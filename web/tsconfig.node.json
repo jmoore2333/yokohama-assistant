@@ -40,6 +40,7 @@
     "vitest.node.config.ts",
     "playwright.config.ts",
     "e2e",
-    "src/**/*.node.test.ts"
+    "src/**/*.node.test.ts",
+    "scripts/**/*.node.test.ts"
   ]
 }

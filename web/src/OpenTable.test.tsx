@@ -9,7 +9,9 @@
 // Every payload below is the corpus's. The two faces are two committed
 // fixtures: `wire.tableOpen` is the table as the stranger reads it, and the
 // lobby's second row is the same shape from the seat — a listing row and a
-// `GET …/table` reply are one `TableView`, so neither face is built here.
+// `GET …/table` reply are one `TableView`, so neither face is built here. The
+// one derived table is `fourWithTwoOpen`, and it moves only the SIZE: its own
+// doc says why.
 
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -30,6 +32,22 @@ const seated = (over: Partial<TableView> = {}): TableView => ({
   ...wire.games.games[1]!,
   ...over,
 });
+
+/** A FOUR-seat table with two seats still open, as a stranger reads it. **Every
+ *  value is the corpus's** — the stranger's own open table, with Blue's seat
+ *  from `table.json` and the open seat's shape from `table_open.json` — and only
+ *  the SIZE moves: the walk's tables are two-seat, so no committed payload has
+ *  two seats free, and the several-seat face is the one R-6.5c2.9 is about. */
+const fourWithTwoOpen = (): TableView => ({
+  ...wire.tableOpen,
+  players: 4,
+  colors: ["Red", "Blue", "Yellow", "Green"],
+  seats: [wire.tableOpen.seats[0]!, wire.table.seats[1]!, wire.tableOpen.seats[1]!, wire.tableOpen.seats[1]!],
+  chosen: [false, false, false, false],
+});
+
+/** The seat cards, in seat order. */
+const cards = () => within(screen.getByRole("list", { name: "Seats" })).getAllByRole("listitem");
 
 /** `show`, at the id `seated()` actually carries. */
 const showSeated = (
@@ -84,81 +102,115 @@ afterEach(() => {
 const tableIs = (t: TableView) => (call: ApiCall): Reply | undefined =>
   call.path.endsWith("/table") ? t : undefined;
 
-describe("the open table, to a stranger", () => {
+describe("the open table, to a stranger with one seat to take", () => {
   it("asks for the table itself rather than waiting out a poll interval", async () => {
     // **The hook does not ask on arm** (`signal.ts`), so a screen that armed the
     // poll and nothing else would read "loading…" for three seconds on every
     // visit — which is the lobby's own reason for an opening fetch.
     const { stub } = show(tableIs(wire.tableOpen));
-    await screen.findByRole("button", { name: "sit here" });
+    await screen.findByRole("button", { name: "Join as Blue" });
     expect(stub.matching("GET", "/table")).toHaveLength(1);
   });
 
-  it("offers a name, a password and one seat — the open one", async () => {
+  // **One free seat, one button** (R-6.5c2.9) — and the password ABOVE the
+  // seats (spec §2.2): typed once, then the choice.
+  it("offers ONE way in, Join as Blue, with the table's password above the seats", async () => {
     show(tableIs(wire.tableOpen));
-    expect(await screen.findByLabelText("Your name")).toBeInTheDocument();
+    const join = await screen.findByRole("button", { name: "Join as Blue" });
+    expect(screen.queryAllByRole("button", { name: /^Sit here/ })).toEqual([]);
     // The password field exists because THIS table is locked; the cell below
     // is the other half.
     expect(wire.tableOpen.locked).toBe(true);
-    expect(screen.getByLabelText("Password")).toBeInTheDocument();
-    // One seat is human and one is open, so one button and not two.
-    const seats = screen.getAllByRole("listitem");
-    expect(seats).toHaveLength(wire.tableOpen.players);
-    expect(screen.getAllByRole("button", { name: "sit here" })).toHaveLength(1);
-    expect(within(seats[1]!).getByRole("button", { name: "sit here" })).toBeInTheDocument();
-    // And the seat somebody holds reads as its NAME (§5.6), not its address.
-    expect(seats[0]).toHaveTextContent("Red");
-    // Nothing a stranger holds: no link to send on, and nothing to abandon.
-    expect(screen.queryByLabelText("Link")).toBeNull();
+    const password = screen.getByLabelText("Table password");
+    const list = screen.getByRole("list", { name: "Seats" });
+    expect(password.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.compareDocumentPosition(join) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Two cards; the taken one by its holder's NAME (§5.6), not its address,
+    // the open one telling the stranger it is theirs for the asking; Red plays
+    // first.
+    expect(cards()).toHaveLength(wire.tableOpen.players);
+    expect(cards()[0]!).toHaveTextContent("Red \u00b7 first player");
+    expect(cards()[0]!).toHaveTextContent("Red");
+    expect(cards()[0]!).not.toHaveTextContent("red@wire.test");
+    expect(cards()[1]!).toHaveTextContent("Open seat");
+    expect(cards()[1]!).toHaveTextContent("yours if you join");
+    // Whose table, how big, how much room — and the lock, as its tag.
+    expect(screen.getByText(/Red's table \u00b7 2 players \u00b7 one seat left/)).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "password required" })).toBeInTheDocument();
+    // Nothing a stranger holds: no link to send on, nothing to abandon, no name to type.
+    expect(screen.queryByLabelText("Invite link")).toBeNull();
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
+    expect(screen.queryByLabelText("Your name")).toBeNull();
+  });
+
+  // **The first player is the table's `start_seat`, not the first card** (the
+  // whole-branch review's Minor 3): every committed table starts at seat 0, so
+  // a caption hard-wired to the first card passed every cell. One field moved,
+  // `start_seat`, from 0 to 1.
+  it("marks the first player at the table's start seat when that is not the first card", async () => {
+    show(tableIs({ ...wire.tableOpen, start_seat: 1 }));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const seats = screen.getByRole("list", { name: "Seats" });
+    expect(cards()[1]!).toHaveTextContent("Blue \u00b7 first player");
+    expect(seats).not.toHaveTextContent("Red \u00b7 first player");
   });
 
   it("asks for no password at an unlocked table", async () => {
     show(tableIs({ ...wire.tableOpen, locked: false }));
-    await screen.findByRole("button", { name: "sit here" });
-    expect(screen.queryByLabelText("Password")).toBeNull();
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    expect(screen.queryByRole("img", { name: "password required" })).toBeNull();
   });
 
-  it("posts the seat, the name and the password, and remembers the name", async () => {
+  // **One click, never zero** (R-6.5c2.9, Review Focus 4): arriving by a link
+  // seats nobody — a link preview or a curious click must not take a seat.
+  it("seats nobody on arrival: nothing is posted until the button is pressed", async () => {
+    // The file's clock idiom (`flush` advances a FAKED clock): an arrival that
+    // joined off an effect or a timer would have posted within these turns.
+    vi.useFakeTimers();
+    const { stub } = show(tableIs(wire.tableOpen));
+    await until(
+      () => screen.queryByRole("button", { name: "Join as Blue" }) !== null,
+      "the table was drawn",
+    );
+    await flush();
+    expect(stub.matching("POST", "/join")).toEqual([]);
+  });
+
+  // **The name is the one this browser KEEPS, read at the click** — the form
+  // asks for none since M6.5c2 (R-6.5c2.8), and a name set in the corner a
+  // moment before is the one the seat takes.
+  it("posts the seat, the name this browser keeps and the password", async () => {
     const { stub, user } = show((call) => {
       if (call.path.endsWith("/table")) return wire.tableOpen;
       if (call.path.endsWith("/join")) return seated({ my_seats: [1] });
       return undefined;
     });
-    await user.type(await screen.findByLabelText("Your name"), "Jeremy");
-    await user.type(screen.getByLabelText("Password"), "hunter2");
-    await user.click(screen.getByRole("button", { name: "sit here" }));
-
+    const join = await screen.findByRole("button", { name: "Join as Blue" });
+    localStorage.setItem(DISPLAY_NAME_KEY, "  Ben  ");
+    await user.type(screen.getByLabelText("Table password"), "hunter2");
+    await user.click(join);
     await waitFor(() => expect(stub.matching("POST", "/join")).toHaveLength(1));
     // Seat ONE — the open one, and the only value no constant and no
     // first-seat default produces.
     expect(stub.matching("POST", "/join")[0]!.body).toEqual({
       seat: 1,
-      name: "Jeremy",
+      name: "Ben",
       password: "hunter2",
     });
-    // The name is a per-BROWSER convenience, so the next table does not ask
-    // again (§5.3). It is never an identity: who you are is `/api/me`'s answer.
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Jeremy");
   });
 
-  it("sends no name when this browser has none, and no password when the table is unlocked", async () => {
+  it("sends no name when this browser keeps none, and no password when the table is unlocked", async () => {
     const { stub, user } = show((call) => {
       if (call.path.endsWith("/table")) return { ...wire.tableOpen, locked: false };
       if (call.path.endsWith("/join")) return seated({ my_seats: [1] });
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "sit here" }));
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
     await waitFor(() => expect(stub.matching("POST", "/join")).toHaveLength(1));
     // **The KEYS, not the values.** `{name: undefined}` serializes away, so an
     // assertion on the value alone would pass for a client that sent the key.
     expect(stub.matching("POST", "/join")[0]!.body).toEqual({ seat: 1 });
-  });
-
-  it("starts from the name this browser already gave", async () => {
-    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
-    show(tableIs(wire.tableOpen));
-    expect(await screen.findByLabelText("Your name")).toHaveValue("Jeremy");
   });
 
   it("shows a wrong password's sentence and keeps what was typed", async () => {
@@ -167,13 +219,13 @@ describe("the open table, to a stranger", () => {
       if (call.path.endsWith("/join")) return { status: 403, body: wire.join403Password };
       return undefined;
     });
-    await user.type(await screen.findByLabelText("Password"), "wrong");
-    await user.click(screen.getByRole("button", { name: "sit here" }));
+    await user.type(await screen.findByLabelText("Table password"), "wrong");
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
     expect(await screen.findByText(wire.join403Password.error)).toBeInTheDocument();
-    // **The fields stay.** A refusal that cleared them would make the second
+    // **The field stays.** A refusal that cleared it would make the second
     // attempt a retype, and the one thing this refusal is about is the field.
-    expect(screen.getByLabelText("Password")).toHaveValue("wrong");
-    expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Table password")).toHaveValue("wrong");
+    expect(screen.getByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
     // And the table was not re-read: a 403 is about the caller, not about the
     // table having moved.
     expect(stub.matching("GET", "/table")).toHaveLength(1);
@@ -192,13 +244,14 @@ describe("the open table, to a stranger", () => {
       if (call.path.endsWith("/join")) return { status: 409, body: wire.join409Taken };
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "sit here" }));
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
     expect(await screen.findByText(wire.join409Taken.error)).toBeInTheDocument();
     await waitFor(() => expect(stub.matching("GET", "/table")).toHaveLength(2));
     // ONCE: a re-read per refusal, not a retry loop.
     expect(stub.matching("POST", "/join")).toHaveLength(1);
-    // And the screen now shows the table as it really is — no seat left to take.
-    expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
+    // The table as it really is: no seat left, so no way in of either kind.
+    expect(screen.queryByRole("button", { name: /^Join as/ })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /^Sit here/ })).toEqual([]);
   });
 
   it("hands the table over when the join says it is no longer open", async () => {
@@ -210,7 +263,7 @@ describe("the open table, to a stranger", () => {
       if (call.path.endsWith("/join")) return { status: 409, body: wire.join409NotOpen };
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "sit here" }));
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(wire.join409NotOpen.error)).toBeNull();
   });
@@ -221,11 +274,11 @@ describe("the open table, to a stranger", () => {
       if (call.path.endsWith("/join")) return wire.tableDealing;
       return undefined;
     });
-    await user.click(await screen.findByRole("button", { name: "sit here" }));
+    await user.click(await screen.findByRole("button", { name: "Join as Blue" }));
     await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(1));
   });
 
-  it("posts one join however fast the seat is clicked", async () => {
+  it("posts one join however fast the button is clicked", async () => {
     // The guard is `App`'s and `Dealing`'s: React batches, so two clicks in one
     // tick both read a `busy` STATE of false and both post — and the second is
     // a 409 the player would read as the screen refusing their own click.
@@ -238,9 +291,9 @@ describe("the open table, to a stranger", () => {
       if (call.path.endsWith("/join")) return held.then(() => seated({ my_seats: [1] }));
       return undefined;
     });
-    const sit = await screen.findByRole("button", { name: "sit here" });
-    await user.click(sit);
-    await user.click(sit);
+    const join = await screen.findByRole("button", { name: "Join as Blue" });
+    await user.click(join);
+    await user.click(join);
     expect(stub.matching("POST", "/join")).toHaveLength(1);
     await act(async () => {
       release();
@@ -249,19 +302,122 @@ describe("the open table, to a stranger", () => {
   });
 });
 
+// ---- two or more free seats: pick a colour (R-6.5c2.9, mock 09) ------------
+describe("the open table, to a stranger with a choice of seats", () => {
+  it("offers Sit here in each open seat, the password once above them, and no single button", async () => {
+    show(tableIs(fourWithTwoOpen()));
+    const sits = await screen.findAllByRole("button", { name: /^Sit here as / });
+    expect(sits.map((b) => b.getAttribute("aria-label"))).toEqual(["Sit here as Yellow", "Sit here as Green"]);
+    expect(sits.map((b) => b.textContent)).toEqual(["Sit here", "Sit here"]);
+    expect(within(cards()[2]!).getByRole("button", { name: "Sit here as Yellow" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Join as/ })).toBeNull();
+    const password = screen.getByLabelText("Table password");
+    expect(
+      password.compareDocumentPosition(screen.getByRole("list", { name: "Seats" })) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByText(/Red's table \u00b7 4 players \u00b7 two seats left/)).toBeInTheDocument();
+    // The seat Blue holds is a taken card, by the holder's name.
+    expect(cards()[1]!).toHaveTextContent("Blue");
+    expect(cards()[1]!).toHaveTextContent("seated");
+  });
+
+  it("takes THE seat that was chosen", async () => {
+    const { stub, user } = show((call) => {
+      if (call.path.endsWith("/table")) return fourWithTwoOpen();
+      if (call.path.endsWith("/join")) return { ...fourWithTwoOpen(), my_seats: [3] };
+      return undefined;
+    });
+    await user.type(await screen.findByLabelText("Table password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Sit here as Green" }));
+    await waitFor(() => expect(stub.matching("POST", "/join")).toHaveLength(1));
+    expect(stub.matching("POST", "/join")[0]!.body).toEqual({ seat: 3, password: "hunter2" });
+  });
+});
+
 describe("the open table, to somebody sitting at it", () => {
-  it("shows the link to send, and no seat to take", async () => {
-    // `locked: true`, so the absent Password field below is the seated FACE
-    // and not merely a table that asks for no password.
+  // **The creator's invite** (mock 08): the link, Copy link, and — at a locked
+  // table — the reminder that the password travels separately. `locked: true`,
+  // so the absent password field below is the seated FACE and not merely a
+  // table that asks for no password.
+  it("shows the creator the link to send, and says the password is theirs to send", async () => {
     showSeated(tableIs(seated({ locked: true })));
-    const link = await screen.findByLabelText("Link");
+    const link = await screen.findByLabelText("Invite link");
     expect(link).toHaveValue(`${window.location.origin}/#/t/wire2`);
-    expect(screen.getByRole("button", { name: "copy" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+    expect(screen.getByText("They'll need the password you set. Send it separately.")).toBeInTheDocument();
     // Nothing to fill in: this person has a seat, and the fields are for taking
     // one.
-    expect(screen.queryByLabelText("Your name")).toBeNull();
-    expect(screen.queryByLabelText("Password")).toBeNull();
-    expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Join as/ })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /^Sit here/ })).toEqual([]);
+  });
+
+  // Somebody ELSE seated invites too, and is not told they set a password they
+  // did not set.
+  it("reminds a seated guest of the table's password without claiming they set it", async () => {
+    showSeated(tableIs(seated({ locked: true, created_by: "someone@else.test" })));
+    await screen.findByLabelText("Invite link");
+    expect(screen.getByText("They'll need the table's password.")).toBeInTheDocument();
+    expect(screen.queryByText(/password you set/)).toBeNull();
+  });
+
+  it("says nothing about a password at an unlocked table", async () => {
+    showSeated(tableIs(seated({ locked: false })));
+    await screen.findByLabelText("Invite link");
+    expect(screen.queryByText(/They'll need/)).toBeNull();
+  });
+
+  // **The seats as cards** (mock 08): yours says You and the name the table
+  // shows for you; the open one says who may take it; the first player is marked.
+  it("draws each seat as a card: you, the open seat and who may take it, the first player marked", async () => {
+    showSeated(tableIs(seated({ locked: true })));
+    await screen.findByLabelText("Invite link");
+    const mine = wire.games.games[1]!.seats[0]!;
+    if (mine.kind !== "human") throw new Error("wire2's seat 0 is the creator's");
+    expect(cards()[0]!).toHaveTextContent("Red \u00b7 first player");
+    expect(cards()[0]!).toHaveTextContent("You");
+    expect(cards()[0]!).toHaveTextContent(mine.name ?? mine.user);
+    expect(cards()[1]!).toHaveTextContent("Open seat");
+    expect(cards()[1]!).toHaveTextContent("anyone in the lobby, with the password");
+    expect(screen.getByText(/Waiting for 1 more player \u00b7 2 players/)).toBeInTheDocument();
+  });
+
+  // **`userEvent.setup()` installs its own clipboard on `navigator`** (and
+  // puts it back after every cell), so the copy is read back through it — a
+  // stub defined before `show` is replaced by the setup and never called.
+  it("says Copied once the link has been copied", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    expect(await navigator.clipboard.readText()).toBe(`${window.location.origin}/#/t/wire2`);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
+    // Heard as well as seen: the button is a polite live region, so the word's
+    // change is announced (the whole-branch review's triage, Task 5 M7).
+    expect(screen.getByRole("button", { name: "Copied" })).toHaveAttribute("aria-live", "polite");
+  });
+
+  // **A refused clipboard is said, and the button claims no copy** (the
+  // whole-branch review's Minor 8): the clipboard is refused in a browser that
+  // has not granted it and on a page served over plain HTTP, and the button
+  // said "Copied" over nothing. Refused here as a browser refuses it, through
+  // the clipboard `userEvent.setup()` installs, and HELD first: nothing is
+  // claimed while the clipboard has not answered either. The sentence is the
+  // lobby's.
+  it("says the link could not be copied when the clipboard refuses, and keeps Copy link", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    const copy = await screen.findByRole("button", { name: "Copy link" });
+    let refuse!: (e: unknown) => void;
+    const refused = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockReturnValue(new Promise<void>((_, reject) => (refuse = reject)));
+    await user.click(copy);
+    const url = `${window.location.origin}/#/t/wire2`;
+    expect(refused).toHaveBeenCalledWith(url);
+    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed before an answer").toBeNull();
+    await act(async () => refuse(new DOMException("Write permission denied.", "NotAllowedError")));
+    expect(await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copied" }), "no copy is claimed after a refusal").toBeNull();
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
   it("escapes an id that is not a bare word", async () => {
@@ -270,7 +426,7 @@ describe("the open table, to somebody sitting at it", () => {
     // an address that opens nothing. The same is true of the request path, which
     // `api.ts` escapes for the same reason.
     show(tableIs(seated({ id: "a b/c" })), { game: "a b/c" });
-    expect(await screen.findByLabelText("Link")).toHaveValue(
+    expect(await screen.findByLabelText("Invite link")).toHaveValue(
       `${window.location.origin}/#/t/a%20b%2Fc`,
     );
   });
@@ -287,7 +443,7 @@ describe("the open table, to somebody sitting at it", () => {
 
   it("offers nothing to abandon to a person who merely sits here", async () => {
     showSeated(tableIs(seated({ created_by: "someone@else.test" })));
-    await screen.findByLabelText("Link");
+    await screen.findByLabelText("Invite link");
     expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
   });
 
@@ -429,23 +585,24 @@ describe("the open table's chat", () => {
   // **A stranger on the seat picker is 403 at this route and must not be shown
   // a panel that refuses** (spec §6.2). The table read is the one route widened
   // to somebody who is not seated (R-2.7); the chat is NOT — so the panel is
-  // rendered under the link field, which only a seated caller has, and the
+  // rendered under the invite, which only a seated caller has, and the
   // stranger's screen asks for nothing at all.
   it("draws the chat panel for a seated caller under the link, and not for a stranger", async () => {
     const { stub } = showSeated(tableIs(seated()));
-    const link = await screen.findByLabelText("Link");
+    const link = await screen.findByLabelText("Invite link");
     const panel = document.querySelector("section.panel.chat")!;
     expect(panel).not.toBeNull();
     expect(panel).toHaveClass("folded");
-    // UNDER the link field, in document order — the place the spec names.
-    expect(link.closest(".link-field")!.compareDocumentPosition(panel)).toBe(
+    // UNDER the invite, in document order and in the MAIN column — the place
+    // the spec names (not mock 08's side rail).
+    expect(link.closest(".invite")!.compareDocumentPosition(panel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
     expect(stub.matching("GET", "/chat").length).toBeGreaterThan(0);
     cleanup();
 
     const stranger = show(tableIs(wire.tableOpen));
-    await screen.findByRole("button", { name: "sit here" });
+    await screen.findByRole("button", { name: "Join as Blue" });
     expect(screen.queryByText("Chat")).toBeNull();
     expect(document.querySelector("section.panel.chat")).toBeNull();
     expect(stranger.stub.matching("GET", "/chat"), "and nothing was asked for").toHaveLength(0);

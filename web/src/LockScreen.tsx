@@ -15,7 +15,7 @@
 // and the caller says which by where it puts it.
 
 import { useRef, useState } from "react";
-import type { ReactNode } from "react";
+import { LobbyBand } from "./Band";
 import type { LockState } from "./local/useLocalHold";
 import { Refusal } from "./Refusal";
 
@@ -46,21 +46,23 @@ export function LockScreen({
   state,
   onTakeover,
   onLeave,
+  leaveLabel = "Lobby",
   inline = false,
-  who,
 }: {
   state: LockFace;
   /** Steal the lock. Rejecting is reported here rather than thrown: the local
    *  host is the only thing that can refuse, and it refuses in a sentence. */
   onTakeover: () => Promise<void> | void;
-  /** Back to the lobby — the standalone shape only, where there is nothing
-   *  else on screen to leave by. */
+  /** The way out — the standalone shape only, where there is nothing else on
+   *  screen to leave by. `App` sends it to the lobby, or to the door in a build
+   *  that serves no lobby (`leaveLabel`). */
   onLeave?: () => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
   /** Draw the strip for the answer deck rather than a screen of its own. */
   inline?: boolean;
-  /** The "On this device" strip, built by `App` and merely placed here, as the
-   *  other pre-game screens do it. */
-  who?: ReactNode;
 }) {
   const [error, setError] = useState<string | null>(null);
   // A ref and not a state, for the reason every other guard in this client is
@@ -101,19 +103,26 @@ export function LockScreen({
     );
   }
   return (
-    <div className="setup locked-out">
-      {who && <div className="who-strip">{who}</div>}
-      <h2>{words.says}</h2>
-      <p className="lede">{words.why}</p>
-      <div className="field unlock-controls">
-        {button}
-        {onLeave && (
-          <button type="button" className="ghost" onClick={onLeave}>
-            Lobby
-          </button>
-        )}
+    <div className="band-screen">
+      {/* A LOCAL game's screen: the band names the device, and draws no
+          identity corner — nothing here is the server's (mock 07's local form,
+          for the same reason). */}
+      <LobbyBand crumbs={["On this device"]} corner={undefined} />
+      <div className="setup locked-out">
+        <div className="notice-card">
+          <h3 className="page-title">{words.says}</h3>
+          <p className="lede">{words.why}</p>
+          <div className="notice-actions">
+            {button}
+            {onLeave && (
+              <button type="button" className="quiet-link" onClick={onLeave}>
+                <span aria-hidden="true">&larr; </span>{leaveLabel}
+              </button>
+            )}
+          </div>
+          {error && <Refusal sentence={error} />}
+        </div>
       </div>
-      {error && <Refusal sentence={error} />}
     </div>
   );
 }

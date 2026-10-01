@@ -6,7 +6,7 @@
 // this menu. Nothing is deleted from here; M6.2 puts that on the open table.
 
 import { useRef, useState, type ReactNode } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, type Host } from "./api";
 import { TableFacts } from "./TableFacts";
 import type { ClientState, TableView } from "./types";
 import { Refusal } from "./Refusal";
@@ -16,6 +16,8 @@ export function GameMenu({
   busy,
   onSwitch,
   onLobby,
+  leaveLabel = "Lobby",
+  savedFrom,
   signOut,
 }: {
   state: ClientState;
@@ -29,11 +31,23 @@ export function GameMenu({
    *  still lands in this menu's own line. */
   onSwitch: (id: string) => void | Promise<void>;
   /** The way OUT of this game, and since M6.2 it goes to the lobby rather than
-   *  straight to the form (spec §5.1). The lobby is where a player picks
+   *  straight to the form (spec §5.1), or to the door in a build that serves
+   *  no lobby (`leaveLabel`). The lobby is where a player picks
    *  between their tables and the open ones, and its own "New table" button is
    *  one click further on — so a control that jumped past it would be the only
    *  route in the client that skipped the first screen. */
   onLobby: () => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
+  /** Which host "Saved games" is read from. Absent is the SERVER, the lobby's
+   *  own listing; `"local"` in a build that serves no lobby (the whole-branch
+   *  review's Important 1), where the server has no game routes and a listing
+   *  sent there came back as a 404 drawn under this list on every open. The
+   *  local host answers the same `GamesList`, so the rows are this browser's
+   *  games, from the listing the door's "On this device" reads. */
+  savedFrom?: Host;
   /** The door's sign-out control, built by `App` and merely PLACED here.
    *
    *  **It lives in this menu on the game screen, and beside the strip on the
@@ -72,7 +86,7 @@ export function GameMenu({
       // server, and the rows say so: a table has a name, a size and something
       // it is waiting on. The id alone was all this menu could show when a
       // saved game was a file.
-      .list()
+      .list("mine", undefined, savedFrom)
       .then((l) => seq === listing.current && setSaved(l.games))
       .catch((e) => seq === listing.current && setError(said(e)));
   };
@@ -103,7 +117,7 @@ export function GameMenu({
       </summary>
       <div>
         <button type="button" className="ghost" onClick={onLobby}>
-          Lobby
+          {leaveLabel}
         </button>
         <div className="label">Saved games</div>
         {saved === null && !error && <div className="muted">loading…</div>}

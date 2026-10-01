@@ -73,6 +73,7 @@ export function Dealing({
   onToggleSection,
   onPlaying,
   onLeave,
+  leaveLabel = "Lobby",
   who,
 }: {
   /** The table being dealt. */
@@ -89,7 +90,8 @@ export function Dealing({
   onToggleSection: (k: SectionKey) => void;
   /** The table has started. `App` opens the game; this screen is replaced. */
   onPlaying: () => void | Promise<void>;
-  /** Back to the lobby.
+  /** Back to the lobby, or to the door in a build that serves no lobby
+   *  (`leaveLabel`).
    *
    *  **A screen you cannot leave is a screen you are stuck on.** The M5.5 set
    *  table had "Re-deal" for this; a table is PERSISTED now, so leaving is not
@@ -105,6 +107,10 @@ export function Dealing({
    *  words are `signal.ts`'s `endSentence` (final review I-2); a refusal that
    *  ends the signal carries the server's own message instead. */
   onLeave: (sentence?: string) => void;
+  /** What the way out SAYS (M6.5c2, spec §2.2): "Lobby", except on a local
+   *  game in a build that serves no lobby, where `App` sends it to the door
+   *  and says so. */
+  leaveLabel?: string;
   /** The "You are …" strip, built by `App` and merely placed here. */
   who?: ReactNode;
 }) {
@@ -308,7 +314,7 @@ export function Dealing({
               this destination (live review M-3). It read "Games" while the
               other three screens named the same place differently. */}
           <button type="button" className="ghost" onClick={() => onLeave()}>
-            Lobby
+            {leaveLabel}
           </button>
         </nav>
       </header>

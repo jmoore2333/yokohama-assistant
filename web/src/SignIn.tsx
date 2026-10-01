@@ -1,111 +1,112 @@
-// The open door's sign-in.
+// The name step: the open door's one question (M6.5c2, R-6.5c2.3; spec §2.1;
+// mock 03).
 //
-// It exists under ONE deployment mode. `open` is the mode where the server
-// believes the `X-Yokohama-Claimed-User` header (spec R-1.2), which is the
-// local and LAN-hosted shape; behind Cloudflare Access or the edge Worker the
-// identity arrives from in front of the server and this screen is never
-// rendered — `App` routes a null user under those modes to a sentence naming
-// the header that was supposed to be set.
+// **It exists under ONE door.** `open` is the mode where the server believes
+// the `X-Yokohama-Claimed-User` header — a self-host with no identity provider,
+// and this project's own browser walk — and behind Cloudflare Access or the
+// edge Worker the identity arrives from in front of the server and this screen
+// is never drawn (`Door.tsx`).
 //
-// The name typed here is normalized to the SAME shape the server normalizes to
-// (R-1.1), so the seat you are given and the name on your screen are one
-// string. A client that stored the raw text would be signed in as
-// `Red@Wire.TEST` and seated as `red@wire.test`.
+// **The rule is the server's, and so is the key.** `normalizeName` is pinned
+// to `User::parse` over one committed table (`nameRule.ts`), so the header this
+// browser sends is exactly the key the server writes seats under. The name as
+// TYPED is stored too, as the display name the lobby corner and every seat show.
+//
+// **Titled `<h3>`**: it is drawn under the lobby's band, whose last crumb is the
+// page's `<h2>` (`Band.tsx`).
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { setClaimedUser, setDisplayName } from "./api";
+import { normalizeName } from "./nameRule";
 import { Refusal } from "./Refusal";
-
-/** The server's own R-1.1 shape, restated so the refusal happens here rather
- *  than as a 400 on the first request. Deliberately the same crude rule and not
- *  a stricter one: two different notions of "an email" would refuse names the
- *  server would have accepted. */
-const EMAIL = /^[^\s@]+@[^\s@]+$/;
 
 export function SignIn({
   onSignedIn,
   notice,
 }: {
-  onSignedIn: (email: string) => void;
+  onSignedIn: (key: string) => void;
   /** Why the player is here, in the server's own words, when they did not
    *  choose to be (spec §7.1). A 401 unmounts the screen that caught it, so the
-   *  sentence has to arrive with them or it is lost — and a game vanishing into
-   *  a bare form is not something anyone can act on. */
+   *  sentence has to arrive with them or it is lost. */
   notice?: string;
 }) {
+  const field = useId();
+  const rule = useId();
+  const refused = useId();
   const [value, setValue] = useState("");
-  /** The name this person's messages and seats are labelled with (R-6.4.3) —
-   *  OPTIONAL, and on the same one key the lobby, the New table form and the
-   *  seat picker read. Blank leaves whatever is stored alone: clearing belongs
-   *  to the lobby's field, which has a value to clear, and a door that wrote an
-   *  empty string here would sign a returning player in under no name at all. */
-  const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      setError("Type the email you want to play under.");
-      return;
-    }
-    if (!EMAIL.test(normalized)) {
-      setError(`${normalized} is not an email`);
+    const name = normalizeName(value);
+    if (!name.ok) {
+      setError(name.reason);
       return;
     }
     // **Stored BEFORE the callback, because the callback is what re-reads
-    // `/api/me`.** `api.ts` attaches the header from storage on every call, so
-    // a refresh that ran first would ask the server who we are while the
-    // browser was still holding nobody, and the answer would send us straight
-    // back to this screen.
-    setClaimedUser(normalized);
-    // Trimmed the way the address is, and only when there is something to
-    // store — see `name`.
-    if (name.trim()) setDisplayName(name.trim());
+    // `/api/me`.** `api.ts` attaches the header from storage on every call, so a
+    // refresh that ran first would ask the server who we are while the browser
+    // was still holding nobody, and the answer would send us straight back here.
+    setClaimedUser(name.key);
+    setDisplayName(name.display);
     setError(null);
-    onSignedIn(normalized);
+    onSignedIn(name.key);
   };
   return (
-    <div className="setup sign-in">
-      <h2>Sign in</h2>
-      {/* Above the form: the reason you are here is read before the thing it is
-          asking you to do. `role="status"` because it appears without the
-          player having done anything on this screen. */}
-      {notice && (
-        <p className="error door-notice" role="status">
-          {notice}
-        </p>
-      )}
-      <p className="lede">
-        This is a development door: the name you type is the name you play under. Behind Cloudflare
-        Access it is still Access that lets you in.
-      </p>
-      {/* A real form, so Enter in the field signs in. The default is prevented
-          because there is nothing to submit TO — the name goes to storage and
-          the next request carries it as a header. */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          submit();
-        }}
-      >
-        <div className="field">
-          <label htmlFor="email">Email</label>
+    <section className="raised-card state-card name-step">
+      <div className="card-band vp" aria-hidden="true" />
+      <div className="card-in">
+        <h3>Choose a name</h3>
+        {/* Above the form: the reason you are here is read before the thing it
+            asks you to do. `role="status"` because it appears without the player
+            having done anything on this screen. */}
+        {notice && (
+          <p className="error door-notice" role="status">
+            {notice}
+          </p>
+        )}
+        <p className="lede">Other players see it at your tables and in chat.</p>
+        {/* A real form, so Enter in the field continues. The default is
+            prevented because there is nothing to submit TO — the name goes to
+            storage and the next request carries it as a header. */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <label className="sr-only" htmlFor={field}>
+            Name
+          </label>
           <input
-            id="email"
+            id={field}
             type="text"
-            autoComplete="email"
+            autoComplete="nickname"
+            aria-describedby={error ? `${rule} ${refused}` : rule}
+            aria-invalid={error ? true : undefined}
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-        </div>
-        <div className="field">
-          <label htmlFor="sign-in-name">Your name (optional)</label>
-          <input id="sign-in-name" value={name} onChange={(e) => setName(e.target.value)} />
-        </div>
-        <button type="submit" className="primary">
-          Sign in
-        </button>
-      </form>
-      {error && <Refusal sentence={error} />}
-    </div>
+          <p className="hint" id={rule}>
+            Letters, numbers, spaces, dots, dashes and underscores. Up to 32 characters.
+          </p>
+          <button type="submit" className="primary">
+            Continue
+          </button>
+        </form>
+        {/* **Announced, and tied to the field** (review M7): `role="alert"` so a
+            screen reader says why the name was refused the moment it is, and
+            the field is marked invalid and described by the reason as well as
+            by the rule. */}
+        {error && (
+          <div id={refused} role="alert">
+            <Refusal sentence={error} />
+          </div>
+        )}
+        <p className="fine">
+          This server doesn&rsquo;t check who anyone is, so anyone who can reach it can use any name.
+          Play here with people you know. Your tables stay with the name you sat down as, so
+          switching names later leaves them behind.
+        </p>
+      </div>
+    </section>
   );
 }

@@ -30,3 +30,8 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/** The door's project link (M6.5c2, spec §2.3): the checked
+ *  `YOKOHAMA_PROJECT_URL`, or `null` where the build set none — a `define` in
+ *  `vite.config.ts`, read by `projectLink.ts` alone. */
+declare const __YOKOHAMA_PROJECT_URL__: string | null;

@@ -35,7 +35,10 @@ function Shot({ src, alt, caption }: { src: string; alt: string; caption: string
   );
 }
 
-export function Help() {
+/** `shots` false draws the words alone: the door's "How to play" does, because
+ *  the screenshots are photographs of the card art (`ASSETS.md`, the
+ *  `web/public/help/` row) and no setup screen draws card art (M6.5c2). */
+export function Help({ shots = true }: { shots?: boolean } = {}) {
   return (
     <>
       <p className="lede">
@@ -80,16 +83,20 @@ export function Help() {
         stack instead, the table above the column, with the answer bar pinned along the bottom
         edge rather than at the top of a column.
       </p>
-      <Shot
-        src="/help/screen.webp"
-        alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
-        caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
-      />
-      <Shot
-        src="/help/strips.webp"
-        alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
-        caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
-      />
+      {shots && (
+        <Shot
+          src="/help/screen.webp"
+          alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
+          caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
+        />
+      )}
+      {shots && (
+        <Shot
+          src="/help/strips.webp"
+          alt="The same table scrolled down: the last row of the pyramid across the top of the frame, then the marks legend, then the Port board drawn as the physical one is &mdash; six slots in a row, each holding an order card at full size with its goods and its victory points under it &mdash; and the head of the Laboratory board below that, its six slots labelled with the surcharge each carries. The answer bar and the seats are unchanged on the right."
+          caption="The same screen, scrolled down. This is what is under the pyramid: the boards you switched on, in the shapes the real ones have. The port is first, the laboratory under it, and the tracks, the goals and the building sites below those."
+        />
+      )}
 
       <h3>Taking a turn</h3>
       <p>
@@ -105,11 +112,13 @@ export function Help() {
         selected is printed before you commit to it. At every other moment no tile applies a
         move, and the pyramid is a picture you can read rather than press.
       </p>
-      <Shot
-        src="/help/placement.webp"
-        alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
-        caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
-      />
+      {shots && (
+        <Shot
+          src="/help/placement.webp"
+          alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
+          caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
+        />
+      )}
 
       <h3>Looking things up</h3>
       <p>
@@ -141,11 +150,13 @@ export function Help() {
         reconstruction the engine can vouch for rather than a note someone stored. If the
         reconstruction does not match what was played, it refuses and says so.
       </p>
-      <Shot
-        src="/help/explain.webp"
-        alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
-        caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
-      />
+      {shots && (
+        <Shot
+          src="/help/explain.webp"
+          alt="The Suggest panel open as a drawer over the table: the move it would play under the heading &ldquo;It would play&rdquo;, then a term-by-term chart with a bar either side of a centre zero line for every feature carrying a nonzero product, each row naming its feature, its arithmetic and its product, and a total under them that foots, over a button offering the remaining features that contribute nothing."
+          caption="Suggest: the move it would play, and the arithmetic behind it — helping to the right of the zero line, hurting to the left. The line it searched follows further down the panel."
+        />
+      )}
 
       <h3>Replaying the game</h3>
       <p>
@@ -165,45 +176,52 @@ export function Help() {
         returns you to it. Nothing you do here changes the game: it is a projection over the
         record, and the position you scrub to is not playable.
       </p>
-      <Shot
-        src="/help/replay.webp"
-        alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
-        caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
-      />
+      {shots && (
+        <Shot
+          src="/help/replay.webp"
+          alt="The Log panel open as a drawer on the right: the replay track across its top with step arrows, a readout of which stop it is at and a &ldquo;Back to live&rdquo; button, the numbered move list under it with the current stop highlighted, and the table beside it redrawn at that earlier position inside a green outline."
+          caption="The replay track lives in the Log panel; the table redraws beside it at full size, outlined to say you are in the past."
+        />
+      )}
 
       <h3>Starting a game</h3>
       <p>
-        The first screen is the <strong>front door</strong>, and it offers two ways on.{" "}
-        <strong>Play on this device</strong> is the games in this browser &mdash; nobody signs in
-        for those, and the last section of this page is about them. <strong>Play with others</strong>{" "}
-        goes to the server, which has to know who you are before it will show you a table: under
-        this deployment that is an email address you type once and it remembers. What you land on
+        The first screen is the <strong>front door</strong>. <strong>You against the bot</strong>{" "}
+        plays in this browser &mdash; nobody signs in, the door lists those games under{" "}
+        <strong>On this device</strong>, and the last section of this page is about them.{" "}
+        <strong>Play with friends</strong>{" "}
+        goes to the server, which has to know who you are before it will show you a table: on a server
+        with no sign-in of its own you choose a name once and this browser remembers it; behind
+        Cloudflare Access it is your Access sign-in. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
-        door at the top of it. It has three lists &mdash; <em>Your games</em>, the
-        tables you already sit at; <em>Open tables</em>, every table on the server still waiting
-        for players, whoever opened it; and <em>Games in progress</em>, the ones you can watch
-        &mdash; and <em>New table</em>, which is the form. Beside <strong>You are</strong> at the
-        top of the lobby is a <strong>Your name</strong> field: it is optional, this browser
-        remembers it, and it is the name the seats you take and the messages you send are
-        labelled with &mdash; leave it blank and your address is used. (It is not the{" "}
-        <em>display name</em> on the form below, which names you at one table.)
+        door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
+        tables you already sit at; <em>Open tables</em>, every other table on the server still
+        waiting for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
+        &mdash; and <em>New table</em>, which is the form. The lobby&rsquo;s top corner says who
+        you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
+        choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
+        <em>change name</em> sets the name the seats you take and the messages you send are labelled
+        with, and this browser remembers it; leave it blank and your address is used.
       </p>
       <p>
-        The form is <strong>one row per seat</strong> &mdash; each one you, somebody else&rsquo;s
-        email, an open seat, or the bot. The bot is offered at two players only, because that is
-        where it has been measured. You can give the table a name, give yourself a display name,
-        and ask for a <strong>password</strong> that anyone joining has to type. Fill every seat
-        and the button reads Deal: the table opens at once. Leave a seat open and it reads Open
-        table, and the table waits. Either way nobody has played yet, and the game does not exist
-        until every seat has chosen its first card.
+        The form is <strong>one row per seat</strong>, in the colours&rsquo; own order &mdash; each
+        one you, a specific person, an open seat, or the bot. The bot is offered at two players
+        only, because that is where it has been measured, and the form names the version it plays
+        as. You choose who plays first, or leave it to a draw; you can give the table a name, and
+        ask for a <strong>password</strong> that anyone joining or spectating has to type. Under{" "}
+        <em>Advanced</em> you can ask for one particular setup by its seed, a whole number the form
+        checks as you type. Fill every seat and the button reads Deal: the table opens at once.
+        Leave a seat open and it reads Open table, and the table waits. Either way nobody has played
+        yet, and the game does not exist until every seat has chosen its first card.
       </p>
       <p>
-        A table with a seat still open has a <strong>link</strong> &mdash; its own address, shown
-        on the table&rsquo;s screen with a copy button beside it. Send it to whoever is playing:
-        they sign in, type the password if the table asks for one, and press <em>sit here</em>.
-        They can equally find the table for themselves under Open tables, without a link at all.
-        The deal begins by itself the moment the last seat is taken, on everybody&rsquo;s screen at
-        once.
+        A table with a seat still open has a <strong>link</strong> &mdash; its own address, under{" "}
+        <em>Invite people</em> on the table&rsquo;s screen with a button that copies it. Send it to
+        whoever is playing: they sign in, type the password if the table asks for one, and take
+        the seat &mdash; <em>Join as</em> its colour when one seat is left, or <em>Sit here</em> on
+        the one they want when there are more. They can equally find the table for themselves under
+        Open tables, without a link at all. The deal begins by itself the moment the last seat is
+        taken, on everybody&rsquo;s screen at once.
       </p>
       <p>
         That choice happens over the <strong>set table</strong>: the areas with their site cards
@@ -228,27 +246,27 @@ export function Help() {
         itself the moment the last of them does.
       </p>
 
-      <h3>Watching a game</h3>
+      <h3>Spectating a game</h3>
       <p>
-        You can watch a game you are not playing in. The lobby&rsquo;s third list,{" "}
-        <em>Games in progress</em>, is every game on the server still being played or
-        already finished, and pressing one opens it &mdash; as does a{" "}
-        <strong>link</strong> to the table, from whoever is at it. If the table was
-        opened with a password, you are asked for it once, on a screen that names the
-        table and who is sitting at it; after that the game opens and stays open to you.
+        You can spectate a game you are not playing in. The lobby&rsquo;s third list,{" "}
+        <em>Being played</em>, is every game on the server still being played or already
+        finished, and <strong>Spectate</strong> beside one opens it &mdash; as does a{" "}
+        <strong>link</strong> to the table, from whoever is at it. If the table was opened with a
+        password &mdash; its row carries the <em>Password</em> tag &mdash; you are asked for it
+        once, on a screen that names the table and who is sitting at it; after that the game opens
+        and stays open to you.
       </p>
       <p>
-        The screen is the same table the players are looking at, with one difference:
-        the strip in the banner reads <strong>You are watching</strong>, and there is no
-        answer bar. Every hand on it is a <em>count</em> rather than cards &mdash; a
-        watcher is never shown anybody&rsquo;s hand, exactly as the players are never
-        shown each other&rsquo;s &mdash; and moves arrive and walk across the table{" "}
-        <em>as they happen</em>, one step at a time, at whatever cadence you set. You
-        cannot play, you cannot undo, and Suggest is not offered, because it runs on a
-        seat and you have none. Everything you can read still reads: the log and its
-        replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
-        played, and the final score once there is one. You can talk, too: the chat panel is at
-        the foot of the column, and what you say is marked as coming from a watcher.
+        The screen is the same table the players are looking at, with one difference: the strip
+        in the banner reads <strong>You are spectating</strong>, and there is no answer bar. Every
+        hand on it is a <em>count</em> rather than cards &mdash; a spectator is never shown
+        anybody&rsquo;s hand, exactly as the players are never shown each other&rsquo;s &mdash;
+        and moves arrive and walk across the table <em>as they happen</em>, one step at a time, at
+        whatever cadence you set. You cannot play, you cannot undo, and Suggest is not offered,
+        because it runs on a seat and you have none. Everything you can read still reads: the log
+        and its replay track, the boards, the card indexes, <em>Why</em> for the last move a bot
+        played, and the final score once there is one. You can talk, too: the chat panel is at the
+        foot of the column, and what you say is marked as coming from a spectator.
       </p>
 
       <h3>Talking</h3>
@@ -256,25 +274,25 @@ export function Help() {
         At the foot of the side column &mdash; under the account of the last turn and the players
         &mdash; is a <strong>Chat</strong> panel, folded until you open it, with a count of what has
         arrived while it was closed. Everyone at the table can talk: each seat&rsquo;s line carries
-        the seat&rsquo;s colour and the name it joined under, or its address, and a watcher&rsquo;s
-        line says <em>watching</em>. A message is never undone and never part of the game&rsquo;s
+        the seat&rsquo;s colour and the name it joined under, or its address, and a spectator&rsquo;s
+        line says <em>spectating</em>. A message is never undone and never part of the game&rsquo;s
         record; the server keeps a limited number per table &mdash; whoever runs it sets how many
         &mdash; and drops the oldest, and the table&rsquo;s chat goes with the table when it is
         abandoned.
       </p>
       <p>
-        The lobby has a chat of its own, <strong>Lobby chat</strong>, under the three lists, folded
+        The lobby has a chat of its own, <strong>Lobby chat</strong>, beside the three lists (under them on a phone), folded
         the same way &mdash; open it to join in. Whoever runs the server can switch it off, and then
-        the section is simply not there. The name you type beside <em>You are</em> on the lobby is
-        the name your messages carry, and the name a seat you take is labelled with; leave it blank
-        and your address is used.
+        the section is simply not there. The name in the lobby&rsquo;s corner is the name your
+        messages carry, and the name a seat you take is labelled with; with none, your address is
+        used.
       </p>
 
       <h3>Saving, and coming back</h3>
       <p>
         Every move you make is written to the server as it is applied &mdash; there is no save
         button and nothing to remember. Leave and come back and the table is under{" "}
-        <em>Your games</em> in the lobby, where it resumes exactly where you left it. You do not
+        <em>Your tables</em> in the lobby, where it resumes exactly where you left it. You do not
         have to leave to find it: the banner&rsquo;s leftmost control names the game you are in,
         and opening it offers <em>Lobby</em> at the top and your other tables under it to switch
         between. A table you opened yourself can be abandoned, from its own screen while it is

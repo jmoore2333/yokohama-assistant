@@ -51,7 +51,7 @@ describe("the hash routes", () => {
   // **The form has two addresses since M6.5b** (spec §2.5): `#/new` opens a
   // table on the server and `#/new/local` opens one in this browser, and the
   // second is reachable with no door at all — which is the whole of what makes
-  // "Play the bot here" work on an unreachable API.
+  // the door's "New game" work on an unreachable API.
   it("reads #/new/local as the local create and round-trips it", () => {
     expect(parseRoute("#/new/local")).toEqual({ kind: "new", local: true });
     expect(hashOf({ kind: "new", local: true })).toBe("#/new/local");

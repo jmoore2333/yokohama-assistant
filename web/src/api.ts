@@ -284,14 +284,24 @@ export const BOUND_MS = 5_000;
 
 /** `p`, or a rejection once `ms` has passed.
  *
- *  A race rather than a catch, for the reason [`BOUND_MS`] gives. The loser's
- *  timer is left to fire and reject a promise nobody is holding, which is
- *  harmless: `Promise.race` has already settled. */
+ *  A race rather than a catch, for the reason [`BOUND_MS`] gives. **The timer
+ *  is cleared the moment `p` settles** (M6.5c2): the signal's probe is bounded
+ *  too, inside a hook whose cells count what is left armed, and a bound whose
+ *  timer outlived its read would stand there as a rung nobody scheduled. */
 export const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
-  Promise.race([
-    p,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms)),
-  ]);
+  new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
 
 /** Which change transport this DEPLOYMENT serves, read once from
  *  `GET /api/health` on entering the multiplayer channel (M6.5b2: no longer at

@@ -28,14 +28,16 @@ import {
   WORKER_BOUND_MS,
   forgetUnplayable,
   listUnplayable,
+  removeForeign,
   restorePairs,
   unplayableIds,
   type Envelope,
 } from "./backup";
+import { api } from "./api";
 import { deletePair, openDb, readPair, restoreOne, takeGeneration, writeDocs } from "./local/db";
 import { rememberServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
-import { breakTheWorker, stubWorker, workerAnswersWith } from "./test/fakeWorker";
+import { breakTheWorker, currentWorker, stubWorker, workerAnswersWith } from "./test/fakeWorker";
 import { wire } from "./wire/contract";
 import committed from "./wire-script/backup-envelope.json";
 
@@ -552,5 +554,104 @@ describe("the database handles", () => {
       opens.mockRestore();
       closes.mockRestore();
     }
+  });
+});
+
+// ---- a game the MODULE refuses to open (M6.5c2, spec §2.4) ----------------
+//
+// **Remove takes the module's fenced delete, never this database directly.** A
+// cross-rev row is this browser's own compatibility note and `forgetUnplayable`
+// removes it straight from IndexedDB; a foreign row is the module's LISTING,
+// loaded into every tab's Worker at its boot, so a delete behind the Worker's
+// back would leave the row listed. The layer's delete never rebuilds (it reads
+// the table and the record's event count), which is why it works on a game
+// `live_handle` refuses; the Worker commits it only for a game this tab holds.
+describe("removing a game this build's bot cannot continue", () => {
+  const ID = "local-9";
+  /** The Worker messages that matter here, in the order they were sent. */
+  const steps = () =>
+    currentWorker()
+      .posted.map((p) => (p.kind === "call" ? `${p.method} ${p.path}` : p.kind))
+      .filter((s) => s === "hold" || s === "release" || s.startsWith("DELETE"));
+
+  it("holds the game, deletes it through the module, and gives the hold back", async () => {
+    await putPair(ID, RECORD_TEXT, tableFor(ID));
+    await removeForeign(ID);
+    expect(steps()).toEqual(["hold", `DELETE /api/games/${ID}`, "release"]);
+    // **And nothing behind the Worker's back**: this fake Worker deletes
+    // nothing itself, so the stored pair still being here is what says the
+    // page did not reach for the database.
+    expect((await readBack(ID)).record).toBe(RECORD_TEXT);
+  });
+
+  it("refuses in a sentence, and sends nothing, when another tab holds the game", async () => {
+    stubWorker({ hold: () => false });
+    await expect(removeForeign(ID)).rejects.toThrow(
+      "this game is open in another tab \u2014 close it there, then remove it",
+    );
+    expect(steps()).toEqual(["hold"]);
+  });
+
+  it("gives the hold back even when the delete is refused", async () => {
+    stubWorker({
+      call: (req) =>
+        req.method === "DELETE" ? { status: 403, body: wire.notSeated403 } : undefined,
+    });
+    await expect(removeForeign(ID)).rejects.toThrow(wire.notSeated403.error);
+    expect(steps()).toEqual(["hold", `DELETE /api/games/${ID}`, "release"]);
+  });
+});
+
+// ---- M6.5c2: the record's `run` through every browser save path (spec §2.4) --
+//
+// **Every save names what produced it** (R-6.5c2.10): the record's `run` block
+// — which bot sat where, at which version and knobs, with its stream seed —
+// and since M6.5c2 the host it was played on (`run.run_id`, stamped by the
+// module: Task 5's pin). This is the PAGE's half: the three places a browser
+// keeps or hands over a record — this database, "Save game file" and the
+// backup envelope — carry `run` byte for byte. They can, because nothing on
+// the page parses a record (`backup.ts`'s header); these cells are what says
+// so for `run` in particular, whose two u64s a JavaScript number rounds.
+describe("the record's run block through every save path", () => {
+  /** The committed record's `run` block, as text — `run` is its last key. */
+  const RUN = RECORD_TEXT.slice(RECORD_TEXT.indexOf('"run": {'), RECORD_TEXT.lastIndexOf("\n}"));
+
+  it("is the premise: a run block whose two u64s no JavaScript number holds", () => {
+    expect(RUN).toContain('"agent_seed": 10851594032870736878');
+    expect(RUN).toContain('"weights": 6957643967275421640');
+    expect(String(Number("10851594032870736878"))).not.toBe("10851594032870736878");
+    // So a parse and a re-serialize on ANY path would change the bytes.
+    expect(JSON.stringify(JSON.parse(RECORD_TEXT), null, 2)).not.toBe(RECORD_TEXT);
+  });
+
+  it("survives this browser's database byte for byte", async () => {
+    await putPair("local-run", RECORD_TEXT, tableFor("local-run"));
+    const back = await readBack("local-run");
+    expect(back.record).toBe(RECORD_TEXT);
+    expect(back.record).toContain(RUN);
+  });
+
+  // "Save game file" hands `api.recordText`'s string to a Blob untouched
+  // (`App.tsx`'s `saveGameFile`; `App.test.tsx`'s local Save game file cell
+  // reads the Blob back). This is the string's own source.
+  it("survives Save game file: the text the download is made of is the stored text", async () => {
+    await putPair("local-run", RECORD_TEXT, tableFor("local-run"));
+    expect(await api.recordText("local-run")).toBe(RECORD_TEXT);
+  });
+
+  it("survives a backup and a restore onto a fresh device, byte for byte", async () => {
+    await putPair("local-run", RECORD_TEXT, tableFor("local-run"));
+    const envelope = await backupOne("local-run");
+    // The envelope carries the record as a JSON STRING: parsing the FILE hands
+    // back the record's exact text, never a parsed record.
+    expect((JSON.parse(envelope) as Envelope).games[0]!.record).toBe(RECORD_TEXT);
+    // A fresh device: a new database, and a new Worker.
+    globalThis.indexedDB = new IDBFactory();
+    resetLocalHostForTests();
+    stubWorker();
+    await restorePairs(envelope);
+    const back = await readBack("local-run");
+    expect(back.record).toBe(RECORD_TEXT);
+    expect(back.record).toContain(RUN);
   });
 });

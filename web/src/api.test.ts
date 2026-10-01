@@ -4,7 +4,7 @@
 // the status, and the door on a 401.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACCESS_CHALLENGE, api, ApiError, onUnauthorized } from "./api";
+import { ACCESS_CHALLENGE, api, ApiError, BOUND_MS, bounded, onUnauthorized } from "./api";
 import { readStream } from "./sse";
 import { resetLocalHostForTests } from "./local/client";
 import { TAKEN_OVER_SENTENCE } from "./local/lost";
@@ -315,5 +315,31 @@ describe("the expired-session read", () => {
     await expect(readStream("/api/games/g/stream", ac.signal, () => {})).rejects.toThrow(
       "no signed-in user",
     );
+  });
+});
+
+// ---- M6.5c2: a bound that is over holds no timer (spec §2.8) ---------------
+describe("bounded", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // **A read that answered leaves nothing armed.** The signal's probe is bounded
+  // since M6.5c2, inside a hook whose cells COUNT timers — battery 23 asserts
+  // none is left once the source has ended — so a bound that outlived its read
+  // would read as a rung of the ladder nobody scheduled.
+  it("clears its timer the moment the read settles, either way", async () => {
+    vi.useFakeTimers();
+    await expect(bounded(Promise.resolve("answered"), BOUND_MS)).resolves.toBe("answered");
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(bounded(Promise.reject(new Error("refused")), BOUND_MS)).rejects.toThrow("refused");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("still rejects once the bound has passed on a read that never settles", async () => {
+    vi.useFakeTimers();
+    const settled = expect(bounded(new Promise<never>(() => {}), BOUND_MS)).rejects.toThrow("timed out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await settled;
   });
 });

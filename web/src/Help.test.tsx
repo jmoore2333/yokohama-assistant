@@ -120,7 +120,7 @@ describe("the help panel and the lobby", () => {
     const { container } = render(<Help />);
     const text = container.textContent ?? "";
     expect(text).toMatch(/\blobby\b/i);
-    expect(text).toContain("Your games");
+    expect(text).toContain("Your tables");
     expect(text).toContain("Open tables");
     expect(text).toMatch(/link/i);
     expect(text).toMatch(/password/i);
@@ -132,17 +132,22 @@ describe("the help panel and the lobby", () => {
   // **The first screen is the DOOR since M6.5b2** (R-6.5b2.1), and a page that
   // went on opening "Sign in first" would be describing the screen this cycle
   // replaced — the exact drift this file exists for. What a reader needs is the
-  // two ways on, and that the lobby is somewhere they can get back FROM.
-  it("names the door's two ways on, and the lobby at its own address", () => {
+  // door's cards by the names they carry (M6.5c2, mock 01), and that the lobby
+  // is somewhere they can get back FROM.
+  it("names the door's ways on, and the lobby at its own address", () => {
     render(<Help />);
     const text = section("Starting a game");
-    expect(text).toContain("Play on this device");
-    expect(text).toContain("Play with others");
+    expect(text).toContain("You against the bot");
+    expect(text).toContain("Play with friends");
+    expect(text).toContain("On this device");
     expect(text).toContain("link back to the door");
+    // The door's words before M6.5c2, gone with the controls they named.
+    expect(text).not.toContain("Play with others");
+    expect(text).not.toContain("Play on this device");
     expect(text).not.toContain("Sign in first");
   });
 
-  // **The name field, in the paragraph that describes the LOBBY** (spec §6.6's
+  // **The corner, in the paragraph that describes the LOBBY** (spec §6.6's
   // third edit, ruling R-7-1). The same fact is stated again in the Talking
   // section, deliberately — a player setting up a table and a player about to
   // say something both need it, and neither reads the other's section first.
@@ -150,20 +155,15 @@ describe("the help panel and the lobby", () => {
   // So this cell is SCOPED, and that is the whole of its value: read over the
   // whole panel it would be satisfied by the Talking section's copy and would
   // go on passing with the lobby's own sentence gone.
-  it("says in the lobby's own paragraph what the name field is for", () => {
+  it("says in the lobby's own paragraph what the corner is for", () => {
     render(<Help />);
     const text = section("Starting a game");
-    expect(text).toContain("Your name");
-    // Named by where it sits, because that is how a reader finds it — and bound
-    // to THIS sentence rather than to the two words. The same section already
-    // carries "You are shown your own two cards", so a bare `"You are"` went on
-    // passing with the new sentence gone (final review, minor 13's sibling).
-    expect(text).toContain("Beside You are at the top of the lobby");
+    expect(text).toContain("playing as");
+    expect(text).toContain("switch player");
+    expect(text).toContain("change name");
     expect(text).toContain("this browser remembers it");
     expect(text).toContain("leave it blank and your address is used");
-    // And it is not the form's own display name, which the next paragraph
-    // offers a reader could take for the same control.
-    expect(text).toContain("not the display name on the form below");
+    expect(text).not.toContain("Beside You are at the top of the lobby");
   });
 
   // **The lobby has THREE lists since M6.3** (final review, minor 8): this
@@ -174,62 +174,60 @@ describe("the help panel and the lobby", () => {
     render(<Help />);
     const text = section("Starting a game");
     expect(text).toContain("three lists");
-    expect(text).toContain("Your games");
+    expect(text).toContain("Your tables");
     expect(text).toContain("Open tables");
-    expect(text).toContain("Games in progress");
+    expect(text).toContain("Being played");
     expect(text).not.toContain("two lists");
   });
 });
 
-describe("the help panel and watching (R-8.1)", () => {
-  /** The whole "Watching a game" SECTION — the shared reader, named here so
-   *  every cell below says which section it is about. */
-  const watchingSection = () => section("Watching a game");
+describe("the help panel and spectating (R-8.1; M6.5c2 R-6.5c2.7)", () => {
+  /** The whole "Spectating a game" SECTION — the shared reader. */
+  const spectatingSection = () => section("Spectating a game");
 
-  // **The two ways in.** A player who wonders how to watch somebody else's
-  // game should find both here: the lobby's third list, and a link somebody
-  // sent them. The list's heading is quoted exactly, so a rename of the section
-  // fails here rather than leaving the page pointing at a heading that is gone.
+  // **The two ways in**: the lobby's third list, quoted as the lobby itself
+  // names it (mock 02), and a link somebody sent.
   it("names the lobby's third list and the link as the two ways in", () => {
     render(<Help />);
-    const text = watchingSection();
-    expect(text).toContain("Games in progress");
+    const text = spectatingSection();
+    expect(text).toContain("Being played");
     expect(text).toMatch(/link/i);
   });
 
-  // The password, asked ONCE — which is what a watcher needs to know before
-  // they decide the lock marker means the table is shut to them.
   it("says a locked table asks for its password once", () => {
     render(<Help />);
-    const text = watchingSection();
+    const text = spectatingSection();
     expect(text).toMatch(/password/i);
     expect(text).toContain("once");
   });
 
-  // **What the screen is, and what it is not.** The three facts a watcher would
-  // otherwise have to discover by trying: the strip, the hidden hands, and that
-  // there is nothing to press.
-  // **And a watcher can TALK (M6.4, R-6.4.1).** The one write a spectator is
-  // allowed, so a page that listed everything they cannot do and stopped there
-  // would be describing the screen they had before this cycle.
-  it("says a watcher can talk, and that what they say is marked", () => {
+  // **And a spectator can TALK (M6.4, R-6.4.1)** — the one write they are allowed.
+  it("says a spectator can talk, and that what they say is marked", () => {
     render(<Help />);
-    const text = watchingSection();
+    const text = spectatingSection();
     expect(text).toContain("You can talk");
-    expect(text).toContain("watcher");
+    expect(text).toContain("spectator");
   });
 
-  it("says what watching looks like and what it does not offer", () => {
+  it("says what spectating looks like and what it does not offer", () => {
     render(<Help />);
-    const text = watchingSection();
-    expect(text).toContain("You are watching");
-    // Every hand is a COUNT — the one thing a spectator must not be able to
-    // read, stated so nobody wonders whether the screen is merely folded.
+    const text = spectatingSection();
+    expect(text).toContain("You are spectating");
     expect(text).toMatch(/count/i);
     expect(text).toContain("as they happen");
     expect(text).toMatch(/cannot play/i);
     expect(text).toMatch(/undo/i);
     expect(text).toMatch(/suggest/i);
+  });
+
+  // **Every word a person reads is the spectate family** (R-6.5c2.7): the WHOLE
+  // panel, because a section-scoped cell would pass with "watch" left in the
+  // lobby's paragraph or the Talking one. The wire's `watching` and `can_watch`
+  // are protocol keys and appear nowhere on this page.
+  it("says spectate and never watch, anywhere on the page", () => {
+    const { container } = render(<Help />);
+    expect(container.textContent).not.toMatch(/\bwatch/i);
+    expect(container.textContent).toMatch(/\bspectat/i);
   });
 });
 
@@ -281,15 +279,15 @@ describe("the help panel and talking (M6.4)", () => {
   });
 
   // **Who is labelled how (R-6.4.2), which is the one thing a reader cannot
-  // work out from the screen**: a seat is named by its seat and a watcher is
+  // work out from the screen**: a seat is named by its seat and a spectator is
   // marked, so a name typed into the lobby is not what a seated player's line
   // carries.
-  it("says how a seat and a watcher are labelled", () => {
+  it("says how a seat and a spectator are labelled", () => {
     render(<Help />);
     const text = section("Talking");
     expect(text).toContain("seat");
     expect(text).toContain("colour");
-    expect(text).toContain("watching");
+    expect(text).toContain("spectating");
   });
 
   // **What a message is NOT (R-6.4.9, R-6.4.13).** Not undone, not in the
@@ -313,15 +311,15 @@ describe("the help panel and talking (M6.4)", () => {
   // both.** An operator can turn the house chat off, and then the section is
   // simply not there — which a player who had read about it would otherwise
   // report as a bug.
-  it("names the lobby chat, its switch and the name field", () => {
+  it("names the lobby chat, its switch and where the name comes from", () => {
     render(<Help />);
     const text = section("Talking");
     expect(text).toContain("Lobby chat");
     expect(text).toContain("switch it off");
-    // The field the name comes from, named by where it sits rather than by its
-    // label — the label is the lobby's own cell, and this is the sentence that
-    // tells a reader which of the four fields feeds their messages.
-    expect(text).toContain("The name you type beside");
+    // Where the name comes from, named by where it sits — the lobby's corner —
+    // and bound to THIS sentence, the one that tells a reader which name their
+    // messages carry (`&rsquo;` renders as the typographic apostrophe).
+    expect(text).toContain("The name in the lobby\u2019s corner");
     expect(text).toContain("your address is used");
   });
 
@@ -348,5 +346,17 @@ describe("the help panel and talking (M6.4)", () => {
     expect(saving.textContent).toMatch(/saved there before it is abandoned/);
     expect(saving.textContent).toMatch(/Abandon and save/);
     expect(saving.textContent).toMatch(/Save game file/);
+  });
+
+  // **The door draws the help WITHOUT its screenshots** (M6.5c2): they are
+  // photographs of the card art (`ASSETS.md`, the `web/public/help/` row), and
+  // no setup screen draws card art. The game's surface keeps them.
+  it("draws its screenshots unless its host asks for the words alone", () => {
+    const { container, unmount } = render(<Help />);
+    expect(container.querySelectorAll("figure.shot")).toHaveLength(5);
+    unmount();
+    const words = render(<Help shots={false} />);
+    expect(words.container.querySelectorAll("figure.shot, img")).toHaveLength(0);
+    expect(words.container.textContent).toContain("The three parts of the screen");
   });
 });

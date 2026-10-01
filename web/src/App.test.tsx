@@ -7,13 +7,14 @@ import { render } from "@testing-library/react";
 import { App } from "./App";
 import {
   CLAIMED_USER_KEY,
+  DISPLAY_NAME_KEY,
   chatText,
   lobbyChat,
   rememberServerFacts,
   setChatText,
   setLobbyChat,
 } from "./api";
-import { resetFactsForTest } from "./local/facts";
+import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
 import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
@@ -21,7 +22,7 @@ import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, open
 import { resetPersistenceRequestForTests } from "./storage";
 import { stubStorage } from "./test/platform";
 import { wire } from "./wire/contract";
-import type { ClientState, Events } from "./types";
+import type { ClientState, Events, TableView } from "./types";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
@@ -1321,9 +1322,10 @@ describe("the boards a player switches during setup", () => {
     render(<App />);
     const user = userEvent.setup();
 
-    // `find`, not `get`: `App` draws nothing at all until `/api/me` answers, so
-    // the LOBBY is one round trip away rather than there on first paint — and
-    // the form is one click beyond it since M6.2 (spec §5.1).
+    // `find`, not `get`: until `/api/me` answers the lobby draws only
+    // "Connecting to the server…", so its New table is one round trip away
+    // rather than there on first paint — and the form is one click beyond it
+    // since M6.2 (spec §5.1).
     await user.click(await screen.findByRole("button", { name: "New table" }));
     await user.click(await screen.findByRole("button", { name: "Deal" }));
     // The dealing screen's own heading: a create opens a TABLE, and the deal is
@@ -1416,7 +1418,7 @@ describe("the route", () => {
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
     // A LINK and never a fetch: Access answers a navigation with a redirect to
     // another origin, which a `fetch` follows and then fails opaquely.
-    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute(
       "href",
       "/enter",
     );
@@ -1432,10 +1434,64 @@ describe("the route", () => {
     // product change, kept: a player with three games open used to be shown a
     // blank create.
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "New game" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "New table" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "New table" }));
     expect(window.location.hash).toBe("#/new");
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New table", level: 3 })).toBeInTheDocument();
+  });
+
+  // **Each form leaves for its own channel's first screen** (M6.5c2, mock 07's
+  // Cancel): the table form for the lobby it came from, the local form for the
+  // door, where this browser's games are listed.
+  it("leaves the table form for the lobby and the local form for the door", async () => {
+    stubWorker();
+    window.location.hash = "#/new";
+    const { user } = app();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    act(() => {
+      window.location.hash = "#/new/local";
+    });
+    await screen.findByRole("heading", { name: "New game against the bot" });
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/"));
+  });
+
+  // **The band says who is playing on the form, in the lobby's own corner**
+  // (mock 07: "Playing as …"): the identity corner, never the old "You are …"
+  // strip, which stays the game banner's.
+  it("draws the identity corner in the new-table form's band", async () => {
+    window.location.hash = "#/new";
+    app();
+    await screen.findByRole("heading", { name: "New table", level: 3 });
+    const band = document.querySelector<HTMLElement>(".lobby-band")!;
+    expect(within(band).getByText(/Playing as/)).toBeInTheDocument();
+    expect(band.textContent).not.toMatch(/You are /);
+  });
+
+  // **And on a table's two pre-game faces** (mocks 08, 09): the open table a
+  // stranger arrives at, and the unlock face in front of a locked game.
+  //
+  // **Both corpus tables are `wire`**, so the table the handler answers is
+  // switched by hand between the two visits — and the second face is pinned by
+  // its Spectate button, since the open table has a "Table password" box too.
+  it("draws the identity corner in the open table's band and the unlock face's", async () => {
+    expect(wire.tableWatchable.id).toBe(wire.tableOpen.id);
+    let table: TableView = wire.tableOpen;
+    window.location.hash = `#/t/${wire.tableOpen.id}`;
+    const { user } = app((call) => (call.path.endsWith("/table") ? table : undefined));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    const band = () => document.querySelector<HTMLElement>(".lobby-band")!;
+    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    table = wire.tableWatchable;
+    act(() => {
+      window.location.hash = `#/t/${wire.tableWatchable.id}`;
+    });
+    await screen.findByRole("button", { name: "Spectate" });
+    expect(screen.getByLabelText("Table password")).toBeInTheDocument();
+    expect(within(band()).getByText(/Playing as/)).toBeInTheDocument();
   });
 
   // **The two forms are two components, keyed by host** (whole-branch review,
@@ -1448,16 +1504,17 @@ describe("the route", () => {
     stubWorker();
     const { user } = app();
     await user.click(await screen.findByRole("button", { name: "New table" }));
-    await user.selectOptions(await screen.findByLabelText("Players"), "4");
+    await user.click(
+      within(await screen.findByRole("group", { name: "Players" })).getByRole("radio", { name: "4" }),
+    );
     // The premise, asserted: the server's form really is at four.
-    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe("4");
+    expect(within(screen.getByRole("group", { name: "Players" })).getByRole("radio", { name: "4" })).toBeChecked();
 
     act(() => {
       window.location.hash = "#/new/local";
     });
-    // The local form asks none of it — which is also how this cell tells the
-    // two apart, since both headings read "New game".
-    await waitFor(() => expect(screen.queryByLabelText("Players")).toBeNull());
+    // The local form asks none of it: its Players group goes.
+    await waitFor(() => expect(screen.queryByRole("group", { name: "Players" })).toBeNull());
     await user.click(await screen.findByRole("button", { name: "Deal" }));
 
     const posted = currentWorker().posted.find(
@@ -1473,7 +1530,7 @@ describe("the route", () => {
     // followed in a cold tab, where no `hashchange` ever fires.
     window.location.hash = "#/new";
     app();
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "New table", level: 3 })).toBeInTheDocument();
   });
 
   // **And the sentence does not follow you into the next table.** A refusal is
@@ -1527,7 +1584,7 @@ describe("the route", () => {
     // is set when the argument comes AFTER the node asked.
     const after = (el: Element) =>
       Boolean(notice.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(after(screen.getByRole("heading", { name: "Your games" }))).toBe(true);
+    expect(after(screen.getByRole("heading", { name: "Your tables" }))).toBe(true);
     expect(after(screen.getByRole("heading", { name: "Open tables" }))).toBe(true);
     expect(after(screen.getByRole("heading", { name: "Lobby" }))).toBe(false);
     // **The lobby, and the hash with it.** A screen left at `#/t/<id>` for a
@@ -1556,7 +1613,7 @@ describe("the route", () => {
     );
     await screen.findByText("you are not seated at this table");
     await user.click(screen.getByRole("button", { name: "New table" }));
-    await screen.findByRole("heading", { name: "New game" });
+    await screen.findByRole("heading", { name: "New table", level: 3 });
     expect(screen.queryByText("you are not seated at this table")).toBeNull();
     window.location.hash = "#/lobby";
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
@@ -1623,7 +1680,7 @@ describe("the route", () => {
   it("draws the seat picker for a table that is still filling its seats", async () => {
     window.location.hash = "#/t/wire";
     app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
-    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
     // And NOT the lobby, which is what this branch drew until Task 8.
     expect(screen.queryByRole("heading", { name: "Lobby" })).toBeNull();
   });
@@ -1638,8 +1695,8 @@ describe("the route", () => {
     const { stub } = app((call) =>
       call.path.endsWith("/table") ? wire.tableWatchable : undefined,
     );
-    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Watch" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Table password")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spectate" })).toBeInTheDocument();
     // **And the GAME was never asked for.** A caller who cannot read this table
     // would be refused, and a 403 in the error strip is not the screen the spec
     // asks for — the face is.
@@ -1669,8 +1726,8 @@ describe("the route", () => {
     expect(wire.tableOpen.my_seats).toHaveLength(0);
     window.location.hash = "#/t/wire";
     app((call) => (call.path.endsWith("/table") ? wire.tableOpen : undefined));
-    expect(await screen.findByRole("button", { name: "sit here" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Spectate" })).toBeNull();
   });
 
   // **A SEATED caller never meets a password box, whatever `can_watch` says.**
@@ -1697,8 +1754,8 @@ describe("the route", () => {
       return undefined;
     });
     await screen.findByText(/end triggers:/);
-    expect(screen.queryByLabelText("Password")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Watch" })).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Spectate" })).toBeNull();
   });
 
   // The password is taken, the table is re-read, and what comes back is the
@@ -1721,11 +1778,11 @@ describe("the route", () => {
       if (call.path.endsWith("/areas")) return wire.areas;
       return undefined;
     });
-    await user.type(await screen.findByLabelText("Password"), "hunter2");
-    await user.click(screen.getByRole("button", { name: "Watch" }));
+    await user.type(await screen.findByLabelText("Table password"), "hunter2");
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
     await screen.findByText(/end triggers:/);
-    expect(screen.getByText("You are watching")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.getByText("You are spectating")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
   });
 
   it("leaves the unlock face for the lobby", async () => {
@@ -1733,13 +1790,133 @@ describe("the route", () => {
     const { user } = app((call) =>
       call.path.endsWith("/table") ? wire.tableWatchable : undefined,
     );
-    await screen.findByLabelText("Password");
+    await screen.findByLabelText("Table password");
     await user.click(screen.getByRole("button", { name: "Lobby" }));
     expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
     await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
     // The face went with the screen — a leftover would draw over the next table
     // opened.
-    expect(screen.queryByLabelText("Password")).toBeNull();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+  });
+
+  // ---- M6.5c2: a game this build's bot cannot continue (spec §2.4) -------
+  //
+  // **A not-over game dealt a bot this build does not run refuses to open**
+  // (R-6.5c2.10), and every game route answers the 409 carrying `foreign_bot`.
+  // It is a SCREEN and not a bounce, for the broken save's reason: what is
+  // left is still the player's — the server's own sentence, and the Abandon
+  // that archives the game — and a bounce to the lobby offered neither.
+  describe("a game this build's bot cannot continue", () => {
+    const refusal = wire.foreignBot409;
+    /** The corpus's playing table — `wire.me` created it and sits at it — with
+     *  ONE field moved, the one fact these cells are about: the bot, taken from
+     *  the corpus's own foreign row (`wire.tableForeign`), run nowhere here and
+     *  named as the refusal names it. */
+    const dealt: TableView = { ...wire.table, bot: wire.tableForeign.bot };
+    const answers = (table: TableView) => (call: ApiCall): Reply | undefined => {
+      if (call.path.endsWith("/api/games/wire/table")) return table;
+      if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: refusal };
+      return undefined;
+    };
+
+    it("stays on the table's screen with the server's sentence, Abandon for its creator, and the way back", async () => {
+      window.location.hash = "#/t/wire";
+      const { user } = app(answers(dealt));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      // NOT the bounce every other refusal of the game takes.
+      expect(window.location.hash).toBe("#/t/wire");
+      // A SERVER game's screen names who is playing: "On this device" is the
+      // local screens' word, and this game is the server's.
+      expect(screen.getByText(`You are ${wire.me.user}`)).toBeInTheDocument();
+      // `wire.me` is the table's creator, and the layer's delete is the
+      // creator's (`tables.rs:1670-1677`).
+      expect(dealt.created_by).toBe(wire.me.user);
+      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+      // A server game's record is served only once it is over, so its bytes are
+      // not offered here — "Save game file" is the LOCAL screen's alone.
+      expect(screen.queryByRole("button", { name: "Save game file" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Lobby" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    // **The seat half of the creator rule**: the layer's delete is the
+    // creator's SEATED, so the table's creator who holds no seat at it is
+    // offered none. The one field moved from `dealt` is `my_seats`;
+    // `created_by` is kept, so only the seat test can withhold the control.
+    it("offers no Abandon to the table's creator who holds no seat at it", async () => {
+      window.location.hash = "#/t/wire";
+      expect(dealt.created_by).toBe(wire.me.user);
+      app(answers({ ...dealt, my_seats: [] }));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    });
+
+    it("offers no Abandon to a player who did not open the table", async () => {
+      window.location.hash = "#/t/wire";
+      app(answers({ ...dealt, created_by: "ada.bell@wire.test" }));
+      expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+      expect(screen.getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    });
+
+    // The anti-vacuity: a 409 WITHOUT the field is the bounce it always was —
+    // the arm reads the field, never the status alone.
+    it("keeps the bounce for a refusal of the game that carries no foreign_bot", async () => {
+      window.location.hash = "#/t/wire";
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/table")) return wire.table;
+        if (call.method === "GET" && call.path.endsWith("/api/games/wire"))
+          return { status: 409, body: wire.dealing409 };
+        return undefined;
+      });
+      expect(await screen.findByText(wire.dealing409.error)).toBeInTheDocument();
+      await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+    });
+
+    // **And the FIELD, never the sentence** (the whole-branch review's Minor
+    // 9): a refusal that carries `foreign_bot` in other words is the same
+    // screen, drawn with the words the body carries. One field moved from the
+    // corpus's refusal, `error`.
+    it("reads the foreign_bot field and not the sentence: other words, the same screen", async () => {
+      window.location.hash = "#/t/wire";
+      const reworded = { ...refusal, error: "another sentence" };
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/table")) return dealt;
+        if (call.method === "GET" && call.path.endsWith("/api/games/wire")) return { status: 409, body: reworded };
+        return undefined;
+      });
+      expect(await screen.findByText(reworded.error)).toBeInTheDocument();
+      expect(window.location.hash).toBe("#/t/wire");
+      expect(screen.getByRole("button", { name: "abandon wire" })).toBeInTheDocument();
+    });
+
+    // **Review Focus 5's third half: the refused game opens no stream.** The
+    // GET's 409 body decides the screen; the transports say nothing useful
+    // about a foreign game (the SSE arm writes a comment and stays open, the
+    // socket sends nothing), so no stream or events read is made for it.
+    //
+    // **The refused game's OWN screen is asserted first**, because the bounce
+    // this replaces opens no game stream either: without the address the cell
+    // passes before the screen exists. The fake clock is this file's idiom for
+    // `flush` (installed BEFORE the render, since the signal opens from a
+    // zero-delay timer of its own), and `try`/`finally` puts the real one back.
+    it("opens no stream and asks no events for a game it will not open", async () => {
+      window.location.hash = "#/t/wire";
+      vi.useFakeTimers();
+      try {
+        const { stub } = app(answers(dealt));
+        await until(() => screen.queryByText(refusal.error) !== null, "the server's sentence was drawn");
+        await flush();
+        expect(window.location.hash).toBe("#/t/wire");
+        const streams = stub.calls.filter(
+          (c) => c.path.startsWith("/api/games/wire/") && /\/(stream|events)(\?|$)/.test(c.path),
+        );
+        expect(streams, "no stream and no events for the refused game").toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("lands on the DEAL when the table flips to dealing under the screen", async () => {
@@ -1777,7 +1954,7 @@ describe("the route", () => {
       // than on a number of turns: a frame written to a body nobody has opened
       // reaches nobody, and nothing re-delivers it.
       await until(() => stream.opens() > 0, "the table's own stream was opened");
-      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
 
       status = "dealing";
       stream.push("signal", wire.eventsDealing);
@@ -1874,7 +2051,7 @@ describe("the route", () => {
           : { status: 403, body: { error: "you are not seated at this table" } };
       });
       await until(() => stream.opens() > 0, "the table's own stream was opened");
-      expect(screen.getByRole("button", { name: "sit here" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Join as Blue" })).toBeInTheDocument();
 
       flipped = true;
       stream.push("signal", wire.eventsDealing);
@@ -1884,7 +2061,7 @@ describe("the route", () => {
       );
       expect(screen.getByRole("heading", { name: "Lobby" })).toBeInTheDocument();
       expect(screen.getByText("you are not seated at this table")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "sit here" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Join as Blue" })).toBeNull();
     } finally {
       vi.useRealTimers();
       process.off("unhandledRejection", note);
@@ -1912,13 +2089,15 @@ describe("the route", () => {
 
 // ---- the door (M6.1 §7.1) --------------------------------------------------
 //
-// Four screens, and `/api/me` picks between them: nothing while it is in
-// flight, the sign-in form under an `open` deployment with nobody signed in,
-// a sentence naming the missing header under the other two doors, and the app
-// itself once the server names a user.
+// The door's states, and `/api/me` picks between them (M6.5c2, spec §2.1):
+// "Connecting to the server…" while it is in flight; the name step under an
+// `open` deployment with nobody named; under the other two doors a card saying
+// the server couldn't tell who you are, the missing header in its operator
+// fold; the expired-session and can't-reach cards when the read fails; and the
+// app itself once the server names a user.
 
 describe("the door", () => {
-  it("shows sign-in when the door is open and nobody is signed in, then the games list", async () => {
+  it("shows the name step when the door is open and nobody has a name, then the lobby", async () => {
     const stub = stubApi((call) => {
       // Answered the way the SERVER answers it: from the header this browser
       // is sending. A stub that returned `wire.me` regardless would model a
@@ -1935,17 +2114,21 @@ describe("the door", () => {
     // the screen that needs no identity.
     window.location.hash = "#/lobby";
     render(<App />);
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     // **Nothing is asked for from behind the door.** Every `/api/games` route
     // is a 401 without an identity, so a client that listed first would show
     // the player a refusal as their first screen.
     expect(stub.matching("GET", "/api/games")).toHaveLength(0);
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Email"), wire.me.user!);
-    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await user.type(screen.getByLabelText("Name"), wire.me.user!);
+    await user.click(screen.getByRole("button", { name: "Continue" }));
 
-    await screen.findByText(`You are ${wire.me.user}`);
+    // The band's corner names the server's answer — its key rides as the
+    // corner's title (`IdentityCorner`).
+    await waitFor(() =>
+      expect(document.querySelector(".identity-corner [title]")).toHaveAttribute("title", wire.me.user!),
+    );
     // The list, and no individual game: signing in lands on the LOBBY, not
     // inside whatever game happens to be first.
     expect(stub.matching("GET", "/api/games/")).toHaveLength(0);
@@ -1973,8 +2156,8 @@ describe("the door", () => {
     window.location.hash = "#/";
     render(<App />);
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Play with others" })).toHaveAttribute("href", "/enter");
-    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
+    expect(screen.queryByRole("heading", { name: "Choose a name" })).toBeNull();
     // And the door was never asked who this is.
     expect(stub.matching("GET", "/api/me")).toHaveLength(0);
 
@@ -1983,7 +2166,7 @@ describe("the door", () => {
     act(() => {
       window.location.hash = "#/lobby";
     });
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Choose a name" })).toBeInTheDocument();
     expect(stub.matching("GET", "/api/me")).toHaveLength(1);
   });
 
@@ -1992,7 +2175,7 @@ describe("the door", () => {
   // sentence, and the silence in "the first screen with no server" — and this
   // is the one that needs arranging: `/api/me` refusing while the server is
   // otherwise reachable, which is what tells the door's own complaint from the
-  // "not connected" line that replaces it when NOTHING answered.
+  // "can't reach the server" card that replaces it when NOTHING answered.
   it("draws the door's refusal in place of the lists, with this browser's games one hash away", async () => {
     stubWorker();
     const sentence = "the store could not be read";
@@ -2009,7 +2192,7 @@ describe("the door", () => {
     render(<App />);
     expect(await screen.findByText(sentence)).toBeInTheDocument();
     // And not the line for a server nobody reached: this one answered.
-    expect(screen.queryByText("not connected")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
     // **The other channel is still reachable from here** (R-6.5b2.1). "On this
     // device" is the DOOR's since this cycle, and the lobby's one link back is
     // drawn OUTSIDE the server area's three states — including this one, where
@@ -2018,7 +2201,7 @@ describe("the door", () => {
       window.location.hash = "#/";
     });
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New game" })).toBeEnabled();
     // **And an ordinary refusal offers no turnstile** (M6.5b2) — the
     // anti-vacuity partner of the cell below, which draws one. This sentence
     // is the server's own and `/enter` would do nothing about it.
@@ -2034,26 +2217,33 @@ describe("the door", () => {
   //
   // It goes the whole way: the header `serverHeaders()` sends is what makes the
   // 401 same-origin and readable, `settle` tells it from this API's own 401 by
-  // the `WWW-Authenticate` header, and `Door` draws it through `Refusal`.
+  // the `WWW-Authenticate` header, and `Door` draws it as state A: its own
+  // card, with the turnstile's link.
+  //
+  // **Both reads meet the challenge, which is the real shape** (Review Focus
+  // 3): the Access application covers the whole hostname, `/api/health`
+  // included, so an expired session fails the health read too — and the card
+  // must still be A, not "can't reach the server", once that read has settled.
   it("draws the turnstile's link for an EXPIRED Access session, and keeps the stored name", async () => {
     stubWorker();
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-    stubApi((call) => {
-      if (call.path.endsWith("/api/me"))
-        return new Response("<html>", {
-          status: 401,
-          headers: {
-            "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"',
-          },
-        });
-      if (call.path.endsWith("/api/health")) return wire.health;
+    const challenge = () =>
+      new Response("<html>", {
+        status: 401,
+        headers: {
+          "www-authenticate": 'Cloudflare-Access resource_metadata="https://x/.well-known/y"',
+        },
+      });
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return challenge();
+      if (call.path.endsWith("/api/health")) return challenge();
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
     window.location.hash = "#/lobby";
     render(<App />);
-    expect(await screen.findByText(/Your session has expired/)).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Your sign-in has run out" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/enter");
     // **The claimed name is NOT dropped**, which is the half a status-only read
     // would get wrong: the door this browser knocks on is fine, and signing the
@@ -2061,7 +2251,14 @@ describe("the door", () => {
     // cannot mint the cookie that is actually missing.
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
     // And the sign-in form is not what they are shown.
-    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Choose a name" })).toBeNull();
+    // Once the challenged health read has SETTLED, the card is still A.
+    expect(stub.matching("GET", "/api/health").length).toBeGreaterThan(0);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(screen.getByRole("heading", { name: "Your sign-in has run out" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
   });
 
   it("names the door rather than offering a form when an edge-door deployment has no user", async () => {
@@ -2073,9 +2270,10 @@ describe("the door", () => {
     window.location.hash = "#/lobby";
     render(<App />);
     await screen.findByText(/Cf-Access-Authenticated-User-Email/);
+    expect(screen.getByRole("heading", { name: "This server couldn't tell who you are" })).toBeInTheDocument();
     // There is nothing to type: the identity arrives from an edge in front of
     // the server, and a form here would store a name that server ignores.
-    expect(screen.queryByLabelText("Email")).toBeNull();
+    expect(screen.queryByLabelText("Name")).toBeNull();
   });
 
   it("a 401 mid-game returns to sign-in, carrying the sentence", async () => {
@@ -2083,7 +2281,7 @@ describe("the door", () => {
       call.path.endsWith("/input") ? signedOutReply() : undefined,
     );
     await userEvent.setup().click(firstOptionButton());
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     // **§7.1's last bullet.** The refusal was in an error strip the sign-in
     // screen replaced, so without carrying it the player's game vanishes and a
     // bare form appears with nothing connecting the two.
@@ -2125,7 +2323,7 @@ describe("the door", () => {
       return undefined;
     });
     await userEvent.setup().click(gameMenu());
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
   });
 
@@ -2142,7 +2340,7 @@ describe("the door", () => {
     // One step back from the present. The fetch is debounced 200 ms, so the
     // wait below is what carries it.
     await user.click(await screen.findByRole("button", { name: "Previous move" }));
-    await screen.findByRole("heading", { name: "Sign in" }, { timeout: 2000 });
+    await screen.findByRole("heading", { name: "Choose a name" }, { timeout: 2000 });
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
   });
 
@@ -2156,7 +2354,7 @@ describe("the door", () => {
     );
     await userEvent.setup().click(firstOptionButton());
     await screen.findByText(wire.notSeated403.error);
-    expect(screen.queryByRole("heading", { name: "Sign in" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Choose a name" })).toBeNull();
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe(wire.me.user);
   });
 
@@ -2169,7 +2367,7 @@ describe("the door", () => {
     await renderApp(wire.gameOver, (call) =>
       call.path.endsWith("/result") ? signedOutReply() : undefined,
     );
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
   });
 
@@ -2190,7 +2388,7 @@ describe("the door", () => {
     });
     window.location.hash = "#/lobby";
     render(<App />);
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
     expect(screen.queryByText(/none yet/)).toBeNull();
   });
@@ -2243,8 +2441,71 @@ describe("the door", () => {
     // The keep is the last one, so the game opens on the reply and the opening
     // walk starts — which is the run whose refusal this cell is about.
     await user.click((await screen.findAllByRole("button", { name: /^keep O\d\d for seat 0/ }))[0]!);
-    await screen.findByRole("heading", { name: "Sign in" });
+    await screen.findByRole("heading", { name: "Choose a name" });
     expect(screen.getByRole("status")).toHaveTextContent(signedOutReply().body.error);
+  });
+
+  // **Review Focus 3.** A browser that typed an address under the OPEN door
+  // still holds its KEY when it visits a door set in front of the server — the
+  // NAS after its redeploy onto `cf-access`. The stale header rides every
+  // request, the server ignores it, and the corner says who ACCESS says this
+  // is. Nothing asks the player to "switch player": the identity is not theirs
+  // to switch there. The KEY only: a stored DISPLAY name shown behind Access is
+  // as the spec mandates (ruling R-B14 — the two hosts are different origins,
+  // so no browser carries one across).
+  it("names the Access identity, never a stale stored key, and offers no switch player (Review Focus 3)", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, "stale@old.test");
+    const stub = stubApi((call) => {
+      // The corpus's user behind Access: one field moved off a real payload,
+      // the precedent of the edge-door cell above.
+      if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "cf-access" };
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/lobby";
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".identity-corner")).not.toBeNull());
+    const corner = document.querySelector<HTMLElement>(".identity-corner")!;
+    expect(within(corner).getByTitle(wire.me.user!)).toHaveTextContent(wire.me.user!);
+    expect(within(corner).getByRole("button", { name: "change name" })).toBeInTheDocument();
+    expect(within(corner).queryByRole("button", { name: "switch player" })).toBeNull();
+    expect(document.body.textContent).not.toContain("stale@old.test");
+    // The premise, read off the wire: the stale header WAS sent, and ignored.
+    expect(stub.matching("GET", "/api/me")[0]!.headers["x-yokohama-claimed-user"]).toBe("stale@old.test");
+  });
+
+  // **switch player, under the open door** (spec §2.1): the stored name goes —
+  // key and display both — and the player is back at the name step.
+  it("drops the stored name on switch player, and lands on the name step", async () => {
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben Castle");
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me"))
+        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/lobby";
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".identity-corner")).not.toBeNull());
+    const corner = document.querySelector<HTMLElement>(".identity-corner")!;
+    expect(within(corner).getByTitle(wire.me.user!)).toHaveTextContent("Ben Castle");
+    await userEvent.setup().click(within(corner).getByRole("button", { name: "switch player" }));
+    expect(await screen.findByRole("heading", { level: 3, name: "Choose a name" })).toBeInTheDocument();
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
   });
 });
 
@@ -2260,11 +2521,11 @@ describe("the door", () => {
 // screen: no answer bar, no Undo, no Suggest, and a strip that says what you
 // are rather than who.
 describe("the spectator screen", () => {
-  it("says you are watching, offers no answer and no Suggest", async () => {
+  it("says you are spectating, offers no answer and no Suggest", async () => {
     await renderApp(wire.spectator);
     expect(wire.spectator.seat).toBeNull();
     // The strip, which is the one line that says which of the two you are here.
-    expect(screen.getByText("You are watching")).toBeInTheDocument();
+    expect(screen.getByText("You are spectating")).toBeInTheDocument();
     expect(screen.queryByText(new RegExp(`You are ${wire.me.user}`))).toBeNull();
     // The deck: the `watching` arm's own words, and nothing to press.
     expect(screen.getByText(/Seat \d+ is deciding\./)).toBeInTheDocument();
@@ -2282,13 +2543,13 @@ describe("the spectator screen", () => {
   // The anti-vacuity, and it is the whole reason the cell above means anything:
   // the SAME shell over a SEATED payload draws both controls and the address.
   // Without this, a banner that had lost its Suggest button entirely, or a
-  // strip that said "You are watching" to everyone, would pass.
+  // strip that said "You are spectating" to everyone, would pass.
   it("offers Suggest and names the player at a table this caller sits at", async () => {
     await renderApp(wire.options);
     expect(wire.options.seat).not.toBeNull();
     expect(screen.getByRole("button", { name: "Suggest" })).toBeInTheDocument();
     expect(screen.getByText(new RegExp(`You are ${wire.me.user}`))).toBeInTheDocument();
-    expect(screen.queryByText("You are watching")).toBeNull();
+    expect(screen.queryByText("You are spectating")).toBeNull();
   });
 });
 
@@ -3193,6 +3454,76 @@ describe("a local game", () => {
     }
   });
 
+  // **The same 404, on the game's own Send to the archive** (M6.5c2 spec §2.8):
+  // the sentence, the fact written down, and the control gone with it. One POST:
+  // the game-over hook never reaches the archive here, because this file runs
+  // with no IndexedDB and the outbox has no store (its rule 7).
+  it("remembers the archive OFF when Send to the archive meets the route's 404, and stops offering it", async () => {
+    const { user, stub } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 404, body: { error: "this server keeps no archive" } }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText("this server keeps no archive")).toBeInTheDocument();
+    expect(archiveAnswer()).toBe("off");
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull());
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+  });
+
+  // **On the STATUS, never the sentence** (the whole-branch review's Minor 2),
+  // and the two cells below are its witnesses at this site: a 404 whose
+  // sentence names no archive — the corpus's lobby-chat 404, another route
+  // switched off — still writes the fact down, and a refusal that is not a 404
+  // leaves it alone however loudly its sentence names the archive (the
+  // corpus's 409 reads "archived").
+  it("remembers the archive OFF when Send to the archive meets a 404 whatever its sentence says", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 404, body: wire.houseChatOff404 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.houseChatOff404.error)).toBeInTheDocument();
+    expect(wire.houseChatOff404.error, "the premise: a sentence that names no archive").not.toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("off");
+  });
+
+  it("leaves the archive fact alone when Send to the archive meets a refusal that is not a 404", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 409, body: wire.archive409 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.archive409.error)).toBeInTheDocument();
+    expect(wire.archive409.error, "the premise: a sentence that names the archive").toMatch(/archive/i);
+    expect(archiveAnswer()).toBe("dir");
+    // And the control stays, because nothing said this server keeps no archive.
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+  });
+
   // **Two clicks in one tick are ONE send** (whole-branch review, Minor #4).
   // The control darkens on the ANSWER, so it cannot be the guard: before the
   // wave a double click posted twice, the second landed as `identical`, and a
@@ -3598,6 +3929,12 @@ describe("a local game", () => {
     // the other says it was recovered.
     const sentence =
       "this save was recorded under game-semantics revision 6, but this build plays revision 7 — the save cannot be resumed";
+    // **And this browser KNOWS it** (M6.5c2 R-B19): the label reads the
+    // REMEMBERED archive fact, and a local screen reads no health before
+    // Abandon is clicked — so without this the label below was "Abandon" by
+    // default, and a screen that passed `local` here as well as on a foreign
+    // game's would have passed it.
+    rememberServerFacts({ ...wire.health, archive: "dir" });
     const caught = catchDownload();
     try {
       const { user } = await openLocal(
@@ -3647,7 +3984,7 @@ describe("a local game", () => {
       // taken here as the address it carries.
       await user.click(screen.getByRole("button", { name: "Lobby" }));
       expect(await screen.findByRole("heading", { name: "Lobby" })).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "Play on this device" })).toHaveAttribute(
+      expect(screen.getByRole("link", { name: "Games on this device" })).toHaveAttribute(
         "href",
         "#/",
       );
@@ -3658,6 +3995,217 @@ describe("a local game", () => {
     } finally {
       caught.restore();
     }
+  });
+
+  // ---- M6.5c2: under a single-player build, no local control leads to a lobby
+  //
+  // **M6.5b2 close §6.3 item 5, closed** (spec §2.2): under
+  // `VITE_MULTIPLAYER=false` four "Lobby" controls on LOCAL screens led to a
+  // lobby whose game routes do not exist. Each now leads to the DOOR, where this
+  // browser's games are listed, and says so. The anti-vacuity partners are the
+  // cells that press "Lobby" on these screens in a build that serves one — ONE
+  // per control, so a control sent to the door in every build fails its own:
+  // the broken save's above, and the Game menu's, the lock screen's and the
+  // local deal's directly below.
+  it("keeps a local game's Game-menu way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    await user.click(gameMenu());
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  it("keeps the other tab's lock screen's way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+    await screen.findByText("This game is open in another tab");
+    expect(screen.queryByRole("button", { name: "On this device" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  it("keeps the local deal's way out to the lobby in a build that serves one", async () => {
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          // The corpus's dealing table, re-addressed to this device — the
+          // one edit `fakeWorker.ts` allows a fixture.
+          call: (req) =>
+            req.path === `/api/games/${LOCAL}/table`
+              ? { status: 200, body: { ...wire.tableDealing, id: LOCAL } }
+              : undefined,
+        },
+      },
+    );
+    await screen.findByRole("heading", { name: "Choose your card" });
+    expect(screen.queryByRole("button", { name: "On this device" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Lobby" }));
+    await waitFor(() => expect(window.location.hash).toBe("#/lobby"));
+  });
+
+  // **A local game this build's bot cannot continue** (M6.5c2, spec §2.4). A
+  // game dealt before this deploy has no bot in its mirror, so the door lists
+  // it as playable; opening it is the first moment the module refuses.
+  it("shows a local game this build's bot cannot continue as a screen: the sentence, Save game file, Abandon", async () => {
+    const refusal = wire.foreignBot409;
+    await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        hooks: {
+          pair: () => ({ record: RECORD, table: TABLE }),
+          call: (req) =>
+            req.path === `/api/games/${LOCAL}` && req.method === "GET"
+              ? { status: 409, body: refusal }
+              : undefined,
+        },
+      },
+    );
+    expect(await screen.findByText(refusal.error)).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#/t/${LOCAL}`);
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+    // Named by the TABLE's name, as the control names it (`Abandon.tsx`),
+    // which the corpus table carries — hence the prefix, as the broken-save
+    // cell above reads it.
+    expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+  });
+
+  // **And its Abandon SENDS FIRST, as every other local Abandon does**
+  // (R-6.5b.6; M6.5c2 R-B19). Unlike a save that no longer rebuilds, the
+  // archive takes this record — its check is a strict replay and asks nothing
+  // of the bot — so the game is sent before it is deleted. ONE timeline across
+  // the two hosts is what makes the order a claim: the server's archive write
+  // and the module's delete, in the order they were made.
+  it("abandons a local game this build's bot cannot continue by sending it to the archive first", async () => {
+    rememberServerFacts({ ...wire.health, archive: "dir" });
+    const order: string[] = [];
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: {
+          pair: () => ({ record: RECORD, table: TABLE }),
+          call: (req) => {
+            if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
+              return { status: 409, body: wire.foreignBot409 };
+            if (req.path === `/api/games/${LOCAL}` && req.method === "DELETE") {
+              order.push("delete");
+              return { status: 204, body: undefined };
+            }
+            return undefined;
+          },
+        },
+        server: (call) => {
+          if (call.method === "POST" && call.path === "/api/archive") {
+            order.push("archive");
+            return wire.archivePostAbandoned;
+          }
+          return undefined;
+        },
+      },
+    );
+    await screen.findByText(wire.foreignBot409.error);
+    const abandon = screen.getByRole("button", { name: /^abandon / });
+    expect(abandon).toHaveTextContent("Abandon and save");
+    await user.click(abandon);
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    await waitFor(() => expect(order).toEqual(["archive", "delete"]));
+    // And back to the door, where this browser's games are listed.
+    await screen.findByRole("heading", { name: "On this device" });
+  });
+
+  describe("in a single-player build", () => {
+    beforeEach(() => {
+      vi.stubEnv("VITE_MULTIPLAYER", "false");
+    });
+
+    /** The one way out a local screen offers, pressed, and where it lands. */
+    const leavesForTheDoor = async (user: ReturnType<typeof userEvent.setup>) => {
+      expect(screen.queryByRole("button", { name: "Lobby" }), "no control says Lobby").toBeNull();
+      await user.click(screen.getByRole("button", { name: "On this device" }));
+      await waitFor(() => expect(window.location.hash).toBe("#/"));
+    };
+
+    it("sends the Game menu's way out to the door", async () => {
+      const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+      await screen.findByText(/end triggers:/);
+      await user.click(gameMenu());
+      await leavesForTheDoor(user);
+    });
+
+    // **The Game menu's "Saved games" asks the SERVER nothing** (the
+    // whole-branch review's Important 1): this build serves no game routes, so
+    // a listing sent to the server is a request for a lobby that does not
+    // exist, answered on the real host by a 404 drawn under "Saved games". The
+    // list is this browser's own games, read from the local host. The local
+    // listing is `gamesNamed` over the two local ids; `local-2` is the row
+    // that proves where the list came from, since the server stub lists
+    // nothing.
+    it("lists this browser's games in the Game menu and sends nothing to the server", async () => {
+      const { user, stub } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            call: (req) =>
+              req.path === "/api/games" && req.method === "GET"
+                ? { status: 200, body: gamesNamed(LOCAL, "local-2") }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByText(/end triggers:/);
+      const before = stub.calls.length;
+      await user.click(gameMenu());
+      const menu = document.querySelector<HTMLElement>(".game-menu")!;
+      await waitFor(() => expect(within(menu).queryByText("loading\u2026")).toBeNull());
+      expect(
+        stub.calls.slice(before).map((c) => `${c.method} ${c.path}`),
+        "nothing the menu did reached fetch",
+      ).toEqual([]);
+      expect(within(menu).getByRole("button", { name: "local-2" })).toBeInTheDocument();
+    });
+
+    it("sends the other tab's lock screen to the door", async () => {
+      const { user } = await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+      await screen.findByText("This game is open in another tab");
+      await leavesForTheDoor(user);
+    });
+
+    it("sends the screen for a save that no longer rebuilds to the door", async () => {
+      const sentence =
+        "this save was recorded under game-semantics revision 6, but this build plays revision 7 \u2014 the save cannot be resumed";
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            pair: () => ({ record: RECORD, table: TABLE }),
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}` && req.method === "GET"
+                ? { status: 500, body: { error: sentence } }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByText(sentence);
+      await leavesForTheDoor(user);
+    });
+
+    it("sends the local deal to the door", async () => {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          hooks: {
+            // The corpus's dealing table, re-addressed to this device — the
+            // one edit `fakeWorker.ts` allows a fixture.
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}/table`
+                ? { status: 200, body: { ...wire.tableDealing, id: LOCAL } }
+                : undefined,
+          },
+        },
+      );
+      await screen.findByRole("heading", { name: "Choose your card" });
+      await leavesForTheDoor(user);
+    });
   });
 });
 
@@ -3689,7 +4237,7 @@ describe("the first screen with no server", () => {
   const localSection = async () => {
     expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "New game" })).toBeEnabled();
   };
 
   /** And its action WORKING, which is the half of R-6.5b.8 an enabled button
@@ -3697,10 +4245,11 @@ describe("the first screen with no server", () => {
    *  route effect used to be gated on a door that is shut in both of these
    *  cells. */
   const playsHere = async () => {
-    await userEvent.setup().click(screen.getByRole("button", { name: "Play the bot here" }));
-    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
-    // The form that needs no server: two seats, you and the bot.
-    expect(screen.getByText("the bot")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "New game" }));
+    expect(await screen.findByRole("heading", { name: "New game against the bot" })).toBeInTheDocument();
+    // The form that needs no server: two seats, you and the bot. Scoped to
+    // the seats: "The bot" is a First player segment too.
+    expect(within(screen.getByRole("list", { name: "Seats" })).getByText("The bot")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
   };
 
@@ -3737,15 +4286,15 @@ describe("the first screen with no server", () => {
     await localSection();
     // **The door says nothing about the server, because it asks it nothing**
     // (R-6.5b2.7).
-    expect(screen.queryByText("not connected")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
     // And the line that DOES report it is one hash away, where the four server
     // sections it replaces would be: the truth is still told, on the screen
     // whose subject the server is.
     act(() => {
       window.location.hash = "#/lobby";
     });
-    expect(await screen.findByText("not connected")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Can't reach the server" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
     act(() => {
       window.location.hash = "#/";
     });
@@ -3773,7 +4322,7 @@ describe("the first screen with no server", () => {
   //
   // Fake timers, and no `userEvent`: what is being read is a DEADLINE, and the
   // only way to reach a five-second one in a test is to move the clock.
-  it("says not connected once the bound elapses on a read that never answers", async () => {
+  it("says it can't reach the server once the bound elapses on a read that never answers", async () => {
     vi.useFakeTimers();
     stubWorker();
     vi.stubGlobal(
@@ -3785,20 +4334,54 @@ describe("the first screen with no server", () => {
     window.location.hash = "#/lobby";
     render(<App />);
     await until(() => screen.queryByRole("heading", { name: "Lobby" }) !== null, "the lobby");
-    // **The anti-vacuity partner.** Nothing has come back yet, and "not
-    // connected" is a claim this browser cannot make until its own deadline
-    // says so — without this the cell would pass against a client that printed
-    // the line before it had asked.
-    expect(screen.queryByText("not connected")).toBeNull();
+    // **The anti-vacuity partner.** Nothing has come back yet, and "can't
+    // reach the server" is a claim this browser cannot make until its own
+    // deadline says so — without this the cell would pass against a client that
+    // drew the card before it had asked.
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     await until(
-      () => screen.queryByText("not connected") !== null,
-      "the not-connected line after the bound",
+      () => screen.queryByRole("heading", { name: "Can't reach the server" }) !== null,
+      "the card after the bound",
     );
     // And it replaces the sections, exactly as the refused arm's does.
-    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Your tables" })).toBeNull();
+  });
+
+  // **"Try again" after a read that HUNG asks again, under a bound of its own**
+  // (M6.5c2, state C). The health read's latch is released when a read
+  // REJECTS; one that never settles would hold it, and "Try again" would then
+  // put "Connecting to the server…" over no health read at all, for the life of
+  // the page — ruling I-86's lesson, that a wait for a fact needs a bound.
+  it("asks health again on Try again after a read that never answered, and says so again at the next bound", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    const spy = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", spy);
+    const healths = () => spy.mock.calls.filter((c: unknown[]) => String(c[0]).endsWith("/api/health")).length;
+    window.location.hash = "#/lobby";
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(
+      () => screen.queryByRole("heading", { name: "Can't reach the server" }) !== null,
+      "the card after the bound",
+    );
+    expect(healths()).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await until(() => screen.queryByText(/Connecting to the server/) !== null, "connecting, once asked again");
+    expect(healths(), "the health read, asked again").toBe(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(
+      () => screen.queryByRole("heading", { name: "Can't reach the server" }) !== null,
+      "the card again, at the second read's bound",
+    );
   });
 
   // **A listing that LANDED is an answer, and the bound must not take it back**
@@ -3807,7 +4390,7 @@ describe("the first screen with no server", () => {
   // back for a player who opened the page while the API was slow — and the
   // bound's `catch` used to write `false` over it unconditionally. A health
   // read that is merely the slowest of the four then replaced a working lobby
-  // with "not connected".
+  // with "can't reach the server".
   it("keeps the lobby when a listing landed before the health read's bound elapsed", async () => {
     vi.useFakeTimers();
     stubWorker();
@@ -3823,15 +4406,15 @@ describe("the first screen with no server", () => {
     });
     window.location.hash = "#/lobby";
     render(<App />);
-    await until(() => screen.queryByRole("heading", { name: "Your games" }) !== null, "the lobby");
+    await until(() => screen.queryByRole("heading", { name: "Your tables" }) !== null, "the lobby");
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
     // The bound has passed and the health read is still out; the sections stay,
     // because something else already answered.
-    expect(screen.queryByText("not connected")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your tables" })).toBeInTheDocument();
   });
 
   // **A late answer is still an answer** (review fix 1). The bound decides
@@ -3839,7 +4422,7 @@ describe("the first screen with no server", () => {
   // beside it is what makes a server that finally speaks stop being one this
   // browser claims it cannot reach. A `Promise.race` alone would drop that
   // answer on the floor.
-  it("stops saying not connected when the server answers after the bound", async () => {
+  it("stops saying it can't reach the server when the server answers after the bound", async () => {
     vi.useFakeTimers();
     stubWorker();
     const health = gate<Reply>();
@@ -3855,19 +4438,23 @@ describe("the first screen with no server", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
-    await until(() => screen.queryByText("not connected") !== null, "the not-connected line");
+    await until(() => screen.queryByRole("heading", { name: "Can't reach the server" }) !== null, "the card");
 
     health.resolve(wire.health);
     await until(
-      () => screen.queryByText(/connecting/) !== null,
+      () => screen.queryByText(/Connecting to the server/) !== null,
       "the door's own word, once the server answered",
     );
-    expect(screen.queryByText("not connected")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Can't reach the server" })).toBeNull();
     // **And the way to the games on this device was there throughout.** The
     // section itself is the door's since M6.5b2; what this screen owes a player
     // whose server will not answer is a way OUT of it, and that link is drawn
     // in every one of the server area's three states.
-    expect(screen.getByRole("link", { name: "Play on this device" })).toBeInTheDocument();
+    expect(
+      within(document.querySelector<HTMLElement>("header.lobby-band")!).getByRole("link", {
+        name: "Games on this device",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("plays a whole local game with every fetch REFUSING, the spy flat across three moves", async () => {

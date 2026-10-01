@@ -1,25 +1,27 @@
-// The front door at `#/` (R-6.5b2.1), which everyone sees.
+// The front door at `#/` (R-6.5b2.1, R-6.5c2.6), which everyone sees.
 //
-// **The two entries are not two of a kind, and that is what these cells pin.**
-// "Play on this device" is a SCREEN this browser draws from its own IndexedDB
-// and reaches with no server at all; "Play with others" is a plain link to
-// `/enter`, so the login is an ordinary navigation the browser already knows
-// how to do. A `fetch` there would follow Access's redirect to another origin
-// and fail opaquely (spec §0.3), which is why the `href` is asserted by value
-// rather than a click handler being asserted to exist.
+// **The three cards are not three of a kind, and that is what these cells
+// pin.** "You against the bot" opens a form this browser draws and plays with
+// no server at all; "Go to the lobby" is a plain link to `/enter`, so the login
+// is an ordinary navigation — a `fetch` there would follow Access's redirect to
+// another origin and fail opaquely (spec §0.3), which is why the `href` is
+// asserted by value; and "On this device" is this browser's own games.
 //
-// **The multiplayer boolean is BUILD-TIME** (R-6.5b2.7): the door asks the
-// server nothing, because a fresh profile has nothing remembered and a request
-// here is the one thing the ruling forbids. The runtime switch is what
-// ENFORCES; this only informs the door.
+// **Everything the door draws comes from the BUILD or from this browser**
+// (R-6.5b2.7): the friends card is a build value, the project link is a build
+// value, the bot's version is the committed contract file, and the games are
+// the local host's. The door asks the server nothing, and a cell below says so
+// with `fetch` as the setup file's throwing stub.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
+import { linkFor } from "./projectLink";
 import type { ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
 import { stubWorker } from "./test/fakeWorker";
+import productionBot from "./wire/production_bot.json";
 
 /** The row the fake local host lists — the corpus's own `TableView`, named for
  *  this device (`fakeWorker.ts`'s one permitted edit). */
@@ -34,57 +36,71 @@ describe("the front door", () => {
     resetLocalHostForTests();
   });
 
-  // "Play with others" is a LINK and never a fetch, so the browser handles the
-  // Access login the way it handles any navigation.
   it("offers multiplayer as a navigation to the turnstile", () => {
     render(<FrontDoor multiplayer />);
-    const link = screen.getByRole("link", { name: /play with others/i });
-    expect(link).toHaveAttribute("href", "/enter");
-    // **The two arms are EXCLUSIVE**, or a component that drew both would pass
-    // this cell and its partner below (Task 3 review, Minor 4).
-    expect(screen.queryByText(/single player only/i)).toBeNull();
+    expect(screen.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute("href", "/enter");
+    expect(screen.getByRole("heading", { name: "Play with friends" })).toBeInTheDocument();
   });
 
-  // **The first screen everyone sees says what the site is** (Task 3 review,
-  // Minor 5): before this the landing screen's highest heading was
-  // `OnThisDevice`'s `<h3>`, so the document started at level 3 and a stranger
-  // at `#/` was told nothing at all.
+  // The product, named once, at the top of the document (Task 3 review, Minor
+  // 5) — in the hero, and NOT in `header.banner`, which is the game's header
+  // and the one the browser walk's `atTheGame` is scoped to.
   it("names the product at the top of the document", () => {
     render(<FrontDoor multiplayer />);
-    expect(screen.getByRole("heading", { level: 1, name: "Yokohama" })).toBeInTheDocument();
+    const title = screen.getByRole("heading", { level: 1, name: "Yokohama" });
+    expect(title.closest("header")).toHaveClass("door-hero");
+    expect(document.querySelector("header.banner")).toBeNull();
   });
 
-  // **The local channel is FIRST, and that is a claim about the door.**
-  // `FrontDoor.tsx` argues it in prose — "the entry that needs nothing" — and
-  // until this cell a refactor that put the turnstile above it passed
-  // everything here (Task 3 review, Minor 3).
+  // **The channel that needs nothing comes first** (Task 3 review, Minor 3) —
+  // since M6.5c2 that is the bot card, whose New game needs no server; the
+  // device card is third, in the approved mock's order.
   it("puts the channel that needs nothing above the one that needs a login", () => {
     render(<FrontDoor multiplayer />);
-    const local = screen.getByRole("heading", { name: "On this device" });
-    const others = screen.getByRole("link", { name: /play with others/i });
-    expect(local.compareDocumentPosition(others) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const bot = screen.getByRole("heading", { name: /You against the bot/ });
+    const friends = screen.getByRole("heading", { name: "Play with friends" });
+    expect(bot.compareDocumentPosition(friends) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const titles = [...document.querySelectorAll(".door-cards > .door-card h2")].map((h) => h.textContent);
+    expect(titles).toEqual([`You against the bot ${productionBot.label}`, "Play with friends", "On this device"]);
   });
 
-  // R-6.5b2.4 on the client side: nothing to enter, nothing offered, and one
-  // line saying so rather than a control that 404s.
-  it("draws no multiplayer entry when the deployment serves none", () => {
+  // **State E** (R-6.5c2.4, mock 06): nothing to enter, nothing offered — and
+  // no sentence either: the friends card is simply not there, and the other
+  // two widen.
+  it("draws no friends card when the build serves none, and the other two widen", () => {
     render(<FrontDoor multiplayer={false} />);
-    expect(screen.queryByRole("link", { name: /play with others/i })).toBeNull();
-    expect(screen.getByText(/single player only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Go to the lobby" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Play with friends" })).toBeNull();
+    const grid = document.querySelector(".door-cards")!;
+    expect(grid).toHaveClass("two-up");
+    expect(grid.querySelectorAll(":scope > .door-card")).toHaveLength(2);
   });
 
-  // **The other way on, and it is a whole channel rather than a link.** The
-  // games in this browser are read from the module in this tab's own Worker —
-  // `fetch` is the setup file's throwing stub, so a door that asked the server
-  // for any part of itself fails here rather than merely being slower.
+  // **The door asks the server NOTHING** (R-6.5b2.7): `fetch` is the setup
+  // file's throwing stub, so a door that asked the server for any part of
+  // itself — the bot's label included — fails here rather than being slower.
   it("draws the games on this device, and asks the server for nothing", async () => {
     render(<FrontDoor multiplayer />);
-    expect(await screen.findByRole("link", { name: LOCAL })).toHaveAttribute(
-      "href",
-      `#/t/${LOCAL}`,
-    );
-    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: LOCAL })).toHaveAttribute("href", `#/t/${LOCAL}`);
+    expect(screen.getByRole("button", { name: "New game" })).toBeInTheDocument();
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("opens the local form from New game, which needs no door", async () => {
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New game" }));
+    expect(window.location.hash).toBe("#/new/local");
+  });
+
+  // **The bot's version, and never a request for it** (R-6.5c2.10, spec §2.4):
+  // the label is the committed contract file's, which `wire_fixtures` refuses
+  // when it is stale — so a re-pointed production bot changes this card at the
+  // next regeneration with no edit here.
+  it("labels the bot with the version this build ships, from the contract file", () => {
+    render(<FrontDoor multiplayer />);
+    const title = screen.getByRole("heading", { name: /You against the bot/ });
+    expect(productionBot.label).not.toBe("");
+    expect(within(title).getByText(productionBot.label)).toHaveClass("version-tag");
   });
 
   // The sentence a game left behind — a local table that no longer opens — is
@@ -92,6 +108,37 @@ describe("the front door", () => {
   it("carries a sentence from the screen a game was left for", () => {
     render(<FrontDoor multiplayer notice="this game is no longer available" />);
     expect(screen.getByText("this game is no longer available")).toBeInTheDocument();
+  });
+
+  // **The project link** (R-6.5c2.6, spec §2.3): only where the build names
+  // one, its text the address without the scheme, in a new tab.
+  it("draws the project link only when the build names one, in a new tab", () => {
+    const { unmount } = render(<FrontDoor multiplayer />);
+    expect(document.querySelector(".project-link")).toBeNull();
+    unmount();
+    render(<FrontDoor multiplayer link={linkFor("https://github.com/you/yokohama-assistant")} />);
+    const link = screen.getByRole("link", { name: "github.com/you/yokohama-assistant" });
+    expect(link).toHaveAttribute("href", "https://github.com/you/yokohama-assistant");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+  });
+
+  // **"How to play" opens the help in place, WITHOUT its screenshots**: they
+  // are photographs of the card art (`ASSETS.md`, the `web/public/help/` row),
+  // and no setup screen draws card art.
+  it("opens the help in place, with its words and none of its pictures", async () => {
+    const { container } = render(<FrontDoor multiplayer />);
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "How to play" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("region", { name: "How to play" });
+    expect(within(panel).getByRole("heading", { name: "The three parts of the screen" })).toBeInTheDocument();
+    expect(container.querySelectorAll("img, figure.shot")).toHaveLength(0);
+    expect(within(panel).getByRole("heading", { name: "How to play" })).toHaveFocus();
+    await user.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("region", { name: "How to play" })).toBeNull();
   });
 
   // **The build value, read once and never asked for.** Absent is ON, so a
@@ -111,12 +158,23 @@ describe("the front door", () => {
   });
 });
 
+
 // **What the door says about the release** (M6.5b2, spec §4's four sentences).
 //
 // The status is a PROP, so these cells render each state directly rather than
 // arranging a service worker jsdom does not have; `swRegister.test.ts` is where
 // the lifecycle that produces each one is driven.
 describe("the door's readiness line", () => {
+  // **The line is the device card's since M6.5c2** (mock 01), so every cell
+  // here mounts `OnThisDevice`, which starts the local host: the fake one.
+  beforeEach(() => {
+    resetLocalHostForTests();
+    stubWorker();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+  });
+
   const status = (over: Partial<ReadinessStatus> = {}): ReadinessStatus => ({
     readiness: "none",
     reason: null,

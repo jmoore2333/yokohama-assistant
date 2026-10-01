@@ -23,6 +23,8 @@ import { defineConfig } from "vitest/config";
 //   the one console error it forgives, and the credential's path into a
 //   browser — which drive `e2e/`'s helpers through fakes, with no browser.
 //   `vitest.config.ts` never sees `e2e/`: its `include` is `src`.
+// - And every `scripts/**/*.node.test.ts` (M6.5c2): a build script's own
+//   cells, beside the script — `project-url.mjs`, which `vite.config.ts` calls.
 //
 // It does NOT merge `vite.config.ts`, unlike its sibling: there is no React
 // plugin, no alias and no browser resolution in play, and merging the build
@@ -33,6 +35,6 @@ export default defineConfig({
     // The real-build cell runs `vite build`, which on a cold cache is tens of
     // seconds — well past vitest's 5 s default.
     testTimeout: 180_000,
-    include: ["src/**/*.node.test.ts", "e2e/**/*.node.test.ts"],
+    include: ["src/**/*.node.test.ts", "e2e/**/*.node.test.ts", "scripts/**/*.node.test.ts"],
   },
 });

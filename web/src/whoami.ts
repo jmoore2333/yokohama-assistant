@@ -9,9 +9,23 @@
 // show the game to one whose session has expired.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, clearClaimedUser } from "./api";
+import { api, ApiError, clearClaimedUser, isSessionExpired } from "./api";
 import type { Channel } from "./route";
 import type { Me } from "./types";
+
+/** How the door's own read failed (M6.5c2, spec §2.1's discriminators):
+ *  `challenge` — the EDGE refused with Access's challenge (state A);
+ *  `network` — nothing answered at all, a network error or offline (state C);
+ *  `refused` — the server answered with a refusal of its own. */
+export type DoorFailure = "challenge" | "network" | "refused";
+
+/** What a failed `/api/me` was. An `ApiError` is an answer — the server's or
+ *  the edge's — and anything else is `fetch` failing with none: `api.ts`'s
+ *  `call` turns every HTTP status into an `ApiError`. */
+export function failureOf(e: unknown): DoorFailure {
+  if (!(e instanceof ApiError)) return "network";
+  return isSessionExpired(e) ? "challenge" : "refused";
+}
 
 /** The door, as the app reads and moves it. */
 export interface Door {
@@ -19,6 +33,9 @@ export interface Door {
   me: Me | null;
   /** `/api/me` itself refused. */
   error: string | null;
+  /** HOW `/api/me` failed, beside `error` — what tells state A from C from a
+   *  plain refusal (spec §2.1). `null` whenever `error` is. */
+  failure: DoorFailure | null;
   /** WHY the player is back at the door, in the server's own words, or `null`
    *  when they asked to be here. It outlives the screen that caught the
    *  refusal, which is the whole reason it is held here: a 401 unmounts that
@@ -35,8 +52,9 @@ export interface Door {
 /** `/api/me`, on entering the MULTIPLAYER channel and again on demand.
  *
  *  **`me` is `null` until it answers, and that is a THIRD state, not a default
- *  of "signed out".** The app draws nothing at all while it is null: a default
- *  either way flashes the wrong screen at half the players for one round trip.
+ *  of "signed out".** The door says only "Connecting to the server…" while it
+ *  is null (state D, `Door.tsx`): a default either way flashes the wrong screen
+ *  at half the players for one round trip.
  *
  *  **It is not a boot read any more** (M6.5b2, R-6.5b2.7, spec §2.2). It ran on
  *  mount whatever screen this was, which made it a FOURTH request on the front
@@ -54,6 +72,7 @@ export interface Door {
 export function useMe(channel: Channel): Door {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<DoorFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -63,10 +82,15 @@ export function useMe(channel: Channel): Door {
     // rather than in `refresh`, so the one place that starts a read is also the
     // one place that forgets the last read's complaint.
     setError(null);
+    setFailure(null);
     api
       .me()
       .then((m) => live && setMe(m))
-      .catch((e) => live && setError(e instanceof ApiError ? e.message : String(e)));
+      .catch((e) => {
+        if (!live) return;
+        setError(e instanceof ApiError ? e.message : String(e));
+        setFailure(failureOf(e));
+      });
     return () => {
       live = false;
     };
@@ -87,6 +111,7 @@ export function useMe(channel: Channel): Door {
   return {
     me,
     error,
+    failure,
     notice,
     refresh,
     // Asked for, so the door says nothing — a notice left standing from an
@@ -96,15 +121,13 @@ export function useMe(channel: Channel): Door {
   };
 }
 
-/** What the screen says when the server names nobody under a door this browser
- *  cannot knock on.
- *
- *  There is no form to offer: both of these identities are set by an edge in
- *  front of the server, so the only useful thing to say is WHICH header was
- *  expected and how the player was supposed to arrive. `open` never reaches
- *  here — it has a screen. */
-export function doorSentence(mode: Me["mode"]): string {
+/** What the OPERATOR reads when the server names nobody under a door set in
+ *  front of it (state B, spec §2.1): which header was expected, and how a
+ *  player was meant to arrive. It sits in the card's "For the operator" fold,
+ *  so a player reads the sentence meant for them first. The open door never
+ *  reaches here: it has the name step. */
+export function doorSentence(mode: Exclude<Me["mode"], "open">): string {
   return mode === "cf-access"
-    ? "This deployment expects Cloudflare Access to name you (Cf-Access-Authenticated-User-Email), and nothing reached the server. Open the site through its public hostname."
-    : "This deployment expects the edge Worker to name you (X-Yokohama-User), and nothing reached the server.";
+    ? "This server expects Cloudflare Access to name each player (Cf-Access-Authenticated-User-Email), and nothing arrived. Open it through its public hostname, or see the self-host guide on identity."
+    : "This server expects the edge Worker to name each player (X-Yokohama-User), and nothing arrived. Open it through its public hostname.";
 }

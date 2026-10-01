@@ -179,6 +179,40 @@ fn a_record_from_another_release_opens_with_no_warning_and_keeps_its_version() {
     assert_eq!(saved.engine_version, other, "the save names the release that wrote it");
 }
 
+/// **A CLI warning reaches the wire** — the field-level witness for
+/// `ClientState.warnings`, which the two filter cells cannot give: a chain
+/// that emptied every game's warnings passes them and fails here. A
+/// `rules_hash` derived to differ from the running one makes
+/// `Session::from_record` warn exactly once, and the game screen's payload
+/// carries that line. (Cycle A's R-A19, closed here as cycle B's first task.)
+#[test]
+fn a_rules_hash_drift_reaches_the_wire_as_a_warning() {
+    use yokohama_web::store::Store;
+    let (games, id) = host_with_the_pair();
+    let store: Arc<dyn Store> = Arc::clone(games.store());
+    let (json, version) = store.read(Doc::Record, &id).expect("a readable store").expect("the pair's record");
+    let mut record: yokohama_core::GameRecord = serde_json::from_str(&json).expect("the committed record parses");
+    let running = yokohama_core::Rules::standard().content_hash();
+    record.rules_hash = format!("{running}-another");
+    let rewritten = serde_json::to_string_pretty(&record).expect("a record serializes");
+    store.write_if_version(Doc::Record, &id, &rewritten, Some(version)).expect("the rewrite lands");
+    let user = User::parse(LOCAL_USER).expect("the local address parses");
+    let res = dispatch(
+        &games,
+        &HOST,
+        Ok(&user),
+        &ApiRequest { method: "GET", path: &format!("/api/games/{id}"), query: "", content_type: None, body: b"" },
+    );
+    assert_eq!(res.status, 200, "{}", res.body);
+    let state: serde_json::Value = serde_json::from_str(&res.body).expect("a ClientState");
+    let warnings = state["warnings"].as_array().expect("an array");
+    assert_eq!(warnings.len(), 1, "exactly the rules_hash line: {warnings:?}");
+    assert!(
+        warnings[0].as_str().unwrap().starts_with("warning: GameRecord.rules_hash="),
+        "the CLI's own line reaches the wire: {warnings:?}",
+    );
+}
+
 /// **Every event of a browser-played game is ACCOUNTED FOR by the native
 /// `why`**: each one is either a bot move this build reconstructs, or the
 /// route's own typed refusal saying the mover was a human seat (or that the

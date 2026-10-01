@@ -155,7 +155,7 @@ const cacheHas = (page: Page, name: string, at: string): Promise<boolean> =>
  * registered and cached nothing.
  */
 async function installed(page: Page): Promise<string> {
-  await expect(page.getByText("Ready to play offline.")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+  await expect(page.getByText("Ready to play offline")).toBeVisible({ timeout: INSTALL_WAIT_MS });
   const names = await releaseCaches(page);
   // Every caller is a FRESH profile installing its first release, so "the one
   // generation" is unambiguous — asserted rather than assumed, because a helper
@@ -1207,7 +1207,7 @@ test("a refused registration: the first /sw.js answers 503, the door names it in
 
   // **The retry REGISTERS, and what that resolves to is adopted**: the door
   // leaves "Preparing…" for "Ready…" and the release is whole in the cache.
-  expect(await retried(page)).toBe("Ready to play offline.");
+  expect(await retried(page)).toBe("Ready to play offline");
   const release = await installed(page);
   expect(scripts, "the retry fetched the worker again").toBe(2);
 
@@ -1266,7 +1266,7 @@ test("a failed FIRST install: one file answers 503 once, the release fails whole
   // Before the fix this line read "…with script ('Unknown'): The object is in
   // an invalid state.. Try again" (measured at 0a4f7223, two periods, the
   // door's own defect as well), on every click until a reload.
-  expect(await retried(page)).toBe("Ready to play offline.");
+  expect(await retried(page)).toBe("Ready to play offline");
   const release = await installed(page);
   expect(scripts, "the retry REGISTERED — it fetched the worker again").toBe(2);
   expect(asks, "and fetched the refused file again").toBe(2);
@@ -1297,7 +1297,7 @@ async function retried(page: Page): Promise<string> {
   });
   await page.getByRole("button", { name: "Try again", exact: true }).click();
   const fresh = page.locator(".offline-state p:not([data-e2e-stale])").first();
-  await expect(fresh).toHaveText(/^(Ready to play offline\.|Could not prepare to play offline)/, {
+  await expect(fresh).toHaveText(/^(Ready to play offline|Could not prepare to play offline)/, {
     timeout: INSTALL_WAIT_MS,
   });
   return fresh.innerText();

@@ -122,6 +122,13 @@
   /* The achievements and the building sites are LANDSCAPE cards, stored
    * sideways on their sheets and turned upright by the generator (W0, W0b). */
   --wide-card-aspect: 799 / 530;
+  /* The navy the door's hero and the setup screens' band glow with (M6.5c2,
+   * the approved mocks' own two stops). GROUNDS, not roles: nothing is
+   * coloured by them that means something, so they belong with the grounds in
+   * kind rather than with the seat and good hues. Measured, no `color-mix` of
+   * `--vp` into `--bg` lands on them — the per-channel fractions disagree. */
+  --ground-glow: #16304f;
+  --ground-deep: #0f1c2c;
 }
 
 @media (prefers-color-scheme: light) {
@@ -912,56 +919,6 @@ button.primary {
 }
 button.primary:disabled { opacity: 0.45; cursor: default; }
 
-/* One seat of the new-game form: who holds it, its colour, and — when the row
-   names somebody else — where to type their address. It WRAPS, because at
-   390px the label, the select and an email field do not sit on one line and a
-   form that pushed the input off the edge would be a page that scrolls
-   sideways (the width gate's own rule, applied before the gate sees it). */
-.field.seat-row { flex-wrap: wrap; }
-/* The password row's caption IS its checkbox's label, so it is not the
-   uppercase column heading every other `.field label` is — it is a sentence
-   beside a control, and it wraps rather than reserving 9rem of gutter. */
-.field.password-field { flex-wrap: wrap; }
-.field .check {
-  min-width: 0; display: flex; align-items: center; gap: 0.4rem;
-  text-transform: none; letter-spacing: normal; font-size: 12px;
-}
-.field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
-
-/* The lobby's two lists ARE the setup screen's `.saved` sections, deliberately:
-   the rows are the same rows and a second set of rules is a second place for
-   them to drift. Only the lock marker is new, and it is a fact on the row
-   rather than a control. */
-.lobby .lock { font-size: 11px; }
-.lobby .open-tables li .table-facts { color: var(--fg-dim); }
-/* The row's name is an ANCHOR since M6.2 (R-14) — the row's job is to go to an
-   address, so it carries one — and it wears `button.ghost`'s box, which is
-   styled on the element and so does not reach an `<a>`. Restated here rather
-   than widening `button.ghost` to `.ghost`: every other `.ghost` in this client
-   is a real button, and a selector that stopped naming the element would start
-   styling the `<summary>`s that deliberately do not carry it (see the banner's
-   note above). */
-.lobby .saved li a.row-link, .front-door .saved li a.row-link {
-  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
-}
-.lobby .saved li a.row-link:hover,
-.front-door .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
-
-/* M6.5b: the door is the lobby's CONTENT now, not a screen in front of it
-   (spec §2.5). `SignIn` and the two door sentences carry their own `.setup`
-   box — the one they had when each of them WAS the page — so nested inside
-   this one they would centre a 52rem column inside a 52rem column and push
-   themselves three rems down from a heading they belong under. The box is
-   theirs where they stand alone and flat where they stand here; nothing in
-   those components moves for it. */
-.lobby > .setup { max-width: none; margin: 0; padding: 0; }
-/* The games on this device are the door's FIRST section since M6.5b2 (they were
-   the lobby's first child before it), so they need the rhythm `.setup h3`'s top
-   margin gives every other section — a first child has none to inherit, and its
-   own margin collapses out of the box. Unscoped for that reason: the rule is
-   about being first, and the host is no longer fixed. */
-.on-this-device { margin-top: 0.6rem; }
 .on-this-device .local-fault { color: var(--fg-dim); }
 
 /* ---- backup and restore (M6.5b2, R-6.5b2.10 – .12) --------------------- */
@@ -973,15 +930,13 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    `.field` next door gets `flex-wrap` at three call sites for the same reason.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, and the door is
-   outside all of them, so this lands on the headed live review. */
+   width cells are on the game screen and the set table, and since M6.5c2 on a
+   fresh profile's door and the same door with one local game
+   (`setup_screens.spec.ts`) — no report, no refusal, no row that will not open
+   — so these rows still land on the headed live review. */
 .backup-controls { margin-top: 0.8rem; }
 .backup-controls .backup-note { margin: 0.3rem 0 0.6rem; }
 .backup-controls .backup-error { display: block; margin: 0.3rem 0; }
-.restore .restore-field { flex-wrap: wrap; }
-/* A file input is as wide as its button plus its "no file chosen" text and
-   does not shrink on its own, which is what pushes a 390px page sideways. */
-.restore .restore-field input[type="file"] { max-width: 100%; font-size: 12px; }
 .restore-report { margin: 0.4rem 0 0; padding-left: 1.1rem; }
 .restore-report li { margin: 0.2rem 0; }
 .restore-id { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
@@ -992,9 +947,10 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    sentences and one control has nothing to lay out.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, and the door is
-   outside all of them, so this lands on the headed live review (the same note
-   the backup block carries). */
+   width cells are on the game screen and the set table, and since M6.5c2 on
+   the door with no game and with one, which draws the storage line but never
+   the install offer — so the offer lands on the headed live review (the same
+   note the backup block carries). */
 .storage-line { margin: 0.8rem 0 0; }
 /* A real break above it, measured at 390px: the storage line and the two
    install sentences are all `.muted` at the same size, and at the backup
@@ -1030,8 +986,9 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    the width it stops fitting rather than scrolling the page at 390px.
 
    **Unmeasured by any gate, deliberately said out loud**: the browser walk's
-   width cells are on the game screen and the set table, so this lands on the
-   headed live review, exactly as the backup and storage blocks above say. */
+   width cells are on the game screen, the set table and the door with no game
+   and with one, which has no outbox row, so this lands on the headed live
+   review, exactly as the backup and storage blocks above say. */
 .outbox { margin-top: 0.8rem; }
 .outbox h4 { margin: 0 0 0.3rem; font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--fg-dim); }
@@ -1049,36 +1006,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    a control in this client uses. */
 .abandon-ask { overflow-wrap: anywhere; font-size: 12px; }
 
-/* ---- the front door (M6.5b2, R-6.5b2.1) -------------------------------- */
-/* Two ways on, and the second is a LINK rather than a button: Access answers a
-   navigation with a redirect to another origin, which a `fetch` follows and
-   then fails opaquely (spec §0.3). So it wears `button.primary`'s box, restated
-   for the element the way `a.row-link` restates `button.ghost`'s — those rules
-   are styled ON the element name and so do not reach an `<a>`. */
-.front-door .with-others a.enter {
-  display: inline-block;
-  background: var(--vp); color: #061019; border: 0; border-radius: var(--radius);
-  padding: 0.45rem 1.1rem; font: inherit; font-weight: 700; text-decoration: none;
-}
-.front-door .with-others { margin-top: 1.6rem; }
-
-/* **The product, named once, at the top of the door** (M6.5b2; Task 3 review,
-   Minor 5). The game screen's own `<h1>` is `.banner h1` — 1.05rem, letter-spaced
-   small caps inside a fixed strip — and this one is a landing heading on a
-   `.setup` page, so it is set from `--display` rather than restating the
-   banner's treatment on a screen that has no banner. */
-.front-door .door-banner { margin-bottom: 1.4rem; }
-.front-door .door-banner h1 {
-  font-family: var(--display); font-size: 2rem; font-weight: 600;
-  letter-spacing: 0.02em; margin: 0;
-}
-.front-door .door-banner p { margin: 0.15rem 0 0; }
-
-/* The readiness line and the update offer (spec §4): a report about the shell,
-   so it sits under both entries and is set at the quiet size the other muted
-   lines use. */
-.front-door .offline-state { margin-top: 1.6rem; }
-.front-door .offline-state p { margin: 0.2rem 0; font-size: 12px; }
 /* A control inside a sentence, for `.log-jump`'s reason: it must be reachable
    by keyboard and named by a role, and it must not look like a button sitting
    in the middle of a line. */
@@ -1087,50 +1014,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
   color: var(--vp); font: inherit; cursor: pointer; text-decoration: underline;
 }
 .linkish:hover { color: var(--fg); }
-/* The way back, for the same reason and in `button.ghost`'s box. */
-.lobby a.to-door {
-  display: inline-block;
-  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
-  margin-bottom: 0.6rem;
-}
-.lobby a.to-door:hover { color: var(--fg); border-color: var(--line-bright); }
-
-/* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
-   is the setup screens' own `.setup` box and the rows are their `.field
-   .seat-row`, so the only rule it needs of its own is the list's markers —
-   these are seats, not bullets. */
-.open-table .seats { list-style: none; margin: 0; padding: 0; }
-.open-table .open-table-controls { justify-content: flex-start; }
-/* The link row: a read-only field holding a whole address, beside a Copy
-   button. It is the one `.field` on any setup screen whose value is WIDER than
-   the screen it is read on, and it pushed the page sideways at 390px — 422
-   against a 390 viewport, with the Copy button's right edge off the window
-   (live review I-1).
-
-   TWO rules, because the default answers neither half. A flex item's automatic
-   minimum size is its CONTENT, so an input holding a 400px URL refuses to be
-   narrower than that URL however little room the row has: `min-width: 0` is
-   what lets it be squeezed at all. And `flex: 1 1 auto` is what makes the
-   squeezing land here rather than on the label or the button — it also grows,
-   so on a wide screen the address is as readable as the room allows. The wrap
-   is the seat row's own (`.field.seat-row`), for the same reason: below the
-   width where even a shrunk input is narrower than its own padding, the button
-   drops to its own line instead of off the edge. */
-.field.link-field { flex-wrap: wrap; }
-.field.link-field input { flex: 1 1 auto; min-width: 0; }
-
-/* The unlock face (M6.3 §5.3): one password box and two buttons. It is the
-   setup screens' own `.setup` box and its row is their `.field`, so the only
-   rule it needs of its own is the controls row — `.field` lays its children out
-   in a line and centres them, and two buttons on their own read as a pair
-   floating in the middle of an empty row. The same rule the open table's own
-   controls take, and for the same reason.
-
-   The lede holds `TableFacts`' `<span>` INLINE, so it wraps like prose at 390px
-   rather than being a flex item with a minimum size of its own content — which
-   is the defect the link row above records. */
-.unlock .unlock-controls { justify-content: flex-start; }
 
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {
@@ -1139,12 +1022,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 }
 .deal-pick.chosen { border-color: var(--vp); box-shadow: 0 0 0 1px var(--vp); }
 .deal-pick:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
-
-.saved ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-.saved li { display: flex; gap: 0.4rem; align-items: center; }
-/* The row's second half — the size, what the table is waiting on, and who is at
-   it. It wraps rather than pushing the delete controls off a narrow screen. */
-.saved li .table-facts { font-size: 11px; }
 
 /* ---- the door (M6.1) ---------------------------------------------------- */
 
@@ -1184,13 +1061,6 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
 /* The door's refusal: a sentence and nothing to click, so it reads as prose
    rather than as a failed form. */
 .door-error { color: var(--warn); max-width: 34rem; }
-
-.sign-in .field { max-width: 26rem; }
-.sign-in form { margin-top: 1rem; }
-.sign-in button.primary { margin-top: 0.6rem; }
-/* Why the player is at this door, when they did not choose to be. Above the
-   form, and given the room a sentence needs. */
-.sign-in .door-notice { margin: 0 0 0.9rem; max-width: 34rem; }
 
 /* One table in the Game menu's list: the name is a control, the rest is not.
    The facts can carry three or four emails at 4P, so the row wraps rather than
@@ -1558,13 +1428,6 @@ ol.account .mover { font-weight: 700; }
   margin: 0 0 0.5rem;
 }
 .chat h2 .fold, .chat h3 .fold { margin-left: auto; font-size: 10px; padding: 0 0.4rem; letter-spacing: 0; text-transform: none; }
-/* The rhythm the heading's `margin-top` used to supply by accident. `.setup h3`
- * gave every lobby section 1.6rem of air above it, and for the three ordinary
- * sections that margin sits OUTSIDE anything — but the chat's heading is inside
- * a bordered, padded `.panel`, so the same rule put the air INSIDE the box
- * (M-3's "26px of dead space above its one header line"). Zeroing it there and
- * putting it on the section is the same 1.6rem in the place it belongs. */
-.lobby .lobby-chat { margin-top: 1.6rem; }
 .chat-new { font-family: var(--mono); font-size: 10px; line-height: 1.4; padding: 0 0.45rem; border-radius: 999px; background: var(--reachable); color: var(--bg-sunken); }
 /* The body folds the turn account's way: clipped, never unmounted, so the
  * live region stays in the tree. **The cap does NOT lift above 1201px, which is
@@ -1622,28 +1485,13 @@ ol.account .mover { font-weight: 700; }
 .chat form input { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 11.5px; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.2rem 0.4rem; }
 .chat form .ghost { font-size: 10px; padding: 0 0.5rem; letter-spacing: 0; text-transform: none; }
 
-/* **The name beside the address (M6.4, R-6.4.3).** In the who-strip, which is
- * one line of small print above the lobby's heading — so the field is sized to
- * that line rather than to the form fields below it, and reads as a setting
- * rather than as something to fill in. */
-.who-strip .your-name { display: inline-flex; align-items: center; gap: 0.35rem; margin-left: 0.75rem; font-size: 11.5px; color: var(--fg-dim); }
-.who-strip .your-name input { font: inherit; font-size: 11.5px; width: 9rem; background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line); border-radius: 3px; padding: 0.1rem 0.35rem; }
-
-/* **On a phone the name takes its own line, and the strip stops breaking its
- * words** (live review, M-1). The field is a label plus a 9rem input — 177px —
- * and it joined a `flex` row with no `flex-wrap`, so at 390px the address broke
- * across three lines and "sign out" across two: a 51px block where the design
- * is one line of small print. Nothing overflowed and nothing was clipped, which
- * is why this is a reading of two BOXES in `joins_by_link.spec.ts` and not a
- * width gate.
- *
- * The row wraps, and the name is given the whole second line rather than left
- * to wrap where it happens to land — a field that lands beside a short address
- * on one screen and under it on the next is worse than one that is always in
- * the same place. `flex-end` because that is the strip's own alignment. */
+/* **On a phone the strip wraps rather than breaking its words** (live review,
+ * M-1): a `flex` row with no `flex-wrap` broke a long address across three
+ * lines and "sign out" across two. The lobby's name field that forced it is
+ * gone (M6.5c2 — the band's corner is its successor); the screens that still
+ * draw the strip keep the wrap. */
 @media (max-width: 480px) {
   .who-strip { flex-wrap: wrap; }
-  .who-strip .your-name { margin-left: 0; width: 100%; justify-content: flex-end; }
 }
 
 /* ---- M5: the strips on the table ---------------------------------------- */
@@ -1832,16 +1680,16 @@ ol.account .mover { font-weight: 700; }
  * is a column, and a sentence sitting over a full-width button is not the
  * shape either of them wants.
  *
- * The two standalone screens take the unlock face's controls row, for the
- * reason that rule gives — `.field` centres its children, and two buttons on
- * their own read as a pair floating in the middle of an empty row. */
+ * The broken save's standalone screen lays its controls out from the left —
+ * `.field` centres its children, and buttons on their own read as a group
+ * floating in the middle of an empty row. (The lock's standalone screen is a
+ * `.notice-card` since M6.5c2, with a row of its own.) */
 .decision.locked-out {
   display: flex; flex-direction: row; flex-wrap: wrap;
   align-items: center; gap: 0.5rem; padding: 0.6rem 0.8rem;
   font-family: var(--display); font-size: 1.05rem;
 }
 .decision.locked-out .primary { margin-left: auto; }
-.locked-out .unlock-controls,
 .broken-save .unlock-controls { justify-content: flex-start; gap: 0.5rem; flex-wrap: wrap; }
 
 /* ---- M5.5: the set table ------------------------------------------------
@@ -1906,4 +1754,696 @@ ol.account .mover { font-weight: 700; }
   /* Scoped, so the base `.deck` rule still stands below the breakpoint, where
    * the page scrolls and the deck is sticky rather than a grid row. */
   .app.setup-table > .deck { max-height: 62vh; }
+}
+
+/* ---- M6.5c2: the setup screens' shared parts (R-6.5c2.6 – .9; spec §2.2) ----
+ *
+ * The approved mocks (`docs/plans/2026-09-26-web-frontend-m6.5c2-mocks/`),
+ * built in this stylesheet's own tokens. No new colour role: the seats' dots
+ * are the seats', gold is "yours" and "to move", orange is the password, the
+ * yen gold is the bot and this device, the VP blue the server. Every rule is
+ * scoped to a class this block introduces, so nothing the game screen draws is
+ * restyled. */
+
+/* Focus, visibly, on every control the setup screens draw. */
+.front-door :focus-visible, .lobby :focus-visible { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* A raised card with a coloured top band: the door's three, the state cards,
+   the name step, the forms. */
+.raised-card {
+  background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+  overflow: hidden; box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+}
+.raised-card > .card-band { height: 8px; background: var(--line-bright); }
+.raised-card > .card-band.yen { background: var(--yen); }
+.raised-card > .card-band.vp { background: var(--vp); }
+.raised-card > .card-band.warn { background: var(--warn); }
+.raised-card > .card-in { padding: 1rem 1.15rem 1.15rem; }
+.raised-card h2 { font-size: 21px; font-weight: 600; margin: 0.25rem 0 0.4rem; }
+.raised-card .lede { color: var(--fg-dim); margin: 0 0 0.9rem; }
+/* Two selectors, because a cap can BE a card's heading (the device card's "On
+   this device" is its `h2`), and `.raised-card h2` would otherwise out-rank it. */
+.card-cap, .raised-card .card-cap {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--fg-faint); margin: 0;
+}
+
+/* The two filled controls: the yen gold one is the bot's and this device's,
+   and a LINK in `button.primary`'s box for a navigation (`/enter`). */
+button.primary.yen { background: var(--yen); color: var(--bg); }
+a.primary-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem;
+  background: var(--vp); color: var(--bg); border: 0; border-radius: var(--radius);
+  padding: 0.5rem 1.05rem; font: inherit; font-weight: 700; text-decoration: none;
+}
+
+/* The board mark: the door's drawing (`BoardMark.tsx`). One class per trade. */
+.board-mark { display: block; max-width: 100%; height: auto; }
+.board-mark .bm-tiles { filter: drop-shadow(0 6px 6px rgb(0 0 0 / 0.5)); }
+.board-mark .bm-tile { stroke: var(--fg); stroke-opacity: 0.16; stroke-width: 1; }
+.bm-tile.copper { fill: var(--copper); }
+.bm-tile.silk { fill: var(--silk); }
+.bm-tile.tea { fill: var(--tea); }
+.bm-tile.seafood { fill: var(--seafood); }
+.bm-tile.yen { fill: var(--yen); }
+.bm-tile.vp { fill: var(--vp); }
+.bm-tile.imports { fill: var(--imports); }
+.bm-tile.neutral { fill: var(--fg-dim); }
+.bm-tile.faint { fill: var(--fg-faint); }
+.bm-president .bm-disc { fill: currentColor; stroke: var(--bg); stroke-width: 3; }
+.bm-president .bm-hole { fill: var(--bg); fill-opacity: 0.35; }
+.bm-cube { fill: currentColor; stroke: var(--bg); stroke-width: 2; }
+
+/* The band. Its side padding lines its content up with the lobby body's
+   68rem column (Task 4: `.lobby-body` is 72rem less 2rem a side). */
+.lobby-band {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  min-height: 64px; padding: 0.6rem max(2rem, calc(50% - 34rem));
+  background: radial-gradient(ellipse 50% 160% at 80% 0%, var(--ground-glow) 0%, var(--ground-deep) 50%, var(--bg) 100%);
+  border-bottom: 1px solid var(--line);
+}
+.band-brand { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.2rem 0.55rem; min-width: 0; }
+.band-brand .band-mark { align-self: center; flex: 0 0 auto; }
+.band-mark rect { fill: var(--vp); }
+.band-mark rect.lit { fill: var(--yen); }
+.band-brand h1 { font-size: 22px; font-weight: 600; letter-spacing: 0; }
+.band-brand .crumb, .band-brand .crumb-sep {
+  font-family: var(--display); font-size: 18px; font-weight: 500; color: var(--fg-dim); margin: 0;
+}
+.band-corner {
+  display: flex; align-items: center; gap: 0.6rem; flex: 0 1 auto;
+  font-size: 12px; color: var(--fg-dim);
+}
+.band-corner a {
+  color: var(--fg-dim); text-decoration: underline; text-decoration-color: var(--line-bright);
+  text-underline-offset: 3px;
+}
+
+/* The identity corner: inline at desktop width, a pill on a phone. */
+.identity-corner { position: relative; display: flex; align-items: center; }
+.identity-menu { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.6rem; }
+.identity-who { color: var(--fg-dim); white-space: nowrap; }
+/* A name may be 64 characters with no break in it: it wraps, and the corner
+   shrinks around it, rather than widen the page. */
+.identity-who b { color: var(--fg); font-weight: 700; white-space: normal; overflow-wrap: anywhere; }
+.identity-address { color: var(--fg-faint); overflow-wrap: anywhere; }
+.identity-menu button.ghost, .identity-edit button.ghost { padding: 0.15rem 0.5rem; font-size: 12px; }
+.identity-edit { display: flex; align-items: center; gap: 0.35rem; }
+.identity-edit input {
+  font: inherit; font-size: 12px; width: 11rem; background: var(--bg-sunken); color: var(--fg);
+  border: 1px solid var(--line-bright); border-radius: var(--radius); padding: 0.2rem 0.4rem;
+}
+.identity-pill {
+  display: none; align-items: center; gap: 0.4rem; max-width: 11rem; font: inherit; font-size: 12px;
+  color: var(--fg); background: transparent; border: 1px solid var(--line-bright); border-radius: 99px;
+  padding: 0.2rem 0.65rem; cursor: pointer;
+}
+.identity-pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--vp); flex: 0 0 auto; }
+.identity-pill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The seat chip, the password tag and the version tag. */
+.seat-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  border: 1px solid var(--line-bright); border-radius: 99px; padding: 2px 9px 2px 6px;
+  font-size: 11.5px; color: var(--fg); overflow-wrap: anywhere;
+}
+.seat-chip.open { border-style: dashed; color: var(--fg-faint); padding-left: 9px; }
+.seat-chip.to-move { border-color: var(--yen); color: var(--yen); }
+.seat-dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
+.password-tag {
+  display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10.5px;
+  font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; line-height: 1.4;
+  color: var(--warn); border: 1px solid color-mix(in oklab, var(--warn) 55%, transparent);
+  background: color-mix(in oklab, var(--warn) 8%, transparent); border-radius: 3px; padding: 1px 6px;
+}
+.padlock rect, .padlock path { fill: none; stroke: currentColor; stroke-width: 1.6; }
+.version-tag {
+  display: inline-block; margin-left: 0.2rem; vertical-align: 0.2em; font-family: var(--mono);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; line-height: 1.5; color: var(--yen);
+  border: 1px solid color-mix(in oklab, var(--yen) 45%, transparent); border-radius: 3px; padding: 0 5px;
+}
+
+/* The seat card: the card's own colour is its seat's (`seatClass`), so the band
+   and the caption read it from `currentColor`. */
+.seat-card {
+  min-width: 0; background: var(--bg-raised); border: 1px solid var(--line-bright);
+  border-radius: 8px; overflow: hidden;
+}
+.seat-card-band { height: 6px; background: currentColor; }
+.seat-card-in { padding: 0.65rem 0.8rem 0.75rem; }
+.seat-card-caption {
+  margin: 0; font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: currentColor;
+}
+.seat-card-who {
+  margin: 0.2rem 0 0.1rem; font-family: var(--display); font-size: 16px; font-weight: 600;
+  color: var(--fg); overflow-wrap: anywhere;
+}
+.seat-card-note { margin: 0; font-size: 11.5px; color: var(--fg-faint); }
+.seat-card.open { border-style: dashed; background: transparent; }
+.seat-card.open .seat-card-band { opacity: 0.45; }
+.seat-card.open .seat-card-who { color: var(--fg-dim); }
+
+/* The phone (mock 11): the corner becomes a pill whose menu drops below it. */
+@media (max-width: 600px) {
+  .lobby-band { padding: 0.55rem 1rem; }
+  .band-brand .band-mark { display: none; }
+  .band-brand h1 { font-size: 19px; }
+  .band-brand .crumb, .band-brand .crumb-sep { font-size: 16px; }
+  .identity-pill { display: inline-flex; min-height: 36px; }
+  .identity-menu {
+    display: none; position: absolute; right: 0; top: calc(100% + 0.5rem); z-index: 20;
+    flex-direction: column; align-items: flex-end; gap: 0.45rem;
+    min-width: 12rem; max-width: calc(100vw - 2rem); padding: 0.65rem 0.75rem;
+    background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+    box-shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+  }
+  .identity-corner[data-open="true"] .identity-menu { display: flex; }
+  .identity-who { white-space: normal; }
+}
+
+/* ---- M6.5c2: the front door (R-6.5c2.6; spec §2.2; mocks 01, 06, 11) ------- */
+/* The hero: the name and the board on the navy glow, full bleed, its content
+   held to the door's 86rem column — the approved mock's own 1376px frame, so
+   at 1440 the content is the mock's width (measured in the headed look). The
+   cards rise into its foot (`.door-main`'s negative margin) — the mock's own
+   overlap. */
+.door-hero {
+  background: radial-gradient(ellipse 60% 90% at 72% 40%, var(--ground-glow) 0%, var(--ground-deep) 45%, var(--bg) 100%);
+  border-bottom: 1px solid var(--line);
+}
+.door-hero-in {
+  max-width: 86rem; margin: 0 auto; min-height: 330px; padding: 1.75rem 3.5rem 4.25rem;
+  display: flex; align-items: center; justify-content: space-between; gap: 2rem;
+}
+/* No `min-width: 0` on `.door-title`, deliberately (Task 3 fix round 1): in a
+   row, the title's box must never shrink below its one unbreakable word, so it
+   is the board that gives way; and the hero stacks at 860px, before the board
+   gets small. A `min-width: 0` here drew "Yokohama" over the pyramid from 820px
+   down to 601px. */
+.door-title h1 { font-size: 76px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; }
+.project-link {
+  display: inline-flex; gap: 6px; margin-top: 1rem; font-size: 12.5px; color: var(--fg-dim);
+  text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 4px;
+  overflow-wrap: anywhere;
+}
+.project-link:hover { color: var(--fg); }
+/* The mock sets the board 34px inside the cards' right edge. */
+.door-hero .board-mark { flex: 0 1 360px; margin-right: 2.125rem; }
+.door-main { position: relative; max-width: 86rem; margin: -2.75rem auto 0; padding: 0 3.5rem 2rem; }
+.door-main > .door-notice {
+  margin: 0 0 0.9rem; padding: 0.5rem 0.8rem; background: var(--bg-raised);
+  border: 1px solid var(--line-bright); border-radius: 6px;
+}
+.door-cards { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 18px; }
+.door-cards.two-up { grid-template-columns: 1fr 1.3fr; max-width: 61rem; }
+
+/* The device card: this browser's games as rows, the install offer, then a
+   foot of ONE line — the release's readiness, Back up, Restore — whose notes
+   and reports drop to full-width rows below it (a grid, so a control's own
+   error line never breaks the row it belongs to). */
+/* It pads itself: no band, so no `.card-in` — its rows stay the section's own
+   children, the shape the browser walk reads (`OnThisDevice.tsx`). */
+.raised-card.on-this-device { padding: 1rem 1.15rem 1.15rem; }
+.on-this-device .card-cap { margin-bottom: 0.35rem; }
+.device-games { list-style: none; margin: 0; padding: 0; }
+.device-row {
+  position: relative; display: flex; justify-content: space-between; align-items: baseline; gap: 0.8rem;
+  padding: 0.45rem 0; border-bottom: 1px solid var(--line); font-size: 12px;
+}
+.device-row a.device-name {
+  min-width: 0; color: var(--fg); font-weight: 700; text-decoration: none; overflow-wrap: anywhere;
+}
+/* The whole row opens the game, and the link's name stays the game's name. */
+.device-row a.device-name::after { content: ""; position: absolute; inset: 0; }
+.device-row:hover a.device-name { text-decoration: underline; text-decoration-color: var(--line-bright); }
+/* The state keeps its own width, up to a cap, and the NAME gives way: at 390px
+   a local game's id is the long half, and the mock reads the state on one line. */
+.device-state { flex: 0 0 auto; max-width: 62%; color: var(--fg-dim); text-align: right; }
+.on-this-device .storage-line { margin: 0.6rem 0 0; font-size: 11.5px; }
+.on-this-device .install-offer {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 0.75rem; margin: 0.75rem 0 0.6rem;
+}
+.on-this-device .install-offer p { margin: 0; font-size: 11.5px; line-height: 1.35; }
+.on-this-device .install-offer.ios { display: block; }
+.on-this-device .install-offer.ios p { margin: 0.2rem 0; }
+.device-foot {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+  column-gap: 0.45rem; row-gap: 0.35rem; margin-top: 0.7rem; padding-top: 0.55rem;
+  border-top: 1px solid var(--line); font-size: 11.5px;
+}
+.device-foot > .offline-state, .device-foot > .back-up-all, .device-foot .restore-field { grid-row: 1; }
+.device-foot > .offline-state { grid-column: 1; padding-right: 0.5rem; }
+.device-foot > .back-up-all { grid-column: 2; }
+.device-foot > .restore { display: contents; }
+.device-foot .restore-field { grid-column: 3; }
+.device-foot > .backup-note, .device-foot > .backup-error,
+.device-foot .restore-error, .device-foot .restore-report { grid-column: 1 / -1; margin: 0; }
+.device-foot .backup-note { font-size: 11px; }
+.device-foot .offline-state p { margin: 0; }
+.device-foot .offline-state .ready { color: var(--reachable); }
+.device-foot .offline-state .ready::before { content: "\25CF\00a0"; }
+/* Back up and Restore read as the mock's two quiet links with a dot between.
+   The dot is Restore's own `::before`, outside the underlined word. */
+.device-foot button.back-up-all, .device-foot .restore-field {
+  background: none; border: 0; padding: 0; font: inherit; color: var(--fg-dim); cursor: pointer;
+}
+.device-foot button.back-up-all, .device-foot .restore-word {
+  text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.device-foot button.back-up-all:hover, .device-foot .restore-field:hover { color: var(--fg); }
+.device-foot .restore-field { position: relative; }
+.device-foot .restore-field::before { content: "\00b7"; color: var(--fg-faint); margin-right: 0.45rem; }
+/* The picker is out of sight (`.sr-only`), so its keyboard focus is drawn on
+   the word that opens it — and only for keyboard focus, as `:focus-visible`
+   draws it everywhere else on this screen. */
+.device-foot .restore-field:has(:focus-visible) .restore-word { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* "How to play": a quiet link under the cards, and the help in place below. */
+.door-foot { display: flex; justify-content: flex-end; padding: 1.1rem 0 0.6rem; }
+.door-foot .linkish {
+  color: var(--fg-faint); font-size: 11.5px; text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.door-help .help-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.door-help h3 { font-size: 1rem; margin: 1.3rem 0 0.4rem; }
+.door-help p { color: var(--fg-dim); max-width: 72ch; }
+
+@media (max-width: 900px) {
+  .door-cards, .door-cards.two-up { grid-template-columns: minmax(0, 1fr); max-width: 36rem; margin: 0 auto; }
+}
+/* The hero stacks, the board above the title, before the two can meet
+   (Task 3 fix round 1). In a row the title is one 348px word and the board met
+   it at 820px (measured, the review's I-1); the cards go to one column at 900
+   and the hero at 860, where the board still has 335px of its 360. The 1rem
+   gap keeps the title's text box (Fraunces rises ~9px above its line box)
+   clear of the board's by ~7px; the phone's own gap is below. */
+@media (max-width: 860px) {
+  .door-hero-in {
+    flex-direction: column-reverse; align-items: center; text-align: center;
+    min-height: 0; gap: 1rem;
+  }
+  .door-hero .board-mark { flex: none; margin-right: 0; }
+}
+/* The phone (mock 11): the board above the title (the stack above, which this
+   inherits), the cards stacked in the desktop's order, each primary control
+   full width and thumb-sized. */
+@media (max-width: 600px) {
+  .door-hero-in { padding: 0.75rem 1rem 4rem; gap: 0.6rem; }
+  .door-hero .board-mark { width: 236px; }
+  .door-title h1 { font-size: 54px; }
+  .door-main { padding: 0 1rem 1.5rem; }
+  .door-card button.primary, .door-card a.primary-link {
+    display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
+  }
+  .door-foot { justify-content: center; }
+}
+
+/* ---- M6.5c2: the lobby's frame and the door's states (R-6.5c2.4; spec §2.1;
+   mocks 03, 05) ------------------------------------------------------------- */
+/* The lobby: the band full width, the body a 72rem column under it (the
+   band's padding lines its content up with this one's). */
+.lobby { min-height: 100vh; }
+.lobby-body { max-width: 72rem; margin: 0 auto; padding: 1.1rem 2rem 2.5rem; }
+.lobby-body > .error { margin: 0 0 0.9rem; }
+.lobby-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; margin: 0.4rem 0 1.1rem; }
+.lobby-actions .to-door, .band-corner .to-door {
+  font-size: 12px; color: var(--fg-dim); text-decoration: underline;
+  text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.lobby-actions .link-word {
+  margin-left: auto; font-size: 11px; letter-spacing: 0.04em; white-space: nowrap; color: var(--warn);
+}
+/* A state is a card, centred where the lists would be. Its title is an `h3`
+   (the band's last crumb is the page's `h2`), so it carries the card title's
+   look here: the shared block styles `.raised-card h2` only. */
+.lobby-door { display: flex; justify-content: center; padding: 1.6rem 0 1rem; }
+.state-card { width: 100%; max-width: 27.5rem; }
+.state-card > .card-band { height: 5px; }
+.state-card h3 { font-size: 21px; font-weight: 600; margin: 0.25rem 0 0.4rem; }
+.state-card .lede { font-size: 12.5px; }
+.state-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 1rem; }
+.state-actions a {
+  color: var(--fg-dim); text-decoration: underline; text-decoration-color: var(--line-bright);
+  text-underline-offset: 3px;
+}
+.operator-note {
+  margin-top: 0.9rem; padding-top: 0.6rem; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--fg-faint);
+}
+.operator-note summary { cursor: pointer; color: var(--fg-dim); font-weight: 600; }
+.operator-note p { margin: 0.4rem 0 0; overflow-wrap: anywhere; }
+/* The name step (mock 03). */
+.name-step > .card-band { height: 6px; }
+.name-step h3 { font-size: 26px; }
+.name-step input {
+  display: block; width: 100%; font: inherit; font-size: 15px; color: var(--fg);
+  background: var(--bg-sunken); border: 1px solid var(--line-bright); border-radius: var(--radius);
+  padding: 0.6rem 0.7rem;
+}
+.name-step .hint { margin: 0.4rem 0 1rem; font-size: 11.5px; color: var(--fg-faint); }
+.name-step .door-notice { margin: 0 0 0.8rem; }
+.name-step .fine {
+  margin: 1.1rem 0 0; padding-top: 0.75rem; border-top: 1px solid var(--line);
+  font-size: 11.5px; color: var(--fg-faint);
+}
+/* State D: three dots and the skeleton of the lists to come. */
+.connecting-state { width: 100%; max-width: 35rem; margin: 0 auto; padding-top: 0.6rem; }
+.connecting-line { color: var(--fg-dim); margin: 0 0 0.9rem; }
+.connecting-dots { display: inline-flex; gap: 4px; margin-right: 8px; vertical-align: middle; }
+.connecting-dots i {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--vp); opacity: 0.5;
+  animation: connecting-pulse 1.2s ease-in-out infinite;
+}
+.connecting-dots i:nth-child(2) { animation-delay: 0.2s; }
+.connecting-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes connecting-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
+.skeleton-rows > div {
+  height: 46px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg-raised);
+}
+.skeleton-rows > div:nth-child(1) { opacity: 0.7; }
+.skeleton-rows > div:nth-child(2) { opacity: 0.5; }
+.skeleton-rows > div:nth-child(3) { opacity: 0.3; }
+@media (prefers-reduced-motion: reduce) { .connecting-dots i { animation: none; } }
+@media (max-width: 600px) {
+  .lobby-body { padding: 0.9rem 1rem 2rem; }
+  .lobby-door { padding-top: 0.8rem; }
+  .name-step button.primary, .state-card a.primary-link {
+    display: flex; align-items: center; justify-content: center; width: 100%; min-height: 44px;
+  }
+  /* Thumb-sized on a phone: New table takes the row beside the way back (mock
+     11), and state C's Try again is as tall as every other card's control. */
+  .lobby-actions button.primary { flex: 1 1 auto; min-height: 44px; }
+  .state-actions button.ghost { min-height: 44px; }
+}
+
+/* ---- M6.5c2: the lobby's lists (R-6.5c2.7; spec section 2.2; mocks 02, 11) */
+/* The lists and the chat's rail side by side; one column below 860px, where
+   the rail follows the lists. */
+.lobby-cols { display: grid; grid-template-columns: minmax(0, 1fr) 18.75rem; gap: 1.4rem; align-items: start; }
+.lobby-cols.no-rail { grid-template-columns: minmax(0, 1fr); }
+.lobby-lists, .lobby-rail { min-width: 0; }
+.lobby-section { margin-bottom: 1.2rem; }
+.lobby-section .section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.2rem 0.6rem; margin: 0 0 0.5rem; }
+.lobby-section h3 { font-size: 16px; font-weight: 600; margin: 0; }
+.section-hint { font-size: 11.5px; color: var(--fg-faint); }
+.lobby-section > .muted { margin: 0.2rem 0 0; }
+.lobby-section > button.more { margin-top: 0.5rem; }
+/* A row: name and age, the seats, one action (mock 02). Yours carry the gold
+   edge; the name is the row's one link. */
+.lobby-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.lobby-row {
+  display: grid; grid-template-columns: minmax(0, 15.5rem) minmax(0, 1fr) auto; align-items: center; gap: 0.3rem 0.9rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.9rem;
+}
+.lobby-row.mine { border-left: 3px solid var(--yen); }
+/* The row's line is grid row 1: the title, the seats and the action, centred
+   on one another. The creator's Abandon is a cell of its own in row 2, under
+   the action, so it never moves the action off that line. */
+.row-title { grid-column: 1; grid-row: 1; min-width: 0; }
+.row-seats { grid-column: 2; grid-row: 1; }
+.row-action { grid-column: 3; grid-row: 1; }
+.row-abandon { grid-column: 3; grid-row: 2; }
+.row-name { display: flex; align-items: center; flex-wrap: wrap; gap: 0.2rem 0.5rem; }
+.lobby-row a.row-link {
+  font-family: var(--display); font-size: 16px; font-weight: 600; color: var(--fg);
+  text-decoration: none; overflow-wrap: anywhere;
+}
+.lobby-row a.row-link:hover { text-decoration: underline; text-decoration-color: var(--line-bright); text-underline-offset: 3px; }
+.row-meta { font-size: 11.5px; color: var(--fg-faint); }
+.row-seats { display: flex; flex-wrap: wrap; gap: 0.3rem; min-width: 0; }
+.row-action { display: flex; align-items: center; justify-content: flex-end; }
+.row-action .row-go { display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; white-space: nowrap; }
+.row-action button.ghost.row-go { color: var(--fg); border-color: var(--line-bright); padding: 0.34rem 0.8rem; }
+.row-action button.ghost.row-go:hover { border-color: var(--fg-dim); }
+/* The creator's Abandon (R-13) in every one of its states, under the action:
+   smaller and quieter than it, and in the action's column rather than beside
+   it, so it takes no width from the seats (mock 02 keeps a row's chips on one
+   line). */
+.row-abandon { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; }
+.row-abandon button.ghost {
+  font-size: 11px; line-height: 1.4; min-height: 24px; padding: 0.1rem 0.5rem; color: var(--fg-faint); white-space: nowrap;
+}
+.row-abandon button.ghost:hover { color: var(--fg); border-color: var(--line-bright); }
+.row-abandon button.ghost.danger:hover { color: var(--warn); border-color: var(--warn); }
+.row-abandon .abandon-ask { max-width: 16rem; text-align: right; }
+.row-action .row-go .padlock { color: var(--warn); }
+.row-action .stranded { font-size: 11.5px; color: var(--warn); }
+@media (max-width: 860px) {
+  .lobby-cols { grid-template-columns: minmax(0, 1fr); }
+}
+/* The phone (mock 11): the title beside the action, the creator's Abandon
+   under the action, the seats wrapping under all of them; the row's action
+   thumb-sized. The rows are spaced by margins, not a row gap, so a row with no
+   Abandon carries no empty track's gap. */
+@media (max-width: 600px) {
+  .lobby-row { grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 0 0.75rem; padding: 0.7rem 0.75rem; }
+  .row-title { grid-column: 1; grid-row: 1 / span 2; }
+  .row-action { grid-column: 2; grid-row: 1; }
+  .row-abandon { grid-column: 2; grid-row: 2; margin-top: 0.3rem; }
+  .row-seats { grid-column: 1 / -1; grid-row: 3; margin-top: 0.5rem; }
+  .row-action .row-go { min-height: 44px; }
+}
+
+/* ---- M6.5c2: the setup screens' shared frame (spec section 2.2) -------------
+ *
+ * A screen with the lobby band across its top and its `.setup` column under it;
+ * the column's own 3rem top margin was for a page with no header. Focus is
+ * drawn on every control under the band, in the lobby's own idiom. */
+.band-screen > .setup { margin-top: 1.5rem; }
+.band-screen :focus-visible { outline: 2px solid var(--vp); outline-offset: 2px; }
+
+/* ---- M6.5c2: the two forms (R-6.5c2.8; mock 07, mock 11) --------------------
+ *
+ * Task 2's raised card (`.raised-card`, `.card-band.vp` / `.yen`, `.card-in`):
+ * the table form's band is the VP blue its submit is, the local form's the yen
+ * its Deal is (`button.primary.yen`). The form's own: its width, a roomier
+ * inside, and its title — an `h3` under the band's `h2` crumb, drawn at a
+ * title's size rather than `.setup h3`'s, which it follows in the file at the
+ * same specificity (the shared block styles `.raised-card h2` only). */
+.form-card { max-width: 35rem; margin: 0 auto; }
+.form-card > .card-in { padding: 1.1rem 1.4rem 1.25rem; }
+.form-card h3 { font-size: 1.5rem; font-weight: 600; margin: 0.1rem 0 0; }
+.form-card .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.25rem; }
+.form-card .lede { color: var(--fg-dim); font-size: 12.5px; margin: 0.25rem 0 0; }
+.form-field { margin: 0.9rem 0 0; padding: 0; border: 0; min-width: 0; }
+.form-field > label:not(.toggle), .form-field > legend, .form-field > .field-label {
+  display: block; padding: 0; margin: 0 0 0.4rem;
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-faint);
+}
+.form-card input:not([type="radio"]):not([type="checkbox"]), .form-card select {
+  width: 100%; min-height: 2.15rem;
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line-bright);
+  border-radius: var(--radius); padding: 0.45rem 0.65rem; font: inherit;
+}
+/* A select draws the mock's small caret rather than the platform's own arrow,
+ * from two gradients in `--fg-faint` (no image, no new colour). */
+.form-card select {
+  appearance: none; padding-right: 2rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--fg-faint) 50%),
+    linear-gradient(135deg, var(--fg-faint) 50%, transparent 50%);
+  background-position: calc(100% - 1.05rem) 50%, calc(100% - 0.75rem) 50%;
+  background-size: 5px 5px; background-repeat: no-repeat;
+}
+.form-card input::placeholder { color: var(--fg-faint); }
+/* A refused field is orange, focused or not. The selector repeats the base
+ * rule's two `:not()`s, which count toward its specificity: without them the
+ * base rule's border wins and only the glow shows (measured in the headed look). */
+.form-card input:not([type="radio"]):not([type="checkbox"])[aria-invalid="true"] {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--warn) 18%, transparent);
+}
+.form-card input[aria-invalid="true"]:focus-visible { outline-color: var(--warn); }
+.field-error { color: var(--warn); font-size: 11.5px; margin: 0.4rem 0 0; }
+
+/* Segments: the radio IS the segment, transparent over its label, so a click
+ * anywhere on the label lands on it and the arrow keys walk the group. */
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--line-bright); border-radius: 5px; overflow: hidden; }
+.seg label {
+  position: relative; display: inline-flex; align-items: center;
+  padding: 0.38rem 0.95rem; color: var(--fg-dim); cursor: pointer;
+  border-right: 1px solid var(--line-bright);
+}
+.seg label:last-child { border-right: 0; }
+.seg label.on {
+  color: var(--fg); font-weight: 700;
+  background: color-mix(in oklab, var(--vp) 14%, var(--bg-raised));
+  box-shadow: inset 0 -2px 0 var(--vp);
+}
+.seg input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--vp); outline-offset: -2px; }
+
+/* One seat: its colour, then who holds it. A person's field drops UNDER the
+ * choice, so a phone never fits three controls on one line. */
+.form-seat {
+  display: grid; grid-template-columns: 6rem minmax(0, 1fr); align-items: center;
+  gap: 0.35rem 0.7rem; padding: 0.4rem 0; border-bottom: 1px solid var(--line);
+}
+.form-seat:last-of-type { border-bottom: 0; }
+.form-seats { list-style: none; margin: 0; padding: 0; }
+.form-seat .color { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 12px; }
+.form-seat .pick { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.form-seat .person, .form-seat .field-error { grid-column: 2; }
+.seat-note { color: var(--fg-faint); font-size: 11.5px; margin: 0.45rem 0 0; }
+
+/* The password switch: a real checkbox, transparent over its whole label as a
+ * segment's radio is, above a drawn track and knob — so a click anywhere on the
+ * switch or its words lands on the checkbox itself (a 1px box under the track
+ * was a box the track covered). `switch-track`, never `track`, which is the
+ * dashboard's own unscoped flex row. */
+.toggle { position: relative; display: inline-flex; align-items: center; gap: 0.6rem; cursor: pointer; }
+.toggle input {
+  position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%;
+  margin: 0; opacity: 0; cursor: pointer;
+}
+.toggle .switch-track {
+  flex: none; position: relative; width: 30px; height: 17px; border-radius: 99px;
+  background: var(--line-bright); transition: background 0.15s;
+}
+.toggle .switch-track::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 50%; background: var(--bg); transition: transform 0.15s;
+}
+.toggle input:checked + .switch-track { background: var(--vp); }
+.toggle input:checked + .switch-track::after { transform: translateX(13px); }
+.toggle input:focus-visible + .switch-track { outline: 2px solid var(--vp); outline-offset: 2px; }
+.form-field .password { margin-top: 0.5rem; max-width: 19rem; }
+
+/* The fold the seed lives in; its marker is drawn, so every engine draws one.
+ * **`details.fold`, never a bare `.fold`**: the class is also on the turn
+ * account's and every chat header's fold BUTTON (`TurnAccount.tsx`,
+ * `Chat.tsx`), which a bare rule gave a 16px top margin (review I-1). */
+details.fold { margin-top: 1rem; padding-top: 0.7rem; border-top: 1px solid var(--line); }
+details.fold > summary { cursor: pointer; font-size: 12px; list-style: none; }
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: "\25B8\00a0"; color: var(--fg-faint); }
+details.fold[open] > summary::before { content: "\25BE\00a0"; }
+details.fold .form-field { margin-top: 0.6rem; }
+details.fold #seed { max-width: 23rem; }
+
+/* The way out and the way on, on one line. */
+.form-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.1rem; }
+.quiet-link {
+  background: none; border: 0; padding: 0; font: inherit; cursor: pointer;
+  color: var(--fg-dim); text-decoration: underline;
+  text-decoration-color: var(--line-bright); text-underline-offset: 3px;
+}
+.quiet-link:hover { color: var(--fg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle .switch-track, .toggle .switch-track::after { transition: none; }
+}
+/* A phone (mock 11): one column, and every control a thumb's size — 44 px, which
+ * the browser suite's width cells read back. */
+@media (max-width: 480px) {
+  .band-screen > .setup { margin-top: 1rem; }
+  .form-card > .card-in { padding: 1rem; }
+  /* The local card's title and its tag stay on one line. */
+  .form-card h3 { font-size: 1.3rem; }
+  .form-card input:not([type="radio"]):not([type="checkbox"]), .form-card select,
+  .form-foot button.primary, .seg label { min-height: 2.75rem; }
+  .form-foot button.primary { flex: 1 1 auto; }
+  /* Segments take the card's width, so four colours and Random share one row
+   * rather than wrap Random under them. */
+  .seg { display: flex; }
+  .seg label { flex: 1 1 auto; justify-content: center; padding: 0 0.5rem; }
+}
+
+/* ---- M6.5c2: waiting and joining (R-6.5c2.9; spec §2.2; mocks 08, 09, 11) ----
+ *
+ * The open table's two faces, the unlock face and the lock screen, under the
+ * band. Every rule is scoped to a class these screens introduce: the chat panel
+ * the open table also draws keeps its own look. */
+/* The table pages hang under the band's brand, as mocks 08 and 09 draw them
+ * and as the lobby's body does, rather than centred: the column starts where
+ * the band's content does. The band's side padding is `max(2rem, 50% - 34rem)`
+ * and this column's own is `.setup`'s 1.25rem, so its margin is the one less
+ * the other. Below 600px the band's padding is 1rem and the column is the
+ * window's width, so the margin goes back to `.setup`'s. */
+.band-screen > .setup.open-table, .band-screen > .setup.unlock {
+  margin-left: max(0.75rem, calc(50% - 35.25rem));
+}
+@media (max-width: 600px) {
+  .band-screen > .setup.open-table, .band-screen > .setup.unlock { margin-left: auto; }
+}
+/* A table's name is the band's last crumb, and it may be an id with nowhere to
+ * break (an id is a table's name when it has no other): measured, a 22-letter
+ * id ran 36px into the identity pill at 360px and 6px at 390px. It wraps
+ * anywhere rather than run under the corner. */
+.band-screen .band-brand h2.crumb { overflow-wrap: anywhere; }
+/* The page's own title under the band: an `h3`, a level under the band's `h2`
+ * crumb, drawn at a title's size rather than `.setup h3`'s. A table named by a
+ * long id breaks anywhere rather than widen the page. */
+.setup h3.page-title { font-size: 1.9rem; font-weight: 600; margin: 0.2rem 0 0.3rem; overflow-wrap: anywhere; }
+/* A notice's title is a sentence, not a name: smaller, at every width (the
+ * phone rule below is outranked). */
+.setup .notice-card h3.page-title { font-size: 1.35rem; margin-top: 0; }
+.open-table .table-status {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem 0.6rem;
+  color: var(--fg-dim); margin: 0.3rem 0 1rem;
+}
+/* The three inputs these screens own, by name — never `.open-table input`,
+ * which would also restyle the chat panel's own box on the same screen. */
+.join-password input, .invite .row input, .spectate-box input {
+  width: 100%; min-height: 2.15rem;
+  background: var(--bg-sunken); color: var(--fg); border: 1px solid var(--line-bright);
+  border-radius: var(--radius); padding: 0.45rem 0.65rem; font: inherit;
+}
+.join-password { max-width: 22rem; margin: 0 0 1rem; }
+/* The seats: as many across as fit, one column on a phone. Each card fills its
+ * cell, so the cards of one row are one height whatever each one says. */
+.seat-cards {
+  list-style: none; margin: 0 0 1rem; padding: 0;
+  display: grid; gap: 0.65rem; grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+}
+.seat-cards > li { display: flex; min-width: 0; }
+.seat-cards > li > .seat-card { flex: 1 1 auto; }
+.seat-cards button.sit { margin-top: 0.5rem; padding: 0.3rem 0.8rem; }
+.open-table button.primary.join { display: block; margin: 0 0 1rem; }
+/* "Invite people" (mock 08): a raised panel with its caption, the link and
+ * Copy link on one row, and the password line under them. */
+.invite {
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.85rem 1rem; margin: 0 0 1rem;
+}
+/* The panel's caption, which `.setup h3` would otherwise draw as a heading. */
+.invite h3.caption {
+  font-family: var(--mono); font-weight: 400; font-size: 10.5px;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-faint); margin: 0;
+}
+/* A whole URL in a row: the input may shrink below its content (`min-width: 0`)
+ * and the button drops under it rather than off the edge (live review I-1). */
+.invite .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.invite .row input { flex: 1 1 14rem; min-width: 0; }
+.invite .row button.ghost { color: var(--fg); border-color: var(--line-bright); }
+.invite .note { color: var(--fg-faint); font-size: 11.5px; margin: 0.55rem 0 0; }
+.open-table .open-table-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.4rem;
+}
+/* Abandon, the quieter danger (mock 08): outlined in the warning colour. */
+.open-table .open-table-controls button.ghost.danger {
+  color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent);
+}
+/* The unlock face: the title with its tag, and one box with one action. */
+.unlock .title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; }
+.spectate-box {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: 8px;
+  padding: 0.85rem 1rem; margin: 0 0 1rem;
+}
+.spectate-box .form-field { flex: 1 1 14rem; margin: 0; }
+.spectate-box button.primary { min-height: 2.15rem; }
+/* The lock screen: one card, its sentence, its action and the way out. */
+.notice-card {
+  max-width: 35rem; margin: 0 auto;
+  background: var(--bg-raised); border: 1px solid var(--line-bright); border-radius: 8px;
+  padding: 1.1rem 1.4rem;
+}
+.notice-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 0.9rem; }
+@media (max-width: 480px) {
+  .setup h3.page-title { font-size: 1.5rem; }
+  .seat-cards { grid-template-columns: 1fr; }
+  .join-password { max-width: none; }
+  .open-table button.primary.join, .spectate-box button.primary { width: 100%; }
+  .open-table button.primary.join, .seat-cards button.sit, .spectate-box button.primary,
+  .join-password input, .invite .row input, .spectate-box input { min-height: 2.75rem; }
 }

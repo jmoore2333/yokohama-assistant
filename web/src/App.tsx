@@ -14,9 +14,12 @@ import {
   RUN_CAP,
   useArchiveFact,
 } from "./api";
+import { rememberArchiveOff } from "./local/facts";
 import { noteGameOver, onArchived, recordLanded, startOutbox } from "./outbox";
+import { IdentityCorner } from "./Band";
 import { Door } from "./Door";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
+import { projectLink } from "./projectLink";
 import { useReadiness } from "./swRegister";
 import { useMe } from "./whoami";
 import { Board } from "./Board";
@@ -122,6 +125,11 @@ async function saveGameFile(game: string): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** Does this refusal carry the foreign-bot fact (M6.5c2, spec §2.4)? By the
+ *  FIELD, never the sentence — `OpenTable`'s `hasStatus` rule. */
+const isForeignBot = (body: unknown): boolean =>
+  typeof body === "object" && body !== null && "foreign_bot" in body;
+
 export function App() {
   // **Which screen this is, as the URL** (spec §5.1). Read here and acted on in
   // one effect below `open`, so there is ONE place that turns a route into a
@@ -180,10 +188,23 @@ export function App() {
    *  R-6.5b.2).
    *
    *  `null` until it answers, which is a real third state: nothing has come
-   *  back yet, and "not connected" would be a claim this browser cannot make.
-   *  It is the health read and not the door's because the door has four
-   *  answers of its own and only one of them is about reachability. */
+   *  back yet, and "can't reach the server" would be a claim this browser
+   *  cannot make. It is the health read and not the door's because the door
+   *  has answers of its own and only one of them is about reachability. */
   const [serverUp, setServerUp] = useState<boolean | null>(null);
+  /** Bumped by "Try again" (state C), which re-runs the health read below —
+   *  its latch is already released by the failure or the bound that drew the
+   *  card. */
+  const [healthTick, setHealthTick] = useState(0);
+  /** "Try again" on a server that could not be reached (M6.5c2, state C): both
+   *  reads again — the door's and the health — and the screen back to
+   *  "connecting" until one answers. A health read that LANDED keeps its answer:
+   *  only a failed one is forgotten. */
+  const retry = useCallback(() => {
+    setServerUp((up) => (up === false ? null : up));
+    setHealthTick((n) => n + 1);
+    refresh();
+  }, [refresh]);
   const [state, setState] = useState<ClientState | null>(null);
   /** The table being DEALT, when there is one (M6.1 §7.4).
    *
@@ -222,12 +243,23 @@ export function App() {
    *  `unlock` holds one: the abandon control states what it is about, and this
    *  screen cannot re-read a game that will not open.
    *
-   *  A SERVER game that refuses this way is a different matter — it is the
-   *  server's record, on a server whose other games are fine — and keeps the
-   *  bounce it has always had. */
-  const [broken, setBroken] = useState<{ id: string; table: TableView; sentence: string } | null>(
-    null,
-  );
+   *  **And a game of EITHER host that this build's bot cannot continue**
+   *  (M6.5c2, spec §2.4): the same screen, because the same things are left —
+   *  the sentence, and the Abandon that archives it: the server's own delete
+   *  archives a server game, and a local one is SENT to the archive first, as
+   *  every other local Abandon is (R-6.5b.6) — the archive takes its record,
+   *  because its check is a strict replay and asks nothing of the bot. That is
+   *  what `foreign` is for: a save that no longer rebuilds is the one game the
+   *  archive would refuse, so its Abandon deletes without sending. A server
+   *  game that refuses for any OTHER reason is the server's record on a server
+   *  whose other games are fine, and keeps the bounce it has always had. */
+  const [broken, setBroken] = useState<{
+    id: string;
+    table: TableView;
+    sentence: string;
+    /** The refusal was the FOREIGN-BOT one, not a rebuild that failed. */
+    foreign: boolean;
+  } | null>(null);
   /** Where the archive put a local game this session, keyed by id (spec §2.5).
    *
    *  **Why it is remembered at all**: the local table document carries no
@@ -517,6 +549,17 @@ export function App() {
    *  for a local game that ends, is abandoned, or is asked for and no longer
    *  there. */
   const toDoor = useCallback((sentence?: string | null) => leave("door", sentence), [leave]);
+  /** Where a LOCAL screen's way out goes, and what it says (M6.5c2, spec §2.2;
+   *  M6.5b2 close §6.3 item 5).
+   *
+   *  A build that serves a lobby keeps the four controls as they were. Under
+   *  `VITE_MULTIPLAYER=false` there is no lobby to go to — its game routes do
+   *  not exist — so each leads to the door, where this browser's games are
+   *  listed, and says so in the local screens' own crumb. Read on every render,
+   *  for `multiplayerOffered`'s reason: a cell stubs the build value. */
+  const localExit: { to: "lobby" | "door"; label: string } = multiplayerOffered()
+    ? { to: "lobby", label: "Lobby" }
+    : { to: "door", label: "On this device" };
 
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
@@ -603,7 +646,17 @@ export function App() {
         } catch (e) {
           if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
             show(null);
-            setBroken({ id, table: doc, sentence: e.message });
+            setBroken({ id, table: doc, sentence: e.message, foreign: false });
+            tableOnScreen.current = id;
+            return;
+          }
+          // **A game this build's bot cannot continue** (M6.5c2, spec §2.4;
+          // R-6.5c2.10): not over, dealt a bot this build does not run. Every
+          // game route answers it with a 409 carrying `foreign_bot`, on both
+          // hosts. A SCREEN and not a bounce, for the broken save's reason.
+          if (e instanceof ApiError && e.status === 409 && isForeignBot(e.body)) {
+            show(null);
+            setBroken({ id, table: doc, sentence: e.message, foreign: true });
             tableOnScreen.current = id;
             return;
           }
@@ -881,8 +934,17 @@ export function App() {
     // whatever the health read is doing. An unconditional `false` here took a
     // working lobby off the screen and replaced it with "not connected"
     // whenever the health read alone was the slow one.
-    bounded(health, BOUND_MS).catch(() => setServerUp((v) => v ?? false));
-  }, [channel]);
+    //
+    // **And the latch goes at the bound too** (M6.5c2, state C): a read that
+    // has not landed by now has recorded nothing, exactly as a rejected one
+    // has, and holding the latch for it left "Try again" re-running this
+    // effect onto the early return above — "Connecting to the server…" over no
+    // health read at all. A late answer still lands through the chain above.
+    bounded(health, BOUND_MS).catch(() => {
+      askedFacts.current = false;
+      setServerUp((v) => v ?? false);
+    });
+  }, [channel, healthTick]);
 
   useEffect(() => {
     // **A local game reaching game over is the second read point** (spec §2.2).
@@ -1265,23 +1327,18 @@ export function App() {
   // R-6.5b.8). They were four `return`s here — a refusal, a silence, the
   // sign-in form and the sentence naming the expected header — and each of
   // them drew nothing else at all, including the games in this browser's own
-  // IndexedDB, which need no door to play. `Door` renders the same four
-  // bodies, in the same order and for the same reasons, as the CONTENT of the
-  // part of the first screen the server owns; `lobbyScreen` below is what puts
-  // them there.
+  // IndexedDB, which need no door to play. `Door` renders them as the CONTENT
+  // of the part of the first screen the server owns — since M6.5c2 as states,
+  // each a card (`Door.tsx` holds their order, which is the rule);
+  // `lobbyScreen` below is what puts them there.
   const signedIn = door.me?.user ?? null;
-  /** The API could not be reached AT ALL: the health read failed and the door
-   *  has never answered either.
-   *
-   *  **One sentence beats two complaints.** Both reads failed for the same
-   *  reason, and the door's own words for it — "TypeError: Failed to fetch",
-   *  or a sign-in form over a server that would take a name and lose it — say
-   *  less than "not connected" and offer more. Where the door DID answer, its
-   *  four answers stand: the server is demonstrably reachable, whatever the
-   *  health read made of it. */
-  const unreachable = serverUp === false && door.me === null;
-  const doorContent =
-    signedIn || unreachable ? null : <Door door={door} onSignedIn={() => refresh()} />;
+  // **The server's part of the lobby while nobody is signed in** (M6.5c2, spec
+  // §2.1): the door's states A–D, the name step and state B are all `Door`'s —
+  // including the one decided here until this cycle, a server nothing answered,
+  // which is state C and reads `serverUp` itself.
+  const doorContent = signedIn ? null : (
+    <Door door={door} serverUp={serverUp} onSignedIn={() => refresh()} onRetry={retry} />
+  );
 
   // **Who you are, and how to stop being them.**
   //
@@ -1305,7 +1362,7 @@ export function App() {
    *  the prompt — a player waiting on somebody else reads `watching` too, and
    *  gets a turn back. */
   const spectating = !!state && state.seat === null;
-  // **"You are watching", and the address goes with it (spec §5.2).** A watcher
+  // **"You are spectating" (spec §5.2; M6.5c2 R-6.5c2.7).** A spectator
   // is not a seat at this table, and the strip is the one line on the banner
   // that says which of the two you are here — sign-out still lives in the Game
   // menu, where every screen with a menu keeps it.
@@ -1320,12 +1377,12 @@ export function App() {
     (state !== null && isLocal(state.id)) ||
     (dealing !== null && isLocal(dealing)) ||
     (route.kind === "new" && route.local) ||
-    broken !== null ||
+    (broken !== null && isLocal(broken.id)) ||
     lockId !== null;
   const whoStrip = (
     <span className="meta who">
       {spectating
-        ? "You are watching"
+        ? "You are spectating"
         : onThisDevice || !signedIn
           ? "On this device"
           : `You are ${signedIn}`}
@@ -1347,11 +1404,23 @@ export function App() {
    *  behind the sign-in gate below, and that is the whole product change: until
    *  this cycle the first screen belonged to the server. */
   const doorScreen = (notice?: string | null) => (
-    <FrontDoor multiplayer={multiplayerOffered()} notice={notice ?? null} readiness={readiness} />
+    <FrontDoor
+      multiplayer={multiplayerOffered()}
+      notice={notice ?? null}
+      readiness={readiness}
+      link={projectLink()}
+    />
   );
 
+  /** The band's corner on a SERVER setup screen (M6.5c2, spec §2.1–§2.2;
+   *  mocks 02, 07, 08, 09): who is playing, and the one change the door allows
+   *  — the identity corner the lobby draws, so the new-table form, the open
+   *  table and the unlock face say it in the lobby's own words. The "You are …"
+   *  strip (`who`) stays the game banner's, the deal's and the broken save's. */
+  const serverCorner = signedIn && door.me ? <IdentityCorner me={door.me} onChange={signOut} /> : undefined;
+
   /** The SERVER's first screen at `#/lobby`: its three listings, the door's own
-   *  answer, or the one line that says the API cannot be reached.
+   *  answer, or the card that says the server cannot be reached.
    *
    *  **Every screen behind a door lands here when there is no user** (spec
    *  §2.5). The four `return`s that used to do that job drew nothing else;
@@ -1361,11 +1430,12 @@ export function App() {
   const lobbyScreen = (notice?: string | null) => (
     <Lobby
       me={signedIn}
-      who={signedIn ? who : undefined}
+      corner={serverCorner}
       notice={notice ?? null}
       door={doorContent}
       serverUp={serverUp}
       onReached={() => setServerUp(true)}
+      onRetry={retry}
     />
   );
 
@@ -1387,50 +1457,78 @@ export function App() {
         <LockScreen
           state={lockState}
           onTakeover={retake}
-          onLeave={() => toLobby()}
-          who={who}
+          onLeave={() => leave(localExit.to)}
+          leaveLabel={localExit.label}
         />
       );
     // **A save in this browser that no longer rebuilds** (spec §4): the
     // engine's own sentence, the bytes still saveable and the game still
     // abandonable — neither of which asks the module to replay anything.
-    if (broken)
+    // **And a game of either host this build's bot cannot continue** (M6.5c2,
+    // spec §2.4): the same screen, host-aware — see `broken`'s own doc.
+    if (broken) {
+      const local = isLocal(broken.id);
+      /** The layer's delete is the CREATOR's, seated (`tables.rs:1670-1677`); a
+       *  local game's is always this browser's own. */
+      const mayAbandon =
+        local || (broken.table.created_by === signedIn && broken.table.my_seats.length > 0);
       return (
         <div className="setup broken-save">
           <div className="who-strip">{who}</div>
           <h2>{broken.table.name ?? broken.id}</h2>
           <Refusal sentence={broken.sentence} />
           <div className="field unlock-controls">
+            {/* The bytes are the player's own on a LOCAL game at any point; a
+                server game's record is served only once the game is over. */}
+            {local && (
+              <button
+                type="button"
+                className="ghost"
+                onClick={() =>
+                  void saveGameFile(broken.id).catch((e) =>
+                    setError(e instanceof Error ? e.message : String(e)),
+                  )
+                }
+              >
+                Save game file
+              </button>
+            )}
+            {/* **`local` for a FOREIGN local game only** (M6.5c2 R-B19).
+                `local` means "send this game to the archive first" (R-6.5b.6),
+                and the archive takes a foreign game's record — its check is a
+                strict replay and asks nothing of the bot — so that game is sent
+                before it is deleted, like every other local Abandon. **NOT for
+                a save that no longer rebuilds** (spec §4: "Abandon still
+                works"): the archive would refuse exactly that record — it is the
+                rebuild that has stopped working — so sending first would leave
+                a game that can never be abandoned; the bytes beside this button
+                are the copy that still works. A server table's own delete
+                archives it (R-6.5a.11). A local game lands on the door, where
+                the rest of this browser's games are listed; a server game on
+                the lobby. */}
+            {mayAbandon && (
+              <Abandon
+                table={broken.table}
+                local={local && broken.foreign}
+                onDone={() => (local ? toDoor() : toLobby())}
+                onError={setError}
+              />
+            )}
+            {/* The way back: the lobby for a server game, and for a local one
+                the lobby where the build serves one and the door where it does
+                not (`localExit`). */}
             <button
               type="button"
               className="ghost"
-              onClick={() =>
-                void saveGameFile(broken.id).catch((e) =>
-                  setError(e instanceof Error ? e.message : String(e)),
-                )
-              }
+              onClick={() => (local ? leave(localExit.to) : toLobby())}
             >
-              Save game file
-            </button>
-            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
-                `local` means "send this game to the archive first", and the
-                archive would refuse exactly this record — it is the rebuild
-                that has stopped working. Sending first would leave a game that
-                can never be abandoned; the bytes beside this button are the
-                copy that still works. The label follows, and reads "Abandon".
-              */}
-            {/* A broken save is a LOCAL one by construction (see `broken`'s own
-                doc), so abandoning it lands on the door, where the rest of this
-                browser's games are listed. The button beside it says "Lobby"
-                and goes there. */}
-            <Abandon table={broken.table} onDone={() => toDoor()} onError={setError} />
-            <button type="button" className="ghost" onClick={() => toLobby()}>
-              Lobby
+              {local ? localExit.label : "Lobby"}
             </button>
           </div>
           {error && <Refusal sentence={error} />}
         </div>
       );
+    }
     // **The two screens a game in this browser reaches with the door shut**
     // (spec §2.5): the local create, and the deal it opens. Both are seated by
     // `LOCAL_USER`, because the module answers as that one address whatever
@@ -1443,7 +1541,15 @@ export function App() {
       // hand-typed `#/new/local`, kept the 4 beside two seats and the module
       // refused the create in `check_shape`'s words. A key is what makes the
       // switch a remount.
-      return <NewGame key="local" local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
+      return (
+        <NewGame
+          key="local"
+          local
+          me={LOCAL_USER}
+          onCreated={(t) => open(t.id)}
+          onCancel={() => toDoor()}
+        />
+      );
     if (dealing && isLocal(dealing))
       return (
         <Dealing
@@ -1454,7 +1560,8 @@ export function App() {
           sections={enabled}
           onToggleSection={toggleSection}
           onPlaying={() => open(dealing, true)}
-          onLeave={toLobby}
+          onLeave={(sentence) => leave(localExit.to, sentence)}
+          leaveLabel={localExit.label}
           who={who}
         />
       );
@@ -1465,7 +1572,15 @@ export function App() {
     // lobby rather than as a gate.
     if (!signedIn) return lobbyScreen(error);
     if (route.kind === "new")
-      return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
+      return (
+        <NewGame
+          key="server"
+          me={signedIn}
+          onCreated={(t) => open(t.id)}
+          onCancel={() => toLobby()}
+          who={serverCorner}
+        />
+      );
     if (dealing)
       return (
         <Dealing
@@ -1515,7 +1630,7 @@ export function App() {
           // `#/t/<id>` lands there: a bare screen that answers nothing is the
           // one place a player cannot act from.
           onLeave={toLobby}
-          who={who}
+          who={serverCorner}
         />
       );
     if (unlock)
@@ -1537,7 +1652,7 @@ export function App() {
             )
           }
           onLeave={() => toLobby()}
-          who={who}
+          who={serverCorner}
         />
       );
     return lobbyScreen(error);
@@ -1665,6 +1780,9 @@ export function App() {
       // is cleared, and the game-over hook does not offer the same bytes again.
       await recordLanded(state.id, pair.record);
     } catch (e) {
+      // **A 404 is the deployment's answer** (M6.5c2; the outbox's rule): the
+      // archive is OFF, written down, and this control goes with it.
+      if (e instanceof ApiError && e.status === 404) rememberArchiveOff();
       // The server's own sentence where it gave one; spec §4's words where the
       // request never reached it. Nothing was sent, so nothing is claimed.
       setError(e instanceof ApiError ? e.message : "the archive could not be reached");
@@ -1746,8 +1864,16 @@ export function App() {
             setSurface(null);
             setScrubK(null);
             setError(null);
-            navigate({ kind: "lobby" });
+            // **A local game's way out is its own channel's first screen where
+            // this build serves no lobby** (`localExit`); a server game's is the
+            // lobby, always.
+            navigate({ kind: isLocal(state.id) ? localExit.to : "lobby" });
           }}
+          leaveLabel={isLocal(state.id) ? localExit.label : "Lobby"}
+          // **A build that serves no lobby lists this browser's games**: its
+          // server has no game routes to list from (the whole-branch review's
+          // Important 1), and every game this screen can show is a local one.
+          savedFrom={multiplayerOffered() ? undefined : "local"}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**
             The banner is one row at 1440 and 1280 by a gate that measures it
@@ -1762,10 +1888,11 @@ export function App() {
         {/* **What the poll can say for itself, and `live` says nothing.**
             A permanent "connected" mark is a thing people stop seeing, and the
             banner is GATED at one row at 1440 and 1280 with 22px of room
-            measured — so the resting state costs no width at all. The two words
-            that do appear are the two a player would otherwise have to guess
+            measured — so the resting state costs no width at all. The words
+            that do appear are the ones a player would otherwise have to guess
             at: the board is as old as the tab was hidden ("refreshing"), or
-            this browser cannot reach the server ("reconnecting"). */}
+            this browser cannot reach the server ("connecting" before its first
+            connection, "reconnecting" once one is lost). */}
         {link !== "live" && (
           <span className="meta link" role="status">
             {link}&hellip;
@@ -2035,6 +2162,10 @@ export function App() {
           changedSeats={highlights?.seats}
           changedTechs={highlights?.techs}
           changedHand={highlights?.hand}
+          // **`state`, the live game, and never `view`**: the record's bot
+          // seats do not change with the position walked or scrubbed, and a
+          // replayed frame is not where they live (M6.5c2, spec §2.4).
+          bots={state.bots}
         />
         {/* LAST, and folded (R-6.4.10): a bonus under the account and the
             players, not the main attraction. `key` remounts it per game so a

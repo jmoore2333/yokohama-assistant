@@ -77,7 +77,7 @@
 import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, deadEnd, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
+import { act, deadEnd, nameThisBrowser, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
 import {
   EXIT,
   LIVE,
@@ -335,10 +335,10 @@ test("two people and a watcher play a paced game across four hibernations, and i
   // x opens a two-seat table with seat 1 OPEN and a password on it — the
   // `joins_by_link` form, with a name only this run uses.
   await x.getByRole("button", { name: "New table" }).click();
-  await expect(x.getByRole("heading", { name: "New game" })).toBeVisible();
-  await x.getByLabel("Seat 1", { exact: true }).selectOption("open");
+  await expect(x.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  await x.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("open");
   await x.getByLabel("Name", { exact: true }).fill(NAME);
-  await x.getByLabel("Ask for a password to join").check();
+  await x.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await x.getByLabel("Table password", { exact: true }).fill(PASSWORD);
   const created = x.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
@@ -368,11 +368,14 @@ test("two people and a watcher play a paced game across four hibernations, and i
   await expect(joinLink, "the table is under Open tables in y's lobby").toBeVisible({ timeout: 30_000 });
   await expect(listed(y), "one row links to the table: this is what the end reads").toHaveCount(1);
   await joinLink.click();
-  await expect(y.getByRole("heading", { name: NAME, exact: true })).toBeVisible();
-  await expect(y.getByText(/password required/)).toBeVisible();
-  await y.getByLabel("Your name", { exact: true }).fill("y (exit test)");
-  await y.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await y.getByRole("button", { name: "sit here" }).click();
+  // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
+  // table's name too.
+  await expect(y.getByRole("heading", { name: NAME, exact: true, level: 3 })).toBeVisible();
+  await expect(y.getByRole("img", { name: "password required" })).toBeVisible();
+  // The join asks no name (R-6.5c2.8): the seat takes the one this browser keeps.
+  await nameThisBrowser(y, "y (exit test)");
+  await y.getByLabel("Table password", { exact: true }).fill(PASSWORD);
+  await y.getByRole("button", { name: "Join as Blue" }).click();
 
   // Both keep, and the last keep starts the table.
   for (const p of [x, y]) {
@@ -388,15 +391,15 @@ test("two people and a watcher play a paced game across four hibernations, and i
   expect((await ownHand(y)).length, "y's own hand is on y's screen").toBeGreaterThan(0);
 
   // w arrives by the table's address, is stopped by the password, and
-  // watches.
+  // spectates.
   await signIn(w, W);
   await w.goto(`/#/t/${id}`);
   await expect(w.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
-  const watchButton = w.getByRole("button", { name: "Watch" });
-  await expect(watchButton).toBeVisible();
-  await w.getByLabel("Password").fill(PASSWORD);
-  await watchButton.click();
-  await expect(w.getByText("You are watching")).toBeVisible();
+  const spectateButton = w.getByRole("button", { name: "Spectate" });
+  await expect(spectateButton).toBeVisible();
+  await w.getByLabel("Table password", { exact: true }).fill(PASSWORD);
+  await spectateButton.click();
+  await expect(w.getByText("You are spectating")).toBeVisible();
   await expect(w.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
   expect(await ownHand(w), "a watcher is dealt no hand").toEqual([]);
   await unfold(w);

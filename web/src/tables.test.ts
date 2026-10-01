@@ -6,9 +6,10 @@
 // looking at is a lobby nobody can trust.
 
 import { describe, expect, it } from "vitest";
-import { holder, seatName, seatNames, tableWord } from "./tables";
+import { ago, deviceWord, holder, rowAction, rowMeta, seatChips, seatName, seatNames, tableWord } from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
 /** The corpus's playing table, with the seat to move handed to the CALLER.
  *
@@ -113,5 +114,133 @@ describe("seatNames", () => {
     expect(seatName(second)).toBe("red@wire.test");
     expect(seatNames(named)).toBe("Red, open seat");
     expect(seatNames(unnamed)).toBe("red@wire.test, open seat");
+  });
+});
+
+// The door's row (M6.5c2, mock 10): which bot the game is against, then what it
+// is waiting on — in the door's words, which are a player's and not a lobby's.
+describe("deviceWord", () => {
+  /** `wire.table` is read by seat 1's holder, so the bot takes seat 0 — derived
+   *  for `seatNames`' reason (the corpus game is bot-free by construction), with
+   *  the label the build ships. */
+  const vsBot = (over: Partial<TableView> = {}): TableView => {
+    const seats = [...wire.table.seats];
+    seats[0] = { kind: "bot" };
+    return { ...wire.table, seats, bot: { label: productionBot.label, runs_here: true }, ...over };
+  };
+  const v = productionBot.label;
+
+  it("names the bot the game is played against, then what the game is waiting on", () => {
+    expect(wire.table.my_seats).toEqual([1]);
+    expect(deviceWord(vsBot())).toBe(`vs ${v} · waiting on the bot`);
+    expect(deviceWord(vsBot({ to_move: 1 }))).toBe(`vs ${v} · your move`);
+    expect(deviceWord(vsBot({ over: true, winner: 1 }))).toBe(`vs ${v} · you won`);
+    expect(deviceWord(vsBot({ over: true, winner: 0 }))).toBe(`vs ${v} · the bot won`);
+    const dealing = { status: "dealing" as const, to_move: null, over: null };
+    expect(deviceWord(vsBot({ ...dealing, chosen: [true, false] }))).toBe(`vs ${v} · choose a card`);
+    expect(deviceWord(vsBot({ ...dealing, chosen: [true, true] }))).toBe(`vs ${v} · dealing`);
+    // The three branches a local game rarely shows, each ONE field moved (the
+    // review's M-7). Over with no winner: `vsBot()` with `over` alone moved
+    // (its `winner` is the corpus's null).
+    expect(deviceWord(vsBot({ over: true }))).toBe(`vs ${v} · over`);
+    // Playing with no seat to move: `vsBot()` with `to_move` alone moved.
+    expect(deviceWord(vsBot({ to_move: null }))).toBe(`vs ${v} · playing`);
+    // Open: the corpus's own open table with `bot` alone moved, so the row
+    // reads the lobby's seat count after the version.
+    expect(deviceWord({ ...wire.tableOpen, bot: { label: v, runs_here: true } })).toBe(
+      `vs ${v} · open · 1 of 2 seated`,
+    );
+  });
+
+  // A game dealt before its table recorded which bot (spec §2.4: "no `bot` in
+  // its mirror") names none, rather than a version it cannot know.
+  it("names no version where the listing carries none", () => {
+    expect(deviceWord(vsBot({ bot: null, to_move: 1 }))).toBe("your move");
+  });
+});
+
+// The lobby row's words (M6.5c2, R-6.5c2.7; mock 02): how long ago a table was
+// opened, the line under its name, a chip per seat, and its one action.
+describe("the lobby row", () => {
+  /** Two days after the corpus's own tables were opened. */
+  const NOW = (wire.table.created_at + 2 * 86_400) * 1000;
+
+  it("says how long ago a table was opened", () => {
+    const at = wire.table.created_at;
+    expect(ago(at, (at + 30) * 1000)).toBe("just now");
+    expect(ago(at, (at + 20 * 60) * 1000)).toBe("20 min ago");
+    expect(ago(at, (at + 3600) * 1000)).toBe("an hour ago");
+    expect(ago(at, (at + 5 * 3600) * 1000)).toBe("5 hours ago");
+    expect(ago(at, (at + 86_400) * 1000)).toBe("a day ago");
+    expect(ago(at, NOW)).toBe("2 days ago");
+    // A device clock behind the table's reads "just now", never a negative age;
+    // a stored time that is not a number still reads (`Chat.tsx`'s `when` rule).
+    expect(ago(at, (at - 600) * 1000)).toBe("just now");
+    expect(ago(Number.NaN, NOW)).toBe("a while ago");
+  });
+
+  it("says the table's size, then what matters from where it is read", () => {
+    expect(rowMeta(wire.table, "mine", NOW)).toBe("2 players \u00b7 opened 2 days ago");
+    expect(rowMeta(wire.table, "playing", NOW)).toBe("2 players");
+    expect(rowMeta(wire.tableDealing, "mine", NOW)).toBe("2 players \u00b7 dealing");
+    expect(rowMeta(wire.tableOpen, "mine", NOW)).toBe("2 players \u00b7 waiting for 1 more");
+    expect(rowMeta(wire.tableOpen, "open", NOW)).toBe("2 players \u00b7 opened 2 days ago");
+    // Two fields moved, `over` and `winner`: the corpus's walk finishes no
+    // game, so no payload is over with a winner on it.
+    expect(rowMeta({ ...wire.table, over: true, winner: 1 }, "mine", NOW)).toBe(
+      "2 players \u00b7 over \u00b7 Blue won",
+    );
+  });
+
+  // A chip per seat, in SEAT ORDER. `table_foreign.json` is the corpus's
+  // playing table with the turn on its bot seat, and it names a bot this build
+  // does not run: the chip reads the LISTING's label, not the build's.
+  it("draws a chip per seat: you, the bot with its version, an open seat, and the turn in gold", () => {
+    expect(seatChips(wire.tableForeign)).toEqual([
+      { color: "Red", label: "you", open: false, toMove: false },
+      { color: "Blue", label: `the bot \u00b7 ${wire.tableForeign.bot!.label} \u00b7 to move`, open: false, toMove: true },
+    ]);
+    // One field moved, `bot`: the same table against the bot this build ships.
+    const vsBot: TableView = { ...wire.tableForeign, bot: { label: productionBot.label, runs_here: true } };
+    expect(seatChips(vsBot)[1]!.label).toBe(`the bot \u00b7 ${productionBot.label} \u00b7 to move`);
+    // Dealt before its table recorded which bot: no version to show (spec section
+    // 2.4). One field moved, `bot`.
+    expect(seatChips({ ...vsBot, bot: null })[1]!.label).toBe("the bot \u00b7 to move");
+    // The corpus's undealt vs-bot table: the version, and no turn to mark.
+    expect(seatChips(wire.tableBot)[1]).toEqual({
+      color: "Blue",
+      label: `the bot \u00b7 ${productionBot.label}`,
+      open: false,
+      toMove: false,
+    });
+    expect(seatChips(wire.tableOpen)[1]).toEqual({ color: "Blue", label: "open seat", open: true, toMove: false });
+    // A dealing table has no turn to mark, and a finished one none either.
+    expect(seatChips(wire.tableDealing).some((c) => c.toMove)).toBe(false);
+    expect(seatChips({ ...wire.table, over: true }).some((c) => c.toMove)).toBe(false);
+  });
+
+  it("offers one action per row, and nothing to open where this server cannot continue the game", () => {
+    expect(rowAction(wire.tableOpen, "mine")).toEqual({ kind: "copy" });
+    expect(rowAction(mine, "mine")).toEqual({ kind: "go", label: "Play", primary: true, padlock: false });
+    expect(rowAction(wire.table, "mine")).toEqual({ kind: "go", label: "Play", primary: false, padlock: false });
+    // A card still owed at the deal is gold too; `wire.tableDealing`'s caller
+    // (seat 1) has not chosen.
+    expect(wire.tableDealing.chosen[1]).toBe(false);
+    expect(rowAction(wire.tableDealing, "mine")).toMatchObject({ label: "Play", primary: true });
+    expect(rowAction({ ...wire.table, over: true }, "mine")).toMatchObject({ kind: "go", label: "View" });
+    expect(rowAction(wire.tableOpen, "open")).toEqual({ kind: "go", label: "Take a seat", primary: false, padlock: true });
+    expect(rowAction(wire.tableWatchable, "playing")).toEqual({
+      kind: "go",
+      label: "Spectate",
+      primary: false,
+      padlock: true,
+    });
+    expect(rowAction({ ...wire.tableWatchable, can_watch: true }, "playing")).toMatchObject({ padlock: false });
+    // A bot this build does not run: nothing to open while the game runs, and
+    // the finished game opens as ever (spec section 2.4, R-6.5c2.10). The corpus's
+    // own foreign table; the second read moves one field, `over`.
+    expect(wire.tableForeign.bot!.runs_here).toBe(false);
+    expect(rowAction(wire.tableForeign, "mine")).toEqual({ kind: "stranded" });
+    expect(rowAction({ ...wire.tableForeign, over: true }, "mine")).toMatchObject({ kind: "go", label: "View" });
   });
 });

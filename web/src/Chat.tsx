@@ -11,7 +11,7 @@
 // because the delta is the only source it has (spec §6.1 says so).
 //
 // **The label is the lobby's rule** (R-6.4.2): a seat's colour chip and its name
-// or email; a watcher's name or email under a "watching" marker at a table
+// or email; a watcher's name or email under a "spectating" marker at a table
 // (not in the house, where everyone is one); a bot's chip and its name — an
 // arm no route produces yet, drawn defensively (R-6.4.15).
 
@@ -329,7 +329,7 @@ export function Chat({ scope, count, tick, colors, sendName, heading = "h2" }: C
     return (
       <span className={`chat-who${scope.kind === "table" ? " watching" : ""}`}>
         {a.name ?? a.user}
-        {scope.kind === "table" && <span className="meta"> · watching</span>}
+        {scope.kind === "table" && <span className="meta"> &middot; spectating</span>}
       </span>
     );
   };

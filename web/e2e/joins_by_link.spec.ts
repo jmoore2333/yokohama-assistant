@@ -10,8 +10,9 @@
 // list a second time, while the question here is whether the address is enough.
 //
 // Three things this can see that nothing else can:
-//   1. The open table's own screen, from the OUTSIDE: a stranger's seat picker
-//      with a name and a password, and the refusal a wrong password earns.
+//   1. The open table's own screen, from the OUTSIDE: a stranger's one button
+//      and the password above the seats, that arriving seats nobody, and the
+//      refusal a wrong password earns.
 //   2. That the CREATOR's screen learns the seat filled WITHOUT A RELOAD — the
 //      3 s poll driving a screen nobody touched.
 //   3. That the table plays, from both browsers, once it fills.
@@ -31,7 +32,7 @@
 import type { Page } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, blame, deadEnd, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, nameThisBrowser, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
 import { LIVE, abandonAsCreator, liveContextOptions } from "./live";
 // Whether a screen has a move on it — read from what can actually be pressed,
 // so a walk in flight reads as "not yet" rather than as a dead end. One
@@ -88,110 +89,55 @@ test("a person holding only a link joins a locked open table and plays", async (
   await signIn(a, "a@e2e.test");
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
 
-  // **The who-strip still reads as one line of small print on a phone** (live
-  // review, M-1). M6.4 put "Your name" (R-6.4.3 — a label plus a 9rem input)
-  // into a `flex` row with no `flex-wrap`, so at 390px the lobby's first line
-  // became a 51px block with the address broken across THREE lines and "sign
-  // out" across two. Nothing overflowed and nothing was clipped, which is why
-  // neither the width gate nor the overflow read below can see it.
-  //
-  // **The oracle is the SAME elements at desktop width**, not a pixel constant:
-  // what is claimed is that narrowing the window does not make these two pieces
-  // of text taller, and a magic number would be a second design figure to keep
-  // in step. Read before the resize and again after it.
+  // **The corner is a pill on a phone, and nothing on the lobby scrolls
+  // sideways** (M6.5c2, spec §2.2). It replaces M6.4's who-strip measure, whose
+  // "Your name" field the corner's own control replaced. At desktop width the
+  // corner reads "Playing as …" beside its one action; at 390px the same corner
+  // is a pill and the action is one tap away. Live the door is the Worker's, so
+  // the action is "change name"; locally it is the open door's "switch player".
   {
     const desktop = a.viewportSize()!;
-    const strip = a.locator(".who-strip");
-    const parts = () =>
-      strip.evaluate((el) => {
-        const who = el.querySelector(".who")!;
-        // `null` where the strip draws no sign-out — which is the edge's door,
-        // live (asserted below).
-        const out = el.querySelector("button");
-        const name = el.querySelector(".your-name input")!;
-        const box = (n: Element) => Math.round(n.getBoundingClientRect().height);
-        return {
-          who: box(who),
-          out: out ? box(out) : null,
-          name: Math.round(name.getBoundingClientRect().width),
-          nameTop: Math.round(name.getBoundingClientRect().top),
-          whoBottom: Math.round(who.getBoundingClientRect().bottom),
-          strip: Math.round(el.getBoundingClientRect().height),
-          wrap: getComputedStyle(el).flexWrap,
-        };
-      });
-    const wide = await parts();
+    const corner = a.locator(".identity-corner");
+    const action = corner.getByRole("button", { name: LIVE ? "change name" : "switch player" });
+    const pill = corner.locator(".identity-pill");
+    await expect(corner.getByText("Playing as")).toBeVisible();
+    await expect(action).toBeVisible();
+    await expect(pill).toBeHidden();
+
     await a.setViewportSize({ width: 390, height: 844 });
-    // The layout has to be DONE before it is read (the width gate's own note).
     await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
-    const narrow = await parts();
-
-    // Anti-vacuity: every piece of the strip is really on the phone screen. A
-    // strip that had dropped its name field would satisfy the heights below
-    // for the wrong reason.
-    expect(wide.who, "the address has a box at desktop width").toBeGreaterThan(0);
-    expect(narrow.name, "the name field is still on the screen at 390px").toBeGreaterThan(0);
-
-    expect(
-      narrow.who,
-      `the address wraps at 390px: ${narrow.who}px against ${wide.who}px at ${desktop.width}`,
-    ).toBeLessThanOrEqual(wide.who);
-    if (LIVE) {
-      // **The edge's door draws no sign-out**: the Worker's door is
-      // `cf-access`, and `App.tsx` draws the button under `open` ONLY. So
-      // live there is none to measure — and its absence is the reading: a
-      // sign-out under Access would look like it logged you out while Access
-      // kept letting you in.
-      expect(wide.out, "no sign-out under the edge's door").toBeNull();
-      expect(narrow.out, "no sign-out under the edge's door").toBeNull();
-    } else {
-      expect(
-        narrow.out,
-        `"sign out" wraps at 390px: ${narrow.out}px against ${wide.out}px at ${desktop.width}`,
-      ).toBeLessThanOrEqual(wide.out!);
-    }
-    // And the field is on its OWN line rather than sharing one — the other half
-    // of the fix, and the half that says the row wrapped where it was told to.
-    // A field that lands beside a short address on one screen and under it on
-    // the next is worse than one that is always in the same place.
-    expect(
-      narrow.nameTop,
-      `the name field shares a line with the address at 390px (top ${narrow.nameTop}, ` +
-        `the address ends at ${narrow.whoBottom})`,
-    ).toBeGreaterThanOrEqual(narrow.whoBottom);
-
+    await expect(pill).toBeVisible();
+    await expect(action, "the action waits behind the pill").toBeHidden();
     const read = await readOverflow(a);
     expect(
       read.docScrollWidth - read.docClientWidth,
       `the lobby scrolls sideways at 390px: ${blame(read)}`,
     ).toBeLessThanOrEqual(0);
-    // eslint-disable-next-line no-console
-    console.log(
-      `who-strip at 390px: address ${narrow.who}px (desktop ${wide.who}) · ` +
-        `${narrow.out === null ? "no sign out" : `sign out ${narrow.out}px (desktop ${wide.out})`} · strip ${narrow.strip}px ` +
-        `(desktop ${wide.strip}) · flex-wrap ${narrow.wrap} · name field ${narrow.name}px`,
-    );
+    await pill.click();
+    await expect(action, "one tap opens the corner").toBeVisible();
+    const opened = await readOverflow(a);
+    expect(
+      opened.docScrollWidth - opened.docClientWidth,
+      `the open corner pushes the lobby sideways at 390px: ${blame(opened)}`,
+    ).toBeLessThanOrEqual(0);
+    await pill.click();
 
     await a.setViewportSize(desktop);
     await a.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
   }
 
   await a.getByRole("button", { name: "New table" }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
-  // **`exact: true` on all three, and each for its own collision.**
-  // `getByLabel` matches by substring and case-insensitively: "Seat 1" also
-  // matches the "Seat 1 email" field an email row reveals, "Name" also matches
-  // "Your name", and the password box is labelled "Table password" precisely so
-  // that it and the checkbox beside it ("Ask for a password to join") are asked
-  // about by different names.
-  await a.getByLabel("Seat 1", { exact: true }).selectOption("open");
+  await expect(a.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  // **Each seat is its colour's since M6.5c2** (mock 07), and `exact`, because
+  // "Blue" is also a First player choice.
+  await a.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("open");
   await a.getByLabel("Name", { exact: true }).fill("Link test");
   // **A LONG name, deliberately** — it is what the chat row below is measured
-  // under (live review, I-1). The review's own worst case is shorter than this
-  // and needs no arranging at all: an un-named watcher is labelled by their
-  // email and marked " · watching", which is the DEFAULT case at a table.
-  await a.getByLabel("Your name", { exact: true }).fill("Annabelle the Cartographer");
-  await a.getByLabel("Ask for a password to join").check();
+  // under (live review, I-1). The form no longer asks for one (R-6.5c2.8: the
+  // lobby's corner owns it), so it is what this browser KEEPS, set where the
+  // create reads it.
+  await nameThisBrowser(a, "Annabelle the Cartographer");
+  await a.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await a.getByLabel("Table password", { exact: true }).fill("sesame");
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
@@ -204,11 +150,13 @@ test("a person holding only a link joins a locked open table and plays", async (
   // The link A would send somebody, read off A's own screen — and then followed
   // below, which is what says the field holds an address and not a sentence.
   //
-  // `exact: true` here too, and this one was MEASURED rather than reasoned:
-  // beside the field sits the creator's Abandon control, whose accessible name
-  // is "abandon Link test" — and a substring match is case-insensitive, so a
-  // bare `getByLabel("Link")` resolved to both.
-  await expect(a.getByLabel("Link", { exact: true })).toHaveValue(new RegExp(`/#/t/${id}$`));
+  // `exact: true` here too, and it was MEASURED rather than reasoned when the
+  // field was labelled "Link": beside it sits the creator's Abandon control,
+  // whose accessible name is "abandon Link test" — and a substring match is
+  // case-insensitive, so a bare `getByLabel("Link")` resolved to both.
+  await expect(a.getByLabel("Invite link", { exact: true })).toHaveValue(new RegExp(`/#/t/${id}$`));
+  // The creator's reminder that the password is theirs to send (mock 08).
+  await expect(a.getByText("They'll need the password you set. Send it separately.")).toBeVisible();
 
   // **One line of chat on the open table**, which is what the two readings in
   // the next block are taken against. Folded by default (R-6.4.10), so it is
@@ -266,7 +214,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   ).toBeLessThan(2 * oneRow.line);
 
   // **And it fits a phone** (live review I-1). This screen is the one place in
-  // the client where a `.field` holds a whole URL, and at 390px it pushed the
+  // the client where a row holds a whole URL, and at 390px it pushed the
   // page sideways by 32px: the row would not wrap, the input would not shrink,
   // and the Copy button's right edge sat off the window at 422. The lane's
   // recorded property is 0px of page overflow from 320 to 2560, and the width
@@ -283,13 +231,29 @@ test("a person holding only a link joins a locked open table and plays", async (
     // Anti-vacuity FIRST, and it is the whole reason this is not a bare
     // `scrollWidth` compare: a screen that drew no link row has no overflow
     // either, which is exactly the failure a width assertion cannot feel.
-    const copy = a.getByRole("button", { name: "copy" });
+    const copy = a.getByRole("button", { name: "Copy link" });
     const box = await copy.boundingBox();
     expect(box, "the Copy button must be on the screen to be measured").not.toBeNull();
     const fieldWidth = await a
-      .getByLabel("Link", { exact: true })
+      .getByLabel("Invite link", { exact: true })
       .evaluate((el) => el.getBoundingClientRect().width);
     expect(fieldWidth, "the link input must have a box to have been squeezed into").toBeGreaterThan(0);
+
+    // **The seat cards stack into one column on a phone** (mock 11), each the
+    // width of the column: two cards side by side at 390 px are two cards a
+    // thumb cannot read.
+    const seatBoxes = await a
+      .getByRole("list", { name: "Seats" })
+      .getByRole("listitem")
+      .evaluateAll((els) =>
+        els.map((e) => {
+          const r = e.getBoundingClientRect();
+          return { left: Math.round(r.left), top: Math.round(r.top), bottom: Math.round(r.bottom) };
+        }),
+      );
+    expect(seatBoxes.length, "the seat cards are on the screen").toBe(2);
+    expect(seatBoxes[1]!.left, "one column").toBe(seatBoxes[0]!.left);
+    expect(seatBoxes[1]!.top, "the second card is under the first").toBeGreaterThanOrEqual(seatBoxes[0]!.bottom);
 
     const read = await readOverflow(a);
     expect(
@@ -357,23 +321,68 @@ test("a person holding only a link joins a locked open table and plays", async (
   // **B arrives by the LINK alone and never sees the lobby.** The address is
   // the whole invitation: B is signed in AT the table's own hash, which is the
   // one route this API widens to a caller who holds no seat (R-2.7).
+  /** Every join B's page makes. **Arriving seats nobody** (R-6.5c2.9, Review
+   *  Focus 4: one click, never zero): a link preview or a curious click must
+   *  not take a seat. Armed BEFORE B goes to the address, so the arrival is
+   *  inside the count. */
+  const joinsByB: string[] = [];
+  b.on("request", (r) => {
+    if (new URL(r.url()).pathname.endsWith("/join")) joinsByB.push(r.url());
+  });
   await signIn(b, "b@e2e.test", `/#/t/${id}`);
-  await expect(b.getByRole("heading", { name: "Link test" })).toBeVisible();
-  await expect(b.getByText(/password required/)).toBeVisible();
-  await b.getByLabel("Your name", { exact: true }).fill("Bob");
-  await b.getByLabel("Password", { exact: true }).fill("wrong");
-  await b.getByRole("button", { name: "sit here" }).click();
+  // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
+  // table's name too.
+  await expect(b.getByRole("heading", { name: "Link test", exact: true, level: 3 })).toBeVisible();
+  // The lock, as its tag, and ONE way in: exactly one seat is free.
+  await expect(b.getByRole("img", { name: "password required" })).toBeVisible();
+  const join = b.getByRole("button", { name: "Join as Blue" });
+  await expect(join).toBeVisible();
+  await expect(b.getByRole("button", { name: /^Sit here/ })).toHaveCount(0);
+  expect(joinsByB, "arriving by the link seated nobody").toEqual([]);
+
+  // **The joiner's screen at 390 px** (mock 11, "Joining: one seat left"): one
+  // column, the button a thumb's size and on the screen, nothing sideways.
+  {
+    const desktop = b.viewportSize()!;
+    await b.setViewportSize({ width: 390, height: 844 });
+    await b.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+    const box = await join.boundingBox();
+    expect(box, "Join as Blue must be on the screen to be measured").not.toBeNull();
+    expect(box!.height, "Join as Blue is a thumb's size").toBeGreaterThanOrEqual(44);
+    const read = await readOverflow(b);
+    expect(
+      read.docScrollWidth - read.docClientWidth,
+      `the joiner's open table scrolls sideways at 390px: ${blame(read)}`,
+    ).toBeLessThanOrEqual(0);
+    expect(Math.round(box!.x + box!.width), "Join as Blue's right edge is on the screen").toBeLessThanOrEqual(
+      read.docClientWidth,
+    );
+    await b.setViewportSize(desktop);
+    await b.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+  }
+
+  // What B is called at the table is what this browser KEEPS: the join asks no
+  // name (R-6.5c2.8), and A's dealing screen reads "Bob" below.
+  await nameThisBrowser(b, "Bob");
+  await b.getByLabel("Table password", { exact: true }).fill("wrong");
+  // Still nobody seated after all that reading: the first join is the click.
+  expect(joinsByB, "nothing joined while B read the screen").toEqual([]);
+  await join.click();
   await expect(b.getByText(/wrong password/)).toBeVisible();
-  // The refusal is about the PASSWORD and not about the person: the name B
-  // typed is still in the field, and the right word is all that is missing.
-  await expect(b.getByLabel("Your name", { exact: true })).toHaveValue("Bob");
-  await b.getByLabel("Password", { exact: true }).fill("sesame");
-  await b.getByRole("button", { name: "sit here" }).click();
+  // The refusal is about the PASSWORD: the field keeps what was typed, and the
+  // one way in is still there.
+  await expect(b.getByLabel("Table password", { exact: true })).toHaveValue("wrong");
+  await expect(join).toBeVisible();
+  await b.getByLabel("Table password", { exact: true }).fill("sesame");
+  await join.click();
+  // Anti-vacuity for the count above: the listener sees a join when there is
+  // one — the refused click and this one, and no third.
+  await expect.poll(() => joinsByB.length, { message: "the two clicks are the two joins" }).toBe(2);
 
   // **A's screen learns, on the poll, with nobody having touched it.** The join
   // filled the last seat, so the table is dealing — and A's open table hands
   // over to the deal by itself. What is read is the SEAT B took: A's dealing
-  // screen names its other seat, and the name is the one B typed.
+  // screen names its other seat, and the name is the one B's browser keeps.
   await expect(a.locator('.deal-seat[data-seat="1"]')).toContainText("Bob", { timeout: 15_000 });
   expect(navigationsOnA, "A did not navigate while B sat down").toEqual([]);
 
@@ -460,23 +469,23 @@ test("a person holding only a link joins a locked open table and plays", async (
     );
   }
 
-  // And the table is in A's lobby, under Your games, saying who is at it and
+  // And the table is in A's lobby, under Your tables, saying who is at it and
   // whose turn it is — the words `tables.ts` gives every list.
   await a.locator("details.game-menu > summary").click();
   await a.getByRole("button", { name: "Lobby" }).click();
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
-  // **Scoped to YOUR GAMES by NAME, and it used to be by exclusion.** A table
-  // can be listed in more than one section — in Open tables while it is still
-  // filling, and since M6.3 in Games in progress once it is not — so
+  // **Scoped to YOUR TABLES by NAME, and it used to be by exclusion.** Until
+  // M6.5c2 a table was listed in more than one section (in Open tables while it
+  // was still filling, and from M6.3 in Games in progress once it was not), so
   // `:not(.open-tables)` stopped meaning "yours" the moment a third section
-  // arrived and resolved two rows for one table. The section says which one it
-  // is instead.
+  // arrived and resolved two rows for one table. A table you sit at is now
+  // listed under Your tables only, and the section still says which one it is.
   const row = a
     .locator("section.your-games li")
     .filter({ has: a.getByRole("link", { name: "Link test", exact: true }) });
   await expect(row).toBeVisible();
   await expect(row, "the row names the person who followed the link").toContainText("Bob");
-  await expect(row, "and says whose turn it is").toContainText(/your turn|waiting on/);
+  await expect(row, "and says whose turn it is").toContainText(/your move|to move/);
 
   // eslint-disable-next-line no-console
   console.log(

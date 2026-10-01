@@ -1,64 +1,39 @@
-// Setup: the form that opens a table, and the seed that must survive the round
-// trip.
+// Setup: the two forms (M6.5c2, spec §2.2, R-6.5c2.8, mock 07).
 //
-// **A FORM, and nothing else (spec §5.3).** The deal left it at M6.1 and the
-// saved-tables list left it at M6.2 — the lobby is the first screen and lists
-// both your games and the open ones, so the cells about rows, facts and
-// deleting are `Lobby.test.tsx`'s and `OpenTable.test.tsx`'s. What is asked
-// here is what a create asks: how many seats, who holds each one (`me` /
-// another email / an open seat / the bot), what the table is called, what YOU
-// are called at it, whether it wants a password, and the seed.
+// **What a create asks, and nothing else.** The table form (`#/new`): how many
+// seats, who holds each (you / a specific person / an open seat / the bot), who
+// plays first, what the table is called, whether it wants a password — and,
+// folded away, which seed. The form for a game on this device (`#/new/local`):
+// its name and who plays first. "Your name" is on NEITHER since M6.5c2: the
+// lobby's corner owns it, and a create sends the name this browser keeps.
+//
+// Every payload rendered is the corpus's; the bot's label is the contract file
+// the component itself imports (spec §2.4).
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NewGame } from "./NewGame";
+import { drawSeat, NewGame } from "./NewGame";
 import { DISPLAY_NAME_KEY } from "./api";
+import { patchServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
+import { trimSeed } from "./seedRule";
 import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
-import type { TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
 /** A seed at the top of the `u64` range — the shape `draw_seed` actually
- *  produces, and the shape a JSON number cannot hold: `Number("18446744073709551557")`
- *  is 18446744073709552000, whose last four digits are not in the seed. */
+ *  produces, and the shape a JSON number cannot hold. */
 const BIG_SEED = "18446744073709551557";
-
-/** Who this browser is signed in as. **Taken from the DOOR, not from storage.**
- *  `App` reads `/api/me` and hands the answer down; a screen that read the
- *  claimed name itself would post a seat for a name the server may not answer
- *  to, which is the defect Task 7's review found at `NewGame.tsx:179`. */
+/** Who this browser is signed in as — from the DOOR, never from storage. */
 const ME = "red@wire.test";
+/** The bot this build deals, by its label (the contract file, spec §2.4). */
+const BOT = productionBot.label;
 
-/** The form, with its callbacks defaulted.
- *
- *  **No `sections` and no art here any more.** This screen draws no board since
- *  the deal moved to `Dealing`, so it takes neither — `App` hands the enabled
- *  set to the dealing screen and to the game, which is where R-T12-4 wanted it
- *  and is one fewer prop to keep in step. */
-function Host({ me = ME, onCreated = () => {} }: { me?: string; onCreated?: (t: TableView) => void }) {
-  return <NewGame me={me} onCreated={onCreated} />;
-}
-
-/** The create posts, and NOT the other posts beside them.
- *
- *  `matching("POST", "/api/games")` is a substring match, so it also catches
- *  every `/api/games/{id}/…` post. The create is the only one whose path ENDS
- *  there. */
+/** The create posts, and NOT the other posts beside them. */
 const creates = (stub: ReturnType<typeof stubApi>): ApiCall[] =>
   stub.matching("POST", "/api/games").filter((c) => c.path.split("?")[0]!.endsWith("/api/games"));
-
-/** The form, rendered over a stub.
- *
- *  **It fetches NOTHING on mount now**: the saved list went to the lobby, so a
- *  handler here only has to answer the create. */
-function show(handler: (call: ApiCall) => Reply, props: Parameters<typeof Host>[0] = {}) {
-  const onCreated = vi.fn();
-  const stub = stubApi(handler);
-  render(<Host onCreated={onCreated} {...props} />);
-  return { onCreated, stub, user: userEvent.setup() };
-}
 
 /** The opening reply: a create answers 201 with a DEALING table (§4.2). */
 const created = (call: ApiCall): Reply | undefined =>
@@ -66,191 +41,383 @@ const created = (call: ApiCall): Reply | undefined =>
     ? { status: 201, body: wire.tableDealing }
     : undefined;
 
-describe("the seats the form posts", () => {
-  // **The body §4.2 reads, and nothing this client used to send.** `keeps` and
-  // `bot_seats` are gone: a create can no longer choose a card for anybody, and
-  // which seats are bots is said by `seats`. The server refuses either by name,
-  // so a client still sending them would fail at the deal with a sentence about
-  // a field the player never touched.
-  it("posts one seat entry per seat, me by default, and the bot only at two players", async () => {
-    const stub = stubApi((call) => {
-      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games"))
-        return { status: 201, body: wire.tableDealing };
-      return undefined;
-    });
-    const onCreated = vi.fn();
-    render(<Host me={ME} onCreated={onCreated} />);
-    const user = userEvent.setup();
+/** The table form over a stub. It fetches NOTHING on mount. */
+function show(handler: (call: ApiCall) => Reply | Promise<Reply> = created) {
+  const onCreated = vi.fn();
+  const onCancel = vi.fn();
+  const stub = stubApi(handler);
+  render(<NewGame me={ME} onCreated={onCreated} onCancel={onCancel} />);
+  return { onCreated, onCancel, stub, user: userEvent.setup() };
+}
+
+/** One seat's choice, by its colour — the accessible name the form gives it. */
+const seat = (color: string) => screen.getByRole("combobox", { name: `${color} seat` });
+/** One segment of a segmented control, inside its own group. */
+const segment = (group: string, name: string) =>
+  within(screen.getByRole("group", { name: group })).getByRole("radio", { name });
+/** The create's body. */
+const posted = (stub: ReturnType<typeof stubApi>) => creates(stub)[0]!.body as Record<string, unknown>;
+
+beforeEach(() => {
+  // The door's name, as `/api/health` says it under the local server: `open`
+  // asks for a NAME where Access asks for an address. A cell about the other
+  // says so.
+  patchServerFacts({ identity: "open" });
+});
+afterEach(() => {
+  resetFactsForTest();
+});
+
+describe("the table form's seats", () => {
+  it("posts one seat per colour \u2014 you and the bot at two players \u2014 and reads Deal", async () => {
+    const { stub, onCreated, user } = show();
+    // **Level 3**: the band's LAST crumb is the page's `<h2>` (Task 2), and it
+    // reads "New table" too — the card titles itself a level below (mock 07).
+    expect(screen.getByRole("heading", { name: "New table", level: 3 })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    const body = creates(stub)[0]!.body as { seats: unknown[]; keeps?: unknown };
-    expect(body.seats).toEqual([{ user: ME }, { bot: true }]);
-    expect("keeps" in body).toBe(false);
+    expect(posted(stub).seats).toEqual([{ user: ME }, { bot: true }]);
+    expect(posted(stub).colors).toEqual(["Red", "Blue"]);
     expect(onCreated).toHaveBeenCalledWith(wire.tableDealing);
   });
 
-  // **R-P10, on the screen and not only in the server's refusal.** The bot is
-  // measured at two players only, so at three and four the option is absent —
-  // and the sentence saying why is beside the choice rather than waiting to
-  // arrive as a 400 after the player has filled the form in.
-  it("at three players no bot is offered, and the other seats open", async () => {
-    const stub = stubApi((call) => created(call));
-    render(<Host me={ME} />);
-    const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText("Players"), "3");
-    const seats = screen.getAllByLabelText(/^Seat \d/);
-    expect(seats).toHaveLength(3);
-    for (const s of seats) {
-      expect(within(s.parentElement!).queryByRole("option", { name: "bot" })).toBeNull();
+  // **R-P10, on the screen and not only in the server's refusal**, and the
+  // BODY rather than the option list: React marks no option selected when the
+  // value matches none, and the browser then shows the first, so a row could
+  // READ one thing while the form held another.
+  it("at three players offers no bot, opens the other seats, and reads Open table", async () => {
+    const { stub, user } = show();
+    await user.click(segment("Players", "3"));
+    for (const c of ["Blue", "Yellow"]) {
+      expect(within(seat(c)).queryByRole("option", { name: "The bot" })).toBeNull();
     }
-    expect(screen.getByText(/measured at two players only/)).toBeInTheDocument();
-
-    // **The BODY, because the option list alone does not say what is posted.**
-    // Mutation-proven the hard way: a `defaultSeats` that seated a bot at seat 1
-    // whatever the count survived the absence check above AND a check on the
-    // select's own value — React marks no option selected when the value
-    // matches none, and the browser then shows the first, so the row READ "me"
-    // while the form held "bot". What the server would have been sent is the
-    // only statement that cannot be fooled that way, and it is a seat entry the
-    // server refuses by name (R-P10).
-    //
-    // The seats themselves are the OPEN default since M6.2 (spec §5.3) — see
-    // the `open seats` block below, which is where that is the subject.
+    expect(screen.getByText(/offered at two players only/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open table" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { seats: unknown[] }).seats).toEqual([
-      { user: ME },
-      { open: true },
-      { open: true },
-    ]);
+    expect(posted(stub).seats).toEqual([{ user: ME }, { open: true }, { open: true }]);
   });
 
-  // Two players is where the bot IS offered, so the cell above is a difference
-  // and not a screen that never offers one.
-  it("offers the bot at two players, which is what makes the absence above a rule", async () => {
-    show(created);
-    const seat1 = screen.getByLabelText("Seat 1");
-    expect(within(seat1.parentElement!).queryByRole("option", { name: "bot" })).not.toBeNull();
+  // Two players is where the bot IS offered, with the version it plays as
+  // (R-6.5c2.10: shown, never chosen) — what makes the absence above a rule.
+  it("offers the bot at two players, and names its version beside the seat it takes", () => {
+    show();
+    expect(within(seat("Blue")).getByRole("option", { name: "The bot" })).toBeInTheDocument();
+    expect(seat("Blue")).toHaveValue("bot");
+    expect(within(seat("Blue").closest(".form-seat")!).getByText(BOT)).toBeInTheDocument();
   });
 
-  it("a seat set to another email posts that email", async () => {
-    const stub = stubApi(created);
-    render(<Host me={ME} />);
-    const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText("Seat 1"), "email");
-    // **Normalized on the way out (R-1.1).** The server lowercases and trims an
-    // address before it seats it, so a client that sent the typed form would
-    // name a seat the table then holds under a different string — and the
-    // player at that address would be told they are not seated.
-    await user.type(screen.getByLabelText("Seat 1 email"), "Blue@Wire.test");
+  // **Review Focus 4's key, at the one place a form types a key for somebody
+  // else.** On an open-door server a person is a NAME, normalized by the
+  // server's own rule (`nameRule.ts`), so "  Ben   Castle " seats `ben castle` —
+  // the key they reach the same seats under whichever way they type it.
+  it("seats a specific person by NAME on an open door, as the key the server keys it by", async () => {
+    const { stub, user } = show();
+    await user.selectOptions(seat("Blue"), "person");
+    await user.type(screen.getByLabelText("Blue player's name"), "  Ben   Castle ");
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { seats: unknown[] }).seats[1]).toEqual({
-      user: "blue@wire.test",
-    });
+    expect(posted(stub).seats).toEqual([{ user: ME }, { user: "ben castle" }]);
   });
 
-  // **The hot seat is still reachable, and is now ASKED FOR rather than the
-  // default** (spec §5.3). One operator driving four human seats is what this
-  // client has always supported and the terminal still does; what changed is
-  // which of the two a 4P form opens without being told.
+  // ...and an ADDRESS behind Access, where the server's identity is an email.
+  it("asks for an ADDRESS behind Access, and posts it normalized", async () => {
+    patchServerFacts({ identity: "cf-access" });
+    const { stub, user } = show();
+    await user.selectOptions(seat("Blue"), "person");
+    const field = screen.getByLabelText("Blue player's address");
+    expect(field).toHaveAttribute("type", "email");
+    await user.type(field, "Blue@Wire.test");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).seats).toEqual([{ user: ME }, { user: "blue@wire.test" }]);
+  });
+
+  // A person the server would not key is refused IN PLACE, and a blank one
+  // holds the button without a sentence — nothing typed is not a mistake yet.
+  it("holds the submit while a specific person is blank or unkeyable, and says why once typed", async () => {
+    const { stub, user } = show();
+    await user.selectOptions(seat("Blue"), "person");
+    const deal = screen.getByRole("button", { name: "Deal" });
+    expect(deal).toBeDisabled();
+    const field = screen.getByLabelText("Blue player's name");
+    await user.type(field, "..");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field.closest(".form-seat")!.querySelector(".field-error")).not.toBeNull();
+    expect(deal).toBeDisabled();
+    await user.clear(field);
+    await user.type(field, "Ben");
+    expect(field).not.toHaveAttribute("aria-invalid", "true");
+    expect(deal).toBeEnabled();
+    expect(creates(stub)).toHaveLength(0);
+  });
+
+  // **The hot seat is still reachable, ASKED FOR rather than the default.**
   it("seats me in every seat at four players when every row says so", async () => {
-    const stub = stubApi(created);
-    render(<Host me={ME} />);
-    const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText("Players"), "4");
-    for (const i of [1, 2, 3]) {
-      await user.selectOptions(screen.getByLabelText(`Seat ${i}`), "me");
-    }
-    // Every seat is a person's, so the button is back to promising the deal.
+    const { stub, user } = show();
+    await user.click(segment("Players", "4"));
+    for (const c of ["Blue", "Yellow", "Green"]) await user.selectOptions(seat(c), "me");
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    const body = creates(stub)[0]!.body as { seats: unknown[]; players: number; colors: string[] };
-    expect(body.players).toBe(4);
-    expect(body.colors).toEqual(["Red", "Blue", "Yellow", "Green"]);
-    expect(body.seats).toEqual([{ user: ME }, { user: ME }, { user: ME }, { user: ME }]);
+    expect(posted(stub).players).toBe(4);
+    expect(posted(stub).colors).toEqual(["Red", "Blue", "Yellow", "Green"]);
+    expect(posted(stub).seats).toEqual([{ user: ME }, { user: ME }, { user: ME }, { user: ME }]);
   });
 
-  // **The count going back down restores the bot**, so the rows are a
-  // derivation of the player count and not a one-way latch. A form that left
-  // three human seats behind at two players would post a table with no bot in
-  // it and no way to ask for one.
+  // The rows are a derivation of the count and not a one-way latch.
   it("puts the bot back when the count comes back down to two", async () => {
-    const stub = stubApi(created);
-    render(<Host me={ME} />);
-    const user = userEvent.setup();
-    await user.selectOptions(screen.getByLabelText("Players"), "4");
-    await user.selectOptions(screen.getByLabelText("Players"), "2");
+    const { stub, user } = show();
+    await user.click(segment("Players", "4"));
+    await user.click(segment("Players", "2"));
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { seats: unknown[] }).seats).toEqual([
-      { user: ME },
-      { bot: true },
-    ]);
+    expect(posted(stub).seats).toEqual([{ user: ME }, { bot: true }]);
+  });
+
+  // **The button says which of the two things the click does**, both arms.
+  it("reads Deal with every seat filled and Open table with one open", async () => {
+    const { user } = show();
+    expect(screen.queryByRole("button", { name: "Open table" })).toBeNull();
+    await user.selectOptions(seat("Blue"), "open");
+    expect(screen.getByRole("button", { name: "Open table" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deal" })).toBeNull();
   });
 });
 
-// **The corpus covers RESPONSES only.** `NewGameRequest` is hand-written on this
-// side and hand-written again as a `json!` literal in `wire_fixtures.rs`. The
-// create body now carries `deny_unknown_fields`, so a renamed field is a 400
-// rather than a silent default — but a field this client stops sending is still
-// a default, and that is what these two cells pin.
-describe("the request the client sends", () => {
-  it("names every field the create endpoint reads, and no others", async () => {
-    const { stub, user } = show((call) => created(call));
+// ---- who plays first (R-6.5c2.8: closes the "who starts" item) -----------
+describe("the first player", () => {
+  it("posts the colour chosen, and Red when nobody chose", async () => {
+    const { stub, user } = show();
+    expect(segment("First player", "Red")).toBeChecked();
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    // No `seed` and no `name`: both are omitted when the player leaves them
-    // blank, which is what makes the server draw a seed and list the table
-    // under its id.
-    expect(Object.keys(creates(stub)[0]!.body as object).sort()).toEqual(
-      ["colors", "players", "seats", "start_seat"].sort(),
-    );
+    expect(posted(stub).start_seat).toBe(0);
   });
 
-  it("carries the name and the seed when the player gives them", async () => {
-    const { stub, user } = show((call) => created(call));
-    await user.type(screen.getByLabelText("Name"), "Thursday");
-    await user.type(screen.getByLabelText("Seed"), "12345");
+  it("posts Blue as seat 1", async () => {
+    const { stub, user } = show();
+    await user.click(segment("First player", "Blue"));
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    const body = creates(stub)[0]!.body as { name: string; seed: string };
-    expect(body.name).toBe("Thursday");
-    expect(body.seed).toBe("12345");
+    expect(posted(stub).start_seat).toBe(1);
   });
 
-  // **The defect, exactly.** A seed is a `u64` and a JS number cannot hold one:
-  // rounded on the way out, the server deals a DIFFERENT GAME than the one the
-  // player asked for, silently and from move one. The client never converts —
-  // the field is a string from the keystroke to the wire, and the server parses
-  // it from a string or a number (`WireSeed`).
-  it("sends a big seed to the create body as the exact string that was typed", async () => {
-    // Enough of it to know it did not survive as a number.
+  // **Random is drawn when the form is SENT** (R-6.5c2.8), from the browser's
+  // own generator — not at render, where a re-render would draw again and the
+  // screen would not know which seat it had promised.
+  it("draws Random from the browser's generator at the moment the form is sent", async () => {
+    const draws = vi.spyOn(crypto, "getRandomValues").mockImplementation(((array: Uint8Array) => {
+      array[0] = 5;
+      return array;
+    }) as typeof crypto.getRandomValues);
+    const { stub, user } = show();
+    await user.click(segment("First player", "Random"));
+    expect(draws, "nothing is drawn before the form is sent").not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(draws).toHaveBeenCalledTimes(1);
+    expect(posted(stub).start_seat).toBe(1); // 5 % 2
+  });
+
+  it("keeps a first player the count still has, and falls back to Red when it does not", async () => {
+    const { stub, user } = show();
+    // Kept: Blue is seat 1 at three players and at two (review M-1: this half
+    // was named and not asserted).
+    await user.click(segment("Players", "3"));
+    await user.click(segment("First player", "Blue"));
+    await user.click(segment("Players", "2"));
+    expect(segment("First player", "Blue")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).start_seat).toBe(1);
+    // Kept: Random is a choice at every count.
+    await user.click(segment("First player", "Random"));
+    await user.click(segment("Players", "4"));
+    expect(segment("First player", "Random")).toBeChecked();
+    // Fallen back: Yellow is seat 2, which two players do not have.
+    await user.click(segment("First player", "Yellow"));
+    await user.click(segment("Players", "2"));
+    expect(segment("First player", "Red")).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(2));
+    expect((creates(stub)[1]!.body as { start_seat: number }).start_seat).toBe(0);
+  });
+});
+
+/** `drawSeat` is fair over every count the form offers: a byte at or past the
+ *  largest multiple of `n` is drawn again rather than folded onto seat 0. */
+describe("the draw", () => {
+  it("draws again past the largest multiple of the count", () => {
+    const bytes = [255, 254, 4];
+    vi.spyOn(crypto, "getRandomValues").mockImplementation(((array: Uint8Array) => {
+      array[0] = bytes.shift()!;
+      return array;
+    }) as typeof crypto.getRandomValues);
+    // 256 % 3 is 1, so only 255 is past the last multiple: it is drawn again,
+    // and 254 % 3 = 2 is the seat.
+    expect(drawSeat(3)).toBe(2);
+    expect(drawSeat(4)).toBe(0); // 4 % 4
+  });
+});
+
+// ---- the name, the display name and the password ---------------------------
+describe("what the table is called, and who you are at it", () => {
+  // **No subtext** (R-6.5c2.8): the placeholder says it, once.
+  it("offers a name field whose placeholder is the whole explanation, and posts what is typed", async () => {
+    const { stub, user } = show();
+    const name = screen.getByLabelText("Name");
+    expect(name).toHaveAttribute("placeholder", "ID shown in the lobby if left blank");
+    expect(name.closest(".form-field")!.querySelectorAll("p")).toHaveLength(0);
+    await user.type(name, "Thursday");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).name).toBe("Thursday");
+  });
+
+  // **"Your name" left the form** (R-6.5c2.8): the lobby's corner owns it. What
+  // a create sends is the name this browser KEEPS, read when the form is sent —
+  // so a name changed in the corner a moment ago is the one this seat takes.
+  it("asks for no name of yours, and sends the one this browser keeps", async () => {
+    const { stub, user } = show();
+    expect(screen.queryByLabelText("Your name")).toBeNull();
+    localStorage.setItem(DISPLAY_NAME_KEY, "  Ben  ");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).display_name).toBe("Ben");
+  });
+
+  it("sends no display_name where this browser keeps none", async () => {
+    const { stub, user } = show();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect("display_name" in posted(stub)).toBe(false);
+  });
+
+  // **The toggle says what it guards** — joining AND spectating — and the box
+  // it reveals carries no placeholder (R-6.5c2.8).
+  it("asks for a password only once ticked, with no placeholder", async () => {
+    const { user } = show();
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    await user.click(screen.getByLabelText("Ask for a password to join or spectate"));
+    expect(screen.getByLabelText("Table password")).not.toHaveAttribute("placeholder");
+  });
+
+  it("sends the password only when ticked and typed, and clears it when unticked", async () => {
+    const { stub, user } = show();
+    const box = screen.getByLabelText("Ask for a password to join or spectate");
+    await user.click(box);
+    await user.type(screen.getByLabelText("Table password"), "   ");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect("password" in posted(stub)).toBe(false);
+
+    await user.clear(screen.getByLabelText("Table password"));
+    await user.type(screen.getByLabelText("Table password"), "  rosebud  ");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(2));
+    expect((creates(stub)[1]!.body as { password: string }).password).toBe("rosebud");
+
+    await user.click(box);
+    expect(screen.queryByLabelText("Table password")).toBeNull();
+    await user.click(box);
+    expect(screen.getByLabelText("Table password")).toHaveValue("");
+  });
+});
+
+// ---- the seed, folded (spec §2.2 "The seed"; Review Focus 2) ---------------
+describe("the seed", () => {
+  const fold = () => screen.getByText("Advanced", { selector: "summary" }).closest("details")!;
+
+  it("lives in the Advanced fold, and is sent as the exact text typed", async () => {
+    // A seed a JSON number cannot hold — the premise, asserted.
     expect(String(Number(BIG_SEED))).not.toBe(BIG_SEED);
-    const { stub, user } = show((call) => created(call));
+    const { stub, user } = show();
+    expect(within(fold()).getByLabelText("Seed")).toBeInTheDocument();
     await user.type(screen.getByLabelText("Seed"), BIG_SEED);
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { seed: unknown }).seed).toBe(BIG_SEED);
+    expect(posted(stub).seed).toBe(BIG_SEED);
+  });
+
+  it("sends no seed for a blank field, so the server draws one", async () => {
+    const { stub, user } = show();
+    await user.type(screen.getByLabelText("Seed"), "   ");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(Object.keys(posted(stub)).sort()).toEqual(["colors", "players", "seats", "start_seat"]);
+  });
+
+  // **Checked AS IT IS TYPED, in the fold, and the button held** (R-6.5c2.8).
+  // The fold is opened first: the field is inside it, so that is the only way
+  // a browser lets anyone type there.
+  it("explains a bad seed inside the fold and holds the button until it is fixed or cleared", async () => {
+    const { user } = show();
+    await user.click(screen.getByText("Advanced", { selector: "summary" }));
+    const seed = screen.getByLabelText("Seed");
+    await user.type(seed, "18446744073709551616");
+    expect(within(fold()).getByText(/^Too large: a seed is a whole number/)).toBeInTheDocument();
+    expect(fold()).toHaveAttribute("open");
+    expect(seed).toHaveAttribute("aria-invalid", "true");
+    expect(seed).toHaveAttribute("aria-describedby", "seed-error");
+    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    await user.clear(seed);
+    expect(screen.queryByText(/^Too large:/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
+  });
+
+  // **Held open while refused, in the order a browser allows** (review I-2).
+  // The seed field is inside the fold, so a refused seed is only ever typed
+  // into an OPEN fold; closing it over the refusal would hide the reason the
+  // button is held. So the summary's click does nothing while the seed is
+  // refused, and once the seed is fixed the fold closes as any fold does.
+  it("holds the fold open over a refused seed, and lets it close once the seed is fixed", async () => {
+    const { user } = show();
+    const summary = screen.getByText("Advanced", { selector: "summary" });
+    await user.click(summary);
+    expect(fold().open, "the premise: one click opens the fold").toBe(true);
+    await user.type(screen.getByLabelText("Seed"), "1e3");
+    await user.click(summary);
+    expect(fold().open, "held open while refused").toBe(true);
+    expect(within(fold()).getByText(/^Not a whole number:/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    await user.clear(screen.getByLabelText("Seed"));
+    await user.click(summary);
+    expect(fold().open, "once fixed it closes as any fold does").toBe(false);
+  });
+
+  // **(Review Focus 2) The fold agrees with the server on every committed
+  // input**: set as the exact value (a typed tab would move the focus), the
+  // field is quiet and the button live exactly where `WireSeed` takes the text
+  // or the text is blank, and refused and held everywhere else.
+  it("agrees with the server's verdict on every input in the committed table", () => {
+    show();
+    const seed = screen.getByLabelText("Seed");
+    for (const c of wire.seedCases) {
+      fireEvent.change(seed, { target: { value: c.raw } });
+      const quiet = c.ok || trimSeed(c.raw) === "";
+      const label = JSON.stringify(c.raw);
+      expect(screen.queryByText(/^(Too large|Not a whole number):/) === null, label).toBe(quiet);
+      expect((screen.getByRole("button", { name: "Deal" }) as HTMLButtonElement).disabled, label).toBe(!quiet);
+    }
   });
 });
 
-describe("a double-clicked Deal", () => {
-  // **The second site of the guard `App` already documents**, and the one with
-  // the worse consequence. `run()` gated on the `busy` STATE, and state is what
-  // makes the bug: React batches, so two clicks in the same tick both read
-  // `busy === false` and both post. Two `POST /api/games` are then two
-  // DIFFERENT tables, and the client is handed whichever answered last.
-  it("posts create exactly once", async () => {
+describe("sending the form", () => {
+  // **The corpus covers RESPONSES only**: `NewGameRequest` is hand-written on
+  // this side, and a field this client stops sending is still a default.
+  it("names every field the create endpoint reads, and no others", async () => {
+    const { stub, user } = show();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(Object.keys(posted(stub)).sort()).toEqual(["colors", "players", "seats", "start_seat"]);
+  });
+
+  // **BOTH clicks inside ONE `act`**, so no render happens between them — the
+  // case the ref exists for.
+  it("posts create exactly once however fast Deal is clicked", async () => {
     const held = gate<unknown>();
-    const { stub } = show((call) => {
-      if (call.method === "POST" && call.path.split("?")[0]!.endsWith("/api/games")) return held.promise;
-      return undefined;
-    });
-    // BOTH clicks inside ONE `act`, so no render happens between them — the
-    // case the ref exists for. Two `user.click`s would each flush, the button
-    // would already be `disabled`, and the cell would pass with the guard
-    // removed, which is not a test of the guard.
+    const { stub } = show((call) =>
+      call.method === "POST" && call.path.endsWith("/api/games") ? held.promise : undefined,
+    );
     const deal = screen.getByRole("button", { name: "Deal" });
     act(() => {
       fireEvent.click(deal);
@@ -260,225 +427,107 @@ describe("a double-clicked Deal", () => {
     held.resolve({ status: 201, body: wire.tableDealing });
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
   });
-});
 
-// **The refusal, which is the one thing from the old saved-tables block that is
-// still about this screen.** A create can fail — a name the server will not
-// take, a seat it refuses — and the sentence belongs here rather than in an
-// unhandled rejection.
-describe("a create that is refused", () => {
-  it("shows the sentence rather than swallowing it", async () => {
-    const { user } = show(() => ({
-      status: 400,
-      body: { error: "a seat names neither a user nor the bot" },
-    }));
+  // The refusal is the corpus's own body (`wire.error`), never a hand-written
+  // one (the M2.5 rule; review M-4).
+  it("shows a refused create's sentence rather than swallowing it", async () => {
+    const { user } = show(() => ({ status: 400, body: wire.error }));
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    expect(await screen.findByText(/neither a user nor the bot/)).toBeInTheDocument();
-  });
-});
-
-// ---- M6.2: open seats, a display name, and a password ----------------------
-
-describe("open seats", () => {
-  // **The default above two players, and it is a product change** (spec §5.3):
-  // until M6.2 every seat defaulted to the person filling the form in, which
-  // made a hot seat the only 3P and 4P table this client could open.
-  it("seats me, then open seats, at three and four players", async () => {
-    const stub = stubApi(created);
-    render(<Host me={ME} />);
-    const user = userEvent.setup();
-    const rows = [
-      [3, [{ user: ME }, { open: true }, { open: true }]],
-      [4, [{ user: ME }, { open: true }, { open: true }, { open: true }]],
-    ] as const;
-    for (const [n, [players, seats]] of rows.entries()) {
-      await user.selectOptions(screen.getByLabelText("Players"), String(players));
-      await user.click(screen.getByRole("button", { name: "Open table" }));
-      // The COUNT, not "at least one": `toBeGreaterThan(0)` is already true on
-      // the second pass before its own create has landed, and the read below
-      // would then be the first pass's body again.
-      await waitFor(() => expect(creates(stub)).toHaveLength(n + 1));
-      expect((creates(stub)[n]!.body as { seats: unknown[] }).seats).toEqual(seats);
-    }
+    expect(await screen.findByText(wire.error.error)).toBeInTheDocument();
   });
 
-  // Two players still defaults to the bot, which is what makes the rows above a
-  // rule about the count rather than a screen that always opens seats.
-  it("still seats the bot at two, and posts {open: true} when a row is switched", async () => {
-    const { stub, user } = show(created);
-    await user.selectOptions(screen.getByLabelText("Seat 1"), "open");
-    await user.click(screen.getByRole("button", { name: "Open table" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { seats: unknown[] }).seats).toEqual([
-      { user: ME },
-      { open: true },
-    ]);
-  });
-
-  // **The button says which of the two things the click does.** A table with an
-  // open seat is not dealt when it is created — it waits for somebody to sit
-  // down — so "Deal" there would promise the set table and hand over a waiting
-  // room. Both arms, because either alone passes on a constant.
-  it("reads Deal with every seat filled and Open table with one open", async () => {
-    const { user } = show(created);
-    expect(screen.getByRole("button", { name: "Deal" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Open table" })).toBeNull();
-    await user.selectOptions(screen.getByLabelText("Seat 1"), "open");
-    expect(screen.getByRole("button", { name: "Open table" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Deal" })).toBeNull();
+  it("goes back without sending anything on Cancel", async () => {
+    const { stub, onCancel, user } = show();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(creates(stub)).toHaveLength(0);
   });
 });
 
-describe("the display name", () => {
-  it("is read from this browser on mount and written back on submit", async () => {
-    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
-    const { stub, user } = show(created);
-    // Prefilled, so the second table does not ask again.
-    expect(screen.getByLabelText("Your name")).toHaveValue("Jeremy");
-    await user.clear(screen.getByLabelText("Your name"));
-    await user.type(screen.getByLabelText("Your name"), "  Jem  ");
-    // **Not yet.** Remembered on submit, not on every keystroke: a name half
-    // typed and then abandoned is not what this browser is called.
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Jeremy");
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { display_name: string }).display_name).toBe("Jem");
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("Jem");
-  });
-
-  it("sends no display_name when the field is blank", async () => {
-    const { stub, user } = show(created);
-    expect(screen.getByLabelText("Your name")).toHaveValue("");
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect("display_name" in (creates(stub)[0]!.body as object)).toBe(false);
-  });
-});
-
-describe("the password", () => {
-  it("is not asked for until the box is ticked", async () => {
-    const { user } = show(created);
-    expect(screen.queryByLabelText("Table password")).toBeNull();
-    await user.click(screen.getByLabelText("Ask for a password to join"));
-    expect(screen.getByLabelText("Table password")).toBeInTheDocument();
-  });
-
-  it("rides the create only when the box is ticked and something was typed", async () => {
-    const { stub, user } = show(created);
-    await user.click(screen.getByLabelText("Ask for a password to join"));
-    await user.type(screen.getByLabelText("Table password"), "  rosebud  ");
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect((creates(stub)[0]!.body as { password: string }).password).toBe("rosebud");
-  });
-
-  // **A ticked box over an empty field opens an UNLOCKED table**, which is the
-  // honest of the two: the alternative is a table locked behind the empty
-  // string, which nobody — including the person who made it — can join.
-  it("sends nothing for a ticked box with an empty field, and nothing after it is unticked", async () => {
-    const { stub, user } = show(created);
-    const box = screen.getByLabelText("Ask for a password to join");
-    await user.click(box);
-    await user.type(screen.getByLabelText("Table password"), "   ");
-    await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() => expect(creates(stub)).toHaveLength(1));
-    expect("password" in (creates(stub)[0]!.body as object)).toBe(false);
-
-    // Typed, then unticked: the word is cleared with the box, so an unticked
-    // form cannot carry a password the player can no longer see. The box is
-    // still ticked from above, so this types into the field it left open.
-    await user.clear(screen.getByLabelText("Table password"));
-    await user.type(screen.getByLabelText("Table password"), "rosebud");
-    expect(screen.getByLabelText("Table password")).toHaveValue("rosebud");
-    await user.click(box);
-    expect(screen.queryByLabelText("Table password")).toBeNull();
-    await user.click(box);
-    expect(screen.getByLabelText("Table password")).toHaveValue("");
-  });
-});
-
-// ---- the LOCAL form (M6.5b, R-6.5b.8; spec §2.5) ---------------------------
-//
-// "Play the bot here" opens this same screen with everything a table in this
-// browser cannot be asked: how many seats (two), who holds them (you and the
-// bot), a password (there is nobody to keep out) and a seed — **which the form
-// never offers and never sends**, because `draw_seed` inside the module draws
-// it and the board is an injective fingerprint of it (spec §2.2).
+// ---- the LOCAL form (M6.5b, R-6.5b.8; M6.5c2 mock 07) ---------------------
 describe("the form for a game on this device", () => {
-  beforeEach(() => {
-    resetLocalHostForTests();
-  });
-  afterEach(() => {
-    resetLocalHostForTests();
-  });
+  beforeEach(() => resetLocalHostForTests());
+  afterEach(() => resetLocalHostForTests());
 
-  const local = (props: Parameters<typeof Host>[0] = {}) => {
+  const local = () => {
     const onCreated = vi.fn();
-    render(<NewGame local me={ME} onCreated={onCreated} {...props} />);
-    return { onCreated, user: userEvent.setup() };
+    const onCancel = vi.fn();
+    render(<NewGame local me={ME} onCreated={onCreated} onCancel={onCancel} />);
+    return { onCreated, onCancel, user: userEvent.setup() };
+  };
+  /** The one create this tab's Worker was sent. */
+  const localBody = () => {
+    const post = currentWorker().posted.find(
+      (p) => p.kind === "call" && p.method === "POST" && p.path === "/api/games",
+    ) as { body: string } | undefined;
+    return JSON.parse(post?.body ?? "{}") as Record<string, unknown>;
   };
 
-  it("fixes the table to you and the bot, and asks nothing a local table cannot answer", () => {
+  it("names the bot's version, fixes the table to you and it, and asks nothing else", () => {
     stubWorker();
     local();
-    // The seating is not a choice: no count, no seat rows to switch, and the
-    // two seats named in words instead.
-    expect(screen.queryByLabelText("Players")).toBeNull();
-    expect(screen.queryByLabelText(/^Seat \d/)).toBeNull();
-    expect(screen.getByText("you")).toBeInTheDocument();
-    expect(screen.getByText("the bot")).toBeInTheDocument();
-    // Nobody to keep out, and no seed to type.
-    expect(screen.queryByLabelText("Ask for a password to join")).toBeNull();
+    expect(screen.getByRole("heading", { name: "New game against the bot" })).toBeInTheDocument();
+    expect(screen.getAllByText(BOT).length).toBeGreaterThan(0);
+    expect(screen.getByText("Two players: you and the bot.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Name")).toHaveAttribute("placeholder", "Optional");
+    // Scoped to the seats: "You" and "The bot" are First player segments too.
+    const seats = screen.getByRole("list", { name: "Seats" });
+    expect(within(seats).getByText("You")).toBeInTheDocument();
+    expect(within(seats).getByText("The bot")).toBeInTheDocument();
+    // No count, no seat to switch, nobody to keep out, no seed and no Advanced.
+    expect(screen.queryByRole("group", { name: "Players" })).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByLabelText("Ask for a password to join or spectate")).toBeNull();
     expect(screen.queryByLabelText("Seed")).toBeNull();
+    expect(screen.queryByText("Advanced")).toBeNull();
   });
 
-  it("submits through the Worker, seated by the local player, with no seed and no id", async () => {
+  it("submits through the Worker, seated by the local player, with the first player chosen", async () => {
     stubWorker();
     const { onCreated, user } = local();
+    await user.click(segment("First player", "The bot"));
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
-
-    // **The create went to the module and not to the network.** `fetch` is the
-    // setup file's throwing stub here, so a create that took the server's arm
-    // would fail loudly rather than quietly reaching a stub.
-    const posts = currentWorker().posted.filter(
-      (p) => p.kind === "call" && p.method === "POST" && p.path === "/api/games",
-    );
-    expect(posts).toHaveLength(1);
-    const body = JSON.parse((posts[0] as { body: string }).body) as Record<string, unknown>;
-    // Seated by the address the MODULE answers as (R-6.5b.1), never by whoever
-    // this browser signed in at: the local table's seats are `local@browser`,
-    // so a form that posted `me` would open a table its own player holds no
-    // seat at.
+    const body = localBody();
     expect(body.seats).toEqual([{ user: "local@browser" }, { bot: true }]);
     expect(body.players).toBe(2);
-    expect(body.start_seat).toBe(0);
     expect(body.colors).toEqual(["Red", "Blue"]);
-    // The two fields a local table has no answer for, and the one the Worker
-    // draws for itself.
+    expect(body.start_seat).toBe(1);
+    // The fields a local table has no answer for, and the one the Worker draws.
     expect("seed" in body).toBe(false);
     expect("password" in body).toBe(false);
     expect("id" in body).toBe(false);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("still carries what the table is CALLED and what you are called at it", async () => {
+  it("draws Random at the moment it is sent", async () => {
     stubWorker();
-    const { user } = local();
-    await user.type(screen.getByLabelText("Name"), "kitchen table");
-    await user.type(screen.getByLabelText("Your name"), "Jem");
+    vi.spyOn(crypto, "getRandomValues").mockImplementation(((array: Uint8Array) => {
+      array[0] = 7;
+      return array;
+    }) as typeof crypto.getRandomValues);
+    const { onCreated, user } = local();
+    await user.click(segment("First player", "Random"));
     await user.click(screen.getByRole("button", { name: "Deal" }));
-    await waitFor(() =>
-      expect(
-        currentWorker().posted.filter((p) => p.kind === "call" && p.method === "POST"),
-      ).toHaveLength(1),
-    );
-    const post = currentWorker().posted.find((p) => p.kind === "call" && p.method === "POST")!;
-    const body = JSON.parse((post as { body: string }).body) as Record<string, unknown>;
-    expect(body.name).toBe("kitchen table");
-    // R-6.5b.3: the name for a save-game review rides in the TABLE document,
-    // which is what this field writes — the record is the engine's format and
-    // knows no people.
-    expect(body.display_name).toBe("Jem");
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(localBody().start_seat).toBe(1); // 7 % 2
+  });
+
+  it("carries the table's name and the name this browser keeps", async () => {
+    stubWorker();
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben");
+    const { onCreated, user } = local();
+    await user.type(screen.getByLabelText("Name"), "kitchen table");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(localBody().name).toBe("kitchen table");
+    expect(localBody().display_name).toBe("Ben");
+  });
+
+  it("goes back on Cancel", async () => {
+    stubWorker();
+    const { onCancel, user } = local();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });

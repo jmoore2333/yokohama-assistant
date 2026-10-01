@@ -44,7 +44,8 @@
 // rounds; the envelope carries both as strings and this module moves strings.
 // The ENVELOPE itself is parsed, because this module wrote it.
 
-import { localAdopt, localPair, localRestoreRead } from "./local/client";
+import { api } from "./api";
+import { hold, localAdopt, localPair, localRestoreRead, release } from "./local/client";
 import {
   forgetGame,
   openDb,
@@ -508,6 +509,31 @@ export async function forgetUnplayable(id: string): Promise<void> {
   return withDb(async (db) => {
     await forgetGame(db, id);
   });
+}
+
+/**
+ * Remove a game the MODULE refuses to open — not over, dealt a bot this build
+ * does not run (M6.5c2, spec §2.4) — through the module's own FENCED delete.
+ *
+ * **Not [`forgetUnplayable`]'s unfenced path, and the difference is where the
+ * row comes from.** A cross-rev row is this browser's own compatibility note,
+ * read straight from IndexedDB; a foreign row is the module's LISTING — every
+ * tab's Worker loaded the pair at its boot — so deleting the stored pair behind
+ * the Worker's back would leave the row listed until the next rebuild. The
+ * layer's `delete` reads the table and the record's event count and never
+ * rebuilds (spec §2.4), which is why it works on a game `live_handle` refuses;
+ * the Worker commits a delete only for a game this tab HOLDS, so the hold comes
+ * first and is given back after — on every way out.
+ */
+export async function removeForeign(id: string): Promise<void> {
+  if (!(await hold(id))) {
+    throw new Error("this game is open in another tab \u2014 close it there, then remove it");
+  }
+  try {
+    await api.remove(id);
+  } finally {
+    await release(id);
+  }
 }
 
 /**

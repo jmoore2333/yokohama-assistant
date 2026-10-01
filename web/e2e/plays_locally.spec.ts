@@ -439,7 +439,7 @@ test("a game closed before its first card is chosen comes back on reload with it
   // the front door, the games in this browser are on it, and the local create
   // is one click from there.
   await page.goto("/");
-  await page.getByRole("button", { name: "Play the bot here" }).click();
+  await page.getByRole("button", { name: "New game", exact: true }).click();
   await page.getByRole("button", { name: "Deal" }).click();
   await page.waitForURL(/#\/t\/local-[0-9a-f]+$/);
   const id = page.url().split("#/t/")[1]!;
@@ -795,7 +795,7 @@ test("the first screen renders On this device with the API refused, and a local 
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "On this device" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Play the bot here" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New game", exact: true })).toBeVisible();
   // **The door costs the Worker NOTHING** (R-6.5b2.7), in a real browser: not
   // `/api/me`, not the health, not the words, not the art. The jsdom cell makes
   // the same claim against a stubbed `fetch`; this one makes it against the
@@ -814,16 +814,16 @@ test("the first screen renders On this device with the API refused, and a local 
   // no jsdom cell can make — there the refusal is a stub; here it is the edge.
   // It is READ and never followed: `/enter` is a navigation, and following it
   // would take this page off the app.
-  await expect(page.getByRole("link", { name: "Play with others" })).toHaveAttribute(
+  await expect(page.getByRole("link", { name: "Go to the lobby" })).toHaveAttribute(
     "href",
     "/enter",
   );
   // **The door reports nothing about a server it never asks** (R-6.5b2.7). The
   // line that does report one is the LOBBY's, one hash away, and it is still
   // there — so the claim this cell has always made is read where it now lives.
-  await expect(page.getByText("not connected")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Can't reach the server" })).toHaveCount(0);
   await page.goto("/#/lobby");
-  await expect(page.getByText("not connected")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Can't reach the server" })).toBeVisible();
 
   const game = await startGame(page, { local: true, signedOut: true });
   const pick = rng(0x4f46_464c); // "OFFL"
@@ -1075,8 +1075,8 @@ test("without Web Locks, a tab whose game was opened elsewhere exports the new o
   await expect(a.getByRole("heading", { name: "On this device" })).toBeVisible();
   const hostA = await localHost(a);
   expect(await withoutLocks(hostA), "A's host has no Web Locks").toBe("undefined");
-  await a.getByRole("button", { name: "Play the bot here" }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
+  await a.getByRole("button", { name: "New game", exact: true }).click();
+  await expect(a.getByRole("heading", { name: "New game against the bot", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "Deal" }).click();
   await a.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });
   const game = { id: a.url().split("#/t/")[1]! };

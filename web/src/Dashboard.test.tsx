@@ -473,3 +473,52 @@ describe("what the side column shows", () => {
     expect(titles.some((t) => t.includes("yen"))).toBe(true);
   });
 });
+
+// ---- M6.5c2: the bot's version on the Players panel (spec §2.2, §2.4; mock 10)
+//
+// **Shown, never chosen** (R-6.5c2.10): the record's own bot seats, labelled
+// (`ClientState.bots`), so a finished game against V2 says V2 while this build
+// runs V4. `wire.watching` is the corpus's one state whose record has a bot
+// seat; a state with no `bots` row for the seat keeps today's bare word.
+describe("the bot's version on the Players panel", () => {
+  it("labels the bot's seat with the record's own version", () => {
+    expect(wire.watching.bots).toEqual([{ seat: 0, label: "V4" }]);
+    // The premise, read by the file's own reader: seat 0 is the bot and seat 1
+    // a person, beside the one `bots` row that names seat 0.
+    expect(playersOf(wire.watching).map((p) => [p.seat, p.is_bot])).toEqual([
+      [0, true],
+      [1, false],
+    ]);
+    render(
+      <Dashboard
+        panels={wire.watching.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+        bots={wire.watching.bots}
+      />,
+    );
+    const seat = document.querySelectorAll(".panel .seat")[0]!;
+    expect(seat.querySelector(".tag .version-tag")).toHaveTextContent("V4");
+    expect(seat.querySelector(".tag")).toHaveTextContent("the bot");
+    // The other seat is a person: no tag of either kind.
+    expect(document.querySelectorAll(".panel .seat")[1]!.querySelector(".version-tag")).toBeNull();
+  });
+
+  it("keeps the bare word where the state names no version for the seat", () => {
+    render(
+      <Dashboard
+        panels={wire.watching.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+        bots={[]}
+      />,
+    );
+    const seat = document.querySelectorAll(".panel .seat")[0]!;
+    expect(seat.querySelector(".version-tag")).toBeNull();
+    expect(seat.querySelector(".tag")).toHaveTextContent("bot");
+  });
+});

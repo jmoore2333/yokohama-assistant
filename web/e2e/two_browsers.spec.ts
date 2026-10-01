@@ -130,22 +130,22 @@ test("two people at two browsers play to a winner and neither sees the other's h
 
   // A opens the table and names B in seat 1. The form's default at two players
   // seats the BOT there, so this is also the one walk that exercises the seat
-  // row's "another email" arm.
+  // row's "a specific person" arm.
   await signIn(a, "a@e2e.test");
   // The lobby is the first screen since M6.2; the form is one click on.
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
-  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
-  // `exact: true`: switching this row to an email puts a "Seat 1 email" field
-  // beside it, and `getByLabel` matches by substring.
-  await a.getByLabel("Seat 1", { exact: true }).selectOption("email");
-  await a.getByLabel("Seat 1 email").fill("b@e2e.test");
+  await expect(a.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  // **"A specific person"**, the arm this walk exists to exercise: a NAME on an
+  // open-door server, an ADDRESS behind Access (M6.5c2, spec §2.2) — either way
+  // the key B signs in as.
+  await a.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("person");
+  await a.getByLabel(/^Blue player's (name|address)$/).fill("b@e2e.test");
   // **A password, because the third browser is the one it is for** (spec §9.4).
   // It costs the two players nothing — both hold a seat and a seat holder never
-  // presents anything — and it is the only way to reach the unlock face, which
-  // is the screen between a link and a game somebody is here to watch.
-  await a.getByLabel("Ask for a password to join").check();
-  await a.getByLabel("Table password").fill(WATCH_PASSWORD);
+  // presents anything — and it is the only way to reach the unlock face.
+  await a.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
+  await a.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
   );
@@ -180,7 +180,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // ---- the third browser, which is here to watch (spec §9.4) --------------
   //
   // It arrives at the table's own address and nothing else: C holds no seat, so
-  // the lobby's Your games does not list this table for it, and the only way in
+  // the lobby's Your tables does not list this table for it, and the only way in
   // is the link somebody would have sent.
   const c = await (await newContextWithoutWorker(browser, await liveContextOptions(WATCHER))).newPage();
   const watchC = watchForBreakage(c);
@@ -191,8 +191,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // Exact, for the reason `harness.ts` gives: the lobby's own heading, not
   // the chat panel's, which carries the word too.
   await expect(c.getByRole("heading", { name: "Lobby", exact: true })).toHaveCount(0);
-  const watchButton = c.getByRole("button", { name: "Watch" });
-  await expect(watchButton).toBeVisible();
+  const spectateButton = c.getByRole("button", { name: "Spectate" });
+  await expect(spectateButton).toBeVisible();
 
   // **The request log, installed BEFORE the stream is opened**, so the one
   // connection the watcher makes for this table is inside the count. The house
@@ -220,9 +220,9 @@ test("two people at two browsers play to a winner and neither sees the other's h
     if (socketTo(ws, streamPath)) streams += 1;
   });
 
-  await c.getByLabel("Password").fill(WATCH_PASSWORD);
-  await watchButton.click();
-  await expect(c.getByText("You are watching")).toBeVisible();
+  await c.getByLabel("Table password", { exact: true }).fill(WATCH_PASSWORD);
+  await spectateButton.click();
+  await expect(c.getByText("You are spectating")).toBeVisible();
   await expect(c.getByText(/end triggers:/)).toBeVisible({ timeout: 15_000 });
   // The watcher's own side column is empty of cards from the first frame, and
   // it is the same selector that finds A's and B's hands on their screens —
@@ -243,15 +243,15 @@ test("two people at two browsers play to a winner and neither sees the other's h
   await reads(c, "hello from a");
   await reads(c, "and b");
   await say(c, "watching you both");
-  // The watcher is MARKED as one, which is the label rule R-6.4.2 asks of a
-  // table. **The separator is in the needle, and that is the whole assertion:**
-  // the row is selected by a text that already contains the word, so a check
-  // for "watching" alone is implied by its own filter and could never fail —
-  // only the marker's own " · watching" distinguishes a labelled watcher from
-  // one who happened to say the word.
+  // The spectator is MARKED as one, which is the label rule R-6.4.2 asks of a
+  // table. **The separator is in the needle**: the row is selected by the
+  // message's own text, so only the marker's " · spectating" tells a labelled
+  // spectator from a line that merely mentions the word. (C's message stays
+  // "watching you both": it is what a person typed, not a word the client
+  // draws.)
   await expect(
     chatOf(c).getByRole("listitem").filter({ hasText: "watching you both" }),
-  ).toContainText("· watching");
+  ).toContainText("\u00b7 spectating");
   // **The mover reads it during their OWN turn** — the cell that must fail
   // under the old `active` (R-6.4.4): whichever page shows a move, that page's
   // panel receives the watcher's line while its prompt is on screen. The

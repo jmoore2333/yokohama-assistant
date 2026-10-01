@@ -31,11 +31,14 @@ import {
   download,
   forgetUnplayable,
   listUnplayable,
+  removeForeign,
   restorePairs,
   type Outcome,
   type RestoreReport,
   type UnplayableGame,
 } from "./backup";
+import type { TableView } from "./types";
+import productionBot from "./wire/production_bot.json";
 
 /** What one outcome reads as. The clash NAMES its row — the id is beside it in
  *  the list — and says what is in the way rather than only that something is. */
@@ -65,6 +68,14 @@ function stamp(): string {
 /** A refusal this control met, shown where it happened rather than thrown. */
 const sentenceOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** The bot this build deals, by its label — the contract file (spec §2.4). */
+const PRODUCTION_LABEL = productionBot.label;
+
+/** What a foreign row says: the bot it was played against and the one this
+ *  build runs — the server's own refusal, worded for a game on this device. */
+const foreignWords = (t: TableView): string =>
+  `played against ${t.bot?.label ?? "a bot"}; this build runs ${PRODUCTION_LABEL} and cannot continue it`;
+
 /**
  * Every game in this browser, as one file (R-6.5b2.10).
  *
@@ -73,7 +84,14 @@ const sentenceOf = (e: unknown): string => (e instanceof Error ? e.message : Str
  * IndexedDB from this page rather than through the Worker for exactly that
  * reason.
  */
-export function BackUpEverything(): React.ReactNode {
+export function BackUpEverything({
+  label = "Back up everything",
+}: {
+  /** The visible word. The door's card says "Back up" (mock 01); the control's
+   *  NAME stays "Back up everything" wherever it is drawn, so a screen reader —
+   *  and every walk that clicks it — hears what the file holds. */
+  label?: string;
+} = {}): React.ReactNode {
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
   const save = async () => {
@@ -92,8 +110,13 @@ export function BackUpEverything(): React.ReactNode {
   };
   return (
     <>
-      <button type="button" className="ghost back-up-all" onClick={() => void save()}>
-        Back up everything
+      <button
+        type="button"
+        className="ghost back-up-all"
+        aria-label={label === "Back up everything" ? undefined : "Back up everything"}
+        onClick={() => void save()}
+      >
+        {label}
       </button>
       {/* **The two files, told apart in one line** (R-6.5b2.10). They are not
           the same file and a player has no way to know that from the button
@@ -184,11 +207,18 @@ export function Restore({ onDone }: { onDone?: () => void }): React.ReactNode {
 
   return (
     <div className="restore">
-      <label className="field restore-field">
-        <span>Restore from a backup</span>
+      {/* **"Restore", with the file picker out of sight** (M6.5c2, mock 01):
+          the word is the control, and the picker opens from it. The input keeps
+          its full NAME, "Restore from a backup" — what a screen reader hears and
+          what every cell and walk reaches it by — and the stylesheet draws its
+          keyboard focus on the word (`:has(:focus-visible)`, `styles.css`). */}
+      <label className="restore-field">
+        <span className="restore-word">Restore</span>
         <input
           ref={input}
           type="file"
+          className="sr-only"
+          aria-label="Restore from a backup"
           accept="application/json,.json"
           onChange={(e) => {
             const file = e.target.files?.[0];
@@ -296,10 +326,33 @@ function Forget({ id, onForget }: { id: string; onForget: (id: string) => Promis
  * **A row can outlive its reason across a `SEMANTICS_REV` bump**, and the note
  * for whoever makes that bump is on `restoreOne` in `local/db.ts`, which is the
  * function it is about (whole-branch review, Minor 1).
+ *
+ * **And the games the LISTING says this build's bot cannot continue** (M6.5c2,
+ * spec §2.4), handed in by the host as `foreign`: listed first, beside the
+ * cross-rev rows, with the same Back up and two-click Remove — but removed
+ * through the module's own fenced delete ([`removeForeign`]), because their row
+ * is the module's listing and not a note in this browser's database.
  */
-export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode {
+export function Unplayable({
+  reload = 0,
+  foreign = [],
+  onRemoved,
+}: {
+  reload?: number;
+  /** Games the LISTING says this build's bot cannot continue (M6.5c2, spec
+   *  §2.4): not over, dealt a bot this build does not run. Listed beside the
+   *  cross-rev rows, the pattern R-6.5b2.12 set, and removed through the
+   *  module's own fenced delete ([`removeForeign`]) — their row is the
+   *  module's listing, not a note in this browser's database. */
+  foreign?: readonly TableView[];
+  /** A foreign row was removed: the host re-reads its listing. */
+  onRemoved?: () => void;
+}): React.ReactNode {
   const [rows, setRows] = useState<UnplayableGame[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** A Remove that did not happen — said under the list, not in place of it:
+   *  the rows are still there, and the reason is about one of them. */
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const read = useCallback(() => {
     listUnplayable().then(setRows, (e: unknown) => setError(sentenceOf(e)));
@@ -314,6 +367,15 @@ export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode
       setError(sentenceOf(e));
     }
   };
+  const removeRefused = async (id: string) => {
+    setRemoveError(null);
+    try {
+      await removeForeign(id);
+      onRemoved?.();
+    } catch (e) {
+      setRemoveError(sentenceOf(e));
+    }
+  };
 
   // **Wrapped, not the bare exception** (review M-10). A browser that cannot
   // open IndexedDB already draws `OnThisDevice`'s own fault line; a second,
@@ -321,12 +383,20 @@ export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode
   // read failed or what it was for.
   if (error !== null)
     return <p className="error">the games that will not open could not be read &mdash; {error}</p>;
-  if (rows === null || rows.length === 0) return null;
+  const cross = rows ?? [];
+  if (cross.length === 0 && foreign.length === 0) return null;
   return (
     <div className="unplayable">
       <h4>Will not open here</h4>
       <ul>
-        {rows.map((g) => (
+        {foreign.map((t) => (
+          <li key={t.id}>
+            <span className="restore-id">{t.name ?? t.id}</span>{" "}
+            <span className="meta">{foreignWords(t)}</span> <BackUpOne id={t.id} />
+            <Forget id={t.id} onForget={removeRefused} />
+          </li>
+        ))}
+        {cross.map((g) => (
           <li key={g.id}>
             <span className="restore-id">{g.id}</span>{" "}
             <span className="meta">
@@ -340,6 +410,7 @@ export function Unplayable({ reload = 0 }: { reload?: number }): React.ReactNode
           </li>
         ))}
       </ul>
+      {removeError !== null && <p className="error">{removeError}</p>}
     </div>
   );
 }
