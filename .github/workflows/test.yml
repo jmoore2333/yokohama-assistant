@@ -3,13 +3,22 @@ on:
   push:
   pull_request:
 
-# **What runs here, and what stays local** (the M6.5c close; spec §5.6 of
-# docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md). CI runs the
-# deterministic suites a clean checkout can build on a runner: the engine
-# crate (`test`); the layer, both WebAssembly hosts, and the Cloudflare
-# Worker's shell, pool and module (`web-server`); and the client
-# (`web-client`). There is no paths filter, so every push runs every job, and
-# a change under `worker/` is always checked.
+# **What runs here, and what stays local** (the M6.5c2 cleanup; spec §2.9 of
+# docs/plans/2026-09-26-web-frontend-m6.5c2-spec.md, as revision 2.7 amends
+# it). CI runs what a clean checkout can build and what the per-edit process
+# does not already run heavily; nothing is added here beyond that (the
+# owner's ruling R-6.5c2.24, "CI stays lean"), and M6.5c2 added only three
+# things: the whole-game gate's return, the step that names the layer's test
+# binaries, and `--test browser_played_pin` on the layer's test line (four
+# cells no workflow had run). It runs four jobs, each a separate claim so
+# that a red one names its lane: the engine crate (`test`); the table layer
+# and the browser host, the whole-game gate among them (`web-server`); the
+# Cloudflare Worker's shell, pool and module (`worker`); and the client
+# (`web-client`). There is no paths filter here, so every push and pull
+# request runs every job, and a change under `worker/` is always checked. The
+# self-host IMAGE is the other workflow's, `docker.yml`, which runs on a pull
+# request or a push to master that changes one of the image's web-lane
+# inputs, and by hand.
 #
 # Deliberately NOT here, each for its reason:
 # - the browser walk (`npm run e2e` in `web/`): it wants a release build and a
@@ -23,8 +32,9 @@ on:
 # - the deploy guard's build-dependent checks (`worker/scripts/deploy-guard.mjs`
 #   checks 1, 2, 8 and 9: the release module, the assets tree, and whether
 #   each is the build of the current sources), which read the deploying
-#   workstation's own build. Its checks of the committed configurations, 3 to
-#   7, DO run here, inside `npm run test:scripts`.
+#   workstation's own build. Its checks 3 to 7, of the committed wrangler
+#   configurations with the per-door rules among them, need no build and DO
+#   run here, inside the `worker` job's `npm run test:scripts`.
 #
 # No job reads a secret or `.dev.vars`, and none deploys: the Worker ships from
 # the owner's workstation through `npm run deploy` (RUNBOOK §6.2). The other
@@ -52,21 +62,24 @@ jobs:
   # crate is byte-identical to master and this one is not, so a failure here
   # names the lane it came from.
   #
-  # **Since 2026-09-15 this job runs WITHOUT the whole-game gate binary**
-  # (`tests/play_a_whole_game.rs`, two tests:
-  # `a_whole_two_player_game_against_the_bot_plays_through_the_api` and
-  # `two_people_play_to_a_winner_and_each_sees_only_their_own_hand`). Both play a
-  # full two-player game through the API on an OS-entropy seed, and the gate's
-  # wall has read 13 s, 857 s and 16 s on identical code (M6.1 close §6.1) — the
-  # pull_request run for PR #31 sat inside it for over thirty minutes while the
-  # push run on the SAME commit passed in three. The two remaining targets are
-  # the claims CI is here for: the lib cells and the corpus contract.
-  #
-  # The gate stays PER-EDIT locally — `cargo test -p yokohama-web` with no
-  # target filter still runs it — and it is deliberately not `#[ignore]`d,
-  # because an ignored test that no documented command runs is a test that
-  # never runs. Owner ruling 2026-09-15: it returns to this job once the room
-  # (M6) is through and the gate is stable.
+  # **Every test binary of the layer runs here since M6.5c2.** From 2026-09-15
+  # this job ran `--lib --test wire_fixtures` alone. That left out the
+  # whole-game gate (`tests/play_a_whole_game.rs`, two arms), whose wall read
+  # 13 s, 857 s and 16 s on identical code (M6.1 close §6.1): its vs-bot arm
+  # placed nothing and leaned on the bot to end the game, and on some
+  # OS-entropy seeds it livelocked (M6.3 close §6.3). The same filter also
+  # left out `tests/browser_played_pin.rs`, whose four cells no workflow had
+  # then ever run. M6.5c2 gave the vs-bot arm the two-people arm's two guards
+  # (the placement probe and the stuck-picker rule) and a recorded bot stream
+  # seed, and a run over 50 OS-entropy seeds ended every game, the longest in
+  # 1,212 inputs under the arm's cap of 5,000 (`VS_BOT_CAP`'s comment in the
+  # test carries the reading; cycle A's plan,
+  # docs/plans/2026-09-27-web-frontend-m6.5c2a-plan.md, Task 8). The owner's
+  # 2026-09-15 ruling returned the gate here once the room (M6) was through
+  # and the gate stable, and spec §2.6 made that recorded run the condition.
+  # It is this job's LAST step, with a bound of its own, and the step that
+  # asks cargo for the layer's test binaries fails when one appears that no
+  # step names.
   web-server:
     runs-on: ubuntu-latest
     steps:
@@ -109,13 +122,15 @@ jobs:
       # deployed (deploy/RUNBOOK.md §1; the orchestrator's ruling I-87), so the
       # modules this job builds and replays come from the version that built
       # the shipped ones. The byte figures of RUNBOOK §1 to §3 were taken on
-      # 132, and `deploy/Dockerfile` still installs 132 for the NAS image;
-      # aligning it is the cleanup cycle's. `apt-get install binaryen` on
-      # `ubuntu-latest` gives 120, which emits a different module, a size
-      # change CI could not see. Nothing here measures whether this tarball's
-      # 133 and the workstation's emit the same bytes. The cache key carries
-      # the version, so a bump here invalidates the cache rather than
-      # restoring the old binary.
+      # 132. Since M6.5c2 `deploy/Dockerfile` installs this same 133 tarball,
+      # pinned to this same hash, so every place a module is optimized — this
+      # job, the self-host image and the deploying workstation — runs one
+      # version. `apt-get install binaryen` on `ubuntu-latest` gives 120,
+      # which emits a different module, a size change CI could not see.
+      # Nothing here measures whether this tarball's 133 and the
+      # workstation's emit the same bytes. The cache key carries the version,
+      # so a bump here invalidates the cache rather than restoring the old
+      # binary.
       #
       # **The download is CHECKSUMMED before anything is unpacked.** The URL
       # promises a name, not bytes, and what comes back is then RUN over the
@@ -123,7 +138,7 @@ jobs:
       # mismatch. The 133 hash was measured on 2026-09-26 over 111,200,018
       # bytes, and it equals the `.sha256` file binaryen publishes beside the
       # tarball, whose 132 file equals the 132 hash this step pinned before.
-      # `deploy/Dockerfile` pins that 132 hash for its own download.
+      # `deploy/Dockerfile` pins this hash for its own download since M6.5c2.
       - uses: actions/cache@v4
         with:
           path: ~/.local/bin/wasm-opt
@@ -146,67 +161,53 @@ jobs:
       # Printed so the log says which optimizer produced the module, rather than
       # leaving a reader to infer it from a cache key.
       - run: wasm-opt --version
-      # M6.5c: BOTH lock files key the npm cache — `web/` and `worker/` are two
-      # packages (P-3). A key read off one lock alone still matches after the
-      # other lock changes, and a matched key is never saved again, so that
-      # package's new downloads would never reach the cache.
+      # The npm cache is keyed by `web/`'s lock alone since M6.5c2: this job
+      # installs only `web/`, and the `worker` job keys its own cache by its own
+      # lock. (M6.5c's P-3 had both locks key one cache while this job installed
+      # both packages.)
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            web/package-lock.json
-            worker/package-lock.json
+          cache-dependency-path: web/package-lock.json
       - run: npm ci
         working-directory: web
       - run: npm run build:wasm
         working-directory: web
-      # The WORKER project, type-checked where the module exists. The
-      # `web-client` job below runs the same script with the module absent and
-      # the opt-out set, so that job checks the app and node projects only —
-      # this is the one place the Worker's own sources are checked at all.
+      # The WORKER project — the browser's Web Worker (`web/src/local/worker.ts`),
+      # not the Cloudflare Worker of the `worker` job — type-checked where the
+      # module exists. The `web-client` job below runs the same script with the
+      # module absent and the opt-out set, so that job checks the other three
+      # projects (the app, the node half and the service worker) and not this
+      # one — this is the one place the Web Worker's own sources are checked at
+      # all.
       - run: npm run typecheck
         working-directory: web
-      # M6.5c: the Cloudflare Worker's package (`worker/`), its own npm package
-      # with its own lock. `npm ci` installs the pinned toolchain, workerd among
-      # it — the pool runs the shell's cells inside the Workers runtime.
-      - run: npm ci
-        working-directory: worker
-      # The module the pool loads, and the one `typecheck` reads the factory's
-      # declarations from: the DEBUG build, because the trap cells call
-      # `debug_trap`, which the release module does not export. It runs BEFORE
-      # both because neither builds one, and a clean checkout has none.
-      - run: npm run build:module:debug
-        working-directory: worker
-      # Both TypeScript projects: the shell with the pool's cells (the Workers
-      # runtime's globals), and the two vitest configs (node's). Its
-      # `pretypecheck` hook writes `test/fixtures.gen.ts` first — the pool's
-      # cells import it, and a clean checkout has none until a hook has run.
-      - run: npm run typecheck
-        working-directory: worker
-      # The node half: the build scripts' cells (the factory transform, the
-      # asset assembly, the deploy guard — whose checks of the two committed
-      # wrangler configurations make a drifted `assets` block red here) and
-      # the shell's pure modules. One cell runs `cargo metadata --offline` to
-      # hold the freshness digest's source list to the module's crate graph
-      # (R3's R-N1), so this step needs `cargo` on the PATH: it belongs in this
-      # job, after the toolchain step, never in a node-only job.
-      - run: npm run test:scripts
-        working-directory: worker
-      # The pool: the shell's cells inside workerd, over the module built above.
-      - run: npm test
-        working-directory: worker
-      # The module's own cells, native: every export's logic is plain Rust,
-      # most of it in an `_inner` function, and the cells call it.
-      - run: cargo test -p yokohama-worker
-      # The module as it DEPLOYS compiles: the `release-wasm` profile, for the
-      # target, without the `debug` feature. The module built above is the
-      # debug one and the cells above are native, so no other step builds that
-      # combination.
-      - run: cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-worker
-      - run: cargo test -p yokohama-web --lib --test wire_fixtures
+      # Every test binary of the layer is named by a step of this job — the
+      # line after this step and the whole-game gate, the job's last step. The
+      # class this lane keeps finding is a suite no command names, which then
+      # never runs: the filter this job carried from 2026-09-15 to M6.5c2 had
+      # left out `browser_played_pin` without a word. The binaries are CARGO's
+      # list, not the directory's, so a `tests/<name>/main.rs` or a `[[test]]`
+      # entry counts as one; `--no-deps` resolves nothing, so it reads no
+      # registry. A new binary fails here until a step names it.
+      - name: every test binary of the layer is named by a step of this job
+        run: |
+          set -euo pipefail
+          got="$(cargo metadata --no-deps --offline --format-version 1 | python3 -c '
+          import json, sys
+          web = next(p for p in json.load(sys.stdin)["packages"] if p["name"] == "yokohama-web")
+          print(" ".join(sorted(t["name"] for t in web["targets"] if "test" in t["kind"])))
+          ')"
+          want="browser_played_pin play_a_whole_game wire_fixtures"
+          if [ "$got" != "$want" ]; then
+            echo "::error::crates/yokohama-web's test binaries are [$got]; this job names [$want] — name the new binary in a step"
+            exit 1
+          fi
+          echo "the layer's test binaries, every one named by a step: $got"
+      - run: cargo test -p yokohama-web --lib --test wire_fixtures --test browser_played_pin
       # M6.5b's fix wave: the browser host's own crate. It is host code with
-      # four cells — among them the scan that holds its platform calls to the
+      # seven cells — among them the scan that holds its platform calls to the
       # clock — and nothing in CI ran them: the `build:wasm` step above only
       # COMPILES it for the browser. This is the class CLAUDE.md's gate rule
       # names, "a suite no documented gate line names is a suite that never
@@ -244,8 +245,12 @@ jobs:
       # reading a person needs, the compiler's error or the cell's own failure,
       # never reaches the log and the step reports only its exit code. The
       # status is taken by hand and the output is printed on BOTH paths.
+      # GitHub runs an unspecified shell as `bash -e {0}`, so `-e` is ON unless
+      # the step turns it off: the `set +e` below is what makes the sentence
+      # above true (M6.5c2, measured — without it a red `cargo` printed nothing).
       - name: the refusing build, and that its eight identity cells really ran
         run: |
+          set +e
           set -uo pipefail
           out=$(cargo test -p yokohama-web --no-default-features --features server --lib "identity::" 2>&1)
           status=$?
@@ -264,6 +269,120 @@ jobs:
       # against a stale script would compare two stale things and agree.
       - run: npm run test:wasm
         working-directory: web
+      # **The whole-game gate, back in CI since M6.5c2** (R-6.5c2.14; spec §2.6,
+      # §2.9). Both arms play a full two-player game through the API; the vs-bot
+      # arm prints the bot's stream seed first (`gate: start bot_seed=…`), and
+      # `YOKOHAMA_WEB_GATE_BOT_SEED` replays that game. It runs LAST, so every
+      # other step has reported before it, and it is BOUNDED: a livelock costs
+      # twenty minutes of a runner under this step's name, where a job's
+      # default would allow six hours. `--nocapture`, because libtest prints a
+      # test's captured output only when the test ends, and a run the bound
+      # kills never ends — the seed line must reach the log as it is printed.
+      # `set +e` for the refusing build's reason; `tee` keeps a copy for the
+      # count; and the count is asserted, because an arm `#[ignore]`d or
+      # deleted still exits 0.
+      - name: the whole-game gate (both arms), bounded
+        timeout-minutes: 20
+        run: |
+          set +e
+          set -uo pipefail
+          cargo test -p yokohama-web --test play_a_whole_game -- --nocapture 2>&1 | tee "$RUNNER_TEMP/whole-game.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the whole-game gate failed — its output, the vs-bot arm's seed included, is above"
+            exit "$status"
+          fi
+          grep -q "test result: ok. 2 passed" "$RUNNER_TEMP/whole-game.log" || {
+            echo "::error::the whole-game gate did not run both of its arms"
+            exit 1
+          }
+
+  # **The Cloudflare Worker, a job of its own since M6.5c2** (R-6.5c2.14; spec
+  # §2.9). Its steps rode inside `web-server` through M6.5c, so a Worker-only
+  # change paid for the browser host's build to be checked, and a red Worker
+  # step read as the layer's. A re-arrangement and not an addition of commands
+  # (R-6.5c2.24): the same commands, with their comments, moved here. Not of
+  # minutes, though: as a job of its own it pays its own runner and, with no
+  # Rust cache in either job, recompiles the crates it shares with
+  # `web-server` (the engine, the CLI and the layer, native and for wasm32) on
+  # the private repository's counted minutes.
+  #
+  # What it needs:
+  # - the pinned toolchain, because the module is a `wasm32-unknown-unknown`
+  #   build and `test:scripts` runs `cargo metadata`;
+  # - `wasm-bindgen-cli` at the crate's pin;
+  # - node.
+  #
+  # It needs NO binaryen: the DEBUG module the pool loads is never run through
+  # `wasm-opt` (`scripts/build-module.mjs`), and the release-wasm step below is
+  # a plain `cargo build`. Nothing here reads `web/`'s node_modules either:
+  # the pool's corpus is the committed `web/src/wire/` and
+  # `web/src/wire-script/`, which the `pretest` and `pretypecheck` hooks read
+  # as text.
+  worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain is named rather than `@stable`, with the wasm target on
+      # it — `web-server`'s reason (M6.5a): `rust-toolchain.toml` pins 1.97.1,
+      # and a bare `rustup target add` could land the target elsewhere.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
+      # The generator the module's glue comes from, at the version
+      # `crates/yokohama-worker` depends on (`wasm-bindgen = "=0.2.128"`). The
+      # cache key is `web-server`'s, so once either job has saved the binary
+      # both restore it.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-bindgen
+          key: wasm-bindgen-cli-0.2.128
+      - run: test -x ~/.cargo/bin/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.128 --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      # M6.5c: the Cloudflare Worker's package (`worker/`), its own npm package
+      # with its own lock. `npm ci` installs the pinned toolchain, workerd among
+      # it — the pool runs the shell's cells inside the Workers runtime.
+      - run: npm ci
+        working-directory: worker
+      # The module the pool loads, and the one `typecheck` reads the factory's
+      # declarations from: the DEBUG build, because the trap cells call
+      # `debug_trap`, which the release module does not export. It runs BEFORE
+      # both because neither builds one, and a clean checkout has none.
+      - run: npm run build:module:debug
+        working-directory: worker
+      # Both TypeScript projects: the shell with the pool's cells (the Workers
+      # runtime's globals), and the two vitest configs (node's). Its
+      # `pretypecheck` hook writes `test/fixtures.gen.ts` first — the pool's
+      # cells import it, and a clean checkout has none until a hook has run.
+      - run: npm run typecheck
+        working-directory: worker
+      # The node half: the build scripts' cells (the factory transform, the
+      # asset assembly, the deploy guard — whose checks of the committed
+      # wrangler configurations make a drifted `assets` block red here) and
+      # the shell's pure modules. One cell runs `cargo metadata --offline` to
+      # hold the freshness digest's source list to the module's crate graph
+      # (R3's R-N1), so this step needs `cargo` on the PATH: it belongs in this
+      # job, after the toolchain step, never in a node-only job.
+      - run: npm run test:scripts
+        working-directory: worker
+      # The pool: the shell's cells inside workerd, over the module built above
+      # — BOTH projects since M6.5c2, one over wrangler.test.jsonc (the worker
+      # door) and one over wrangler.open.test.jsonc (the open door).
+      - run: npm test
+        working-directory: worker
+      # The module's own cells, native: every export's logic is plain Rust,
+      # most of it in an `_inner` function, and the cells call it.
+      - run: cargo test -p yokohama-worker
+      # The module as it DEPLOYS compiles: the `release-wasm` profile, for the
+      # target, without the `debug` feature. The module built above is the
+      # debug one and the cells above are native, so no other step builds that
+      # combination.
+      - run: cargo build --profile release-wasm --target wasm32-unknown-unknown -p yokohama-worker
 
   # **The browser client, which nothing here could make red until M3.5.**
   #

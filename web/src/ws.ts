@@ -16,11 +16,18 @@
 // tell an expired session from a dropped network, and does not try. It answers
 // `"closed"`, and the arm asks one plain fetch what happened.
 //
+// **So under the open door the name rides the URL** (M6.5c2, spec §2.1): the
+// upgrade carries `claimed=<the stored name>` — `api.ts`'s `identityParams`,
+// the value the fetch header carries — set through `URLSearchParams`, so a `+`
+// travels as `%2B` and never becomes a space (Review Focus 1). Under the
+// Access doors it carries nothing: the edge's own session is the identity.
+//
 // What is here is the transport and NOTHING about the signal — `sse.ts`'s rule.
 // It knows the framing and the keep-alive; it does not know what a `signal`
 // frame carries, and it knows of `end` only that the server has said this
 // socket is over.
 
+import { identityParams } from "./api";
 import type { Frame } from "./sse";
 
 /** How often an open socket says `ping` (spec §2.7).
@@ -54,7 +61,8 @@ function unwrap(message: unknown): Frame | null {
 
 /**
  * Open a socket on `path` — the source's own stream URL, `ws:` under `http:`
- * and `wss:` under `https:` — and read frames from it until it closes.
+ * and `wss:` under `https:`, with the open door's claim as its `claimed`
+ * parameter — and read frames from it until it closes.
  *
  * Resolves `"ended"` when an `end` frame came before the close, WHATEVER the
  * close's code: this host always sends `end` before its 4403/4404 close (spec
@@ -95,6 +103,7 @@ export function readSocket(
     }
     const url = new URL(path, location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    for (const [key, value] of Object.entries(identityParams())) url.searchParams.set(key, value);
     const ws = new WebSocket(url.href);
     let ended = false;
     let ping: ReturnType<typeof setInterval> | undefined;

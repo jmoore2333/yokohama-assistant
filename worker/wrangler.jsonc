@@ -60,21 +60,27 @@
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
   // The variables (spec §3.1), none of them a secret; RUNBOOK §6 says what
   // each one's absence means. `wrangler deploy` REPLACES the Worker's
-  // variables with these, so this file is the whole list. Three that `Env`
-  // declares are not here, and their absence is their meaning:
-  // `YOKOHAMA_WEB_COUNT_WAKES` (off), `YOKOHAMA_WEB_ADMINS` (set with
-  // `wrangler secret put`, the plan's ruling P-1 — a deploy leaves a secret
-  // alone), and the pool's test clock, which never ships (the deploy guard
-  // refuses this file if it so much as names it).
+  // variables with these, so this file is the whole list. Four that `Env`
+  // declares are not here: `YOKOHAMA_WEB_COUNT_WAKES`, whose absence means
+  // off; the two SECRETS, `YOKOHAMA_WEB_ADMINS` (the plan's ruling P-1) and
+  // the dev door's `DEV_DOOR_CLIENT_ID` (M6.5c2, R-6.5c2.5), each set as a
+  // Worker secret, which a deploy leaves alone — the deploy guard refuses this
+  // file if its `vars` name either; and the pool's test clock, which never
+  // ships (the deploy guard refuses this file if it so much as names it).
   "vars": {
+    // The door (M6.5c2, spec §2.1; R-6.5c2.5), with no default: `worker` is
+    // Cloudflare Access, verified by the shell — this repository's
+    // configuration, behind the `yokohama` Access application. `open` is a
+    // deployment with no identity provider, where anyone who reaches the Worker
+    // may play under any name; no Worker of this repository runs it.
+    "YOKOHAMA_WEB_IDENTITY": "worker",
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
     "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
-    // The `yokohama-worker` Service Auth credential's client id — its public
-    // half. The secret lives only in the repository root's gitignored
-    // `.dev.vars`, and no configuration names it.
-    "DEV_DOOR_CLIENT_ID": "62dc00d9ce1cb5d7c56849003a277bdc.access",
-    // On for this cycle (spec §3.1): the test harness's claimed callers.
+    // On for this cycle (spec §3.1): the test harness's claimed callers. The
+    // `yokohama-worker` credential's client id is the secret
+    // `DEV_DOOR_CLIENT_ID`; with none set, the dev door is shut whatever this
+    // says.
     "YOKOHAMA_DEV_DOOR": "on",
     // The receipt archive over the bucket above (spec §2.6). `off` deploys
     // with no archive — RUNBOOK §6.3 says what changes — and needs no change

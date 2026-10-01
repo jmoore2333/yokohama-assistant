@@ -12,8 +12,9 @@ not this repository. If a Cloudflare word is new, [the terms section](#the-cloud
 defines each one in a few lines. §2 to §5 then explain the platform, its free plan, the CPU budget
 that shaped the design, and what a game costs; the rest explains **why** the host has the shape it
 has and **how** each part works. Every mechanism is described as the code does it at the M6.5c
-close. Every figure is either a reading, named with where it was taken, or, in §5, an estimate
-derived from readings and labelled as one. The readings are this cycle's own measurements, and
+close, and a sentence M6.5c2 made false is corrected where it stands, with a dated note. Every
+figure is either a reading, named with where it was taken, or, in §5, an estimate derived from
+readings and labelled as one. The readings are this cycle's own measurements, and
 Cloudflare's documentation as fetched on 2026-09-26. A behaviour that was designed but never
 observed live says so.
 
@@ -21,7 +22,8 @@ It is a map, not an authority. The authority is the spec,
 [`docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md`](../docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md),
 read with the corrections execution recorded in the close,
 [`docs/plans/2026-09-26-web-frontend-m6.5c-close.md`](../docs/plans/2026-09-26-web-frontend-m6.5c-close.md).
-The operating manual is [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) §6. Where this file and the
+The operating manual is [`RUNBOOK.md`](RUNBOOK.md), beside this file; in this README, "RUNBOOK" is
+that file, and the NAS host's is [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md). Where this file and the
 code disagree, the code is right and this file has a bug.
 
 **Contents.** Start with [the Cloudflare terms](#the-cloudflare-terms-this-readme-uses) if the
@@ -132,9 +134,9 @@ seams and speaks one platform.
 
 | Host | Code | What it serves | Identity | How a change reaches a browser | Where finished games go |
 |---|---|---|---|---|---|
-| **The NAS container** | `crates/yokohama-web` with its `server` feature (axum and tokio) | hosted multiplayer at `yokohama-nas.moore.nyc`, and the self-host path | `claimed`: a typed name, behind Access | server-sent events | a directory |
+| **The NAS container** | `crates/yokohama-web` with its `server` feature (axum and tokio) | hosted multiplayer at `yokohama-nas.moore.nyc`, and the self-host path | `cf-access` behind Access (the repository's default), or `open` for a self-host with no identity provider ([`deploy/README.md`](../deploy/README.md)) | server-sent events | a directory |
 | **The browser** | `crates/yokohama-wasm`, run in a Web Worker by `web/src/local/` | single player, with no server | a fixed local identity | nothing to signal | IndexedDB, then an upload by the client's outbox |
-| **Cloudflare** (this directory) | `crates/yokohama-worker`, one instance per Durable Object, under the TypeScript shell in `worker/src/` | hosted multiplayer at `yokohama.moore.nyc` | `cf-access`: Access's assertion, verified | hibernatable WebSockets | the R2 bucket `yokohama-archive` |
+| **Cloudflare** (this directory) | `crates/yokohama-worker`, one instance per Durable Object, under the TypeScript shell in `worker/src/` | hosted multiplayer at `yokohama.moore.nyc` | `worker`: Access's assertion, verified (shown as `cf-access`), or `open` (§1.5) | hibernatable WebSockets | the R2 bucket `yokohama-archive` |
 
 The client is ONE static release, `web/dist`, with its service worker. The NAS serves it from its
 own binary, and Cloudflare serves it from its asset layer. Single player runs from that release on
@@ -164,9 +166,10 @@ Two layer changes were made, each for a reason no host code could supply:
   save is uploaded after the move has been answered (§7.5), so the stamp that records "this game is
   archived" runs later, as a retry. That stamp must be the layer's own code.
 - **`tables::check_shape` became `pub`** (`crates/yokohama-web/src/tables.rs`). The house refuses,
-  loudly, a table copy that the layer's own listing would drop without a word (§7.4). It has to,
-  because the layer's diagnostics are `eprintln!`, and `eprintln!` prints nothing on
-  `wasm32-unknown-unknown`.
+  loudly, a table copy that the layer's own listing would drop without a word (§7.4). It had to,
+  because the layer's diagnostics were then `eprintln!`, and `eprintln!` prints nothing on
+  `wasm32-unknown-unknown`. *(Corrected 2026-09-28: since M6.5c2 the layer's log lines reach this
+  host's log through the log seam, under their own names, §10.2.)*
 
 Nothing else in the layer moved. The engine and the other fenced crates, the CLI and the browser
 host's crate (`crates/yokohama-wasm`) are byte-identical to the cycle's base, and `SEMANTICS_REV`,
@@ -219,7 +222,8 @@ that cannot finish at once. §7 takes each part in turn.
 
 ### 1.4 What a player sees
 
-These screenshots were taken on the live Worker on 2026-09-26 with three test identities. Alice
+These screenshots were taken on the live Worker on 2026-09-26 with three test identities, before
+M6.5c2 redesigned the door, the lobby and the forms; they are recaptured in cycle D. Alice
 (`alice@readme.test`) opens a table named "Friday game" with a password, Ben (`ben@readme.test`)
 joins it, and Carol (`carol@readme.test`) watches. The client is the same program on every host;
 only where its answers come from differs.
@@ -271,6 +275,71 @@ socket sends can reach the game (§7.3).*
 
 *After Alice abandoned the table, on which no move had been made, Ben's screen shows the marker's
 sentence (§7.7), over a lobby that no longer lists the table.*
+
+### 1.5 The two doors: Access, or an open door
+
+`YOKOHAMA_WEB_IDENTITY` names this host's door, and it has **no default** (M6.5c2, R-6.5c2.5). A
+deployment that names none answers its API with a 500 naming the variable, as it answers any bad
+value, while the static release is still served; the deploy guard refuses to deploy a configuration
+that names none, and prints the door it deploys. The value is trimmed and then matched exactly, as the
+layer reads the same variable on the NAS, so `Open` is refused by name. There are two doors.
+
+**Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
+- A Cloudflare Access application covers the hostname. The Worker verifies Access's signed assertion
+  on every request before anything reads it (§7.6), and the objects' layer runs its `worker` mode,
+  trusting only the `X-Yokohama-User` header the Worker sets.
+- `/api/me` and `/api/health` name this door `cf-access`, the door a player's browser is behind.
+- `workers_dev` must be `false`, because a `workers.dev` URL would go around the hostname-wide
+  application, and both Access values must be set; the guard refuses either lack.
+- **The dev door** (§7.6) is this repository's test instrument under this door: the `yokohama-worker`
+  Service Auth credential with `YOKOHAMA_DEV_DOOR=on`, naming its caller in
+  `X-Yokohama-Claimed-User`. The live Playwright tier and the live replay play as several people
+  through it.
+- The dev door's client id, `DEV_DOOR_CLIENT_ID`, is a Worker SECRET since M6.5c2, put at that
+  cycle's close (the twenty-first deployment, 2026-09-28; `RUNBOOK.md` §15), and the guard refuses
+  it in `vars`. The dev door goes off before any public door: it is one of the public door's
+  preconditions, which the M6.5c2 cycle C close records
+  (`docs/plans/2026-09-28-web-frontend-m6.5c2c-close.md` §6).
+
+**The open door — `open`, for a deployment with no identity provider.**
+- Players choose a name on the first screen, and the name is who they are. `/api/me` names this door
+  `open`, and the layer keys a name exactly as the NAS's open door does
+  ([`deploy/README.md`](../deploy/README.md#2-the-open-door-a-home-network-a-lan-or-a-vpn)).
+- The Worker reads no Access assertion. It still removes every client `x-yokohama-*` header, and it
+  forwards the caller's name as `X-Yokohama-Claimed-User`, the one header the objects read at this
+  door. The name rides ONE carrier per request:
+  - on a `fetch`, the `X-Yokohama-Claimed-User` header the client sends;
+  - on a WebSocket upgrade, a `claimed=` query parameter, because a browser cannot put a header on
+    an upgrade. The client adds it under this door only.
+- The Worker holds a name only to what a header can carry: visible ASCII, a tab or a space, judged
+  before anything is trimmed or lowercased. A name outside that is no one, never a platform error.
+  Every other rule a name meets is the layer's key grammar, in the objects.
+- The Origin check on upgrades stays.
+- **The trust model:** anyone who can reach the Worker may use any name. A name is a label and a key,
+  never a credential, and tables stay with the name you sat down as.
+- **The quota is the deployer's.** On Workers Free, anyone who can reach an open Worker can spend its
+  100,000 requests a day (§3.1). Cloudflare's rate-limiting rules are the tool.
+- **The operator surface is refused.** A claimed name is never an operator's rights, so under `open`,
+  `/api/admin/…` answers the layer's 404 — as if no operator were configured — whatever name is
+  claimed. An open deployment is operated through `wrangler` and the dashboard.
+- **A contradiction is refused at run time.** `YOKOHAMA_WEB_ADMINS`, or `YOKOHAMA_DEV_DOOR=on`,
+  beside `open` makes the API answer a 500 naming both variables (`src/config.ts`). The guard cannot
+  see the first, which is a secret.
+- **What the guard allows under `open`:**
+  - a `workers.dev` URL, since there is no door to go around;
+  - never `preview_urls`, because a preview version is not the deployed code, whatever the door;
+  - never `YOKOHAMA_DEV_DOOR=on` in `vars`.
+- **Saves:** a plain name never files its saves under the bucket's `test/` root. That root takes
+  only an address ending `.test`, and R-6.5c2.12's lifecycle rule `expire-test-after-30-days`, set at
+  the M6.5c2 close (2026-09-28, `RUNBOOK.md` §15), expires its objects after 30 days.
+- **One refusal reads differently from the NAS's** (ruling R-C10): a claim the layer's grammar
+  refuses, such as `..`, sent to `POST /api/archive`, names an Archive object before the layer can
+  judge it, and that object's `init` answers a 500 carrying the layer's own sentence where the NAS
+  answers its 401. The client's name step never sends such a claim.
+
+**No open-door Worker is deployed by this project.** The owner's Worker is Access. The open door is
+proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells are
+`test/open/`), where the shell runs in workerd with real sockets.
 
 ---
 
@@ -437,9 +506,11 @@ anything about a table, the engine rebuilds the game by applying every recorded 
 **How the core crates run inside it.** The engine (`crates/yokohama-core`), the terminal's model
 (`crates/yokohama-cli`) and the table layer (`crates/yokohama-web`) are compiled together with this
 host's glue (`crates/yokohama-worker`) into one WebAssembly module, built for size: `opt-level =
-"z"`, fat link-time optimization, one codegen unit, then `wasm-opt -Oz`. The module has been
-1,221,719 B since the fix wave. Each object owns its own instance of it (§6.3), so the Rust runs
-where the long CPU allowance is, and the Worker never loads it.
+"z"`, fat link-time optimization, one codegen unit, then `wasm-opt -Oz`. Its size is read in ONE
+place, the root `Cargo.toml`'s `release-wasm` comment, by `scripts/module-figures.mjs`, and re-read at
+each release; the RUNBOOK's deployment records keep the size each deployment shipped. *(Corrected
+2026-09-28, M6.5c2: this sentence stated one size as current.)* Each object owns its own instance of
+it (§6.3), so the Rust runs where the long CPU allowance is, and the Worker never loads it.
 
 **What the spike measured** (spec §0.3, on the real account, before the design was written):
 
@@ -499,7 +570,7 @@ used.
 
 ### 5.1 What was measured
 
-The account's analytics were read before and after each live run (RUNBOOK §6.7, and the close's
+The account's analytics were read before and after each live run (RUNBOOK §7, and the close's
 quota readings). The unit is an **input**: one line the Playwright harness sent to the table, a move or one
 step of a multi-step move.
 
@@ -524,15 +595,19 @@ At the harness's rates, 1,000 inputs use this share of each Free daily ceiling:
 |---|---|---|
 | 100,000 Worker requests | 13,400, 13.4 % | 7,460 inputs; 5,000 to 6,200 after the account's other Workers |
 | 100,000 Durable Object requests | 13,700, 13.7 % | 7,300 inputs |
-| 5 million rows read | 470,000, 9.4 % | 10,600 inputs |
+| 5 million rows read | 470,000, 9.4 % at M6.5c; **56,000, 1.1 % since M6.5c2** (read live at the cycle C close, `RUNBOOK.md` §16) | 10,600 inputs at M6.5c; **about 89,000 since M6.5c2** |
 | 100,000 rows written | 2,500, 2.5 % | 40,000 inputs |
 
 **The request quotas bind first, not rows read.** The Worker requests go soonest, because the
 account's other Workers use 17,000 to 33,000 of them a day (spec §0.5), which leaves this host
 67,000 to 83,000 (spec §2.8). The Durable Object requests come next; the account's other objects
-use only 300 to 1,800 a day (spec §0.5). Rows read is the cost this cycle did not reduce (every
-request re-reads the table's three documents up to three times, the whole-branch review's F-4), and
-it is the third limit to bind, not the first.
+use only 300 to 1,800 a day (spec §0.5). Rows read was the cost M6.5c did not reduce (its requests
+re-read the table's three documents up to three times, the whole-branch review's F-4); since M6.5c2 a
+warm request reads them once and a cold one twice (§11), and the live three-page game at the cycle C
+close read **about 56 rows per input** (101,236 rows over a 1,795-input game, `RUNBOOK.md` §16) against
+M6.5c's 470 — so rows read now binds LAST, after rows written, and the Worker requests still bind
+first (that game read 13.8 requests an input, M6.5c's figure). *(Corrected 2026-09-28, M6.5c2: first
+the reads, then this arithmetic, re-read at the cycle C close.)*
 
 ### 5.3 Games per day
 
@@ -653,15 +728,15 @@ shipping a shared instance.
 
 **Each object owns one instance, and each instance owns one `Games`.** A trap costs one instance of
 one object: the shell discards it and the next request builds a new one from what SQLite holds.
-Another table never notices. The price is memory: a new instance starts with its own linear memory,
-18 pages or 1.125 MiB (read off the release build), and the spike read 1,441,792 B after a
-595-event replay.
+Another table never notices. The price is memory: a new instance starts with its own linear memory
+— read in ONE place, the root `Cargo.toml`'s `release-wasm` comment — and the spike read
+1,441,792 B after a 595-event replay.
 
 ### 6.4 What the spike measured before the design was written
 
 The owner authorized a throwaway Worker on the real account on 2026-09-22, deployed once at the
 real hostname and torn down, so the design would rest on readings rather than documentation (spec
-§0.3). The first real deployment re-read every row with the real code (RUNBOOK §6.8).
+§0.3). The first real deployment re-read every row with the real code (RUNBOOK §8).
 
 | Question | The spike's reading | Re-read on the real deployments |
 |---|---|---|
@@ -754,6 +829,11 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    - an object whose `fetch` rejects, on a throw that is not a trap, answers 500 `the server could
      not answer — try again` in the API's JSON shape, and the Worker logs `object-failed`.
 
+   Steps 6 and 7 are the `worker` door's. Under `open` (§1.5) the Worker verifies no assertion: step
+   6 reads the claimed name, from the `X-Yokohama-Claimed-User` header on a fetch and from the
+   `claimed=` parameter on an upgrade, and step 7 forwards it as `X-Yokohama-Claimed-User`, which
+   also names the caller's Archive object. *(Added 2026-09-28, M6.5c2.)*
+
 The deployment readings put the Worker's own CPU, JWT verification included, at 0–2 ms a request
 (1 ms typical), inside Free's 10 ms.
 
@@ -782,7 +862,8 @@ holds:
 It reports the host's facts as `Host { identity_name: "cf-access", signal_kind: "ws", serves_games:
 true, multiplayer_offered: true }`. It reads the caller from `X-Yokohama-User` through the layer's
 own `identity::resolve` in its `worker` mode, so the literal `anonymous`, like an absent header, is
-no caller.
+no caller. *(Since M6.5c2 both follow the door `init` is given: under `open`, `identity_name` is
+`open` and the caller is read from `X-Yokohama-Claimed-User` in the layer's `open` mode, §1.5.)*
 
 **The exports**, sixteen in the release build (`src/lib.rs`): `init`, `dispatch`, `create`,
 `events`, `identity`, `load`, `read`, `set_clock`, `house_copy`, `put_copy`, `remove_copy`,
@@ -792,8 +873,9 @@ functions (`dispatch_inner` and so on), which is where the logic lives, so `carg
 yokohama-worker` reaches all of it natively. The calls that reach the layer answer a `Reply`: the
 layer's `status` and `body`; the `bumps`, every signal call made during the call, in order, as JSON
 (`{"bump": id}`, `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`); an `archive`
-plan when a put was deferred (§7.5); and the `picker` row, or a `dropped` one, when it changed
-(§7.3).
+plan when a put was deferred (§7.5); the `picker` row, or a `dropped` one, when it changed
+(§7.3); and `logs`, the lines the layer logged during the call (§10.2). *(Corrected 2026-09-28:
+`logs` is the field M6.5c2's log seam added.)*
 
 **Two routes are this host's, not the layer's**, because on the NAS they belong to axum's router
 rather than to `dispatch`:
@@ -801,11 +883,12 @@ rather than to `dispatch`:
 - **`create`** (`src/create.rs`). The Worker names the table's object before the layer runs, so
   every 201 must name the object that holds the table. The layer's own parser decides: a body it
   refuses is dispatched UNCHANGED, for the layer's own 400, and a body with no `id` gets
-  `,"id":"<name>"` inserted as TEXT before its final `}`. Three host-written refusals cover the
-  rest: a positional JSON array, which the layer's derive would accept (400 `a game must be created
-  from a JSON object`); `"id": null`, which the layer would replace with an id of its own (400 `a
-  game id, when given, must be a string`); and an `id` that is not the object's name, which routing
-  makes unreachable (500). Nothing is re-serialized: a round trip through a JSON value was measured
+  `,"id":"<name>"` inserted as TEXT before its final `}`. Two host-written refusals cover the rest:
+  `"id": null`, which the layer would replace with an id of its own (400 `a game id, when given,
+  must be a string`); and an `id` that is not the object's name, which routing makes unreachable
+  (500). *(Corrected 2026-09-28: a third, a positional JSON array, which the layer's derive used to
+  accept, is the layer's own 400 since M6.5c2, `the request body must be a JSON object` —
+  `api::NOT_AN_OBJECT`.)* Nothing is re-serialized: a round trip through a JSON value was measured
   turning a duplicate-key 400 into a 201.
 - **`events`** (`src/events.rs`), `GET /api/games/{id}/events`, restates axum's handler in its
   order: the caller, the query through the layer's own parser, then a `wait` above 25 s refused with
@@ -813,9 +896,11 @@ rather than to `dispatch`:
   request would keep an object invocation open for nothing, and the only client that asks with
   `wait` on this host is the socket arm's one probe (§8), which wants an immediate answer.
 
-A refusal the module writes itself restates the layer's error body, `{"error": …}`, because the
-layer's own builder is private to its crate; a cell pins the two equal. The crate's platform scan,
-`this_host_makes_no_platform_call_but_the_clock`, holds its sources to one platform call, the
+A refusal the module writes itself is built by the layer's own `api::error_body`, which the layer
+exports since M6.5c2; the lobby socket's 401 (`identity_inner`) still writes its `{"error": …}` by
+hand, and a cell pins it byte-equal to the layer's. *(Corrected 2026-09-28: until M6.5c2 the module
+restated the body, because the layer's builder was private to its crate.)* The crate's platform
+scan, `this_host_makes_no_platform_call_but_the_clock`, holds its sources to one platform call, the
 clock, beside the bindgen glue.
 
 ### 7.3 The table object (`src/table.ts`, `src/storage.ts`, `src/module.ts`, `src/frames.ts`)
@@ -1131,14 +1216,21 @@ sequenceDiagram
   one-person table, in which case nothing is owed. A failed upload is retried by the alarm on the
   backoff.
 
-**A `conflict` is final at every site**: game over logs it and stops, an abandon is refused with it,
-and an expiry marks the table `held` (§7.7).
+**A `conflict` is final at every site, with one exception since M6.5c2** (R-6.5c2.11): at game over
+the upload hands the record it met at the key to the module, and the layer stamps the table when that
+record is an earlier completion of this same game, so the archive keeps the first ending and the
+table is not stranded. Every other conflict is final: game over logs it and stops, an abandon is
+refused with it, and an expiry marks the table `held` (§7.7). A stamp the layer refuses with a
+non-200 is logged `stamp-refused` and never thrown: the save is retried after a `landed` or
+`identical` upload, and is final after a conflict. *(Corrected 2026-09-28.)*
 
 **The keys** are the layer's `archive::paths`, so a copy of the bucket is a directory the CLI loads:
 `rev7/over/<id>.json` and `rev7/abandoned/<id>.json`, each beside its `<id>.table.json`, and a
 browser's save under `browser/<the caller's segment>/`. **A plan whose game belongs to a `.test`
 address goes under `test/` instead.** That is the table creator's address for a server game, and the
-full sender's address for a browser save, never its truncated 64-character segment. Every test
+full sender's address for a browser save, never its truncated 64-character segment. *(Since M6.5c2
+the rule asks for an ADDRESS, one with an `@`: a plain name at the open door never takes the `test/`
+root, even one ending `.test`.)* Every test
 identity uses the reserved `.test` domain, so the live test tiers never write into the owner's
 training data. A reply's `path` is relative to that root, as a NAS reply's is relative to its
 archive directory.
@@ -1149,6 +1241,9 @@ request or alarm resumes the save. A delete while the switch is off takes such a
 table, logged `archive-owed-dropped`.
 
 ### 7.6 Identity (`src/identity.ts`)
+
+This section is the `worker` door's, this repository's; the open door's reading of a claimed name is
+§1.5. *(Added 2026-09-28, M6.5c2.)*
 
 **Access is the door.** The `yokohama` Access application covers the whole hostname, so no request,
 not even for a static file, reaches this host without passing it. Access forwards its verdict as a
@@ -1189,8 +1284,8 @@ the Worker can set it, because only the Worker can reach the objects. `/api/heal
 report the mode as `cf-access`, the door the client is behind.
 
 **The dev door is a development door, and it is on this cycle.** A holder of the credential can
-claim any identity at any table, the owner's included. That is the trust the NAS's `claimed` mode
-gives every person Access admits, narrowed to one secret, and it never grants an operator's rights
+claim any identity at any table, the owner's included. That is the trust the open door gives every
+caller (§1.5), narrowed to one secret, and it never grants an operator's rights
 (§7.7). It exists for the test harnesses, and it must be switched off when the site goes public
 (R-6.5c.3). Two facts about the credential matter in practice:
 
@@ -1254,8 +1349,10 @@ address, and anyone else is 403 `this address is not an operator here`. Past the
 sets `X-Yokohama-Operator`, which, like every `x-yokohama-*` header, no client can send.
 
 - **`GET /api/admin/tables`** is the house's listing from its copies: each table's `id`, `name`,
-  `status`, `players`, `created_at` (the layer's seconds), `last_active` (the shell's
-  milliseconds), `bytes` (the table object's SQLite size), `over`, `winner` and `archived_at`.
+  `status`, `players`, `created_at` (the layer's seconds), `last_active` (seconds, the shell's
+  milliseconds cut where the row is built), `bytes` (the table object's SQLite size), `over`,
+  `winner` and `archived_at`: every time in it is unix seconds. *(Corrected 2026-09-28:
+  `last_active` was the shell's milliseconds until M6.5c2.)*
   `last_active` and `bytes` are as of the table's last delivery, so a chat post or a move within a
   turn does not refresh them.
 - **`POST /api/admin/tables/{id}/expire`** ends the table NOW by the path above, with reason
@@ -1337,7 +1434,9 @@ downstream knows which transport a frame came over.
 - **Nothing opens before the transport is known** (rulings I-81 and I-86). A page learns its arm
   from `/api/health`'s `signal` field, and until that answer the default is SSE, which this host
   refuses with a 426. So the arm waits for the health read, for at most 5 s, and the screen reads
-  "reconnecting…" meanwhile.
+  "connecting…" meanwhile. *(Corrected 2026-09-28: since M6.5c2 a signal that has never connected
+  reads "connecting…", and "reconnecting…" only once a connection is lost; this read
+  "reconnecting…" before.)*
 
 **Measured live.** In the two-browser re-run of 2,510 inputs, the watcher opened its socket once and
 held it through the 1,886 applied moves it watched, and each player opened twice, both before the
@@ -1376,7 +1475,7 @@ sequenceDiagram
 |---|---|---|---|
 | Native Rust | `cargo test -p yokohama-worker` | every export's logic, through its `_inner` function: the recorded signal, the receipt archive and its `test/` root, the picker, the scrub, `create`'s and `events`' rules, `expire` | per edit; CI |
 | Node | `npm run test:scripts` in `worker/` | the build scripts (the factory transform, the asset assembly, the deploy guard's checks over the committed configurations) and the shell's pure modules (routing, identity with crafted keys, the slot's orderings, the marker, the operator gate, the frames, the configuration). One cell runs `cargo metadata`, so it needs `cargo` on the `PATH` | per edit; CI |
-| The pool | `npm test` in `worker/`, after `npm run build:module:debug` | Cloudflare's Workers Vitest integration (`@cloudflare/vitest-plugin`) runs every `test/*.test.ts` INSIDE workerd, with real SQLite, alarms, WebSockets and a local R2, over the built debug module: the Worker, the three objects, the slot, the archive, expiry, the operator, the sockets, the factory's isolation — and the whole committed corpus replayed through the objects (`test/corpus.test.ts`) | per edit; CI |
+| The pool | `npm test` in `worker/`, after `npm run build:module:debug` | Cloudflare's Workers Vitest integration (`@cloudflare/vitest-plugin`) runs the cells INSIDE workerd, with real SQLite, alarms, WebSockets and a local R2, over the built debug module: the Worker, the three objects, the slot, the archive, expiry, the operator, the sockets, the factory's isolation — and the whole committed corpus replayed through the objects (`test/corpus.test.ts`). Since M6.5c2 it is TWO projects, one per door: `worker` over `wrangler.test.jsonc`, every `test/**/*.test.ts` but `test/open/`, and `open` over `wrangler.open.test.jsonc`, `test/open/`. `npm test` runs both, and `npx vitest run --project open` one | per edit; CI |
 | Types | `npm run typecheck` in `worker/` | the shell and the pool's cells | per edit; CI |
 | The live replay | `node scripts/live-replay.mjs` in `worker/` | the same corpus through the DEPLOYED Worker, as the walk's `.test` identities | by the operator, over WARP; never CI |
 | The live browser tier | `YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link` in `web/` | real browsers through the live Worker: a table joined by its link, and a whole game played to a winner with a watcher, every console error but the known ones a failure | by the operator; never CI |
@@ -1387,6 +1486,11 @@ backdating a `written_at` or a marker's `at`. The spec's mutation battery, 39 na
 twice, at the whole-branch review's head and again after its fix wave: 38 are caught by named cells
 (native, pool and the client's own), and row 4, a frame sent before its batch, is recorded as
 uncatchable, because the platform's output gate makes it equivalent.
+
+**A development note, for every code file of this lane:** every INVISIBLE non-ASCII code point in
+code is a `\u` escape (an edit tool decodes a typed escape); a visible glyph may be raw. A no-break
+space or a Kelvin sign typed raw is invisible in review, and an edit tool asked to write `\u00a0`
+may write the character itself, so the escape is checked after the edit.
 
 ### 9.2 The build
 
@@ -1407,7 +1511,10 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
   refuses when `wasm-opt` is absent), and the factory transform LAST, so a build killed part way
   leaves no factory for anything to load. A release build whose optimizer changed nothing leaves
   `gen/.unoptimized`, which the deploy guard refuses. The first deployment's module went from
-  1,854,072 B to 1,220,664 B through `wasm-opt`; since the fix wave it is 1,221,719 B.
+  1,854,072 B to 1,220,664 B through `wasm-opt`. Its current size is read in ONE place, the root
+  `Cargo.toml`'s `release-wasm` comment (§6.3), by `node scripts/module-figures.mjs
+  gen/yokohama_worker_bg.wasm` after a release build. *(Corrected 2026-09-28, M6.5c2: this line
+  stated the fix wave's size as current.)*
 - **`build:module:debug`** builds the pool's module: `--release --features debug`, no `wasm-opt`,
   and the `debug_trap` export the trap cells call. It is never deployed.
 - **`build:assets`** (`scripts/assemble-assets.mjs`) rebuilds `worker/assets/` from nothing:
@@ -1434,18 +1541,28 @@ nine checks hold, and every failure is named, not only the first:
    module never ships.
 2. **The assets tree verifies against its own `sw.js`** and holds no debug browser module, so what
    wrangler uploads is the release, however the tree was made.
-3. **`workers_dev` and `preview_urls` are explicitly `false`.** Absent is not false: with no route,
-   an absent `workers_dev` is a public `workers.dev` URL, and an absent `preview_urls` leaves the
-   Worker's version URLs as they were.
+3. **`wrangler.jsonc` names its door, and the door's rules hold** (M6.5c2). `YOKOHAMA_WEB_IDENTITY`
+   in the top-level `vars` must be `worker` or `open`, and the guard prints the door it reads before
+   its verdict: `wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell`.
+   `preview_urls` must be explicitly `false` under both doors, since a preview version is not the
+   deployed code. Under `worker`, `workers_dev` must be explicitly `false` and both Access values set;
+   under `open`, a `workers.dev` URL is allowed and `YOKOHAMA_DEV_DOOR=on` is refused. Absent is not
+   false: with no route, an absent `workers_dev` is a public `workers.dev` URL, and an absent
+   `preview_urls` leaves the Worker's version URLs as they were. *(Corrected 2026-09-28: until
+   M6.5c2 this check asked both switches `false`, with no door to read.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production.
-5. **The `assets` block is exactly spec §2.3's in BOTH configurations.** The pool reads only
-   `wrangler.test.jsonc`, so without this production's block could drift with every pool cell green,
-   and an asset-layer fallback answers a missing file without ever invoking the Worker.
-6. **The `durable_objects`, `migrations` and `r2_buckets` blocks are equal in both files**, so the
-   pool never tests a class, a binding, a migration or a bucket that production does not ship.
-7. **No `vars` block names `YOKOHAMA_WEB_ADMINS`**: the operator list is a secret, and a value there
-   would commit an address to the repository.
+5. **The `assets` block is exactly spec §2.3's in all three configurations**: production's and the
+   pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads only its own two
+   files, so without this production's block could drift with every pool cell green, and an
+   asset-layer fallback answers a missing file without ever invoking the Worker.
+6. **The `durable_objects`, `migrations` and `r2_buckets` blocks of each pool file equal
+   production's**, so the pool never tests a class, a binding, a migration or a bucket that
+   production does not ship.
+7. **No `vars` block in `wrangler.jsonc` names a secret**: `YOKOHAMA_WEB_ADMINS`, whose value would
+   commit an address to the repository, or, since M6.5c2, `DEV_DOOR_CLIENT_ID`. Both are set as
+   secrets, which a deploy leaves alone, and the pool's `wrangler.test.jsonc` keeps its test client
+   id. *(Checks 5–7 corrected 2026-09-28 for the pool's second configuration and the second secret.)*
 8. **`gen/` is the build of the sources as they are now**: `gen/source.json` against the same digest
    taken again. `wrangler deploy` bundles `src/` fresh but ships `gen/` as it sits, so a crate
    changed without a rebuild would ship an old module whose exports the new shell may call and not
@@ -1460,30 +1577,34 @@ workstation that deploys.
 
 ### 9.4 Configuration and secrets
 
-`wrangler.jsonc` is production's configuration and `wrangler.test.jsonc` the pool's, a Worker named
-`yokohama-web-test` that is never deployed. Production binds `ASSETS`; the three object namespaces
-`TABLE`, `HOUSE` and `ARCHIVER`, in the one migration `v1`, which has been FROZEN since the first
-deploy, so a class added later needs a tag of its own; and the private bucket `yokohama-archive` as
-`ARCHIVE`, with no public URL and no custom domain.
+`wrangler.jsonc` is production's configuration, and `wrangler.test.jsonc` and
+`wrangler.open.test.jsonc` are the pool's two, one per door: the Workers `yokohama-web-test` and
+`yokohama-web-open-test`, which are never deployed. Production binds `ASSETS`; the three object
+namespaces `TABLE`, `HOUSE` and `ARCHIVER`, in the one migration `v1`, which has been FROZEN since
+the first deploy, so a class added later needs a tag of its own; and the private bucket
+`yokohama-archive` as `ARCHIVE`, with no public URL and no custom domain.
 
 `wrangler deploy` REPLACES the Worker's variables with the file's `vars`, so that file is the whole
-list; secrets survive a deploy. RUNBOOK §6.3 gives every variable and what its absence means. In
-brief: `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` and `DEV_DOOR_CLIENT_ID` configure identity (§7.6);
-`YOKOHAMA_DEV_DOOR` is `on` this cycle; `YOKOHAMA_WEB_ARCHIVE` is `r2`;
+list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its absence means. In
+brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
+`ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `on` for the live tiers;
+`YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90`; the NAS's three chat variables keep the NAS's defaults;
 `YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
-file. A bad value answers the API's requests 500, naming the variable, and leaves the static release
-alone; RUNBOOK §6.3 lists the few answers that come before the configuration is read, and the
+two files. A bad value answers the API's requests 500, naming the variable, and leaves the static
+release alone; RUNBOOK §3 lists the few answers that come before the configuration is read, and the
 recipes "to deploy with no archive" and "to keep every table".
 
 **Nothing secret is in the repository:**
 
 - **`YOKOHAMA_WEB_ADMINS`**, the operator list, is a Worker secret, put with `wrangler secret put`
   from standard input. Its refusals name an entry by position, never by value.
-- **The Service Auth credential `yokohama-worker`** has a public client id, committed as
-  `DEV_DOOR_CLIENT_ID`. Its secret lives only in the repository root's gitignored `.dev.vars`, and
-  no recipe puts it on a command line or a screen: curl reads it from a mode-600 header file.
-  RUNBOOK §6.4 says how to rotate it.
+- **The Service Auth credential `yokohama-worker`** has a client id, its public half, put as the
+  Worker secret `DEV_DOOR_CLIENT_ID` since the twenty-first deployment (2026-09-28, `RUNBOOK.md` §15; it was a
+  committed variable before, and stays in the history). Its secret lives only in the repository
+  root's gitignored `.dev.vars`, and no recipe puts it on a command line or a screen: curl reads it
+  from a mode-600 header file.
+  RUNBOOK §4 says how to rotate it.
 - **A read-only R2 key**, scoped to this bucket, lives in `.dev.vars` for copying the bucket down.
 - **The account** is reached through `wrangler`'s own OAuth login (`npx wrangler whoami`).
 
@@ -1507,7 +1628,7 @@ between games. At the M6.5c exit the window read four `wake` lines, one on the f
 ### 9.6 Deploying, and rolling back
 
 Every deploy runs `web/`'s release build, `worker/`'s build and `npm run deploy`, then reads the
-result with the tail listening (RUNBOOK §6.5); RUNBOOK §6.8 on records each one, numbered on from
+result with the tail listening (RUNBOOK §5); RUNBOOK §8 on records each one, numbered on from
 the NAS's deployments, so this host's first was the fourteenth. **A deploy restarts every object
 and closes every socket** with 1006: the client probes once and reconnects, an open picker is
 re-fed or dropped (§7.3), and no acknowledged move is lost, but everyone reconnects, so deploy
@@ -1520,7 +1641,7 @@ returns to an earlier version, but never across a Durable Object migration, nor 
 to a bucket that no longer exists.
 
 **A rollback across the M6.5c fix wave**, to the eighteenth deployment or earlier, has two known
-consequences (RUNBOOK §6.6). Rolling forward again needs nothing.
+consequences (RUNBOOK §6). Rolling forward again needs nothing.
 
 1. **Generation order.** The older code draws a table's generation in SECONDS, and every seconds
    generation orders before every retired MILLISECONDS one. So a table forced under the newer code
@@ -1543,7 +1664,7 @@ consequences (RUNBOOK §6.6). Rolling forward again needs nothing.
   is one invocation, PRETTY-PRINTED over many lines, so parse by whole JSON objects (`jq` reads a
   stream), never by line. The Worker's events read `executionModel: "stateless"`, an object's
   `"durableObject"` with its class as `entrypoint`, and each has its `cpuTime`. A run with no tail
-  can be read later through the Workers Observability query API (RUNBOOK §6.7).
+  can be read later through the Workers Observability query API (RUNBOOK §7).
 - **`node scripts/read-deploy.mjs assets|install|console <base-url>`** reads the static release:
   every precache entry of the DEPLOYED `sw.js` checked by status, type and SHA-256, the service
   worker's install in headless Chromium, and the console of a fresh and a controlled load.
@@ -1552,9 +1673,10 @@ consequences (RUNBOOK §6.6). Rolling forward again needs nothing.
 
 ### 10.2 The log lines
 
-The layer's own diagnostics print nothing on this host, so the shell logs what it can observe: one
-JSON object per line, `{"event": …}`, kept by Workers Logs. RUNBOOK §6.5 is the full vocabulary,
-with every field. The families:
+The shell logs what it observes, one JSON object per line, `{"event": …}`, kept by Workers Logs, and
+since M6.5c2 the layer's own lines ride each reply to the shell's log under their own names (the log
+seam). RUNBOOK §5 is the full vocabulary, with every field. *(Corrected 2026-09-28: this said the
+layer's diagnostics printed nothing on this host, which was true until the log seam.)* The families:
 
 - **The request path:** `object-failed` (logged by the Worker), `trap` (with the `call` that
   trapped), `load-trap`, `poison`, `init-refused`, `identity-failed`, `frame-failed`,
@@ -1562,20 +1684,27 @@ with every field. The families:
 - **The house:** `slot-pushed`, `slot-acked`, `slot-failed`, `slot-ignored`, `copy-refused`,
   `house-chat-dropped`, `alarm-failed`.
 - **The archive:** `archive-landed`, `archive-identical`, `archive-conflict`, `archive-failed`, each
-  naming its site; `archive-stamped`; `archive-owed-kept`; `archive-owed-dropped`.
+  naming its site; `archive-stamped`; `stamp-refused` (since M6.5c2); `archive-owed-kept`;
+  `archive-owed-dropped`.
 - **The endings:** `expired`, `expiry-failed`, `held`, `expiry-blocked`, `marker-ended`, `forced`,
-  and `operator` for every operator action.
+  `removal-ended` (since M6.5c2), and `operator` for every operator action.
+- **The layer's own** (since M6.5c2): `archive-over-unstamped`, `archive-over-table-gone`,
+  `archive-kept-earlier-completion`, `listing-skipped`, and `archive-over-refused`, which the module
+  drops where it is only its own deferral of a game-over put.
 
 Two lines carry a reading rule. A `slot-pushed` without its `slot-acked` is a delivery the alarm
 will retry. An `expiry-failed` that repeats hourly is read by its `body`: one naming a stored
 document that does not parse is a table only the operator's force will end, while the archive's own
 refusal, with R2's reason inside it, means wait for R2, because a force there drops the game the
-expiry was saving.
+expiry was saving. A `stamp-refused` names no reason: a foreign bot's 409, the one a save owed
+across an undo can meet, is on the wake's `restore-refused` line, whose `body` carries it. `forced`
+is exactly an operator's force, which since M6.5c2 flags its own removal; a markerless removal that
+older code left is logged `removal-ended`.
 
 ### 10.3 The quota guard
 
 Before and after any live run, read the UTC day's figures from the account's GraphQL Analytics
-API, one dataset per call (RUNBOOK §6.7 has the queries): Worker requests by script
+API, one dataset per call (RUNBOOK §7 has the queries): Worker requests by script
 (`workersInvocationsAdaptive`), and Durable Object rows written and read
 (`durableObjectsPeriodicGroups`). The owner's HOLD line this cycle was 80,000 a UTC day for each of
 the Worker requests and the rows written; a run that could cross it waits for the next UTC day.
@@ -1583,7 +1712,7 @@ the Worker requests and the rows written; a run that could cross it waits for th
 ### 10.4 The live tiers, and what they leave behind
 
 Both live tiers are the operator's to run, from the owner's workstation over WARP, with the
-credential in `.dev.vars` (RUNBOOK §6.7). Run one at a time, and never the replay beside the
+credential in `.dev.vars` (RUNBOOK §7). Run one at a time, and never the replay beside the
 Playwright tier: the two share the lobby chat's counter.
 
 - **The live corpus replay** (`node scripts/live-replay.mjs` in `worker/`) forces its three fixed
@@ -1599,7 +1728,8 @@ What a run leaves on the account:
 
 - two 90-day markers per Playwright run, at fresh `sim-` ids, because each spec abandons its table;
 - saves under the bucket's `test/` root for every `.test` identity's finished and abandoned games,
-  which no lifecycle rule removes (the choice of one is the owner's, carried to the cleanup cycle);
+  which the lifecycle rule `expire-test-after-30-days` removes 30 days after they were written
+  (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
 - the replay's own first-send saves under `test/browser/red_at_wire.test/`, kept for good by the
   owner's direction;
 - a PERMANENT lobby chat post per replay run ("anyone up for a second table?", from `red@wire.test`)
@@ -1608,19 +1738,22 @@ What a run leaves on the account:
 
 ### 10.5 The `test/` root and the replay's reset
 
-Every save a `.test` identity makes lands under `test/`, apart from the owner's paths. The replay's
+Every save a `.test` ADDRESS makes lands under `test/`, apart from the owner's paths; a plain name
+never takes the `test/` root; the prefix's lifecycle rule `expire-test-after-30-days` expires its
+objects after 30 days, set at the M6.5c2 close (R-6.5c2.12; 2026-09-28, `RUNBOOK.md` §15).
+*(Corrected 2026-09-28, M6.5c2.)* The replay's
 two first sends therefore meet their own earlier saves on every run after the first, and the
 archive's once-rule answers `200` with `"identical": true`, which the replay accepts for those two
 rows alone. A `wire` record whose bytes have changed since meets them as a 409 instead: a version
 bump (every record carries `engine_version`), a walk that plays other moves, or a record format
 change. The replay then STOPS, names the cause, and prints the reset: four `npx wrangler r2 object
 delete "yokohama-archive/test/browser/red_at_wire.test/…" --remote` lines, run in `worker/` with
-wrangler's login, since the owner's R2 key is read-only. RUNBOOK §6.7 ("The replay's reset") has
+wrangler's login, since the owner's R2 key is read-only. RUNBOOK §7 ("The replay's reset") has
 them in full.
 
 ### 10.6 The operator's playbook
 
-RUNBOOK §6.3 is the playbook: setting, listing and deleting the `YOKOHAMA_WEB_ADMINS` secret, and
+RUNBOOK §3 is the playbook: setting, listing and deleting the `YOKOHAMA_WEB_ADMINS` secret, and
 the three curl calls (the listing, an expire, a force), sent over WARP as the owner and never with
 the credential, which is never an operator.
 
@@ -1630,28 +1763,36 @@ the credential, which is never an operator.
 
 - **It is not public.** Access covers the whole hostname (R-6.5c.1). The path-scoped Access door
   that would open the single-player site to the public is built and proven locally but not
-  deployed, the card art is not published, the dev door is ON in production's variables, and
-  `DEV_DOOR_CLIENT_ID` is committed. Going public is meant to be a configuration change; on a
-  public door, a scanner's misses would each be a Worker invocation.
-- **It did not reduce rows read.** About 470 rows read per move in the three-page harness, because
-  every request re-reads the table's three documents up to three times (F-4); the cleanup cycle is
-  to read them once. §5 sets it beside the other ceilings.
+  deployed, the card art is not published, and the dev door is ON in production's variables, for
+  the live tiers; the public door's preconditions are recorded in the M6.5c2 cycle C close (§6). *(Corrected
+  2026-09-28: `DEV_DOOR_CLIENT_ID` is a secret since M6.5c2, where this said it was committed.)*
+  Going public is meant to be a configuration change; on a public door, a scanner's misses would
+  each be a Worker invocation.
+- **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
+  remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
+  documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three
+  times (F-4, about 470 rows read per move in the three-page harness); the live figure per move read
+  **about 56** at the cycle C close (101,236 rows over 1,795 moves, `RUNBOOK.md` §16), and §5.2's
+  arithmetic carries it. *(Corrected 2026-09-28: this
+  bullet said the cycle did not reduce rows read.)*
 - **A poisoned or `held` table needs the operator.** Nothing sweeps either, and the operator's
   listing does not flag them; the log does (`poison`, `held`, `expiry-blocked`). The listing's
   `last_active` and `bytes` also lag any activity that changes no copy.
-- **The first connection reads "reconnecting…".** With no remembered health answer, every
-  server-signal screen of this cycle's client reads "reconnecting…" until it connects: one health
-  round trip, at most 5 s when health hangs. That holds on both hosts once they run this client (the
-  NAS's running image predates it). A "connecting" word is a later wording change.
+- **The first connection read "reconnecting…" until M6.5c2.** With no remembered health answer,
+  every server-signal screen of the M6.5c client read "reconnecting…" until it connected: one health
+  round trip, at most 5 s when health hangs. *(Corrected 2026-09-28: M6.5c2's client reads
+  "connecting…" before its first connection, and "reconnecting…" only once one is lost.)*
 - **The same-second re-create, before its fix.** At the fifteenth to eighteenth deployments, a force
   then a re-create of one id within one second left the new table off the lobby for 90 days about
   half the time. Millisecond generations fixed it from the nineteenth; a rollback across the fix
   wave brings back a relative of it (§9.6).
-- **The refinish.** On this host, and never on the NAS, a one-person table can be stranded. An undo
-  that lands during a game-over upload's I/O leaves the first completion in the bucket unstamped;
-  a replay to a DIFFERENT end then meets it as a `conflict`, so the creator's Abandon is refused for
-  good and the table's expiry goes `held` until the operator's force. The window is tens of
-  milliseconds, and a rule that stamps on such a conflict is the spec's to make, not a host fix.
+- **The refinish, closed in M6.5c2 for the same game.** An undo that lands during a game-over
+  upload's I/O leaves the first completion in the bucket unstamped, and a replay to a DIFFERENT end
+  then meets it as a `conflict`. Since M6.5c2 (R-6.5c2.11) the layer stamps such a conflict, because
+  the record it met is an earlier completion of this same game: the archive keeps the first ending
+  and the table is not stranded. A record of a DIFFERENT game at the key, reachable only through a
+  caller-chosen id, stays final: the table is stranded until the operator's force. *(Corrected
+  2026-09-28: at M6.5c this bullet said a same-game refinish stranded the table.)*
 - **An expired unfinished game is lost while the archive is off**, and so is a game-over save still
   owed from before the switch went off. The marker says the first, and `archive-owed-dropped` the
   second.
@@ -1689,10 +1830,12 @@ the credential, which is never an operator.
   [`docs/plans/2026-09-23-web-frontend-m6.5c-plan.md`](../docs/plans/2026-09-23-web-frontend-m6.5c-plan.md),
   and the hosting umbrella,
   [`docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md`](../docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md).
-- **The operating manual**, [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) §6: §6.1 the build, §6.2 the
-  deploy, §6.3 the variables and the operator's playbook, §6.4 the credential, §6.5 reading it and
-  the log vocabulary, §6.6 rollback, §6.7 the live tiers and the quota guard, and every deployment's
-  record from §6.8 on. Its §0–§3 and §5 are the NAS host's.
+- **The operating manual**, [`RUNBOOK.md`](RUNBOOK.md) beside this file: §1 the build, §2 the
+  deploy, §3 the variables and the operator's playbook, §4 the credential, §5 reading it and the log
+  vocabulary, §6 rollback, §7 the live tiers and the quota guard, and every deployment's record from
+  §8 on. It was the NAS runbook's sixth section until M6.5c2, and that runbook's map still resolves
+  the older citations; [`deploy/RUNBOOK.md`](../deploy/RUNBOOK.md) is the NAS host's, beside the
+  self-host guide, [`deploy/README.md`](../deploy/README.md).
 - **[`CLAUDE.md`](../CLAUDE.md)**: the gate commands, the fences every cycle of the web lane keeps,
   and the lane's standing rules.
 - **Cloudflare's own pages**, listed with their dates in §3.1.

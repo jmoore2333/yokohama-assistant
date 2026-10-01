@@ -183,8 +183,19 @@ fn a_record_from_another_release_opens_with_no_warning_and_keeps_its_version() {
 /// `ClientState.warnings`, which the two filter cells cannot give: a chain
 /// that emptied every game's warnings passes them and fails here. A
 /// `rules_hash` derived to differ from the running one makes
-/// `Session::from_record` warn exactly once, and the game screen's payload
-/// carries that line. (Cycle A's R-A19, closed here as cycle B's first task.)
+/// `Session::from_record` warn about it, and the game screen's payload
+/// carries that line and no other. (Cycle A's R-A19, closed here as cycle B's
+/// first task.)
+///
+/// **Why the count still reads one after the bump to 0.6.0** (M6.5c2 cycle
+/// C). The committed pair was written at 0.5.0, and this cell leaves its
+/// `engine_version` as committed. At 0.5.0 that matched the running version,
+/// so the session warned once, about the `rules_hash`. At any other running
+/// version the session warns TWICE — the release's drift line first, then the
+/// `rules_hash` line — and `client::without_version_drift` drops the drift
+/// line, so the wire still carries exactly one. While the pair's version and
+/// the running one differ, the count is also a witness that the filter drops
+/// the drift line and nothing beside it: an unfiltered chain reads two here.
 #[test]
 fn a_rules_hash_drift_reaches_the_wire_as_a_warning() {
     use yokohama_web::store::Store;

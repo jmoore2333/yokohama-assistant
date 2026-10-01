@@ -205,11 +205,13 @@ export function normalizeHouseChat(name, got, base, identities) {
  * What to delete when a first send meets an earlier run's save of a `wire`
  * record that has since changed (R3's M-1): each first send's record key, as
  * its committed reply names the path, and its `.table.json` twin — under the
- * root spec §2.6 gives the sender `who`, `test/` for an address ending
- * `.test` — and a `wrangler r2 object delete` for each.
+ * root spec §2.6 gives the sender `who`, `test/` for an EMAIL ending `.test`
+ * and the bucket's top for anything else, a plain name ending `.test` among
+ * them — and a `wrangler r2 object delete` for each.
  */
 export function resetRecipe(corpus, who) {
-  const root = who.endsWith(".test") ? "test/" : "";
+  // The module's own rule: `crates/yokohama-worker/src/receipt.rs`'s `is_test_identity`.
+  const root = who.includes("@") && who.endsWith(".test") ? "test/" : "";
   const keys = [...FIRST_SENDS].flatMap((fixture) => {
     const { path } = JSON.parse(corpus[fixture]);
     return [`${root}${path}`, `${root}${path.replace(/\.json$/, ".table.json")}`];
@@ -244,7 +246,7 @@ export function readCredential(file = DEV_VARS) {
   try {
     text = readFileSync(file, "utf8");
   } catch {
-    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (RUNBOOK §6.4)`);
+    throw new Error(`the credential file ${file} is absent or unreadable — it holds the ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
   }
   const values = new Map();
   for (const line of text.split(/\r?\n/)) {
@@ -253,7 +255,7 @@ export function readCredential(file = DEV_VARS) {
   }
   const read = (key) => {
     const value = values.get(key);
-    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (RUNBOOK §6.4)`);
+    if (!value) throw new Error(`${file} holds no ${key}= line — the credential is its ${KEYS[0]}= and ${KEYS[1]}= lines (worker/RUNBOOK.md §4)`);
     return value;
   };
   return { id: read(KEYS[0]), secret: read(KEYS[1]) };
@@ -430,8 +432,15 @@ function judge(fixture, reply, context) {
     got = freezeClock(got);
     for (const field of HOST_FIELDS[fixture] ?? []) {
       if (!isObject(got)) break;
-      // An exemption is spent only on a value this host SENT and that
-      // differs: a field it dropped is a mismatch, never `"off" → (absent)`.
+      // An exemption is spent only on a value this host SENT, as a string,
+      // that differs from the committed one: a field it dropped is a
+      // mismatch, never `"off" → (absent)`. The rule's twin is the pool's,
+      // `worker/test/corpus.test.ts`'s `hostFields` — the same rule over the
+      // same fields, stated once in each of the two WORKER replays (R3's L-5;
+      // ruling R-C3). The browser host's node replay
+      // (`web/src/local/corpus.node.test.ts`) still spends an exemption on
+      // `not.toEqual` alone, which an absent field passes: a recorded debt
+      // (Task 7's review, M-5; ruling R-C20).
       if (typeof got[field] !== "string") {
         diffs.push({ path: field, reason: "exempted, but this host sent no string for it", committed: committed[field], got: got[field] });
       } else if (isDeepStrictEqual(got[field], committed[field])) {

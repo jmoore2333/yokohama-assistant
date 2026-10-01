@@ -117,7 +117,11 @@ describe("the front door", () => {
     expect(document.querySelector(".project-link")).toBeNull();
     unmount();
     render(<FrontDoor multiplayer link={linkFor("https://github.com/you/yokohama-assistant")} />);
-    const link = screen.getByRole("link", { name: "github.com/you/yokohama-assistant" });
+    // **The new tab is announced** (M6.5c2 cycle C, the a11y pass): its name
+    // says so, in words a screen reader reads and the page does not draw —
+    // the drawn arrow is decoration and reads as nothing.
+    const link = screen.getByRole("link", { name: "github.com/you/yokohama-assistant (opens in a new tab)" });
+    expect(within(link).getByText("(opens in a new tab)")).toHaveClass("sr-only");
     expect(link).toHaveAttribute("href", "https://github.com/you/yokohama-assistant");
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
@@ -139,6 +143,22 @@ describe("the front door", () => {
     expect(within(panel).getByRole("heading", { name: "How to play" })).toHaveFocus();
     await user.click(within(panel).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("region", { name: "How to play" })).toBeNull();
+  });
+
+  // **Close hands focus back to what opened the help** (M6.5c2 cycle C, the
+  // a11y pass): the panel and its Close are unmounted by the click, and focus
+  // on a removed element falls to the document's body — a keyboard player was
+  // sent back to the top of the page.
+  it("returns focus to How to play when the help is closed", async () => {
+    render(<FrontDoor multiplayer />);
+    const user = userEvent.setup();
+    const toggle = screen.getByRole("button", { name: "How to play" });
+    await user.click(toggle);
+    const panel = screen.getByRole("region", { name: "How to play" });
+    expect(within(panel).getByRole("heading", { name: "How to play" }), "the premise: focus went in").toHaveFocus();
+    await user.click(within(panel).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("region", { name: "How to play" })).toBeNull();
+    expect(toggle).toHaveFocus();
   });
 
   // **The build value, read once and never asked for.** Absent is ON, so a

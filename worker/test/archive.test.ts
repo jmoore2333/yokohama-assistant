@@ -8,22 +8,26 @@ import type { ArchiveOwed } from "../src/r2";
 import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
 import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
-import { failingPuts, failPushes, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
+import { upsertDoc } from "../src/storage";
+import { failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
 import {
   ANOTHER_RECORD,
   BLUE,
+  DAY_MS,
   LOCAL,
   OWED,
   RED,
   alarmOf,
   archiveOff,
   archivedAt,
+  backdate,
   bucketText,
   call,
   docOf,
   expiryOf,
   holding,
   logsDuring,
+  markerOf,
   noTtl,
   owedGameOver,
   rebuilt,
@@ -72,6 +76,28 @@ function oneSeatGame(name: string): Promise<DurableObjectStub<Table>> {
   const { record, table } = ARCHIVE_WALK[0]!.body as { record: string; table: string };
   const hot = replaceOnce(replaceOnce(table, '"user": "blue@wire.test"', `"user": "${WIRE_RED}"`), '"id": "wire"', `"id": "${name}"`);
   return holding(name, { table: hot, record });
+}
+
+/**
+ * The walk's last input lines, from the decision two undos reach at the
+ * one-person table: `1`, `0`, `confirm`, `1` end the game again with the
+ * walk's own record, byte for byte; `1`, `1`, `confirm`, `1` answer the
+ * second line otherwise and end the SAME game with another record. The
+ * refinish cells assert both as premises.
+ */
+const ORIGINAL_END = ["1", "0", "confirm", "1"] as const;
+const DIFFERENT_END = ["1", "1", "confirm", "1"] as const;
+
+/** `lines` played in order through `input`, each held to `play`'s premise;
+ *  answers the last play. */
+async function playAll(
+  input: (line: string) => Promise<Response>,
+  play: (res: Response) => Promise<Play>,
+  lines: readonly string[],
+): Promise<Play> {
+  let last: Play | undefined;
+  for (const line of lines) last = await play(await input(line));
+  return last!;
 }
 
 /** `meta.archive_owed` — the shell's own JSON, whose plan's record and table
@@ -701,27 +727,259 @@ describe("game over (spec §2.6)", () => {
     expect(archivedAt(await bucketText(tableKey)), "identical writes nothing: the first completion's table stands").toBe(first!.reading);
   });
 
-  // "A Conflict is final at every site" (spec §2.6): another game's record
-  // already holds this id's key. Game over logs it and clears `archive_owed`,
-  // writes nothing to the bucket, stamps nothing — and, the save discharged,
-  // re-arms the alarm to what is still due: with nothing else, the table's
-  // expiry (spec §2.4). Mutants: a conflict retried (still owed, with an alarm
-  // at a rung); a conflict stamped.
-  it("a conflict at game over is final: logged, nothing owed, nothing stamped", async () => {
-    const id = "go-conflict";
+  // "A Conflict is final at every site" (spec §2.6) — kept by R-6.5c2.11
+  // (M6.5c2, spec §2.5; Review Focus 3) for every conflict the layer does not
+  // stamp. What the key holds goes to the stamp as every conflict now does;
+  // where it is no earlier completion of this game the layer logs its
+  // refusal and stamps nothing, so the conflict is FINAL: `archive_owed`
+  // cleared, nothing retried, the bucket untouched, the alarm re-armed to the
+  // table's expiry. Two such held texts, each of which a retry would meet
+  // again (nothing this shell runs deletes an archived key): another game's
+  // record (the walk's, another seed), which only a caller-chosen id can
+  // reach, and a text that is no record. Mutants: a
+  // conflict retried (still owed, an alarm
+  // at a rung); `held` read as the same game (a stamp); a conflict's stamp
+  // answer read through `stampArm` (a retry).
+  it.each([
+    ["another game's record", "go-conflict", (ARCHIVE_WALK[0]!.body as { record: string }).record],
+    ["a text that is no record", "go-conflict-text", ANOTHER_RECORD],
+  ] as const)("a conflict at game over with %s is final: logged, nothing owed, nothing stamped", async (_what, id, held) => {
     const stub = await owedGameOver(id);
     const recordKey = `rev7/over/${id}.json`;
-    await env.ARCHIVE!.put(recordKey, ANOTHER_RECORD);
+    await env.ARCHIVE!.put(recordKey, held);
     const { lines } = await logsDuring(async () => {
       expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
       await settle(stub);
     });
-    expect(archiveLines(lines)).toEqual([overLine("conflict", id, recordKey, 0)]);
+    // The plan's reading is the pool's frozen clock (`wrangler.test.jsonc`).
+    expect(archiveLines(lines)).toEqual([
+      overLine("conflict", id, recordKey, 0),
+      { event: "archive-over-refused", id, error: `${recordKey} holds a different record — a game is archived once` },
+      stampLine(id, recordKey, 1_789_000_000, false, true),
+    ]);
     expect(await owedOf(stub), "final: nothing owed").toBeUndefined();
     expect(archivedAt(await docOf(stub, "table")), "nothing stamped").toBeNull();
-    expect(await bucketText(recordKey), "the archive keeps the record it held").toBe(ANOTHER_RECORD);
+    expect(await bucketText(recordKey), "the archive keeps the record it held").toBe(held);
     expect(await bucketText(`rev7/over/${id}.table.json`), "a conflict writes nothing").toBeNull();
     expect(await alarmOf(stub), "no retry for a save discharged: the alarm is the table's expiry").toBe(await expiryOf(stub));
+  });
+
+  // **The refinish race, overlapping** (M6.5c2, R-6.5c2.11; spec §2.5; review
+  // M3, o2; Review Focus 3). At the one-person table the game ends (completion
+  // A) and its upload is held; the one person's two undos land DURING it, and
+  // they play a DIFFERENT end (completion B), whose upload starts too —
+  // `uploads` keys each by its plan, and two endings are two plans, so the map
+  // does not make B wait on A (o2, asserted). A is let through first and
+  // lands; its plan is no longer the one owed, so it settles nothing. B then
+  // meets A's record and answers `conflict`, carrying it, and the layer,
+  // finding an earlier completion of THIS game, stamps. The table ends stamped
+  // at B's reading, the archive keeps the FIRST ending, and the creator's
+  // Abandon deletes it, saving nothing again — a stamped game owes no second
+  // save. Overlapping, B's table put ran after A's, so the bucket's TABLE may
+  // be B's beside A's record: best-effort (spec §2.5), and not asserted; the
+  // next cell pins the pair. Before the fix, measured here: B's conflict final
+  // and no stamp; the plan's D6 also read the Abandon then refused for good.
+  // Mutants: the conflict arm left final; `held` dropped anywhere between R2
+  // and the layer.
+  it("(the refinish race) an undo during a held upload, then a different end: stamped, the first ending kept, abandonable", async () => {
+    const id = "refinish-overlap";
+    const stub = await oneSeatGame(id);
+    const recordKey = `test/rev7/over/${id}.json`;
+    const input = (line: string) => call(stub, WIRE_RED, "POST", `/api/games/${id}/input`, JSON.stringify({ line }));
+    const play = async (res: Response) => {
+      expect(res.status, "premise: the input applied").toBe(200);
+      return res.json<Play>();
+    };
+    const ticks = ticking(1_799_000_000);
+    let first: ArchiveOwed | undefined;
+    let second: ArchiveOwed | undefined;
+    let released: unknown[] = [];
+    try {
+      await play(await input("undo"));
+      await play(await input("undo"));
+      expect((await play(await call(stub, WIRE_RED, "GET", `/api/games/${id}`))).events, "premise: two undos from the walk's end").toBe(1034);
+      await settle(stub);
+      const puts = heldInTurn();
+      const swapped = await swapBucket(stub, puts.through);
+      try {
+        expect((await playAll(input, play, ORIGINAL_END)).prompt.kind, "premise: completion A").toBe("game_over");
+        first = await owedOf(stub);
+        await until(() => puts.arrived() === 1, "A's upload reaches the bucket");
+        await play(await within(input("undo"), "the first undo answers while A's upload is held"));
+        await play(await within(input("undo"), "the second undo answers while A's upload is held"));
+        expect((await playAll(input, play, DIFFERENT_END)).prompt.kind, "premise: completion B").toBe("game_over");
+        second = await owedOf(stub);
+        expect(second!.plan.record, "premise: B is another ending").not.toBe(first!.plan.record);
+        await until(() => puts.arrived() === 2, "B's upload reaches the bucket");
+        expect(await runInDurableObject(stub, (t: Table) => t["uploads"].size), "(o2) both in flight: the map does not serialize them").toBe(2);
+        released = (
+          await logsDuring(async () => {
+            puts.openFirst();
+            await until(async () => (await bucketText(recordKey)) === first!.plan.record, "A lands");
+            puts.openSecond();
+            await settle(stub);
+          })
+        ).lines;
+      } finally {
+        puts.openAll();
+        await swapped.restore();
+        await settle(stub);
+      }
+    } finally {
+      ticks.restore();
+    }
+    expect(archiveLines(released)).toEqual([
+      overLine("landed", id, recordKey, 0),
+      overLine("conflict", id, recordKey, 0),
+      { event: "archive-kept-earlier-completion", id, key: recordKey },
+      stampLine(id, recordKey, second!.reading, true, true),
+    ]);
+    expect(await owedOf(stub), "nothing owed").toBeUndefined();
+    expect(archivedAt(await docOf(stub, "table")), "stamped, at B's reading").toBe(second!.reading);
+    expect(await bucketText(recordKey), "the archive keeps the FIRST ending").toBe(first!.plan.record);
+    const abandoned = await logsDuring(async () => {
+      const res = await call(stub, WIRE_RED, "DELETE", `/api/games/${id}`);
+      await settle(stub);
+      return res;
+    });
+    expect(abandoned.result.status, "abandonable: a stamped game owes no second save").toBe(204);
+    expect(archiveLines(abandoned.lines), "and its Abandon saves nothing again").toEqual([]);
+    expect(await bucketText(`test/rev7/abandoned/${id}.json`), "nothing under abandoned/").toBeNull();
+    expect(await markerOf(stub)).toMatchObject({ reason: "abandoned", kept: "archive" });
+  });
+
+  // **The refinish race, one upload after the other** (M6.5c2, R-6.5c2.11;
+  // spec §2.5; review o1; Review Focus 3). A's upload is held, the undos land
+  // during it, and A lands — its game no longer over, so its stamp answers
+  // `{"stamped": false, "over": false}` and nothing is owed. Then the different
+  // end B: its upload reads the record key FIRST (`executePlan`) and meets A's
+  // record, so the conflict WRITES NOTHING and the pair in the bucket stays
+  // one game's: A's record beside A's table, told from B's by its
+  // `archived_at` (the clock ticks). The layer stamps, and the table expires
+  // as any stamped table does: its alarm is its expiry deadline, and at its
+  // TTL it ends `expired`, keeping its archive and saving nothing again.
+  // Before the fix, measured here: the table unstamped after B; the plan's D6
+  // also read its expiry then `held`. Mutants: the conflict arm left final;
+  // `held` dropped anywhere between R2 and the layer; the table put before
+  // the record is read (B's table in the bucket).
+  it("(the refinish race) the pair stays one game's, and the stamped table expires normally", async () => {
+    const id = "refinish-seq";
+    const stub = await oneSeatGame(id);
+    const [recordKey, tableKey] = [`test/rev7/over/${id}.json`, `test/rev7/over/${id}.table.json`];
+    const input = (line: string) => call(stub, WIRE_RED, "POST", `/api/games/${id}/input`, JSON.stringify({ line }));
+    const play = async (res: Response) => {
+      expect(res.status, "premise: the input applied").toBe(200);
+      return res.json<Play>();
+    };
+    const ticks = ticking(1_799_100_000);
+    let first: ArchiveOwed | undefined;
+    let second: unknown[] = [];
+    try {
+      await play(await input("undo"));
+      await play(await input("undo"));
+      await settle(stub);
+      const puts = heldPuts();
+      const swapped = await swapBucket(stub, puts.through);
+      try {
+        expect((await playAll(input, play, ORIGINAL_END)).prompt.kind, "premise: completion A").toBe("game_over");
+        first = await owedOf(stub);
+        expect(first!.plan.record, "premise: A is the walk's own record").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
+        await until(() => puts.reached(), "A's upload reaches the bucket");
+        await play(await within(input("undo"), "the first undo answers while A's upload is held"));
+        await play(await within(input("undo"), "the second undo answers while A's upload is held"));
+        const released = await logsDuring(async () => {
+          puts.open();
+          await settle(stub);
+        });
+        expect(archiveLines(released.lines), "premise: A landed with its game no longer over").toEqual([
+          overLine("landed", id, recordKey, 0),
+          stampLine(id, recordKey, first!.reading, false, false),
+        ]);
+      } finally {
+        puts.open();
+        await swapped.restore();
+        await settle(stub);
+      }
+      second = (
+        await logsDuring(async () => {
+          expect((await playAll(input, play, DIFFERENT_END)).prompt.kind, "premise: completion B").toBe("game_over");
+          await settle(stub);
+        })
+      ).lines;
+    } finally {
+      ticks.restore();
+    }
+    const stamped = archivedAt(await docOf(stub, "table"));
+    expect(stamped, "stamped, at B's own reading").not.toBeNull();
+    expect(stamped, "premise: B's reading is not A's, so the two plans' tables differ").not.toBe(first!.reading);
+    expect(await docOf(stub, "record"), "premise: B is another ending").not.toBe(first!.plan.record);
+    expect(archiveLines(second)).toEqual([
+      overLine("conflict", id, recordKey, 0),
+      { event: "archive-kept-earlier-completion", id, key: recordKey },
+      stampLine(id, recordKey, stamped!, true, true),
+    ]);
+    expect(await owedOf(stub), "nothing owed").toBeUndefined();
+    expect(await bucketText(recordKey), "the archive keeps the FIRST ending").toBe(first!.plan.record);
+    expect(archivedAt(await bucketText(tableKey)), "a conflict writes nothing: the pair is A's").toBe(first!.reading);
+    expect(await alarmOf(stub), "the stamped table's alarm is its expiry deadline").toBe(await expiryOf(stub));
+    await backdate(stub, Date.now() - 90 * DAY_MS - 60_000);
+    const expired = await logsDuring(async () => {
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      await settle(stub);
+    });
+    const ends = expired.lines.filter((l) => !["slot-pushed", "slot-acked", "wake"].includes(String((l as { event?: unknown }).event)));
+    expect(ends, "expiring normally: no save owed at its end, never held").toEqual([{ event: "expired", id, reason: "expired", kept: "archive" }]);
+    expect(await markerOf(stub)).toMatchObject({ reason: "expired", kept: "archive" });
+    expect(await bucketText(`test/rev7/abandoned/${id}.json`), "nothing saved again under abandoned/").toBeNull();
+  });
+
+  // **A refused stamp is retried, never thrown** (M6.5c2, spec §2.4's R2-o1;
+  // cycle A's `settleUpload` item). An owed game-over save whose game was then
+  // undone, and which then meets a deploy whose bot is not the game's: the
+  // stored record is the owed pair's own cut, where the bot is to move, with
+  // its bot's version moved 2 → 3 in the TEXT (`replaceOnce`; the strings
+  // rule). The alarm's upload lands; the wake's rebuild and the stamp's are
+  // both refused by the layer's foreign-bot rule, a 409. The shell logs
+  // `stamp-refused {id, status}`, throws nothing, and keeps the save owed —
+  // counted, its alarm re-armed to the next rung: final-for-now, bounded by
+  // the creator's Abandon or the table's expiry, which never rebuild (spec
+  // §2.4; the layer's own cell holds the Abandon). Mutants: the 409 body
+  // handed to `parseStamp` (a throw inside the alarm); the refusal read as a
+  // settled stamp (the save cleared).
+  it("a stamp the layer refuses is logged and retried on the backoff, and nothing throws inside the alarm", async () => {
+    const id = "go-foreign";
+    const stub = await owedGameOver(id);
+    const recordKey = `rev7/over/${id}.json`;
+    const failing = await swapBucket(stub, failingPuts(1));
+    try {
+      expect((await call(stub, LOCAL, "GET", `/api/games/${id}/table`)).status).toBe(200);
+      await settle(stub);
+    } finally {
+      await failing.restore();
+    }
+    const owed = await owedOf(stub);
+    expect(owed?.attempt, "premise: the game-over save is owed, its first upload failed").toBe(1);
+    const foreign = replaceOnce(OWED_GAME_OVER_JSON, '"version":2', '"version":3');
+    await runInDurableObject(stub, (_t, state) => {
+      state.storage.transactionSync(() => upsertDoc(state.storage.sql, "record", foreign, Date.now()));
+    });
+    await evictDurableObject(stub);
+    const before = Date.now();
+    const ran = await logsDuring(async () => {
+      expect(await runDurableObjectAlarm(stub), "the alarm ran, and threw nothing").toBe(true);
+      await settle(stub);
+    });
+    const after = Date.now();
+    expect(ran.lines, "premise: the layer's foreign-bot rule refuses the wake's rebuild").toContainEqual(
+      expect.objectContaining({ event: "restore-refused", id, status: 409, body: expect.stringContaining('"foreign_bot"') }),
+    );
+    expect(archiveLines(ran.lines), "the upload landed, and no stamp settled").toEqual([overLine("landed", id, recordKey, 1)]);
+    expect(ran.lines, "the refusal logged").toContainEqual({ event: "stamp-refused", id, status: 409 });
+    expect(await owedOf(stub), "still owed, one more failure counted").toEqual({ ...owed, attempt: 2 });
+    expect(archivedAt(await docOf(stub, "table")), "nothing stamped").toBeNull();
+    const alarm = await alarmOf(stub);
+    expect(alarm, "re-armed at the rung after two failures").toBeGreaterThanOrEqual(before + 120_000);
+    expect(alarm).toBeLessThanOrEqual(after + 120_000);
   });
 
   // Spec §5.2: "a chat post arriving during a slow … R2 put lands". It must be

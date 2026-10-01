@@ -526,7 +526,7 @@ describe("the table object (spec §2.4)", () => {
   it("a module the object cannot build answers 500, logged, and is never a load trap", async () => {
     const refusal = configModule.shellConfig({ ...env, YOKOHAMA_WEB_ARCHIVE: "s3" });
     if (!("error" in refusal)) throw new Error("premise: the shell refuses YOKOHAMA_WEB_ARCHIVE=s3");
-    const bad = JSON.stringify({ archive: "off", caller: null, lobby_chat: "maybe", chat_keep: null, chat_text: null });
+    const bad = JSON.stringify({ identity: "worker", archive: "off", caller: null, lobby_chat: "maybe", chat_keep: null, chat_text: null });
     const initSentence = thrown(() => createModule(compiled).init(bad));
     expect(initSentence, "premise: init names the variable").toEqual(expect.stringContaining("YOKOHAMA_WEB_LOBBY_CHAT"));
     const arms: Array<[string, () => () => void, unknown, unknown]> = [

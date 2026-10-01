@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { sourceDigest } from "./build-module.mjs";
-import { configFailures, deployGuard } from "./deploy-guard.mjs";
+import { configFailures, deployGuard, doorLine } from "./deploy-guard.mjs";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -45,6 +45,17 @@ const OBJECTS = `"durable_objects": {
 /** The archive's bucket, bound as spec §3.1 has it. */
 const BUCKET = `"r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }]`;
 
+/** Production's door (M6.5c2, spec §2.1): the worker door, and the Access
+ *  values it needs. Last in the file, so a cell that writes a `vars` block of
+ *  its own before `"main"` is read OVER by this one — duplicate keys, the last
+ *  one wins — and a cell that means a key to be read writes it into this
+ *  block. */
+const DOOR_VARS = `"vars": {
+    "YOKOHAMA_WEB_IDENTITY": "worker",
+    "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
+    "ACCESS_AUD": "test-aud"
+  }`;
+
 const PRODUCTION = `// production
 {
   "name": "yokohama-web",
@@ -54,8 +65,18 @@ const PRODUCTION = `// production
   ${ASSETS_BLOCK("./assets")},
   ${OBJECTS},
   ${BUCKET},
+  ${DOOR_VARS},
 }
 `;
+
+/** Production's configuration at the OPEN door, which needs no Access
+ *  values: the door changed, and the team's domain and audience gone. */
+const OPEN = PRODUCTION.replace(
+  DOOR_VARS,
+  `"vars": {
+    "YOKOHAMA_WEB_IDENTITY": "open"
+  }`,
+);
 
 const TEST_CONFIG = `{
   "name": "yokohama-web-test",
@@ -63,6 +84,17 @@ const TEST_CONFIG = `{
   ${OBJECTS},
   ${BUCKET},
   "vars": { "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
+}
+`;
+
+/** The pool's second configuration, the open door's (M6.5c2): held to the
+ *  same blocks as `wrangler.test.jsonc`. */
+const OPEN_TEST_CONFIG = `{
+  "name": "yokohama-web-open-test",
+  ${ASSETS_BLOCK("./.test-assets")},
+  ${OBJECTS},
+  ${BUCKET},
+  "vars": { "YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
 }
 `;
 
@@ -103,6 +135,7 @@ function worker(changes = {}, since = {}) {
     "static/_headers": "/*\n  X-Content-Type-Options: nosniff\n",
     "wrangler.jsonc": PRODUCTION,
     "wrangler.test.jsonc": TEST_CONFIG,
+    "wrangler.open.test.jsonc": OPEN_TEST_CONFIG,
     "../web/dist/sw.js": SW,
     "../crates/yokohama-worker/src/lib.rs": "// the module\n",
   });
@@ -171,7 +204,9 @@ describe("the deploy guard", () => {
     ]);
   });
 
-  it("refuses a workers.dev URL", () => {
+  // A workers.dev URL would go around the hostname's Access application, so
+  // the worker door refuses one (check 3, per door).
+  it("refuses a workers.dev URL at the worker door", () => {
     const open = PRODUCTION.replace('"workers_dev": false', '"workers_dev": true');
     expect(deployGuard(worker({ "wrangler.jsonc": open }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc must set "workers_dev": false/),
@@ -201,7 +236,10 @@ describe("the deploy guard", () => {
   // file's text searched (the committed configuration, whose comment names
   // it, is refused).
   it("refuses an operator list among production's vars", () => {
-    const listed = PRODUCTION.replace('"main"', '"vars": { "YOKOHAMA_WEB_ADMINS": "someone@example.com" },\n  "main"');
+    const listed = PRODUCTION.replace(
+      '"YOKOHAMA_WEB_IDENTITY": "worker"',
+      '"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_WEB_ADMINS": "someone@example.com"',
+    );
     expect(deployGuard(worker({ "wrangler.jsonc": listed }))).toEqual([
       "wrangler.jsonc's vars name YOKOHAMA_WEB_ADMINS — the operator list is a secret (wrangler secret put), never a committed value",
     ]);
@@ -256,10 +294,13 @@ describe("the deploy guard", () => {
       expect.stringMatching(/^wrangler\.test\.jsonc's durable_objects differs from wrangler\.jsonc's/),
     ]);
   });
+  // Production's migration now differs from BOTH pool files (M6.5c2): each
+  // is named.
   it("refuses a migration the pool runs and production does not ship", () => {
     const drift = PRODUCTION.replace('["Table", "House", "Archive"]', '["Table", "House"]');
     expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([
       expect.stringMatching(/^wrangler\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
+      expect.stringMatching(/^wrangler\.open\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
     ]);
   });
   it("reads the two blocks by value, whatever their keys' order or spacing", () => {
@@ -365,12 +406,139 @@ describe("the deploy guard", () => {
       "worker/assets/_redirects is not worker/static/_redirects — assemble the assets again: npm run build",
     ]);
   });
+
+  // Check 3, per door (M6.5c2, spec §2.1; review R2.2-m5). The door has no
+  // default: a configuration naming none is refused, rather than deployed to
+  // answer every request the 500, and the value is read as the shell reads
+  // it — trimmed, then matched exactly. Mutants: the check missing; a default
+  // door; any value read as a door; the value case-folded.
+  it("refuses a configuration that names no door, and one naming a door it does not know", () => {
+    const none = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker",', "");
+    expect(deployGuard(worker({ "wrangler.jsonc": none }))).toEqual([
+      "wrangler.jsonc names no door — its vars must set YOKOHAMA_WEB_IDENTITY to worker or open, and there is no default",
+    ]);
+    for (const [value, shown] of [
+      ['"cf-access"', '"cf-access"'],
+      ['"Worker"', '"Worker"'],
+      ['""', '""'],
+      ["true", "true"],
+    ]) {
+      const other = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": ${value}`);
+      expect(deployGuard(worker({ "wrangler.jsonc": other })), value).toEqual([
+        `wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — got ${shown}`,
+      ]);
+    }
+    const spaced = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": " worker "');
+    expect(deployGuard(worker({ "wrangler.jsonc": spaced })), "trimmed, as the shell reads it").toEqual([]);
+  });
+  // Without the team or the audience no assertion is verified, and every
+  // caller is no one — at the worker door; the open door reads neither.
+  // Mutants: the check missing; either value exempted; the check made
+  // whatever the door.
+  it("refuses the worker door without its Access team or audience, and asks neither of the open door", () => {
+    const noTeam = PRODUCTION.replace('"ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",', "");
+    expect(deployGuard(worker({ "wrangler.jsonc": noTeam }))).toEqual([
+      "wrangler.jsonc's vars must set ACCESS_TEAM_DOMAIN under the worker door — without it no assertion is verified, and every caller is no one",
+    ]);
+    const blind = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": " "');
+    expect(deployGuard(worker({ "wrangler.jsonc": blind }))).toEqual([
+      "wrangler.jsonc's vars must set ACCESS_AUD under the worker door — without it no assertion is verified, and every caller is no one",
+    ]);
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN })), "the open door: no Access values").toEqual([]);
+  });
+  // A workers.dev URL goes around the hostname's Access application — the
+  // worker door's refusal; an open door has nothing to go around. Preview URLs
+  // are refused at BOTH doors: a preview version is not the deployed code,
+  // whatever the door. Mutants: workers_dev refused at both doors; preview_urls
+  // exempted at the open door.
+  it("allows a workers.dev URL at the open door only, and refuses preview URLs at both", () => {
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN.replace('"workers_dev": false', '"workers_dev": true') }))).toEqual([]);
+    for (const [door, config] of [
+      ["worker", PRODUCTION],
+      ["open", OPEN],
+    ]) {
+      expect(deployGuard(worker({ "wrangler.jsonc": config.replace('"preview_urls": false', '"preview_urls": true') })), door).toEqual([
+        expect.stringMatching(/^wrangler\.jsonc must set "preview_urls": false/),
+      ]);
+    }
+  });
+  // The dev door is the worker door's test instrument; the Worker refuses the
+  // pair at run time too (`shellConfig`). Read as the shell reads a switch.
+  // Mutants: the check missing; the switch read raw; the check made whatever
+  // the door (production's worker door runs the dev door on).
+  it("refuses the dev door on beside the open door, read as the shell reads a switch", () => {
+    for (const on of ["on", " On "]) {
+      const both = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "${on}"`);
+      expect(deployGuard(worker({ "wrangler.jsonc": both })), on).toEqual([
+        "wrangler.jsonc's vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair",
+      ]);
+    }
+    const off = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "off"');
+    expect(deployGuard(worker({ "wrangler.jsonc": off })), "off").toEqual([]);
+    const worked = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_DEV_DOOR": "on"');
+    expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door").toEqual([]);
+  });
+  // Check 7's second secret (M6.5c2, R-6.5c2.5): the dev door's client id.
+  // It reads production's file alone, so the pool files keep their test value
+  // (review m9). Mutants: the key missing from the check; an environment's
+  // vars not read for it; a pool file read too.
+  it("refuses the dev door's client id among production's vars, and leaves the pool's", () => {
+    const listed = PRODUCTION.replace(
+      '"YOKOHAMA_WEB_IDENTITY": "worker"',
+      '"YOKOHAMA_WEB_IDENTITY": "worker", "DEV_DOOR_CLIENT_ID": "some-client.access"',
+    );
+    expect(deployGuard(worker({ "wrangler.jsonc": listed }))).toEqual([
+      "wrangler.jsonc's vars name DEV_DOOR_CLIENT_ID — the dev door's client id is a secret (wrangler secret put), never a committed value",
+    ]);
+    const staged = PRODUCTION.replace('"main"', '"env": { "staging": { "vars": { "DEV_DOOR_CLIENT_ID": "some-client.access" } } },\n  "main"');
+    expect(deployGuard(worker({ "wrangler.jsonc": staged }))).toEqual([
+      "wrangler.jsonc's env.staging.vars name DEV_DOOR_CLIENT_ID — the dev door's client id is a secret (wrangler secret put), never a committed value",
+    ]);
+    const pools = {
+      "wrangler.test.jsonc": TEST_CONFIG.replace('"vars": {', '"vars": { "DEV_DOOR_CLIENT_ID": "test-client.access",'),
+      "wrangler.open.test.jsonc": OPEN_TEST_CONFIG.replace('"vars": {', '"vars": { "DEV_DOOR_CLIENT_ID": "test-client.access",'),
+    };
+    expect(deployGuard(worker(pools)), "the pool files keep theirs").toEqual([]);
+  });
+  // Checks 5 and 6 over the open door's pool file (M6.5c2): the pool reads it
+  // too, so it must test what production ships. Mutant: the open file not
+  // read.
+  it("holds the open door's pool file to spec §2.3's assets block and production's object blocks", () => {
+    const drift = OPEN_TEST_CONFIG.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
+    expect(deployGuard(worker({ "wrangler.open.test.jsonc": drift }))).toEqual([
+      expect.stringMatching(/^wrangler\.open\.test\.jsonc's durable_objects differs from wrangler\.jsonc's/),
+    ]);
+    const spa = OPEN_TEST_CONFIG.replace('"not_found_handling": "none"', '"not_found_handling": "single-page-application"');
+    expect(deployGuard(worker({ "wrangler.open.test.jsonc": spa }))).toEqual([
+      expect.stringMatching(/^wrangler\.open\.test\.jsonc's assets\.not_found_handling must be "none"/),
+    ]);
+    expect(deployGuard(worker({ "wrangler.open.test.jsonc": null }))).toEqual(["wrangler.open.test.jsonc is absent"]);
+  });
+  // The guard names the door a configuration ships (R-6.5c2.5; review
+  // R2.2-m5), and none where it names none check 3 knows — which check 3
+  // refuses. Mutants: the line missing; a door it does not know printed.
+  it("names the door a configuration ships", () => {
+    expect(doorLine(worker())).toBe("wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(doorLine(worker({ "wrangler.jsonc": OPEN }))).toBe(
+      "wrangler.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
+    );
+    expect(doorLine(worker({ "wrangler.jsonc": PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker",', "") }))).toBeUndefined();
+    const nas = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "cf-access"');
+    expect(doorLine(worker({ "wrangler.jsonc": nas }))).toBeUndefined();
+    expect(doorLine(worker({ "wrangler.jsonc": null }))).toBeUndefined();
+  });
 });
 
 describe("the committed configurations", () => {
   // The per-commit catcher for battery rows 13 and 14: the checks that need no
-  // build, over the two files this commit ships.
+  // build, over the three files this commit ships.
   it("pass every check that needs no build", () => {
     expect(configFailures(fileURLToPath(new URL("..", import.meta.url)))).toEqual([]);
+  });
+  // M6.5c2 (R-6.5c2.5): production's door is the worker door.
+  it("name the worker door", () => {
+    expect(doorLine(fileURLToPath(new URL("..", import.meta.url)))).toBe(
+      "wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell",
+    );
   });
 });

@@ -389,7 +389,12 @@ function TableForm({
               open={advanced || seedError !== null}
               onToggle={(e) => setAdvanced(e.currentTarget.open)}
             >
+              {/* **And says why while it is held** (cycle C, the a11y pass;
+                  R-B17): a keyboard's Enter on a summary that will not close
+                  did nothing a screen reader could hear. It points at the
+                  refusal while there is one, and at nothing after. */}
               <summary
+                aria-describedby={seedError !== null ? "seed-error" : undefined}
                 onClick={(e) => {
                   if (seedError !== null) e.preventDefault();
                 }}

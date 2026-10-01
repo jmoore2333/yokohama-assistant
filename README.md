@@ -287,47 +287,58 @@ cd web && npm ci && npm run build && cd ..
 YOKOHAMA_WEB_IDENTITY=open cargo run --release -p yokohama-web   # http://127.0.0.1:8080
 ```
 
-`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `open` is the self-host
-door: you type a name and play under it.
+`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `open` is the mode for your
+own machine: the first screen asks for a name and you play under it. Before you put the server on a
+network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 ## Hosting
 
-**One table layer, three hosts** (M6.5a's seam). The same `yokohama-web` layer runs in three
-places, and the first two each serve the client, with its service worker, behind the same
-Cloudflare Access application.
+**One table layer, three hosts, and a guide and a runbook for each server.**
 
-- **Cloudflare, at `yokohama.moore.nyc`, live since 2026-09-23: hosted multiplayer** (M6.5c). A
-  stateless Worker verifies Access's signed assertion and forwards each request by name to a
-  Durable Object: one per table, which keeps that table's documents in its own SQLite and runs the
-  layer as its own WebAssembly instance; one for the lobby; and one per player for browser saves.
-  Moves reach the other screens over hibernatable WebSockets, finished and abandoned games are
-  archived to an R2 bucket in the NAS archive's own layout, and a table idle for 90 days is saved
-  and expires. **[`worker/README.md`](worker/README.md) explains the design, its reasoning and its
-  mechanics in detail, for readers new to Cloudflare** — start with
-  [what a Durable Object is](worker/README.md#2-what-a-durable-object-is-and-what-serverless-means-here),
-  [Free vs Paid](worker/README.md#3-free-vs-paid-and-how-this-was-optimized-for-free),
-  [the 10 ms CPU budget](worker/README.md#4-lessons-from-the-10-ms-cpu-budget-and-how-the-core-crates-run-inside-it)
-  and [what a game costs](worker/README.md#5-estimates-for-concurrent-and-ongoing-games).
-  [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) §6 is how it is built, deployed and read. The cycle's
-  record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md), and the cleanup cycle
-  after it starts from [its handover](docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md).
-- **The NAS, at `yokohama-nas.moore.nyc`: the self-host path.** A container on the owner's Synology
-  NAS since 2026-09-01, reached only through the existing cloudflared tunnel; it moved to this
-  hostname on 2026-09-21, leaving `yokohama.moore.nyc` to the Worker. The current build,
-  `yokohama-web:0.5.0-m6.5b2.1`, has been live since 2026-09-22 and runs with
-  `YOKOHAMA_WEB_IDENTITY=claimed` (the open door's name before M6.5c2 renamed it), server-sent
-  events and a directory archive. The RUNBOOK is its
-  record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery as a
-  context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`), §3 the
-  container (network `cf-internal`, the named volume `yokohama-web-data` holding the game store, no
-  port published to the LAN), §3.5–§3.16 every deployment with its numbers, §5 rollback (every
-  earlier image tag is still on the NAS).
-- **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in
-  a Web Worker, so a game against the bot needs no server: it is kept in the browser's own storage,
-  the release installs whole for offline play, and a finished game is sent to the host's archive
-  when there is one. On either hostname a local game makes no server call until it ends.
+- **Your own server, in Docker — [`deploy/README.md`](deploy/README.md), the self-host guide.** One image
+  carries the server and the client.
+  - The guide leads with Access: `cf-access` behind a Cloudflare Access application, this repository's
+    default.
+  - It gives the open door its own section and trust model, for a home network, a LAN or a VPN with no
+    identity provider: anyone who can reach the server may use any name.
+  - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached only
+    through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
+    2026-09-22 under the mode then called `claimed`, and since the M6.5c2 close (2026-09-28) it runs
+    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, with server-sent events and a directory archive
+    (`deploy/RUNBOOK.md` §3.17 is that deployment's record).
+    [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
+    musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
+    Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
+    named volume `yokohama-web-data` holding the game store, no port published to the LAN), §3.5 on
+    every deployment with its numbers, §5 rollback (every earlier image tag is still on the NAS).
+- **Cloudflare: hosted multiplayer at `yokohama.moore.nyc`, live since 2026-09-23 (M6.5c) —
+  [`worker/README.md`](worker/README.md), written for readers new to Cloudflare.**
+  - A stateless Worker verifies Access's signed assertion and forwards each request by name to a Durable
+    Object: one per table, which keeps that table's documents in its own SQLite and runs the layer as
+    its own WebAssembly instance; one for the lobby; and one per player for browser saves.
+  - Moves reach the other screens over hibernatable WebSockets, finished and abandoned games are
+    archived to an R2 bucket in the NAS archive's own layout, and a table idle for 90 days is saved and
+    expires.
+  - Start with
+    [what a Durable Object is](worker/README.md#2-what-a-durable-object-is-and-what-serverless-means-here),
+    [Free vs Paid](worker/README.md#3-free-vs-paid-and-how-this-was-optimized-for-free),
+    [the 10 ms CPU budget](worker/README.md#4-lessons-from-the-10-ms-cpu-budget-and-how-the-core-crates-run-inside-it)
+    and [what a game costs](worker/README.md#5-estimates-for-concurrent-and-ongoing-games).
+  - [`worker/RUNBOOK.md`](worker/RUNBOOK.md) is how it is built, deployed and read, and
+    [the two doors](worker/README.md#15-the-two-doors-access-or-an-open-door) are its identity choice:
+    Access, as this repository deploys it, or an open door.
+  - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md), and the
+    cleanup cycle after it, M6.5c2, starts from
+    [its handover](docs/plans/2026-09-26-web-frontend-m6.5c2-handover.md).
+- **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in a Web
+  Worker, so a game against the bot needs no server.
+  - The game is kept in the browser's own storage, and the release installs whole for offline play.
+  - A finished game is sent to the host's archive when there is one.
+  - On either hostname a local game makes no server call until it ends.
 
-The Modal path and its edge proxy were retired unused (RUNBOOK §4).
+The web lane's operating detail — its suites, its gates and its standing rules — is in
+[`CLAUDE.md`](CLAUDE.md). The Modal path and its edge proxy were retired unused (`deploy/RUNBOOK.md`
+§4).
 
 What the code already does right:
 
@@ -341,6 +352,10 @@ What the code already does right:
 - **The bind address is explicit.** `YOKOHAMA_WEB_HOST` (default `127.0.0.1`) and
   `YOKOHAMA_WEB_PORT` (default `8080`); a container needs `0.0.0.0` and that is a deployment's
   decision to make, not a default to inherit.
+
+*The paragraphs below are the room cycles' history. Since M6.5c2 the mode the first of them called
+`claimed` is named `open` (R-6.5c2.3), and the NAS is ruled `cf-access` (R-6.5c2.5), which it has run
+since the M6.5c2 close (2026-09-28).*
 
 **What M6.1 added, and what it did not:**
 
@@ -361,7 +376,7 @@ What the code already does right:
   policy attached to a Worker hands the identity to the Worker directly, and the origin trusts
   only what that Worker sets. Since M6.5c the Cloudflare host is that shape, with the verification
   added: its Worker checks the assertion's signature before it sets the one header the objects
-  trust ([`worker/README.md`](worker/README.md) §3.6).
+  trust ([`worker/README.md`](worker/README.md) §7.6).
 - **So the identity gate is still the proxy, and it still has to be in front of everything.** An
   origin reachable without going through Access is an origin whose identity header anyone can
   write.
@@ -562,10 +577,11 @@ carries three printed mechanical exhibits instead of an inference.
 The CLI is tester-ready; start with the linked HTML guide and report any table/CLI mismatch.
 
 Releases track completed phases (**v0.5.0** ↔ the V4 close — the current build, whose default bot
-is the sighted evaluator; **v0.3.3** ↔ Phase 3.3 was the previous full cut). Saves and self-play
-records are compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`, currently 7), not
-the release version (PR #14), so they survive release cuts — though a save stops resuming across a
-semantics bump by design, and rev-6-and-earlier saves no longer resume.
+is the sighted evaluator; **v0.3.3** ↔ Phase 3.3 was the previous full cut). The workspace is at
+0.6.0 since M6.5c2 (R-6.5c2.19); the `v0.6.0` tag is cut at cycle D's close, after the merge. Saves
+and self-play records are compatibility-keyed to the game-semantics revision (`SEMANTICS_REV`,
+currently 7), not the release version (PR #14), so they survive release cuts — though a save stops
+resuming across a semantics bump by design, and rev-6-and-earlier saves no longer resume.
 
 ## Workspace crates
 
@@ -631,29 +647,11 @@ recommendation for your seat), `why` / `why <n>` (a bot move, replayed and accou
 Full tester guide: **[HTML](docs/cli-guide.html)** or [Markdown](docs/cli-guide.md).
 
 **Gates.** Per-edit (debug): the six crate suites (`yokohama-core`, its `eval_probe` example
-target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) — plus a
-seventh, `yokohama-web`, the browser lane (merged to master 2026-09-11) — + the four
+target, `yokohama-cli`, `yokohama-oracle`, `yokohama-difftest`, `yokohama-bridge`) + the four
 `bridge/tests/*.js` node suites (the BGA bridge's browser half has no cargo coverage and would
 otherwise never run) + `cargo clippy --workspace --all-targets -- -D warnings`, all zero-warning.
-**The browser CLIENT adds three more per-edit commands, from `web/`** (M2.5,
-2026-08-31 — before it, "the suites are green" was not a claim about the browser at all):
-`npm run typecheck` (both TS projects, and the committed wire corpus against the hand-written
-client types), `npm test` (**447** vitest component tests over jsdom in 29 files, every payload
-of them server-emitted), and `npm run e2e` (**38** Playwright tests in seven spec files — 37
-driving real Chromium against the real release binary, including a whole 2P game clicked through
-to a winner, TWO browsers signed in as two people playing one game and each checked for the
-other's cards, the explanation chart's real geometry, the page's real width at four viewports per
-seat count, the table's fit rule read as the rendered tile width, and the replay track walking
-the board back and returning it unchanged; the thirty-eighth needs no browser and is what keeps
-the escape hatch below honest). Two further spec FILES are GENERATORS rather than tests and are
-dropped from the glob unless their own switch asks for them: `shots.spec.ts`
-(`YOKOHAMA_WEB_SHOTS=1`, two) writes the help panel's pictures, so leaving it in the run would
-re-cut documentation as a side effect and dirty the tree, and `gates.spec.ts`
-(`YOKOHAMA_WEB_GATES=1`, six) shoots the visual gates into a gitignored directory. The browser ones
-need `npx playwright install chromium` once; absence is a loud refusal naming that command, and
-`YOKOHAMA_WEB_E2E_OPTIONAL=1` turns it into a skip that says out loud it tested nothing — a
-convention that broke once when a new spec shipped without its skip line, and is now read off
-the spec directory at run time rather than remembered.
+The web lane's own per-edit commands — the layer, both WebAssembly hosts, the client's npm commands
+and the Worker's — and their counts are in [`CLAUDE.md`](CLAUDE.md)'s Commands section.
 Pre-merge: all **fifteen** release gates below, measured as ONE uninterrupted sequence at every
 close — a sum of per-command times from separate sessions is not a measured total. **Wall
 figures are per-machine since 2026-08-11** (two workstations whose profiles INVERT by gate
@@ -708,7 +706,12 @@ says what a fork has to do about them.
 - [`guidingpath.md`](guidingpath.md) — **authoritative** status, roadmap, and every rules
   ruling (decision log)
 - [`CLAUDE.md`](CLAUDE.md) — working conventions (TDD, gates, the oracle independence rule,
-  the `SEMANTICS_REV` bump contract)
+  the `SEMANTICS_REV` bump contract), and the web lane's suites and standing rules
+- [`deploy/README.md`](deploy/README.md) / [`worker/README.md`](worker/README.md) — the two server
+  hosts' guides: the self-host image, led by Access with the open door beside it, and the Cloudflare
+  host
+- [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) / [`worker/RUNBOOK.md`](worker/RUNBOOK.md) — their
+  operating records: the NAS's recipe and every deployment's readings, and the Worker's
 - [`docs/cli-guide.md`](docs/cli-guide.md) / [`.html`](docs/cli-guide.html) — tester-facing
   CLI guide (kept word-identical, enforced by the `guide_sync` test)
 - [`docs/suggest-walkthrough-2026-07-27.html`](docs/suggest-walkthrough-2026-07-27.html) — a

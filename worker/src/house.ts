@@ -9,7 +9,7 @@ import { Instance, readReply, type Replied } from "./module";
 import { errorBody, log, respond } from "./respond";
 import { decide, type Ack, type HouseRow, type Slot } from "./slot";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
-import { isUpgrade, NOT_AN_UPGRADE, USER_HEADER } from "./table";
+import { forwardedCaller, isUpgrade, NOT_AN_UPGRADE } from "./table";
 
 /** The house chat's one id — the layer's `chat::HOUSE`, the only id its store
  *  takes for that document. It is also the object's name (`HOUSE_NAME`). */
@@ -26,7 +26,7 @@ const TRAP = "the lobby's engine stopped — try again";
 const RETIRED_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** What a lobby socket carries across hibernation: the caller it was admitted
- *  as, exactly as `X-Yokohama-User` named them. */
+ *  as, exactly as its door's header named them (`forwardedCaller`). */
 interface Attachment {
   user: string | undefined;
 }
@@ -109,7 +109,7 @@ export class House extends DurableObject<Env> {
     if (stream && req.method !== "GET") return respond(405, "");
     if (stream && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
     const incoming: Incoming = {
-      user: req.headers.get(USER_HEADER) ?? undefined,
+      user: forwardedCaller(req.headers, this.config),
       stream,
       method: req.method,
       path: url.pathname,
@@ -186,8 +186,16 @@ export class House extends DurableObject<Env> {
    * carried them. So those two are as of the table's last DELIVERY (spec
    * §2.5): activity that changes no copy — a chat post, a move within a turn —
    * does not refresh them, and a table whose last copy the table object
-   * refused (`copy-refused`) is listed as that last copy reads. A copy
-   * carries no seed — the scrub zeroes it — so it may be parsed.
+   * refused (`copy-refused`) is listed as that last copy reads.
+   *
+   * Every time a row carries is unix SECONDS (M6.5c2, spec §2.7): the layer's
+   * `created_at` and `archived_at` as the copy has them, and `last_active` cut
+   * to whole seconds here, from the MILLISECONDS the slot and the `copies` row
+   * keep (the shell's time base, which nothing here changes).
+   *
+   * A copy carries no seed, and since M6.5c2 may carry a bot descriptor whose
+   * `weights` is above 2^53, which this parse rounds; it may be parsed because
+   * nothing here reads `params` and no parsed copy is written back.
    */
   listing(): OperatorRow[] {
     const sql = this.ctx.storage.sql;
@@ -210,7 +218,7 @@ export class House extends DurableObject<Env> {
           status: copy.status,
           players: copy.players,
           created_at: copy.created_at,
-          last_active,
+          last_active: Math.floor(last_active / 1000),
           bytes,
           over: copy.turn?.over ?? false,
           winner: copy.turn?.winner ?? null,
@@ -438,8 +446,12 @@ export class House extends DurableObject<Env> {
 }
 
 /** The house chat's `last` — the newest message number ever given — out of
- *  its document, which carries no seed and so may be parsed (spec §2.5); `0`
- *  with no document. */
+ *  its document (spec §2.5); `0` with no document. That document is the
+ *  house CHAT, not a table's copy: it carries no seed, and no bot descriptor
+ *  (a bot author is a seat and a name), so not the `weights` above 2^53 a
+ *  copy may carry since M6.5c2, which a parse rounds. It may be parsed because
+ *  nothing here reads more than `last` and no parsed document is written
+ *  back. */
 function lastOf(house: string | undefined): number {
   if (house === undefined) return 0;
   const last = (JSON.parse(house) as { last?: unknown }).last;

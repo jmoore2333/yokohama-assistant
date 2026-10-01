@@ -105,8 +105,11 @@ export function deviceWord(t: TableView): string {
   return `${vs}${t.my_seats.includes(t.to_move) ? "your move" : `waiting on ${holder(t, t.to_move)}`}`;
 }
 
-/** Which of the lobby's three lists a row is in (M6.5c2, R-6.5c2.7). */
-export type Section = "mine" | "open" | "playing";
+/** Which of the lobby's lists a row is in (M6.5c2, R-6.5c2.7): its three,
+ *  and the Finished group folded under the third (cycle C, R-6.5c2.22) — the
+ *  finished games the caller does NOT sit at. A finished game you sit at is
+ *  read under `"mine"`, because the lobby filters `notMine` first. */
+export type Section = "mine" | "open" | "playing" | "finished";
 
 /** How long ago a table was opened, in a row's words (mock 02: "opened 2 days
  *  ago"). `createdAt` is the wire's Unix SECONDS and `now` milliseconds, the
@@ -175,6 +178,16 @@ export function seatChips(t: TableView): ChipModel[] {
   });
 }
 
+/** Is this a game THIS BUILD cannot continue? Dealt a bot this build does not
+ *  run, and not over — every game route refuses it (spec section 2.4), while a
+ *  finished one opens as it always did (R-6.5c2.10).
+ *
+ *  **One sentence, read everywhere a game is offered** (M6.5c2 cycle C; the
+ *  fix wave review's concern (a)): the lobby's row (`rowAction`), the door's
+ *  "Will not open here" (`OnThisDevice`) and the Game menu's saved games, so a
+ *  game one of them sets aside is never offered by another. */
+export const isStranded = (t: TableView): boolean => Boolean(t.bot && !t.bot.runs_here && !t.over);
+
 /** A row's one control (R-6.5c2.7), or why it has none. */
 export type RowAction =
   | { kind: "go"; label: "Play" | "View" | "Take a seat" | "Spectate"; primary: boolean; padlock: boolean }
@@ -187,11 +200,13 @@ export type RowAction =
  *  run, and it is not over) offers nothing to open: every game route refuses
  *  it (spec section 2.4), and its creator can still abandon it from the row. A
  *  finished one opens as ever. Yours: a card owed or your move is the gold
- *  Play; a table still filling is its link, to send. The padlock says a
- *  password is still wanted: at an open table whenever it is locked, at a game
- *  only until this caller has given it (`can_watch`). */
+ *  Play; a table still filling is its link, to send. Somebody else's finished
+ *  game is VIEWED rather than spectated (R-6.5c2.22): nothing on it is still
+ *  happening. The padlock says a password is still wanted: at an open table
+ *  whenever it is locked, at a game (finished or not) only until this caller
+ *  has given it (`can_watch`). */
 export function rowAction(t: TableView, section: Section): RowAction {
-  if (t.bot && !t.bot.runs_here && !t.over) return { kind: "stranded" };
+  if (isStranded(t)) return { kind: "stranded" };
   if (section === "mine") {
     if (t.status === "open") return { kind: "copy" };
     if (t.over) return { kind: "go", label: "View", primary: false, padlock: false };
@@ -202,5 +217,6 @@ export function rowAction(t: TableView, section: Section): RowAction {
     return { kind: "go", label: "Play", primary: owed, padlock: false };
   }
   if (section === "open") return { kind: "go", label: "Take a seat", primary: false, padlock: t.locked };
+  if (section === "finished") return { kind: "go", label: "View", primary: false, padlock: t.locked && !t.can_watch };
   return { kind: "go", label: "Spectate", primary: false, padlock: t.locked && !t.can_watch };
 }

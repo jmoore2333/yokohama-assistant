@@ -6,7 +6,18 @@
 // looking at is a lobby nobody can trust.
 
 import { describe, expect, it } from "vitest";
-import { ago, deviceWord, holder, rowAction, rowMeta, seatChips, seatName, seatNames, tableWord } from "./tables";
+import {
+  ago,
+  deviceWord,
+  holder,
+  isStranded,
+  rowAction,
+  rowMeta,
+  seatChips,
+  seatName,
+  seatNames,
+  tableWord,
+} from "./tables";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
 import productionBot from "./wire/production_bot.json";
@@ -242,5 +253,78 @@ describe("the lobby row", () => {
     expect(wire.tableForeign.bot!.runs_here).toBe(false);
     expect(rowAction(wire.tableForeign, "mine")).toEqual({ kind: "stranded" });
     expect(rowAction({ ...wire.tableForeign, over: true }, "mine")).toMatchObject({ kind: "go", label: "View" });
+  });
+});
+
+// **One sentence for "this build cannot continue it"** (M6.5c2 cycle C; the
+// fix wave review's concern (a)): the lobby's row, the door's "Will not open
+// here" and the single-player Game menu all read this, so a game stranded in
+// one of them cannot be offered in another. Each value below is a corpus row
+// with at most ONE field moved, named.
+describe("isStranded", () => {
+  it("is a game dealt a bot this build does not run, only while it is not over", () => {
+    expect(wire.tableForeign.bot?.runs_here, "the premise: the corpus's foreign row").toBe(false);
+    expect(isStranded(wire.tableForeign)).toBe(true);
+    // `over` moved: a finished game opens as it always did (R-6.5c2.10).
+    expect(isStranded({ ...wire.tableForeign, over: true })).toBe(false);
+    // A bot this build DOES run (`table_bot.json`), and a table with no bot.
+    expect(wire.tableBot.bot?.runs_here).toBe(true);
+    expect(isStranded(wire.tableBot)).toBe(false);
+    expect(wire.table.bot).toBeNull();
+    expect(isStranded(wire.table)).toBe(false);
+  });
+});
+
+// The lobby's Finished group (M6.5c2 cycle C, R-6.5c2.22; spec section 2.2 as
+// amended): a finished game the caller does not sit at is VIEWED, not
+// spectated, and its padlock is the one Spectate carried. The corpus's walk
+// finishes no game, so every table here is a corpus table with `over` moved.
+describe("the Finished group's row", () => {
+  it("offers View on a finished game you do not sit at, never Spectate, and no padlock once the password is given", () => {
+    // `wire.gamesPlaying`'s one table is the lobby's third list as a stranger
+    // reads it: locked, and this caller has given the password (`can_watch`).
+    const playing = wire.gamesPlaying.games[0]!;
+    expect(playing.my_seats).toEqual([]);
+    expect(playing.locked).toBe(true);
+    expect(playing.can_watch).toBe(true);
+    // One field moved, `over`.
+    expect(rowAction({ ...playing, over: true }, "finished")).toEqual({
+      kind: "go",
+      label: "View",
+      primary: false,
+      padlock: false,
+    });
+    // The same table still under way is Spectate: the word is the list's.
+    expect(rowAction(playing, "playing")).toMatchObject({ label: "Spectate" });
+  });
+
+  // **Review Focus 5**: a locked finished game this caller has not unlocked
+  // keeps the padlock on its action, as Spectate did — the unlock face still
+  // answers at its address.
+  it("puts the padlock on a locked finished game's View while its password is still wanted", () => {
+    expect(wire.tableWatchable.locked).toBe(true);
+    expect(wire.tableWatchable.can_watch).toBe(false);
+    expect(wire.tableWatchable.my_seats).toEqual([]);
+    // One field moved, `over`.
+    expect(rowAction({ ...wire.tableWatchable, over: true }, "finished")).toEqual({
+      kind: "go",
+      label: "View",
+      primary: false,
+      padlock: true,
+    });
+  });
+
+  // **A finished game you sit at is never asked for "finished"**: the lobby
+  // filters `notMine` before it splits the third list, so yours stay under
+  // Your tables with View. Were it asked, the answer would be the same one —
+  // a seat holder's `can_watch` is true (`TableView`'s own rule), so the
+  // padlock cannot appear on a game you are at by either road.
+  it("reads a finished game you sit at as Your tables' View, and the Finished arm would agree", () => {
+    const yours = { ...wire.table, over: true }; // one field moved, `over`
+    expect(yours.my_seats).toEqual([1]);
+    expect(yours.locked).toBe(true);
+    expect(yours.can_watch).toBe(true);
+    expect(rowAction(yours, "mine")).toEqual({ kind: "go", label: "View", primary: false, padlock: false });
+    expect(rowAction(yours, "finished")).toEqual(rowAction(yours, "mine"));
   });
 });

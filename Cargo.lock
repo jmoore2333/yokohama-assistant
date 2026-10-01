@@ -218,7 +218,7 @@ dependencies = [
 
 [[package]]
 name = "gen-data"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -879,14 +879,14 @@ dependencies = [
 
 [[package]]
 name = "yokohama-bridge"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "yokohama-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -909,7 +909,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-difftest"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rand",
  "rand_chacha",
@@ -921,7 +921,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-oracle"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-wasm"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "js-sys",
  "serde_json",
@@ -941,7 +941,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-web"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "form_urlencoded",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "yokohama-worker"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "http",
  "js-sys",

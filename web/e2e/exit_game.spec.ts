@@ -82,6 +82,9 @@ import {
   EXIT,
   LIVE,
   abandonAsCreator,
+  abandonOpened,
+  awaitCreate,
+  createdTable,
   describeBounds,
   exitLayout,
   forgetHidden,
@@ -92,6 +95,7 @@ import {
   placeWindow,
   watchVisibility,
   type ExitLayout,
+  type Opening,
 } from "./live";
 import { appliedEvents, chatOf, hasMove, ownHand, reads, say, socketTo, unfold } from "./shared_table";
 
@@ -232,18 +236,22 @@ interface Checkpoint {
   applied: boolean;
 }
 
-/** The table this walk opened, and the page of the person who opened it. */
-let opened: { page: Page; id: string } | null = null;
+/** The table this walk is opening, and the page of the person opening it:
+ *  known from the moment its create is SENT ([`awaitCreate`]). */
+let opened: Opening | null = null;
 
 // **The table is abandoned whatever happens**, as its creator, in an
 // `afterEach` and not a `finally` — for the measured reason
 // `two_browsers.spec.ts` gives: a timed-out body's `finally` runs only after
 // its pages are closed. The walk abandons it itself at its end, which is one
-// of the things it is here to see; this is for a walk that did not get there.
+// of the things it is here to see; this is for a walk that did not get there —
+// from the moment the create is SENT, for as long as `awaitCreate`'s wait
+// lasts (R3's L-9), so a walk that fails before it reads the create's reply
+// still takes its table away.
 test.afterEach(async () => {
   const table = opened;
   opened = null;
-  if (LIVE && table) await abandonAsCreator(table.page, table.id);
+  await abandonOpened(table);
 });
 
 test("two people and a watcher play a paced game across four hibernations, and its creator abandons it", async ({
@@ -340,13 +348,9 @@ test("two people and a watcher play a paced game across four hibernations, and i
   await x.getByLabel("Name", { exact: true }).fill(NAME);
   await x.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
   await x.getByLabel("Table password", { exact: true }).fill(PASSWORD);
-  const created = x.waitForResponse(
-    (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
-  );
+  opened = awaitCreate(x);
   await x.getByRole("button", { name: "Open table" }).click();
-  const id = String(((await (await created).json()) as { id: string }).id);
-  expect(id, "the server named the table").toBeTruthy();
-  opened = { page: x, id };
+  const id = await createdTable(opened);
   streamPath = `/api/games/${id}/stream`;
   await expect(x).toHaveURL(new RegExp(`#/t/${id}$`));
 

@@ -156,13 +156,28 @@ export async function get(base, path, pairs, fetcher = fetch) {
   return fetcher(url, { redirect: "manual", headers: credentialFor(url.href, new URL(base).origin, pairs) ?? {} });
 }
 
-/** The deployed `sw.js`, and its precache list and cache name. */
-async function deployedRelease(base, pairs) {
-  const res = await get(base, "/sw.js", pairs);
-  const text = await res.text();
-  if (res.status !== 200) throw new Error(`/sw.js answered ${res.status}: ${text.slice(0, 200)}`);
+/** The deployed `sw.js`, and its precache list and cache name. An answer that
+ *  is not the release — an Access login, the edge's challenge — is named by
+ *  its status, type and size, never by what it says (R3's L-3; the file's own
+ *  rule, above, and `web/e2e/live.ts`'s `accessState`, which names the
+ *  credential's one answer the same way). */
+export async function deployedRelease(base, pairs, fetcher = fetch) {
+  const res = await get(base, "/sw.js", pairs, fetcher);
+  const body = new Uint8Array(await res.arrayBuffer());
+  if (res.status !== 200) {
+    throw new Error(`/sw.js answered ${res.status} — ${answerShape(res.status, res.headers.get("content-type"), body.length)}`);
+  }
+  const text = new TextDecoder().decode(body);
   const cacheName = /yokohama-release-[0-9a-f]{16}/.exec(text)?.[0];
   return { entries: precacheList(text), cacheName, cacheControl: res.headers.get("cache-control") };
+}
+
+/** What an answer that is not the release was, for a line about it: a
+ *  redirect with no address — Access's carries a token — or a body's type and
+ *  size in bytes, never its bytes. */
+export function answerShape(status, contentType, bytes) {
+  if (status >= 300 && status < 400) return "a redirect (its location is not printed: Access's carries a token)";
+  return `a ${contentType ?? "typeless"} body of ${bytes} B`;
 }
 
 async function assets(base, file) {

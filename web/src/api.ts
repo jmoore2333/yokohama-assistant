@@ -215,6 +215,22 @@ export function identityHeaders(): Record<string, string> {
   return who ? { "x-yokohama-claimed-user": who } : {};
 }
 
+/** The identity a WebSocket UPGRADE carries, as query parameters — `{}` where
+ *  there is nothing to send (M6.5c2, spec §2.1).
+ *
+ *  **A browser puts no header on an upgrade** (`new WebSocket(url)`, `ws.ts`),
+ *  so under the OPEN door the stored name rides the upgrade's URL as
+ *  `claimed=`, and the Worker reads it there, on upgrades only. It is the value
+ *  `identityHeaders` sends on every fetch — one stored name, one statement of
+ *  it — and nothing under any other door: behind Access the edge's own session
+ *  is the identity, and a name left from an open door would only be a stale
+ *  one in a URL. `ws.ts` encodes it with `URLSearchParams`, so a `+` travels as
+ *  `%2B` and never becomes a space (Review Focus 1). */
+export function identityParams(): Record<string, string> {
+  const who = claimedUser();
+  return who && identityMode() === "open" ? { claimed: who } : {};
+}
+
 /** What EVERY request to the server carries: the identity header, and the one
  *  header that makes an expired Access session readable (M6.5b2, spec §2.1).
  *

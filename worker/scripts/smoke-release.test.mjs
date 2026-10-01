@@ -58,7 +58,14 @@ describe("the release module's smoke (the orchestrator's ruling, task 7's review
       ["dispatch", "smoke@x.test", "GET", "/api/health", "", undefined, "bytes:0"],
       ["free"],
     ]);
-    expect(JSON.parse(SMOKE_CONFIG)).toEqual({ archive: "off", caller: null, lobby_chat: null, chat_keep: null, chat_text: null });
+    expect(JSON.parse(SMOKE_CONFIG)).toEqual({
+      identity: "worker",
+      archive: "off",
+      caller: null,
+      lobby_chat: null,
+      chat_keep: null,
+      chat_text: null,
+    });
   });
 
   // The refusal path the ruling asks for. Mutant: the status never read.

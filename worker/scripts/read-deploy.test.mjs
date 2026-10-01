@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  answerShape,
   checkEntry,
   credentialFor,
   cutAtQuery,
   cutUrlsIn,
+  deployedRelease,
   edgeInjections,
   essence,
   get,
@@ -308,6 +310,36 @@ describe("what the script prints can carry no token", () => {
       },
       { url: "https://h.test/", to: undefined, from: "https://cli.h.test/cdn-cgi/access/authorized", location: "https://h.test/next", initiator: "https://h.test/page.js" },
     ]);
+  });
+});
+
+describe("deployedRelease — an answer that is not the release is named by its shape (R3's L-3)", () => {
+  // The file's own rule (its header): no value a token could ride in is
+  // printed. A login page or the edge's challenge in place of `sw.js` is named
+  // by its status, type and size — never a character of what it says, as
+  // `web/e2e/live.ts`'s `accessState` names the credential's one answer.
+  // Mutant: the body echoed, as `text.slice(0, 200)` was.
+  it("never echoes a non-200 /sw.js body: its status, type and size, and nothing it says", async () => {
+    const page = "<html><body>Sign in — token=DUMMY-TOKEN-1234</body></html>";
+    const fetcher = async () => new Response(page, { status: 403, headers: { "content-type": "text/html; charset=utf-8" } });
+    const said = await deployedRelease("https://yokohama.moore.nyc", [], fetcher).then(
+      () => "no refusal",
+      (e) => e.message,
+    );
+    expect(said).toBe(`/sw.js answered 403 — a text/html; charset=utf-8 body of ${enc(page).length} B`);
+    expect(said).not.toContain("DUMMY-TOKEN-1234");
+  });
+  // Mutant: the redirect's `location` printed.
+  it("names a redirect without its address, and a typeless body by its size", async () => {
+    const fetcher = async () =>
+      new Response(null, { status: 302, headers: { location: "https://team.cloudflareaccess.com/cdn-cgi/access/login?token=DUMMY-TOKEN-1234" } });
+    const said = await deployedRelease("https://yokohama.moore.nyc", [], fetcher).then(
+      () => "no refusal",
+      (e) => e.message,
+    );
+    expect(said).toBe("/sw.js answered 302 — a redirect (its location is not printed: Access's carries a token)");
+    expect(said).not.toContain("DUMMY-TOKEN-1234");
+    expect(answerShape(204, null, 0)).toBe("a typeless body of 0 B");
   });
 });
 

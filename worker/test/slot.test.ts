@@ -1083,6 +1083,26 @@ describe("the durable slot (spec §2.5)", () => {
     }
   });
 
+  // A table with a bot seat: since M6.5c2 its copy carries the bot's
+  // descriptor (R-6.5c2.10), whose `weights` is above 2^53, where a parse
+  // rounds it. The shell parses a copy only to read it (the operator's
+  // listing; `copyFacts`), so the copy the house STORES must be the text
+  // `house_copy` answered, byte for byte, those digits intact. Mutant: the
+  // copy re-encoded through a parse on the way, in the table's push or the
+  // house's store.
+  it("a copy whose bot weights are above 2^53 is stored as house_copy's text, byte for byte", async () => {
+    const id = "slot-weights";
+    const stub = tableStub(id);
+    expect((await create(id, CREATE_BODY.replace('{"open":true}', '{"bot":true}'))).status).toBe(201);
+    expect((await call(stub, RED, "POST", `/api/games/${id}/keep`, '{"seat":0,"card":1}')).status, "premise: red keeps, the table's one human seat").toBe(200);
+    await settle(stub);
+    const want = copyOf(id, await tableText(stub));
+    const digits = /"weights":\s*(\d+)/.exec(want)?.[1];
+    expect(digits, "premise: house_copy's text carries the bot's weights").toBe("6957643967275421640");
+    expect(String(Number(digits)), "premise: a parse rounds those digits").not.toBe(digits);
+    expect((await copyRow(id))?.json, "the house stores house_copy's text over the stored table, byte for byte").toBe(want);
+  });
+
   // Spec §2.5: the lobby socket is silent on connect, as the SSE lobby stream
   // is, and hears every copy the house applies — ONE frame per applied copy,
   // `{"event":"house","data":<house_frame(seq, chat)>}`. A house chat post is

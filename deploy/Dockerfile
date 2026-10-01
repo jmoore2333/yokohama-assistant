@@ -1,16 +1,21 @@
 # The Yokohama browser client and its API, as one image.
 #
-# **One artifact, two places it runs.** This is what runs under Portainer on the
-# NAS, and what anyone self-hosting runs under a local Docker; the deployment
-# decision is where to point a tunnel, not what to build. Nothing in here is
-# host-specific — every path the server needs is an environment variable with a
-# default that resolves inside the image. (Hosted multiplayer on Cloudflare is
-# the Worker in `worker/`, which runs no image — RUNBOOK §6.)
+# **One artifact, built from a checkout.** This is what anyone self-hosting
+# runs under a local Docker; the deployment decision is where to point a
+# tunnel, not what to build. Nothing in here is host-specific — every path the
+# server needs is an environment variable with a default that resolves inside
+# the image. The NAS runs `deploy/Dockerfile.runtime` instead: a static musl
+# binary and the client, built on the workstation, because the NAS's kernel is
+# 3.10 (RUNBOOK §1–§3); until M6.5c2 this paragraph said the NAS ran this
+# image. `.github/workflows/docker.yml` builds this one and smoke-runs it.
+# (Hosted multiplayer on Cloudflare is the Worker in `worker/`, which runs no
+# image — RUNBOOK §6.)
 #
-# Built for `linux/amd64` deliberately. The DS1517+ is an Intel Atom C2538, so
-# amd64 is right for it — but the build happens on a workstation, because
-# compiling this workspace on that Atom is where the plan would fall over rather
-# than where it would be tested.
+# Built for `linux/amd64` deliberately: the architecture of the NAS (a DS1517+,
+# an Intel Atom C2538) and of the runner `docker.yml` builds on. The build
+# happens on a workstation or that runner, never on the Atom, because
+# compiling this workspace there is where the plan would fall over rather than
+# where it would be tested.
 
 # ---------------------------------------------------------------------------
 # 1. The server, AND the browser host's WebAssembly module. `rust-toolchain.toml`
@@ -30,10 +35,13 @@
 FROM rust:1-slim-trixie AS server
 WORKDIR /src
 
-# `cargo build` needs no C toolchain for this workspace today (no build.rs
-# anywhere, checked), but pkg-config and a linker are cheap insurance and this
-# stage is not in the final image. `curl` is here for the step below and for
-# nothing else.
+# `cargo build` needs no C toolchain for this workspace today: the
+# workspace's one build script, `crates/yokohama-worker/build.rs`, belongs to
+# a package this stage does not build and neither package it builds depends
+# on (until M6.5c2 this line said "no build.rs anywhere, checked", which
+# stopped being true at M6.5c). pkg-config is cheap insurance (the base image
+# carries the linker, its own gcc) and this stage is not in the final image.
+# `curl` is here for the step below and for nothing else.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config curl \
  && rm -rf /var/lib/apt/lists/*
@@ -43,25 +51,35 @@ RUN apt-get update \
 # `wasm-opt -Oz`, which is 1.78 MB -> 1.17 MB; `npm run build:wasm` refuses
 # outright when it is absent, and this stage runs the same steps by hand.
 #
-# **Pinned to the SAME upstream binary the workflow installs, not to apt.**
-# Debian trixie ships `binaryen 120-4` (`wasm-opt version 120`, read off an
-# `apt-cache policy` in this very base image) where the workstation and CI run
-# 132, and that was a measured difference and not a theoretical one: over the
-# same input, apt's 120 emitted 1,174,709 B where 132 emits 1,173,055 B. The
+# **Pinned to the SAME upstream binary CI installs, not to apt: binaryen 133
+# since M6.5c2**, the version `.github/workflows/test.yml` installs and the
+# one on the workstation that optimizes every deployed module (the
+# orchestrator's ruling I-87 took CI to 133 at the M6.5c close; this stage
+# followed at M6.5c2). Debian trixie ships `binaryen 120-4` (`wasm-opt
+# version 120`, read off an `apt-cache policy` in this very base image), and
+# that was a measured difference and not a theoretical one: over the same
+# input, apt's 120 emitted 1,174,709 B where 132 emitted 1,173,055 B. The
 # image is `linux/amd64`, so the workflow's own asset applies byte for byte.
-# One static binary out of a 22-entry release; `libbinaryen` is a static
-# archive, so nothing else needs unpacking.
+# One static binary out of the release; `libbinaryen` is a static archive, so
+# nothing else needs unpacking.
 #
 # **The download is CHECKSUMMED before anything is unpacked from it.** A release
 # asset is mutable in the sense that matters here — the URL is a promise about a
 # name, not about bytes — and this one is fetched over the network into a stage
 # that then RUNS it. `sha256sum -c` fails the layer loudly on any mismatch, so a
 # replaced asset stops the build instead of optimizing the module with whatever
-# arrived. The hash was measured on 2026-09-21 over 117,057,408 bytes, by two
-# independent downloads on this workstation and a third elsewhere, all three
-# agreeing. `.github/workflows/test.yml` pinned the same file until the M6.5c
-# close, when CI moved to 133, the version every Worker module was deployed
-# with; this image stays on 132 until the cleanup cycle aligns the two.
+# arrived. The 133 hash is the one `test.yml` pins, measured there on
+# 2026-09-26 over 111,200,018 bytes and equal to the `.sha256` file binaryen
+# publishes beside the tarball. Until M6.5c2 this stage pinned 132
+# (`195ddc94…`, measured 2026-09-21 over 117,057,408 bytes by two independent
+# downloads on the workstation and a third elsewhere, all three agreeing).
+#
+# **The two paragraphs below are a 132-era record, kept as measured.** This
+# stage's first 133 module read 1,200,515 B (M6.5c2 cycle C's Task 8,
+# 2026-09-28: this Dockerfile's `linux/amd64` build, emulated on an arm64
+# workstation under Docker Desktop 29.8.0). That is a reading of THIS stage;
+# the workstation's module keeps its figures in their one place, the root
+# `Cargo.toml`'s `release-wasm` comment.
 #
 # **What pinning the optimizer did NOT close, measured rather than assumed.**
 # With the SAME `wasm-opt 132` on both hosts, this stage's module and the
@@ -81,11 +99,11 @@ RUN apt-get update \
 # deployment ships, and the cross-host gap is the thing to re-measure before
 # any ceiling is tightened.
 RUN curl -fsSL -o /tmp/binaryen.tar.gz \
-      https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz \
- && echo "195ddc94f9bc89f45abdabb0b9eea86023d727ba90eac8b35b80f2544fc30572  /tmp/binaryen.tar.gz" | sha256sum -c - \
- && tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_132/bin/wasm-opt \
- && install -m 0755 /tmp/binaryen-version_132/bin/wasm-opt /usr/local/bin/wasm-opt \
- && rm -rf /tmp/binaryen.tar.gz /tmp/binaryen-version_132 \
+      https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz \
+ && echo "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489  /tmp/binaryen.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/binaryen.tar.gz -C /tmp binaryen-version_133/bin/wasm-opt \
+ && install -m 0755 /tmp/binaryen-version_133/bin/wasm-opt /usr/local/bin/wasm-opt \
+ && rm -rf /tmp/binaryen.tar.gz /tmp/binaryen-version_133 \
  && wasm-opt --version
 
 # **The pin first, and the target onto the pinned toolchain.** `rustup target
@@ -110,9 +128,12 @@ RUN cargo install wasm-bindgen-cli --version 0.2.128 --locked
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
-# `-p yokohama-web` pulls `yokohama-cli` and `yokohama-core` as dependencies
-# and leaves the oracle, difftest, bridge and gen-data crates unbuilt — they
-# are development tooling and nothing at runtime calls them.
+# `-p yokohama-web` pulls `yokohama-cli` and `yokohama-core` as dependencies,
+# and the BGA bridge with them (the CLI's importer reads captures through it,
+# `crates/yokohama-cli/Cargo.toml`), and leaves the oracle, difftest, gen-data
+# and Worker crates unbuilt — development tooling and another host, which
+# nothing at runtime here calls. (Until M6.5c2 this line listed the bridge
+# among the unbuilt.)
 #
 # Both builds, the `wasm-bindgen` run and the `wasm-opt` pass are ONE step
 # because `target/` is a cache mount: it does not survive the layer, so anything
@@ -206,16 +227,20 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # deliberately. Since M6.1 this API reads an identity of its own — one header,
 # named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route, with
 # 401 for no identity and 403 for a caller with no seat — but that is not the
-# same as being safe to expose: `cf-access` and `worker` trust a header only
-# their own edge can set, and `open` authenticates nobody: whoever reaches the door may take any name.
-# Binding wide is still a statement that something in FRONT of this container is
-# doing identity — a Cloudflare Tunnel with an Access policy — and it belongs in
-# the deployment artifact where that is true, not in the program.
+# same as being safe to expose. `cf-access` and `worker` trust a header only
+# their own edge can set, and `open` trusts whatever name a caller types (the
+# open door's trust model, R-6.5c2.3). Binding wide is still a statement that
+# something decides who may reach this port — a Cloudflare Tunnel with an
+# Access policy, or a home network or VPN for the open door — and it belongs
+# in the deployment artifact where that is true, not in the program.
 #
 # **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here either**, for the same
 # reason: there is no default mode, and an image started without it exits 1
-# naming the three accepted values. The NAS sets it on the container
-# (`RUNBOOK.md` §3 records the value).
+# naming the accepted values. This repository's door is `cf-access`
+# (R-6.5c2.5); a deployment sets its door on the container (`RUNBOOK.md` §3
+# records the NAS's). The image is built with the default features, so
+# `open` is compiled in as well — `deploy/smoke-image.sh` starts it under no
+# door, under `cf-access` and under `open`.
 # The three chat variables (`YOKOHAMA_WEB_LOBBY_CHAT`, `YOKOHAMA_WEB_CHAT_KEEP`,
 # `YOKOHAMA_WEB_CHAT_TEXT`) are the other way round: each has a default, so an
 # image started without them runs the lobby chat on with a keep of 500

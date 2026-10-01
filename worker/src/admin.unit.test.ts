@@ -11,22 +11,43 @@ const ADMINS = ["chief@t.test", "boss@t.test"];
 // list (a 403 where the layer's 404 belongs).
 describe("the operator gate (spec §2.9)", () => {
   it("passes a listed person, with their address", () => {
-    expect(operatorGate(ADMINS, { kind: "person", email: "boss@t.test" })).toEqual({ kind: "operator", email: "boss@t.test" });
+    expect(operatorGate("worker", ADMINS, { kind: "person", email: "boss@t.test" })).toEqual({ kind: "operator", email: "boss@t.test" });
   });
 
   it("refuses a dev-door identity claiming a listed address (battery 32)", () => {
-    expect(operatorGate(ADMINS, { kind: "dev", email: "boss@t.test" })).toEqual({ kind: "refused" });
+    expect(operatorGate("worker", ADMINS, { kind: "dev", email: "boss@t.test" })).toEqual({ kind: "refused" });
   });
 
   it("refuses a person not on the list, and no one", () => {
-    expect(operatorGate(ADMINS, { kind: "person", email: "red@t.test" })).toEqual({ kind: "refused" });
-    expect(operatorGate(ADMINS, { kind: "none" })).toEqual({ kind: "refused" });
+    expect(operatorGate("worker", ADMINS, { kind: "person", email: "red@t.test" })).toEqual({ kind: "refused" });
+    expect(operatorGate("worker", ADMINS, { kind: "none" })).toEqual({ kind: "refused" });
   });
 
   it("is off with no list, whoever calls", () => {
     for (const identity of [{ kind: "person", email: "boss@t.test" }, { kind: "dev", email: "boss@t.test" }, { kind: "none" }] as const) {
-      expect(operatorGate(null, identity), identity.kind).toEqual({ kind: "off" });
+      expect(operatorGate("worker", null, identity), identity.kind).toEqual({ kind: "off" });
     }
+  });
+
+  // M6.5c2, spec §2.1 (review R2.2-M1): under the OPEN door no one is an
+  // operator — a claimed name is never an operator's rights — so the gate is
+  // `off`, the routes the layer's 404, whatever the list and whoever calls.
+  // `shellConfig` refuses a list beside `open`, and a person cannot reach the
+  // gate there, but the gate reads the door first all the same. A claimed name
+  // never counts under `worker` either. Mutants: the door not read (a claim
+  // meets the 403, a listed person the surface); `refused` under `open`; a
+  // claim read as a person.
+  it("is off under the open door, whatever the list and whoever calls; a claim is never an operator", () => {
+    const callers = [
+      { kind: "claimed", name: "boss@t.test" },
+      { kind: "person", email: "boss@t.test" },
+      { kind: "none" },
+    ] as const;
+    for (const identity of callers) {
+      expect(operatorGate("open", ADMINS, identity), identity.kind).toEqual({ kind: "off" });
+      expect(operatorGate("open", null, identity), `${identity.kind}, no list`).toEqual({ kind: "off" });
+    }
+    expect(operatorGate("worker", ADMINS, { kind: "claimed", name: "boss@t.test" })).toEqual({ kind: "refused" });
   });
 });
 

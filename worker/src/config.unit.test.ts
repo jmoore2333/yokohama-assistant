@@ -6,11 +6,13 @@ import type { Env } from "./env";
 // in for one; node has no R2.
 const BUCKET = {} as R2Bucket;
 
-/** An `Env` with `vars` set and, when asked, the bucket bound. The variables
- *  are `unknown` here because a wrangler `vars` entry can be a number or a
- *  boolean, and those are cells too. */
+/** An `Env` with `vars` set and, when asked, the bucket bound — at the WORKER
+ *  door unless `vars` names another, or `undefined` for none (M6.5c2): the
+ *  door has no default, and every other cell here is about another variable.
+ *  The variables are `unknown` here because a wrangler `vars` entry can be a
+ *  number or a boolean, and those are cells too. */
 function env(vars: Record<string, unknown> = {}, bucket = false): Env {
-  return { ASSETS: {} as Fetcher, ...(bucket ? { ARCHIVE: BUCKET } : {}), ...vars } as Env;
+  return { ASSETS: {} as Fetcher, ...(bucket ? { ARCHIVE: BUCKET } : {}), YOKOHAMA_WEB_IDENTITY: "worker", ...vars } as Env;
 }
 
 /** The configuration, or the cell fails with the refusal it got instead. */
@@ -143,6 +145,76 @@ describe("YOKOHAMA_WEB_TEST_CLOCK (the plan's ruling P-2)", () => {
   });
 });
 
+// M6.5c2, spec §2.1 (R-6.5c2.5): the door has NO default, and this Worker has
+// two. Read as the layer reads the NAS's variable of this name
+// (`IdentityMode::from_str`): trimmed, then matched exactly — `Open` is not
+// `open`, and `cf-access` and `claimed` are not this host's doors: here the
+// shell verifies Access itself, which is `worker`.
+describe("YOKOHAMA_WEB_IDENTITY (M6.5c2, spec §2.1)", () => {
+  // Mutants: a default door; the absence read as `worker`.
+  it("refuses a Worker that names no door, saying there is no default", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: undefined }))).toBe(
+      "YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision",
+    );
+  });
+  it("is worker or open, trimmed", () => {
+    expect(accepted(env()).door).toBe("worker");
+    expect(accepted(env({ YOKOHAMA_WEB_IDENTITY: "open" })).door).toBe("open");
+    expect(accepted(env({ YOKOHAMA_WEB_IDENTITY: " open " })).door).toBe("open");
+  });
+  // Mutants: any string read as a door; the value lowercased.
+  it.each(["cf-access", "claimed", "Open", "WORKER", ""])("refuses %j, naming it", (value) => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: value }))).toBe(
+      `YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(value)}`,
+    );
+  });
+});
+
+// M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it,
+// at run time, naming BOTH variables — the Worker's form of refusing to start.
+// An operator list is a SECRET, which the deploy guard cannot see, so this is
+// where it is refused; the dev door on is refused here and by the guard. The
+// dev door's client id is IGNORED under open, never refused: a credential
+// means nothing where a claim needs none. Mutants: either refusal missing;
+// either made whatever the door; the operator list's value echoed.
+describe("what the open door refuses beside it (M6.5c2, spec §2.1)", () => {
+  const ADMINS_BESIDE_OPEN =
+    "YOKOHAMA_WEB_ADMINS is set beside YOKOHAMA_WEB_IDENTITY=open — a claimed name is never an operator: " +
+    "delete the operator list (wrangler secret delete YOKOHAMA_WEB_ADMINS), or deploy the worker door";
+  const DEV_DOOR_BESIDE_OPEN =
+    "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
+    "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door";
+  it("refuses an operator list, naming both variables and echoing nothing", () => {
+    const sentence = refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_WEB_ADMINS: "boss@t.test" }));
+    expect(sentence).toBe(ADMINS_BESIDE_OPEN);
+    expect(sentence).not.toContain("boss@t.test");
+  });
+  it("refuses the dev door on, read as every switch is read", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_DEV_DOOR: " ON " }))).toBe(DEV_DOOR_BESIDE_OPEN);
+  });
+  it("keeps both under the worker door, and ignores the dev door off and its client id under open", () => {
+    expect(accepted(env({ YOKOHAMA_WEB_ADMINS: "boss@t.test", YOKOHAMA_DEV_DOOR: "on" }))).toMatchObject({
+      door: "worker",
+      admins: ["boss@t.test"],
+      devDoor: true,
+    });
+    expect(
+      accepted(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_DEV_DOOR: "off", DEV_DOOR_CLIENT_ID: "some-client.access" })),
+    ).toMatchObject({
+      door: "open",
+      admins: null,
+      devDoor: false,
+    });
+  });
+  // Two defects at once (the lane's M6.2 lesson): the list is named first,
+  // and its value is echoed by neither sentence.
+  it("names the operator list before the dev door", () => {
+    const sentence = refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_WEB_ADMINS: "boss@t.test", YOKOHAMA_DEV_DOOR: "on" }));
+    expect(sentence).toBe(ADMINS_BESIDE_OPEN);
+    expect(sentence).not.toContain("boss@t.test");
+  });
+});
+
 // The orchestrator's ruling E3: every variable is a string or absent. A
 // wrangler `vars` entry written without quotes arrives as a number or a
 // boolean — which the module's own parse would refuse naming no variable, and
@@ -153,6 +225,7 @@ describe("a variable that is not a string", () => {
     ["YOKOHAMA_DEV_DOOR", true, "the boolean true"],
     ["YOKOHAMA_WEB_CHAT_KEEP", 500, "the number 500"],
     ["ACCESS_AUD", null, "null"],
+    ["YOKOHAMA_WEB_IDENTITY", true, "the boolean true"],
   ])("refuses %s given %j", (name, value, described) => {
     expect(refused(env({ [name]: value }))).toBe(`${name} must be a string, in quotes — got ${described}`);
   });
@@ -172,6 +245,13 @@ describe("which of two refusals is named", () => {
       'YOKOHAMA_WEB_ARCHIVE must be r2 or off — got "s3"',
     );
   });
+  // M6.5c2: the door is ShellConfig's FIRST field. Mutant: the door read after
+  // the archive switch.
+  it("the door before the archive switch", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: undefined, YOKOHAMA_WEB_ARCHIVE: "s3" }))).toMatch(
+      /^YOKOHAMA_WEB_IDENTITY must be worker or open/,
+    );
+  });
 });
 
 describe("the module's init configuration (the plan's names table)", () => {
@@ -186,13 +266,17 @@ describe("the module's init configuration (the plan's names table)", () => {
       true,
     );
     expect(moduleConfig(e, "Red@T.test")).toBe(
-      '{"archive":"r2","caller":"Red@T.test","lobby_chat":" Off ","chat_keep":" All ","chat_text":" 250 "}',
+      '{"identity":"worker","archive":"r2","caller":"Red@T.test","lobby_chat":" Off ","chat_keep":" All ","chat_text":" 250 "}',
     );
   });
   it("is off with no caller and no chat variable set", () => {
     expect(moduleConfig(env(), null)).toBe(
-      '{"archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}',
+      '{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}',
     );
+  });
+  // The door is carried as the shell read it. Mutant: the raw value sent.
+  it("carries the door as the shell read it: trimmed", () => {
+    expect(JSON.parse(moduleConfig(env({ YOKOHAMA_WEB_IDENTITY: " open " }), null)).identity).toBe("open");
   });
   // The module's own refusals name their variables, but it cannot see a
   // binding and would parse a number without naming one: a configuration the

@@ -388,7 +388,7 @@ In `archive.rs`'s test module:
 #[test]
 fn a_caller_segment_is_path_safe_and_readable() {
     let seg = |s: &str| caller_segment(&crate::identity::User::parse(s).unwrap());
-    assert_eq!(seg("jamoore@gmail.com"), "jamoore_at_gmail.com");
+    assert_eq!(seg("<the owner's address>"), "<the owner's address, transliterated>"); // scrubbed 2026-09-28 (R-6.5c2.16)
     assert_eq!(seg("A/B@c"), "a_b_at_c", "a slash is replaced, the address lowercased");
     assert_eq!(seg("../../x@y"), ".._.._x_at_y");
     assert_eq!(seg("..@.."), ".._at_..");

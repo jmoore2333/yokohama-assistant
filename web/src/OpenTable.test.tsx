@@ -16,6 +16,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { NO_ANSWER } from "./Abandon";
 import { OpenTable } from "./OpenTable";
 import { DISPLAY_NAME_KEY } from "./api";
 import { fakeStream, flush, openStream, until, stubApi, type ApiCall, type Reply } from "./test/harness";
@@ -231,6 +232,25 @@ describe("the open table, to a stranger with one seat to take", () => {
     expect(stub.matching("GET", "/table")).toHaveLength(1);
   });
 
+  // **The refusal sits by the field it is about** (M6.5c2 cycle C, polish 4):
+  // directly after the join block — the password, the seats and "Join as" —
+  // and above the screen's controls, not at the page's foot under them, a
+  // screen-height from the field a wrong password is about.
+  it("puts a join's refusal right after the seats and the Join button, above the controls", async () => {
+    const { user } = show((call) => {
+      if (call.path.endsWith("/table")) return wire.tableOpen;
+      if (call.path.endsWith("/join")) return { status: 403, body: wire.join403Password };
+      return undefined;
+    });
+    await user.type(await screen.findByLabelText("Table password"), "wrong");
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
+    const strip = (await screen.findByText(wire.join403Password.error)).closest(".error")!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
+    expect(after(screen.getByRole("button", { name: "Join as Blue" }), strip), "after Join as Blue").toBe(true);
+    expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
+  });
+
   it("re-reads the table once when the seat was taken while this screen was open", async () => {
     let tables = 0;
     const { stub, user } = show((call) => {
@@ -420,6 +440,25 @@ describe("the open table, to somebody sitting at it", () => {
     expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
   });
 
+  // **A copy that lands takes the refusal away** (M6.5c2 cycle C; the Opus
+  // re-review's one Minor): a clipboard refused and then granted within one
+  // visit left "the link could not be copied" standing under a button that
+  // says "Copied", two sentences contradicting each other.
+  it("clears the refusal when a later copy lands, and says Copied", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    const url = `${window.location.origin}/#/t/wire2`;
+    const refused = `the link could not be copied \u2014 it is ${url}`;
+    const write = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValueOnce(new DOMException("Write permission denied.", "NotAllowedError"));
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    expect(await screen.findByText(refused), "the premise: the first copy was refused").toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Copy link" }));
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(refused), "the refusal is gone once a copy landed").toBeNull();
+  });
+
   it("escapes an id that is not a bare word", async () => {
     // **An unescaped `/` makes a link `parseRoute` reads as the LOBBY** — its
     // pattern is `^/t/([^/]+)$` — so a table whose id carries one would hand out
@@ -459,6 +498,50 @@ describe("the open table, to somebody sitting at it", () => {
     // **The leave is the point.** There is nothing to go back to: the table the
     // screen is about no longer exists.
     await waitFor(() => expect(onLeave).toHaveBeenCalledTimes(1));
+  });
+
+  // **Abandon's refusal has a strip of its own, directly under the controls**
+  // (M6.5c2 cycle C, polish 4; the task review's I-1, ruled R-C24). The join
+  // block's strip is a screen-height ABOVE Abandon on a seated face — the
+  // Invite panel and the chat sit between them, ~350px at 390 with the chat
+  // folded — so each refusal sits beside its own control: the join's, the
+  // password's and the copy's up there, Abandon's down here, and never in the
+  // other's. A DELETE that got no answer is the refusal the control words
+  // itself (`NO_ANSWER`).
+  it("puts Abandon's refusal in its own strip directly after the controls, and not in the join block's", async () => {
+    const { user } = showSeated((call) => {
+      if (call.path.endsWith("/table")) return seated();
+      if (call.method === "DELETE") throw new TypeError("Failed to fetch");
+      return undefined;
+    });
+    await user.click(await screen.findByRole("button", { name: "abandon wire2" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire2" }));
+    const strip = (await screen.findByText(NO_ANSWER)).closest(".error")!;
+    const controls = document.querySelector(".open-table-controls")!;
+    expect(controls.nextElementSibling, "the element right after the controls").toBe(strip);
+    // And not in the upper strip: nothing between the seats and the controls
+    // carries it.
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const upper = [...document.querySelectorAll(".open-table > .error")].filter(
+      (e) => after(document.querySelector("ol.seat-cards")!, e) && after(e, controls),
+    );
+    expect(upper.map((e) => e.textContent), "the join block's strip does not carry it").toEqual([]);
+  });
+
+  // **And the join block's strip keeps the copy's refusal, above the Invite
+  // panel whose button raised it** (R-C24): the split moves Abandon's alone.
+  it("keeps a refused copy's sentence in the join block's strip, above the controls", async () => {
+    const { user } = showSeated(tableIs(seated()));
+    vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(
+      new DOMException("Write permission denied.", "NotAllowedError"),
+    );
+    await user.click(await screen.findByRole("button", { name: "Copy link" }));
+    const url = `${window.location.origin}/#/t/wire2`;
+    const strip = (await screen.findByText(`the link could not be copied \u2014 it is ${url}`)).closest(".error")!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
+    expect(after(strip, document.querySelector("section.invite")!), "above the Invite panel").toBe(true);
+    expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
   });
 
   it("has a way back to the lobby", async () => {

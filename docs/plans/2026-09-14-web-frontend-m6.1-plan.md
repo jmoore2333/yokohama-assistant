@@ -2263,7 +2263,7 @@ git commit -m "feat(web): preview retires and the seed never crosses the wire; t
 ```bash
 curl -sS https://yokohama.moore.nyc/api/health              # "identity":"claimed"
 curl -sS -o /dev/null -w '%{http_code}\n' https://yokohama.moore.nyc/api/games   # 401
-curl -sS -H 'X-Yokohama-Claimed-User: jamoore@gmail.com' https://yokohama.moore.nyc/api/games  # {"games":[]}
+curl -sS -H "X-Yokohama-Claimed-User: <the owner's address>" https://yokohama.moore.nyc/api/games  # {"games":[]} — the owner's address scrubbed 2026-09-28 (R-6.5c2.16)
 ```
 
 - [ ] **Step 4: Write §3.7** — the record: the tag, the image digest, the container id, the Env line, the three readings, R-1.4's two sentences (`cf-access` trusts the tunnel because 8080 is unpublished; `claimed` authenticates the door and not the seat), and the rollback (`0.5.0-m5.5.4` is still an image on the NAS; its client knows nothing of `/table`, so a rollback is a whole-image rollback).

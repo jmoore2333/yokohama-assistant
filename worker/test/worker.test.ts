@@ -234,6 +234,62 @@ describe("the Worker's own answers (spec §2.3)", () => {
     expect((await worker("/assets/x.js", { env: bad })).status).toBe(404);
   });
 
+  // M6.5c2, spec §2.1 (R-6.5c2.5): the door has NO default. The Worker refuses
+  // before any object is reached, as it refuses every variable it cannot read
+  // — and a cell's override reaches the Worker's own `shellConfig` alone,
+  // which is exactly this instrument (review R2.2-M2): the objects read their
+  // configuration file's. Mutants: a default door (the absence read as
+  // `worker`); the check before routing (`/enter` answers 500).
+  it("an unset YOKOHAMA_WEB_IDENTITY answers 500 naming it on every /api/* path", async () => {
+    const unset = { ...env, YOKOHAMA_WEB_IDENTITY: undefined };
+    const body = JSON.stringify({
+      error: "YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision",
+    });
+    for (const path of ["/api/health", "/api/me", "/api/art", "/api/games/wire/table"]) {
+      const res = await worker(path, { env: unset, token: await person(RED) });
+      expect([res.status, res.text], path).toEqual([500, body]);
+    }
+    expect((await worker("/enter", { env: unset })).status).toBe(302);
+    expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
+  });
+
+  // M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it —
+  // an operator list, and the dev door on — answers every `/api/*` the 500
+  // naming both variables, as the unset door does, before any object is
+  // reached. This configuration is the worker door's, whose dev door is ON, so
+  // an override of the door alone meets the dev door's refusal, and one that
+  // also sets a list meets the list's first. The override reaches the Worker's
+  // own `shellConfig` alone (review R2.2-M2), which is where both are read.
+  // The partner: the same override with the dev door off and no list is no
+  // refusal. Mutants: either refusal missing; the list's value echoed.
+  it("an operator list, or the dev door on, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
+    const opened = { ...env, YOKOHAMA_WEB_IDENTITY: "open" };
+    const refusals: Array<[Env, string]> = [
+      [
+        { ...opened, YOKOHAMA_WEB_ADMINS: "boss@t.test" },
+        "YOKOHAMA_WEB_ADMINS is set beside YOKOHAMA_WEB_IDENTITY=open — a claimed name is never an operator: " +
+          "delete the operator list (wrangler secret delete YOKOHAMA_WEB_ADMINS), or deploy the worker door",
+      ],
+      [
+        opened,
+        "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
+          "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
+      ],
+    ];
+    expect(env.YOKOHAMA_DEV_DOOR, "premise: this configuration's dev door is on").toBe("on");
+    for (const [overridden, sentence] of refusals) {
+      for (const path of ["/api/health", "/api/me", "/api/admin/tables", "/api/games/wire/table"]) {
+        const res = await reaching(() => worker(path, { env: overridden }));
+        expect([res.result.status, res.result.text], path).toEqual([500, JSON.stringify({ error: sentence })]);
+        expect(res.result.text, `${path}: the list's value is echoed nowhere`).not.toContain("boss@t.test");
+        expect([res.table.length, res.house.length, res.archive.length], `${path}: no object reached`).toEqual([0, 0, 0]);
+      }
+      expect((await worker("/enter", { env: overridden })).status).toBe(302);
+    }
+    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off" } });
+    expect(accepted.status, accepted.text).toBe(200);
+  });
+
   // The NAS's answer is its typed `ArtManifest`: the file's nine maps, in the
   // struct's declaration order, and NOT the file's two generator keys — the
   // committed `art_manifest.json` (the orchestrator's ruling on Task 12's
@@ -320,6 +376,32 @@ describe("identity at the Worker (R-6.5c.3; spec §2.3)", () => {
     expect((await worker("/api/me", { headers: claimed, token: await person(BLUE) })).text).toBe(
       `{"mode":"cf-access","user":"${BLUE}"}`,
     );
+  });
+
+  // M6.5c2, spec §2.1: under `worker` the claim's carriers name no one without
+  // the credential — the header (battery 15, above) and the upgrade's
+  // `claimed` parameter alike — and a person's assertion is the caller
+  // whatever the parameter says. The anonymous half claims an ADDRESS: the
+  // worker mode reads a plain name as absent however it is forwarded, so only
+  // an address can show a parameter that reached `X-Yokohama-User`. Mutants:
+  // the parameter read under `worker` (forwarded as the worker door's header,
+  // the anonymous half; displacing the person, the person half); the door read
+  // per request rather than from the configuration.
+  it("under worker an upgrade's claimed parameter is no caller, and never outranks a person", async () => {
+    const anonymous = await worker(`/api/stream?${new URLSearchParams({ claimed: "evil@x.test" })}`, { headers: UPGRADE });
+    expect([anonymous.status, anonymous.webSocket]).toEqual([401, null]);
+    const who = "param-person@t.test";
+    const res = await worker(`/api/stream?${new URLSearchParams({ claimed: "evil@x.test" })}`, {
+      token: await person(who),
+      headers: UPGRADE,
+    });
+    const tab = await socket(res);
+    const attached = await runInDurableObject(houseStub(), (_o, state) =>
+      state.getWebSockets("lobby").map((ws) => ws.deserializeAttachment() as { user?: string }),
+    );
+    expect(attached).toContainEqual({ user: who });
+    expect(attached).not.toContainEqual({ user: "evil@x.test" });
+    tab.ws.close(1000, "done");
   });
 
   // Mutant: an archive with no caller sent to an Archive object of its own —

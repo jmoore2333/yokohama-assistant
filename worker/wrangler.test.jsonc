@@ -45,6 +45,9 @@
   // send assumes (spec §0.2).
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
   "vars": {
+    // Production's door (M6.5c2, spec §2.1). The pool's `open` project runs the
+    // other door, over `wrangler.open.test.jsonc`.
+    "YOKOHAMA_WEB_IDENTITY": "worker",
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud",
     "DEV_DOOR_CLIENT_ID": "test-client.access",

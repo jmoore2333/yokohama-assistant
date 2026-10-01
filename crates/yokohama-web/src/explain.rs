@@ -471,12 +471,18 @@ pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
 pub fn foreign_why(record: &yokohama_core::GameRecord, rules: &Rules, event: Option<usize>) -> Option<Why> {
     let foreign = crate::bots::foreign(record);
     let (_, first) = foreign.first()?;
-    let Some(n) = event else { return Some(Why::foreign(&crate::bots::label(first))) };
+    // The `played` half of the refusal's pair (R-C5): a bot that shares this
+    // build's label is told apart by its version, then by its knobs, so a
+    // same-name re-point reads "made by V4.2" — never "made by V4" on a server
+    // that runs V4.
+    let running = crate::bots::production();
+    let played = |d: &crate::bots::BotDescriptor| crate::bots::distinguishing_labels(d, &running).0;
+    let Some(n) = event else { return Some(Why::foreign(&played(first))) };
     if !matches!(record.events.get(n), Some(yokohama_core::RecordedEvent::Move(_))) {
         return None;
     }
     let mover = yokohama_core::state_at(record, n, rules).ok()?.current_player.0;
-    foreign.iter().find(|(seat, _)| *seat == mover).map(|(_, d)| Why::foreign(&crate::bots::label(d)))
+    foreign.iter().find(|(seat, _)| *seat == mover).map(|(_, d)| Why::foreign(&played(d)))
 }
 
 impl Provenance {

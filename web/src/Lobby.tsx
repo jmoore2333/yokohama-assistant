@@ -1,7 +1,8 @@
 // The SERVER's first screen (spec section 5.2; M6.5c2, R-6.5c2.7, mock 02):
 // the band, then three lists as rows (the tables you sit at, the tables
 // waiting for someone to sit down, and the games being played) with the lobby
-// chat in a rail beside them, and below them on a phone.
+// chat in a rail beside them, and below them on a phone. Under the third list,
+// folded, the finished games you do not sit at (cycle C, R-6.5c2.22).
 //
 // **At `#/lobby` since M6.5b2, and no longer the screen a visitor lands on.**
 // `#/` is the front door (R-6.5b2.1), which draws from this browser alone; the
@@ -83,9 +84,9 @@ function unique(tables: TableView[]): TableView[] {
 }
 
 /** A table you sit at is YOURS: it is listed under Your tables, and not again
- *  under Open tables or Being played, whose rows are for a table you could take
- *  a seat at or spectate (mock 02). `my_seats` is the server's answer for this
- *  caller, so the rule guesses nothing. */
+ *  under Open tables, Being played or Finished, whose rows are for a table you
+ *  could take a seat at, spectate or view (mock 02). `my_seats` is the server's
+ *  answer for this caller, so the rule guesses nothing. */
 const notMine = (t: TableView): boolean => t.my_seats.length === 0;
 
 /** A listing that got NO answer, in a player's words: the door's state C says
@@ -280,12 +281,15 @@ export function Lobby({
 
   /** Put a table's address on the clipboard (mock 02's Copy link). A browser
    *  that refuses (an insecure origin has no clipboard) gets the address in
-   *  the error strip instead, which a player can still copy by hand. */
+   *  the error strip instead, which a player can still copy by hand — and a
+   *  copy that then lands clears the strip (M6.5c2 cycle C; the Opus
+   *  re-review's one Minor), so no refusal stands beside "Copied". */
   const copyLink = async (t: TableView) => {
     const url = new URL(hashOf({ kind: "table", id: t.id }), window.location.href).href;
     try {
       await navigator.clipboard.writeText(url);
       setCopied(t.id);
+      setError(null);
       if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
       copiedTimer.current = setTimeout(() => {
         copiedTimer.current = null;
@@ -369,7 +373,12 @@ export function Lobby({
 
   const mine = lists ? unique([...lists.mine.games, ...(paged?.games ?? [])]) : [];
   const open = lists ? lists.open.games.filter(notMine) : [];
-  const playing = lists ? lists.playing.games.filter(notMine) : [];
+  /** The `playing` scope, split (R-6.5c2.22): it lists finished games too,
+   *  because "over" is not a table STATUS (`tables.rs`), so Being played takes
+   *  the games still under way and Finished the rest — in the listing's own
+   *  order, which is newest first. */
+  const playing = lists ? lists.playing.games.filter(notMine).filter((t) => !t.over) : [];
+  const finished = lists ? lists.playing.games.filter(notMine).filter((t) => t.over) : [];
   const nextCursor = paged ? paged.next : (lists?.mine.next ?? null);
   /** Whether this deployment answers the house chat (R-6.4.6): the rail, or
    *  one column with no rail at all. */
@@ -468,13 +477,13 @@ export function Lobby({
                   )}
                 </section>
 
-                {/* Every game being played that is not yours, so a spectator
-                    can find one without a link (R-3.9). A row opens `#/t/<id>`
-                    as the other two do, and what that lands on is the
-                    spectator screen, or at a locked table the face that asks
-                    for its password, which the padlock on Spectate is warning
-                    about. No Abandon: that is the creator's, under Your
-                    tables. */}
+                {/* Every game still being played that is not yours, so a
+                    spectator can find one without a link (R-3.9). A row opens
+                    `#/t/<id>` as the other two do, and what that lands on is
+                    the spectator screen, or at a locked table the face that
+                    asks for its password, which the padlock on Spectate is
+                    warning about. No Abandon: that is the creator's, under
+                    Your tables. */}
                 <section className="lobby-section playing-tables">
                   <header className="section-head">
                     <h3>Being played</h3>
@@ -486,6 +495,30 @@ export function Lobby({
                     <ul className="lobby-rows">{playing.map((t) => row(t, "playing"))}</ul>
                   )}
                 </section>
+
+                {/* **The finished games that are not yours, FOLDED** (R-6.5c2.22,
+                    R-C6). Folded, because a table's lifetime is each host's
+                    rule and the NAS sets none (R-6.5c2.2): there this list
+                    would grow without end, and drawn open it would make every
+                    visit to the lobby a longer scroll. Absent rather than
+                    empty while there is none, because an empty fold is
+                    clutter. A row is the other lists' row with View on it,
+                    and opens the address Spectate did, so a locked table's
+                    padlock and unlock face are unchanged. Your own finished
+                    games stay under Your tables. */}
+                {finished.length > 0 && (
+                  <section className="lobby-section finished-tables">
+                    <details className="fold">
+                      <summary>
+                        <h3>Finished</h3>
+                        <span className="section-hint">
+                          {finished.length === 1 ? "1 game" : `${finished.length} games`}
+                        </span>
+                      </summary>
+                      <ul className="lobby-rows">{finished.map((t) => row(t, "finished"))}</ul>
+                    </details>
+                  </section>
+                )}
               </div>
               {/* The house chat (R-6.4.5, R-6.4.6), in the RAIL: folded by
                   default (opening it is entering the lobby chat) and absent

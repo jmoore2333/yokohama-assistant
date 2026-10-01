@@ -51,9 +51,9 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
+use yokohama_web::bots::BotDescriptor;
 use yokohama_web::store::{Doc, MemStore, Store};
-use yokohama_web::table::{Lock, TableDoc};
+use yokohama_web::table::{Lock, SeatDoc, TableDoc, TurnMirror};
 use yokohama_web::tables::check_shape;
 
 use crate::STORE;
@@ -98,10 +98,13 @@ pub(crate) fn house_copy_with(id: &str, scrubbed: impl Fn(&mut TableDoc)) -> Res
     Ok(Some(serde_json::to_string(&doc).expect("a table document serializes")))
 }
 
-/// The scrub, in place (the module doc). Every field is NAMED, with no `..`:
-/// the three it replaces are bound, and every other is bound to `_` and kept
-/// as stored. So a field added to `TableDoc` is a compile error here, and
-/// whoever adds one decides whether the house may hold it.
+/// The scrub, in place (the module doc). Every field is NAMED, with no `..`,
+/// all the way down (R1's cleanup debt 2; spec §2.7): the table document's,
+/// the lock's, each seat's, the turn mirror's and its bot descriptor's. The
+/// three it replaces are bound, and every other is bound to `_` and kept as
+/// stored. So a field added to any of them is a compile error here (E0027),
+/// and so is a seat of a new kind (E0004): whoever adds one decides whether
+/// the house may hold it.
 fn scrub(doc: &mut TableDoc) {
     let TableDoc {
         schema: _,
@@ -112,11 +115,11 @@ fn scrub(doc: &mut TableDoc) {
         players: _,
         colors: _,
         start_seat: _,
-        seats: _,
+        seats,
         keeps,
         seed,
         status: _,
-        turn: _,
+        turn,
         lock,
         unlocked: _,
         archived_at: _,
@@ -128,6 +131,24 @@ fn scrub(doc: &mut TableDoc) {
     if let Some(Lock { salt, hash }) = lock {
         *salt = "0".repeat(salt.len());
         *hash = "0".repeat(hash.len());
+    }
+    // Kept as stored — and NAMED, all the way down: a secret added to a seat,
+    // to the mirror, or to the mirror's bot cannot reach the house unscrubbed
+    // without a line here. One exhaustive `match` each, because a nested
+    // `if let` is `clippy::collapsible_match`.
+    for seat in seats.iter() {
+        match seat {
+            SeatDoc::Human { user: _, name: _ } | SeatDoc::Bot | SeatDoc::Open => {}
+        }
+    }
+    match turn {
+        Some(TurnMirror {
+            to_move: _,
+            over: _,
+            winner: _,
+            bot: Some(BotDescriptor { controller: _, version: _, params: _ }) | None,
+        })
+        | None => {}
     }
 }
 
@@ -156,19 +177,12 @@ pub fn remove_copy_inner(id: &str) -> Result<(), String> {
     store.delete(id)
 }
 
-/// The lobby socket's frame data (spec §2.5): `{"seq":…,"chat":…}`, the text the
-/// NAS's `/api/stream` writes as each `house` event's data, with the layer's
-/// own `u64` counters (`signal::House`, which is behind the layer's `server`
-/// feature and not built here).
+/// The lobby socket's frame data (spec §2.5): `{"seq":…,"chat":…}` — the
+/// layer's own `signal::house_frame` (M6.5c2, spec §2.6), which the NAS's
+/// `/api/stream` writes as each `house` event's data too, so the two hosts'
+/// frames are one function's.
 pub fn house_frame_inner(seq: u64, chat: u64) -> String {
-    serde_json::to_string(&HouseFrame { seq, chat }).expect("two numbers serialize")
-}
-
-/// The house frame's two counters, in the order the NAS writes them.
-#[derive(Serialize)]
-struct HouseFrame {
-    seq: u64,
-    chat: u64,
+    yokohama_web::signal::house_frame(seq, chat)
 }
 
 /// This instance's store: `crate::STORE`, the same `Arc` its `Games` reads, so
@@ -589,23 +603,19 @@ mod tests {
         assert_eq!(house_copy_with("defect", defective), Err(refusal));
     }
 
-    /// **`house_frame` is the NAS's lobby frame, byte for byte** (spec §2.5):
-    /// the `data` of the `house` event `house_stream` writes on `/api/stream`,
-    /// which since M6.5c2 is the layer's own `signal::house_frame` (spec §2.6's
-    /// restatements). So this compares against the export, and the pin on the
-    /// layer's source TEXT retires with its reason. The export takes `u32`
-    /// (the orchestrator's ruling I-22) and widens it without loss.
+    /// **`house_frame` is the layer's lobby frame, and the export widens it
+    /// without loss** (spec §2.5, §2.6). Since M6.5c2 `house_frame_inner` IS
+    /// `yokohama_web::signal::house_frame`, whose shape the layer's own cells
+    /// pin — compared with that function, it would be compared with itself — so
+    /// this pins the BYTES. What is this crate's own is the export's `u32` (the
+    /// orchestrator's ruling I-22). Mutants: the export narrowing either
+    /// counter, or swapping the two.
     #[test]
     fn house_frame_is_the_sse_frames_data_byte_for_byte() {
         assert_eq!(house_frame_inner(3, 7), r#"{"seq":3,"chat":7}"#);
-        for (seq, chat) in [(0, 0), (3, 7), (7, 3), (u64::from(u32::MAX) + 1, 1), (u64::MAX, u64::MAX)] {
-            assert_eq!(house_frame_inner(seq, chat), yokohama_web::signal::house_frame(seq, chat), "({seq}, {chat})");
-        }
-        assert_eq!(crate::house_frame(3, 7), house_frame_inner(3, 7));
-        assert_eq!(
-            crate::house_frame(u32::MAX, u32::MAX),
-            yokohama_web::signal::house_frame(u64::from(u32::MAX), u64::from(u32::MAX)),
-        );
+        assert_eq!(crate::house_frame(3, 7), r#"{"seq":3,"chat":7}"#);
+        assert_eq!(crate::house_frame(u32::MAX, 7), r#"{"seq":4294967295,"chat":7}"#);
+        assert_eq!(crate::house_frame(7, u32::MAX), r#"{"seq":7,"chat":4294967295}"#);
     }
 
     /// `put_copy` REPLACES a copy the house already holds — where `load`, a

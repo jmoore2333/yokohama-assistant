@@ -24,13 +24,15 @@
 //! the table it was sent, which the layer does not stamp, so its plan does not
 //! move with the reading.
 //!
-//! **The `test/` root** (spec §2.6, §5): a plan whose address ends in `.test` —
-//! the reserved domain every test identity uses — is keyed under `test/`
-//! instead of the bucket's top, so the live test tiers never write into the
-//! owner's training data. The address is read WHOLE: a server game's table's
-//! `created_by`, or the address a browser's save's Archive object was
-//! initialized with — never the path's `caller_segment`, which the
-//! 64-character cap can strip of its `.test`.
+//! **The `test/` root** (spec §2.6, §5): a plan whose address is an EMAIL in
+//! `.test` — the reserved domain every test identity uses, and never a plain
+//! name (M6.5c2, review R2.2-m4: under the open door `a.test` is a legal name)
+//! — is keyed under `test/` instead of the bucket's top, so the live test
+//! tiers never write into the owner's training data ([`is_test_identity`]).
+//! The address is read WHOLE: a server game's table's `created_by`, or the
+//! address a browser's save's Archive object was initialized with — never the
+//! path's `caller_segment`, which the 64-character cap can strip of its
+//! `.test`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -45,13 +47,24 @@ use yokohama_web::table::TableDoc;
 use yokohama_web::ApiError;
 
 use crate::config::ARCHIVE_VAR;
-use crate::{dispatch_inner, error_body, from_the_layer, read_inner, sha256_hex, ReplyData};
+use crate::{dispatch_inner, error_body, from_the_layer, read_inner, sha256_hex, ReplyData, Scope};
 
 /// The root a test identity's plan is keyed under (spec §2.6).
 const TEST_ROOT: &str = "test/";
 
 /// The reserved domain every test identity's address ends in.
 const TEST_DOMAIN: &str = ".test";
+
+/// Whether `address` is a TEST identity's (spec §2.6; M6.5c2, review R2.2-m4):
+/// an EMAIL in the reserved `.test` domain. Every address this reads is a key
+/// the layer's `User::parse` wrote — a table's `created_by`, or the caller
+/// `init` normalized — and under the key grammar a plain name never holds an
+/// `@`, so a plain name is never one, whatever it ends in: under the open door
+/// `a.test` is a legal name, and the `test/` prefix EXPIRES after 30 days
+/// (R-6.5c2.12).
+fn is_test_identity(address: &str) -> bool {
+    address.contains('@') && address.ends_with(TEST_DOMAIN)
+}
 
 /// What a put that met no receipt answers: a `Failed`, whose words each of the
 /// layer's three sites puts inside its own sentence — the abandon's and the
@@ -71,6 +84,15 @@ const NO_CALLER: &str =
 const ANOTHER_CALLER: &str =
     "a browser's save is filed by its Archive object's address, and this save was sent by another caller";
 
+/// A second deferred put in ONE call, of ANOTHER plan (R1's cleanup debt 3):
+/// refused, and the first kept. A reply carries one plan (`Reply.archive`),
+/// and the shell owes, uploads and re-dispatches one, so a pending slot that
+/// kept the last would drop the first without a word. No layer site defers
+/// two in one call — the layer's `delete` reads the stored record without
+/// building a handle, and `archive_over_retry`'s two puts are one plan — so
+/// this makes one plan per call structural rather than observed.
+const SECOND_PLAN: &str = "a second deferred put in one call — this host carries one plan per call";
+
 /// This instance's receipt archive — the SAME `Arc` its `Games` puts through —
 /// or `None` with the archive `off`. [`crate::init_inner`] replaces it each
 /// time it rebuilds the `Games`, so a new instance holds no receipt and no
@@ -83,8 +105,9 @@ pub struct ReceiptArchive {
     /// The outcomes the shell has installed, by plan key. The put a receipt
     /// answers SPENDS it, and a put for any other plan does not see it.
     receipts: Mutex<HashMap<String, Outcome>>,
-    /// The plan of the last put that met no receipt, until [`drain_plan`]
-    /// hands it to the call's reply.
+    /// The plan of the put that met no receipt, until [`drain_plan`] hands it
+    /// to the call's reply — ONE per call: a second, of another plan, is
+    /// refused (`SECOND_PLAN`).
     pending: Mutex<Option<Plan>>,
     /// The Archive object's address, as `init` normalized it; `None` on every
     /// other object.
@@ -109,13 +132,19 @@ pub struct Plan {
 }
 
 /// An upload's outcome, as the shell hands it to [`receipt_inner`]
-/// (§"Names shared across tasks"): one of four words, and a detail — R2's
-/// message, or the key.
+/// (§"Names shared across tasks"): one of four words, a detail — R2's
+/// message, or the key — and, on a `conflict`, the record the key HELD, as its
+/// exact text (M6.5c2, R-6.5c2.11), which the layer's refinish rule compares.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Outcome {
     pub outcome: Kind,
     pub detail: String,
+    /// The record the key already held — beside a `conflict` only
+    /// ([`parse_outcome`] refuses it elsewhere), and only where the shell read
+    /// it. `None` reads as not the same game.
+    #[serde(default)]
+    pub held: Option<String>,
 }
 
 /// The four outcomes of an upload carried out in `DirArchive::put`'s order
@@ -140,7 +169,8 @@ impl ReceiptArchive {
         Self { receipts: Mutex::new(HashMap::new()), pending: Mutex::new(None), caller }
     }
 
-    /// `"test/"` for a test identity's plan, else `""` — by the FULL address.
+    /// `"test/"` for a test identity's plan ([`is_test_identity`]), else `""`
+    /// — by the FULL address.
     /// `prefix` is one of the two the layer passes (`Archive::put`'s doc): `""`
     /// for a server's own game, whose address is its table's `created_by`
     /// (`strip_for_archive` keeps it), and `browser/<segment>/` for a browser's
@@ -159,9 +189,10 @@ impl ReceiptArchive {
     /// segment, not that the sender spelled its address as the object does.
     fn root(&self, prefix: &str, table_json: &str) -> Result<&'static str, PutError> {
         let test = match prefix {
-            "" => creator_of(table_json)
-                .ok_or_else(|| PutError::Failed("the table document names no creator".to_string()))?
-                .ends_with(TEST_DOMAIN),
+            "" => is_test_identity(
+                &creator_of(table_json)
+                    .ok_or_else(|| PutError::Failed("the table document names no creator".to_string()))?,
+            ),
             browser if browser.starts_with("browser/") => {
                 let caller = self.caller.as_deref().ok_or_else(|| PutError::Failed(NO_CALLER.to_string()))?;
                 // `init` normalized the caller through this same parse, so it
@@ -170,7 +201,7 @@ impl ReceiptArchive {
                 if own.as_deref() != Ok(browser) {
                     return Err(PutError::Failed(ANOTHER_CALLER.to_string()));
                 }
-                caller.ends_with(TEST_DOMAIN)
+                is_test_identity(caller)
             }
             other => return Err(PutError::Failed(format!("the archive keeps no root for the prefix {other:?}"))),
         };
@@ -186,8 +217,10 @@ impl Archive for ReceiptArchive {
     /// 2. the plan's key over its four parts ([`plan_key`]);
     /// 3. a receipt for that key, REMOVED and answered: `landed` and
     ///    `identical` as themselves, `conflict` as a conflict at the record
-    ///    key, `failed` as its detail;
-    /// 4. with no receipt, the plan recorded and the put deferred.
+    ///    key carrying the record it held, `failed` as its detail;
+    /// 4. with no receipt, the plan recorded and the put deferred — unless
+    ///    another plan is already pending in this call, which refuses this one
+    ///    (`SECOND_PLAN`) and keeps the first.
     fn put(
         &self,
         prefix: &str,
@@ -204,13 +237,17 @@ impl Archive for ReceiptArchive {
             return match receipt.outcome {
                 Kind::Landed => Ok(PutOutcome::Landed),
                 Kind::Identical => Ok(PutOutcome::Identical),
-                // `held` rides the receipt once the shell hands the held text back
-                // (M6.5c2's cycle C); until then this archive cannot say.
-                Kind::Conflict => Err(PutError::Conflict { key: record_key, held: None }),
+                // The held record's text, as the shell read it from the key
+                // (M6.5c2, R-6.5c2.11): the layer's refinish rule compares it.
+                Kind::Conflict => Err(PutError::Conflict { key: record_key, held: receipt.held }),
                 Kind::Failed => Err(PutError::Failed(receipt.detail)),
             };
         }
-        *self.pending.lock().expect("the pending plan") = Some(Plan {
+        let mut pending = self.pending.lock().expect("the pending plan");
+        if pending.as_ref().is_some_and(|held| held.key != key) {
+            return Err(PutError::Failed(SECOND_PLAN.to_string()));
+        }
+        *pending = Some(Plan {
             key,
             record_key,
             table_key,
@@ -255,9 +292,9 @@ pub(crate) fn drain_plan() -> Option<String> {
 /// see it.
 ///
 /// Refused, with a sentence: an outcome that is not the object the shell writes
-/// — `{"outcome": "landed" | "identical" | "conflict" | "failed", "detail": …}`
-/// and no other key — and any receipt with the archive `off`, where no put is
-/// deferred.
+/// — `{"outcome": "landed" | "identical" | "conflict" | "failed", "detail": …}`,
+/// a `conflict` optionally with `"held": <text>`, and no other key — and any
+/// receipt with the archive `off`, where no put is deferred.
 pub fn receipt_inner(plan_key: &str, outcome: &str) -> Result<(), String> {
     let guard = RECEIPTS.lock().expect("the host's receipts");
     let archive = guard
@@ -272,12 +309,22 @@ pub fn receipt_inner(plan_key: &str, outcome: &str) -> Result<(), String> {
 /// also reads a struct from a positional ARRAY, a form `deny_unknown_fields`
 /// does not govern, so an array is refused before serde reads it — `picker.rs`'s
 /// rule for its row.
+///
+/// `held` beside anything but a `conflict` is refused (M6.5c2): the shell
+/// sets it only where the key held other bytes, so a landed, identical or
+/// failed receipt carrying a record is a shell defect. The sentence names no
+/// byte of the record.
 fn parse_outcome(json: &str) -> Result<Outcome, String> {
     let value: Value = serde_json::from_str(json).map_err(|e| format!("a receipt's outcome is not JSON: {e}"))?;
     if !value.is_object() {
         return Err(format!("a receipt's outcome is the object {{\"outcome\", \"detail\"}}, not {json}"));
     }
-    serde_json::from_value(value).map_err(|e| format!("a receipt's outcome does not parse: {e}"))
+    let outcome: Outcome =
+        serde_json::from_value(value).map_err(|e| format!("a receipt's outcome does not parse: {e}"))?;
+    if outcome.held.is_some() && !matches!(outcome.outcome, Kind::Conflict) {
+        return Err("a receipt carries the held record only beside a conflict".to_string());
+    }
+    Ok(outcome)
 }
 
 /// `stamp_archive(id)` (spec §2.6's game-over site; R-6.5c.9): finish a
@@ -307,22 +354,31 @@ fn parse_outcome(json: &str) -> Result<Outcome, String> {
 ///   handle's reading, the one `archive_if_over` takes, and never the table's
 ///   `turn` mirror, a cache that can be stale.
 ///
-/// The shell (Task 13) derives three arms from the pair, and a `conflict`
-/// receipt clears `archive_owed` whatever they say (final at every site, spec
-/// §2.6):
+/// The shell reads its arms from the pair and the upload's outcome together
+/// (`settledArm`, `worker/src/r2.ts`):
 ///
-/// - `stamped: true` — the save is complete: clear `archive_owed`;
+/// - `stamped: true` — the save is complete: clear `archive_owed`. After a
+///   `conflict` receipt this is the refinish rule (M6.5c2, R-6.5c2.11): the
+///   record the key held was an earlier completion of THIS game — the same
+///   seed, configuration and choices, which the layer compares — the archive
+///   keeps it, and the table is stamped;
 /// - `stamped: false, over: false` — the game is no longer over (below):
 ///   clear it too;
-/// - `stamped: false, over: true` — the stamp did not land: a `failed`
+/// - `stamped: false, over: true` — the stamp did not land. After a `conflict`
+///   receipt the conflict is FINAL: cleared, and never retried. The key holds
+///   another game's record, a text that is no record, or a record the shell
+///   did not hand on, which no retry can change — or, rarely, this game's,
+///   with the stamp write itself failed, which spec §2.5 leaves final too:
+///   every conflict but the one the layer stamped. Otherwise it is a `failed`
 ///   receipt, a put that met none (its plan, deferred again, in this reply's
-///   `archive`), or a stamp write that failed. The alarm retries.
+///   `archive`), or a stamp write that failed, and the alarm retries.
 ///
 /// **No longer over** (ruling E3): after an undo at a one-person table,
 /// `archive_if_over` puts nothing and stamps nothing. A later completion puts
 /// afresh; where the first completion's copy has landed with different bytes,
-/// that put is a `Conflict` the shell logs — the archive keeps the first
-/// completion, as the directory archive does. A game abandoned
+/// that put is a `Conflict` carrying the first completion, and the layer
+/// stamps (R-6.5c2.11) — the archive keeps the first completion, as the
+/// directory archive does. A game abandoned
 /// instead, whose copy landed under `over/` without its stamp, is archived
 /// again under `abandoned/` — the directory archive's own behaviour
 /// (`Archive`'s doc), kept for parity.
@@ -330,7 +386,7 @@ fn parse_outcome(json: &str) -> Result<Outcome, String> {
 /// An error is the layer's own, in its error shape: an open or dealing table
 /// answers `handle`'s `Err(Open | Dealing)`, and an id with no table its 404.
 pub fn stamp_archive_inner(id: &str) -> ReplyData {
-    from_the_layer(|games| {
+    from_the_layer(Scope::Table(id), |games| {
         // `over` is read off the handle the retry has just found or built, so
         // this rebuilds nothing, and nothing between the two moves the game.
         let over = games.archive_over_retry(id).and_then(|()| {
@@ -401,18 +457,30 @@ fn stamped(games: &Games, id: &str) -> bool {
 /// handle with the table. The only calls that could replace or remove a table
 /// under a resident game are the house's `put_copy` and `remove_copy`, which
 /// the shell makes on the house's own instance, where no game is played.
+///
+/// **One document reaches that 500 with no game resident** (M6.5c2): one the
+/// layer reads and this module's JSON read of the creator (`creator_of`)
+/// cannot — an unknown key holding a number out of `f64`'s range, which
+/// serde's struct parse skips unread and a `serde_json::Value` refuses. The
+/// creator it names is the layer's alone, so `handle` REBUILDS the game,
+/// pumping any owed bot move, and answers `Ok`. No layer write makes such a
+/// document. The arm answers under `Scope::Table(id)`, so that pump's record
+/// change clears the table's picker (`picker.rs`'s
+/// `an_expire_with_no_creator_whose_rebuild_pumps_clears_the_picker`).
 pub fn expire_inner(id: &str) -> ReplyData {
     let creator = read_inner("table", id).ok().flatten().as_deref().and_then(creator_of);
     match creator {
         Some(creator) => dispatch_inner(Some(&creator), "DELETE", &format!("/api/games/{id}"), "", None, b""),
-        None => from_the_layer(|games| {
+        None => from_the_layer(Scope::Table(id), |games| {
             let e = match games.handle(id) {
                 Err(e) => ApiError::from(e),
                 // A game is resident only where its table was read, and the
                 // layer's delete drops the two together. Only the house's
                 // `put_copy` or `remove_copy` could replace or remove the table
                 // under a resident game, and the shell calls those on the
-                // house's own instance, where no game is ever played.
+                // house's own instance, where no game is ever played. The one
+                // other way here is a rebuild over a document only the layer
+                // reads (the doc above).
                 Ok(_) => ApiError::server_error(format!(
                     "{id:?} has a game in play but no table document that names its creator"
                 )),
@@ -451,9 +519,14 @@ mod tests {
 
     /// `init`'s configuration with the archive ON, as the shell builds it
     /// (§"Names shared across tasks"): `caller` is the Archive object's
-    /// address, and `null` on every other object.
+    /// address, and `null` on every other object. The worker door.
     fn r2(caller: Option<&str>) -> String {
-        json!({"archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
+        r2_at(caller, "worker")
+    }
+
+    /// [`r2`] at `door` (M6.5c2, spec §2.1): `worker` or `open`.
+    fn r2_at(caller: Option<&str>, door: &str) -> String {
+        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
             .to_string()
     }
 
@@ -786,6 +859,44 @@ mod tests {
         );
     }
 
+    /// **A plain name never takes the `test/` root** (M6.5c2, review
+    /// R2.2-m4). Under the open door `a.test` is a legal name (the key
+    /// grammar), and the `test/` prefix EXPIRES after 30 days (R-6.5c2.12): a
+    /// player so named must not have their saves filed where the test tiers'
+    /// are pruned. The test root takes an EMAIL in `.test`, whose `@` a plain
+    /// name never has — at both roots: a server game's creator, and a browser
+    /// save's caller. The partner at each root is an address in `.test`,
+    /// which still takes it. Mutant: the old `ends_with(".test")` alone.
+    #[test]
+    fn a_plain_name_never_takes_the_test_root() {
+        let _s = serial();
+        let _p = pin(1_789_001_200);
+        // A server game's root: its creator's. The joiner is a plain name at
+        // both rows, and the creator's root is the one read.
+        for (creator, root) in [("a.test", ""), (RED, "test/")] {
+            init_inner(&r2_at(None, "open")).unwrap();
+            playing_with_a_move("plain", creator, "joiner");
+            let r = call(creator, "DELETE", "/api/games/plain", None);
+            assert_eq!(r.status, 500, "{creator}: premise: the abandon deferred — {}", r.body);
+            let base = format!("{root}rev7/abandoned/plain");
+            assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
+        }
+        // A browser save's root: its Archive object's caller's.
+        let save = the_committed_save();
+        for (caller, root) in [("joiner.test", ""), (RED, "test/")] {
+            init_inner(&r2_at(Some(caller), "open")).unwrap();
+            let r = call(caller, "POST", "/api/archive", Some(&save));
+            assert_eq!(
+                (r.status, r.body.as_str()),
+                (500, r#"{"error":"the archive could not be written: deferred to the host"}"#),
+                "{caller}: premise: the save deferred",
+            );
+            let segment = caller_segment(&User::parse(caller).unwrap());
+            let base = format!("{root}browser/{segment}/rev7/over/{OWED}");
+            assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
+        }
+    }
+
     /// **The root and the path name ONE caller** (R1's L-1, fail-closed). The
     /// layer files a browser's save under its SENDER's segment,
     /// `browser/<caller_segment>/`, and this archive roots it by the address
@@ -1054,7 +1165,7 @@ mod tests {
                 let refused = call(LOCAL, "POST", &format!("/api/games/{OWED}/input"), Some(r#"{"line":"undo"}"#));
                 assert_eq!(refused.status, 403, "premise: the fence refuses the API's undo here — {}", refused.body);
                 assert_eq!(stored("record", OWED).as_deref(), plan["record"].as_str(), "premise: and it undid nothing");
-                let undo = crate::from_the_layer(|games| {
+                let undo = crate::from_the_layer(crate::Scope::Table(OWED), |games| {
                     let handle = games.handle(OWED).expect("the resident game");
                     let mut repl = handle.lock().expect("a game");
                     let _ = repl.step("undo");
@@ -1217,6 +1328,73 @@ mod tests {
         assert_eq!(archived_at(OWED), None, "nothing stamped");
     }
 
+    /// **R-6.5c2.11 through the receipt** (M6.5c2, spec §2.5; review M3; Review
+    /// Focus 3): a `conflict` receipt carries the record the key held, and the
+    /// stamp's put meets it as `PutError::Conflict { held }` — the layer's
+    /// same-game rule reads it in Rust, never the shell. A record of THIS game
+    /// (the same seed, configuration and choices) stamps: here the committed
+    /// pair cut short, whose events differ from the stored record's, because
+    /// the rule compares a game's setup and never its moves — in the race it
+    /// is the game's earlier completion (the pool's refinish cells). A held
+    /// text that does not parse as a record (that same record cut off by its
+    /// last byte), another game's record, or a conflict whose held record the
+    /// shell did not read stays unstamped, `over: true`. Mutants: `held`
+    /// dropped between the receipt and the put (the first row unstamped);
+    /// `held` read as always the same game (the other rows stamped).
+    #[test]
+    fn a_conflict_receipt_carrying_a_record_of_this_game_stamps() {
+        let _s = serial();
+        let _p = pin(1_789_001_100);
+        let full = read(web_fixtures().join("browser-played-2p.json"));
+        let same_game = partial_of(&full, 587);
+        let cut_off = &same_game[..same_game.len() - 1];
+        let other_game = {
+            let mut record: GameRecord = serde_json::from_str(&same_game).unwrap();
+            record.seed = record.seed.wrapping_add(1);
+            serde_json::to_string(&record).unwrap()
+        };
+        assert!(serde_json::from_str::<GameRecord>(cut_off).is_err(), "premise: the cut-off text is no record");
+        for (what, held, stamped) in [
+            ("a record of this game", Some(same_game.as_str()), true),
+            ("a text that is no record", Some(cut_off), false),
+            ("another game's record", Some(other_game.as_str()), false),
+            ("a record the shell did not read", None, false),
+        ] {
+            init_inner(&r2(None)).unwrap();
+            let plan = plan_of(&pump_owed_game_over());
+            assert_ne!(plan["record"].as_str(), held, "{what}: premise: the key holds OTHER bytes than the plan's");
+            let receipt = match held {
+                Some(text) => json!({"outcome": "conflict", "detail": plan["record_key"], "held": text}),
+                None => json!({"outcome": "conflict", "detail": plan["record_key"]}),
+            };
+            receipt_inner(key(&plan), &receipt.to_string()).unwrap();
+            let s = stamp_archive_inner(OWED);
+            let want = if stamped { r#"{"stamped":true,"over":true}"# } else { r#"{"stamped":false,"over":true}"# };
+            assert_eq!((s.status, s.body.as_str(), s.archive.as_deref()), (200, want, None), "{what}");
+            assert_eq!(archived_at(OWED), stamped.then_some(1_789_001_100), "{what}");
+        }
+    }
+
+    /// The held record rides a CONFLICT and nothing else (M6.5c2): the shell
+    /// sets it only where the key held other bytes, and a landed, identical or
+    /// failed receipt carrying a whole game is a shell defect, refused rather
+    /// than ignored — in a sentence naming no byte of the record. `held` is
+    /// the record's TEXT, so a number there is refused too. Mutant: `held`
+    /// accepted beside any outcome.
+    #[test]
+    fn a_receipt_carries_the_held_record_only_beside_a_conflict() {
+        let _s = serial();
+        init_inner(&r2(None)).unwrap();
+        receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x","held":"{}"}"#).unwrap();
+        receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x"}"#).unwrap();
+        for kind in ["landed", "identical", "failed"] {
+            let err = receipt_inner("a-key", &json!({"outcome": kind, "detail": "x", "held": "{\"seed\":1}"}).to_string())
+                .unwrap_err();
+            assert_eq!(err, "a receipt carries the held record only beside a conflict", "{kind}");
+        }
+        assert!(receipt_inner("a-key", r#"{"outcome":"conflict","detail":"x","held":5}"#).is_err(), "held is the record's TEXT");
+    }
+
     /// **The layer's log reaches the reply — but a DEFERRED put is not a line**
     /// (M6.5c2, spec §2.6). On this host every game-over put is deferred first:
     /// `ReceiptArchive::put` records the plan and answers `Failed(DEFERRED)`,
@@ -1306,5 +1484,32 @@ mod tests {
         // Anti-vacuity, and the open door's premise (M6.5c2): a plain name is a
         // caller the key grammar accepts.
         init_inner(&r2(Some("  Ben   Castle "))).expect("a plain name is a caller");
+    }
+
+    /// **One plan per call, structurally** (R1's cleanup debt 3; spec §2.7): a
+    /// second put of ANOTHER plan before the call's drain is refused, in its
+    /// own words, and the FIRST is the plan the reply carries — where the
+    /// pending slot kept the LAST, dropping the first without a word. The same
+    /// plan put twice is still one plan. Driven on `put` directly: no layer
+    /// site defers two in one call. Mutant: a second plan overwriting the
+    /// first — `second` reads `DEFERRED`, and the drained plan is `two`'s.
+    #[test]
+    fn a_second_deferred_plan_in_one_call_is_refused_and_the_first_is_carried() {
+        let _s = serial();
+        init_inner(&r2(None)).unwrap();
+        let archive = super::RECEIPTS.lock().unwrap().clone().expect("the receipt archive, under r2");
+        let table = |id: &str| json!({ "created_by": RED, "id": id }).to_string();
+        let failed_with = |r: &Result<yokohama_web::archive::PutOutcome, PutError>, sentence: &str| {
+            matches!(r, Err(PutError::Failed(said)) if said.as_str() == sentence)
+        };
+        let first = archive.put("", Why::Over, "one", r#"{"r":1}"#, &table("one"));
+        assert!(failed_with(&first, super::DEFERRED), "{first:?}");
+        let again = archive.put("", Why::Over, "one", r#"{"r":1}"#, &table("one"));
+        assert!(failed_with(&again, super::DEFERRED), "the same plan again is still one plan: {again:?}");
+        let second = archive.put("", Why::Over, "two", r#"{"r":2}"#, &table("two"));
+        assert!(failed_with(&second, super::SECOND_PLAN), "{second:?}");
+        let drained: Value = serde_json::from_str(&super::drain_plan().expect("a plan is carried")).unwrap();
+        assert_eq!(drained["record_key"], "test/rev7/over/one.json", "the FIRST plan is the one the reply carries");
+        assert_eq!(super::drain_plan(), None, "and only one");
     }
 }

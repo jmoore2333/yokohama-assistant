@@ -15,7 +15,7 @@
 #
 # Build the inputs first (see RUNBOOK.md), then:
 #
-#     docker build -f deploy/Dockerfile.runtime -t yokohama-web:0.5.0 <ctx>
+#     docker build -f deploy/Dockerfile.runtime -t yokohama-web:0.6.0-m6.5c2 <ctx>
 #
 # where <ctx> contains: yokohama-web (the static binary), dist/, art/.
 
@@ -45,11 +45,13 @@ COPY art/  /srv/assets/art/
 # loopback deliberately. Since M6.1 this API does read an identity — one header,
 # named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route — but a
 # header is worth exactly what the path to the port is worth: `cf-access` and
-# `worker` trust a header only their own edge can set, and `open` authenticates
-# nobody: whoever reaches the door may take any name. So binding wide is still a statement
-# that something in FRONT is doing identity. On this deployment that something
-# is the Cloudflare tunnel plus its Access application, and the container is
-# never published to the LAN.
+# `worker` trust a header only their own edge can set, and `open` trusts
+# whatever name a caller types (R-6.5c2.3). So binding wide is still a statement
+# that something in FRONT decides who may reach this port. On this deployment
+# that something is the Cloudflare tunnel plus its Access application, whose
+# door is `cf-access` (R-6.5c2.5; the NAS runs it since the M6.5c2 close,
+# `RUNBOOK.md` §3.17, and §3 records the value each deployment runs), and the
+# container is never published to the LAN.
 #
 # **`YOKOHAMA_WEB_IDENTITY` is deliberately NOT set here.** There is no default
 # mode, and an image started without the variable **exits 1** naming the three

@@ -416,6 +416,143 @@ describe("liveRequest — a live call's log never leaves the run", () => {
   });
 });
 
+// ---- a live table, known from the moment its create is SENT (R3's L-9) ------
+
+describe("awaitCreate and abandonOpened — a live table is taken away whether or not the walk read its create's reply", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** A page whose responses the cell lands one at a time: `awaitCreate` calls
+   *  `waitForResponse`, which settles on the first response its predicate
+   *  takes, or fails as Playwright 1.62.1's does — a `TimeoutError` at its
+   *  timeout, and an error named plain `Error` when the page closes or
+   *  crashes; the abandon calls `request.delete`. A body that is an `Error`
+   *  is one `json()` cannot read. */
+  function creatingPage() {
+    let predicate: ((r: PwResponse) => boolean) | undefined;
+    let answer: ((r: PwResponse) => void) | undefined;
+    let fail: ((e: Error) => void) | undefined;
+    const deleted: string[] = [];
+    const page = {
+      waitForResponse: (p: (r: PwResponse) => boolean) => {
+        predicate = p;
+        return new Promise<PwResponse>((resolve, reject) => {
+          answer = resolve;
+          fail = reject;
+        });
+      },
+      request: {
+        delete: async (url: string) => {
+          deleted.push(url);
+          return { ok: () => true, status: () => 204 };
+        },
+      },
+    };
+    return {
+      page: page as unknown as Page,
+      deleted,
+      armed: () => predicate !== undefined,
+      land: (status: number, body: unknown, method = "POST", url = `${LIVE_ORIGIN}/api/games`) => {
+        const json = async () => {
+          if (body instanceof Error) throw body;
+          return body;
+        };
+        const r = { status: () => status, url: () => url, request: () => ({ method: () => method }), json } as unknown as PwResponse;
+        if (predicate?.(r)) answer?.(r);
+      },
+      end: (name: string, message: string) => fail?.(Object.assign(new Error(message), { name })),
+    };
+  }
+
+  // Mutant: the wait armed after the call returns — or only once the walk
+  // reads the reply — which a response landing first would pass by.
+  it("arms the wait at once, reads the table's id off the create's 201 past a listing and a join, and abandons it live", async () => {
+    const live = await liveAt("live");
+    const fake = creatingPage();
+    const opening = live.awaitCreate(fake.page);
+    expect(fake.armed(), "the wait is armed before awaitCreate returns, so before the click").toBe(true);
+    fake.land(200, { games: [] }, "GET", `${LIVE_ORIGIN}/api/games?scope=open`);
+    fake.land(200, {}, "POST", `${LIVE_ORIGIN}/api/games/sim-1/join`);
+    fake.land(201, { id: "sim-00000000000000aa" });
+    await expect(opening.id).resolves.toBe("sim-00000000000000aa");
+    await live.abandonOpened(opening);
+    expect(fake.deleted).toEqual([`${LIVE_ORIGIN}/api/games/sim-00000000000000aa`]);
+  });
+
+  // Mutant: a refusal's body read for an id, or a wait's failure thrown into
+  // the afterEach.
+  it("answers null for a refused create, a 201 naming no table, or a wait that ended without one — and abandons nothing then, nor for null, nor locally", async () => {
+    const live = await liveAt("live");
+    const refused = creatingPage();
+    const refusedOpening = live.awaitCreate(refused.page);
+    refused.land(400, { error: "no", id: "sim-00000000000000cc" });
+    await expect(refusedOpening.id).resolves.toBeNull();
+    await live.abandonOpened(refusedOpening);
+    const unnamed = creatingPage();
+    const unnamedOpening = live.awaitCreate(unnamed.page);
+    unnamed.land(201, { id: 7 });
+    await expect(unnamedOpening.id).resolves.toBeNull();
+    await live.abandonOpened(unnamedOpening);
+    // A create never sent ends as Playwright ends the wait: its timeout (the
+    // config's actionTimeout), or the page closing.
+    const ended = creatingPage();
+    const endedOpening = live.awaitCreate(ended.page);
+    ended.end("TimeoutError", 'Timeout 15000ms exceeded while waiting for event "response"');
+    await expect(endedOpening.id).resolves.toBeNull();
+    await live.abandonOpened(endedOpening);
+    await expect(live.abandonOpened(null)).resolves.toBeUndefined();
+    const local = await liveAt("");
+    const here = creatingPage();
+    const hereOpening = local.awaitCreate(here.page);
+    here.land(201, { id: "sim-00000000000000bb" });
+    await expect(hereOpening.id, "locally the id is read all the same").resolves.toBe("sim-00000000000000bb");
+    await local.abandonOpened(hereOpening);
+    expect([refused, unnamed, ended, here].flatMap((f) => f.deleted), "no DELETE was sent").toEqual([]);
+  });
+
+  // Task 7's review, I-1: a `null` id folds five causes into one, and the
+  // walk's one sentence used to be "the server named no table" for all of
+  // them — false for a wait that timed out, or a page that closed. The reason
+  // is SAFE: a status, or the wait's error NAME, never its message, which
+  // could carry what the request sent.
+  // Mutant: every cause worded as a refusal, or the error's message printed.
+  it("says why a create named no table — its status, or the wait's error NAME and never its message — and the walk's throw names it", async () => {
+    const live = await liveAt("live");
+    const reasonOf = async (act: (fake: ReturnType<typeof creatingPage>) => void) => {
+      const fake = creatingPage();
+      const opening = live.awaitCreate(fake.page);
+      act(fake);
+      const thrown = await live.createdTable(opening).then(
+        (id) => `named ${id}`,
+        (e: unknown) => (e as Error).message,
+      );
+      return { reason: await opening.reason, thrown };
+    };
+    const made = await reasonOf((f) => f.land(201, { id: "sim-00000000000000aa" }));
+    expect(made).toEqual({ reason: null, thrown: "named sim-00000000000000aa" });
+    // Access's answer when WARP's device login has expired (CLAUDE.md).
+    const moved = await reasonOf((f) => f.land(302, null));
+    expect(moved.reason).toBe("it answered 302, not 201");
+    expect(moved.thrown).toBe("no table id came back from the create: it answered 302, not 201");
+    const unnamed = await reasonOf((f) => f.land(201, { id: "" }));
+    expect(unnamed.reason).toBe("it answered 201 naming no table");
+    const unreadable = await reasonOf((f) => f.land(201, Object.assign(new Error("Unexpected token < in JSON"), { name: "SyntaxError" })));
+    expect(unreadable.reason).toBe("its 201 could not be read (SyntaxError)");
+    const secret = "cookie: CF_Authorization=DUMMY-SESSION-5678";
+    const timedOut = await reasonOf((f) => f.end("TimeoutError", `Timeout 15000ms exceeded while waiting for event "response"\n${secret}`));
+    expect(timedOut.reason).toContain("the wait for its reply timed out (TimeoutError)");
+    expect(timedOut.reason, "a create answered after the wait is named as a table left behind").toContain("left in the lobby");
+    expect(timedOut.thrown, "a timeout is not worded as a refusal").not.toMatch(/it answered \d/);
+    const closed = await reasonOf((f) => f.end("Error", `Target page, context or browser has been closed\n${secret}`));
+    expect(closed.reason).toBe("the wait for its reply ended in Error before any reply: the page closed, or crashed");
+    for (const read of [timedOut, closed, unreadable]) {
+      expect(`${read.reason} ${read.thrown}`, "no error message is printed").not.toMatch(/DUMMY-SESSION-5678|Timeout 15000ms|Target page|Unexpected token/);
+    }
+  });
+});
+
 // ---- where a walk plays (plan review M9; the review's L-8) -----------------
 
 describe("baseUrlFor", () => {
@@ -864,6 +1001,35 @@ describe("watchForBreakage — the designed 409, in both modes", () => {
         `console.error: ${DEAL_LINE}`,
       ]);
       expect(watch.dealAnswers).toBe(2);
+    });
+  }
+
+  for (const live of [false, true]) {
+    // R3's L-7: the forgiveness is exact in COUNT as well as in shape. A page
+    // meets the designed 409 once — the deal flipped to playing between two
+    // of its requests, and the screen goes to the board — so one response and
+    // one console line are forgiven, and a second of either is breakage. The
+    // cap is a PAGE's: another page's watch forgives its own one.
+    // Mutant: no cap — a client looping on the 409 passes the walk.
+    it(`forgives ONE designed 409 a page ${live ? "live" : "locally"}: a second, its response and its line, is breakage`, async () => {
+      const { watchForBreakage, DEAL_ANSWERS_PER_PAGE } = await harnessAt(live);
+      const base = baseUrlFor(live);
+      const fake = fakePage();
+      const watch = watchForBreakage(fake.page);
+      fake.response(409, DEAL(base));
+      fake.error(DEAL_LINE, DEAL(base));
+      fake.response(409, DEAL(base));
+      fake.error(DEAL_LINE, DEAL(base));
+      expect(watch.dealAnswers, "one 409's two lines, and no more").toBe(2);
+      expect(watch.failures).toEqual([`409 ${DEAL(base)}`, `console.error: ${DEAL_LINE}`]);
+
+      const other = fakePage();
+      const otherWatch = watchForBreakage(other.page);
+      other.response(409, DEAL(base));
+      other.error(DEAL_LINE, DEAL(base));
+      expect(otherWatch.dealAnswers, "another page spends its own").toBe(2);
+      expect(otherWatch.failures).toEqual([]);
+      expect(DEAL_ANSWERS_PER_PAGE, "the cap this cell reads").toBe(1);
     });
   }
 });

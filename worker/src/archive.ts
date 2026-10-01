@@ -5,7 +5,7 @@ import type { Env } from "./env";
 import { Instance, pinnedTo, type Replied } from "./module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
 import { errorBody, log, respond } from "./respond";
-import { USER_HEADER } from "./table";
+import { forwardedCaller } from "./table";
 
 /** Every archive object's name is this and the caller's address (spec §2.3):
  *  one object per caller. */
@@ -71,7 +71,7 @@ export class Archive extends DurableObject<Env> {
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const incoming: Incoming = {
-      user: req.headers.get(USER_HEADER) ?? undefined,
+      user: forwardedCaller(req.headers, this.config),
       method: req.method,
       path: url.pathname,
       query: url.search.slice(1),

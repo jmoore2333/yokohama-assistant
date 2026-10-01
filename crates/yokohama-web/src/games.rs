@@ -62,9 +62,11 @@ pub enum GameError {
     Server(String),
     /// A game NOT OVER whose recorded bot this build does not run (M6.5c2,
     /// R-6.5c2.10): the labels of the bot it was played against and of the one
-    /// this build deals. Typed rather than a `Conflict` for `Dealing`'s reason
-    /// — a client BRANCHES on it, drawing the reason rather than a banner — so
-    /// the pair rides beside the sentence as `"foreign_bot"`.
+    /// this build deals, told apart where they tie
+    /// ([`crate::bots::distinguishing_labels`], R-C5). Typed rather than a
+    /// `Conflict` for `Dealing`'s reason — a client BRANCHES on it, drawing the
+    /// reason rather than a banner — so the pair rides beside the sentence as
+    /// `"foreign_bot"`.
     ForeignBot { played: String, runs: String },
 }
 
@@ -571,10 +573,10 @@ impl Games {
             Session::from_record(record, (*self.rules).clone()).map_err(GameError::Server)?;
         if let Some((_, played)) = &foreign {
             if !session.is_over() {
-                return Err(GameError::ForeignBot {
-                    played: crate::bots::label(played),
-                    runs: crate::bots::label(&crate::bots::production()),
-                });
+                // Told apart where the two labels tie (R-C5), so a same-name
+                // re-point never reads "played against V4 … now runs V4".
+                let (played, runs) = crate::bots::distinguishing_labels(played, &crate::bots::production());
+                return Err(GameError::ForeignBot { played, runs });
             }
         }
         let mut repl = Repl::new(session);
@@ -1228,10 +1230,12 @@ mod tests {
     /// **(Review Focus 4) R2-o1: an owed game-over upload that was undone and
     /// then meets a new bot is bounded, not stranded.** The Worker's retry
     /// reaches the layer as `archive_over_retry`, which answers the foreign-bot
-    /// refusal (the shell's backoff retries it: `settleUpload`'s `parseStamp`
-    /// throws on an error body), and the creator's Abandon — which reads the
-    /// record's event count and never rebuilds — archives the game and clears
-    /// it.
+    /// refusal (a reply that is no 200, which the shell never hands to
+    /// `parseStamp`: `settleUpload` logs `stamp-refused` and, after a `landed`
+    /// or `identical` upload, keeps the save owed and retries it on the backoff
+    /// with its attempt counted, until the creator's Abandon or the table's
+    /// expiry clears it), and the creator's Abandon — which reads the record's
+    /// event count and never rebuilds — archives the game and clears it.
     #[test]
     fn an_unfinished_foreign_game_is_refused_by_the_retry_and_cleared_by_abandon() {
         let archive = RecordingArchive::recording();
@@ -1247,6 +1251,108 @@ mod tests {
         assert_eq!(puts[0].why, crate::archive::Why::Abandoned, "the mirror says not over");
         assert_eq!(puts[0].record, record, "the stored bytes");
         assert!(games.read_table(PLAYED_ID).unwrap().is_none(), "and gone");
+    }
+
+    /// **A same-name re-point is told apart in every foreign-bot sentence, and
+    /// keeps its label on every screen** (M6.5c2, R-C5, R-C17). The committed
+    /// pair's bot seat is re-pointed to THIS build's controller and knobs at the
+    /// NEXT controller version — the record's seat and the table mirror's copy
+    /// alike — so the bot is foreign while its label ties with production's.
+    /// Every other foreign fixture pairs two labels that already differ, where
+    /// [`crate::bots::distinguishing_labels`] and `label` answer alike, so this
+    /// cell is what reads the difference at each caller:
+    ///
+    /// - unfinished: the 409 through `dispatch` — its sentence and its
+    ///   `foreign_bot` pair, joined in `lib.rs`'s `From<GameError>` — and the
+    ///   Worker's stamp path, `archive_over_retry`, with the same pair;
+    /// - finished: `why` bare AND at a bot move (`foreign_why`'s two sites) and
+    ///   the undo refusal;
+    /// - both: the screens still read the plain label — the lobby row's `bot`,
+    ///   `ClientState.bots`, and the Players panel's bot badge beside them.
+    #[test]
+    fn a_same_name_re_point_is_told_apart_in_every_refusal_and_keeps_its_label_on_every_screen() {
+        let running = crate::bots::production();
+        let next = running.version + 1;
+        let label = crate::bots::label(&running);
+        let (played, runs) = (format!("{label}.{next}"), format!("{label}.{}", running.version));
+        let repointed = |cut: Option<usize>| -> Games {
+            let (record, table) = foreign_pair(&running.controller, cut);
+            let mut record: GameRecord = serde_json::from_str(&record).expect("the pair's record");
+            record.run.as_mut().expect("run provenance").seats[1].version = next;
+            let mut table: crate::table::TableDoc = serde_json::from_str(&table).expect("the pair's table");
+            table.turn.as_mut().expect("a mirror").bot.as_mut().expect("the mirrored bot").version = next;
+            let foreign = crate::bots::foreign(&record);
+            assert_eq!(foreign.len(), 1, "premise: the bot seat is foreign");
+            assert_eq!(crate::bots::label(&foreign[0].1), label, "premise: its label ties with production's");
+            let games = games();
+            games.load_document(Doc::Record, PLAYED_ID, &serde_json::to_string(&record).unwrap()).unwrap();
+            games.load_document(Doc::Table, PLAYED_ID, &serde_json::to_string(&table).unwrap()).unwrap();
+            games
+        };
+        const HOST: crate::api::Host = crate::api::Host {
+            identity_name: "local",
+            signal_kind: "none",
+            serves_games: true,
+            multiplayer_offered: false,
+        };
+        let ask = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, serde_json::Value) {
+            let user = who("local@browser");
+            let req = crate::api::ApiRequest {
+                method,
+                path,
+                query,
+                content_type: (!body.is_empty()).then_some("application/json"),
+                body: body.as_bytes(),
+            };
+            let res = crate::api::dispatch(games, &HOST, Ok(&user), &req);
+            (res.status, serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null))
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+
+        // Unfinished, the bot to move: the 409 on the wire, the pair beside it.
+        let unfinished = repointed(Some(BOT_TO_MOVE_AT));
+        let want = serde_json::json!({
+            "error": format!("This game was played against {played}. This server now runs {runs} and can't continue it."),
+            "foreign_bot": { "played": played, "runs": runs },
+        });
+        assert_eq!(ask(&unfinished, "GET", &base, "", ""), (409, want), "the 409 names the two versions");
+        match unfinished.archive_over_retry(PLAYED_ID) {
+            Err(GameError::ForeignBot { played: p, runs: r }) => assert_eq!((p, r), (played.clone(), runs.clone())),
+            other => panic!("expected the foreign-bot refusal, got {:?}", other.map(|_| "a stamp")),
+        }
+        let (status, table) = ask(&unfinished, "GET", &format!("{base}/table"), "", "");
+        assert_eq!(status, 200, "{table}");
+        assert_eq!(table["bot"], serde_json::json!({ "label": label, "runs_here": false }), "the lobby row keeps the label");
+
+        // Finished: it opens, the screens keep the label, and `why` and undo
+        // name the version.
+        let finished = repointed(None);
+        let (status, state) = ask(&finished, "GET", &base, "", "");
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["over"], true, "premise: finished");
+        assert_eq!(state["bots"], serde_json::json!([{ "seat": 1, "label": label }]), "`ClientState.bots` keeps the label");
+        let players = state["frame"]["dashboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|p| p.get("Players"))
+            .expect("a Players panel");
+        let is_bot: Vec<bool> =
+            players["players"].as_array().unwrap().iter().map(|p| p["is_bot"].as_bool().unwrap()).collect();
+        assert_eq!(is_bot, [false, true], "the panel's badge sits on the seat `bots` labels");
+        let foreign_why = serde_json::json!({
+            "ok": null,
+            "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run.") },
+        });
+        // Event 4 is a move seat 1 made (`a_finished_foreign_game_opens_scores_
+        // downloads_and_masks_the_conversion` reads it so over the same pair);
+        // were it not, `account_parts` would answer and this would fail loudly.
+        for query in ["", "event=4"] {
+            assert_eq!(ask(&finished, "GET", &format!("{base}/why"), query, ""), (200, foreign_why.clone()), "why?{query}");
+        }
+        let (status, v) = ask(&finished, "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
+        assert_eq!(status, 403, "{v}");
+        assert_eq!(v["error"], format!("undo is not offered on a game played against {played}, which this server doesn't run"));
     }
 
     /// **Every game this layer deals names the host it was played on** (M6.5c2,
@@ -1282,6 +1388,51 @@ mod tests {
             games.persist("named", &repl).unwrap();
             assert_eq!(run_id(&games).as_deref(), Some(host.run_id()), "{host:?}: an undo keeps it");
         }
+    }
+
+    /// **Only `finalize` stamps `run.run_id`; `persist` never re-stamps it**
+    /// (M6.5c2, spec §2.4; cycle A's carried item). A record dealt by a layer
+    /// built for [`RunHost::Browser`] — its JSON read out of that layer's store
+    /// — is loaded into one built for [`RunHost::Server`], and a move there
+    /// persists it: the stored record still names `web/browser`, the host it
+    /// was dealt on. The cell above cannot see a re-stamp, because there the
+    /// dealing host and the persisting host are one; here they differ, so a
+    /// `persist` that wrote its own host's id would turn the answer to
+    /// `web/server`.
+    #[test]
+    fn a_persist_on_another_host_keeps_the_run_id_the_game_was_dealt_under() {
+        let layer = |run_host: RunHost| {
+            Games::with_parts(
+                Arc::new(Rules::standard()),
+                Arc::new(MemStore::default()),
+                ChatConfig::default(),
+                Arc::new(NoSignal),
+                Games::ticking_clock(),
+                Arc::new(NoArchive),
+                run_host,
+            )
+        };
+        let run_id = |text: &str| -> Option<String> {
+            serde_json::from_str::<GameRecord>(text).unwrap().run.expect("the seats were stamped").run_id
+        };
+        let events = |text: &str| serde_json::from_str::<GameRecord>(text).unwrap().events.len();
+
+        let browser = layer(RunHost::Browser);
+        playing(&browser, &two_people("moved", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let record = browser.read_document(Doc::Record, "moved").unwrap().expect("the dealt record");
+        let table = browser.read_document(Doc::Table, "moved").unwrap().expect("the dealt table");
+        assert_eq!(run_id(&record).as_deref(), Some("web/browser"), "premise: dealt in the browser");
+
+        let server = layer(RunHost::Server);
+        server.load_document(Doc::Record, "moved", &record).unwrap();
+        server.load_document(Doc::Table, "moved", &table).unwrap();
+        let line = crate::api::Input { line: "1".to_string(), expect: None };
+        if let Err(e) = crate::api::input(&server, &who("red@t.test"), "moved", &line) {
+            panic!("a move on the server: {}", e.message);
+        }
+        let stored = server.read_document(Doc::Record, "moved").unwrap().expect("the stored record");
+        assert!(events(&stored) > events(&record), "premise: the server persisted a move");
+        assert_eq!(run_id(&stored).as_deref(), Some("web/browser"), "the persist kept the id the game was dealt under");
     }
 
     /// A record this server writes carries the terminal digest, so the

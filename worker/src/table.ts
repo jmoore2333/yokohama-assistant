@@ -5,6 +5,7 @@ import { earliest, guardAlarmName } from "./alarm";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
+import { CLAIMED_USER_HEADER } from "./identity";
 import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
 import { expiryDeadline, gameOf, keptOf, markerEnd, markerSentence, ttlDaysOf, type Ending, type Marker, type Reason } from "./marker";
 import { Instance, pinnedTo, readReply, type Bump, type Replied } from "./module";
@@ -13,7 +14,7 @@ import {
   logOutcome,
   parsePlan,
   parseStamp,
-  stampArm,
+  settledArm,
   type ArchiveOwed,
   type Outcome,
   type Plan,
@@ -27,7 +28,9 @@ import {
   deleteDoc,
   deleteMeta,
   ensureTables,
+  forgetTables,
   getMeta,
+  hasDoc,
   hasTables,
   readDocs,
   setMeta,
@@ -36,6 +39,22 @@ import {
 
 /** The caller, as the Worker resolved it (the plan's internal headers). */
 export const USER_HEADER = "X-Yokohama-User";
+
+/**
+ * The caller an object was handed (the plan's internal headers; M6.5c2, spec
+ * §2.1): the ONE header its door names, and no other — `X-Yokohama-User`, a
+ * caller the Worker verified, under `worker`; `X-Yokohama-Claimed-User`, a name
+ * a caller claimed, under `open`. The Worker strips every client
+ * `x-yokohama-*` header and sets its door's alone, so the two agree while the
+ * Worker and the object read one configuration — and were they ever to
+ * disagree, a claim would reach no caller rather than pass as a verified one.
+ * With a configuration the shell refuses there is no door and no caller: the
+ * object answers that refusal's 500 before it reads one.
+ */
+export function forwardedCaller(headers: Headers, config: ShellConfig | { error: string }): string | undefined {
+  if ("error" in config) return undefined;
+  return headers.get(config.door === "open" ? CLAIMED_USER_HEADER : USER_HEADER) ?? undefined;
+}
 /** A create's object name, percent-encoded (the plan's internal headers). */
 export const TABLE_ID_HEADER = "X-Yokohama-Table-Id";
 
@@ -64,8 +83,8 @@ const USED_RECENTLY = "this name was used recently — try another";
 type Transport = "events" | "stream";
 
 /** What a socket carries across hibernation: the caller it was admitted as,
- *  exactly as `X-Yokohama-User` named them — the viewer every frame it is
- *  sent is computed for. */
+ *  exactly as its door's header named them (`forwardedCaller`) — the viewer
+ *  every frame it is sent is computed for. */
 interface Attachment {
   user: string | undefined;
 }
@@ -181,7 +200,7 @@ export class Table extends DurableObject<Env> {
     if (transport === "stream" && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
     const incoming: Incoming = {
       id: this.ctx.id.name ?? requestedId(url.pathname, req.headers, create),
-      user: req.headers.get(USER_HEADER) ?? undefined,
+      user: forwardedCaller(req.headers, this.config),
       method: req.method,
       path: url.pathname,
       query: url.search.slice(1),
@@ -263,23 +282,39 @@ export class Table extends DurableObject<Env> {
 
   /**
    * The object ends (spec §2.4 step 6; spec §2.9's force): its module dropped,
-   * and `deleteAll()`, which at this compatibility date deletes its alarm too.
-   * Logged `marker-ended` when it ends a marker, and `forced` when there is
-   * none — which only a force leaves, since every delete through the layer
-   * writes its marker in the batch that writes its REMOVAL. An owed save it
-   * drops is logged `archive-owed-dropped` first, once `deleteAll()` has
-   * dropped it — only a force's immediate path meets one here, since a
-   * delete's batch and a force's clear it — so a force logs the two in ONE
-   * order on both its paths.
+   * `deleteAll()`, which at this compatibility date deletes its alarm too, and
+   * the tables forgotten (`forgetTables`), so the next read scans for them and
+   * finds none. Logged:
+   *
+   * - `marker-ended` when it ends a marker;
+   * - `forced` when an operator's force ended it: at once, on its immediate
+   *   path, which writes no batch and passes `forced`; or through the REMOVAL
+   *   its batch flagged (`meta.forced`), once acknowledged;
+   * - `removal-ended` for a REMOVAL with no marker and no flag (Task 14's L-4):
+   *   one the code before the marker wrote (the fifteenth and sixteenth
+   *   deployments), or one a force made before the flag (from the seventeenth
+   *   deployment until the one that carries it), acknowledged since. Every
+   *   delete through the layer writes its marker in the batch that writes its
+   *   REMOVAL, and a force flags its own, so no code since leaves such a
+   *   removal, and every `forced` line follows its force's `operator` line.
+   *
+   * An owed save it drops is logged `archive-owed-dropped` first, once
+   * `deleteAll()` has dropped it — only a force's immediate path meets one
+   * here, since a delete's batch and a force's clear it — so a force logs the
+   * two in ONE order on both its paths.
    */
-  private async end(marker: Marker | undefined): Promise<void> {
+  private async end(marker: Marker | undefined, forced = false): Promise<void> {
     const id = this.ctx.id.name;
-    const owed = archiveOwedOf(this.ctx.storage.sql);
+    const sql = this.ctx.storage.sql;
+    const owed = archiveOwedOf(sql);
+    const flagged = forced || getMeta(sql, "forced") !== undefined;
     this.instance?.drop();
     await this.ctx.storage.deleteAll();
+    forgetTables(sql);
     if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
-    if (marker === undefined) log("forced", { id });
-    else log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
+    if (marker !== undefined) log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
+    else if (flagged) log("forced", { id });
+    else log("removal-ended", { id });
   }
 
   /**
@@ -501,39 +536,60 @@ export class Table extends DurableObject<Env> {
    *
    * - **`failed`**: counted in `archive_owed` and retried by the alarm on the
    *   backoff (`retryArchive`).
-   * - **`conflict`**: final at every site — `archive_owed` cleared, and the
-   *   alarm re-armed to what is still due, or deleted when nothing is.
-   * - **`landed` or `identical`**: the module — woken first when it is new —
-   *   takes the outcome as its receipt and stamps with the layer's own code at
-   *   the RECORDED reading (`stamp`), so its put makes the stored plan and
-   *   meets the receipt. Its answer decides (`stampArm`): `stamped` completes
-   *   the save and clears `archive_owed`; `no-longer-over` clears it too;
-   *   `retry` — the game over, the stamp not landed — keeps it owed, counted,
-   *   its plan the one the stamp re-made at that reading when the module
-   *   deferred one. The stamped table row, `archive_owed` and the slot the
-   *   changed copy owes go in ONE batch (`commit`). A trap is the side
-   *   channel's (spec §2.4): logged, the module discarded, and the save
-   *   retried.
+   * - **`landed`, `identical` or `conflict`**: the module — woken first when it
+   *   is new — takes the outcome as its receipt, a conflict's with the record
+   *   the key held (R-6.5c2.11), and stamps with the layer's own code at the
+   *   RECORDED reading (`stamp`), so its put makes the stored plan and meets
+   *   the receipt. What the two leave together decides (`settledArm`):
+   *   `stamped` completes the save and clears `archive_owed` — after a
+   *   conflict, only where the layer found the key holding an earlier
+   *   completion of THIS game (the same seed, configuration and choices), which
+   *   it compares in Rust, never here; `no-longer-over` clears it too; `final`
+   *   — every conflict the layer did not stamp, whatever the stamp answered —
+   *   clears it and retries nothing, the M6.5c spec §2.6 arm kept for all of
+   *   them (spec §2.5, §10.5). Among them: another game's record at the key,
+   *   which only a caller-chosen id can reach, or a text that is no record,
+   *   which a retry would meet again while the key holds it (nothing this
+   *   shell runs deletes an archived key; a key under `test/` alone expires,
+   *   after 30 days); rarely, a record of this game whose stamp's write failed
+   *   or whose put met no receipt, which a retry might have landed and the
+   *   rule leaves final all the same; and a stamp the layer refused, which no
+   *   retry of this save lands (`settledArm` names every case, and why);
+   *   `retry` — after a `landed` or `identical` upload, the stamp refused (a
+   *   reply that is no 200, logged `stamp-refused`) or not landed with the
+   *   game over — keeps it owed, counted, its plan the one the stamp re-made
+   *   at that reading when the module deferred one. A refused stamp is never
+   *   thrown, and after a `landed` or `identical` upload it is retried on the
+   *   backoff: the layer's foreign-bot rule refuses a game not over against a
+   *   bot this build does not run, a 409, until the creator's Abandon or the
+   *   table's expiry — neither of which rebuilds — clears the save (spec
+   *   §2.4). The stamped table row, `archive_owed` and the slot the changed
+   *   copy owes go in ONE batch (`commit`). A trap is the side channel's (spec
+   *   §2.4): logged, the module discarded, and the save retried.
    * - **A plan the wake deferred** — a new module's `restore_picker` pumping a
    *   bot run to game over — is owed rather than a clear, as every reply's
    *   plan is (the plan's ruling P-2). It is unreachable today: a save is
    *   owed only for a game already over, so the wake here finds it over, or —
    *   the undo case — back at a human's decision, and owes no bot run. Were
    *   a pump to move the record there, the receipt's plan would no longer
-   *   match, the stamp would retry, and the plan it re-made — of that same
-   *   stored record, at the recorded reading — is the one owed.
+   *   match. After a `landed` or `identical` upload the stamp would retry,
+   *   and the plan it re-made — of that same stored record, at the recorded
+   *   reading — is the one owed; after a `conflict` its
+   *   `{stamped: false, over: true}` is `final`, and what is owed is the
+   *   wake's own plan, at the wake's reading (`owing`).
    *
-   * **The undo case, and what it leaves** (the orchestrator's ruling I3;
-   * Task 6's escalation e, RECORDED and not fixed this cycle). An undo at a
-   * one-person table that lands during the upload's I/O leaves the game not
-   * over at the stamp: nothing is owed, and the first completion's copy stays
-   * in the bucket unstamped. A replay to the SAME end meets it as
-   * `identical`, and stamps. A replay to a DIFFERENT end meets it as a
-   * `conflict` — final, so that game is never stamped: the creator's later
-   * abandon plans the same record key and is refused for good, and an expiry
-   * is `held` until the operator's `?force`. The NAS stamps inside `persist`,
-   * where no undo can land between the put and the stamp; a rule that stamps
-   * on such a conflict is the owner's to make.
+   * **The undo case** (the orchestrator's ruling I3; Task 6's escalation e;
+   * made whole by R-6.5c2.11). An undo at a one-person table that lands during
+   * the upload's I/O leaves the game not over at the stamp: nothing is owed,
+   * and the first completion's copy stays in the bucket unstamped. A replay to
+   * the SAME end meets it as `identical`, and stamps. A replay to a DIFFERENT
+   * end meets it as a `conflict` carrying that first completion — the same
+   * game — and stamps too: the archive keeps the first ending, and the table
+   * is abandonable and expires as any stamped table does
+   * (`test/archive.test.ts`, the refinish race). Two completions' uploads can
+   * OVERLAP — `uploads` keys each by its plan, and two endings are two plans —
+   * and then one completion's record can land beside the other's table: R2
+   * has no cross-key atomicity, and that pair is best-effort (spec §2.5).
    *
    * Answers whether its batch wrote a slot.
    */
@@ -543,10 +599,6 @@ export class Table extends DurableObject<Env> {
     if (current?.plan.key !== owed.plan.key) return false;
     if (outcome.outcome === "failed") {
       this.retryArchive(current);
-      return false;
-    }
-    if (outcome.outcome === "conflict") {
-      this.batch((sql) => deleteMeta(sql, "archive_owed"), this.dueBesidesArchive(sql));
       return false;
     }
     const config = this.config;
@@ -571,9 +623,14 @@ export class Table extends DurableObject<Env> {
         return false;
       }
       const { status, body, archive: replanned } = completed.reply;
+      // Only a 200 carries the two booleans; any other reply is the layer's
+      // refusal in its error shape — a foreign bot's 409 among them — which
+      // is logged and read as no stamp, never parsed (a throw here would
+      // escape the upload, and an alarm with it).
       const stamp = status === 200 ? parseStamp(body) : undefined;
-      log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...(stamp ?? { status, body }) });
-      const arm = stamp === undefined ? "retry" : stampArm(stamp);
+      if (stamp === undefined) log("stamp-refused", { id, status });
+      else log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...stamp });
+      const arm = settledArm(outcome, stamp);
       done = this.commit(
         id,
         completed,
@@ -601,10 +658,13 @@ export class Table extends DurableObject<Env> {
 
   /**
    * An owed save's completion, in the module: the upload's `outcome`
-   * installed as the receipt, `stamp_archive(id)` pinned to the RECORDED
-   * reading (`pinnedTo`, which restores the setting after it), and the layer's
-   * documents read back — under ONE `guarded`. Answers the call, or
-   * `undefined` when it trapped, logged.
+   * installed as the receipt, a conflict's with the record the key held
+   * (R-6.5c2.11) — the outcome's JSON as `executePlan` built it, the held
+   * record a string inside it and never parsed here — `stamp_archive(id)`
+   * pinned to the RECORDED reading (`pinnedTo`, which restores the setting
+   * after it), and the layer's documents read back — under ONE `guarded`.
+   * Answers the call, whatever its status (`settleUpload` reads a reply that
+   * is no 200 as a refused stamp), or `undefined` when it trapped, logged.
    */
   private stamp(id: string, instance: Instance, owed: ArchiveOwed, outcome: Outcome): Called | undefined {
     let stage = "receipt";
@@ -862,9 +922,12 @@ export class Table extends DurableObject<Env> {
    * refuses to read (both run `check_shape` over the same stored text), or a
    * copy its scrub broke, which the module's own cells show no stored
    * document reaches.
+   *
+   * Whether a record is stored, the fallback `gameOf` reads, is asked of ONE
+   * row where `kept` is computed (`hasDoc`; Task 14's L-8): the loop reads no
+   * document of its own.
    */
   private async deleting(id: string, instance: Instance, config: ShellConfig, how: Deleting): Promise<Deleted | Response> {
-    const stored = readDocs(this.ctx.storage.sql);
     // Both sites read the house copy: its stamp, and an expiry's viewer.
     let stage = "house_copy";
     const done = instance.guarded((mod) => {
@@ -902,7 +965,7 @@ export class Table extends DurableObject<Env> {
     const kept = keptOf({
       stamped: copy?.stamped ?? false,
       saved: outcome?.outcome === "landed" || outcome?.outcome === "identical",
-      game: gameOf(reading, stored.has("record")),
+      game: gameOf(reading, hasDoc(this.ctx.storage.sql, "record")),
       archive: config.archive,
     });
     return {
@@ -1113,16 +1176,19 @@ export class Table extends DurableObject<Env> {
    * - With nothing stored: 204 at once, writing nothing.
    * - Where the object holds no generation — no copy of the table was ever
    *   drawn — or the house has acknowledged the table's removal, the object
-   *   ends at once (`end`), and 204. A table whose first copy trapped holds a
-   *   generation all the same and takes the push below, which the house
-   *   acknowledges although it never held the row.
+   *   ends at once (`end`, told it is a force's), and 204. A table whose
+   *   first copy trapped holds a generation all the same and takes the push
+   *   below, which the house acknowledges although it never held the row.
    * - Otherwise ONE batch deletes every document, and every `meta` key but
    *   the slot's own four — the marker, an owed save and `held` among them —
-   *   and writes the REMOVAL, unless one already waits, with its retry's
-   *   alarm. The module is dropped and every socket ended as a delete ends
-   *   them, and the removal is pushed IN the request (`deliverSlot`): its
-   *   acknowledgement, with no marker standing, ends the object
-   *   (`acknowledged`). The answer is 204 once the storage is gone, or 503
+   *   writes the REMOVAL, unless one already waits, with its retry's alarm,
+   *   and flags the object as forced (`meta.forced`, its time in
+   *   milliseconds), so the end that REMOVAL's acknowledgement brings, in
+   *   this request or a later alarm, is logged `forced` (Task 14's L-4). The
+   *   module is dropped and every socket ended as a delete ends them, and the
+   *   removal is pushed IN the request (`deliverSlot`): its acknowledgement,
+   *   with no marker standing, ends the object (`acknowledged`). The answer
+   *   is 204 once the storage is gone, or 503
    *   `the lobby has not confirmed the removal — the alarm will finish it`
    *   when the push failed — and the alarm, re-armed by that failure, does.
    *   Until then a create at the id is the 409 of a removal the house has not
@@ -1141,7 +1207,7 @@ export class Table extends DurableObject<Env> {
     const state = slotState(sql);
     if (state.generation === undefined || (state.slot === undefined && !differs(state, null))) {
       this.endSockets(id);
-      await this.end(undefined);
+      await this.end(undefined, true);
       return respond(204, "");
     }
     const owed = archiveOwedOf(sql);
@@ -1150,6 +1216,8 @@ export class Table extends DurableObject<Env> {
       (sql) => {
         clearDocs(sql);
         clearMetaBut(sql, ["generation", "revision", "slot", "acked"]);
+        // The REMOVAL is a force's: `end` logs it `forced` (Task 14's L-4).
+        setMeta(sql, "forced", String(Date.now()));
         for (const write of this.owedWrites(id, { draw: undefined, slot: removal, traps: 0 })) write();
       },
       removal === undefined ? undefined : Date.now() + nextRetry(0),
@@ -1657,11 +1725,10 @@ export class Table extends DurableObject<Env> {
    *   slot is the REMOVAL) and an alarm run that finds a table document
    *   (`recopy`). A move that leaves the table document alone makes none.
    * - **What it holds**: the compiled module is the isolate's, shared, so
-   *   the instance adds its own linear memory, which starts at 18 pages —
-   *   1.125 MiB, 121,001 bytes of them the module's data, copied in from its
-   *   168 data segments (the release build, read off its memory and data
-   *   sections; the data SECTION is 122,381 bytes encoded, its segment
-   *   headers included) — and the one table document it is handed. Building
+   *   the instance adds its own linear memory — its starting size is the
+   *   release module's reading in the root `Cargo.toml`'s `release-wasm`
+   *   comment, the ONE place the module's figures are measured (R1's
+   *   cleanup debt 6) — and the one table document it is handed. Building
    *   it, `init`, the load and the copy measured about 0.15 ms a call in the
    *   pool.
    * - **When it is dropped**: when this returns. Nothing keeps it — `scratch`
@@ -2057,13 +2124,15 @@ interface CopyFacts {
 
 /**
  * What the table `mod` holds under `id` says of itself on its HOUSE COPY — the
- * table document with its seed zeroed (spec §2.5's scrub), so it may be
- * parsed, where the table document itself never is (the plan's strings rule;
- * the orchestrator's rulings I-64 and I-71): its creator, whom an expiry reads
- * the table as, and whether its save was made. `undefined` when no table is
- * stored, or the module refuses the copy, as it refuses a stored document that
- * does not parse or that `check_shape` rejects. A trap is the caller's: it runs
- * under their `guarded`.
+ * table document through spec §2.5's scrub — which is parsed here, where the
+ * table document itself never is (the plan's strings rule; the orchestrator's
+ * rulings I-64 and I-71): its creator, whom an expiry reads the table as, and
+ * whether its save was made. A copy carries no seed, and since M6.5c2 may
+ * carry a bot descriptor whose `weights` is above 2^53, which this parse
+ * rounds; it may be parsed because nothing here reads `params` and no parsed
+ * copy is written back. `undefined` when no table is stored, or the module refuses the copy,
+ * as it refuses a stored document that does not parse or that `check_shape`
+ * rejects. A trap is the caller's: it runs under their `guarded`.
  */
 function copyFacts(mod: Exports, id: string): CopyFacts | undefined {
   let copy: string | undefined;

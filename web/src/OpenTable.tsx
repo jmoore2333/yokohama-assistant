@@ -77,6 +77,13 @@ export function OpenTable({
   const [table, setTable] = useState<TableView | null>(null);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** **Abandon's refusal, in a strip of its own** (M6.5c2 cycle C; the task
+   *  review's I-1, ruled R-C24): one state per strip, because each strip sits
+   *  beside its own control. `error` is the join block's — the join's, the
+   *  password's and a refused copy's; this is the one the controls' Abandon
+   *  raises, drawn directly under the controls. One shared state would put an
+   *  Abandon refusal a screen-height above its button on a seated face. */
+  const [abandonError, setAbandonError] = useState<string | null>(null);
   /** "Something about this table may have changed" (spec §6.2), counted.
    *
    *  This screen's hook is a `"wake"` consumer — a frame is not its value, so
@@ -327,6 +334,15 @@ export function OpenTable({
           </button>
         )}
 
+        {/* **The join block's refusals sit by the join** (M6.5c2 cycle C,
+            polish 4): directly under the password, the seats and "Join as",
+            which is what a join's and a wrong password's refusals are about —
+            not at the page's foot, under the controls (and, for a seated
+            caller, the chat). A refused copy lands here too, directly above the
+            Invite panel whose button raised it. Abandon's refusal does NOT: it
+            has its own strip under the controls (`abandonError`, below). */}
+        {error && <Refusal sentence={error} />}
+
         {seated && (
           <Invite url={url} locked={table.locked} mine={table.created_by === me} onRefused={setError} />
         )}
@@ -347,13 +363,14 @@ export function OpenTable({
               gone, and there is nothing here to go back to. Outlined in the
               warning colour, the quieter danger (mock 08). */}
           {seated && table.created_by === me && (
-            <Abandon table={table} onDone={() => leave.current()} onError={setError} />
+            <Abandon table={table} onDone={() => leave.current()} onError={setAbandonError} />
           )}
           <button type="button" className="quiet-link" onClick={() => leave.current()}>
             <span aria-hidden="true">&larr; </span>Lobby
           </button>
         </div>
-        {error && <Refusal sentence={error} />}
+        {/* Abandon's refusal, directly under the button that raised it (R-C24). */}
+        {abandonError && <Refusal sentence={abandonError} className="error abandon-refusal" />}
       </div>
     </div>
   );
@@ -371,8 +388,9 @@ function Invite({
   url: string;
   locked: boolean;
   mine: boolean;
-  /** Where a refused copy is said: the screen's own refusal strip. */
-  onRefused: (sentence: string) => void;
+  /** Where a refused copy is said: the screen's own refusal strip — and
+   *  `null` once a later copy lands, which takes the refusal away. */
+  onRefused: (sentence: string | null) => void;
 }) {
   const [copied, setCopied] = useState(false);
   /** **"Copied" only once the clipboard has taken the link** (the whole-branch
@@ -381,11 +399,16 @@ function Invite({
    *  is absent and the call throws; either way the refusal is said in the
    *  lobby's own sentence, which carries the link, and the button keeps
    *  offering the copy. Nothing rejects out of here: an unhandled rejection is
-   *  a `pageerror` the browser gate counts as breakage. */
+   *  a `pageerror` the browser gate counts as breakage.
+   *
+   *  **A copy that lands clears the strip** (M6.5c2 cycle C; the Opus
+   *  re-review's one Minor): a clipboard refused and then granted left the
+   *  refusal standing under a button that says "Copied". */
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(url);
       setCopied(true);
+      onRefused(null);
     } catch {
       setCopied(false);
       onRefused(`the link could not be copied \u2014 it is ${url}`);

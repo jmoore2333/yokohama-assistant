@@ -13,11 +13,26 @@ import type { Env } from "./env";
 export type Identity =
   | { kind: "person"; email: string }
   | { kind: "dev"; email: string }
+  /** The open door's caller (M6.5c2, spec §2.1; review R2.2-m6): a name a
+   *  caller claimed, held only to what a header can carry. Its own kind, so
+   *  the operator gate's person-only rule and the archive object's naming
+   *  read it without a special case, and `dev` stays the live tier's kind
+   *  under `worker`. */
+  | { kind: "claimed"; name: string }
   | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }
 export interface IdentityConfig {
   teamDomain: string; aud: string; devDoorClientId: string; devDoor: boolean; nowSeconds: number;
 }
+
+/** The header a claim rides on a `fetch`: the dev door's under `worker`, and
+ *  the open door's (M6.5c2, spec §2.1) — which the Worker also hands the
+ *  objects under `open` (`forwardedCaller`, `table.ts`). */
+export const CLAIMED_USER_HEADER = "X-Yokohama-Claimed-User";
+
+/** The query parameter an open-door claim rides on a WebSocket UPGRADE, which
+ *  a browser can put no header on (M6.5c2, spec §2.1; `web/src/ws.ts`). */
+export const CLAIMED_PARAM = "claimed";
 
 const bytes = (b64url: string): Uint8Array => {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64url.length / 4) * 4, "=");
@@ -51,7 +66,8 @@ export function isAddress(email: string): boolean {
 }
 
 /**
- * The address a raw value names: `raw` judged by `forwardable` BEFORE
+ * The address a raw value names — or, at the open door, the name a caller
+ * claimed (`claimedIdentity`, M6.5c2): `raw` judged by `forwardable` BEFORE
  * anything else is done to it, then trimmed and ASCII-lowercased as the
  * layer's `User::parse` reads a caller — or `undefined` for a raw value that
  * is not forwardable, or blank.
@@ -109,10 +125,46 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
     return email === undefined ? { kind: "none" } : { kind: "person", email };
   }
   if (c.devDoor && claims.common_name === c.devDoorClientId) {
-    const claimed = address(h.get("x-yokohama-claimed-user") ?? "");
+    const claimed = address(h.get(CLAIMED_USER_HEADER) ?? "");
     if (claimed !== undefined && isAddress(claimed)) return { kind: "dev", email: claimed };
   }
   return { kind: "none" };
+}
+
+/**
+ * **An open-door claim** (M6.5c2, spec §2.1): the raw name a caller sent —
+ * `handle` picks the carrier, the header on a `fetch` and the `claimed`
+ * parameter on an upgrade — judged by `address`: RAW by `forwardable` first,
+ * so a percent-decoded parameter holding a character no header can carry is
+ * no caller, rather than a `headers.set` that throws into the platform's plain
+ * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson).
+ * The shell never judges a name beyond what a header can carry: the layer's
+ * key grammar does, in the objects. A blank or absent claim is no one.
+ *
+ * Space runs are NOT collapsed here — that is the key grammar's, and there is
+ * one. So a hand-typed `ben   castle` names the Archive object
+ * `archive:ben   castle` where the client's own `ben castle` names another; the
+ * two hold nothing of their own and file under one key, because the module
+ * normalizes both, so the only cost is a second object.
+ */
+export function claimedIdentity(raw: string | null): Identity {
+  const name = raw === null ? undefined : address(raw);
+  return name === undefined ? { kind: "none" } : { kind: "claimed", name };
+}
+
+/** The value an identity is forwarded as, and names its archive object by —
+ *  a person's or the dev door's address, or an open-door claim — or
+ *  `undefined` for no one (M6.5c2). */
+export function callerName(identity: Identity): string | undefined {
+  switch (identity.kind) {
+    case "person":
+    case "dev":
+      return identity.email;
+    case "claimed":
+      return identity.name;
+    case "none":
+      return undefined;
+  }
 }
 
 /**
@@ -201,13 +253,18 @@ export function identityConfig(env: Env, devDoor: boolean, nowSeconds: number): 
 /**
  * Whether a RAW address — an assertion's `email` claim, or the claimed
  * header, before anything is trimmed or lowercased — can travel as the
- * objects' `X-Yokohama-User`: every character a tab, a space or visible
+ * objects' `X-Yokohama-User`; or, at the open door (M6.5c2), whether a
+ * claimed name — the header, or an upgrade's percent-decoded `claimed`
+ * parameter, which can hold a character on which `headers.set` throws, such
+ * as a carriage return (review R2.2-m3) — can travel as their
+ * `X-Yokohama-Claimed-User`: every character a tab, a space or visible
  * ASCII, the bytes the layer's own `resolve` reads a header with (`http`'s
  * `HeaderValue::to_str`), which reads any other value as ABSENT. workerd would
- * send such a value on regardless, as UTF-8, with a warning that a browser's
- * `Headers` would throw. So a raw address outside the set is no caller here:
- * `resolveIdentity` answers `none` for it, no identity header is forwarded,
- * and the layer answers as it does for no one (the orchestrator's rulings:
+ * send a non-ASCII value on regardless, as UTF-8, with a warning that a
+ * browser's `Headers` would throw. So a raw value outside the set is no caller
+ * here: `resolveIdentity` or `claimedIdentity` answers `none` for it, no
+ * identity header is forwarded, and the layer answers as it does for no one
+ * (the orchestrator's rulings:
  * Task 2's review, E1; Task 11's review, I1 — judged raw, because JavaScript's
  * `trim()` and `toLowerCase()` would first turn some such addresses into
  * visible ASCII, and into another user's).

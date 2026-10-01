@@ -387,7 +387,9 @@ export function Unplayable({
   if (cross.length === 0 && foreign.length === 0) return null;
   return (
     <div className="unplayable">
-      <h4>Will not open here</h4>
+      {/* An `h3`, the level under the device card's `h2` it sits in (cycle C,
+          polish 3). */}
+      <h3>Will not open here</h3>
       <ul>
         {foreign.map((t) => (
           <li key={t.id}>

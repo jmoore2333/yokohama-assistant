@@ -64,7 +64,20 @@ import { NO_SERVICE_WORKER } from "./sw";
 // looked for a prefix this file had guessed would report "no generations" for
 // ever and every retention assertion below would pass by finding nothing.
 import { CACHE_PREFIX } from "../src/precache";
-import { act, atTheGame, capReached, deadEnd, readScreen, rng, startGame, WALKER, type Game } from "./harness";
+import {
+  act,
+  atTheGame,
+  capReached,
+  deadEnd,
+  look,
+  noSidewaysScroll,
+  PHONE,
+  readScreen,
+  rng,
+  startGame,
+  WALKER,
+  type Game,
+} from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly — the guard
 // `every_spec_can_skip.spec.ts` reads this directory for.
@@ -1204,6 +1217,34 @@ test("a refused registration: the first /sw.js answers 503, the door names it in
   expect(refused).toContain("(503)");
   expect(refused).toMatch(/[^.]\. Try again$/);
   expect(scripts, "the refusal really was the registration's own script fetch").toBe(1);
+
+  // **The sentence takes the foot's first row at 390px** (M6.5c2 cycle C; the
+  // whole-branch review's Minor 7): beside Back up and Restore it was squeezed
+  // into a 194px column, eleven lines deep (measured here before the fix). The
+  // state spans the foot, and the two links sit on the row under it; the
+  // picture is the headed look's.
+  const desktop = page.viewportSize()!;
+  await page.setViewportSize(PHONE);
+  await noSidewaysScroll(page, "the door with a refused registration at 390px");
+  const foot = await page.locator(".device-foot").evaluate((f) => {
+    const box = (e: Element) => {
+      const r = e.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+    };
+    return {
+      foot: box(f),
+      state: box(f.querySelector(":scope > .offline-state")!),
+      backUp: box(f.querySelector(":scope > .back-up-all")!),
+    };
+  });
+  // eslint-disable-next-line no-console
+  console.log(`DEVICE FOOT at 390, refused: ${JSON.stringify(foot)}`);
+  expect(foot.state.right - foot.state.left, "the sentence spans the foot").toBeGreaterThanOrEqual(
+    foot.foot.right - foot.foot.left - 1,
+  );
+  expect(foot.backUp.top, "Back up sits under the sentence").toBeGreaterThanOrEqual(foot.state.bottom - 1);
+  await look(page, "device-foot-refused-390");
+  await page.setViewportSize(desktop);
 
   // **The retry REGISTERS, and what that resolves to is adopted**: the door
   // leaves "Preparing…" for "Ready…" and the release is whole in the cache.

@@ -196,6 +196,13 @@ describe("resetRecipe", () => {
   it("keys a sender outside .test at the bucket's top", () => {
     expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
   });
+  // The module's own rule (`receipt.rs`'s `is_test_identity`): a test identity
+  // is an EMAIL in `.test`, so a plain name that ends `.test` — a legal name
+  // under the open door — is keyed at the bucket's top, as the module keys its
+  // save. Mutant: the old rule, `who.endsWith(".test")` alone.
+  it("keys a plain name that ends .test at the bucket's top: no @, no test identity", () => {
+    expect(resetRecipe(CORPUS, "wire.test").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
+  });
 });
 
 describe("readCredential", () => {

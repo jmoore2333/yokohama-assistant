@@ -26,7 +26,7 @@ import { reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
 import { hashOf } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
 import type { ReadinessStatus } from "./swRegister";
-import { deviceWord } from "./tables";
+import { deviceWord, isStranded } from "./tables";
 import type { TableView } from "./types";
 
 export function OnThisDevice({
@@ -94,12 +94,11 @@ export function OnThisDevice({
 
   /** Games the module will REFUSE to open (M6.5c2, spec §2.4): not over, and
    *  dealt a bot this build does not run — read off the listing's own
-   *  `bot.runs_here`, never off the record (`db.ts` forbids parsing it). A
-   *  FINISHED one opens as it always did (R-6.5c2.10), so it stays a row. A
-   *  game with a compatibility row is `Unplayable`'s already. */
-  const foreign = (games ?? []).filter(
-    (t) => t.bot?.runs_here === false && t.over !== true && !hidden.has(t.id),
-  );
+   *  `bot.runs_here`, never off the record (`db.ts` forbids parsing it), by
+   *  the one sentence the lobby's row and the Game menu read (`isStranded`,
+   *  cycle C). A FINISHED one opens as it always did (R-6.5c2.10), so it stays
+   *  a row. A game with a compatibility row is `Unplayable`'s already. */
+  const foreign = (games ?? []).filter((t) => isStranded(t) && !hidden.has(t.id));
   /** The rows a player can actually open. A game with a compatibility row, or
    *  one of `foreign`, is drawn by `Unplayable` below instead, with the reason
    *  it will not. */
@@ -210,8 +209,13 @@ function oneStop(reason: string): string {
  *  cell or a walk reads stays the sentence alone. */
 function Readiness({ status }: { status?: ReadinessStatus }) {
   if (!status || (status.readiness === "none" && !status.updateWaiting)) return null;
+  // **`failed` takes the foot's whole first row** (M6.5c2 cycle C; the
+  // whole-branch review's Minor 7): beside Back up and Restore the failure's
+  // sentence wrapped to eleven lines at 390px. A CLASS and not only the
+  // stylesheet's `:has(.linkish)`, so a cell can see it; the update offer,
+  // which carries a `.linkish` too, spans by that rule.
   return (
-    <div className="offline-state">
+    <div className={status.readiness === "failed" ? "offline-state failed" : "offline-state"}>
       {status.readiness === "installing" && <p className="muted">Preparing to play offline&hellip;</p>}
       {status.readiness === "ready" && <p className="muted ready">Ready to play offline</p>}
       {status.readiness === "failed" && (
@@ -371,7 +375,8 @@ function Outbox(): React.ReactNode {
   if (rows.length === 0) return null;
   return (
     <div className="outbox">
-      <h4>Waiting to reach the archive</h4>
+      {/* An `h3`, the level under the card's `h2` (cycle C, polish 3). */}
+      <h3>Waiting to reach the archive</h3>
       <ul>
         {rows.map((r) => (
           <OutboxRow key={r.id} row={r} />

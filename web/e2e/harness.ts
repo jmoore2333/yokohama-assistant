@@ -1,6 +1,6 @@
 // What every browser walk needs: a game, a console watch, and a click policy.
 
-import { expect, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
+import { expect, test, type ConsoleMessage, type Locator, type Page } from "@playwright/test";
 import { BASE_URL } from "../playwright.config";
 import { LIVE } from "./live";
 
@@ -16,6 +16,17 @@ export function rng(seed: number): () => number {
     return ((z ^ (z >>> 15)) >>> 0) / 0x1_0000_0000;
   };
 }
+
+/**
+ * How many of the deal's designed 409s one watched page may spend (R3's
+ * L-7): ONE — its two lines, the response and Chromium's console line, each
+ * forgiven once, so `dealAnswers` reads at most 2 a page. A page meets the 409
+ * once: the table flipped to playing between two of its requests, and the
+ * screen goes to the board. A second is breakage, so a client that looped on
+ * the refusal fails the walk rather than having its lines forgiven by the
+ * hundred.
+ */
+export const DEAL_ANSWERS_PER_PAGE = 1;
 
 /**
  * Everything the page said that a player would call broken.
@@ -61,7 +72,8 @@ export function rng(seed: number): () => number {
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
  * Chromium's console line — counted apart, in `dealAnswers`, so a run says
- * which forgiveness it spent.
+ * which forgiveness it spent — ONE a page, its two lines once each
+ * ([`DEAL_ANSWERS_PER_PAGE`]; R3's L-7).
  */
 export function watchForBreakage(
   page: Page,
@@ -69,6 +81,8 @@ export function watchForBreakage(
 ): { failures: string[]; forgiven: number; dealAnswers: number } {
   const failures: string[] = [];
   const watch = { failures, forgiven: 0, dealAnswers: 0 };
+  /** The deal's designed 409s this page has spent, arm by arm. */
+  const dealt = { response: 0, console: 0 };
   const allowed = (status: number, url: string) =>
     expected.some((e) => e.status === status && url.includes(e.urlIncludes));
   page.on("console", (m: ConsoleMessage) => {
@@ -85,7 +99,8 @@ export function watchForBreakage(
       watch.forgiven += 1;
       return;
     }
-    if (isDealAnswerLine(text, m.location().url, BASE_URL)) {
+    if (isDealAnswerLine(text, m.location().url, BASE_URL) && dealt.console < DEAL_ANSWERS_PER_PAGE) {
+      dealt.console += 1;
       watch.dealAnswers += 1;
       return;
     }
@@ -94,7 +109,8 @@ export function watchForBreakage(
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
     if (r.status() >= 400 && r.url().startsWith(BASE_URL) && !allowed(r.status(), r.url())) {
-      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL)) {
+      if (isDealAnswer(r.status(), r.request().method(), r.url(), BASE_URL) && dealt.response < DEAL_ANSWERS_PER_PAGE) {
+        dealt.response += 1;
         watch.dealAnswers += 1;
         return;
       }
@@ -842,4 +858,31 @@ export function blame(read: OverflowRead): string {
         `content ${s.scrollWidth} in ${s.clientWidth}, overflow-x: ${s.overflowX})`,
     )
     .join("; ");
+}
+
+// ---- the setup screens' two widths and their two reads (M6.5c2) -----------
+//
+// Lifted out of `setup_screens.spec.ts` when a second spec needed them (cycle
+// C, R-C7: the lobby's Finished group, read at the end of a whole game). The
+// bodies are the ones that spec defined; a second copy would drift.
+
+/** The desktop the setup screens are read at. */
+export const DESKTOP = { width: 1440, height: 900 };
+/** The phone the setup screens are read at (mock 11). */
+export const PHONE = { width: 390, height: 844 };
+
+/** Nothing on the page is wider than its window — read once the layout is DONE
+ *  (the width gate's own note, above). */
+export async function noSidewaysScroll(page: Page, what: string): Promise<void> {
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => r(null))));
+  const read = await readOverflow(page);
+  expect(
+    read.docScrollWidth - read.docClientWidth,
+    `${what} scrolls sideways: ${blame(read)}`,
+  ).toBeLessThanOrEqual(0);
+}
+
+/** A picture for the headed look, under this run's own output directory. */
+export async function look(page: Page, name: string): Promise<void> {
+  await page.screenshot({ path: test.info().outputPath(`${name}.png`), fullPage: true });
 }
