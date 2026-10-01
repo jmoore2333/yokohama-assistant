@@ -44,19 +44,24 @@
 //    are `drainVisible`, which shows the widget through the seam and sends
 //    again. And a visitor who has chosen no name under the open door is never
 //    posted for: the layer's refusal is certain (F-14).
-// 6b. **A keyed build is the open door by R-FP4** (Task 6 fix round 1): only
-//    the open configuration deploys a build with a Turnstile site key, and the
-//    deploy guard's check 12 holds the two together. So under a keyed build a
+// 6b. **A keyed build is the open door by R-FP4 (one build per door state)**
+//    (Task 6 fix round 1): the deploy guard's check 12 holds the declaration
+//    to the stamp and, from Task 7, to the open identity. So under a keyed build a
 //    visitor with no claimed name is refused an upload for CERTAIN without
 //    anything being asked — and nothing is: no health read, no widget, no post,
 //    at game over (a fresh context's included), at a launch or in any drain.
 //    Their games are written down `"signed-out"`, and a `"signed-out"` row is
 //    retried only once a name is stored. A KEYLESS build (the Access builds,
 //    the NAS) cannot know its door without the read, and makes it as E did.
-// 6c. **The archive fact's wait is bounded, its read is not** (Task 6 fix
-//    round 1): a check that takes longer than the read's 5 s wait still lands
-//    its answer, which is written down, and the pass that waited sends its rows
-//    again then — with the door's own apply held until it has.
+// 6c. **The archive fact's wait is the caller's, and the read has its own
+//    bound** (Task 6 fix rounds 1 and 2): a check that takes longer than the
+//    read's 5 s wait still lands its answer, which is written down, and the
+//    pass that waited sends its rows again then — with the door's own apply
+//    held until it has. The read past the wait is bounded too (M6.5c I-86: a
+//    read that never settles is a state, not a delay): any pass in progress is
+//    waited out (the overlay's own 90 s ends it), then the transport's
+//    `BOUND_MS`; past that the hold goes and the rows read "waiting for a human
+//    check", as a late refusal leaves them.
 // 7. **Every entry point ANSWERS, with ONE named exception.** Each is called
 //    with `void` from a render or an event handler, so a browser with no usable
 //    IndexedDB — a private window, a blocked site — has no outbox rather than
@@ -76,7 +81,7 @@
 //    dropped unposted.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, claimedUser, ensureArchiveFact, isEdgeRefusal } from "./api";
+import { api, ApiError, BOUND_MS, claimedUser, ensureArchiveFact, isEdgeRefusal } from "./api";
 import { openDbBounded } from "./backup";
 import { localPair } from "./local/client";
 import {
@@ -96,6 +101,7 @@ import {
 } from "./local/facts";
 import { setApplyBusy } from "./swRegister";
 import { turnstileSiteKey } from "./buildValues";
+import { passInProgress } from "./turnstile";
 
 export type { PendingReason };
 
@@ -545,16 +551,68 @@ async function archiveFactFor(
  * widget. A read the edge refused after all (Cancel, a second challenge) marks
  * the rows it was for "waiting for a human check", as an answer inside the
  * wait would have.
+ *
+ * **And the read is BOUNDED** (Task 6 fix round 2; M6.5c I-86): a read that
+ * never answers would otherwise hold the door's apply for as long as it is
+ * out. [`lateBound`] waits out any pass in progress, then `BOUND_MS`; when it
+ * elapses first, the hold goes and the rows are marked as a late refusal marks
+ * them.
  */
 function followLate(landed: Promise<unknown>, interactive: boolean, ids: readonly string[]): void {
   setApplyBusy(true);
-  void landed
-    .then(
-      () => (interactive ? drainVisible() : drain({ interactive: false })),
-      (e: unknown) => (isEdgeRefusal(e) ? serial(() => markChallenged(ids)) : undefined),
-    )
+  const bound = lateBound();
+  const settled = landed.then(
+    () => "landed" as const,
+    (e: unknown) => (isEdgeRefusal(e) ? ("refused" as const) : ("failed" as const)),
+  );
+  void Promise.race([settled, bound.elapsed.then(() => "out of time" as const)])
+    .then((how) => {
+      bound.stop();
+      if (how === "landed") return interactive ? drainVisible() : drain({ interactive: false });
+      if (how === "refused" || how === "out of time") return serial(() => markChallenged(ids));
+      return undefined;
+    })
     .catch(() => undefined)
     .finally(() => setApplyBusy(false));
+}
+
+/**
+ * How long a late read is given (Task 6 fix round 2): every pass in progress
+ * waited out first — the overlay's widget ends by its own 90 s, so a person
+ * mid-check is never cut off — and then `BOUND_MS`, the transport's own bound,
+ * with no pass running. A pass that starts during that wait (a read answered
+ * with the challenge late) is waited out in turn. `stop` clears what is armed
+ * once the read has settled first.
+ */
+function lateBound(): { elapsed: Promise<void>; stop: () => void } {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let wake: (() => void) | undefined;
+  const elapsed = (async () => {
+    while (!stopped) {
+      const pass = passInProgress();
+      if (pass) {
+        await pass.then(
+          () => undefined,
+          () => undefined,
+        );
+        continue;
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        timer = setTimeout(resolve, BOUND_MS);
+      });
+      if (!stopped && !passInProgress()) return;
+    }
+  })();
+  return {
+    elapsed,
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+      wake?.();
+    },
+  };
 }
 
 /** Whether this pass may show the widget: a person is looking at the tab. */

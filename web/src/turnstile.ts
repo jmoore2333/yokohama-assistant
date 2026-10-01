@@ -211,6 +211,13 @@ export function passChallenge(): Promise<void> {
   return p;
 }
 
+/** The pass in progress, or `null` — what a wait that must not cut a person
+ *  mid-check waits out first. Every pass is bounded: the overlay's widget by
+ *  [`CHALLENGE_MS`], and with no overlay there is no pass at all. */
+export function passInProgress(): Promise<void> | null {
+  return passing;
+}
+
 /** How many checks have passed on this page. A site reads it before it sends:
  *  a challenge answered to a request that went out BEFORE a pass that has
  *  since landed is older than the clearance, and the retry needs no widget —

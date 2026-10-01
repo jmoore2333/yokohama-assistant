@@ -931,9 +931,10 @@ describe("the edge's challenge (cycle F)", () => {
 
 // ---- Task 6 fix round 1 ------------------------------------------------------
 //
-// **A keyed build IS the open door** (R-FP4: production, behind Access, is
-// built WITHOUT the site key, only the open configuration deploys a build with
-// one, and the guard's check 12 holds them together). So under a keyed build a
+// **A keyed build IS the open door** (R-FP4, one build per door state:
+// production, behind Access, is built WITHOUT the site key, and only the open
+// configuration deploys a build with one; the deploy guard's check 12 holds the
+// declaration to the stamp and, from Task 7, to the open identity). So under a keyed build a
 // visitor who has chosen no name is refused an upload for CERTAIN, and nothing
 // needs to be asked to know it: no health read, no widget, no post — at game
 // over, at a launch, in a drain. A keyless build (the Access builds, the NAS)
@@ -1100,5 +1101,74 @@ describe("a check that outlasts the archive fact's wait (Task 6 fix round 1, Imp
     expect(stub.matching("POST", "/api/archive")).toHaveLength(2);
     await until(() => !applyBusy(), "the door's apply was released");
   });
-});
 
+  // **Fix round 2: the late read is BOUNDED** (CLAUDE.md, M6.5c I-86: "a read
+  // that never settles is a state, not a delay"). Past the caller's wait, a
+  // read that never answers would hold the door's apply for as long as it is
+  // out — minutes, on a stalled connection. It gets the transport's own bound
+  // after any pass in progress, and then the hold goes and the rows read
+  // "waiting for a human check", exactly as a late refusal leaves them.
+  it("releases the door's hold and marks the rows challenged when a late read never answers", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "offline");
+    await enqueue(SECOND, "unknown");
+    const stub = stubApi(() => new Promise<Response>(() => {}));
+    let returned = false;
+    const drained = drainVisible().then(() => {
+      returned = true;
+    });
+    await until(() => stub.calls.length > 0, "the health read went out");
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => returned, "the drain returned at the bound");
+    await drained;
+    expect(applyBusy(), "held past the caller's wait").toBe(true);
+    await vi.advanceTimersByTimeAsync(BOUND_MS - 1);
+    expect(applyBusy(), "held through the late read's own bound").toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => !applyBusy(), "the hold was released at the bound");
+    const reasons = (await pending()).map((r) => [r.id, r.reason]).sort();
+    expect(reasons).toEqual([
+      [GAME, "challenged"],
+      [SECOND, "challenged"],
+    ]);
+    expect(stub.calls, "nothing asked again").toHaveLength(1);
+  });
+
+  // The bound's partner: a pass still in the overlay is the overlay's to end
+  // (its own 90 s), and the late read's bound starts after it — so a person
+  // who takes 12 s is not cut off at 10.
+  it("does not cut a pass that is still in the overlay: a 12 s check lands its rows", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    let cleared = false;
+    const handler = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            cleared = true;
+            resolve();
+          }, 12_000);
+        }),
+    );
+    setChallengeHandler(handler);
+    stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    void drainVisible();
+    await until(() => handler.mock.calls.length > 0, "the widget was asked for");
+    await vi.advanceTimersByTimeAsync(2 * BOUND_MS + 1_000);
+    expect(applyBusy(), "held while the overlay is up").toBe(true);
+    expect(await pending(), "not marked while the check is still running").toEqual([
+      expect.objectContaining({ id: GAME, reason: "challenged" }),
+    ]);
+    await vi.advanceTimersByTimeAsync(12_000 - (2 * BOUND_MS + 1_000));
+    await until(async () => (await pending()).length === 0, "the row landed");
+    expect(handler).toHaveBeenCalledTimes(1);
+    await until(() => !applyBusy(), "the hold was released");
+  });
+});
