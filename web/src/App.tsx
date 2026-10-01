@@ -9,9 +9,12 @@ import { TurnAccount } from "./TurnAccount";
 import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
+import { Lobby } from "./Lobby";
 import { NewGame } from "./NewGame";
+import { OpenTable } from "./OpenTable";
+import { navigate, useRoute, type Route } from "./route";
 import { loadCadence, saveCadence, type Cadence } from "./playback";
-import { useSignal } from "./signal";
+import { useSignal, type End } from "./signal";
 import { BoardsMenu, useSections } from "./BoardsMenu";
 import { CARD_SURFACES, Surface, SURFACES, type SurfaceName } from "./Surfaces";
 import { TableSections } from "./TableSections";
@@ -63,6 +66,11 @@ export function App() {
   // hooks, which is where it can finally be acted on.
   const door = useMe();
   const { refresh, signOut, signedOut } = door;
+  // **Which screen this is, as the URL** (spec §5.1). Read here and acted on in
+  // one effect below `open`, so there is ONE place that turns a route into a
+  // screen — three call sites deciding for themselves is how a hash and a screen
+  // stop agreeing.
+  const route = useRoute();
   // **Every 401 on this API routes here, and no screen has to remember to
   // (ruling R-7.1).** `api.ts` invokes this from inside `call`, before the
   // refusal is thrown — so it reaches the door whatever the caller then does
@@ -85,6 +93,12 @@ export function App() {
    *  this are never both set: `show` clears this, and the one place that sets it
    *  is `open`. */
   const [dealing, setDealing] = useState<string | null>(null);
+  /** The table still FILLING ITS SEATS, when there is one (spec §5.4).
+   *
+   *  The fourth screen, and a sibling of `dealing` rather than a mode of it: an
+   *  open table has no deal to show and no game to play, and what a caller does
+   *  there is take a seat. `show` clears it, exactly as it clears `dealing`. */
+  const [openTable, setOpenTable] = useState<string | null>(null);
   /** The table the game on screen belongs to — who sits where, and which of
    *  those seats are the caller's.
    *
@@ -97,6 +111,16 @@ export function App() {
   const [surface, setSurface] = useState<SurfaceName | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** **Which visit to the lobby the notice above is about.**
+   *
+   *  Every sentence shown over the lobby is raised together with the navigation
+   *  that shows it — a refused `#/t/<id>`, a table abandoned under this screen,
+   *  a seat taken between the draw and the click — so clearing on any route
+   *  change would wipe it in the same tick it was set. This records the route
+   *  the notice belongs to, and the route effect clears it the next time the
+   *  route is something else. Without it a 403 about a table survived a trip to
+   *  the form and back and sat in the lobby's strip describing nothing. */
+  const noticeFor = useRef<Route["kind"] | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   // **The replay position, or `null` for "the present".** M4's whole state is
   // this one integer: the scrubber is a projection over a record the server
@@ -163,6 +187,25 @@ export function App() {
   // the player is now looking at. So the id is kept in a ref that every change
   // of game updates, and `send` drops anything that no longer matches it.
   const gameId = useRef<string | null>(null);
+  /** The table on screen — as a game, a deal or an open table — or `null`.
+   *
+   *  **A ref, and NOT the three states it mirrors** (spec §5.1). The route
+   *  effect below has to ask "is this table already on screen?", and asking it
+   *  of `dealing` and `openTable` puts those in the effect's dependency list —
+   *  which fires it in the window between a table being put on screen and the
+   *  `hashchange` for it arriving. Measured: a create set `dealing`, the effect
+   *  ran while `route` still read `#/new`, its own else-branch cleared the deal,
+   *  and the hashchange then opened the table a SECOND time (two `GET …/table`,
+   *  two deals). The route decides the screen; the screen does not re-decide the
+   *  route. */
+  const tableOnScreen = useRef<string | null>(null);
+  /** The table `open` is CURRENTLY fetching, or `null`.
+   *
+   *  A ref and not a state, for the reason `inFlight` above is one: this is read
+   *  by an effect that runs in the same tick as the navigation that started the
+   *  request, and a state set would not be visible until the render after. See
+   *  the route effect below `open`. */
+  const openingId = useRef<string | null>(null);
   /** Events `prev..next` landed: build the run, and walk it when it holds a
    *  move this browser did not make.
    *
@@ -227,12 +270,14 @@ export function App() {
   const show = useCallback(
     (s: ClientState | null, opening = false) => {
       gameId.current = s?.id ?? null;
+      tableOnScreen.current = s?.id ?? null;
       setState(s);
-      // The dealing screen goes with the game being shown, and with "New game"
+      // The dealing screen goes with the game being shown, and with the lobby
       // too: a table id left behind here would draw the dealing screen again the
-      // next time the player asked for the form. The TABLE goes with it for the
+      // next time the player left for the lobby. The TABLE goes with it for the
       // same reason — `open` puts the new one back in the same tick.
       setDealing(null);
+      setOpenTable(null);
       setTable(null);
       setRun(null);
       setWalk(null);
@@ -252,6 +297,23 @@ export function App() {
     [landed],
   );
 
+  /** **Land on the lobby, with the server's sentence if there is one.**
+   *
+   *  The five paths that put a player back on the lobby against their will —
+   *  a refused `#/t/<id>`, a game that stopped answering, a deal or an open
+   *  table that went out from under them, a hand-over that found the table
+   *  filled — say the same two things in the same order, and they also have to
+   *  agree with `noticeFor` about which visit the sentence belongs to. One
+   *  callback, so that agreement is not five separate things to keep true.
+   *
+   *  A `null` or absent sentence CLEARS, which is what leaving by choice
+   *  should do. */
+  const toLobby = useCallback((sentence?: string | null) => {
+    setError(sentence ?? null);
+    noticeFor.current = sentence == null ? null : "lobby";
+    navigate({ kind: "lobby" });
+  }, []);
+
   /** Open a table BY ID — the one door into a game, and the reason it asks
    *  `GET …/table` first (M6.1 §7.4).
    *
@@ -269,24 +331,97 @@ export function App() {
    *  happened. */
   const open = useCallback(
     async (id: string, opening = false) => {
-      // `doc`, not `table`: the state of the same name is what this puts BACK,
-      // and one name for both would read as a self-assignment.
-      const doc = await api.table(id);
-      if (doc.status === "dealing") {
-        // `show(null)` first, so a game being left takes its walk and its
-        // refusal with it; the dealing id is set in the same tick.
-        show(null);
-        setDealing(id);
-        return;
+      // **The hash is set FIRST, before anything is fetched** (spec §5.1). A
+      // table opened from a row, from the Game menu or by a create is the same
+      // screen as one opened from a link, so the address is written the same
+      // way — and a refusal below then leaves the route effect to put it back.
+      navigate({ kind: "table", id });
+      // **The guard against opening the same table twice.** `navigate` changes
+      // the hash synchronously, so the route effect runs while this call is
+      // still awaiting its first response — and every "is it already open?"
+      // test it can make is still false. The ref is the only thing that knows a
+      // request is in flight for this id.
+      openingId.current = id;
+      try {
+        // `doc`, not `table`: the state of the same name is what this puts BACK,
+        // and one name for both would read as a self-assignment.
+        const doc = await api.table(id);
+        if (doc.status === "open") {
+          // Nobody has dealt yet and there may be no seat here for this caller
+          // at all. `show(null)` first, for the same reason the dealing arm
+          // does it.
+          show(null);
+          setOpenTable(id);
+          tableOnScreen.current = id;
+          return;
+        }
+        if (doc.status === "dealing") {
+          // `show(null)` first, so a game being left takes its walk and its
+          // refusal with it; the dealing id is set in the same tick.
+          show(null);
+          setDealing(id);
+          tableOnScreen.current = id;
+          return;
+        }
+        const next = await api.get(id);
+        show(next, opening);
+        // AFTER `show`, which clears it: React batches both into one render, so
+        // the last write is the one that stands.
+        setTable(doc);
+      } finally {
+        openingId.current = null;
       }
-      const next = await api.get(id);
-      show(next, opening);
-      // AFTER `show`, which clears it: React batches both into one render, so
-      // the last write is the one that stands.
-      setTable(doc);
     },
     [show],
   );
+
+  /** **The route decides the screen, in ONE place.**
+   *
+   *  Every way into a table — a lobby row, a create, the Game menu, a link
+   *  somebody sent — goes through the hash, and this is what the hash then
+   *  does.
+   *
+   *  **Two refs and no state, so the effect runs on the ROUTE changing and on
+   *  nothing else.** `tableOnScreen` is what is already drawn; `openingId` is a
+   *  request in flight, and without it a create would open its own table twice —
+   *  `open` navigates before it fetches, so this effect runs while the first
+   *  call is still awaiting `GET …/table` and every state-shaped test is still
+   *  false. Both refs' own doc comments carry the measurement. */
+  useEffect(() => {
+    if (!door.me?.user) return;
+    if (route.kind === "table") {
+      if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
+        // **A refusal is about the table you were opening, so opening another
+        // one clears it.** Without this a "you are not seated at this table"
+        // follows the player into the next game they open and sits in its error
+        // strip describing nothing on screen. Cleared HERE and not at the top of
+        // the effect: the arm below is the one a refused open navigates TO, so
+        // an unconditional clear there would wipe the sentence in the same tick
+        // it was set — which is why that arm asks `noticeFor` first.
+        setError(null);
+        noticeFor.current = null;
+        open(route.id).catch((e) => {
+          // A table that does not exist, or is not this caller's to see. The
+          // sentence is the server's and the lobby is where it is shown — a
+          // bare screen at a `#/t/<id>` that answers nothing is the one place a
+          // player cannot act from.
+          toLobby(e instanceof ApiError ? e.message : String(e));
+        });
+      }
+      return;
+    }
+    // **A notice does not outlive the screen it was about.** It is raised
+    // together with the navigation that shows it, so `noticeFor` says which
+    // visit it belongs to and the clear happens on the NEXT route change —
+    // clearing unconditionally here would wipe the sentence in the same tick a
+    // refused table set it, which is the case the arm above exists for.
+    if (noticeFor.current !== route.kind) {
+      setError(null);
+      noticeFor.current = null;
+    }
+    // `#/` or `#/new`: no game, no deal and no table on screen.
+    if (tableOnScreen.current) show(null);
+  }, [route, door.me?.user, open, show]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -466,6 +601,12 @@ export function App() {
       },
       [state, landed],
     ),
+    // **A game that is GONE stops being polled, and says so** (spec §5.5). The
+    // reachable case is a shared table somebody abandoned while this browser was
+    // looking at it: before `onEnd` the poll backed off against a permanent 404
+    // and the banner read "reconnecting…" about a game that was never coming
+    // back. The sentence is the server's own.
+    useCallback((e: End) => toLobby(e.sentence ?? "this game is no longer available"), [toLobby]),
   );
 
   // **Debounced, because a drag is not a click.**
@@ -562,31 +703,67 @@ export function App() {
   // and the game must agree about which boards are on, and a second
   // `useSections()` inside `NewGame` was two copies that stopped agreeing the
   // moment one of them was toggled (R-T12-4).
-  // **Two screens live in front of a game now, not one.** A table is dealt
-  // before it is played, and the dealing screen is where the person holding a
-  // seat chooses their card. `open` is what moves between them, so neither
-  // screen has to know what the other is for.
+  // **FOUR screens live in front of a game now** (spec §5.1), and the ROUTE is
+  // what picks between them rather than a chain of "is this null" tests. `#/new`
+  // is the form whether or not a table happens to be dealing; `#/` is the lobby;
+  // `#/t/<id>` is whichever of the three a table's own status makes it, which is
+  // `open`'s question and the route effect's answer.
   if (!state) {
-    return dealing ? (
-      <Dealing
-        game={dealing}
-        me={door.me.user}
-        art={art}
-        labels={labels}
-        sections={enabled}
-        onToggleSection={toggleSection}
-        onPlaying={() => open(dealing, true)}
-        onLeave={() => show(null)}
-        who={who}
-      />
-    ) : (
-      <NewGame
-        me={door.me.user}
-        onCreated={(t) => open(t.id)}
-        onOpen={(id) => open(id)}
-        who={who}
-      />
-    );
+    if (route.kind === "new")
+      return <NewGame me={door.me.user} onCreated={(t) => open(t.id)} who={who} />;
+    if (dealing)
+      return (
+        <Dealing
+          game={dealing}
+          me={door.me.user}
+          art={art}
+          labels={labels}
+          sections={enabled}
+          onToggleSection={toggleSection}
+          onPlaying={() => open(dealing, true)}
+          // A sentence when the table went out from under this screen, none
+          // when the player simply left — `toLobby` clears on the absence,
+          // which is what leaving by choice should do.
+          onLeave={toLobby}
+          who={who}
+        />
+      );
+    if (openTable)
+      return (
+        <OpenTable
+          game={openTable}
+          me={door.me.user}
+          // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
+          // What the open table knows is that it is no longer open; whether
+          // that is the deal or a game already running is `open`'s own
+          // question, and a table can pass through both while this screen is
+          // up — the last seat fills, both people keep, and the flip this
+          // browser sees is straight to `playing`.
+          //
+          // Safe to call for the id already on screen: the two refs the route
+          // effect reads exist to stop that EFFECT echoing a navigation, and
+          // neither is consulted here.
+          // **The `catch` is not decoration.** `open` has none of its own, and
+          // the reachable case is a stranger who clicked a seat that filled in
+          // the same moment: `join` answers with a table that is no longer
+          // open, the hand-over runs, and `GET …/table` refuses a caller who is
+          // not seated. Without this that rejection is unhandled and the screen
+          // recovers only when the poll's own refusal fires one tick later.
+          // Same two lines the route effect uses for a refused `#/t/<id>`.
+          onStarted={() =>
+            void open(openTable, true).catch((e) =>
+              toLobby(e instanceof ApiError ? e.message : String(e)),
+            )
+          }
+          // The sentence is the server's — a table deleted under this screen —
+          // and the lobby is where it is shown, for the reason a refused
+          // `#/t/<id>` lands there: a bare screen that answers nothing is the
+          // one place a player cannot act from.
+          onLeave={toLobby}
+          who={who}
+        />
+      );
+    return <Lobby me={door.me.user} who={who} notice={error} />;
   }
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
@@ -717,11 +894,15 @@ export function App() {
             // with.
             return open(id);
           }}
-          onNew={() => {
+          // **Out of the game is out to the LOBBY** (spec §5.1). `show(null)`
+          // alone would leave the hash reading `#/t/<id>` for a game no longer
+          // on screen, which is an address that lies and a Back button that
+          // does nothing; the route effect is what clears the game.
+          onLobby={() => {
             setSurface(null);
             setScrubK(null);
             setError(null);
-            show(null);
+            navigate({ kind: "lobby" });
           }}
         />
         {/* **The strip here, and the BUTTON inside the Game menu.**

@@ -593,11 +593,15 @@ mod tests {
                 [..usize::from(players)]
                 .to_vec(),
             start_seat: 0,
-            seats: emails.iter().map(|e| SeatDoc::Human { user: (*e).to_string() }).collect(),
+            seats: emails
+                .iter()
+                .map(|e| SeatDoc::Human { user: (*e).to_string(), name: None })
+                .collect(),
             keeps: vec![Some(1); usize::from(players)],
             seed: 7,
             status: TableStatus::Playing,
             turn: None,
+            lock: None,
         }
     }
 

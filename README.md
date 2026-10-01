@@ -199,7 +199,7 @@ file locally.
 ## The browser client
 
 **Merged to master on 2026-09-11** (the `web-frontend` lane: M1–M5.5 and the 2026-09-06 owner
-corrections), with **M6.1 "identity and seats" live since 2026-09-15**. The same engine, the same
+corrections), with **M6.1 "identity and seats" live since 2026-09-15 and M6.2 "the lobby" live since 2026-09-16**. The same engine, the same
 words, and the same legal-move gate —
 served over HTTP and drawn in a browser instead of a terminal. It is a *second frontend over one
 engine*, never a second engine: the server routes, scopes and serializes and computes nothing
@@ -288,12 +288,12 @@ run locally: you type a name and play under it.
 
 **Deployed since 2026-09-01: a container on the owner's Synology NAS behind Cloudflare Access at
 `yokohama.moore.nyc`, reached only through the existing cloudflared tunnel.** The current build,
-`yokohama-web:0.5.0-m6.1`, has been live since 2026-09-15 and runs with
+`yokohama-web:0.5.0-m6.2.1`, has been live since 2026-09-16 and runs with
 `YOKOHAMA_WEB_IDENTITY=claimed`. [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md)
 is the record rather than a plan: §1 the static musl cross-compile on the workstation, §2 delivery
 as a context tarball the NAS fetches through Portainer's Docker proxy (`POST /build?remote=…`),
 §3 the container (network `cf-internal`, the named volume `yokohama-web-data` holding the game
-store, no port published to the LAN), §3.5–§3.7 every deployment so far with its numbers, §5
+store, no port published to the LAN), §3.5–§3.8 every deployment so far with its numbers, §5
 rollback (every earlier image tag is still on the NAS). Modal (`deploy/modal_app.py`) with the
 edge Worker in `deploy/worker/` is the upgrade path — measured, and deliberately not deployed.
 
@@ -335,8 +335,14 @@ What the code already does right:
 The Access application in front of the tunnel is the door — the container publishes no port, a
 local run stays on `127.0.0.1` — and what the server adds behind it is *scoping*: a person sees
 their own tables, their own seat's cards, and nobody else's, on every route including the replay.
-The transport for a shared room and the store are the questions still open; the lobby, live
-transport, chat and the hosting move are M6.2–M6.5 of
+**What M6.2 added (2026-09-16):** the first screen is a lobby — the tables you sit at, with whose
+turn it is, and every open table in the house; a table opens with open seats and an optional
+password (a salted SHA-256, never served); its address is a link, `#/t/<id>`, and a person holding
+only that link signs in, types the password if the table asks, takes a seat, and the join that
+fills the last seat deals. `GET /api/games?scope=mine|open` pages with a cursor over table
+documents alone; `POST …/{id}/join` is the one new route; an open table is the only thing a
+non-seated caller can read. The transport for a shared room and the store are the questions still
+open; live transport, spectating, chat and the hosting move are M6.3–M6.5 of
 [`docs/plans/2026-09-14-web-frontend-m6-room-plan.md`](docs/plans/2026-09-14-web-frontend-m6-room-plan.md),
 and M6.1's own record is
 [`docs/plans/2026-09-15-web-frontend-m6.1-close.md`](docs/plans/2026-09-15-web-frontend-m6.1-close.md).

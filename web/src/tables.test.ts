@@ -29,12 +29,31 @@ describe("tableWord", () => {
     expect(tableWord({ ...wire.table, over: true })).toBe("over");
   });
 
+  // M6.2's two new words (spec §5.2).
+  it("counts the seats at an open table, and names the winner at a finished one", () => {
+    // `open` is read BEFORE `over`, and the corpus's open table carries
+    // `over: null` — so a row that read the turn words first would print
+    // "playing" for a table nobody has sat down at.
+    expect(tableWord(wire.tableOpen)).toBe("open · 1 of 2 seated");
+    expect(tableWord(wire.games.games[1]!)).toBe("open · 1 of 2 seated");
+    // **The winner is named**, which is the whole difference from "over": a
+    // player comes back to the lobby to find out who won, and `winner` is the
+    // engine's own answer rather than the margin.
+    expect(tableWord({ ...wire.table, over: true, winner: 1 })).toBe("over · Blue won");
+    expect(tableWord({ ...wire.table, over: true, winner: 0 })).toBe("over · Red won");
+    // A finished table with no winner on it still reads, rather than printing
+    // "over · nobody won".
+    expect(tableWord({ ...wire.table, over: true, winner: null })).toBe("over");
+  });
+
   it("says your turn only when the seat to move is one of yours", () => {
     expect(tableWord(mine)).toBe("your turn");
     // The same table, read by the other player: same `to_move`, different
     // `my_seats`. The corpus row IS that reading.
     expect(wire.table.my_seats).not.toContain(wire.table.to_move);
-    expect(tableWord(wire.table)).toBe("waiting on red@wire.test");
+    // The NAME, not the address (spec §5.6): the corpus's seats are called
+    // "Red" and "Blue" since M6.2, and those are what a person reads.
+    expect(tableWord(wire.table)).toBe("waiting on Red");
   });
 
   it("names the bot rather than an email when the bot holds the turn", () => {
@@ -48,7 +67,7 @@ describe("tableWord", () => {
     const vsBot: TableView = { ...wire.table, seats };
     expect(tableWord(vsBot)).toBe("waiting on the bot");
     expect(holder(vsBot, wire.table.to_move!)).toBe("the bot");
-    expect(holder(wire.table, 1)).toBe("blue@wire.test");
+    expect(holder(wire.table, 1)).toBe("Blue");
   });
 });
 
@@ -57,10 +76,10 @@ describe("tableWord", () => {
 // nobody, which is exactly the table a player is deciding whether to join.
 describe("seatNames", () => {
   it("lists every seat in seat order, in the words a row reads", () => {
-    expect(seatNames(wire.games.games[0]!)).toBe("red@wire.test, blue@wire.test");
+    expect(seatNames(wire.games.games[0]!)).toBe("Red, Blue");
     // Seat ORDER, not the order the server happens to have listed them in:
     // which colour sits where is what a returning player is looking for.
-    expect(seatNames(wire.table)).toBe("red@wire.test, blue@wire.test");
+    expect(seatNames(wire.table)).toBe("Red, Blue");
   });
 
   it("marks a bot seat rather than inventing a name for it", () => {
@@ -68,8 +87,31 @@ describe("seatNames", () => {
     // bot-free by construction, so no committed payload can carry this seat.
     const seats = [...wire.table.seats];
     seats[1] = { kind: "bot" };
-    expect(seatNames({ ...wire.table, seats })).toBe("red@wire.test, the bot");
+    expect(seatNames({ ...wire.table, seats })).toBe("Red, the bot");
     expect(seatName({ kind: "bot" })).toBe("the bot");
-    expect(seatName({ kind: "human", user: "red@wire.test" })).toBe("red@wire.test");
+    // M6.2's third arm. A seat nobody has taken is named rather than left to
+    // print as `undefined`, which is what a ternary over `kind === "bot"` did.
+    expect(seatName({ kind: "open" })).toBe("open seat");
+  });
+
+  // **The name where there is one, the address where there is not** (spec
+  // §5.6), read off ONE payload that carries both: `wire.gamesOpen` lists a
+  // table whose seat 0 is named and a table whose seat 0 is not.
+  it("prefers the name a player gave and falls back to the address", () => {
+    const named = wire.gamesOpen.games[0]!;
+    const unnamed = wire.gamesOpen.games[1]!;
+    const first = named.seats[0]!;
+    const second = unnamed.seats[0]!;
+    if (first.kind !== "human" || second.kind !== "human") throw new Error("fixture moved");
+    // Anti-vacuity: the two rows differ in exactly the field under test, and
+    // both name the same person — so what changes below is the wording and not
+    // the seat.
+    expect(first.name).toBe("Red");
+    expect(second.name).toBeNull();
+    expect(first.user).toBe(second.user);
+    expect(seatName(first)).toBe("Red");
+    expect(seatName(second)).toBe("red@wire.test");
+    expect(seatNames(named)).toBe("Red, open seat");
+    expect(seatNames(unnamed)).toBe("red@wire.test, open seat");
   });
 });

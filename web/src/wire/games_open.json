@@ -1,0 +1,69 @@
+{
+  "games": [
+    {
+      "chosen": [
+        false,
+        false
+      ],
+      "colors": [
+        "Red",
+        "Blue"
+      ],
+      "created_at": 1789000000,
+      "created_by": "red@wire.test",
+      "id": "wire",
+      "locked": true,
+      "my_seats": [],
+      "name": "wire",
+      "over": null,
+      "players": 2,
+      "seats": [
+        {
+          "kind": "human",
+          "name": "Red",
+          "user": "red@wire.test"
+        },
+        {
+          "kind": "open"
+        }
+      ],
+      "start_seat": 0,
+      "status": "open",
+      "to_move": null,
+      "winner": null
+    },
+    {
+      "chosen": [
+        false,
+        false
+      ],
+      "colors": [
+        "Red",
+        "Blue"
+      ],
+      "created_at": 1789000000,
+      "created_by": "red@wire.test",
+      "id": "wire2",
+      "locked": false,
+      "my_seats": [],
+      "name": "wire2",
+      "over": null,
+      "players": 2,
+      "seats": [
+        {
+          "kind": "human",
+          "name": null,
+          "user": "red@wire.test"
+        },
+        {
+          "kind": "open"
+        }
+      ],
+      "start_seat": 0,
+      "status": "open",
+      "to_move": null,
+      "winner": null
+    }
+  ],
+  "next": null
+}

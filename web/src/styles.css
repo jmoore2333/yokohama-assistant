@@ -866,7 +866,58 @@ button.primary:disabled { opacity: 0.45; cursor: default; }
    form that pushed the input off the edge would be a page that scrolls
    sideways (the width gate's own rule, applied before the gate sees it). */
 .field.seat-row { flex-wrap: wrap; }
+/* The password row's caption IS its checkbox's label, so it is not the
+   uppercase column heading every other `.field label` is — it is a sentence
+   beside a control, and it wraps rather than reserving 9rem of gutter. */
+.field.password-field { flex-wrap: wrap; }
+.field .check {
+  min-width: 0; display: flex; align-items: center; gap: 0.4rem;
+  text-transform: none; letter-spacing: normal; font-size: 12px;
+}
 .field.seat-row .meta { font-size: 11px; letter-spacing: 0.06em; }
+
+/* The lobby's two lists ARE the setup screen's `.saved` sections, deliberately:
+   the rows are the same rows and a second set of rules is a second place for
+   them to drift. Only the lock marker is new, and it is a fact on the row
+   rather than a control. */
+.lobby .lock { font-size: 11px; }
+.lobby .open-tables li .table-facts { color: var(--fg-dim); }
+/* The row's name is an ANCHOR since M6.2 (R-14) — the row's job is to go to an
+   address, so it carries one — and it wears `button.ghost`'s box, which is
+   styled on the element and so does not reach an `<a>`. Restated here rather
+   than widening `button.ghost` to `.ghost`: every other `.ghost` in this client
+   is a real button, and a selector that stopped naming the element would start
+   styling the `<summary>`s that deliberately do not carry it (see the banner's
+   note above). */
+.lobby .saved li a.row-link {
+  background: transparent; color: var(--fg-dim); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 0.3rem 0.7rem; text-decoration: none;
+}
+.lobby .saved li a.row-link:hover { color: var(--fg); border-color: var(--line-bright); }
+
+/* The open table (M6.2 §5.4): the seat picker, and the waiting face. The screen
+   is the setup screens' own `.setup` box and the rows are their `.field
+   .seat-row`, so the only rule it needs of its own is the list's markers —
+   these are seats, not bullets. */
+.open-table .seats { list-style: none; margin: 0; padding: 0; }
+.open-table .open-table-controls { justify-content: flex-start; }
+/* The link row: a read-only field holding a whole address, beside a Copy
+   button. It is the one `.field` on any setup screen whose value is WIDER than
+   the screen it is read on, and it pushed the page sideways at 390px — 422
+   against a 390 viewport, with the Copy button's right edge off the window
+   (live review I-1).
+
+   TWO rules, because the default answers neither half. A flex item's automatic
+   minimum size is its CONTENT, so an input holding a 400px URL refuses to be
+   narrower than that URL however little room the row has: `min-width: 0` is
+   what lets it be squeezed at all. And `flex: 1 1 auto` is what makes the
+   squeezing land here rather than on the label or the button — it also grows,
+   so on a wide screen the address is as readable as the room allows. The wrap
+   is the seat row's own (`.field.seat-row`), for the same reason: below the
+   width where even a shrunk input is narrower than its own padding, the button
+   drops to its own line instead of off the edge. */
+.field.link-field { flex-wrap: wrap; }
+.field.link-field input { flex: 1 1 auto; min-width: 0; }
 
 .deal { display: flex; gap: 0.6rem; flex-wrap: wrap; margin: 0.4rem 0 0.9rem; }
 .deal-pick {

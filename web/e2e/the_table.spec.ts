@@ -10,7 +10,7 @@ import {
   readOverflow,
   readScreen,
   rng,
-  signIn,
+  newGameForm,
   startGame,
   watchForBreakage,
 } from "./harness";
@@ -263,8 +263,10 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   await expect(page.locator(".table-sec.ports .board-strip")).toBeVisible();
   await page.keyboard.press("Escape");
 
+  // The reload comes back to the same table by its hash (M6.2 §5.1), so the
+  // section this cell is about is read on the game it was switched off in —
+  // which is what the sentence "persists across a reload" always meant.
   await page.reload();
-  await page.getByRole("button", { name: /^sim-/ }).first().click();
   await expect(page.locator(".table-sec.buildings")).toBeVisible();
   await page.locator(".boards-menu > summary").click();
   await expect(page.getByRole("button", { name: "Building sites" })).toHaveAttribute("aria-pressed", "true");
@@ -425,8 +427,14 @@ test("four assistants of one colour stand as a pile, not as a cube and a count",
 test("at four players the asking seat is in the frame on the middle turn", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
-  await signIn(page);
-  await page.getByLabel("Players").selectOption("4");
+  // The lobby, then the form (M6.2 §5.1) — and every seat said to be this
+  // browser's, because above two players the form now defaults them to OPEN and
+  // an open table is not dealt at all (§5.3).
+  await newGameForm(page);
+  await page.getByLabel("Players", { exact: true }).selectOption("4");
+  for (const i of [1, 2, 3]) {
+    await page.getByLabel(`Seat ${i}`, { exact: true }).selectOption("me");
+  }
   await page.getByRole("button", { name: "Deal" }).click();
   // Four seats, all this browser's (R-P10: no bot above two players), and the
   // dealing screen asks for the lowest one that has not kept.
@@ -493,7 +501,7 @@ test("at four players the asking seat is in the frame on the middle turn", async
 test("the set table shows the port, hides the bot's cards and withholds the technologies and goals before the first choice, and the chosen card lands in hand", async ({ page }) => {
   const watch = watchForBreakage(page);
   await page.setViewportSize({ width: 1710, height: 869 });
-  await signIn(page);
+  await newGameForm(page);
   await page.getByRole("button", { name: "Deal" }).click();
   await expect(page.locator(".table-sec.ports .strip-slot .card-face")).toHaveCount(6);
   await expect(page.locator(".board .tile")).toHaveCount(10);

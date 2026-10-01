@@ -32,9 +32,20 @@ import type {
  *  exactly the deployment that is hosted. */
 export class ApiError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  /** The refusal body as it arrived, parsed — or `null` where the server sent
+   *  nothing, or something that is not JSON.
+   *
+   *  **One caller branches on a FIELD of it, not on the sentence.** A 409 from
+   *  `POST …/join` means two different things: `DealingErrorBody` carries a
+   *  `status`, and that one says the table has moved on and the answer is the
+   *  next screen; a 409 without one says the seat was taken, and the answer is
+   *  to re-read the table. Matching the wording instead would be a client that
+   *  breaks when a sentence is reworded. */
+  readonly body: unknown;
+  constructor(message: string, status: number, body: unknown = null) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
@@ -107,6 +118,34 @@ export function clearClaimedUser(): void {
   }
 }
 
+/** Where the form keeps what this browser calls itself (spec §5.3).
+ *
+ *  **A CONVENIENCE, and never an identity.** Who you are is the server's answer
+ *  at `/api/me`; this is only what a seat you take is LABELLED with, so it is
+ *  sent as a field on a create or a join and never as a header. A browser with
+ *  nothing here simply seats an address. */
+export const DISPLAY_NAME_KEY = "yokohama.display_name";
+
+/** What this browser calls itself, or `null`. A storage that throws — a private
+ *  window, a blocked site — reads as nobody, the `claimedUser` idiom. */
+export function displayName(): string | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage.getItem(DISPLAY_NAME_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Remember it, so the next table does not ask again. A storage that refuses is
+ *  not an error to report: the field is simply blank next time. */
+export function setDisplayName(name: string): void {
+  try {
+    localStorage.setItem(DISPLAY_NAME_KEY, name);
+  } catch {
+    /* storage refused: the field is blank next time */
+  }
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -144,7 +183,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     // **Before the throw, so it reaches the door whatever the caller does with
     // the refusal** — including discarding it, which one caller does.
     if (res.status === 401) unauthorized?.(message);
-    throw new ApiError(message, res.status);
+    throw new ApiError(message, res.status, parseFailed ? null : parsed);
   }
   if (parseFailed) {
     // A 2xx that is not JSON is this API answering with something it does not
@@ -158,9 +197,11 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return parsed as T;
 }
 
-/** One seat of a table being opened: a person's email, or the bot. Exactly one
- *  of the two — a seat naming both is a 400 that says so. */
-export type SeatRequest = { user: string } | { bot: true };
+/** One seat of a table being opened: a person's email, the bot, or nobody yet.
+ *  Exactly one of the three — a seat naming two is a 400 that says so, and so
+ *  is a seat naming none (`{bot: false}` alone is not a human seat with no
+ *  email). */
+export type SeatRequest = { user: string } | { bot: true } | { open: true };
 
 export interface NewGameRequest {
   players: number;
@@ -173,7 +214,27 @@ export interface NewGameRequest {
   /** One entry per seat, in seat order. **The creator must hold one of them**
    *  (R-1.6), and a bot is refused at three and four players (R-P10). */
   seats: SeatRequest[];
+  /** The table's LABEL since M6.2 — free text the lobby prints, never the id. */
   name?: string;
+  /** The storage id. The browser never sends one: the server draws it, and a
+   *  client-chosen id is a name two people can collide on. Declared because the
+   *  fixture harness and a hand-written `curl` do send one. */
+  id?: string;
+  /** What the CREATOR is called on screen, written onto every seat they hold
+   *  and onto no other — a name is a claim about the person who gave it. */
+  display_name?: string;
+  /** The table password (R-2.1). Stored salted and hashed, and never served
+   *  back in any form. */
+  password?: string;
+}
+
+/** Taking an open seat at an open table. The password is the TABLE's, not the
+ *  caller's: an unlocked table ignores one, and a locked table refuses without
+ *  it. `name` is what this seat will be called on screen. */
+export interface JoinRequest {
+  seat: number;
+  name?: string;
+  password?: string;
 }
 
 const id = (s: string) => encodeURIComponent(s);
@@ -186,20 +247,50 @@ export const api = {
   /** 404s when the server has no cropped art. That is a supported state, not an
    *  error: callers treat the rejection as "no art" and draw without it. */
   art: () => call<ArtManifest>("GET", "/api/art"),
-  /** The tables you sit at, newest first — never anyone else's. */
-  list: () => call<GamesList>("GET", "/api/games"),
+  /** One page of the lobby, newest first.
+   *
+   *  Two scopes and not a filter: `mine` is every table you sit at, at every
+   *  status, and `open` is every table still filling its seats, whoever made
+   *  it. `before` is the previous page's `next` cursor, sent back untouched —
+   *  no `limit` from here, because the server's default page is the one this
+   *  client asks for. */
+  list: (scope: "mine" | "open" = "mine", before?: string) =>
+    call<GamesList>(
+      "GET",
+      `/api/games?scope=${scope}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
+    ),
   /** Opens a table, and starts NOTHING: the reply is `status: "dealing"` and
    *  every seat is owed a deal it fetches for itself. */
   create: (req: NewGameRequest) => call<TableView>("POST", "/api/games", req),
-  /** Who sits where, and how far the dealing has got. */
+  /** Who sits where, and how far the dealing has got.
+   *
+   *  **The one route widened to any signed-in caller at an OPEN table**
+   *  (R-2.7): a join link is an address, and the person following one has to
+   *  see what they are joining. `my_seats` is then empty. */
   table: (game: string) => call<TableView>("GET", `/api/games/${id(game)}/table`),
+  /** Take one open seat. Refused when the table is not open any more, when the
+   *  seat is taken, and when the table is locked and the password is absent or
+   *  wrong — each with the sentence that says which. The join that fills the
+   *  LAST open seat flips the table to `dealing` in the same write. */
+  join: (game: string, req: JoinRequest) =>
+    call<TableView>("POST", `/api/games/${id(game)}/join`, req),
   /** The caller's OWN two cards, over the set table. `seat` and `cards` are
    *  null together once every seat this caller holds has chosen. */
   deal: (game: string) => call<DealView>("GET", `/api/games/${id(game)}/deal`),
   /** Choose, for one seat the caller holds. The LAST keep at the table starts
-   *  the game, and the reply then reads `status: "playing"`. */
-  keep: (game: string, seat: number, card: 1 | 2) =>
-    call<TableView>("POST", `/api/games/${id(game)}/keep`, { seat, card }),
+   *  the game, and the reply then reads `status: "playing"`.
+   *
+   *  `name` is what THIS seat is called on screen (spec §5.6) — the browser's
+   *  remembered display name, sent with the keep because a person who followed
+   *  a link to a table somebody else opened for them has had no other moment to
+   *  say it. Omitted where there is none: a seat with no name is listed by its
+   *  address, which is the pre-M6.2 shape. */
+  keep: (game: string, seat: number, card: 1 | 2, name?: string) =>
+    call<TableView>("POST", `/api/games/${id(game)}/keep`, {
+      seat,
+      card,
+      ...(name ? { name } : {}),
+    }),
   get: (game: string) => call<ClientState>("GET", `/api/games/${id(game)}`),
   remove: (game: string) => call<null>("DELETE", `/api/games/${id(game)}`),
   /** The one mutation: an option's `number`, or a sub-prompt token. The server

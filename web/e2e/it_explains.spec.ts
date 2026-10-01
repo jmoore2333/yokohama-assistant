@@ -46,6 +46,11 @@ async function aGameWithABot(request: import("@playwright/test").APIRequestConte
       // fence. The bot's keep is still the bot's: nothing here names a card for
       // it, and the server takes its argmax when the table finalizes.
       seats: [{ bot: true }, { user: WALKER }],
+      // **The id AND the name, because M6.2 split them** (spec §3.1, R-2.4).
+      // `name` is free text the lobby prints; the storage id is the server's
+      // draw unless one is asked for — and every call below addresses this
+      // table by `name`, which only works while the two are the same string.
+      id: name,
       name,
     },
   });
@@ -86,9 +91,12 @@ async function pastTheForcedOpening(
 async function openPanel(page: import("@playwright/test").Page, game: string, label: string) {
   // `signIn` navigates: the door is a SCREEN since M6.1, so getting through it
   // is a page load and a form rather than a storage write before one.
-  await signIn(page, WALKER, `/?game=${game}`);
-  const pick = page.getByRole("button", { name: game, exact: false }).first();
-  if (await pick.count()) await pick.click().catch(() => {});
+  //
+  // **Straight to the table's own address** (M6.2 §5.1): the route names the
+  // game, so there is no list to find a row in and no `.first()` guessing which
+  // of two matching buttons is the right one. `signIn` navigates, and the hash
+  // survives it.
+  await signIn(page, WALKER, `/#/t/${game}`);
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
   await page.getByRole("button", { name: label, exact: true }).click();
   await expect(page.getByRole("dialog", { name: label })).toBeVisible();

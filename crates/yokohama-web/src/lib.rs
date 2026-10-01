@@ -42,6 +42,7 @@ pub mod identity;
 pub mod outcome;
 pub mod store;
 pub mod table;
+pub mod tables;
 
 use std::sync::Arc;
 
@@ -58,7 +59,8 @@ use serde::{Deserialize, Serialize};
 use yokohama_core::{Rules, SEMANTICS_REV};
 
 use crate::client::ClientState;
-use crate::games::{Games, NewGame};
+use crate::games::Games;
+use crate::tables::NewGame;
 use crate::store::{FsStore, MemStore, Store};
 
 /// A refused request, as the client sees it.
@@ -109,6 +111,22 @@ impl ApiError {
             table_status: Some("dealing"),
         }
     }
+    /// A session route asked of a table that is still filling its seats (M6.2).
+    pub fn open() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: games::OPEN_SENTENCE.to_string(),
+            table_status: Some("open"),
+        }
+    }
+    /// A table-phase route asked of a table whose game has started (M6.2).
+    pub fn playing() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message: games::PLAYING_SENTENCE.to_string(),
+            table_status: Some("playing"),
+        }
+    }
 }
 
 /// Every refusal `Games` raises, in the status a client reads it as.
@@ -124,6 +142,8 @@ impl From<games::GameError> for ApiError {
         match e {
             E::NotFound(m) => Self::not_found(m),
             E::Dealing => Self::dealing(),
+            E::Open => Self::open(),
+            E::Playing => Self::playing(),
             E::Forbidden(m) => {
                 Self { status: StatusCode::FORBIDDEN, message: m, table_status: None }
             }
@@ -410,7 +430,7 @@ fn viewer_of(
 /// refuses a document whose `seats` disagrees with its `players`.
 fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
     match table.seats.get(usize::from(seat.0)) {
-        Some(crate::table::SeatDoc::Human { user }) => user,
+        Some(crate::table::SeatDoc::Human { user, .. }) => user,
         _ => "the bot",
     }
 }
@@ -522,24 +542,69 @@ fn undo_allowed(
     }
 }
 
-/// The lobby: `{ "games": [...] }` rather than a bare array.
+/// What `GET /api/games` is being asked (§3.3).
 ///
-/// An object because a list is a place fields get added to — a cursor, a count —
-/// and a client that has to change shape to read one is a client that breaks.
+/// `deny_unknown_fields` through [`QueryArgs`] for the reason that extractor
+/// exists: `?scoped=open` would otherwise default silently to `mine` and answer
+/// a lobby asking for open tables with the caller's own — confidently, and with
+/// something it did not ask for.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListQuery {
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub before: Option<String>,
+}
+
+/// The lobby: `{ "games": [...], "next": … }` rather than a bare array.
+///
+/// An object because a list is a place fields get added to — and `next` is the
+/// field it was: a client reading a bare array would have had to change shape to
+/// learn there was a second page.
 #[derive(Debug, Clone, Serialize)]
 pub struct GamesList {
     pub games: Vec<crate::table::TableView>,
+    /// The cursor for the NEXT page, or `null` when this is the last one.
+    /// `<created_at>,<id>` — the row this page ended at, in the listing's own
+    /// order; a client sends it straight back as `before`.
+    pub next: Option<String>,
 }
 
 async fn list_games(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
+    QueryArgs(q): QueryArgs<ListQuery>,
 ) -> ApiResult<GamesList> {
-    state
-        .games
-        .list_for(&user)
-        .map(|games| Json(GamesList { games }))
-        .map_err(ApiError::server_error)
+    use crate::tables::{Scope, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
+    let scope = match q.scope.as_deref() {
+        None => Scope::Mine,
+        Some(s) => s.parse::<Scope>().map_err(ApiError::bad_request)?,
+    };
+    let limit = q.limit.unwrap_or(LIST_LIMIT_DEFAULT);
+    // Both ends refused rather than clamped: a caller that asked for 0 or for
+    // 500 believed something about this API, and answering it with 1 or with
+    // 100 leaves it believing that. `Games::list` guards `0` again for the same
+    // reason it is refused here — see its doc.
+    if limit == 0 || limit > LIST_LIMIT_MAX {
+        return Err(ApiError::bad_request(format!("limit {limit} — 1 to {LIST_LIMIT_MAX}")));
+    }
+    let before = match q.before.as_deref() {
+        None => None,
+        Some(c) => {
+            let (at, id) = c
+                .split_once(',')
+                .ok_or_else(|| ApiError::bad_request("before is <created_at>,<id>"))?;
+            let at: u64 =
+                at.parse().map_err(|_| ApiError::bad_request("before is <created_at>,<id>"))?;
+            Some((at, id.to_string()))
+        }
+    };
+    let (games, next) =
+        state.games.list(&user, scope, limit, before).map_err(ApiError::server_error)?;
+    Ok(Json(GamesList { games, next }))
 }
 
 /// **201 with the TABLE, and no game yet.** Nothing is dealt into anyone's hand
@@ -554,12 +619,18 @@ async fn create_game(
     Ok((StatusCode::CREATED, Json(view)))
 }
 
+/// The table as this caller may read it.
+///
+/// **The one route R-2.7 widens**: at `Open` any signed-in caller is answered,
+/// because a join link is an address and the person following one has to see
+/// what they are joining. At every other status this is `Games::table`'s fence
+/// unchanged, and `my_seats` on the view may therefore be EMPTY.
 async fn get_table(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> ApiResult<crate::table::TableView> {
-    let doc = state.games.table(&id, &user)?;
+    let doc = state.games.table_for_anyone(&id, &user)?;
     Ok(Json(doc.view(&user)))
 }
 
@@ -578,6 +649,37 @@ async fn deal(
 pub struct Keep {
     pub seat: u8,
     pub card: u8,
+    /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
+    /// only when it has no name yet — see [`Games::keep`](games::Games::keep).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Taking an open seat at an open table (M6.2, §3.2).
+///
+/// The password is the TABLE's and not the caller's: a table without a lock
+/// ignores one, and a table with a lock refuses without it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    pub seat: u8,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+async fn join(
+    identity::Identity(user): identity::Identity,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    JsonBody(req): JsonBody<Join>,
+) -> ApiResult<crate::table::TableView> {
+    // The same fallible parse `keep` makes, and for the same reason: the number
+    // came off the wire and `PlayerId::new` panics at four and above.
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(Json(state.games.join(&id, &user, seat, req.name.as_deref(), req.password.as_deref())?))
 }
 
 async fn keep(
@@ -592,7 +694,7 @@ async fn keep(
     // but would still drop the connection with no sentence in it.
     let seat = yokohama_core::PlayerId::try_new(req.seat)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.games.keep(&id, &user, seat, req.card)?))
+    Ok(Json(state.games.keep(&id, &user, seat, req.card, req.name.as_deref())?))
 }
 
 async fn get_game(
@@ -1407,6 +1509,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/api/games/{id}/table", get(get_table))
         .route("/api/games/{id}/deal", get(deal))
         .route("/api/games/{id}/keep", post(keep))
+        .route("/api/games/{id}/join", post(join))
         .route("/api/games/{id}/input", post(input))
         .route("/api/games/{id}/ports", get(ports))
         .route("/api/games/{id}/labs", get(labs))
@@ -1592,7 +1695,7 @@ mod tests {
     async fn an_unknown_key_in_a_new_game_request_is_refused_rather_than_defaulted() {
         let good = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 1,
-            "seed": "20260831", "name": "fenced",
+            "seed": "20260831", "name": "fenced", "id": "fenced",
             "seats": [{ "user": WHO }, { "user": WHO }],
         });
         let mut renamed = good.clone();
@@ -1631,11 +1734,17 @@ mod tests {
     /// would satisfy the first line alone, and one that answered 400 to
     /// everything would satisfy none of the others while still looking careful.
     ///
-    /// **And the closing pair is load-bearing.** `deal` reaches
-    /// `settle`, which takes `table_lock` when it has repairing to do, so a
-    /// panic in there would poison that mutex and every later `create` in the
-    /// process would die with it. A create of a different name answering 201,
-    /// and its own deal answering 200, is what a `catch_unwind` could not fake.
+    /// **And the closing pair is load-bearing.** `deal` reaches `settle`, which
+    /// takes a lock when it has repairing to do, so a panic in there is not a
+    /// dropped connection but a POISONED mutex. A create of a different name
+    /// answering 201, and its own deal answering 200, is what a `catch_unwind`
+    /// could not fake.
+    ///
+    /// **Read it at its M6.2 size.** The lock `settle` takes is now that
+    /// table's own (`Games::lock_for`), so a poisoning here is confined to the
+    /// broken game and a create of another name would survive it in any case;
+    /// what the closing pair still says is that the PROCESS is alive and
+    /// serving, which is what a panic in a handler does not leave behind.
     #[tokio::test]
     async fn a_deal_the_server_cannot_build_is_a_500_a_bad_request_is_400_and_the_server_lives() {
         let state = Arc::new(AppState::in_memory());
@@ -1675,7 +1784,7 @@ mod tests {
         // named by the key it did not know.
         let mut bad = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-            "seats": seats_for(2, &[1]), "name": "typo",
+            "seats": seats_for(2, &[1]), "name": "typo", "id": "typo",
         });
         bad["startSeat"] = serde_json::json!(0);
         let (status, body) = call(&router, "POST", "/api/games", Some(bad)).await;
@@ -1685,15 +1794,15 @@ mod tests {
             "the refusal names the key it did not know: {body}",
         );
 
-        // The server is alive and `table_lock` is not poisoned: a table of a
-        // different name still opens, and its own deal still answers.
+        // The server is alive: a table of a different name still opens, and its
+        // own deal still answers.
         let (status, body) = call(
             &router,
             "POST",
             "/api/games",
             Some(serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seats": seats_for(2, &[1]), "name": "after",
+                "seats": seats_for(2, &[1]), "name": "after", "id": "after",
             })),
         )
         .await;
@@ -1826,6 +1935,7 @@ mod tests {
                 "seed": "20260831",
                 "seats": seats_for(players, bots),
                 "name": name,
+                "id": name,
             })),
         )
         .await;
@@ -1925,6 +2035,7 @@ mod tests {
                 "seed": seed.to_string(),
                 "seats": seats.iter().map(|u| serde_json::json!({ "user": u })).collect::<Vec<_>>(),
                 "name": name,
+                "id": name,
             }),
         )
         .await;
@@ -1986,6 +2097,7 @@ mod tests {
                 "seed": seed.to_string(),
                 "seats": [{ "user": who }, { "bot": true }],
                 "name": name,
+                "id": name,
             }),
         )
         .await;
@@ -2051,58 +2163,335 @@ mod tests {
         panic!("the bot never moved in 40 of {user}'s inputs");
     }
 
-    /// **Every route that needs a session is a 403 for a signed-in stranger**
-    /// (R-1.5), in one cell over the whole table, because a fence applied to
-    /// twelve routes and forgotten on the thirteenth is exactly the shape that
-    /// ships.
+    /// Every session route, as one list, with the body a POST needs.
     ///
-    /// `/events` joined the list when Task 6 added the route (R-0.2). It was
-    /// exempt here only while the route did not exist — a URI with no route
-    /// answers 404 from the fallback, which is not the property this cell is
-    /// about — and the exemption went out with the reason for it.
+    /// The list rather than a literal per cell, because the property below is
+    /// about COVERAGE: a fence applied to sixteen routes and forgotten on the
+    /// seventeenth is exactly the shape that ships, and a route added to the
+    /// router and not to this list is the same defect one layer up.
+    fn session_routes() -> Vec<(&'static str, &'static str, Option<serde_json::Value>)> {
+        vec![
+            ("GET", "", None),
+            ("GET", "/table", None),
+            ("GET", "/deal", None),
+            ("POST", "/keep", Some(serde_json::json!({ "seat": 1, "card": 1 }))),
+            ("POST", "/join", Some(serde_json::json!({ "seat": 1 }))),
+            ("POST", "/input", Some(serde_json::json!({ "line": "1" }))),
+            ("GET", "/ports", None),
+            ("GET", "/labs", None),
+            ("GET", "/areas", None),
+            ("GET", "/log", None),
+            ("GET", "/events", None),
+            ("GET", "/at/0", None),
+            ("GET", "/suggest", None),
+            ("GET", "/why", None),
+            ("GET", "/index/orders", None),
+            ("GET", "/result", None),
+            ("DELETE", "", None),
+        ]
+    }
+
+    /// **Every route that needs a session refuses a signed-in stranger, at
+    /// every status, with exactly two exceptions — `table` and `join`, and only
+    /// while the table is OPEN** (R-1.5 with R-2.7, spec §3.4).
+    ///
+    /// One cell over the whole table rather than seventeen, because a fence
+    /// applied to sixteen routes and forgotten on the seventeenth is exactly the
+    /// shape that ships — and since M6.2 the claim is two-dimensional: the same
+    /// seventeen routes against an OPEN, a DEALING and a PLAYING table, since
+    /// R-2.7 widened two of them at one status only and a widening that leaked
+    /// into the others is the defect this exists to catch.
+    ///
+    /// **THREE statuses and not four.** `TableStatus` has exactly three
+    /// variants; "over" is not one of them — a finished game is a `Playing`
+    /// table whose session says `is_over`, read off the turn mirror — and
+    /// reaching it in a lib cell means playing a 2P game to a winner, which the
+    /// whole-game gate does in tens of seconds of OS-entropy wall. For a
+    /// STRANGER the two are the same request in any case: the table read comes
+    /// first and refuses before anything looks at the session.
+    ///
+    /// **The order of the steps is the cell.** A successful `join` SEATS the
+    /// caller and, at a 2P table with one open seat, FLIPS the table to dealing
+    /// — so it is done LAST at the open table, after every other route has been
+    /// asked of both callers. An earlier version of this walk joined fifth and
+    /// measured eleven routes against a DEALING table while reporting them as
+    /// open.
+    ///
+    /// **`POST …/keep` was the one route that answered a stranger differently,
+    /// and this cell is where that was found** (ruling #8). `Games::keep` must
+    /// settle under the table's lock, and its `Open`/`Playing` arms used to sit
+    /// ABOVE the holder check — so a caller with no seat here was told WHICH
+    /// status the table was in (409 "this table is still open" / "this table is
+    /// playing") where every other route answered one sentence about seats and
+    /// nothing else. The check moved above them; all seventeen routes now
+    /// refuse a stranger alike, and the only thing `keep` still says
+    /// differently is its own sentence, "seat N is not yours", which is
+    /// deliberate and older than this cycle.
     #[tokio::test]
-    async fn every_session_route_is_403_for_a_signed_in_stranger() {
+    async fn every_session_route_refuses_a_stranger_at_every_status_except_table_and_join_at_open()
+    {
+        const STRANGER: &str = "green@wire.test";
+        const NOT_SEATED: &str = "you are not seated at this table";
         let state = Arc::new(AppState::in_memory());
-        start_as(&state, "fenced", 20260831, &["red@wire.test", "blue@wire.test"]).await;
-        for uri in [
-            "/api/games/fenced",
-            "/api/games/fenced/table",
-            "/api/games/fenced/ports",
-            "/api/games/fenced/labs",
-            "/api/games/fenced/areas",
-            "/api/games/fenced/log",
-            "/api/games/fenced/events",
-            "/api/games/fenced/at/0",
-            "/api/games/fenced/suggest",
-            "/api/games/fenced/why",
-            "/api/games/fenced/index/orders",
-            "/api/games/fenced/result",
-        ] {
-            let (status, body) = get_as(&state, "green@wire.test", uri).await;
-            assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
-            assert_eq!(body["error"], "you are not seated at this table", "{uri}");
-        }
+        let open_table = serde_json::json!({
+            "players": 2,
+            "colors": ["Red", "Blue"],
+            "start_seat": 0,
+            "seed": "20260831",
+            "seats": [{ "user": "red@wire.test" }, { "open": true }],
+            "id": "opent",
+            "name": "opent",
+        });
+        let (status, body) = post_as(&state, "red@wire.test", "/api/games", open_table).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["status"], "open", "{body}");
+        // DEALING is a create with both seats named and no keep posted — the
+        // one shape `start_as` cannot leave behind, since it keeps for every
+        // seat and finishes at playing.
         let (status, body) = post_as(
             &state,
-            "green@wire.test",
-            "/api/games/fenced/input",
-            serde_json::json!({ "line": "1" }),
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+                "id": "dealt",
+                "name": "dealt",
+            }),
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["status"], "dealing", "{body}");
+        start_as(&state, "playt", 20260831, &["red@wire.test", "blue@wire.test"]).await;
 
-        // Anti-vacuity: a seated caller gets every one of them. Without this a
-        // server that refused all thirteen to everybody would pass above.
+        // 1. THE STRANGER, at all three tables, on every route but `table` and
+        //    `join` — which are asked afterwards, `join` last of all. 403 on
+        //    every one of them, at every status, and NO route says which status
+        //    it was (ruling #8 closed the one that did).
+        for table in ["opent", "dealt", "playt"] {
+            for (method, suffix, body) in session_routes() {
+                if suffix == "/table" || suffix == "/join" {
+                    continue;
+                }
+                let uri = format!("/api/games/{table}{suffix}");
+                let (status, got) = request_as(&state, STRANGER, method, &uri, body).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {got}");
+                // `keep`'s own sentence is older than this cycle and stays: a
+                // seat nobody holds and a seat somebody else holds are one
+                // refusal. What matters here is that it names a SEAT and never
+                // a status, so it tells a stranger nothing the others do not.
+                let expected =
+                    if suffix == "/keep" { "seat 1 is not yours" } else { NOT_SEATED };
+                assert_eq!(got["error"], expected, "{method} {uri}: {got}");
+                assert!(got.get("status").is_none(), "no status leaks: {method} {uri}: {got}");
+            }
+        }
+
+        // 2. `table` is the widening, and ONLY at open (R-2.7). The other two
+        //    statuses are the anti-vacuity half: a widening written as "anybody
+        //    may read a table" passes the open line and fails these.
+        let (status, view) = get_as(&state, STRANGER, "/api/games/opent/table").await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["my_seats"], serde_json::json!([]), "a caller with no seat here: {view}");
+        assert_eq!(view["status"], "open", "{view}");
+        for table in ["dealt", "playt"] {
+            let (status, got) = get_as(&state, STRANGER, &format!("/api/games/{table}/table")).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{table}: {got}");
+            assert_eq!(got["error"], NOT_SEATED, "{table}: {got}");
+        }
+
+        // 3. THE SEAT HOLDER at the open table hears the status instead (§3.4),
+        //    on every route but `table`, `join` and DELETE. Before the
+        //    stranger's join below, which would move this table out from under
+        //    it.
+        for (method, suffix, body) in session_routes() {
+            if suffix == "/table" || suffix == "/join" || method == "DELETE" {
+                continue;
+            }
+            // **Red's keep is for red's OWN seat**, and it has to be: since
+            // ruling #8 the holder check comes first, so a keep for the still-
+            // OPEN seat 1 is "seat 1 is not yours" whoever sends it. Seat 0 is
+            // what makes this line a reading of the STATUS arm rather than of
+            // the seat fence — which is the whole of what this loop claims.
+            let body = if suffix == "/keep" {
+                Some(serde_json::json!({ "seat": 0, "card": 1 }))
+            } else {
+                body
+            };
+            let uri = format!("/api/games/opent{suffix}");
+            let (status, got) = request_as(&state, "red@wire.test", method, &uri, body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{method} {uri}: {got}");
+            assert_eq!(got["status"], "open", "{method} {uri}: {got}");
+            assert_eq!(got["error"], games::OPEN_SENTENCE, "{method} {uri}: {got}");
+        }
+
+        // 4. `join` is admitted at OPEN and refused by STATUS elsewhere (§3.2:
+        //    "you are not seated at this table" is explicitly not an arm there —
+        //    a stranger is exactly who joins).
+        for (table, status_word) in [("dealt", "dealing"), ("playt", "playing")] {
+            let (status, got) = post_as(
+                &state,
+                STRANGER,
+                &format!("/api/games/{table}/join"),
+                serde_json::json!({ "seat": 1 }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CONFLICT, "{table}: {got}");
+            assert_eq!(got["status"], status_word, "{table}: {got}");
+        }
+        // LAST, because it seats the caller and flips the table to dealing.
+        let (status, joined) =
+            post_as(&state, STRANGER, "/api/games/opent/join", serde_json::json!({ "seat": 1 }))
+                .await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        assert_eq!(joined["my_seats"], serde_json::json!([1]), "{joined}");
+        assert_eq!(joined["status"], "dealing", "the filling join flips it: {joined}");
+
+        // 5. R-2.6's SUCCESS, which nothing else witnesses: the creator's delete
+        //    answers at a table that was open, and the table is then gone.
+        let (status, got) = delete_as(&state, "red@wire.test", "/api/games/opent").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{got}");
+        let (status, got) = get_as(&state, "red@wire.test", "/api/games/opent/table").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{got}");
+
+        // Anti-vacuity: a seated caller gets the routes this cell refused.
+        // Without it a server that refused everything to everybody would pass.
         for uri in [
-            "/api/games/fenced",
-            "/api/games/fenced/table",
-            "/api/games/fenced/log",
-            "/api/games/fenced/at/0",
-            "/api/games/fenced/index/orders",
+            "/api/games/playt",
+            "/api/games/playt/table",
+            "/api/games/playt/log",
+            "/api/games/playt/at/0",
+            "/api/games/playt/index/orders",
+            "/api/games/playt/events",
+            "/api/games/playt/ports",
         ] {
             let (status, body) = get_as(&state, "blue@wire.test", uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
         }
+    }
+
+    /// **A second page is reached by sending the cursor back** (§3.3), over the
+    /// route rather than over `Games::list`.
+    ///
+    /// The route is where the claim lives and where nothing saw it: the lib
+    /// cell `tables::tests::the_cursor_pages_without_gap_or_overlap` walks the
+    /// pages inside the type, and `GamesList.next` was never once SERIALIZED
+    /// non-null — not in a cell and not in the committed corpus — so the
+    /// handler's `before` parse had its four refusals covered and its success
+    /// path covered nowhere.
+    ///
+    /// **The two tables are created in the REVERSE of the order they are
+    /// expected in, and that is what keeps this cell off the clock.**
+    /// `created_at` is unix SECONDS: two creates normally land in one second,
+    /// where the id tie-break puts `oa` first, but a pair straddling a second
+    /// boundary would be ordered by recency instead. Making `oa` the LATER
+    /// create means both rules give the same answer, so the expected order is
+    /// fixed however the clock falls. The tie-break itself is pinned, at five
+    /// rows in one second, by the cursor cell in `tables.rs`.
+    #[tokio::test]
+    async fn the_listing_pages_over_the_route_with_a_cursor_the_client_sends_back() {
+        let state = Arc::new(AppState::in_memory());
+        for id in ["ob", "oa"] {
+            let (status, body) = post_as(
+                &state,
+                "red@wire.test",
+                "/api/games",
+                serde_json::json!({
+                    "players": 2,
+                    "colors": ["Red", "Blue"],
+                    "start_seat": 0,
+                    "seed": "20260831",
+                    "seats": [{ "user": "red@wire.test" }, { "open": true }],
+                    "id": id,
+                    "name": id,
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{id}: {body}");
+        }
+        // The whole listing first, so the paged walk below is compared against
+        // this server's own order rather than against a re-implementation of
+        // the sort. Two rows, and the last page of them says so with a null.
+        let (status, all) = get_as(&state, "red@wire.test", "/api/games?scope=open").await;
+        assert_eq!(status, StatusCode::OK, "{all}");
+        assert_eq!(
+            all["games"].as_array().expect("an array").iter().map(|g| g["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["oa", "ob"],
+            "{all}",
+        );
+        assert!(all["next"].is_null(), "one page holds both: {all}");
+
+        // PAGE ONE. `next` is non-null here and nowhere else in this codebase.
+        let (status, first) =
+            get_as(&state, "red@wire.test", "/api/games?scope=open&limit=1").await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(first["games"].as_array().expect("an array").len(), 1, "{first}");
+        assert_eq!(first["games"][0]["id"], "oa", "{first}");
+        let cursor = first["next"].as_str().expect("a cursor, not null").to_string();
+        // Its exact form, because the client sends this string back verbatim
+        // and a shape change here is a shape change on the wire.
+        let (at, id) = cursor.split_once(',').expect("<created_at>,<id>");
+        assert_eq!(
+            at.parse::<u64>().expect("a numeric created_at"),
+            first["games"][0]["created_at"].as_u64().expect("a created_at"),
+            "the cursor names the row this page ended at: {cursor}",
+        );
+        assert_eq!(id, "oa", "…by its id too: {cursor}");
+
+        // PAGE TWO, from the cursor the server just handed out. The second row
+        // arrives, the first does not arrive again, and the walk ends.
+        let (status, second) = get_as(
+            &state,
+            "red@wire.test",
+            &format!("/api/games?scope=open&limit=1&before={cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        assert_eq!(second["games"].as_array().expect("an array").len(), 1, "{second}");
+        assert_eq!(second["games"][0]["id"], "ob", "no gap and no overlap: {second}");
+        assert!(second["next"].is_null(), "the last page: {second}");
+    }
+
+    /// **The listing fences its query and pages it** (§3.3).
+    ///
+    /// Four refusals and then the one that answers, because the refusals are
+    /// what a client meets when it gets a parameter wrong and a silent default
+    /// is the failure mode `QueryArgs` exists to stop: `?scoped=open` would
+    /// otherwise return the caller's OWN tables with a 200 on it.
+    #[tokio::test]
+    async fn list_games_validates_its_query() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "one", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        for (query, expected) in [
+            ("?scope=nope", "no scope named"),
+            ("?limit=0", "limit 0"),
+            ("?limit=101", "limit 101"),
+            ("?before=junk", "before is"),
+            ("?before=notanumber,x", "before is"),
+            ("?nope=1", "nope"),
+        ] {
+            let (status, got) = get_as(&state, "red@wire.test", &format!("/api/games{query}")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{query}: {got}");
+            assert!(
+                got["error"].as_str().unwrap_or_default().contains(expected),
+                "{query}: {got}",
+            );
+        }
+        // The default scope is `mine`, and the reply always carries `next` —
+        // `null` when there is no second page, which is the shape the client
+        // reads rather than a field that appears only sometimes.
+        let (status, got) = get_as(&state, "red@wire.test", "/api/games").await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["games"].as_array().expect("an array").len(), 1, "{got}");
+        assert!(got.get("next").is_some() && got["next"].is_null(), "{got}");
+        let (status, got) = get_as(&state, "red@wire.test", "/api/games?scope=open&limit=1").await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert!(got["games"].as_array().expect("an array").is_empty(), "no open table: {got}");
+        assert!(got["next"].is_null(), "{got}");
     }
 
     /// **The signal answers in four fields at every status, and fences its
@@ -2145,7 +2534,7 @@ mod tests {
     #[tokio::test]
     async fn events_answers_in_four_fields_at_every_status_and_fences_its_query() {
         let state = Arc::new(AppState::in_memory());
-        let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig",
+        let body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "seed": "20260831", "name": "sig", "id": "sig",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }] });
         post_as(&state, "red@wire.test", "/api/games", body).await;
         let (status, e) = get_as(&state, "blue@wire.test", "/api/games/sig/events").await;
@@ -2926,7 +3315,7 @@ mod tests {
     async fn the_create_flow_deals_per_seat_and_the_state_is_409_until_the_last_keep() {
         let state = Arc::new(AppState::in_memory());
         let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831", "name": "flow",
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831", "name": "flow", "id": "flow",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
         });
         let (status, table) = post_as(&state, "red@wire.test", "/api/games", body).await;
@@ -3000,7 +3389,7 @@ mod tests {
             assert!(err["error"].as_str().unwrap().contains(key), "{key}: {err}");
         }
         let body = serde_json::json!({
-            "players": 2, "colors": ["Red", "Blue"], "name": "own",
+            "players": 2, "colors": ["Red", "Blue"], "name": "own", "id": "own",
             "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
         });
         post_as(&state, "red@wire.test", "/api/games", body).await;
@@ -3672,7 +4061,7 @@ mod tests {
             serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
                 "seats": [{ "user": WHO }, { "bot": true }],
-                "seed": seed.to_string(), "name": name,
+                "seed": seed.to_string(), "name": name, "id": name,
             })
         };
 
@@ -4224,5 +4613,86 @@ mod tests {
             "no position in {positions} marked a single reachable tile — the historical board is \
              being built with an empty legal list, and the reach marker is silently gone",
         );
+    }
+    /// **`POST …/{id}/join` answers 200 with the table**, and its body is
+    /// fenced like every other.
+    ///
+    /// The unknown key is posted at a DEALING table on purpose: the extractor
+    /// refuses it before the handler runs, so the answer is 400 naming the key
+    /// and not the 409 the table's own status would give — which is what says
+    /// the body fence sits in front of the status check rather than behind it.
+    #[tokio::test]
+    async fn join_is_a_route_that_answers_200_with_the_table_and_400_on_an_unknown_key() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, table) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "open": true }],
+                "id": "joinable",
+                "password": "sesame",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        assert_eq!(table["status"], serde_json::json!("open"), "{table}");
+
+        let (status, joined) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/joinable/join",
+            serde_json::json!({ "seat": 1, "name": "Alex", "password": "sesame" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        assert_eq!(joined["my_seats"], serde_json::json!([1]), "{joined}");
+        assert_eq!(joined["seats"][1]["name"], serde_json::json!("Alex"), "{joined}");
+        assert_eq!(joined["status"], serde_json::json!("dealing"), "the filling join flips");
+
+        let (status, body) = post_as(
+            &state,
+            "blue@wire.test",
+            "/api/games/joinable/join",
+            serde_json::json!({ "seat": 1, "nope": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap_or_default().contains("nope"), "names the key: {body}");
+    }
+
+    /// **A keep may carry the display name**, which is how a seat somebody
+    /// else's create bound gets a name at all.
+    #[tokio::test]
+    async fn keep_carries_a_name() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, table) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2,
+                "colors": ["Red", "Blue"],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": [{ "user": "red@wire.test" }, { "bot": true }],
+                "id": "named",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        let (status, kept) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games/named/keep",
+            serde_json::json!({ "seat": 0, "card": 1, "name": "Jeremy" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+        assert_eq!(kept["seats"][0]["name"], serde_json::json!("Jeremy"), "{kept}");
     }
 }

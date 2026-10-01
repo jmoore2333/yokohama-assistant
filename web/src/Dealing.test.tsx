@@ -19,8 +19,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
-import { ApiError } from "./api";
+import { ApiError, DISPLAY_NAME_KEY } from "./api";
 import { stubApi, type ApiCall, type Reply } from "./test/harness";
+import { seatName } from "./tables";
 import { wire } from "./wire/contract";
 import type { DealView } from "./types";
 
@@ -37,7 +38,7 @@ function Host({
   game?: string;
   me?: string;
   onPlaying?: () => void;
-  onLeave?: () => void;
+  onLeave?: (sentence?: string) => void;
 }) {
   const [sections, onToggleSection] = useSections();
   return (
@@ -149,7 +150,7 @@ describe("the dealing screen", () => {
   // is running server-side by then (the last keep started it), so a 500 or a
   // dropped connection on the read that opens it would strand this browser on a
   // dealing screen for a table that is not dealing, with no way forward but the
-  // "Games" button. The latch is released on failure and taken again on the next
+  // "Lobby" button. The latch is released on failure and taken again on the next
   // attempt, so its purpose — one hand-over per SUCCESS — is unchanged.
   it("retries the hand-over when it fails, and stops asking once it succeeds", async () => {
     vi.useFakeTimers();
@@ -224,7 +225,12 @@ describe("the dealing screen", () => {
     // has chosen is public at any table; which card it took is not.
     const other = container.querySelector('.deal-seat.human.other[data-seat="1"]')!;
     expect(other).not.toBeNull();
-    expect(other.textContent).toContain("blue@wire.test");
+    // **The NAME that seat's holder gave, not the address the table is keyed
+    // by** (spec §5.6). Derived through `seatName` rather than restated, so the
+    // one place a seat is worded is the one place this can drift from.
+    const seat1 = wire.deal.table.seats[1]!;
+    expect(seatName(seat1)).toBe("Blue");
+    expect(other.textContent).toContain(seatName(seat1));
     expect(other.textContent).toContain("waiting");
   });
 
@@ -298,13 +304,116 @@ describe("the dealing screen", () => {
   // persisted now, so leaving abandons nothing — the row is in the lobby and
   // opens straight back here. Without this the only way out of a table that is
   // waiting on somebody else is a page reload.
-  it("has a way back to the games list", async () => {
+  it("has a way back to the lobby", async () => {
     const onLeave = vi.fn();
     stubApi(dealThen(wire.deal));
     render(<Host onLeave={onLeave} />);
     await screen.findAllByRole("button", { name: /^keep/ });
-    await userEvent.setup().click(screen.getByRole("button", { name: "Games" }));
+    // The word itself is the assertion (live review M-3): every other screen's
+    // control back to this destination says "Lobby", and this one said "Games".
+    await userEvent.setup().click(screen.getByRole("button", { name: "Lobby" }));
     expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // **A table that is GONE stops being polled, and says so** (final review M2).
+  // The reachable case is the creator abandoning from a lobby row (R-13) while
+  // the deal is up at somebody ELSE's browser: without an `onEnd` the poll ends
+  // silently and the deal sits there until the next click 404s. `App` and
+  // `OpenTable` already carried these three lines; this consumer did not.
+  //
+  // The SENTENCE is the point, not merely the leave: it is the server's, and it
+  // is what the lobby then shows about a screen that went by itself.
+  it("leaves with the server's sentence when the table is abandoned under it", async () => {
+    vi.useFakeTimers();
+    const onLeave = vi.fn();
+    let gone = false;
+    stubApi((call) => {
+      if (call.path.endsWith("/deal")) return wire.dealWaiting;
+      if (call.path.endsWith("/events"))
+        return gone
+          ? { status: 404, body: { error: "no such game" } }
+          : wire.eventsDealing;
+      return undefined;
+    });
+    render(<Host onLeave={onLeave} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    // Anti-vacuity: a live table is still being waited on.
+    expect(onLeave).not.toHaveBeenCalled();
+
+    gone = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3100);
+    });
+    expect(onLeave).toHaveBeenCalledTimes(1);
+    expect(onLeave.mock.calls[0]![0]).toBe("no such game");
+
+    // And the poll is over: a permanent 404 asked again is a client waiting for
+    // an answer it already has.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  // ---- the name on the keep (spec §5.6) ------------------------------------
+  //
+  // **The last moment this browser can say what it is called.** The form asks
+  // the creator and the open table's seat picker asks whoever sits down there,
+  // but a seat filled at create time BY EMAIL reaches this screen never having
+  // been asked — and the table would then list that person by their address for
+  // the life of the game. The server writes the name onto a seat that has none,
+  // so a keep can never rename somebody.
+  it("posts the name this browser remembers with the keep", async () => {
+    localStorage.setItem(DISPLAY_NAME_KEY, "Jeremy");
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
+      return dealThen(wire.deal, wire.dealWaiting)(call);
+    });
+    render(<Host />);
+    const picks = await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    await userEvent.setup().click(picks[0]!);
+    await waitFor(() => expect(stub.matching("POST", "/keep")).toHaveLength(1));
+    expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
+      seat: wire.deal.seat,
+      card: 1,
+      name: "Jeremy",
+    });
+  });
+
+  it("posts no name key at all when this browser has none", async () => {
+    // **The KEY, not the value.** `{name: undefined}` serializes away, so an
+    // assertion on the value would pass for a client that sent the key — and
+    // this API refuses an unknown key rather than defaulting it.
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/keep")) return wire.dealWaiting.table;
+      return dealThen(wire.deal, wire.dealWaiting)(call);
+    });
+    render(<Host />);
+    const picks = await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    await userEvent.setup().click(picks[0]!);
+    await waitFor(() => expect(stub.matching("POST", "/keep")).toHaveLength(1));
+    expect(stub.matching("POST", "/keep")[0]!.body).toEqual({
+      seat: wire.deal.seat,
+      card: 1,
+    });
+  });
+
+  // And the other end of §5.6, on the screen that reads it: the seats this
+  // table is waiting on are NAMED. The corpus's second seat is "Blue" at
+  // `blue@wire.test`, so a client reading the wrong field would say the address.
+  it("names the seats it is waiting on, rather than their addresses", async () => {
+    stubApi(dealThen(wire.dealWaiting));
+    render(<Host />);
+    const waiting = await screen.findByText(/waiting on/);
+    const blue = wire.dealWaiting.table.seats[1]!;
+    expect(blue.kind).toBe("human");
+    expect(seatName(blue)).toBe("Blue");
+    expect(waiting).toHaveTextContent("waiting on Blue");
+    expect(waiting.textContent).not.toMatch(/@/);
   });
 
   it("shows a refusal rather than a blank screen", async () => {

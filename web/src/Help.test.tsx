@@ -98,6 +98,31 @@ describe("the help panel's set-table section", () => {
   });
 });
 
+describe("the help panel and the lobby", () => {
+  // **M6.2's shape, in the words on the screen.** The panel went a whole cycle
+  // telling players their game was "in the list on the start screen" after the
+  // start screen became the lobby, and nothing could see it: this file renders
+  // the prose but read only the set-table section, and the two e2e specs that
+  // open the panel assert nothing in its paragraphs.
+  //
+  // What is asserted is the three things a player cannot do without — where
+  // their tables are, how somebody else gets into one, and how to get back —
+  // plus the two retired sentences, so the next cycle's stale prose fails here
+  // rather than shipping.
+  it("names the lobby's two lists, the join link and the password", () => {
+    const { container } = render(<Help />);
+    const text = container.textContent ?? "";
+    expect(text).toMatch(/\blobby\b/i);
+    expect(text).toContain("Your games");
+    expect(text).toContain("Open tables");
+    expect(text).toMatch(/link/i);
+    expect(text).toMatch(/password/i);
+    expect(text).toMatch(/abandon/i);
+    expect(text).not.toContain("the list on the start screen");
+    expect(text).not.toContain("back to the start screen");
+  });
+});
+
 describe("the help panel's prose", () => {
   // Every emphasis in the panel, not just the one that broke. A tag preceded by
   // a letter and beginning with a letter is a missing `{" "}` — the JSX

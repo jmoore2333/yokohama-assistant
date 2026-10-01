@@ -82,7 +82,13 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // seats the BOT there, so this is also the one walk that exercises the seat
   // row's "another email" arm.
   await signIn(a, "a@e2e.test");
-  await a.getByLabel("Seat 1").selectOption("email");
+  // The lobby is the first screen since M6.2; the form is one click on.
+  await expect(a.getByRole("heading", { name: "Lobby" })).toBeVisible();
+  await a.getByRole("button", { name: "New table" }).click();
+  await expect(a.getByRole("heading", { name: "New game" })).toBeVisible();
+  // `exact: true`: switching this row to an email puts a "Seat 1 email" field
+  // beside it, and `getByLabel` matches by substring.
+  await a.getByLabel("Seat 1", { exact: true }).selectOption("email");
   await a.getByLabel("Seat 1 email").fill("b@e2e.test");
   const created = a.waitForResponse(
     (r) => /\/api\/games$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
