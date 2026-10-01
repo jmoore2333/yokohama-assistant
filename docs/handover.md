@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-01, the web lane WRAPPED: the stack #31 → #44 merged to master bottom-up with merge commits (`b1052bed`), `v0.6.0` tagged there, the wrap's row in `guidingpath.md` (`4ad19c40`); F's record stays [the close](plans/2026-10-01-web-frontend-m6.5c2f-close.md). Both hosts run F's release behind Access; W-3 was closed on your real browser the same day (the row). `test.yml` and `docker.yml` stay disabled by your word. **NEXT, in a fresh session: the hotfix spec [`plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md`](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md)** (the V5 ship's one CLI line, done now, from the spec alone), then the computer player (Track 1).
+**Updated:** 2026-10-01, the web lane WRAPPED: the stack #31 → #44 merged to master bottom-up with merge commits (`b1052bed`), `v0.6.0` tagged there, the wrap's row in `guidingpath.md` (`4ad19c40`); F's record stays [the close](plans/2026-10-01-web-frontend-m6.5c2f-close.md). Both hosts run F's release behind Access; W-3 was closed on your real browser the same day (the row). `test.yml` and `docker.yml` stay disabled by your word. The hotfix [`plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md`](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md) (the V5 ship's one CLI line) landed the same day (`guidingpath.md`'s row). **NEXT: the computer player (Track 1).**
 
 **History, by record.** This board keeps no running history; each session's account is its record of record:
 - 2026-10-01 — cycle F "the clean finish" closed ([close](plans/2026-10-01-web-frontend-m6.5c2f-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-30-web-frontend-m6.5c2f-plan.md`](plans/2026-09-30-web-frontend-m6.5c2f-plan.md)); the public window vetted the no-Access door and reverted it.
@@ -101,12 +101,13 @@ and the scribe tooling are parked in `docs/temp/owner-games/ledger/` (README ins
    sign, then ONE confirmatory battery) → OD-8 acceptance play → OD-11, the bar. A weight change
    is a DIFFERENT contestant (D1), never a tune.
 
-**Owed by the V5 ship (R-F4, cycle F, 2026-10-01):** a V5 build plays V4 games on the web exactly
-when the V5 ship (a) admits `v4-step9-draft1` in the CLI's `eligible` AND (b) still derives V4's
-exact descriptor, `LOOKAHEAD_IMPL_VERSION` and `EVAL_IMPL_VERSION` unmoved — a weights-only V5.
-A V5 that moves either refuses them as DRIFT; until a V5 build admits `v4-step9-draft1`, it refuses
-them with `eligible`'s own sentence, as the CLI does (the re-entry handover §5, item 12;
-[`web-lane.md`](web-lane.md) §15).
+**The V5 ship's one CLI line is DONE (R-F4; the hotfix, 2026-10-01):** a V5 build plays V4 games
+on the web exactly when it still derives V4's exact descriptor, `LOOKAHEAD_IMPL_VERSION` and
+`EVAL_IMPL_VERSION` unmoved — a weights-only V5; the admission is in place since 2026-10-01
+(`GRANDFATHERED_NAMED_IDENTITIES` in `crates/yokohama-cli/src/bot.rs`). **What the re-point owes
+this line is the append:** the V5 ship adds its identity to that list and never removes one. A V5
+that moves either refuses V4 games as DRIFT (the re-entry handover §5, item 12;
+[`web-lane.md`](web-lane.md) §15; [the spec](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md)).
 
 **You decide:** D3 · W6 · OD-6 (restate the ≤420s roster target — the M5 read 492.17s) · OD-8's
 format (game count, rubric — its inherited "brake behind" line contradicts canon ruling 15).

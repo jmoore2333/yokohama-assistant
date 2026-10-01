@@ -14,7 +14,9 @@
 //! identity `v4-step9-draft1` ([`Contestant::PRODUCTION`]). The two labelled
 //! DIAGNOSTIC arms (`mcts-v1`, the S2 atomic arm) are refused by name in
 //! [`eligible`] -- the CLI is a player's driver, not a second diagnostic
-//! surface, and every evaluator seat it runs has to be `why`-explainable. The
+//! surface, and every evaluator seat it runs has to be `why`-explainable. A
+//! named identity that shipped as production is grandfathered on resume once
+//! production moves on (`GRANDFATHERED_NAMED_IDENTITIES`, 2026-10-01); the
 //! OTHER named identities stay refused as research arms, by a different
 //! sentence, because they are a different fact. Rungs are grandfathered so that
 //! every save ever written by this driver still resumes.
@@ -34,10 +36,10 @@
 //! (`GreedyAgent`/`LookaheadAgent` sample their world from their own stream
 //! inside `choose`), constructed here exactly as `Contestant::build` constructs
 //! it -- same table, same constructor, same knobs -- and pinned equal to it by
-//! `decide_matches_contestant_build_for_every_eligible_evaluator_arm`. The
-//! PRODUCTION seat has one construction in this crate, [`production_agent`],
-//! which `suggest` calls too, so the seat you play against and the seat that
-//! advises you cannot be built two ways. It takes
+//! `decide_matches_contestant_build_for_every_eligible_evaluator_arm`. A
+//! NAMED seat has one construction in this crate, `named_agent`, which
+//! `suggest` reaches through [`production_agent`] too, so the seat you play
+//! against and the seat that advises you cannot be built two ways. It takes
 //! the seat's `PlayerView` and nothing else, so the honesty property is the
 //! same one, reached through the agent rather than through this module.
 //!
@@ -253,6 +255,14 @@ impl BotSeats {
     /// It cannot fire inside one build; it exists for the resume of a record
     /// written by another one.
     pub fn from_provenance(run: Option<&RunProvenance>) -> (Self, Vec<String>) {
+        Self::from_provenance_under(Contestant::PRODUCTION, run)
+    }
+
+    /// [`from_provenance`](Self::from_provenance) with the production
+    /// contestant a PARAMETER -- [`eligible_under`]'s, threaded. Every caller
+    /// but the tests passes [`Contestant::PRODUCTION`]; the tests pass a
+    /// stand-in, which is how a re-point's future is held to the resume today.
+    fn from_provenance_under(production: Contestant, run: Option<&RunProvenance>) -> (Self, Vec<String>) {
         let Some(run) = run else {
             return (Self::none(), Vec::new());
         };
@@ -264,7 +274,9 @@ impl BotSeats {
                 seats.push(None);
                 continue;
             }
-            match Contestant::from_parts(&seat.controller, &seat.params).map(eligible) {
+            match Contestant::from_parts(&seat.controller, &seat.params)
+                .map(|contestant| eligible_under(production, contestant))
+            {
                 Ok(Ok(contestant)) => {
                     // This driver keys every bot seat with ONE stream seed, so
                     // a record carrying two is not something it wrote. Say so
@@ -338,7 +350,9 @@ impl BotSeats {
 /// provisional against amendment D1's post-screening production freeze, which
 /// is the knob-screening step the checkpoint routes after this milestone.
 /// Re-pointing it again is a ship event with its own commit, moving all four
-/// bindings together or none.
+/// bindings together or none -- and APPENDING the new identity to
+/// `GRANDFATHERED_NAMED_IDENTITIES`, where the identity it retires stays, so
+/// every unfinished game against the retired bot plays on (2026-10-01, R-F4).
 ///
 /// There is NO picker. The wizard's question stays "which seats are bots";
 /// difficulty levels and per-seat contestant choice are out of scope (OD-4(i)).
@@ -359,7 +373,9 @@ pub const PROVISIONAL_DEFAULT_BOT: Contestant = Contestant::PRODUCTION;
 /// ever wrote names one, and dropping them would make old games unresumable),
 /// `greedy-v1` and `lookahead-v1`, the two arms that ACCOUNT for their move,
 /// and the shipped PRODUCTION contestant, which since 2026-08-30 is a NAMED
-/// identity and accounts for its move exactly as `lookahead-v1` does.
+/// identity and accounts for its move exactly as `lookahead-v1` does -- with,
+/// since 2026-10-01, every named identity that shipped as production before it
+/// ([`GRANDFATHERED_NAMED_IDENTITIES`]).
 /// `mcts-v1` and the S2 atomic arm are labelled diagnostics in core
 /// (mcts-v1 measured and NOT adopted, per the 3.4 architecture decision), and
 /// the principle is worth stating once: every EVALUATOR seat this driver runs
@@ -374,7 +390,47 @@ pub const PROVISIONAL_DEFAULT_BOT: Contestant = Contestant::PRODUCTION;
 /// `move_legality` discipline): a contestant added to core lands here as a
 /// COMPILE ERROR asking whether the CLI should run it, rather than being
 /// silently admitted or silently refused.
+///
+/// **Admission here is for a game that EXISTS** (2026-10-01, R-F4): the
+/// resume ([`BotSeats::from_provenance`]) and `why`'s reconstruction. A NEW
+/// table's seats are dealt by the wizard, which deals
+/// [`PROVISIONAL_DEFAULT_BOT`] alone and never asks this function, so a
+/// [grandfathered](GRANDFATHERED_NAMED_IDENTITIES) identity is never a seat
+/// anyone can choose at a new table; it is the bot an unfinished game was
+/// played against, played on.
 pub(crate) fn eligible(contestant: Contestant) -> Result<Contestant, String> {
+    eligible_under(Contestant::PRODUCTION, contestant)
+}
+
+/// **Every named identity that has SHIPPED as [`Contestant::PRODUCTION`], in
+/// ship order** (2026-10-01, R-F4: a build that reconstructs the exact
+/// recorded bot plays on; new games deal only the production bot).
+///
+/// [`eligible`] admits each of these whatever production is today, and
+/// [`decide`] plays each on its OWN table, so the day production re-points an
+/// unfinished game against a retired production bot resumes as that bot
+/// rather than as a HUMAN in the CLI and a refusal on the web. Whether it then
+/// plays EXACTLY as recorded is the drift check's question
+/// ([`identity_drift_warnings`]), not this list's.
+///
+/// **A re-point APPENDS the identity it ships here and NEVER removes one** --
+/// a removal turns every unfinished game against that bot into a human seat.
+/// `grandfathered_named_identities_carry_every_identity_that_shipped_as_production`
+/// fails until the shipped identity is here.
+pub(crate) const GRANDFATHERED_NAMED_IDENTITIES: &[NamedIdentity] = &[NamedIdentity::V4Step9Draft1];
+
+/// Is the named `arm` a seat this driver plays under `production` -- the
+/// production identity itself, or a [grandfathered](GRANDFATHERED_NAMED_IDENTITIES)
+/// one? The ONE predicate [`eligible_under`] and [`decide_under`] guard their
+/// named arms with, so the admission and the decision cannot come apart.
+fn admits_named(production: Contestant, arm: NamedIdentity) -> bool {
+    Contestant::NamedTable(arm) == production || GRANDFATHERED_NAMED_IDENTITIES.contains(&arm)
+}
+
+/// [`eligible`] with the production contestant a PARAMETER. Every caller but
+/// the tests passes [`Contestant::PRODUCTION`]; the tests pass a stand-in,
+/// which is how a re-point's future is held to today's code.
+fn eligible_under(production: Contestant, contestant: Contestant) -> Result<Contestant, String> {
     match contestant {
         Contestant::Policy(_) | Contestant::GreedyV1 { .. } | Contestant::LookaheadV1 { .. } => {
             Ok(contestant)
@@ -382,11 +438,13 @@ pub(crate) fn eligible(contestant: Contestant) -> Result<Contestant, String> {
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             Err(diagnostic_refusal(contestant))
         }
-        // **ONE named identity is admitted: the one this driver SHIPS.** Since
-        // the 2026-08-30 V4 ship commit the production contestant is
-        // `Contestant::PRODUCTION`, a named table -- so it is admitted by
-        // EQUALITY with that const rather than by its arm, which is what keeps
-        // the admission exactly one seat wide.
+        // **The named identities admitted are the ones this driver has
+        // SHIPPED.** Since the 2026-08-30 V4 ship commit the production
+        // contestant is `Contestant::PRODUCTION`, a named table -- so it is
+        // admitted by EQUALITY with that const rather than by its arm, and
+        // since 2026-10-01 so is every identity that shipped as production
+        // before it (`GRANDFATHERED_NAMED_IDENTITIES`, which today holds V4
+        // alone, so the admitted set is still exactly one seat wide).
         //
         // The other named identities (core's V4 step-8 arena surface) stay
         // RESEARCH arms: they exist so a §11 weight comparison is a runnable
@@ -398,29 +456,22 @@ pub(crate) fn eligible(contestant: Contestant) -> Result<Contestant, String> {
         // same commit) plus a wizard surface plus a resume path -- a decision
         // for whoever wants that seat, made then, not a side effect of core
         // gaining an arena identity.
-        Contestant::NamedTable(_) if contestant == Contestant::PRODUCTION => Ok(contestant),
+        Contestant::NamedTable(arm) if admits_named(production, arm) => Ok(contestant),
         Contestant::NamedTable(_) => Err(research_identity_refusal(contestant)),
     }
 }
 
-/// **THE ONE CONSTRUCTION of the shipped production seat in this crate.**
+/// **The shipped production seat, as `suggest` builds it** -- through
+/// [`named_agent`], the one construction [`decide`]'s named arm builds every
+/// named seat with, so the seat you play against and the seat that advises you
+/// cannot be built two ways.
 ///
-/// Called by [`decide`]'s named arm (the seat you play against) and by
-/// `suggest` (the seat that advises you), which is the whole point: those two
-/// were separate constructions that happened to agree until the 2026-08-30 ship
-/// commit -- `suggest` reaching `LookaheadAgent::new`'s constructor defaults
-/// while `decide` spelled the knobs out -- and
+/// Those two were separate constructions that happened to agree until the
+/// 2026-08-30 ship commit -- `suggest` reaching `LookaheadAgent::new`'s
+/// constructor defaults while `decide` spelled the knobs out -- and
 /// [`PROVISIONAL_DEFAULT_BOT`]'s doc has said since W5 that the freeze must
 /// unify them. `suggest_and_the_production_seat_decide_identically_at_one_seed`
 /// is the cell that would notice if they came apart again.
-///
-/// It mirrors `Contestant::build`'s `NamedTable` arm rather than calling it,
-/// for [`decide`]'s stated reason: `build` returns a `Box<dyn ArenaAgent>`,
-/// which erases the `last_explanation`/`last_roots`/`last_stats` surface `why`
-/// and `suggest` render from. The mirror is held equal to what it mirrors by
-/// `decide_matches_contestant_build_for_every_eligible_evaluator_arm`, and the
-/// three knobs come from `NamedIdentity::KNOBS` -- core's own spelling of them
-/// -- so this crate transcribes no number.
 pub(crate) fn production_agent(rules: &Rules, decision_seed: u64) -> lookahead::LookaheadAgent {
     let Contestant::NamedTable(arm) = PROVISIONAL_DEFAULT_BOT else {
         // Unreachable by CONSTANT rather than by guard, `decide`'s discipline:
@@ -431,6 +482,25 @@ pub(crate) fn production_agent(rules: &Rules, decision_seed: u64) -> lookahead::
         // place the crate asserts its own const's shape.
         unreachable!("the production contestant is a named identity")
     };
+    named_agent(arm, rules, decision_seed)
+}
+
+/// **THE ONE CONSTRUCTION of a named seat in this crate**: the production seat
+/// (through [`production_agent`]) and, since 2026-10-01, a
+/// [grandfathered](GRANDFATHERED_NAMED_IDENTITIES) one, each on its OWN table
+/// -- a grandfathered seat built on the production's table would play a bot its
+/// record does not name.
+///
+/// It mirrors `Contestant::build`'s `NamedTable` arm rather than calling it,
+/// for [`decide`]'s stated reason: `build` returns a `Box<dyn ArenaAgent>`,
+/// which erases the `last_explanation`/`last_roots`/`last_stats` surface `why`
+/// and `suggest` render from. The mirror is held equal to what it mirrors by
+/// `decide_matches_contestant_build_for_every_eligible_evaluator_arm` and, for
+/// a re-pointed production, by
+/// `decide_plays_each_admitted_named_seat_on_its_own_table_under_a_re_pointed_production`;
+/// the three knobs come from `NamedIdentity::KNOBS` -- core's own spelling of
+/// them -- so this crate transcribes no number.
+fn named_agent(arm: NamedIdentity, rules: &Rules, decision_seed: u64) -> lookahead::LookaheadAgent {
     let knobs = NamedIdentity::KNOBS;
     lookahead::LookaheadAgent::with_knobs(
         rules,
@@ -601,6 +671,20 @@ pub(crate) fn decide(
     seat: PlayerId,
     decision_seed: u64,
 ) -> Result<Decision, BotError> {
+    decide_under(Contestant::PRODUCTION, contestant, state, rules, seat, decision_seed)
+}
+
+/// [`decide`] with the production contestant a PARAMETER, for
+/// [`eligible_under`]'s reason: it reads only into the named arm's admission
+/// ([`admits_named`]), never into a construction.
+fn decide_under(
+    production: Contestant,
+    contestant: Contestant,
+    state: &GameState,
+    rules: &Rules,
+    seat: PlayerId,
+    decision_seed: u64,
+) -> Result<Decision, BotError> {
     let view = observe(state, seat).map_err(|e| BotError::View(e.to_string()))?;
     match contestant {
         Contestant::Policy(policy) => {
@@ -684,14 +768,16 @@ pub(crate) fn decide(
         Contestant::MctsV1 { .. } | Contestant::AtomicDiag { .. } => {
             Err(BotError::DeadEnd(diagnostic_refusal(contestant)))
         }
-        // **THE SHIPPED PRODUCTION SEAT.** Built through [`production_agent`],
-        // the one construction `suggest` shares, and read out exactly as the
-        // `lookahead-v1` arm above reads out -- a named arm IS a
-        // `LookaheadAgent`, so the ranked roots, the continuation and the
-        // counters are all there and `why` renders the full block.
-        Contestant::NamedTable(_) if contestant == Contestant::PRODUCTION => {
+        // **THE SHIPPED PRODUCTION SEAT, AND EVERY ONE THAT SHIPPED BEFORE
+        // IT.** Built through [`named_agent`] on the seat's OWN table -- the
+        // one construction `suggest` shares through [`production_agent`] --
+        // and read out exactly as the `lookahead-v1` arm above reads out -- a
+        // named arm IS a `LookaheadAgent`, so the ranked roots, the
+        // continuation and the counters are all there and `why` renders the
+        // full block.
+        Contestant::NamedTable(arm) if admits_named(production, arm) => {
             preflight_belief(&view, rules, decision_seed)?;
-            let mut agent = production_agent(rules, decision_seed);
+            let mut agent = named_agent(arm, rules, decision_seed);
             let report = agent.choose(&view, rules).map_err(BotError::DeadEnd)?;
             let explanation = cloned_explanation(agent.last_explanation(), &contestant)?;
             let mut ranking = agent.last_roots().to_vec();
@@ -1061,9 +1147,10 @@ mod tests {
             Contestant::LOOKAHEAD_V1_DEFAULT,
             Contestant::LookaheadV1 { b: 2, k: 1, m: 4, cap: Some(200) },
             // The SHIPPED seat since the 2026-08-30 ship commit. It is the arm
-            // this pin most needs: `decide` builds it through `production_agent`
-            // — a cli-side function `suggest` shares — so the construction that
-            // could drift from `Contestant::build` is one this crate authors.
+            // this pin most needs: `decide` builds it through `named_agent` —
+            // the construction `suggest` reaches through `production_agent` —
+            // so the construction that could drift from `Contestant::build` is
+            // one this crate authors.
             Contestant::PRODUCTION,
         ];
         assert!(arms.contains(&PROVISIONAL_DEFAULT_BOT), "the wizard's default must be swept");
@@ -1162,8 +1249,9 @@ mod tests {
     /// cannot drift apart" — and until 2026-08-30 the two were separate
     /// constructions that happened to agree, `suggest` reaching
     /// `LookaheadAgent::new`'s constructor defaults while `decide` spelled the
-    /// knobs out. They now share [`production_agent`], and this is the cell
-    /// that would notice if they stopped.
+    /// knobs out. They now share [`named_agent`] (`suggest` through
+    /// [`production_agent`]), and this is the cell that would notice if they
+    /// stopped.
     ///
     /// Pinned as a DECISION rather than as a shared call site, because the
     /// property is about what the two seats play: at one position and one seed
@@ -1206,22 +1294,26 @@ mod tests {
             finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)])
                 .unwrap();
 
-        // **THE PRODUCTION ARM IS EXCLUDED, and its exclusion is asserted.**
-        // Since 2026-08-30 one named identity IS the seat this driver ships, so
-        // the refusal narrowed from "every named arm" to "every named arm that
-        // is not the production contestant". The sentence the other arms are
-        // refused with is unchanged: they are still research identities for
-        // arena weight comparisons, and that is still a different fact from a
-        // diagnostic arm.
+        // **THE ADMITTED ARMS ARE EXCLUDED, and their exclusion is asserted.**
+        // Since 2026-08-30 one named identity IS the seat this driver ships,
+        // and since 2026-10-01 every identity that shipped as production is
+        // grandfathered (`GRANDFATHERED_NAMED_IDENTITIES`, the production one
+        // among them), so the refusal narrowed from "every named arm" to "every
+        // named arm this driver neither ships nor has shipped". The sentence
+        // the other arms are refused with is unchanged: they are still research
+        // identities for arena weight comparisons, and that is still a
+        // different fact from a diagnostic arm. Read through `admits_named`, so
+        // a re-point that appends its identity keeps this cell green.
         let research: Vec<NamedIdentity> = NamedIdentity::ALL
             .into_iter()
-            .filter(|arm| Contestant::NamedTable(*arm) != Contestant::PRODUCTION)
+            .filter(|arm| !admits_named(Contestant::PRODUCTION, *arm))
             .collect();
         assert_eq!(
             research.len(),
-            NamedIdentity::ALL.len() - 1,
-            "exactly one named arm is the production contestant",
+            NamedIdentity::ALL.len() - GRANDFATHERED_NAMED_IDENTITIES.len(),
+            "exactly the grandfathered named arms, production among them, are excluded",
         );
+        assert!(!research.is_empty(), "anti-vacuity: some named arm is still a research identity");
         for arm in research {
             let contestant = Contestant::NamedTable(arm);
             let refusal = eligible(contestant).expect_err("a named identity is not a CLI bot seat");
@@ -1251,9 +1343,14 @@ mod tests {
         // ANTI-VACUITY: the eligible arms are still eligible, so this pin
         // narrows the surface rather than closing it — and the production arm
         // is a NAMED arm that IS admitted, which is what stops the refusal from
-        // quietly widening back to every named identity.
+        // quietly widening back to every named identity. So is every
+        // grandfathered one.
         assert_eq!(eligible(PROVISIONAL_DEFAULT_BOT), Ok(PROVISIONAL_DEFAULT_BOT));
         assert_eq!(eligible(Contestant::PRODUCTION), Ok(Contestant::PRODUCTION));
+        for arm in GRANDFATHERED_NAMED_IDENTITIES {
+            let contestant = Contestant::NamedTable(*arm);
+            assert_eq!(eligible(contestant), Ok(contestant), "{} is grandfathered", arm.name());
+        }
         assert!(matches!(Contestant::PRODUCTION, Contestant::NamedTable(_)));
         decide(Contestant::PRODUCTION, &state, &rules, state.current_player, 11)
             .expect("the production seat decides rather than halting");
@@ -1387,6 +1484,145 @@ mod tests {
             assert_eq!(back.contestant_at(PlayerId::new(0)), Some(contestant));
             assert_eq!(back.contestant_at(PlayerId::new(1)), None);
             assert_eq!(back.seed(), bots.seed());
+        }
+    }
+
+    // ---- 2026-10-01 hotfix: the grandfathered named identities (R-F4) -----
+    //
+    // `docs/plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md`. Every
+    // cell below holds a RE-POINT's future to today's code with a STAND-IN
+    // production: `v2-padded` plays the part of a V5 identity, so the cells
+    // read what a build whose production is not V4 does with a V4 game.
+
+    /// The stand-in production -- a named identity that is NOT V4, as a V5
+    /// ship's would be.
+    const STAND_IN_PRODUCTION: Contestant = Contestant::NamedTable(NamedIdentity::V2Padded);
+
+    /// **The list carries every identity that shipped as production** -- and
+    /// the production identity of THIS build is one, so a re-point that forgets
+    /// to append its new identity fails here, and one that removes V4 fails
+    /// here and in the cells below.
+    #[test]
+    fn grandfathered_named_identities_carry_every_identity_that_shipped_as_production() {
+        let Contestant::NamedTable(shipped) = Contestant::PRODUCTION else {
+            panic!("the production contestant is a named identity")
+        };
+        assert!(
+            GRANDFATHERED_NAMED_IDENTITIES.contains(&shipped),
+            "{} shipped as production and is not in GRANDFATHERED_NAMED_IDENTITIES: a re-point \
+             APPENDS the identity it ships here, and NEVER removes one",
+            shipped.name(),
+        );
+        assert!(
+            GRANDFATHERED_NAMED_IDENTITIES.contains(&NamedIdentity::V4Step9Draft1),
+            "v4-step9-draft1 shipped as production on 2026-08-30: append, never remove",
+        );
+    }
+
+    /// **A grandfathered identity is admitted whatever production is**, and
+    /// the admission is exactly that wide: a research identity is still refused
+    /// in its own words, and a diagnostic arm in its.
+    #[test]
+    fn a_grandfathered_identity_is_admitted_under_any_production() {
+        assert_ne!(STAND_IN_PRODUCTION, Contestant::PRODUCTION, "fixture: a re-pointed production");
+        let v4 = Contestant::NamedTable(NamedIdentity::V4Step9Draft1);
+        assert_eq!(eligible_under(STAND_IN_PRODUCTION, v4), Ok(v4));
+        // The production itself, as ever.
+        assert_eq!(eligible_under(STAND_IN_PRODUCTION, STAND_IN_PRODUCTION), Ok(STAND_IN_PRODUCTION));
+
+        let research = Contestant::NamedTable(NamedIdentity::V2RefitPadded);
+        assert_eq!(
+            eligible_under(STAND_IN_PRODUCTION, research),
+            Err(research_identity_refusal(research)),
+            "a research identity is never grandfathered",
+        );
+        let mcts = Contestant::MCTS_V1_DEFAULT;
+        assert_eq!(eligible_under(STAND_IN_PRODUCTION, mcts), Err(diagnostic_refusal(mcts)));
+    }
+
+    /// **A recorded V4 seat resumes as V4 under a re-pointed production** --
+    /// silently, since the descriptor it carries is the one this build derives
+    /// -- while a research identity's seat still resumes HUMAN, loudly.
+    #[test]
+    fn from_provenance_resumes_a_recorded_v4_seat_under_a_re_pointed_production() {
+        let v4 = Contestant::NamedTable(NamedIdentity::V4Step9Draft1);
+        let run_of = |contestant: Contestant| RunProvenance {
+            schema: RUN_PROVENANCE_SCHEMA,
+            master_seed: None,
+            run_id: None,
+            seats: vec![contestant.provenance(Some(5)).observed_as(OBSERVATION_VIEW)],
+        };
+        let recorded = run_of(v4);
+        assert_eq!(
+            (recorded.seats[0].controller.clone(), recorded.seats[0].version, recorded.seats[0].params.clone()),
+            Contestant::PRODUCTION.descriptor(),
+            "fixture: the seat carries V4's descriptor as this build derives it",
+        );
+        let (bots, warnings) = BotSeats::from_provenance_under(STAND_IN_PRODUCTION, Some(&recorded));
+        assert_eq!(bots.contestant_at(PlayerId::new(0)), Some(v4), "{warnings:?}");
+        assert!(warnings.is_empty(), "the exact recorded bot resumes silently: {warnings:?}");
+        assert_eq!(bots.seed(), 5);
+
+        // The stand-in production itself resumes, as ever -- the line that
+        // makes this cell see its own `production`: a resume reading the
+        // const instead would refuse the stand-in as a research identity.
+        let (bots, warnings) =
+            BotSeats::from_provenance_under(STAND_IN_PRODUCTION, Some(&run_of(STAND_IN_PRODUCTION)));
+        assert_eq!(bots.contestant_at(PlayerId::new(0)), Some(STAND_IN_PRODUCTION), "{warnings:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        let research = Contestant::NamedTable(NamedIdentity::V2RefitPadded);
+        let (bots, warnings) = BotSeats::from_provenance_under(STAND_IN_PRODUCTION, Some(&run_of(research)));
+        assert_eq!(bots.contestant_at(PlayerId::new(0)), None, "a research seat resumes HUMAN");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(&research_identity_refusal(research)), "{}", warnings[0]);
+        assert!(warnings[0].contains("HUMAN"), "{}", warnings[0]);
+    }
+
+    /// **`decide` plays every admitted named seat on its OWN table** -- the
+    /// half of the hotfix the resume needs to mean anything: a V4 seat admitted
+    /// at resume and then built on the production's table (or refused at its
+    /// first decision) would play a bot the record does not name.
+    ///
+    /// Both admitted seats under the stand-in are held to `Contestant::build`,
+    /// so the cell fails whichever way the construction goes wrong: the
+    /// production's table for a grandfathered seat, or the build's own
+    /// production const for the stand-in. The anti-vacuity line is what makes
+    /// that a test: the two tables choose differently somewhere in the sweep.
+    #[test]
+    fn decide_plays_each_admitted_named_seat_on_its_own_table_under_a_re_pointed_production() {
+        let v4 = Contestant::NamedTable(NamedIdentity::V4Step9Draft1);
+        let (placement, rules) = branching_state();
+        let movement = movement_state(placement.clone(), &rules);
+        let mut the_tables_choose_differently = false;
+        for state in [&placement, &movement] {
+            let seat = state.current_player;
+            let view = observe(state, seat).expect("a sim seat's view");
+            for seed in [1u64, 7, 0x5EED] {
+                let mut chosen = Vec::new();
+                for arm in [STAND_IN_PRODUCTION, v4] {
+                    let mine = decide_under(STAND_IN_PRODUCTION, arm, state, &rules, seat, seed)
+                        .unwrap_or_else(|e| panic!("{arm:?} at seed {seed} must decide: {e}"));
+                    let (mut theirs, _handle) = arm.build(&rules, seed);
+                    let report = theirs.choose(&view, &rules).expect("the arena agent's own decision");
+                    assert_eq!(mine.mv, report.mv, "{arm:?} at seed {seed} played another table");
+                    assert!(mine.explain.is_some(), "{arm:?} accounts for its move");
+                    chosen.push(mine.mv);
+                }
+                the_tables_choose_differently |= chosen[0] != chosen[1];
+            }
+        }
+        assert!(
+            the_tables_choose_differently,
+            "anti-vacuity: the two tables must choose differently somewhere, or this cell \
+             cannot tell one construction from the other",
+        );
+
+        let research = Contestant::NamedTable(NamedIdentity::V2RefitPadded);
+        match decide_under(STAND_IN_PRODUCTION, research, &placement, &rules, placement.current_player, 11) {
+            Err(BotError::DeadEnd(message)) => assert_eq!(message, research_identity_refusal(research)),
+            Err(other) => panic!("a research identity halts with a DeadEnd, got {other:?}"),
+            Ok(_) => panic!("a research identity must not produce a decision"),
         }
     }
 }

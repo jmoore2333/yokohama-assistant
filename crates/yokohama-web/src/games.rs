@@ -1468,10 +1468,11 @@ mod tests {
     }
 
     /// **An unfinished game against an identity the CLI's `eligible` refuses is
-    /// refused in `eligible`'s own words** (cycle F, Review Focus 2 — the V5
-    /// shape: V4's place the day a V5 bot ships, until the V5 ship admits V4 in
-    /// the CLI). `v2-padded` is a non-production named identity; the CLI would
-    /// resume its seat as a human, and the web refuses the game naming why.
+    /// refused in `eligible`'s own words** (cycle F, Review Focus 2 — the shape
+    /// V4 would have had the day a V5 bot shipped, until the 2026-10-01 hotfix
+    /// grandfathered it in the CLI). `v2-padded` is a non-production named
+    /// identity; the CLI would resume its seat as a human, and the web refuses
+    /// the game naming why.
     #[test]
     fn an_unfinished_game_against_an_ineligible_named_identity_is_refused_in_eligible_s_words() {
         let games = games();

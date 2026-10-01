@@ -779,10 +779,11 @@ mod tests {
     }
 
     /// **An identity the CLI's `eligible` refuses is refused in `eligible`'s
-    /// own words** (cycle F, Review Focus 2 — the V5 shape: the day V5 ships,
-    /// V4 is a non-production named identity like these; the catcher for
-    /// `runs_here` admitting one). Its seat is reported with the reason, and
-    /// the same code admits it the day the CLI does.
+    /// own words** (cycle F, Review Focus 2 — the shape V4 would have had the
+    /// day V5 shipped, until the 2026-10-01 hotfix grandfathered it in the
+    /// CLI's `eligible`; the catcher for `runs_here` admitting one). Its seat
+    /// is reported with the reason, and the same code admits it the day the
+    /// CLI does.
     #[test]
     fn an_ineligible_named_identity_is_refused_in_eligible_s_own_words() {
         let v2 = against(&descriptor_of(Contestant::NamedTable(NamedIdentity::V2Padded)));
