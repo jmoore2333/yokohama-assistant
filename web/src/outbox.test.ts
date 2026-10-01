@@ -20,7 +20,8 @@ import {
   serverFactsTakenAt,
 } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
-import { CLAIMED_USER_KEY } from "./api";
+import { BOUND_MS, CLAIMED_USER_KEY } from "./api";
+import { applyBusy, resetDoorAutoApplyForTests } from "./swRegister";
 import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { DB_NAME, openDb, readOutboxRow } from "./local/db";
 import { STORAGE_BOUND_MS } from "./backup";
@@ -927,3 +928,177 @@ describe("the edge's challenge (cycle F)", () => {
     expect(await pending()).toEqual([]);
   });
 });
+
+// ---- Task 6 fix round 1 ------------------------------------------------------
+//
+// **A keyed build IS the open door** (R-FP4: production, behind Access, is
+// built WITHOUT the site key, only the open configuration deploys a build with
+// one, and the guard's check 12 holds them together). So under a keyed build a
+// visitor who has chosen no name is refused an upload for CERTAIN, and nothing
+// needs to be asked to know it: no health read, no widget, no post — at game
+// over, at a launch, in a drain. A keyless build (the Access builds, the NAS)
+// cannot know its door without the read, and makes it as E did.
+describe("a nameless visitor under a keyed build (Task 6 fix round 1, Important 1)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  const reasons = async () => (await pending()).map((r) => [r.id, r.reason]).sort();
+  /** The remembered facts: the open door, keeping an archive, read `age` ms ago. */
+  const remembered = (age: number) =>
+    rememberServerFacts({ ...wire.health, identity: "open", archive: "dir" }, Date.now() - age);
+
+  beforeEach(() => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+  });
+
+  it("makes NO request at a fresh context's game over, and marks the game signed-out", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    expect(serverFactsTakenAt(), "the premise: nothing has ever been read").toBeNull();
+    await noteGameOver(GAME);
+    expect(stub.calls, "no health read and no post").toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+  });
+
+  it("makes NO request for a signed-out row at a visible launch, however stale the facts, nor for any row in a drain", async () => {
+    await enqueue(GAME, "signed-out");
+    await enqueue(SECOND, "offline");
+    remembered(2 * 3_600_000);
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+    const stub = stubApi(() => challenged());
+    const stop = startOutbox();
+    await drainVisible(); // queued behind the launch's own pass
+    await drain({ interactive: false });
+    await sendNow(SECOND);
+    expect(stub.calls, "nothing asked of the server").toHaveLength(0);
+    expect(handler).not.toHaveBeenCalled();
+    // The row a drain would have sent is written down for what it is waiting
+    // on — a name — and the signed-out row stays as it was.
+    expect(await reasons()).toEqual([
+      [GAME, "signed-out"],
+      [SECOND, "signed-out"],
+    ]);
+    stop();
+  });
+
+  it("retries a signed-out row through the widget at a visible launch once a name is stored", async () => {
+    await enqueue(GAME, "signed-out");
+    remembered(2 * 3_600_000);
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    let cleared = false;
+    const handler = vi.fn(() => {
+      cleared = true;
+      return Promise.resolve();
+    });
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const stop = startOutbox();
+    await vi.waitFor(async () => expect(await pending()).toEqual([]));
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    stop();
+  });
+
+  it("keeps E's health read in a KEYLESS build, where the door is not known without it", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "open", archive: "dir" };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /api/health"]);
+    // The read named the open door, and the post it would refuse is not made
+    // (F-14, the first commit's rule).
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+  });
+});
+
+// **The check outlasts the read's 5 s wait** (Task 6 fix round 1, Important
+// 2). The bound is the CALLER's wait, not the request's: a person passing the
+// widget in 6 s pays for an answer, and the answer is kept when it lands — the
+// fact written down, the rows sent again through the ordinary pass under the
+// clearance, with no second widget — and the door's own apply is held until
+// then, so a waiting release cannot reload the page under the overlay.
+describe("a check that outlasts the archive fact's wait (Task 6 fix round 1, Important 2)", () => {
+  const SECOND = "local-8";
+  const challenged = () =>
+    new Response("<html>challenge</html>", {
+      status: 403,
+      headers: { "cf-mitigated": "challenge", "content-type": "text/html" },
+    });
+  /** A real turn of the event loop: the store runs on `setImmediate`, which
+   *  the cell leaves real while it fakes the clock. */
+  const tick = () => new Promise<void>((r) => setImmediate(r));
+  const until = async (ok: () => boolean | Promise<boolean>, what: string) => {
+    for (let i = 0; i < 400; i += 1) {
+      if (await ok()) return;
+      await tick();
+    }
+    throw new Error(`${what} never became true`);
+  };
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetDoorAutoApplyForTests();
+  });
+
+  it("returns at the bound, keeps the answer that lands at 6 s, lands the rows with no second widget, and holds the door's apply until then", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+    await enqueue(GAME, "challenged");
+    await enqueue(SECOND, "challenged");
+    expect(serverFactsTakenAt(), "the premise: a fresh context, nothing read").toBeNull();
+    let cleared = false;
+    const handler = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            cleared = true;
+            resolve();
+          }, 6_000);
+        }),
+    );
+    setChallengeHandler(handler);
+    const stub = stubApi((call) => {
+      if (!cleared) return challenged();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    let returned = false;
+    const drained = drainVisible().then(() => {
+      returned = true;
+    });
+    await until(() => handler.mock.calls.length > 0, "the widget was asked for");
+
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => returned, "the drain returned at the bound");
+    await drained;
+    expect(cleared, "the overlay is still up").toBe(false);
+    expect(applyBusy(), "the door's apply is held under the overlay").toBe(true);
+    expect(serverFactsTakenAt()).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(6_000 - BOUND_MS);
+    expect(cleared).toBe(true);
+    await until(async () => (await pending()).length === 0, "the rows landed");
+    expect(serverFactsTakenAt(), "the answer the check paid for is kept").not.toBeNull();
+    expect(archiveAnswer()).toBe("dir");
+    expect(handler, "no second widget").toHaveBeenCalledTimes(1);
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(2);
+    await until(() => !applyBusy(), "the door's apply was released");
+  });
+});
+

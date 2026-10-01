@@ -44,6 +44,19 @@
 //    are `drainVisible`, which shows the widget through the seam and sends
 //    again. And a visitor who has chosen no name under the open door is never
 //    posted for: the layer's refusal is certain (F-14).
+// 6b. **A keyed build is the open door by R-FP4** (Task 6 fix round 1): only
+//    the open configuration deploys a build with a Turnstile site key, and the
+//    deploy guard's check 12 holds the two together. So under a keyed build a
+//    visitor with no claimed name is refused an upload for CERTAIN without
+//    anything being asked — and nothing is: no health read, no widget, no post,
+//    at game over (a fresh context's included), at a launch or in any drain.
+//    Their games are written down `"signed-out"`, and a `"signed-out"` row is
+//    retried only once a name is stored. A KEYLESS build (the Access builds,
+//    the NAS) cannot know its door without the read, and makes it as E did.
+// 6c. **The archive fact's wait is bounded, its read is not** (Task 6 fix
+//    round 1): a check that takes longer than the read's 5 s wait still lands
+//    its answer, which is written down, and the pass that waited sends its rows
+//    again then — with the door's own apply held until it has.
 // 7. **Every entry point ANSWERS, with ONE named exception.** Each is called
 //    with `void` from a render or an event handler, so a browser with no usable
 //    IndexedDB — a private window, a blocked site — has no outbox rather than
@@ -82,6 +95,7 @@ import {
   type ArchiveKind,
 } from "./local/facts";
 import { setApplyBusy } from "./swRegister";
+import { turnstileSiteKey } from "./buildValues";
 
 export type { PendingReason };
 
@@ -430,6 +444,13 @@ async function attempt(
       await forget(db, id);
       return undefined;
     }
+    // **Rule 6b: a keyed build is the open door by R-FP4**, so a nameless
+    // visitor's upload is refused for certain — whatever this browser has or
+    // has not been told — and the game waits for a name.
+    if (namelessUnderKey()) {
+      await putPending(db, id, "signed-out");
+      return undefined;
+    }
     if (kind === "unknown") {
       await putPending(db, id, "unknown");
       return undefined;
@@ -457,6 +478,21 @@ async function attempt(
  *  asked for a person and none passed, which stops the pass (rule 6a). */
 type Outcome = "challenged" | undefined;
 
+/** Rule 6b: whether this visitor's upload is refused for CERTAIN with nothing
+ *  asked — a keyed build is the open door by R-FP4, and under the open door a
+ *  visitor with no claimed name is not one the layer will take a post from. */
+const namelessUnderKey = (): boolean => Boolean(turnstileSiteKey()) && claimedUser() === null;
+
+/** Rule 6b's pass: write each game down for what it is waiting on, asking the
+ *  server NOTHING. The remembered archive fact still drops a game a deployment
+ *  known to keep none has no use for (`attempt`'s order). */
+async function holdForAName(ids: readonly string[]): Promise<void> {
+  const kind = archiveAnswer();
+  await withStore(async (db) => {
+    for (const id of ids) await attempt(db, id, kind);
+  }, undefined);
+}
+
 /** Mark every row in `ids` "waiting for a human check" — what a challenge met
  *  by a pass's health read, or by one of its sends, says of the rest (F-15). */
 async function markChallenged(ids: readonly string[]): Promise<void> {
@@ -480,14 +516,45 @@ async function attemptAll(ids: readonly string[], kind: ArchiveKind, interactive
 
 /** The archive fact for a pass — or `"challenged"` when the edge challenged the
  *  health read and no check passed for it (rule 6a; F-15: a fresh context's
- *  FIRST request is this one). */
-async function archiveFactFor(interactive: boolean): Promise<ArchiveKind | "unknown" | "challenged"> {
+ *  FIRST request is this one).
+ *
+ *  **And a read that outlives its wait is followed** (rule 6c): `ids` are the
+ *  rows this pass was for, and [`followLate`] sends them again when the late
+ *  answer lands. */
+async function archiveFactFor(
+  interactive: boolean,
+  ids: readonly string[],
+): Promise<ArchiveKind | "unknown" | "challenged"> {
   try {
-    return await ensureArchiveFact({ interactive });
+    return await ensureArchiveFact({ interactive, onLate: (landed) => followLate(landed, interactive, ids) });
   } catch (e) {
     if (isEdgeRefusal(e)) return "challenged";
     throw e;
   }
+}
+
+/**
+ * Rule 6c: the archive fact's read went on past its wait — a person still
+ * passing the widget, or a slow server.
+ *
+ * **The door's own apply is held until it settles** (R-FP14): a waiting release
+ * must not reload the page under the overlay. When the answer lands it has
+ * been written down, and the waiting rows go through the ordinary pass — a
+ * VISIBLE one where this was, so a challenged row is among them — which now
+ * finds the fact fresh and the clearance set: no second read, no second
+ * widget. A read the edge refused after all (Cancel, a second challenge) marks
+ * the rows it was for "waiting for a human check", as an answer inside the
+ * wait would have.
+ */
+function followLate(landed: Promise<unknown>, interactive: boolean, ids: readonly string[]): void {
+  setApplyBusy(true);
+  void landed
+    .then(
+      () => (interactive ? drainVisible() : drain({ interactive: false })),
+      (e: unknown) => (isEdgeRefusal(e) ? serial(() => markChallenged(ids)) : undefined),
+    )
+    .catch(() => undefined)
+    .finally(() => setApplyBusy(false));
 }
 
 /** Whether this pass may show the widget: a person is looking at the tab. */
@@ -515,8 +582,16 @@ export async function noteGameOver(id: string): Promise<void> {
     // the widget here (cycle F) — unless the tab is hidden, as a reload of a
     // finished game in a background tab is: then the row waits for a visible
     // one, like every background pass's.
+    //
+    // **Rule 6b first**: under a keyed build a nameless visitor's game is
+    // written down for its name, and the server is asked nothing — a fresh
+    // context's first game over included.
+    if (namelessUnderKey()) {
+      await holdForAName([id]);
+      return;
+    }
     const interactive = visible();
-    const kind = await archiveFactFor(interactive);
+    const kind = await archiveFactFor(interactive, [id]);
     if (kind === "challenged") {
       await markChallenged([id]);
       return;
@@ -544,21 +619,39 @@ export async function noteGameOver(id: string): Promise<void> {
 export async function drain(opts: { interactive?: boolean } = {}): Promise<void> {
   const interactive = opts.interactive ?? false;
   await serial(async () => {
+    // **Rule 6b**: a `signed-out` row under a keyed build with no name stored
+    // is waiting on a NAME, which no read and no widget can supply — it is
+    // left out, and retried once a name is stored.
+    const nameless = namelessUnderKey();
     const waiting = await withStore(
       async (db) =>
         (await readOutbox(db))
           .filter(isPending)
-          .filter((r) => r.reason !== "refused" && (interactive || r.reason !== "challenged")),
+          .filter(
+            (r) =>
+              r.reason !== "refused" &&
+              (interactive || r.reason !== "challenged") &&
+              !(nameless && r.reason === "signed-out"),
+          ),
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     if (waiting.length === 0) return;
+    // Any other row of a nameless visitor's under a keyed build is written down
+    // for its name, with nothing asked (rule 6b).
+    if (nameless) {
+      await holdForAName(waiting.map((r) => r.id));
+      return;
+    }
     // **The door's own apply waits while rows are being sent** (cycle F,
     // R-FP14): a reload in the middle of a send would lose the row's answer.
     // Held only where there is something to send — an empty queue, the
     // ordinary state, never touches it.
     setApplyBusy(true);
     try {
-      const kind = await archiveFactFor(interactive);
+      const kind = await archiveFactFor(
+        interactive,
+        waiting.map((r) => r.id),
+      );
       if (kind === "challenged") {
         await markChallenged(waiting.map((r) => r.id));
         return;
@@ -602,8 +695,13 @@ export async function drainVisible(): Promise<void> {
 /** One game, because the player asked for it by name. */
 export async function sendNow(id: string): Promise<void> {
   await serial(async () => {
+    // Rule 6b: a nameless visitor under a keyed build is asked nothing.
+    if (namelessUnderKey()) {
+      await holdForAName([id]);
+      return;
+    }
     // A click: a person is here, and a challenge shows the widget (cycle F).
-    const kind = await archiveFactFor(true);
+    const kind = await archiveFactFor(true, [id]);
     if (kind === "challenged") {
       await markChallenged([id]);
       return;
@@ -633,10 +731,19 @@ export async function reconsiderAll(): Promise<void> {
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     const waiting = rows.filter((r) => r.reason !== "refused");
+    // Rule 6b: a nameless visitor under a keyed build is asked nothing, and
+    // their `signed-out` rows stay as they are.
+    if (namelessUnderKey()) {
+      await holdForAName(waiting.filter((r) => r.reason !== "signed-out").map((r) => r.id));
+      return;
+    }
     // **A background pass** (cycle F, rule 6a): a discovery is neither a
     // launch nor a click, so it shows no widget, and a challenge marks the
     // rows it would have sent.
-    const kind = await archiveFactFor(false);
+    const kind = await archiveFactFor(
+      false,
+      waiting.map((r) => r.id),
+    );
     if (kind === "challenged") {
       await markChallenged(waiting.map((r) => r.id));
       return;

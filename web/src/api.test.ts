@@ -15,6 +15,7 @@ import {
   onUnauthorized,
 } from "./api";
 import { EDGE_CHECK, EDGE_CHECK_REPEATED, resetTurnstileForTests, setChallengeHandler } from "./turnstile";
+import { facts, resetFactsForTest, serverFactsTakenAt } from "./local/facts";
 import { readStream } from "./sse";
 import { resetLocalHostForTests } from "./local/client";
 import { TAKEN_OVER_SENTENCE } from "./local/lost";
@@ -560,6 +561,32 @@ describe("the edge's challenge (cycle F, R-FP8)", () => {
     expect(isEdgeRefusal(refused)).toBe(true);
     expect(handler).toHaveBeenCalledTimes(1);
     expect(asked).toHaveLength(2);
+  });
+
+  // **The bound is the caller's WAIT, never the read's** (Task 6 fix round 1,
+  // Important 2): a check a person takes 6 s to pass still pays for an answer,
+  // and that answer is written down when it lands — the caller told, through
+  // `onLate`, that the read it stopped waiting for is still out.
+  it("keeps the archive fact's answer when it lands after the 5 s wait, and tells the caller", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      resetFactsForTest();
+      setChallengeHandler(() => new Promise<void>((resolve) => setTimeout(resolve, 6_000)));
+      answers(challenged, () => json({ ...wire.health, archive: "dir" }));
+      let late: Promise<unknown> | null = null;
+      const waited = ensureArchiveFact({ onLate: (p) => (late = p) });
+      await vi.advanceTimersByTimeAsync(BOUND_MS);
+      await expect(waited, "the caller's wait ends at the bound").resolves.toBe("unknown");
+      expect(late, "the caller is told the read is still out").not.toBeNull();
+      expect(serverFactsTakenAt()).toBeNull();
+      await vi.advanceTimersByTimeAsync(6_000 - BOUND_MS);
+      await expect(late).resolves.toBe("dir");
+      expect(serverFactsTakenAt(), "the late answer is written down").not.toBeNull();
+      expect(facts("server").archive).toBe("dir");
+    } finally {
+      vi.useRealTimers();
+      resetFactsForTest();
+    }
   });
 
   // **The archive fact's read hands the edge's refusal ON** — it is the one

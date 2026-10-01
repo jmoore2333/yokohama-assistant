@@ -639,6 +639,10 @@ export async function ensureArchiveFact(opts?: {
    *  background pass reads with `false`, so a challenge there shows no
    *  widget. */
   interactive?: boolean;
+  /** Told when the WAIT ends with the read still out (Task 6 fix round 1):
+   *  handed the read, which settles once its answer is written down — or with
+   *  the read's own failure. The caller's wait is over; the read is not. */
+  onLate?: (landed: Promise<ArchiveKind>) => void;
 }): Promise<ArchiveKind | "unknown"> {
   const at = serverFactsTakenAt();
   // **`Math.abs`, because a clock can move BACKWARDS** (review M-7). A
@@ -651,12 +655,36 @@ export async function ensureArchiveFact(opts?: {
     // **Through `api.health`, and bounded by the same number the words are**: a
     // read that hangs would otherwise leave a caller waiting for ever for an
     // answer it is about to act on.
-    const h = await bounded(
-      api.health(undefined, opts?.interactive === undefined ? undefined : { interactive: opts.interactive }),
-      BOUND_MS,
+    //
+    // **The bound is the CALLER's wait, and never the read's** (cycle F, Task 6
+    // fix round 1; `transportWait`'s own rule): a read the edge challenged
+    // goes on while a person passes the widget, which can take longer than
+    // the bound — and the answer that check paid for is written down WHEN IT
+    // LANDS, however late. A caller that wants to act on a late answer says so
+    // (`onLate`); the outbox does, and sends its rows again under the
+    // clearance rather than show the widget a second time.
+    const read = api.health(undefined, opts?.interactive === undefined ? undefined : { interactive: opts.interactive });
+    const landed = read.then((h) => {
+      rememberServerFacts(h);
+      return h.archive;
+    });
+    let settled = false;
+    landed.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
     );
-    rememberServerFacts(h);
-    return h.archive;
+    try {
+      return await bounded(landed, BOUND_MS);
+    } catch (e) {
+      // The wait ended and the read did not: that read is still the caller's,
+      // if it asked for it.
+      if (!settled) opts?.onLate?.(landed);
+      throw e;
+    }
   } catch (e) {
     // **The EDGE's refusal is handed on, and it is the one failure that is**
     // (cycle F, spec §2.6; F-15): it is not "nothing answered" — the edge
