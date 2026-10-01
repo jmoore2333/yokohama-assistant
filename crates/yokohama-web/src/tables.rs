@@ -110,7 +110,8 @@ impl<'de> Deserialize<'de> for WireSeed {
     }
 }
 
-/// One seat of a requested table: a person's email, the bot, or nobody yet.
+/// One seat of a requested table: a person's key (an email, or a plain name),
+/// the bot, or nobody yet.
 ///
 /// **Exactly one of the THREE**, refused by name otherwise. Three optional
 /// fields rather than a tagged enum because that is what the browser's form
@@ -248,9 +249,10 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     for (i, spec) in req.seats.iter().enumerate() {
         match (&spec.user, spec.bot, spec.open) {
             // Normalized HERE and nowhere else, through the one function that
-            // knows what an email of this API's is — so a seat bound from a
+            // knows what a key of this API's is — so a seat bound from a
             // header reading `  Red@Wire.TEST ` is the seat the next request
-            // finds.
+            // finds. A plain name is a key here under every mode (M6.5c2); only
+            // a CALLER is held to the mode's rule.
             (Some(raw), false, false) => {
                 let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
                 seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None });
@@ -366,8 +368,10 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
 /// a backup restores, and its `check_table_alone`, over a restored table still
 /// at the deal.
 ///
-/// `pub` since M6.5c (R-6.5c.8): a host that cannot hear the layer's
-/// `eprintln!` refuses a copy its lobby would drop.
+/// `pub` since M6.5c (R-6.5c.8): a host refuses at the source a copy its lobby
+/// would drop — the house's own check (`crates/yokohama-worker`'s
+/// `house_copy_inner`) — because the listing's line arrives only once the row
+/// is gone.
 pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     if doc.schema > TABLE_SCHEMA {
         return Err(format!(
@@ -395,15 +399,15 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     // is about SIZE rather than about a panic: `Games::unlock` refuses the
     // 257th entry, and a hand-written file carrying ten thousand is a document
     // this server would go on reading, writing and re-serializing on every
-    // join at that table. Each entry must parse as a `User` for the plainer
-    // reason that `can_watch` compares it against one — an entry that never
-    // normalizes is an entry no caller can ever match, written as though it
-    // admitted somebody.
+    // join at that table. Each entry must parse as a `User` — an email or a
+    // plain name (M6.5c2) — for the plainer reason that `can_watch` compares
+    // it against one: an entry that never normalizes is an entry no caller can
+    // ever match, written as though it admitted somebody.
     if doc.unlocked.len() > UNLOCKED_CAP {
         return Err(format!("{} watchers — a table remembers {UNLOCKED_CAP}", doc.unlocked.len()));
     }
     if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
-        return Err(format!("{bad:?} on the watcher list is not an address this server writes"));
+        return Err(format!("{bad:?} on the watcher list is neither an email nor a name"));
     }
     // M6.5a's stamp, bounded like a message's `created_at` (R-6.5a.10).
     if let Some(at) = doc.archived_at {
@@ -424,7 +428,7 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     // table's mutex) and inside `Games::list_for`, which builds a row for every
     // table on the volume. One hand-edited `to_move` there drops the lobby poll
     // for every player, not one game.
-    if let Some(TurnMirror { to_move, winner, .. }) = doc.turn {
+    if let Some(&TurnMirror { to_move, winner, .. }) = doc.turn.as_ref() {
         if usize::from(to_move) >= usize::from(doc.players) {
             return Err(format!("to_move {to_move} at a {}-seat table", doc.players));
         }
@@ -1152,7 +1156,7 @@ impl Games {
         }
         if doc.unlocked.len() >= UNLOCKED_CAP {
             return Err(GameError::Conflict(
-                "this table has as many watchers as it can remember".to_string(),
+                "this table has as many spectators as it can remember".to_string(),
             ));
         }
         doc.unlocked.push(user.as_str().to_string());
@@ -1216,6 +1220,9 @@ impl Games {
         let mut session = Session::new_sim(config, doc.seed, choices, (*self.rules).clone())
             .map_err(GameError::Server)?;
         session.set_run_seats(bots.seat_provenance());
+        // Where it was played (M6.5c2, spec §2.4): AFTER the seats, whose
+        // provenance the id lands in — `Session::set_run_id`'s own contract.
+        session.set_run_id(self.run_host.run_id());
         let mut repl = Repl::new(session);
         bring_alive(&mut repl);
         // `Session::to_record_json`, never `to_string_pretty(record())`: the
@@ -1547,8 +1554,9 @@ impl Games {
     /// missing loudly: `create` will then report the name occupied, so the
     /// player can neither see the game nor reuse the name and no surface says
     /// why. Each skip writes one line naming the id and the failure, through the
-    /// same `eprintln!` channel `main.rs` reports its own failures on, so a
-    /// corrupt table is visible in the container log.
+    /// layer's log (`Games::with_log`, M6.5c2): stderr beside `main.rs`'s own
+    /// lines on the NAS, the shell's log on the Worker, the console in the
+    /// browser — so a corrupt table is visible wherever the layer runs.
     ///
     /// **The order is `(created_at desc, id asc)` and it is TOTAL**, which is
     /// what makes the cursor exact rather than approximate: `created_at` is unix
@@ -1578,9 +1586,9 @@ impl Games {
                 Ok(Some((json, _))) => match serde_json::from_str::<TableDoc>(&json) {
                     Ok(doc) => doc,
                     Err(e) => {
-                        eprintln!(
-                            "{id:?}'s table document does not parse, so it is not in this \
-                             listing: {e}"
+                        self.log.line(
+                            crate::log::LISTING_SKIPPED,
+                            serde_json::json!({ "id": id.as_str(), "why": "does not parse", "error": e.to_string() }),
                         );
                         continue;
                     }
@@ -1589,9 +1597,9 @@ impl Games {
                 // landed in the window. Nothing is wrong and nothing is lost.
                 Ok(None) => continue,
                 Err(e) => {
-                    eprintln!(
-                        "{id:?}'s table document could not be read, so it is not in this \
-                         listing: {e}"
+                    self.log.line(
+                        crate::log::LISTING_SKIPPED,
+                        serde_json::json!({ "id": id.as_str(), "why": "could not be read", "error": e }),
                     );
                     continue;
                 }
@@ -1600,7 +1608,10 @@ impl Games {
             // deliberately does not go through it — and `seats_of` two lines
             // below is exactly the call [`check_shape`] exists to make total.
             if let Err(why) = check_shape(&doc) {
-                eprintln!("{id:?}'s table document is malformed, so it is not in this listing: {why}");
+                self.log.line(
+                    crate::log::LISTING_SKIPPED,
+                    serde_json::json!({ "id": id.as_str(), "why": "is malformed", "error": why }),
+                );
                 continue;
             }
             let keep = match scope {
@@ -2480,6 +2491,70 @@ mod tests {
             .expect("the process is alive, so the server can still open a table");
     }
 
+    /// **A table the listing skips is SAID** (M6.5c2, spec §2.6): one
+    /// `listing-skipped` line per skipped document, naming it and why, where
+    /// each was an `eprintln!` that no wasm host could hear. Three documents,
+    /// one per site — one that does not parse, one the store cannot read, one
+    /// `check_shape` refuses — in the store's own (sorted) order, and the
+    /// healthy table still listed.
+    #[test]
+    fn a_listing_says_each_table_it_skips_and_why() {
+        /// A `MemStore` whose read of one id FAILS — a present file this
+        /// process may not read.
+        struct OneUnreadable(MemStore);
+        impl Store for OneUnreadable {
+            fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+                self.0.list(doc)
+            }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+                if id == "unread" {
+                    return Err("permission denied".to_string());
+                }
+                self.0.read(doc, id)
+            }
+            fn write_if_version(&self, doc: Doc, id: &str, json: &str, expected: Option<Version>)
+                -> Result<Version, WriteError> {
+                self.0.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> {
+                self.0.delete(id)
+            }
+        }
+        let log = RecordingLog::recording();
+        let games = Games::new(Arc::new(Rules::standard()), Arc::new(OneUnreadable(MemStore::default())))
+            .with_log(log.clone());
+        let red = who("red@t.test");
+        games.create(&two_people("healthy", CORPUS_SEED), &red).expect("a neighbour table");
+        let malformed = serde_json::json!({
+            "schema": 3, "id": "malformed", "name": null, "created_by": "red@t.test",
+            "created_at": 1_789_000_000u64, "players": 2, "colors": ["Red", "Blue"],
+            // `PlayerId::new(7)` panics; `check_shape` is what refuses it first.
+            "start_seat": 7,
+            "seats": [{ "kind": "human", "user": "red@t.test" }, { "kind": "human", "user": "blue@t.test" }],
+            "keeps": [null, null], "seed": CORPUS_SEED, "status": "dealing", "turn": null,
+        })
+        .to_string();
+        for (id, text) in [("unparsed", r#"{"schema":3}"#.to_string()), ("unread", "{}".to_string()), ("malformed", malformed)] {
+            games.store().write_if_version(Doc::Table, id, &text, None).expect("the store takes what it is given");
+        }
+        let listed = games.list_for(&red).expect("one bad file does not fail the listing");
+        assert_eq!(listed.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["healthy"]);
+        let said: Vec<(&str, String, String)> = log
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(event, f)| (*event, f["id"].as_str().unwrap().to_string(), f["why"].as_str().unwrap().to_string()))
+            .collect();
+        let line = |id: &str, why: &str| (crate::log::LISTING_SKIPPED, id.to_string(), why.to_string());
+        assert_eq!(
+            said,
+            [line("malformed", "is malformed"), line("unparsed", "does not parse"), line("unread", "could not be read")],
+        );
+        let unread = log.fields(2);
+        assert_eq!(unread["error"], "permission denied", "the store's own reason rides the line");
+    }
+
     // ---------------------------------------------------------------------
     // The two archive sites (M6.5a, R-6.5a.11).
     // ---------------------------------------------------------------------
@@ -2518,15 +2593,19 @@ mod tests {
         assert_eq!(archive.puts.lock().unwrap().len(), 1, "stamped tables are not put again");
     }
 
-    /// The first failure rule: a put that fails at game over is logged, the
-    /// move is still answered, and the stamp stays UNSET — the retry mark.
+    /// The first failure rule: a put that fails at game over is SAID (M6.5c2:
+    /// through the log seam, where it was an `eprintln!`), the move is still
+    /// answered, and the stamp stays UNSET — the retry mark.
     #[test]
     fn a_failing_archive_at_game_over_still_answers_the_move() {
-        let games = games().with_archive(RecordingArchive::failing());
+        let log = RecordingLog::recording();
+        let games = games().with_archive(RecordingArchive::failing()).with_log(log.clone());
         let (_, _repl) = play_to_the_end(&games, "over-fails"); // every persist returned Ok
         let (doc, _) = games.read_table("over-fails").unwrap().unwrap();
         assert_eq!(doc.archived_at, None, "unset says a retry is owed");
         assert!(games.handle("over-fails").is_ok(), "the game is still served");
+        assert_eq!(log.events(), [crate::log::OVER_PUT_REFUSED], "one line, at the persist that ended the game");
+        assert_eq!(log.fields(0), serde_json::json!({ "id": "over-fails", "error": "disk on fire" }));
     }
 
     /// The abandon site: a playing table with events is put under `abandoned/`
@@ -2722,7 +2801,7 @@ mod tests {
         let winner_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2) });
+            d.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(2), bot: None });
             d
         };
         // The other half of the mirror, and the one with the wider blast
@@ -2733,7 +2812,7 @@ mod tests {
         let to_move_off_the_table = || {
             let mut d = valid();
             d.status = TableStatus::Playing;
-            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None });
+            d.turn = Some(TurnMirror { to_move: 9, over: false, winner: None, bot: None });
             d
         };
 
@@ -2745,7 +2824,7 @@ mod tests {
         };
         let unparsable_watcher = || {
             let mut d = valid();
-            d.unlocked = vec!["Not An Address".to_string()];
+            d.unlocked = vec!["..".to_string()];
             d
         };
 
@@ -4942,6 +5021,23 @@ mod tests {
         assert!(playing.unlock("locked", &green, "  sesame ").expect("trimmed").can_watch);
     }
 
+    /// **A plain name on the watcher list reads, and is one key however it is
+    /// typed** (M6.5c2, spec §2.1 and §3; review H2). The key grammar is
+    /// `check_shape`'s too, and it runs on every read — so a grammar the check
+    /// did not share would take the whole table off the lobby (the arm
+    /// `every_shape_arm_refuses_with_the_sentence_it_promises` pins). The name
+    /// is written by the layer's own `unlock`, read back and listed.
+    #[test]
+    fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
+        let playing = a_locked_game("named");
+        assert!(playing.unlock("named", &who("  Ben   Castle "), "sesame").expect("the password").can_watch);
+        let (doc, _) = playing.read_table("named").expect("it reads").expect("it is there");
+        assert_eq!(doc.unlocked, vec!["ben castle".to_string()], "the KEY, normalized once");
+        assert!(doc.can_watch(&who("BEN CASTLE")), "the same key, typed otherwise");
+        let lobby = playing.list_for(&who("red@t.test")).expect("the lobby");
+        assert!(lobby.iter().any(|row| row.id == "named"), "listed");
+    }
+
     /// A seat holder never needs the password, and an unlocked table never
     /// needs one either — and NEITHER writes.
     ///
@@ -5018,7 +5114,7 @@ mod tests {
             .expect_err("the list is full");
         assert!(
             matches!(&refused, GameError::Conflict(m)
-                if m == "this table has as many watchers as it can remember"),
+                if m == "this table has as many spectators as it can remember"),
             "{refused:?}",
         );
 
@@ -5086,7 +5182,7 @@ mod tests {
         playing(&games, &two_people("playt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         playing(&games, &two_people("overt", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
         let (mut doc, version) = games.read_table("overt").unwrap().unwrap();
-        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1) });
+        doc.turn = Some(TurnMirror { to_move: 0, over: true, winner: Some(1), bot: None });
         games.write_table(&doc, Some(version)).expect("a finished mirror");
 
         let (rows, next) = games

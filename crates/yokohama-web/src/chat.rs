@@ -288,7 +288,7 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
         if let Some(u) = user {
             if User::parse(u).is_err() {
                 return Err(format!(
-                    "message {i}'s author {u:?} is not an address this server writes",
+                    "message {i}'s author {u:?} is neither an email nor a name",
                 ));
             }
         }
@@ -426,8 +426,13 @@ mod tests {
         );
         let mut bad_user = doc(vec![seat(1, 0, "a")]);
         bad_user.messages[0].author =
-            Author::Seat { seat: 0, user: "not an email".into(), name: None };
+            Author::Seat { seat: 0, user: "..".into(), name: None };
         assert!(check_shape(&bad_user, Some(2)).is_err());
+        // The far side (M6.5c2): a plain name is a key, so a watcher an open
+        // door wrote under one is an author this document still reads.
+        let mut named = doc(vec![seat(1, 0, "a")]);
+        named.messages[0].author = Author::Watcher { user: "ben castle".into(), name: None };
+        assert_eq!(check_shape(&named, Some(2)), Ok(()), "a plain-name watcher is an author");
         let mut bad_name = doc(vec![seat(1, 0, "a")]);
         bad_name.messages[0].author =
             Author::Seat { seat: 0, user: "r@t.test".into(), name: Some("x".repeat(65)) };

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { WIRE } from "./corpus.gen";
-import { settle, tableStub } from "./helpers";
+import { replaceOnce, settle, tableStub } from "./helpers";
 import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
 
 // **The objects serve the corpus** (spec §5.3's pool half, R-6.5c.8; the
@@ -28,7 +28,7 @@ import { ARCHIVE_WALK, WALK, WALK_HOST, walk } from "./walk";
  * header names the caller (`identity`, and `mode` on `/api/me`), how a change
  * reaches a browser (`signal`), and where its archive is kept (`archive`).
  * This host reads `cf-access`, `ws` and `r2`; the axum host the corpus was cut
- * from, `claimed`, `sse` and `off` — its primary `Api` keeps no archive.
+ * from, `open`, `sse` and `off` — its primary `Api` keeps no archive.
  * `multiplayer` is NOT here: both hosts offer it.
  */
 const HOST_FIELDS: Record<string, string[]> = {
@@ -43,24 +43,38 @@ const HOST_FIELDS: Record<string, string[]> = {
  * own, and stated back here, so a fixture that stopped being routed appears by
  * name and a new one cannot join the corpus without landing in a column.
  *
- * - `site_space_words` is a contract, never a route's payload.
+ * - `site_space_words`, `identity_cases` and `seed_cases` are contracts,
+ *   never a route's payload.
  * - `watching`, `locked` and the four `why`/explanation files are built in
  *   process by the emitter's `constructed()`: a deterministic bot-free walk
  *   cannot reach them.
  * - `house_chat_off_404` comes from an `Api` of the emitter's with the lobby
  *   chat switched off, which no script replays. (The eight `archive_*` files
  *   are `archive-walk.json`'s, which this host replays.)
+ * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
+ *   route's payload.
+ * - `table_bot`, `foreign_bot_409`, `table_foreign` and `why_foreign` come from
+ *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
+ *   holding the committed pair re-seated against another bot — which no script
+ *   replays.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
  */
 const THIRD_COLUMN = [
   "explanation_terminal",
+  "foreign_bot_409",
   "house_chat_off_404",
+  "identity_cases",
   "locked",
+  "production_bot",
+  "seed_cases",
   "site_space_words",
+  "table_bot",
+  "table_foreign",
   "watching",
   "why",
+  "why_foreign",
   "why_refusals",
   "why_refused",
 ];
@@ -120,6 +134,12 @@ describe("the objects serve the corpus (spec §5.3)", () => {
     // `archived_at`.
     await settle(tableStub("wire"));
     const saved = await env.ARCHIVE!.get("test/rev7/over/wire.json");
-    expect(await saved?.text(), "the walk's game over saved its record").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
+    const committed = (ARCHIVE_WALK[0]!.body as { record: string }).record;
+    expect(committed, "premise: the emitter is the axum host").toContain('"run_id": "web/server"');
+    // The record is one game's on every host, and differs by exactly the host
+    // that dealt it (M6.5c2, spec §2.4): the emitter is the axum host, this
+    // pool is the Worker, and `run.run_id` says so.
+    expect(await saved?.text(), "the walk's game over saved its record, as this host names itself")
+      .toBe(replaceOnce(committed, '"run_id": "web/server"', '"run_id": "web/worker"'));
   });
 });

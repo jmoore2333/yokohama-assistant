@@ -68,7 +68,7 @@ export { recallServerFacts, rememberServerFacts };
  *  `identity.rs` is the only place on this API that answers 401, so the status
  *  alone means "the server does not know who you are" and nothing else. The
  *  sentence cannot do that job — it is one of THREE, one per identity mode
- *  ("no signed-in user: send X-Yokohama-Claimed-User" under `claimed`, and two
+ *  ("no signed-in user: send X-Yokohama-Claimed-User" under `open`, and two
  *  different "no identity reached the server…" sentences under Cloudflare
  *  Access and the edge Worker) — so a client matching the first would strand
  *  exactly the deployment that is hosted. */
@@ -119,7 +119,7 @@ export function onUnauthorized(handler: ((sentence: string) => void) | null): vo
 
 /** Where the sign-in screen keeps the claimed user (R-plan-2). Read on every
  *  call; absent means no header. A value is only ever WRITTEN by the sign-in
- *  screen, which only exists in `claimed` mode, and the server ignores this
+ *  screen, which only exists in `open` mode, and the server ignores this
  *  header under any other mode (spec R-1.2). */
 export const CLAIMED_USER_KEY = "yokohama.claimed_user";
 
@@ -209,7 +209,7 @@ export function clearDisplayName(): void {
  *  to come from HERE rather than be restated there, because a second statement
  *  of it is a second thing to forget when the door changes. It is also why the
  *  reader is a `fetch` and not an `EventSource`: `EventSource` cannot carry a
- *  header at all, so the `claimed` door could not sign a stream. */
+ *  header at all, so the `open` door could not sign a stream. */
 export function identityHeaders(): Record<string, string> {
   const who = claimedUser();
   return who ? { "x-yokohama-claimed-user": who } : {};
@@ -502,7 +502,7 @@ export const useArchiveFact = (): ArchiveKind | "unknown" =>
  *  where nothing has ever said (M6.5b2, spec §2.6).
  *
  *  **A hook for [`useArchiveFact`]'s reason** (review M-5): the outbox's
- *  "not signed in" remedy is two steps under `claimed` and one under the other
+ *  "not signed in" remedy is two steps under `open` and one under the other
  *  two doors, and a module read during render is a value that never redraws
  *  when the health answer lands. The same shape the archive fact retired one
  *  file over; restating it for the identity would have been the same defect. */

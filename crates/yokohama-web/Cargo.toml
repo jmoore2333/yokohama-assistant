@@ -13,16 +13,17 @@ publish = false
 # `time` builds for the target only to panic, so the DEPENDENCY is what is
 # gated, not a call inside it.
 #
-# M6.5b2 (R-6.5b2.3): `dev-identity` is the second feature, and it gates ONE
-# thing — whether `YOKOHAMA_WEB_IDENTITY=claimed` parses. `claimed` trusts any
-# email past the door, which is a development convenience and not a security
-# boundary, so a build that goes on the public internet drops it with
+# M6.5b2 (R-6.5b2.3), renamed by M6.5c2 (R-6.5c2.3): `open-door` is the
+# second feature, and it gates ONE thing — whether `YOKOHAMA_WEB_IDENTITY=open`
+# parses. The open door is a supported self-host mode whose trust model is
+# "anyone who can reach the server may use any name", so it stays a DEFAULT
+# feature; a build that must not offer it drops it with
 # `--no-default-features --features server` — the one spelling that keeps the
 # server half and leaves only the two modes an edge asserts.
 [features]
-default = ["server", "dev-identity"]
+default = ["server", "open-door"]
 server = ["dep:axum", "dep:tokio", "dep:tokio-stream"]
-dev-identity = []
+open-door = []
 
 [dependencies]
 # The engine, and the CLI's library half. `yokohama-cli` is a lib as well as a

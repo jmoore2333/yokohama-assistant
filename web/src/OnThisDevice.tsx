@@ -315,7 +315,7 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
 }
 
 /**
- * What to DO about "not signed in" — and under `claimed` it is two steps, not
+ * What to DO about "not signed in" — and under `open` it is two steps, not
  * one (spec §2.6).
  *
  * **Read off the door's own name.** Passing `/enter` gets the Access cookie;
@@ -329,11 +329,11 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  * whatever the answer turns out to be.
  */
 function Remedy(): React.ReactNode {
-  const claimed = useIdentityMode() === "claimed";
+  const open = useIdentityMode() === "open";
   return (
     <span className="muted remedy">
       <a href="/enter">Sign in at the door</a>
-      {claimed ? ", then sign in here with your email." : "."}
+      {open ? ", then sign in here with your email." : "."}
     </span>
   );
 }

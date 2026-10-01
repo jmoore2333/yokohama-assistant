@@ -15,7 +15,7 @@ import fs from "node:fs";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
-import { act, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
+import { act, capReached, deadEnd, readScreen, rng, startGame, watchForBreakage } from "./harness";
 import type { Affordance } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
@@ -24,7 +24,9 @@ import type { Affordance } from "./harness";
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
 /** The walk's own cap. Well above what a game takes (the run prints its own
- *  figure), and low enough that a loop fails as a loop rather than as a timeout. */
+ *  figure), and low enough that a loop fails as a loop rather than as a timeout.
+ *  A hit throws `capReached`, which names the cap, the turn and the
+ *  end-trigger strip — never `deadEnd`'s stuck-table sentence (M6.5c2). */
 const CAP = 4000;
 
 test("a whole two-player game plays through to a winner", async ({ page }) => {
@@ -42,6 +44,7 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
     moves += 1;
     screen = await readScreen(page);
   }
+  if (!screen.over) throw await capReached(page, game, moves);
   // eslint-disable-next-line no-console
   console.log(
     `game ${game.id} finished in ${moves} moves via ` +

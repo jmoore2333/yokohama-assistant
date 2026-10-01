@@ -31,6 +31,7 @@ mod config;
 mod create;
 mod events;
 mod house;
+pub mod log;
 mod picker;
 mod receipt;
 pub mod signal;
@@ -44,7 +45,7 @@ use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
 use yokohama_web::games::Games;
-use yokohama_web::identity::{resolve, IdentityMode, User, WORKER_HEADER};
+use yokohama_web::identity::{admit, resolve, IdentityMode, User, WORKER_HEADER};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
 
@@ -53,6 +54,7 @@ pub use crate::events::events_inner;
 pub use crate::house::{house_copy_inner, house_frame_inner, put_copy_inner, remove_copy_inner};
 pub use crate::picker::restore_picker_inner;
 pub use crate::receipt::{expire_inner, receipt_inner, stamp_archive_inner};
+use crate::log::{LogLine, ShellLog};
 use crate::receipt::ReceiptArchive;
 use crate::signal::{Bump, RecordingSignal};
 
@@ -73,6 +75,10 @@ pub(crate) static STORE: Mutex<Option<Arc<MemStore>>> = Mutex::new(None);
 /// The signal the one `Games` holds — the SAME `Arc`, so what the layer
 /// signals during a call is drained into that call's reply.
 pub(crate) static SIGNAL: Mutex<Option<Arc<RecordingSignal>>> = Mutex::new(None);
+
+/// The log the one `Games` holds — the SAME `Arc`, so what the layer logs
+/// during a call is drained into that call's reply (M6.5c2).
+pub(crate) static LOG: Mutex<Option<Arc<ShellLog>>> = Mutex::new(None);
 
 /// The clock, copied from `yokohama-wasm` (`crates/yokohama-wasm/src/lib.rs`)
 /// and never shared, because each host is its own host — with one difference:
@@ -141,10 +147,10 @@ const HOST: Host =
     Host { identity_name: "cf-access", signal_kind: "ws", serves_games: true, multiplayer_offered: true };
 
 /// Build a FRESH layer from the shell's configuration, replacing any earlier
-/// one — the `Games`, its store, its signal and its archive together, an empty
-/// `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new receipt archive
-/// with no receipt and no pending plan, under `off` none. A refused
-/// configuration changes nothing. A bad VALUE's refusal names its variable
+/// one — the `Games`, its store, its signal, its archive and its log together,
+/// an empty `picker::PICKERS`, and `receipt::RECEIPTS`: under `r2` a new
+/// receipt archive with no receipt and no pending plan, under `off` none. A
+/// refused configuration changes nothing. A bad VALUE's refusal names its variable
 /// (spec §2.2); a configuration of the wrong shape names none — JSON that is
 /// not an object is refused in this crate's own sentence, which names the five
 /// keys, and an unknown key or a value of the wrong JSON type in serde's words
@@ -164,6 +170,7 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         Some(receipts) => receipts.clone(),
         None => Arc::new(NoArchive),
     };
+    let log = Arc::new(ShellLog::default());
     let games = Games::with_parts(
         Arc::new(yokohama_core::Rules::standard()),
         store.clone(),
@@ -171,9 +178,12 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         signal.clone(),
         Arc::new(now),
         layer_archive,
-    );
+        yokohama_web::games::RunHost::Worker,
+    )
+    .with_log(log.clone());
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
+    *LOG.lock().expect("the host's log") = Some(log);
     *picker::PICKERS.lock().expect("the host's pickers") = Some(HashMap::new());
     *receipt::RECEIPTS.lock().expect("the host's receipts") = receipts;
     *GAMES.lock().expect("the host's games") = Some(games);
@@ -208,6 +218,10 @@ pub struct ReplyData {
     /// `{"stored": <its code, or null>, "running": <this build's>}`, which the
     /// shell logs as `picker-dropped`. `None` from every other call.
     pub dropped: Option<String>,
+    /// The layer's log lines during this call (M6.5c2, spec §2.6), in call
+    /// order, less the one deferral `log.rs` drops. Empty from a call that
+    /// never reached the layer.
+    pub logs: Vec<LogLine>,
 }
 
 /// [`ReplyData`] as a JS class with getters — `wasm-bindgen` cannot hand a
@@ -259,23 +273,34 @@ impl Reply {
     pub fn dropped(&self) -> Option<String> {
         self.data.dropped.clone()
     }
+
+    /// The layer's log lines as JSON: `[]` when it logged nothing, else one
+    /// `{"event", "fields"}` per line, which the shell logs as its own.
+    #[wasm_bindgen(getter)]
+    pub fn logs(&self) -> String {
+        serde_json::to_string(&self.data.logs).expect("a log line serializes")
+    }
 }
 
 /// The layer's error body, RESTATED (spec §2.2; the orchestrator's ruling R-03):
-/// `{"error": …}`, with `"status"` beside it when `table_status` is set.
+/// `{"error": …}`, with `"status"` beside it when `table_status` is set, and
+/// `"foreign_bot"` beside it when `foreign_bot` is (M6.5c2).
 ///
 /// The layer's own builder is `error_response` in `crates/yokohama-web/src/api.rs`
 /// — the body `IntoResponse for ApiError` writes in `crates/yokohama-web/src/lib.rs`
 /// — and it is `pub(crate)`. Each host is its own host, so this one restates the
 /// shape rather than widen the layer for its convenience, as it restates the
-/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins both arms equal to
+/// clock. `a_refusal_body_is_the_one_dispatch_writes` pins all three arms equal to
 /// `dispatch`'s body for the same refusal, so a drift is a red cell.
 pub(crate) fn error_body(e: &ApiError) -> String {
-    match e.table_status {
-        Some(status) => serde_json::json!({ "error": e.message, "status": status }),
-        None => serde_json::json!({ "error": e.message }),
+    let mut body = serde_json::json!({ "error": e.message });
+    if let Some(status) = e.table_status {
+        body["status"] = status.into();
     }
-    .to_string()
+    if let Some(pair) = &e.foreign_bot {
+        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+    }
+    body.to_string()
 }
 
 /// SHA-256 of `text`'s bytes, in lowercase hex: the one digest this host takes
@@ -296,28 +321,31 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
         archive: None,
         picker: None,
         dropped: None,
+        logs: Vec::new(),
     }
 }
 
 /// Who the caller is, by the `worker` mode's ONE header (spec §2.3): the value
 /// the shell hands over goes into a header map as `X-Yokohama-User` and is read
 /// by the layer's own `identity::resolve` — so `anonymous`, like an absent or
-/// blank value, is no caller, and a refusal is the layer's own sentence.
+/// blank value, is no caller; so is a plain name (the layer's mode rule,
+/// M6.5c2); and a refusal is the layer's own sentence.
 ///
 /// A value no header can carry — one holding a control character other than a
-/// tab — never reaches `resolve`: `User::parse` answers it instead, trimming it
-/// as `resolve` would and refusing any control character that remains, in the
-/// sentence the layer's 401 carries for a malformed caller. It is a 401 either
-/// way, with one difference in wording: a value whose only such characters
-/// are at its ends, which the trim removes, and which trims to nothing or to
-/// `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence, where
-/// `resolve` would answer its absent-caller sentence had a header carried it.
-/// No header can.
+/// tab — never reaches `resolve`, so it takes `resolve`'s two steps here: the
+/// key grammar (`User::parse`, trimming as `resolve` would and refusing any
+/// control character that remains) and then the mode's rule (`identity::admit`),
+/// so `"ben\r"` is nobody exactly as a header naming `ben` is (review R2-m1).
+/// It is a 401 either way, with one difference in wording: a value whose only
+/// such characters are at its ends, which the trim removes, and which trims to
+/// nothing or to `anonymous` — `"anonymous\n"` — gets `User::parse`'s sentence,
+/// where `resolve` would answer its absent-caller sentence had a header carried
+/// it. No header can.
 pub fn identity_of(user: Option<&str>) -> Result<User, String> {
     let mut headers = http::HeaderMap::new();
     if let Some(raw) = user {
         let Ok(value) = http::HeaderValue::from_str(raw) else {
-            return User::parse(raw);
+            return User::parse(raw).and_then(|user| admit(IdentityMode::Worker, user));
         };
         headers.insert(WORKER_HEADER, value);
     }
@@ -336,7 +364,7 @@ pub fn identity_inner(user: Option<&str>) -> ReplyData {
         Ok(u) => (200, serde_json::json!({ "user": u.as_str() }).to_string()),
         Err(sentence) => (401, serde_json::json!({ "error": sentence }).to_string()),
     };
-    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None }
+    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None, logs: Vec::new() }
 }
 
 #[wasm_bindgen]
@@ -475,12 +503,25 @@ pub(crate) fn from_the_layer(call: impl FnOnce(&Games) -> (u16, String, Option<S
     let guard = GAMES.lock().expect("the host's games");
     let games = guard.as_ref().expect("init() before any call into the layer");
     let (status, body, picker) = call(games);
-    ReplyData { status, body, bumps: drain_bumps(), archive: receipt::drain_plan(), picker, dropped: None }
+    ReplyData {
+        status,
+        body,
+        bumps: drain_bumps(),
+        archive: receipt::drain_plan(),
+        picker,
+        dropped: None,
+        logs: drain_logs(),
+    }
 }
 
 /// Everything the layer signalled since the last drain.
 fn drain_bumps() -> Vec<Bump> {
     SIGNAL.lock().expect("the host's signal").as_ref().expect("init() before any call into the layer").drain()
+}
+
+/// Everything the layer logged since the last drain.
+fn drain_logs() -> Vec<LogLine> {
+    LOG.lock().expect("the host's log").as_ref().expect("init() before any call into the layer").drain()
 }
 
 /// The four document kinds the layer keeps, by the names [`load`] and [`read`]
@@ -606,7 +647,28 @@ mod tests {
         assert_eq!((r.status, r.body.as_str()), (401, want.as_str()));
         let r = identity_inner(Some("Red@Wire.Test"));
         assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#), "normalized once");
-        assert!(r.bumps.is_empty() && r.archive.is_none() && r.picker.is_none(), "an identity read writes nothing");
+        assert!(r.bumps.is_empty() && r.archive.is_none() && r.picker.is_none() && r.logs.is_empty(), "an identity read writes nothing");
+    }
+
+    /// **The fallback follows the mode rule** (M6.5c2, spec §2.1 rule 4; review
+    /// R2-m1). A value no header can carry never reaches `resolve` as a
+    /// header, and the key grammar alone trims `"ben\r"` to the plain name
+    /// `ben` — a key the `worker` door admits as nobody. So the fallback takes
+    /// `resolve`'s two steps itself, and `"ben\r"` answers exactly what a
+    /// header naming `ben` answers: the mode's absent sentence. An ADDRESS the
+    /// same trim recovers is still that caller — the anti-vacuity, since a
+    /// fallback that refused everything would pass the first half.
+    #[test]
+    fn a_value_no_header_can_carry_is_held_to_the_worker_modes_rule() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let absent = resolve(IdentityMode::Worker, &http::HeaderMap::new()).unwrap_err();
+        let r = identity_inner(Some("ben\r"));
+        assert_eq!((r.status, r.body.as_str()), (401, serde_json::json!({ "error": absent }).to_string().as_str()));
+        let as_header = identity_inner(Some("ben"));
+        assert_eq!((as_header.status, &as_header.body), (r.status, &r.body), "the carrier never decides who it is");
+        let r = identity_inner(Some("Red@Wire.Test\r"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#));
     }
 
     /// This host's four deployment facts on `/api/health` (spec §4's second class).
@@ -694,6 +756,37 @@ mod tests {
         let page: serde_json::Value =
             serde_json::from_str(&call("red@t.test", "GET", "/api/chat", None).body).unwrap();
         assert_eq!(page["messages"][0]["text"], "first", "{page}");
+    }
+
+    /// **A plain name on a table's watcher list reads on this host too**
+    /// (M6.5c2, spec §3's identity cells; review H2): `check_shape` runs on the
+    /// module's every table read, over the key grammar an `open` host writes
+    /// watchers under. The table is this host's own — created and dealt by its
+    /// routes — and its roster is given a plain name by hand, because this
+    /// module's `worker` door admits no plain-name CALLER to unlock with (the
+    /// mode rule), which is not the property here.
+    #[test]
+    fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let body = r#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"password":"sesame"}"#;
+        assert_eq!(create_inner(Some("red@t.test"), body.as_bytes(), "named", Some("application/json")).status, 201);
+        for (who, seat) in [("red@t.test", 0), ("blue@t.test", 1)] {
+            let keep = format!(r#"{{"seat":{seat},"card":1}}"#);
+            assert_eq!(call(who, "POST", "/api/games/named/keep", Some(&keep)).status, 200, "{who}");
+        }
+        let mut doc: serde_json::Value = serde_json::from_str(&read_inner("table", "named").unwrap().unwrap()).unwrap();
+        let record = read_inner("record", "named").unwrap().expect("the last keep dealt the game");
+        for (watcher, status) in [("ben castle", 200), ("..", 500)] {
+            doc["unlocked"] = serde_json::json!([watcher]);
+            init_inner(&config("off")).unwrap();
+            load_inner("table", "named", &doc.to_string()).unwrap();
+            load_inner("record", "named", &record).unwrap();
+            let r = call("red@t.test", "GET", "/api/games/named/table", None);
+            // `..` is the anti-vacuity: the grammar still refuses it, so 200
+            // above is a shape check that passed, not one that never ran.
+            assert_eq!(r.status, status, "{watcher:?}: {}", r.body);
+        }
     }
 
     /// `set_clock` hands back what it replaced, so a caller that pins a reading
@@ -946,26 +1039,22 @@ mod tests {
         assert!(read_inner("table", "sim-00000000000000dd").unwrap().unwrap().contains("18446744073709551615"));
     }
 
-    /// A positional ARRAY body the layer itself would accept (plan review m3) is
-    /// refused here: this host names its object from an object's `id` only.
+    /// A positional ARRAY body is the LAYER's own 400 since M6.5c2 (spec §2.6):
+    /// `api::parse_json` reads an object only, so this module forwards the body
+    /// as it forwards every body the layer refuses, and the answer is the
+    /// layer's, byte for byte — one sentence on every host.
     #[test]
-    fn an_array_body_the_layer_would_accept_is_refused() {
+    fn an_array_body_is_the_layers_own_400() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        // Positional, in `NewGame`'s FIELD ORDER (tables.rs:140-171): players,
-        // colors, start_seat, seed, seats, and every later field defaults — the
-        // shape the plan's review measured at 201. The premise below fails if
-        // that order ever changes, so the refusal is never read off a body the
-        // layer would have refused anyway.
+        // Positional, in `NewGame`'s FIELD ORDER — the body the M6.5c plan's
+        // review measured at 201, before the layer refused it.
         let body = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
         let direct = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body.as_bytes());
-        assert_eq!(direct.status, 201, "premise: the LAYER accepts this array positionally — {}", direct.body);
         init_inner(&config("off")).unwrap();
         let r = create_inner(Some("red@t.test"), body.as_bytes(), "sim-00000000000000ff", Some("application/json"));
-        assert_eq!(r.status, 400, "{}", r.body);
-        assert_eq!(r.body, r#"{"error":"a game must be created from a JSON object"}"#);
-        // Nothing under ANY id: the array names no id, so a table the layer made
-        // from it would sit under one it drew.
+        assert_eq!((r.status, &r.body), (direct.status, &direct.body), "the layer's own answer, byte for byte");
+        assert_eq!((r.status, r.body.as_str()), (400, serde_json::json!({ "error": api::NOT_AN_OBJECT }).to_string().as_str()));
         assert!(stored(Doc::Table).is_empty() && stored(Doc::Record).is_empty(), "nothing stored");
         // Anti-vacuity: the same listing names a table the moment one IS stored.
         let r = create_inner(Some("red@t.test"), CREATE.as_bytes(), "sim-00000000000000ff", Some("application/json"));
@@ -1033,9 +1122,11 @@ mod tests {
         assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0}"#);
     }
 
-    /// The restated error body is `dispatch`'s own, for the same refusal — both
-    /// arms of it, the `status` arm through a constructed `ApiError` compared with
-    /// the layer's dealing 409.
+    /// The restated error body is `dispatch`'s own, for the same refusal — all
+    /// three arms of it: the `status` arm through a constructed `ApiError`
+    /// compared with the layer's dealing 409, and the `foreign_bot` arm (M6.5c2)
+    /// through the events route's own refusal of a game not over against a bot
+    /// this build does not run.
     #[test]
     fn a_refusal_body_is_the_one_dispatch_writes() {
         let _s = serial();
@@ -1048,8 +1139,46 @@ mod tests {
         let d = dispatch_inner(Some("red@t.test"), "GET", "/api/games/dealt", "", None, b"");
         assert_eq!(d.status, 409, "premise: a dealing table's session route is the 409 that carries `status`");
         let message = serde_json::from_str::<serde_json::Value>(&d.body).unwrap()["error"].as_str().unwrap().to_string();
-        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing") });
+        let restated = error_body(&ApiError { status: http::StatusCode::CONFLICT, message, table_status: Some("dealing"), foreign_bot: None });
         assert_eq!(restated, d.body);
+
+        // M6.5c2: the foreign-bot 409, whose pair rides beside the sentence —
+        // the events route's body is the restatement's, dispatch's the layer's.
+        let (record, table) = foreign_unfinished("foreign");
+        load_inner("record", "foreign", &record).unwrap();
+        load_inner("table", "foreign", &table).unwrap();
+        let d = dispatch_inner(Some("local@browser"), "GET", "/api/games/foreign", "", None, b"");
+        assert_eq!(d.status, 409, "premise: a game not over against a foreign bot — {}", d.body);
+        assert!(d.body.contains(r#""foreign_bot":{"played":"V2","#), "premise: the pair rides the body — {}", d.body);
+        let e = events_inner("foreign", Some("local@browser"), "");
+        assert_eq!((e.status, e.body.as_str()), (d.status, d.body.as_str()), "the restated body, whole");
+    }
+
+    /// The committed browser-played pair as a game NOT over against a bot this
+    /// build does not run: seat 1 renamed `v2-padded`, cut at 300 events with
+    /// the bot to move, re-stamped, and the table's mirror moved with it. After
+    /// the layer's `games::test_support::foreign_pair`, less the mirror's `bot`
+    /// (ruling R-06: a test-only helper of another crate cannot be imported).
+    fn foreign_unfinished(id: &str) -> (String, String) {
+        use yokohama_core::{state_at, GameRecord};
+        let pair = |file: &str| {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../yokohama-web/tests/fixtures").join(file);
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        };
+        let mut record: GameRecord = serde_json::from_str(&pair("browser-played-2p.json")).unwrap();
+        let mut table: yokohama_web::table::TableDoc = serde_json::from_str(&pair("browser-played-2p.table.json")).unwrap();
+        record.run.as_mut().unwrap().seats[1].controller = "v2-padded".to_string();
+        record.events.truncate(300);
+        let state = state_at(&record, 300, &yokohama_core::Rules::standard()).unwrap();
+        record.stamp_terminal_digest(&state);
+        table.id = id.to_string();
+        table.turn = Some(yokohama_web::table::TurnMirror {
+            to_move: state.current_player.0,
+            over: false,
+            winner: None,
+            bot: None,
+        });
+        (serde_json::to_string(&record).unwrap(), serde_json::to_string(&table).unwrap())
     }
 
     /// `events`' 401 is `dispatch`'s own for the same caller, byte for byte —
@@ -1093,13 +1222,13 @@ mod tests {
     }
 
     /// **The crate's own scan** (spec §5.1), copied from `yokohama-wasm`'s
-    /// `this_host_makes_no_platform_call_but_the_clock`
-    /// (`crates/yokohama-wasm/src/lib.rs`) — each host is its own host, and
-    /// what the two share is the layer, never a test module. This is host code
-    /// and its ONLY platform call is the clock. The eight patterns the layer's
-    /// `platform_calls_stay_behind_the_server_feature` names are refused here
-    /// too, over EVERY `src/*.rs` of this crate with each file's top-level test
-    /// module cut out.
+    /// scan (`crates/yokohama-wasm/src/lib.rs` — named for the clock and the
+    /// console there since M6.5c2, when that host gained the console) — each
+    /// host is its own host, and what the two share is the layer, never a test
+    /// module. This is host code and its ONLY platform call is the clock. The
+    /// eight patterns the layer's `platform_calls_stay_behind_the_server_feature`
+    /// names are refused here too, over EVERY `src/*.rs` of this crate with
+    /// each file's top-level test module cut out.
     ///
     /// Two anti-vacuity partners, and the second is the one worth reading: the
     /// scan must have looked at a file, and the one allowed call must be in

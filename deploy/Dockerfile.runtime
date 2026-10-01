@@ -45,8 +45,8 @@ COPY art/  /srv/assets/art/
 # loopback deliberately. Since M6.1 this API does read an identity — one header,
 # named by `YOKOHAMA_WEB_IDENTITY`, required on every `/api/games` route — but a
 # header is worth exactly what the path to the port is worth: `cf-access` and
-# `worker` trust a header only their own edge can set, and `claimed`
-# authenticates the door and not the seat. So binding wide is still a statement
+# `worker` trust a header only their own edge can set, and `open` authenticates
+# nobody: whoever reaches the door may take any name. So binding wide is still a statement
 # that something in FRONT is doing identity. On this deployment that something
 # is the Cloudflare tunnel plus its Access application, and the container is
 # never published to the LAN.

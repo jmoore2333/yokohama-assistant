@@ -1,0 +1,7 @@
+{
+  "ok": null,
+  "refusal": {
+    "kind": "foreign_bot",
+    "message": "This move was made by V2, which this server doesn't run."
+  }
+}

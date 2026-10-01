@@ -1,0 +1,39 @@
+{
+  "bot": {
+    "label": "V2",
+    "runs_here": false
+  },
+  "can_watch": true,
+  "chosen": [
+    true,
+    true
+  ],
+  "colors": [
+    "Red",
+    "Blue"
+  ],
+  "created_at": 1789000000,
+  "created_by": "local@browser",
+  "id": "wire-foreign",
+  "locked": false,
+  "my_seats": [
+    0
+  ],
+  "name": null,
+  "over": false,
+  "players": 2,
+  "seats": [
+    {
+      "kind": "human",
+      "name": null,
+      "user": "local@browser"
+    },
+    {
+      "kind": "bot"
+    }
+  ],
+  "start_seat": 0,
+  "status": "playing",
+  "to_move": 1,
+  "winner": null
+}

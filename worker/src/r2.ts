@@ -47,8 +47,9 @@ export type Site = "game-over" | "abandon" | "expiry" | "operator" | "browser";
 
 /**
  * The shell's line for an upload's outcome (spec §2.8; the layer's own lines
- * are mute on this host): `archive-<outcome>`, naming the object, the site,
- * the record's key and the outcome's detail, and `extra` beside them.
+ * reach this log through `readReply` since M6.5c2, under names of their own):
+ * `archive-<outcome>`, naming the object, the site, the record's key and the
+ * outcome's detail, and `extra` beside them.
  */
 export function logOutcome(id: string | undefined, site: Site, plan: Plan, outcome: Outcome, extra: Record<string, unknown> = {}): void {
   log(`archive-${outcome.outcome}`, { id, site, record_key: plan.record_key, detail: outcome.detail, ...extra });

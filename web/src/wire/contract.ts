@@ -67,6 +67,8 @@ import type {
   DecisionModel,
   Breakdown,
   Explanation,
+  ForeignBot,
+  ForeignBotErrorBody,
   FrameModel,
   Health,
   HistoricalFrame,
@@ -82,12 +84,15 @@ import type {
   Placing,
   PlayerModel,
   PortsPanel,
+  ProductionBot,
   PromptState,
   Provenance,
   Ranked,
   RefusalRow,
+  SeatBot,
   SuggestOk,
   SuggestResponse,
+  TableBot,
   TableView,
   Term,
   Terminal,
@@ -104,6 +109,13 @@ import choiceWarehouseTake from "./choice_WarehouseTake.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
+import identityCases from "./identity_cases.json";
+import seedCases from "./seed_cases.json";
+import productionBot from "./production_bot.json";
+import tableBot from "./table_bot.json";
+import foreignBot409 from "./foreign_bot_409.json";
+import tableForeign from "./table_foreign.json";
+import whyForeign from "./why_foreign.json";
 import error from "./error.json";
 import events from "./events.json";
 import eventsDealing from "./events_dealing.json";
@@ -340,6 +352,31 @@ const _chat400SeatedName: Widen<ApiErrorBody> = chat400SeatedName;
 const _chat403NotSeated: Widen<ApiErrorBody> = chat403NotSeated;
 const _chat403Locked: Widen<ApiErrorBody> = chat403Locked;
 const _houseChatOff404: Widen<ApiErrorBody> = houseChatOff404;
+// ---- M6.5c2: the bot's label ------------------------------------------------
+//
+// `bot` is `TableBot | null` and `null` in every walk payload, so the table
+// assertions above are satisfied without ever reaching `Widen<TableBot>` — the
+// terminal explanation's lesson below. `table_bot` is the vs-bot table that
+// enters the branch, and `watching` the one `ClientState` whose `bots` is not
+// empty (the ARRAY, for `noUncheckedIndexedAccess`'s reason under §1b).
+const _tableBot: Widen<TableView> = tableBot;
+const _tableBotBot: Widen<TableBot> = tableBot.bot;
+const _seatBots: Widen<SeatBot>[] = watching.bots;
+// The contract the door imports: not a route's payload, and typed here so the
+// screens that read it read a checked shape.
+const _productionBot: Widen<ProductionBot> = productionBot;
+// ---- M6.5c2: the foreign-bot rule ---------------------------------------------
+//
+// The 409 a game not over against another bot answers on every game route —
+// the one refusal besides the dealing and open ones that carries a second key —
+// the lobby row that says this build does not run its bot, and `why`'s
+// THIRTEENTH refusal shape, the layer's own (`explain::Why::foreign`), which
+// `why_refusals.json` does not carry because it is not the CLI's.
+const _foreignBot409: Widen<ForeignBotErrorBody> = foreignBot409;
+const _tableForeign: Widen<TableView> = tableForeign;
+const _tableForeignBot: Widen<TableBot> = tableForeign.bot;
+const _whyForeign: Widen<WhyResponse> = whyForeign;
+const _whyForeignRefusal: Widen<RefusalRow> = whyForeign.refusal;
 
 const _health: Widen<Health> = health;
 // Both sides of `/api/me`: signed in, and the payload a caller with no identity
@@ -372,6 +409,18 @@ const _archive400Digest: Widen<ApiErrorBody> = archive400Digest;
 const _archive400Replay: Widen<ApiErrorBody> = archive400Replay;
 const _archive400Table: Widen<ApiErrorBody> = archive400Table;
 const _artManifest: Widen<ArtManifest> = artManifest;
+/** One input of the key grammar and the layer's two answers (M6.5c2, spec §2.1
+ *  and §3): `key` is `User::parse`'s normalized key, `display` its
+ *  `User::typed_form` — the same value, case kept — and both are `null` where
+ *  the layer refuses the input. Not a route's payload: a CONTRACT, emitted by
+ *  `wire_fixtures`, which the client's name step is pinned to. */
+export interface IdentityCase {
+  raw: string;
+  key: string | null;
+  display: string | null;
+}
+const _identityCases: readonly IdentityCase[] = identityCases;
+const _seedCases: readonly { raw: string; ok: boolean }[] = seedCases;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
 const _whyRefused: Widen<WhyResponse> = whyRefused;
@@ -490,7 +539,7 @@ void [
   _events, _eventsDealing, _eventsOpen,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
-  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -500,6 +549,8 @@ void [
   _terminal, _terminalStanding,
   _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
   _chat400Long, _chat400SeatedName, _chat403NotSeated, _chat403Locked, _houseChatOff404,
+  _tableBot, _tableBotBot, _seatBots, _productionBot,
+  _foreignBot409, _tableForeign, _tableForeignBot, _whyForeign, _whyForeignRefusal,
 ];
 
 // ## §2. The key sets, so a field the SERVER adds is not silently unknown
@@ -539,7 +590,7 @@ type KeysOf<T, K extends readonly string[]> = [
 const CLIENT_STATE = [
   "id", "mode", "seat", "to_move", "your_turn", "frame", "prompt",
   "messages", "over", "end_triggers", "deck_remaining", "end_game_triggered",
-  "scores", "warnings", "events",
+  "scores", "warnings", "events", "bots",
 ] as const;
 const FRAME = ["title", "board", "dashboard", "decision"] as const;
 const DECISION = [
@@ -589,12 +640,19 @@ const ME = ["mode", "user"] as const;
 const TABLE = [
   "id", "name", "created_by", "created_at", "players", "colors", "start_seat",
   "seats", "chosen", "my_seats", "status", "to_move", "over", "locked", "winner",
-  "can_watch",
+  "can_watch", "bot",
 ] as const;
+// M6.5c2: the table's bot, one bot seat, and the door's contract file.
+const TABLE_BOT = ["label", "runs_here"] as const;
+const SEAT_BOT = ["seat", "label"] as const;
+const PRODUCTION_BOT = ["identity", "label"] as const;
+const FOREIGN_BOT_ERROR = ["error", "foreign_bot"] as const;
+const FOREIGN_BOT = ["played", "runs"] as const;
 const DEAL_VIEW = ["table", "seat", "cards", "keep_note", "frame"] as const;
 const GAMES_LIST = ["games", "next"] as const;
-// The open and dealing 409s are the ONLY refusals that carry a second key, and
-// the only ones this client branches on rather than displays.
+// The open, dealing and playing 409s carry a second key, `status`, and the
+// foreign-bot 409 (M6.5c2) carries `foreign_bot`: the only four refusals that
+// do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn", "chat"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
@@ -688,12 +746,17 @@ const _as: KeysOf<Extract<ChatAuthor, { kind: "seat" }>, typeof CHAT_AUTHOR_SEAT
   CHAT_AUTHOR_SEAT;
 const _aw: KeysOf<Extract<ChatAuthor, { kind: "watcher" }>, typeof CHAT_AUTHOR_WATCHER> =
   CHAT_AUTHOR_WATCHER;
+const _tb: KeysOf<TableBot, typeof TABLE_BOT> = TABLE_BOT;
+const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
+const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
+const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
+const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
-      _cg, _cm, _as, _aw];
+      _cg, _cm, _as, _aw, _tb, _sb, _pb, _fe, _fb];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
 export const KEYS = {
@@ -742,6 +805,11 @@ export const KEYS = {
   chatMessage: CHAT_MESSAGE,
   chatAuthorSeat: CHAT_AUTHOR_SEAT,
   chatAuthorWatcher: CHAT_AUTHOR_WATCHER,
+  tableBot: TABLE_BOT,
+  seatBot: SEAT_BOT,
+  productionBot: PRODUCTION_BOT,
+  foreignBotError: FOREIGN_BOT_ERROR,
+  foreignBot: FOREIGN_BOT,
 } as const;
 
 // ## §3. The fixtures, typed, for every other test to render
@@ -836,6 +904,15 @@ export const wire = {
    *  `wire_fixtures.rs` — the client has to word these itself, and had 55 of the
    *  96 wrong. */
   siteSpaceWords: siteSpaceWords as { cards: { index: number; spaces: string[] }[] },
+  /** Not a payload either: the key grammar's verdicts over a committed list of
+   *  inputs (`User::parse` and `User::typed_form`), frozen so the name step's
+   *  normalization cannot drift from the server's. See that fixture's doc in
+   *  `wire_fixtures.rs`. */
+  identityCases: identityCases as readonly IdentityCase[],
+  /** Not a payload either: `WireSeed`'s verdicts over a committed list of
+   *  inputs, frozen so the form's as-you-type check cannot drift from the
+   *  server's rule. See that fixture's doc in `wire_fixtures.rs`. */
+  seedCases: seedCases as readonly { raw: string; ok: boolean }[],
   suggest: as<SuggestResponse>(suggest),
   why: as<WhyResponse>(why),
   whyRefused: as<WhyResponse>(whyRefused),
@@ -859,6 +936,13 @@ export const wire = {
   chat403NotSeated: as<ApiErrorBody>(chat403NotSeated),
   chat403Locked: as<ApiErrorBody>(chat403Locked),
   houseChatOff404: as<ApiErrorBody>(houseChatOff404),
+  // ---- M6.5c2: the bot's label -------------------------------------------
+  tableBot: as<TableView>(tableBot),
+  productionBot: as<ProductionBot>(productionBot),
+  // ---- M6.5c2: the foreign-bot rule -------------------------------------
+  foreignBot409: as<ForeignBotErrorBody>(foreignBot409),
+  tableForeign: as<TableView>(tableForeign),
+  whyForeign: as<WhyResponse>(whyForeign),
 } as const;
 
 /** The queued-choice heads the corpus DOES carry.

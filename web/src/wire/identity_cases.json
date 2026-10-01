@@ -1,0 +1,207 @@
+[
+  {
+    "display": "red@wire.test",
+    "key": "red@wire.test",
+    "raw": "red@wire.test"
+  },
+  {
+    "display": "Red@Wire.TEST",
+    "key": "red@wire.test",
+    "raw": "Red@Wire.TEST"
+  },
+  {
+    "display": "Red@Wire.TEST",
+    "key": "red@wire.test",
+    "raw": " Red@Wire.TEST "
+  },
+  {
+    "display": "a+b@x.test",
+    "key": "a+b@x.test",
+    "raw": "a+b@x.test"
+  },
+  {
+    "display": "ben castle",
+    "key": "ben castle",
+    "raw": "ben castle"
+  },
+  {
+    "display": "Ben Castle",
+    "key": "ben castle",
+    "raw": "  Ben   Castle "
+  },
+  {
+    "display": "Ben",
+    "key": "ben",
+    "raw": "Ben"
+  },
+  {
+    "display": "BEN",
+    "key": "ben",
+    "raw": "BEN"
+  },
+  {
+    "display": "b3n_c-a.stle",
+    "key": "b3n_c-a.stle",
+    "raw": "b3n_c-a.stle"
+  },
+  {
+    "display": "a.test",
+    "key": "a.test",
+    "raw": "a.test"
+  },
+  {
+    "display": "7 wonders",
+    "key": "7 wonders",
+    "raw": "7 wonders"
+  },
+  {
+    "display": "x",
+    "key": "x",
+    "raw": "x"
+  },
+  {
+    "display": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "."
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": ".."
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": ". ."
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "-"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": ".x"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "_x"
+  },
+  {
+    "display": "x.",
+    "key": "x.",
+    "raw": "x."
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "anonymous"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "ANONYMOUS"
+  },
+  {
+    "display": "anonymous1",
+    "key": "anonymous1",
+    "raw": "anonymous1"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": ""
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "   "
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "Bén"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "ben!"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "a/b"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "ｂｅｎ"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "Kelvin"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "a@b@c"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "@x.test"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "a@"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "a b@x.test"
+  },
+  {
+    "display": "ben",
+    "key": "ben",
+    "raw": "ben\t"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "ben\tcastle"
+  },
+  {
+    "display": "ben",
+    "key": "ben",
+    "raw": "ben\r"
+  },
+  {
+    "display": "Ben",
+    "key": "ben",
+    "raw": " Ben"
+  },
+  {
+    "display": "ben",
+    "key": "ben",
+    "raw": "ben"
+  },
+  {
+    "display": null,
+    "key": null,
+    "raw": "﻿ben"
+  }
+]

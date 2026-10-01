@@ -288,7 +288,7 @@ impl Api {
     fn with_archive(dir: &std::path::Path) -> Self {
         let state = Arc::new(AppState::with_store_chat_and_archive(
             Arc::new(yokohama_web::store::MemStore::default()),
-            yokohama_web::identity::IdentityMode::Claimed,
+            yokohama_web::identity::IdentityMode::Open,
             yokohama_web::chat::ChatConfig::default(),
             Arc::new(yokohama_web::archive::DirArchive::new(dir)),
         )
@@ -745,15 +745,19 @@ struct Walk {
     /// The PRIMARY `Api`'s calls, in order — the script a second host replays.
     script: Vec<ScriptRow>,
     /// The calls the walk made on a SECOND `Api` — one built with the lobby
-    /// chat off, one with a real archive directory.
+    /// chat off, one with a real archive directory, one holding a vs-bot
+    /// table (M6.5c2), and one holding the committed pair re-seated against
+    /// another bot (M6.5c2).
     ///
     /// **Kept rather than dropped, so the classification can be derived.** A
-    /// browser host has neither of those deployments, so the payloads these
-    /// produced are third-column files (spec §5) by construction. Holding them
-    /// is what lets [`corpus`] tell "answered by a host this script does not
-    /// describe" apart from "answered by nothing at all" — the second is a
-    /// payload that slipped into the walk from a construction, and it is a hard
-    /// failure rather than a quiet widening of the third column.
+    /// browser host has neither of the first two deployments, and no script
+    /// replays the third's vs-bot table or the fourth's re-seated pair, so the
+    /// payloads these produced are third-column files (spec §5) by
+    /// construction. Holding them is what lets [`corpus`] tell "answered by a
+    /// host this script does not describe" apart from "answered by nothing at
+    /// all" — the second is a payload that slipped into the walk from a
+    /// construction, and it is a hard failure rather than a quiet widening of
+    /// the third column.
     aside: Vec<ScriptRow>,
     /// The archive `Api`'s calls, in order, KEPT APART as well (M6.5c, spec
     /// §5.3) — the rows of `web/src/wire-script/archive-walk.json`, which a
@@ -767,7 +771,7 @@ struct Walk {
 
 /// The walk over a caller's [`Api`], so a cell can read what the walk counted.
 ///
-/// Answers the payloads, the rows of the two SECOND `Api`s it builds along the
+/// Answers the payloads, the rows of the three SECOND `Api`s it builds along the
 /// way — see [`Walk::aside`] — and the archive `Api`'s rows again on their own
 /// ([`Walk::archive`]).
 async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<ScriptRow>) {
@@ -1252,10 +1256,11 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // it already gave, never a rule: a miss falls back to asking about every
     // area in turn, and a hit costs one request instead of up to twenty-four.
     let mut placed_before: Option<u64> = None;
-    // A prompt that does not move is a walk that does not terminate. Three
-    // identical prompts in a row means the arm below is answering with
-    // something the game will not take, and the answer is to back out of the
-    // picker rather than to keep pushing.
+    // A prompt that does not move is a walk that does not terminate. A prompt
+    // that comes back unchanged three more times after its first — the FOURTH
+    // identical prompt in a row, `stuck` reaching 3 — means the arm below is
+    // answering with something the game will not take, and the answer is to
+    // back out of the picker rather than to keep pushing.
     let mut stuck = 0usize;
     let mut last_prompt = Value::Null;
 
@@ -1759,12 +1764,118 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     assert_eq!(status, StatusCode::NOT_FOUND, "{house_chat_off_404}");
     out.push(("house_chat_off_404".to_string(), house_chat_off_404));
 
+    // **A table with a BOT seat, as its creator reads it** (M6.5c2, spec §2.4),
+    // from an `Api` of its own so the primary walk stays bot-free — a bot's
+    // stream seed is OS entropy, drawn at the deal — and so no lobby page this
+    // walk commits gains a row. Undealt, so its bot is the one `finalize` will
+    // deal and the payload carries no seed of any kind. It is the corpus's one
+    // `TableView` whose `bot` is not null: without it `Widen<TableView>` is
+    // satisfied by `null` and checks nothing about `TableBot` (the terminal
+    // explanation's lesson, `contract.ts` §1).
+    let bots = Api::new();
+    let (status, table_bot) = bots.call("POST", "/api/games", Some(bot_table_body())).await;
+    assert_eq!(status, StatusCode::CREATED, "{table_bot}");
+    assert_eq!(table_bot["status"], "dealing", "premise: undealt, so its bot is the one this build deals");
+    let production = yokohama_web::bots::production();
+    assert_eq!(
+        table_bot["bot"],
+        json!({ "label": yokohama_web::bots::label(&production), "runs_here": true }),
+    );
+    out.push(("table_bot".to_string(), table_bot));
+
+    // **A game played against a bot this build does not run** (M6.5c2,
+    // R-6.5c2.10), from an `Api` of its own: the committed browser-played pair
+    // with its bot seat renamed to `v2-padded` — cut at 300 events (not over:
+    // every game route refuses it, and its lobby row says so) and whole
+    // (finished: it opens, and `why` names its bot). The three payloads are the
+    // client's only sources for the refusal it branches on, the lobby row that
+    // does not run here, and `why`'s thirteenth refusal shape.
+    let foreign = Api::new();
+    for (id, cut) in [("wire-foreign", Some(300)), ("wire-foreign-over", None)] {
+        let (record, table) = foreign_pair(id, "v2-padded", cut);
+        let games = &foreign.state.games;
+        games.load_document(yokohama_web::store::Doc::Record, id, &record).expect("a fresh store");
+        games.load_document(yokohama_web::store::Doc::Table, id, &table).expect("a fresh store");
+    }
+    let (status, foreign_bot_409) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{foreign_bot_409}");
+    assert_eq!(foreign_bot_409["foreign_bot"]["played"], "V2", "{foreign_bot_409}");
+    out.push(("foreign_bot_409".to_string(), foreign_bot_409));
+    let (status, table_foreign) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign/table", None).await;
+    assert_eq!(status, StatusCode::OK, "{table_foreign}");
+    assert_eq!(table_foreign["bot"]["runs_here"], false, "premise: the row says this build does not run it");
+    out.push(("table_foreign".to_string(), table_foreign));
+    let (status, why_foreign) =
+        foreign.call_as(Some(PAIR_PLAYER), "GET", "/api/games/wire-foreign-over/why", None).await;
+    assert_eq!(status, StatusCode::OK, "{why_foreign}");
+    assert_eq!(why_foreign["refusal"]["kind"], "foreign_bot", "{why_foreign}");
+    out.push(("why_foreign".to_string(), why_foreign));
+
     let (archived, archive_script) = archive_payloads(api).await;
     out.extend(archived);
 
     let mut aside = off.script.take();
+    aside.extend(bots.script.take());
+    aside.extend(foreign.script.take());
     aside.extend(archive_script.iter().cloned());
     (out, aside, archive_script)
+}
+
+/// The committed browser-played pair, which carries a seed and therefore lives
+/// OUTSIDE the corpus (`tests/browser_played_pin.rs`'s note); nothing it holds
+/// but what a payload serves reaches `web/src/wire/`.
+const PAIR_RECORD: &str = include_str!("fixtures/browser-played-2p.json");
+const PAIR_TABLE: &str = include_str!("fixtures/browser-played-2p.table.json");
+/// The one address a local game is played by, and so the pair's seat 0.
+const PAIR_PLAYER: &str = "local@browser";
+
+/// The pair re-seated under `id` as a game played against ANOTHER bot:
+/// seat 1's recorded controller renamed, its version and knobs kept, the
+/// table's mirror naming the same bot; with `cut`, the first `cut` events only,
+/// re-stamped, and the mirror moved with them (not over). COPIED from the
+/// layer's `games::test_support::foreign_pair`, a test-only helper of another
+/// crate target, which cannot be imported (the receipt cells' ruling R-06).
+fn foreign_pair(id: &str, controller: &str, cut: Option<usize>) -> (String, String) {
+    use yokohama_core::{state_at, GameRecord};
+    let mut record: GameRecord = serde_json::from_str(PAIR_RECORD).expect("the pair's record");
+    let mut table: yokohama_web::table::TableDoc = serde_json::from_str(PAIR_TABLE).expect("the pair's table");
+    table.id = id.to_string();
+    let seat = &mut record.run.as_mut().expect("the pair's run provenance").seats[1];
+    seat.controller = controller.to_string();
+    let bot = yokohama_web::bots::BotDescriptor {
+        controller: seat.controller.clone(),
+        version: seat.version,
+        params: seat.params.clone(),
+    };
+    let mirror = table.turn.as_mut().expect("the pair's mirror");
+    mirror.bot = Some(bot);
+    if let Some(cut) = cut {
+        record.events.truncate(cut);
+        let state = state_at(&record, cut, &Rules::standard()).expect("the cut replays");
+        record.stamp_terminal_digest(&state);
+        *mirror = yokohama_web::table::TurnMirror {
+            to_move: state.current_player.0,
+            over: false,
+            winner: None,
+            bot: mirror.bot.take(),
+        };
+    }
+    (serde_json::to_string(&record).expect("a record"), serde_json::to_string(&table).expect("a table"))
+}
+/// The vs-bot table the `table_bot` fixture is read from: the walker at seat 0,
+/// the bot at seat 1, at the corpus seed.
+fn bot_table_body() -> Value {
+    json!({
+        "players": 2,
+        "colors": ["Red", "Blue"],
+        "start_seat": 0,
+        "seed": SETUP_SEED,
+        "seats": [{ "user": WALKER }, { "bot": true }],
+        "name": "wire-bot",
+        "id": "wire-bot",
+    })
 }
 
 /// **What the archive route answers a browser** (M6.5b, R-6.5b.6), captured
@@ -2147,6 +2258,9 @@ async fn corpus() -> Corpus {
         .expect("a serializable manifest"),
     ));
     all.push(("site_space_words".to_string(), site_space_words()));
+    all.push(("production_bot".to_string(), production_bot()));
+    all.push(("identity_cases".to_string(), identity_cases()));
+    all.push(("seed_cases".to_string(), seed_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
     for (_, value) in all.iter_mut() {
@@ -2294,6 +2408,203 @@ fn site_space_words() -> Value {
         })
         .collect();
     serde_json::json!({ "cards": cards })
+}
+
+/// **What the new-table form checks a seed against, as the server reads one**
+/// (M6.5c2, spec §2.2 "The seed"; Review Focus 5).
+///
+/// Not a payload any route serves — a CONTRACT, frozen as
+/// [`site_space_words`] is and for its reason: the client has to decide
+/// something itself. The form checks a typed seed AS IT IS TYPED
+/// (`web/src/seedRule.ts`, cycle B), which is a second statement of
+/// [`WireSeed`]'s rule — `str::trim`, then `u64::from_str`: an optional `+`,
+/// ASCII digits, at most 18446744073709551615. The client cannot call Rust, so
+/// the two are held together here: `seedRule.test.ts` asserts `checkSeed` gives
+/// every verdict in this file, and this file is refused when the rule moves.
+///
+/// **The inputs sit where a hand-written check would part ways with the
+/// server**: leading zeros and a `+` it takes; a full-width or an Arabic-Indic
+/// digit, an exponent, a sign, a separator and one past the top it refuses;
+/// and TWO that split JavaScript's own `String.prototype.trim` from Rust's —
+/// U+FEFF, which JavaScript strips and Rust does not, and U+0085, which Rust
+/// strips and JavaScript does not (measured on both sides when this was
+/// written). None is the walk's [`SETUP_SEED`], in either spelling: the
+/// leakage pin scans this file like every other.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+const SEED_INPUTS: &[&str] = &[
+    "+007 ",
+    " 7",
+    "007",
+    "\u{ff17}",
+    "1e3",
+    "-1",
+    "18446744073709551616",
+    "18446744073709551615",
+    "",
+    " ",
+    "0",
+    "+0",
+    "-0",
+    "+",
+    "12 34",
+    "\t42\n",
+    "\u{a0}12\u{a0}",
+    "\u{feff}12",
+    "\u{85}12",
+    "\u{3000}12\u{3000}",
+    "0x10",
+    "1_000",
+    "12.0",
+    "\u{663}",
+    "00000000000000000000018446744073709551615",
+    "99999999999999999999",
+];
+
+/// Each input with [`WireSeed`]'s own verdict — the create's `seed` field
+/// deserialized from the STRING a browser sends, exactly as `NewGame` reads it.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+fn seed_cases() -> Value {
+    Value::Array(
+        SEED_INPUTS
+            .iter()
+            .map(|raw| {
+                let ok = serde_json::from_value::<yokohama_web::tables::WireSeed>(Value::String(
+                    (*raw).to_string(),
+                ))
+                .is_ok();
+                serde_json::json!({ "raw": raw, "ok": ok })
+            })
+            .collect(),
+    )
+}
+
+/// **The verdicts Review Focus 5 names, as the spec states them** (M6.5c2).
+///
+/// `seed_cases.json` is whatever [`WireSeed`] says TODAY, and the client is held
+/// to that — so without this cell the two could agree with each other and both
+/// disagree with what the spec promised the player. The last two asserts are
+/// the anti-vacuity: the two inputs on which JavaScript's `String.prototype.trim`
+/// and Rust's `str::trim` part ways really do get different verdicts from the
+/// server, so a client rule written on the obvious trim fails cycle B's
+/// `seedRule.test.ts`.
+///
+/// [`WireSeed`]: yokohama_web::tables::WireSeed
+#[test]
+fn the_seed_table_holds_the_verdicts_the_spec_names() {
+    let cases = seed_cases();
+    let verdict = |raw: &str| -> bool {
+        cases
+            .as_array()
+            .expect("the table is an array")
+            .iter()
+            .find(|c| c["raw"] == raw)
+            .unwrap_or_else(|| panic!("{raw:?} is not in the committed table"))["ok"]
+            .as_bool()
+            .expect("a verdict")
+    };
+    for raw in ["+007 ", " 7", "007", "18446744073709551615"] {
+        assert!(verdict(raw), "the server takes {raw:?}, and the spec says it does");
+    }
+    for raw in ["\u{ff17}", "1e3", "-1", "18446744073709551616", "", " "] {
+        assert!(!verdict(raw), "the server refuses {raw:?}, and the spec says it does");
+    }
+    assert!(verdict("\u{85}12"), "Rust's trim strips U+0085; JavaScript's does not");
+    assert!(!verdict("\u{feff}12"), "JavaScript's trim strips U+FEFF; Rust's does not");
+}
+
+/// **The key grammar's verdicts, frozen for the client's name step** (M6.5c2,
+/// spec §2.1 and §3).
+///
+/// Not a payload any route serves — a CONTRACT, emitted and refused exactly as
+/// [`site_space_words`] is. Under the open door the client normalizes a typed
+/// name ITSELF, before any request (`web/src/nameRule.ts`, cycle B), and is
+/// pinned to these rows, so the two cannot disagree about who a name is.
+///
+/// Each row is one committed input and the layer's two answers: `key`,
+/// `User::parse`'s normalized key, and `display`, `User::typed_form` — the same
+/// value with its case kept, which is what a player is shown. Both are `null`
+/// where the layer refuses the input. The inputs split every rule the grammar
+/// has, and they include every row the name step's own coverage cell requires
+/// — among them the characters on which Rust and JavaScript disagree: U+0085
+/// (Rust's `str::trim` removes it, JavaScript's `trim` does not), U+FEFF (the
+/// reverse) and U+212A KELVIN SIGN (JavaScript's `toLowerCase` folds it to
+/// `k`). serde_json writes non-ASCII unescaped: read this file's diff with
+/// `cat -v`.
+fn identity_cases() -> Value {
+    use yokohama_web::identity::User;
+    let (a32, a33) = ("a".repeat(32), "a".repeat(33));
+    let inputs = [
+        // The two shapes, trimmed and lowercased by one rule.
+        "red@wire.test", "Red@Wire.TEST", " Red@Wire.TEST ", "a+b@x.test",
+        "ben castle", "  Ben   Castle ", "Ben", "BEN", "b3n_c-a.stle", "a.test", "7 wonders",
+        // The length bounds.
+        "x", a32.as_str(), a33.as_str(),
+        // The leading character (review H1), and the reserved word.
+        ".", "..", ". .", "-", ".x", "_x", "x.", "anonymous", "ANONYMOUS", "anonymous1",
+        // Nothing at all.
+        "", "   ",
+        // Outside both alphabets: a non-ASCII letter, full-width letters, the
+        // Kelvin sign (which JavaScript's `toLowerCase` folds to `k`), and the
+        // email shape's four refusals.
+        "Bén", "ben!", "a/b", "\u{ff42}\u{ff45}\u{ff4e}", "\u{212a}elvin", "a@b@c", "@x.test", "a@", "a b@x.test",
+        // Tabs and returns, and the white space the two trims disagree on.
+        "ben\t", "ben\tcastle", "ben\r", "\u{a0}Ben", "\u{85}ben", "\u{feff}ben",
+    ];
+    Value::Array(
+        inputs
+            .iter()
+            .map(|raw| match User::parse(raw) {
+                Ok(key) => json!({ "raw": raw, "key": key.as_str(), "display": User::typed_form(raw) }),
+                Err(_) => json!({ "raw": raw, "key": null, "display": null }),
+            })
+            .collect(),
+    )
+}
+
+/// **What the rows say, where a person would check first** (M6.5c2) — and the
+/// one relation the client's name step relies on between the two columns: on
+/// every accepted row the key IS the display, ASCII-lowercased, and a row is
+/// never accepted in one column and refused in the other. (Review Focus 1: one
+/// key for the name typed two ways.)
+#[test]
+fn the_identity_cases_carry_the_key_grammar_s_verdicts() {
+    let rows = identity_cases();
+    let rows = rows.as_array().expect("a list");
+    let row = |raw: &str| {
+        rows.iter().find(|r| r["raw"] == raw).unwrap_or_else(|| panic!("no row for {raw:?}")).clone()
+    };
+    // (Review Focus 1) one key, shown as typed.
+    assert_eq!(row("  Ben   Castle "), json!({ "raw": "  Ben   Castle ", "key": "ben castle", "display": "Ben Castle" }));
+    assert_eq!(row("ben castle")["key"], "ben castle", "the same person, typed plainly, is the same key");
+    // Review H1's names, and the reserved word, are never keys.
+    for raw in [".", "..", ". .", "-", ".x", "anonymous"] {
+        assert_eq!(row(raw), json!({ "raw": raw, "key": null, "display": null }), "{raw:?}");
+    }
+    for r in rows {
+        match (r["key"].as_str(), r["display"].as_str()) {
+            (Some(key), Some(display)) => assert_eq!(key, display.to_ascii_lowercase(), "{r}"),
+            (None, None) => {}
+            _ => panic!("accepted in one column and refused in the other: {r}"),
+        }
+    }
+}
+
+/// **The bot this build deals, for the screens that must name it without
+/// asking** (M6.5c2, spec §2.4; review M1, R2-m6).
+///
+/// Not a payload any route serves — a CONTRACT, emitted and refused exactly as
+/// [`site_space_words`] is. Unlike that file, which the client holds a function
+/// to, this one is IMPORTED: the door's bot card, the local form and the table
+/// form's bot option read the label from it at build time, because the door
+/// asks the server nothing (R-6.5b2.7) and a fifth literal in
+/// `web/src/local/facts.ts` would be a second truth. When the AI lane re-points
+/// `PROVISIONAL_DEFAULT_BOT`, the writer test below refuses until this file is
+/// regenerated — that is the "pull".
+fn production_bot() -> Value {
+    let bot = yokohama_web::bots::production();
+    json!({ "identity": bot.controller, "label": yokohama_web::bots::label(&bot) })
 }
 
 /// **No payload spells the setup seed. There is no longer an exception.**

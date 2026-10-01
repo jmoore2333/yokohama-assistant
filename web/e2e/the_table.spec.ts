@@ -193,11 +193,11 @@ test("an enabled section re-fetches once after a move, collapses while replaying
   // three places: the `/input` reply, the re-read `GET /api/games/{id}` in
   // `send`'s catch branch, and `create`. So the count that follows from the rule
   // is one `/ports` per state-changing RESPONSE, not one per "move" — and a move
-  // in `act()`'s sense is not one request: a placement clicks up to three tiles
-  // and then Confirm, and every one of those four is its own `/input` post with
-  // its own reply. Asserting `+1` would therefore be asserting which affordance
-  // the seeded walk happened to take. This counts the posts instead and asserts
-  // the RELATION, which is what the spec actually says.
+  // in `act()`'s sense is not one request: a placement asks up to six tiles
+  // and then Confirms or Cancels, and every one of those is its own `/input`
+  // post with its own reply. Asserting `+1` would therefore be asserting which
+  // affordance the seeded walk happened to take. This counts the posts instead
+  // and asserts the RELATION, which is what the spec actually says.
   //
   // **Counted on the RESPONSE, and only where it succeeded.** These are named
   // for state-changing responses, and a request is not one: a refused `/input`

@@ -464,6 +464,13 @@ export interface Screen {
   over: boolean;
   options: number;
   tiles: number;
+  /** Tiles the open picker has SELECTED — `aria-pressed="true"` (M6.5c2). The
+   *  walk confirms every picker it fills, and an accepted Confirm closes it, so
+   *  a picker that opens with some already selected is one whose Confirm was
+   *  REFUSED. */
+  pressed: number;
+  /** The open picker is Option B's, which takes ONE area (M6.5c2). */
+  single: boolean;
   counts: number;
   confirm: boolean;
   only: boolean;
@@ -538,6 +545,12 @@ export async function readScreen(page: Page): Promise<Screen> {
       // for the same reason. This selector is what every walk in this suite
       // steers by, so it is the one to follow if that shape ever moves again.
       tiles: many('.tile[role="button"]:not([aria-disabled="true"])'),
+      pressed: many('.tile[role="button"][aria-pressed="true"]'),
+      // Every `.decision`, because the class is drawn more than once
+      // (`deadEnd`'s note) and the prompt's need not be the first.
+      single: [...document.querySelectorAll(".decision")].some((d) =>
+        (d.textContent ?? "").includes("click one area on the board"),
+      ),
       counts: many(".options .controls button.ghost:not([disabled])"),
       confirm: named("Confirm"),
       only: named("Apply the only option"),
@@ -552,7 +565,7 @@ export async function readScreen(page: Page): Promise<Screen> {
 
 /** Which affordance a move went through — so a walk can say what it exercised
  *  rather than only that it finished. */
-export type Affordance = "option" | "only" | "placement" | "count" | "confirm";
+export type Affordance = "option" | "only" | "placement" | "count" | "confirm" | "cancel";
 
 /**
  * One move, chosen from WHAT IS ON THE SCREEN.
@@ -584,23 +597,44 @@ export async function act(
     return "option";
   }
 
-  // A placement picker. The board is the input surface, and the tiles that are
-  // buttons are exactly the ones the client will let you toggle.
+  // A placement picker. The board is the input surface.
   //
-  // Placing NOTHING is legal and is what the server-side gate does, but a walk
-  // that only ever did that would never put an assistant on the board, and a
-  // game in which nobody places never ends — measured on the fixture walk at
-  // turn 3,644 with nothing having happened at all. Option A takes up to three
-  // areas, so the count VARIES: a walk that always placed exactly one never
-  // exercised a multi-area selection or the fee that grows with it.
+  // Placing NOTHING is legal, but a walk that only ever did that would never
+  // put an assistant on the board, and a game in which nobody places never ends
+  // — measured on the fixture walk at turn 3,644 with nothing having happened
+  // at all, and the server gate's vs-bot arm livelocked on exactly that until
+  // M6.5c2. Option A takes up to three areas, so the count VARIES: a walk that
+  // always placed exactly one never exercised a multi-area selection or the fee
+  // that grows with it. Option B takes one.
+  //
+  // **Each tile is ASKED, as the server gate's placement probe asks** (M6.5c2,
+  // spec §2.6). Every tile the client lets you toggle is clickable, but the
+  // SERVER decides which it takes, and a refusal is a 200 carrying the engine's
+  // line with the selection unchanged. So the walk clicks one UNPRESSED tile at
+  // a time — a pressed one would toggle OFF — waits for the reply, and keeps
+  // count of what the server took. A refusal costs one ask and never a Confirm.
+  //
+  // **And the server gate's stuck-picker rule, for its reason**: a set the server
+  // took one area at a time can be unaffordable together, and the same refused
+  // Confirm then comes back for ever (measured there 40,000 times).
+  // - A picker that opens with a selection already made had its Confirm refused,
+  //   since this walk confirms every picker it fills, so it backs OUT with Cancel.
+  // - An Option B picker that took no area is backed out of the same way, since
+  //   confirming it would be refused.
+  // - An Option A picker that took none is confirmed empty: placing none is legal
+  //   there, and it is how a walk with no assistants left gets past the phase.
   if (screen.tiles > 0 && screen.confirm) {
-    const wanted = 1 + nth(Math.min(3, screen.tiles));
-    for (let i = 0; i < wanted; i += 1) {
-      const live = page.locator('.tile[role="button"]:not([aria-disabled="true"])');
-      const n = await live.count();
+    if (screen.pressed > 0) return cancelPicker(page);
+    const wanted = screen.single ? 1 : 1 + nth(Math.min(3, screen.tiles));
+    let placed = 0;
+    for (let asked = 0; placed < wanted && asked < wanted + 3; asked += 1) {
+      const free = page.locator('.tile[role="button"][aria-pressed="false"]:not([aria-disabled="true"])');
+      const n = await free.count();
       if (n === 0) break;
-      await live.nth(nth(n)).click();
+      await free.nth(nth(n)).click();
+      placed = (await readScreen(page)).pressed;
     }
+    if (placed === 0 && screen.single) return cancelPicker(page);
     await page.getByRole("button", { name: "Confirm" }).click();
     return "placement";
   }
@@ -644,6 +678,41 @@ export async function deadEnd(page: Page, game: Game, moves: number): Promise<Er
         ? "the session is LOCKED after a driver or engine fault"
         : "nothing on the screen is answerable and the game is not over";
   return new Error(`${why}\n  game ${game.id}, after ${moves} moves\n\n${zone}`);
+}
+
+/** Back out of an open placement picker, through its own Cancel — always live
+ *  there (`Decision.tsx`'s controls). */
+async function cancelPicker(page: Page): Promise<Affordance> {
+  await page.locator(".decision .controls button.ghost", { hasText: "Cancel" }).first().click();
+  return "cancel";
+}
+
+/**
+ * A walk that reached its cap, in a sentence that says so (M6.5c2, spec §2.6).
+ *
+ * **Never `deadEnd`'s sentence.** A cap hit is a game still RUNNING — the two
+ * recorded hits (M6.3, M6.5c) were 4,001-move games with their end triggers
+ * unmet — and "nothing on the screen is answerable" named a stuck table
+ * instead. This names the cap, the turn and the end-trigger strip, so a hit
+ * says how far the game got.
+ */
+export async function capReached(page: Page, game: Game, moves: number): Promise<Error> {
+  const read = async (selector: string) =>
+    (await page.locator(selector).first().innerText({ timeout: 2_000 }).catch(() => "")).trim();
+  return new Error(capSentence(game.id, moves, await read(".end-strip"), await read(".decision .chain")));
+}
+
+/** `capReached`'s words — pure, so a node cell holds them apart from
+ *  `deadEnd`'s. `strip` is printed as the screen draws it: `.end-strip`
+ *  renders `view.end_triggers`, which already begins `end triggers: `, so only
+ *  the fallback carries the label. */
+export function capSentence(id: string, moves: number, strip: string, chain: string): string {
+  return (
+    `the walk reached its cap at ${moves} moves and the game is still running — ` +
+    `a game this walk has not ended, not a screen with nothing to click\n` +
+    `  game ${id}, ${chain || "no turn on screen"}\n` +
+    `  ${strip || "end triggers: no end-trigger strip drawn"}`
+  );
 }
 
 // ---- the layout measurement (M3.5's width gate, shared since M5.5) --------

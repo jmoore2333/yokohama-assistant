@@ -187,6 +187,10 @@ pub struct ClientState {
     /// count and not an event list: the walk reads the positions from
     /// `/at/{k}` and the words from `/log`, both of which already exist.
     pub events: usize,
+    /// Every bot seat the RECORD names, labelled (M6.5c2, R-6.5c2.10) — empty
+    /// for an all-human game. From the record's `run.seats`, not from the
+    /// resident `Repl`'s bot table.
+    pub bots: Vec<crate::bots::SeatBot>,
 }
 
 impl PromptState {
@@ -272,21 +276,57 @@ pub fn stand_in(state: &GameState) -> PlayerId {
 /// flag — one operator's toggle at one terminal, which hides every hand at once
 /// so a person can hand the keyboard over. A per-seat payload has no use for
 /// it: each seat already sees only its own, always, and there is nobody to hand
-/// the screen to. `is_bot` is still the REPL's own reconciled answer
-/// ([`Repl::bots`]), never re-derived here.
+/// the screen to.
+///
+/// **`is_bot` is the RECORD's answer since M6.5c2** (R-6.5c2.10; spec §2.4's
+/// fourth mask), and this re-rules the sentence that stood here — "`is_bot` is
+/// still the REPL's own reconciled answer ([`Repl::bots`]), never re-derived
+/// here" — by name. The record's `run.seats` is the source `ClientState.bots`
+/// reads too, so the panel's badge and the payload's labels cannot disagree.
+/// They differ from the `Repl`'s answer in exactly one place: a FINISHED game
+/// played against a bot this build does not run, whose seat `Repl::new`
+/// (`BotSeats::from_provenance`) has turned into a human one inside the
+/// resident `Repl`, and whose Players panel must still say a bot played it.
+/// Everywhere else the two agree, because every bot the web deals is
+/// `PROVISIONAL_DEFAULT_BOT`, which `from_provenance` restores.
 pub fn facts_for(repl: &Repl, viewer: Viewer) -> Vec<SeatFacts> {
+    let bots: Vec<u8> =
+        crate::bots::recorded(repl.session.record()).into_iter().map(|(seat, _)| seat).collect();
     repl.session
         .state()
         .players
         .iter()
         .map(|p| SeatFacts {
-            is_bot: repl.bots().is_bot(p.id),
+            is_bot: bots.contains(&p.id.0),
             hand_hidden: match viewer {
                 Viewer::Seat(s) => p.id != s,
                 Viewer::Spectator => true,
             },
         })
         .collect()
+}
+
+/// `warnings` less the line `Repl::new` added for each seat it turned from a
+/// FOREIGN bot into a human (M6.5c2, R-6.5c2.10; spec §2.4's first mask) —
+/// `warning: seat N was played by controller "…", … it resumes as a HUMAN
+/// seat, so you are now playing it`, which on the web is false: nothing here
+/// converts a bot's seat, and nobody is now playing it.
+///
+/// **By the CLI's own prefix** (`bot.rs`, `BotSeats::from_provenance`'s two
+/// conversion arms), per foreign seat and naming its controller, so no other
+/// warning can match. `Session::load_warnings` is a `Vec<String>` and a typed
+/// alternative would need a CLI change, so the cell that pins this asserts the
+/// WHOLE array of a finished foreign game — empty — and fails loudly the day
+/// the CLI's wording moves, rather than passing by matching the prefix itself.
+pub(crate) fn without_foreign_conversion(
+    warnings: Vec<String>,
+    record: &yokohama_core::GameRecord,
+) -> Vec<String> {
+    let converted: Vec<String> = crate::bots::foreign(record)
+        .into_iter()
+        .map(|(seat, d)| format!("warning: seat {seat} was played by controller \"{}\"", d.controller))
+        .collect();
+    warnings.into_iter().filter(|w| !converted.iter().any(|p| w.starts_with(p.as_str()))).collect()
 }
 
 /// The `PlayerId` the CLI's builders are handed for this viewer.
@@ -495,10 +535,25 @@ impl ClientState {
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
-            warnings: session.load_warnings.clone(),
+            warnings: without_version_drift(without_foreign_conversion(session.load_warnings.clone(), session.record())),
             events: session.record().events.len(),
+            bots: crate::bots::seat_bots(session.record()),
         }
     }
+}
+
+/// The CLI's engine-version drift line, and nothing else, dropped from what the
+/// game screen shows (M6.5c2, spec §2.6, R-6.5c2.19).
+///
+/// `engine_version` is provenance only (`GameRecord`'s own doc), and every save
+/// carries it; after a release bump the line would sit on EVERY existing game.
+/// The CLI's own frame is unchanged. **A prefix match on the CLI's `format!`**
+/// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>` and
+/// a typed alternative would be a CLI change: the pin that keeps it honest
+/// asserts an EMPTY array (`browser_played_pin.rs`), never "no drift line".
+pub fn without_version_drift(warnings: Vec<String>) -> Vec<String> {
+    const DRIFT: &str = "warning: GameRecord.engine_version=";
+    warnings.into_iter().filter(|w| !w.starts_with(DRIFT)).collect()
 }
 
 /// One historical position, projected from the record — the M4 replay payload.
@@ -775,6 +830,30 @@ mod tests {
         Repl::new(session)
     }
 
+    /// **`ClientState.bots` is the record's bot seats, labelled** (M6.5c2,
+    /// R-6.5c2.10): empty for an all-human game, the bot's seat and label for a
+    /// vs-bot one.
+    #[test]
+    fn the_payload_names_the_records_bot_seats() {
+        use yokohama_cli::bot::PROVISIONAL_DEFAULT_BOT;
+        let humans = two_human_repl();
+        let payload = ClientState::of("t", &humans, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert!(payload.bots.is_empty(), "an all-human game names no bot");
+
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(config, 20_260_831, vec![StartingOrderChoice::Keep(0); 2], Rules::standard())
+            .expect("a game");
+        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 7).seat_provenance());
+        let vs_bot = Repl::new(session);
+        let payload = ClientState::of("t", &vs_bot, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(
+            serde_json::to_value(&payload.bots).expect("serializable"),
+            serde_json::json!([{ "seat": 1, "label": crate::bots::label(&crate::bots::production()) }]),
+        );
+    }
+
     /// The three arms of [`viewer_seat`], including the hot seat, in one cell —
     /// because the claim is the PRECEDENCE, and each arm alone is satisfied by
     /// an implementation that ignores the other two.
@@ -1043,5 +1122,71 @@ mod tests {
             "the final standings are public",
         );
         assert!(hand_panels(&payload.frame).is_empty(), "and still no hand");
+    }
+
+    /// **Only the engine-version drift line is dropped** (M6.5c2, spec §2.6,
+    /// R-6.5c2.19). The match is a PREFIX on the CLI's own `format!`
+    /// (`Session::from_record`), because `load_warnings` is a `pub Vec<String>`
+    /// and a typed alternative would be a CLI change. So this cell holds the
+    /// filter's PRECISION — every other warning stays, and a line that merely
+    /// quotes the field is kept — while
+    /// `browser_played_pin.rs`'s `a_record_from_another_release_opens_with_no_warning_and_keeps_its_version`
+    /// holds that it matches the CLI at all.
+    #[test]
+    fn only_the_engine_version_drift_line_is_dropped() {
+        let drift = "warning: GameRecord.engine_version=\"0.5.0\" does not match running engine version \
+                     \"0.6.0\" — replaying anyway (v1 does not refuse on a version mismatch)"
+            .to_string();
+        let rules = "warning: GameRecord.rules_hash=\"x\" does not match running rules content hash \"y\" — \
+                     replaying anyway (v1 does not refuse on a rules_hash mismatch)"
+            .to_string();
+        let seat = "warning: seat 1 was played by controller \"z\", which this build does not know how to run"
+            .to_string();
+        let quoted = format!("note: {drift}");
+        assert_eq!(
+            without_version_drift(vec![drift.clone(), rules.clone(), seat.clone(), quoted.clone()]),
+            vec![rules, seat, quoted],
+        );
+        assert_eq!(without_version_drift(vec![drift]), Vec::<String>::new());
+        assert_eq!(without_version_drift(Vec::new()), Vec::<String>::new());
+    }
+
+    /// **Only the FOREIGN seat's conversion line is dropped** (M6.5c2, spec
+    /// §2.4's first mask, R-6.5c2.10) — the first stage's PRECISION, which the
+    /// finished-foreign cell's `[]` cannot see: a filter that emptied every
+    /// game's warnings passes that cell. Over the committed pair re-seated
+    /// against `v2-padded` (seat 1 foreign, seat 0 a person), fed lines in the
+    /// CLI's own shapes (`BotSeats::from_provenance`'s two conversion arms,
+    /// `identity_drift_warnings`, `Session::from_record`'s `rules_hash` line):
+    /// seat 1's two conversion lines go, and a `rules_hash` line, seat 1's
+    /// version-drift line and a conversion-shaped line naming the HUMAN seat 0
+    /// all stay, in order.
+    #[test]
+    fn only_the_foreign_seats_conversion_line_is_dropped() {
+        let (record, _) = crate::games::test_support::foreign_pair("v2-padded", None);
+        let record: yokohama_core::GameRecord = serde_json::from_str(&record).expect("the pair's record");
+        let converted = "warning: seat 1 was played by controller \"v2-padded\", which this build does not know \
+                         how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
+            .to_string();
+        let refused = "warning: seat 1 was played by controller \"v2-padded\", but y — it resumes as a HUMAN \
+                       seat, so you are now playing it"
+            .to_string();
+        let rules = "warning: GameRecord.rules_hash=\"x\" does not match running rules content hash \"y\" — \
+                     replaying anyway (v1 does not refuse on a rules_hash mismatch)"
+            .to_string();
+        let drift = "warning: seat 1 records controller \"v2-padded\" at version 1, but this build runs \
+                     version 2 — the seat still plays, under the CURRENT build"
+            .to_string();
+        let human = "warning: seat 0 was played by controller \"v2-padded\", which this build does not know \
+                     how to run — it resumes as a HUMAN seat, so you are now playing it (x)"
+            .to_string();
+        assert_eq!(
+            without_foreign_conversion(
+                vec![converted.clone(), rules.clone(), refused, drift.clone(), human.clone()],
+                &record,
+            ),
+            vec![rules, drift, human],
+        );
+        assert_eq!(without_foreign_conversion(vec![converted], &record), Vec::<String>::new());
     }
 }

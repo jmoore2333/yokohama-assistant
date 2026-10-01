@@ -1,0 +1,39 @@
+{
+  "bot": {
+    "label": "V4",
+    "runs_here": true
+  },
+  "can_watch": true,
+  "chosen": [
+    false,
+    true
+  ],
+  "colors": [
+    "Red",
+    "Blue"
+  ],
+  "created_at": 1789000000,
+  "created_by": "red@wire.test",
+  "id": "wire-bot",
+  "locked": false,
+  "my_seats": [
+    0
+  ],
+  "name": "wire-bot",
+  "over": null,
+  "players": 2,
+  "seats": [
+    {
+      "kind": "human",
+      "name": null,
+      "user": "red@wire.test"
+    },
+    {
+      "kind": "bot"
+    }
+  ],
+  "start_seat": 0,
+  "status": "dealing",
+  "to_move": null,
+  "winner": null
+}

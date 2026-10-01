@@ -23,7 +23,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, isBeaconCorsError, isDealAnswer, isDealAnswerLine } from "./harness";
+import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine } from "./harness";
 import {
   EXIT_LAUNCH_ARGS,
   LIVE_ORIGIN,
@@ -866,4 +866,33 @@ describe("watchForBreakage — the designed 409, in both modes", () => {
       expect(watch.dealAnswers).toBe(2);
     });
   }
+});
+
+describe("capSentence — a walk that reached its cap says so (M6.5c2, spec §2.6)", () => {
+  // Never `deadEnd`'s words: a cap hit is a game still RUNNING — the two
+  // recorded hits were 4,001-move games with their end triggers unmet — and
+  // "nothing on the screen is answerable" named a stuck table instead, which
+  // sent the reader after the wrong defect. Mutant: the sentence reverting to
+  // `deadEnd`'s. The strip is fed as the screen draws it — `.end-strip` renders
+  // `view.end_triggers`, which begins with its own label — so a sentence that
+  // labels it again says "end triggers: end triggers: …".
+  const labels = (text: string) => text.split("end triggers:").length - 1;
+
+  it("names the cap, the game, its turn and its end triggers, and no dead end", () => {
+    const strip = "end triggers: deck 3 · church 3/4 · customs 0/4 · shophouses 1/8 · trade houses 0/4";
+    const text = capSentence("sim-00000000000000aa", 4000, strip, "TURN 212 · SEAT 1");
+    expect(text).toContain("reached its cap at 4000 moves");
+    expect(text).toContain("sim-00000000000000aa");
+    expect(text).toContain("TURN 212 · SEAT 1");
+    expect(text).toContain(strip);
+    expect(labels(text)).toBe(1);
+    expect(text).not.toContain("nothing on the screen is answerable");
+  });
+
+  it("says what it could not read rather than printing nothing", () => {
+    const text = capSentence("local-1", 4001, "", "");
+    expect(text).toContain("no turn on screen");
+    expect(text).toContain("no end-trigger strip drawn");
+    expect(labels(text)).toBe(1);
+  });
 });

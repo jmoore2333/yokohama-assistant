@@ -29,7 +29,18 @@
   "turn": {
     "to_move": 1,
     "over": true,
-    "winner": 1
+    "winner": 1,
+    "bot": {
+      "controller": "v4-step9-draft1",
+      "version": 2,
+      "params": {
+        "b": 4,
+        "eval_impl": 3,
+        "k": 1,
+        "m": 8,
+        "weights": 6957643967275421640
+      }
+    }
   },
   "lock": null,
   "unlocked": [],

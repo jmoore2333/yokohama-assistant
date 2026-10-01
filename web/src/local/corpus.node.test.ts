@@ -88,7 +88,7 @@ if (!have) {
  * The fields a HOST is entitled to differ on (spec §5, second column).
  *
  * `identity` is which header names the caller and `signal` is how a change
- * reaches a browser — the axum host reads `claimed` and `sse`, the browser host
+ * reaches a browser — the axum host reads `open` and `sse`, the browser host
  * `local` and `none`. `mode` on `/api/me` is the same fact from the client's
  * side. `multiplayer` (M6.5b2) is the third: the axum host the corpus is cut
  * from offers it and the browser host cannot, there being nobody else at the
@@ -120,12 +120,12 @@ const HOST_FIELDS: Record<string, string[]> = {
  * It is a DERIVED truth stated back, not a filing decision — the replay asserts
  * this set equals exactly the files `walk.json` does not name, so a fixture
  * that quietly stopped being routed appears here by name and a new one cannot
- * join the corpus without landing in a column. Four reasons, and they are four
- * different things:
+ * join the corpus without landing in a column. Several reasons, not one:
  *
- * - `art_manifest` and `site_space_words` were never route payloads: the first
- *   is the host's own art directory, the second a CONTRACT the client has to
- *   word itself.
+ * - `art_manifest`, `site_space_words`, `identity_cases` and `seed_cases`
+ *   were never route payloads: the first is the host's own art directory,
+ *   the other three CONTRACTS the client holds itself to (the terminal's
+ *   words, the key grammar's verdicts, a seed's verdict).
  * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal` and
  *   `why_refusals` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
@@ -137,10 +137,18 @@ const HOST_FIELDS: Record<string, string[]> = {
  * - `house_chat_off_404` and the eight `archive_*` files come from a second and
  *   a third `Api` — a deployment with the lobby chat off, and one with a real
  *   archive directory. The module is neither.
+ * - `production_bot` is a CONTRACT the client imports (M6.5c2), never a
+ *   route's payload.
+ * - `table_bot`, `foreign_bot_409`, `table_foreign` and `why_foreign` come from
+ *   two more `Api`s of the emitter's (M6.5c2) — one holding a vs-bot table, one
+ *   holding the committed pair re-seated against another bot — which no script
+ *   replays.
  */
 const NOT_SERVED = [
   "art_manifest",
   "site_space_words",
+  "identity_cases",
+  "seed_cases",
   "watching",
   "locked",
   "why",
@@ -159,6 +167,11 @@ const NOT_SERVED = [
   "archive_400_digest",
   "archive_400_replay",
   "archive_400_table",
+  "production_bot",
+  "table_bot",
+  "foreign_bot_409",
+  "table_foreign",
+  "why_foreign",
 ];
 
 /** `FROZEN_CREATED_AT` in `wire_fixtures.rs`, which the walk's own clock reads. */

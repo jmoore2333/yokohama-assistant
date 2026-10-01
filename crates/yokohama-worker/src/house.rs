@@ -26,9 +26,10 @@
 //!
 //! **`check_shape` runs twice, and either refusal carries its reason**, which
 //! the shell logs (spec §2.8). The house's `list` would drop a document it
-//! rejects, and would say so only through the layer's `eprintln!`, which is
-//! mute on this host. So each defect is loud here, at the source, rather than
-//! a row that silently leaves the lobby:
+//! rejects, and would say so only in the layer's log line — which reaches the
+//! shell since M6.5c2, but only once the row has left the lobby. So each
+//! defect is loud here, at the source, rather than a row that silently leaves
+//! the lobby:
 //!
 //! - **on the stored ORIGINAL, first**: a defect in the table's own document.
 //!   The NAS's listing drops such an original, and the scrub would repair two
@@ -588,28 +589,23 @@ mod tests {
         assert_eq!(house_copy_with("defect", defective), Err(refusal));
     }
 
-    /// **`house_frame` is the NAS's lobby frame, byte for byte** (spec §2.5): the
-    /// `data` of the `house` event `house_stream` writes on `/api/stream`. That
-    /// `format!` is behind the layer's `server` feature, which this crate does
-    /// not build, so it is RESTATED here (the orchestrator's ruling R-02) — and
-    /// the restatement is pinned to the layer's source text, so a change to the
-    /// frame there reds this cell rather than reaching two clients as two
-    /// shapes. The export takes `u32` (the orchestrator's ruling I-22) and widens
-    /// it without loss.
+    /// **`house_frame` is the NAS's lobby frame, byte for byte** (spec §2.5):
+    /// the `data` of the `house` event `house_stream` writes on `/api/stream`,
+    /// which since M6.5c2 is the layer's own `signal::house_frame` (spec §2.6's
+    /// restatements). So this compares against the export, and the pin on the
+    /// layer's source TEXT retires with its reason. The export takes `u32`
+    /// (the orchestrator's ruling I-22) and widens it without loss.
     #[test]
     fn house_frame_is_the_sse_frames_data_byte_for_byte() {
         assert_eq!(house_frame_inner(3, 7), r#"{"seq":3,"chat":7}"#);
-        // `house_stream`'s `format!`, restated from `crates/yokohama-web/src/lib.rs:720`.
-        let sse = |seq: u64, chat: u64| format!("{{\"seq\":{},\"chat\":{}}}", seq, chat);
         for (seq, chat) in [(0, 0), (3, 7), (7, 3), (u64::from(u32::MAX) + 1, 1), (u64::MAX, u64::MAX)] {
-            assert_eq!(house_frame_inner(seq, chat), sse(seq, chat), "({seq}, {chat})");
+            assert_eq!(house_frame_inner(seq, chat), yokohama_web::signal::house_frame(seq, chat), "({seq}, {chat})");
         }
-        let layer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../yokohama-web/src/lib.rs");
-        let layer = std::fs::read_to_string(layer).expect("the layer's source");
-        let line = r#".data(format!("{{\"seq\":{},\"chat\":{}}}", h.seq, h.chat)),"#;
-        assert_eq!(layer.matches(line).count(), 1, "the layer writes the frame restated above: {line}");
         assert_eq!(crate::house_frame(3, 7), house_frame_inner(3, 7));
-        assert_eq!(crate::house_frame(u32::MAX, u32::MAX), sse(u64::from(u32::MAX), u64::from(u32::MAX)));
+        assert_eq!(
+            crate::house_frame(u32::MAX, u32::MAX),
+            yokohama_web::signal::house_frame(u64::from(u32::MAX), u64::from(u32::MAX)),
+        );
     }
 
     /// `put_copy` REPLACES a copy the house already holds — where `load`, a

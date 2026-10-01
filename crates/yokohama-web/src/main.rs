@@ -71,7 +71,7 @@ async fn main() {
     // is no longer "no authentication of any kind" — but neither mode makes the
     // port safe to expose:
     //
-    // - Under `claimed` the header is whatever the caller sends. It
+    // - Under `open` the header is whatever the caller sends. It
     //   authenticates the DOOR, not the seat: two callers sending two different
     //   emails ARE two different people to this server, seated and scoped
     //   separately — it simply cannot verify that either is who they say, so
@@ -87,7 +87,7 @@ async fn main() {
     let host = std::env::var("YOKOHAMA_WEB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
 
     // **No default identity source (R-1.3).** Which header names the caller is
-    // a deployment decision — `claimed` trusts anything past the door, and the
+    // a deployment decision — `open` trusts anything past the door, and the
     // two proxy modes trust a header only their own edge can set — so a process
     // that was not told refuses to start rather than guessing the permissive
     // one. The Worker's own fail-closed shape for its secrets.

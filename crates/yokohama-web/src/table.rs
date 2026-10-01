@@ -30,9 +30,10 @@ use crate::identity::User;
 
 /// Who plays one seat.
 ///
-/// A human seat carries the NORMALIZED email `identity::User::parse` produced —
-/// the one key every binding is written under, so a seat bound from a header
-/// reading `  Red@Wire.TEST ` is the same seat the next request finds.
+/// A human seat carries the NORMALIZED key `identity::User::parse` produced — an
+/// email, or (M6.5c2) a plain name — the one key every binding is written
+/// under, so a seat bound from a header reading `  Red@Wire.TEST ` is the same
+/// seat the next request finds.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SeatDoc {
@@ -80,7 +81,7 @@ pub enum TableStatus {
 /// doing so: a lost mirror write costs a list row that says whose turn it was
 /// one move ago, and nothing else — no play route reads this. Listing twenty
 /// games by rebuilding twenty sessions is what it exists to avoid.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TurnMirror {
     pub to_move: u8,
     pub over: bool,
@@ -88,6 +89,22 @@ pub struct TurnMirror {
     /// `Placing.won`, never `standings[0]` (rank order; `outcome.rs:71`).
     #[serde(default)]
     pub winner: Option<u8>,
+    /// The RECORD's bot (M6.5c2, R-6.5c2.10): the first non-human seat's
+    /// `(controller, version, params)`, so a lobby row can label a dealt
+    /// table's bot, and say whether this build runs it, without rebuilding the
+    /// session that knows. `None` for an all-human game — and for a table whose
+    /// mirror was last written before this field, which reads "the bot" with no
+    /// version until its next applied move (a finished one never gains it; no
+    /// persist follows game over — review m7).
+    ///
+    /// **Absent from the document when `None`**, so an all-human table's stored
+    /// bytes are what they were; `#[serde(default)]` reads a document written
+    /// before it, and neither `TableDoc` nor this type carries
+    /// `deny_unknown_fields`, so an older binary reads one written after it —
+    /// `TABLE_SCHEMA` stays 3. The field is also why this type is no longer
+    /// `Copy`: its readers take a reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<crate::bots::BotDescriptor>,
 }
 
 /// The table password, as stored: hex of 16 random bytes and hex of
@@ -197,7 +214,7 @@ pub struct TableDoc {
     #[serde(default)]
     pub lock: Option<Lock>,
     /// Everyone who has presented this table's password to `POST …/{id}/unlock`
-    /// and may therefore WATCH it (M6.3, R-3.5). Normalized emails, as every
+    /// and may therefore WATCH it (M6.3, R-3.5). Normalized keys, as every
     /// other binding here is.
     ///
     /// **Never on the wire**, like `seed`, `keeps` and `lock` — it is the list
@@ -386,11 +403,12 @@ impl TableDoc {
                 .collect(),
             my_seats: self.seats_of(user),
             status: self.status,
-            to_move: self.turn.map(|t| PlayerId::new(t.to_move)),
-            over: self.turn.map(|t| t.over),
+            to_move: self.turn.as_ref().map(|t| PlayerId::new(t.to_move)),
+            over: self.turn.as_ref().map(|t| t.over),
             locked: self.lock.is_some(),
-            winner: self.turn.and_then(|t| t.winner).map(PlayerId::new),
+            winner: self.turn.as_ref().and_then(|t| t.winner).map(PlayerId::new),
             can_watch: self.can_watch(user),
+            bot: crate::bots::table_bot(self),
         }
     }
 }
@@ -451,6 +469,12 @@ pub struct TableView {
     /// two different answers, which is why the `unlocked` list itself never
     /// crosses.
     pub can_watch: bool,
+    /// The table's bot, or `null` (M6.5c2, R-6.5c2.10): its label and whether
+    /// this build runs it — [`crate::bots::table_bot`]'s answer. An undealt
+    /// table's is the production bot, which `finalize` will deal; a dealt one's
+    /// is the record's, read off [`TurnMirror::bot`]; `null` at a table with no
+    /// bot seat, and at a dealt one whose mirror predates the field.
+    pub bot: Option<crate::bots::TableBot>,
 }
 
 /// What `GET /api/games/{id}/deal` serves: the set table, and the caller's OWN
@@ -700,7 +724,8 @@ mod tests {
         assert!(doc.lock.is_none());
         assert!(doc.unlocked.is_empty(), "M6.3's list defaults empty on a document written before it");
         assert!(doc.seats.iter().all(|s| matches!(s, SeatDoc::Human { name: None, .. })));
-        assert_eq!(doc.turn.expect("a mirror").winner, None);
+        assert_eq!(doc.turn.as_ref().expect("a mirror").winner, None);
+        assert_eq!(doc.turn.as_ref().expect("a mirror").bot, None, "a mirror written before the field reads none");
         assert!(!doc.is_full() || doc.open_seats().is_empty());
     }
 
@@ -739,7 +764,7 @@ mod tests {
         let lock = Lock::new("sesame");
         let (salt, hash) = (lock.salt.clone(), lock.hash.clone());
         d.lock = Some(lock);
-        d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2) });
+        d.turn = Some(TurnMirror { to_move: 1, over: true, winner: Some(2), bot: None });
         let v = serde_json::to_value(d.view(&User::parse("red@t.test").unwrap())).unwrap();
         assert_eq!(v["locked"], true);
         assert_eq!(v["winner"], 2);
@@ -778,6 +803,51 @@ mod tests {
         d.unlocked.push("grey@t.test".to_string());
         assert!(d.can_watch(&grey), "on the list");
         assert!(!d.can_watch(&green), "and one unlock admits ONE caller");
+    }
+
+    /// **The view names the table's bot** (M6.5c2, R-6.5c2.10): an undealt
+    /// table's is the one this build deals, a dealt one's is its mirror's — the
+    /// record's — and `null` where there is no bot seat, or where a dealt
+    /// table's mirror predates the field (review m7). `runs_here` compares the
+    /// TRIPLE, not the name (review m12).
+    #[test]
+    fn the_view_names_the_bot_undealt_dealt_foreign_and_before_the_field() {
+        use serde_json::{json, Value};
+        let reader = User::parse("a@t.test").expect("an email");
+        let bot_of = |d: &TableDoc| serde_json::to_value(d.view(&reader)).expect("a view")["bot"].clone();
+        let production = crate::bots::production();
+        let runs_here = json!({ "label": crate::bots::label(&production), "runs_here": true });
+
+        let mut undealt = playing_doc();
+        undealt.status = TableStatus::Dealing;
+        undealt.keeps = vec![None, None];
+        assert_eq!(bot_of(&undealt), runs_here, "undealt: the bot `finalize` will deal");
+
+        let mut dealt = playing_doc();
+        dealt.turn = Some(TurnMirror { to_move: 0, over: false, winner: None, bot: Some(production) });
+        assert_eq!(bot_of(&dealt), runs_here, "dealt: the record's, from the mirror");
+
+        let mut foreign = dealt.clone();
+        foreign.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").controller = "v2-padded".into();
+        assert_eq!(bot_of(&foreign), json!({ "label": "V2", "runs_here": false }), "another bot: named, not run here");
+
+        // Production's NAME at another version, or with other weights, still
+        // labels "V4" (`from_parts` reads neither), and does not run here: a
+        // name-only compare would answer `true` for both.
+        let mut other_version = dealt.clone();
+        other_version.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").version += 1;
+        assert_eq!(bot_of(&other_version), json!({ "label": "V4", "runs_here": false }), "same name, another version");
+        let mut other_weights = dealt.clone();
+        *other_weights.turn.as_mut().and_then(|t| t.bot.as_mut()).expect("a bot").params.get_mut("weights").expect("weights") += 1;
+        assert_eq!(bot_of(&other_weights), json!({ "label": "V4", "runs_here": false }), "same name, other weights");
+
+        let mut older = dealt.clone();
+        older.turn.as_mut().expect("a mirror").bot = None;
+        assert_eq!(bot_of(&older), Value::Null, "a mirror written before the field names no version");
+
+        let mut humans = dealt;
+        humans.seats[1] = SeatDoc::Human { user: "b@t.test".into(), name: None };
+        assert_eq!(bot_of(&humans), Value::Null, "no bot seat, whatever the mirror says");
     }
 
     /// The view carries the BOOLEAN and never the list: who else is watching is

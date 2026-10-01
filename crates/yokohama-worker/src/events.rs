@@ -21,10 +21,12 @@ use yokohama_web::ApiError;
 
 use crate::{error_body, from_the_layer, host_refusal, identity_of, ReplyData};
 
-/// The cap on `wait`, RESTATED from `MAX_WAIT_SECONDS` in
-/// `crates/yokohama-web/src/lib.rs` (the orchestrator's ruling R-03). That
-/// constant is private and behind `server`, and the refusal is the axum
-/// HANDLER's, not the layer parser's: `parse_query` accepts `wait=26`.
+/// The cap on `wait`, RESTATED from the layer's `api::MAX_WAIT_SECONDS` (the
+/// orchestrator's ruling R-03). Since M6.5c2 the cap and its sentence are the
+/// layer's exports, `api::MAX_WAIT_SECONDS` and `api::check_wait`, which axum's
+/// `events` handler calls first; this module keeps its restatement until cycle
+/// C switches it to them. The refusal is still the HANDLER's, not the layer
+/// parser's: `parse_query` accepts `wait=26`.
 const MAX_WAIT_SECONDS: u64 = 25;
 
 /// `GET /api/games/{id}/events?after=&wait=`, in the order axum's handler takes
@@ -49,7 +51,7 @@ pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
     let user = match identity_of(user) {
         Ok(user) => user,
         Err(sentence) => {
-            return host_refusal(ApiError { status: StatusCode::UNAUTHORIZED, message: sentence, table_status: None })
+            return host_refusal(ApiError { status: StatusCode::UNAUTHORIZED, message: sentence, table_status: None, foreign_bot: None })
         }
     };
     let q = match api::parse_query::<EventsQuery>(query) {

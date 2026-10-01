@@ -1,4 +1,5 @@
 {
+  "bots": [],
   "deck_remaining": 10,
   "end_game_triggered": false,
   "end_triggers": "end triggers: deck 10 · church 1/4 · customs 0/4 · shophouses 0/8 · trade houses 0/4",

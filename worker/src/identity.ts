@@ -36,13 +36,15 @@ export function asciiLower(s: string): string {
 
 /**
  * Whether `email` — trimmed and ASCII-lowercased, as `address` answers it and
- * as `shellConfig` reads an operator — is an ADDRESS by the layer's
- * `User::parse` rule: at most 254 bytes, no whitespace or control character,
- * and exactly one `@` with something on both sides. `User::parse` answers
- * nothing else, so a value outside the rule names no caller the layer would
- * accept (R1's L-2) and no operator one could match. Wherever a CALLER is read
- * the value is visible ASCII with tabs and spaces (`forwardable`), where this
- * test and `User::parse`'s agree character for character.
+ * as `shellConfig` reads an operator — is an ADDRESS by the layer's email
+ * shape (`User::is_email`, the mode rule's test): at most 254 bytes, no
+ * whitespace or control character, and exactly one `@` with something on both
+ * sides. `User::parse`'s key grammar also takes a plain name (M6.5c2), but
+ * under `worker` the layer's mode rule admits an address and nothing else, so
+ * a value outside this rule names no caller the layer would accept (R1's L-2)
+ * and no operator one could match. Wherever a CALLER is read the value is
+ * visible ASCII with tabs and spaces (`forwardable`), where this test and the
+ * layer's email shape agree character for character.
  */
 export function isAddress(email: string): boolean {
   return new TextEncoder().encode(email).length <= 254 && /^[^@\s\p{Cc}]+@[^@\s\p{Cc}]+$/u.test(email);

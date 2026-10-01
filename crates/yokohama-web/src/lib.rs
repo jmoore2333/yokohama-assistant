@@ -59,13 +59,17 @@ pub mod archive;
 /// The backup envelope and the validator the archive route shares with it
 /// (M6.5b2, R-6.5b2.10 – .12). NOT behind `server`: the browser host calls it.
 pub mod backup;
+/// The bot's label, and whether this build runs it (M6.5c2, R-6.5c2.10).
+pub mod bots;
 pub mod chat;
 pub mod client;
 pub mod explain;
 pub mod games;
 pub mod grammar;
 pub mod identity;
+pub mod log;
 pub mod outcome;
+pub mod platform;
 pub mod signal;
 pub mod store;
 pub mod table;
@@ -117,23 +121,30 @@ use crate::store::{FsStore, MemStore, Store};
 pub struct ApiError {
     pub status: StatusCode,
     pub message: String,
-    /// The ONE refusal a client branches on rather than displays (M6.1): a
-    /// table that is still dealing. It rides beside the sentence as `"status"`,
-    /// so a client that opened a game by id knows to draw the setup screen
-    /// instead of an error banner.
+    /// A refusal a client branches on rather than displays (M6.1): a table that
+    /// is still open, dealing, or already playing. It rides beside the sentence
+    /// as `"status"`, so a client that opened a game by id knows to draw the
+    /// setup screen instead of an error banner.
     ///
     /// **`&'static str`, and absent on every other refusal.** A field that a
     /// handler could fill with anything would be a second, untyped error
-    /// channel; the only value that reaches it is [`games::GameError::Dealing`]'s.
+    /// channel; the only values that reach it are [`games::GameError::Dealing`]'s,
+    /// `Open`'s and `Playing`'s.
     pub table_status: Option<&'static str>,
+    /// The other refusal a client branches on (M6.5c2, R-6.5c2.10): a game not
+    /// over whose recorded bot this build does not run, answered with the two
+    /// labels beside the sentence as `"foreign_bot": {"played", "runs"}`.
+    /// Typed for `table_status`'s reason, and absent on every other refusal:
+    /// the only value that reaches it is [`games::GameError::ForeignBot`]'s.
+    pub foreign_bot: Option<bots::ForeignBot>,
 }
 
 impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None }
+        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None, foreign_bot: None }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None }
+        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None, foreign_bot: None }
     }
     /// This process failed at something the caller asked for correctly.
     ///
@@ -145,7 +156,7 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: message.into(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }
     }
     /// A session route asked of a table that has not finished dealing.
@@ -153,7 +164,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::DEALING_SENTENCE.to_string(),
-            table_status: Some("dealing"),
+            table_status: Some("dealing"), foreign_bot: None,
         }
     }
     /// A session route asked of a table that is still filling its seats (M6.2).
@@ -161,7 +172,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::OPEN_SENTENCE.to_string(),
-            table_status: Some("open"),
+            table_status: Some("open"), foreign_bot: None,
         }
     }
     /// A table-phase route asked of a table whose game has started (M6.2).
@@ -169,7 +180,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             message: games::PLAYING_SENTENCE.to_string(),
-            table_status: Some("playing"),
+            table_status: Some("playing"), foreign_bot: None,
         }
     }
 }
@@ -190,11 +201,17 @@ impl From<games::GameError> for ApiError {
             E::Open => Self::open(),
             E::Playing => Self::playing(),
             E::Forbidden(m) => {
-                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None }
+                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None, foreign_bot: None }
             }
-            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None },
+            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
+            E::ForeignBot { played, runs } => Self {
+                status: StatusCode::CONFLICT,
+                message: bots::cannot_continue(&played, &runs),
+                table_status: None,
+                foreign_bot: Some(bots::ForeignBot { played, runs }),
+            },
         }
     }
 }
@@ -202,11 +219,7 @@ impl From<games::GameError> for ApiError {
 #[cfg(feature = "server")]
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = match self.table_status {
-            Some(status) => serde_json::json!({ "error": self.message, "status": status }),
-            None => serde_json::json!({ "error": self.message }),
-        };
-        (self.status, Json(body)).into_response()
+        (self.status, Json(api::error_value(&self))).into_response()
     }
 }
 
@@ -399,10 +412,10 @@ impl AppState {
         .with_multiplayer(multiplayer))
     }
 
-    /// Backed by memory, in `claimed` mode — the mode every test drives with a
+    /// Backed by memory, in `open` mode — the mode every test drives with a
     /// header. Tests, and any run that must leave no trace.
     pub fn in_memory() -> Self {
-        Self::in_memory_with(identity::IdentityMode::Claimed)
+        Self::in_memory_with(identity::IdentityMode::Open)
     }
 
     pub fn in_memory_with(identity: identity::IdentityMode) -> Self {
@@ -419,7 +432,7 @@ impl AppState {
     pub fn in_memory_with_chat(chat: chat::ChatConfig) -> Self {
         Self::with_store_and_chat(
             Arc::new(MemStore::default()),
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
             chat,
         )
     }
@@ -463,7 +476,9 @@ impl AppState {
                 signals.clone(),
                 Arc::new(table::now_unix),
                 archive,
-            ),
+                games::RunHost::Server,
+            )
+            .with_log(Arc::new(log::StderrLog)),
             identity,
             heartbeat: HEARTBEAT,
             signals,
@@ -538,15 +553,6 @@ impl AppState {
 // idempotent. It is recorded here so the next reader does not trust a sentence
 // over the code.
 
-/// The longest a `?wait` may hold (spec §3.3).
-///
-/// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
-/// silently given 25 would read the early answer as "nothing changed for two
-/// minutes", which is the same failure `deny_unknown_fields` exists to prevent
-/// one field over.
-#[cfg(feature = "server")]
-const MAX_WAIT_SECONDS: u64 = 25;
-
 /// `GET /api/games/{id}/events` — the change signal, polled form.
 ///
 /// **NOT seated, since M6.3 — and the seat it resolves is resolved for one
@@ -582,12 +588,8 @@ async fn events(
     Path(id): Path<String>,
     QueryArgs(q): QueryArgs<EventsQuery>,
 ) -> ApiResult<Events> {
+    api::check_wait(q.wait)?;
     if let Some(wait) = q.wait {
-        if wait > MAX_WAIT_SECONDS {
-            return Err(ApiError::bad_request(format!(
-                "a request can be held for at most {MAX_WAIT_SECONDS} seconds, not {wait}"
-            )));
-        }
         // **Admitted BEFORE it subscribes**, for the reason `stream` states:
         // `Signals::subscribe` makes a sender for any id at all, so holding a
         // request for a table the caller may not read — or that does not
@@ -717,7 +719,7 @@ async fn house_stream(
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event("house")
-                .data(format!("{{\"seq\":{},\"chat\":{}}}", h.seq, h.chat)),
+                .data(signal::house_frame(h.seq, h.chat)),
         )
     });
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
@@ -1008,7 +1010,7 @@ mod tests {
         app(Arc::new(
             AppState::with_store_chat_and_archive(
                 Arc::new(MemStore::default()),
-                identity::IdentityMode::Claimed,
+                identity::IdentityMode::Open,
                 chat::ChatConfig::default(),
                 archive,
             )
@@ -1076,6 +1078,24 @@ mod tests {
         };
         let ours = api::parse_json::<Input>(None, br#"{"line":"1"}"#).unwrap_err();
         assert_eq!(ours.message, axum_text);
+        // **And the one DEPARTURE, named** (M6.5c2, spec §2.6): a positional
+        // ARRAY that serde reads a struct from is ACCEPTED by axum and refused
+        // by the layer in its own words — the only body whose answer is not
+        // axum's, and only because axum's was a table opened from a list.
+        let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(array))
+            .unwrap();
+        assert!(
+            axum::Json::<tables::NewGame>::from_request(req, &()).await.is_ok(),
+            "premise: axum reads the array as a create",
+        );
+        let ours = api::parse_json::<tables::NewGame>(Some("application/json"), array.as_bytes())
+            .expect_err("the layer refuses it");
+        assert_eq!(ours.message, api::NOT_AN_OBJECT);
     }
 
     /// R-6.5a.3's 405 is axum's SHAPE: an empty body AND the `Allow` header
@@ -1128,7 +1148,7 @@ mod tests {
     #[tokio::test]
     async fn an_err_identity_through_dispatch_is_the_extractors_401_sentence_in_every_mode() {
         for mode in [
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
             identity::IdentityMode::CfAccess,
             identity::IdentityMode::Worker,
         ] {
@@ -1191,7 +1211,7 @@ mod tests {
         // A watcher of the FINISHED game: signed in, no seat, no lock to knock on.
         let (status, body) = get_as(&state, "green@wire.test", &format!("/api/games/{name}/record")).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-        assert_eq!(body["error"], "the record is the players' — watch, download nothing");
+        assert_eq!(body["error"], "the record is the players' — a spectator downloads nothing");
         // A seat holder gets the store's exact bytes.
         let (status, raw_bytes) =
             raw(app(Arc::clone(&state)), "GET", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
@@ -1202,6 +1222,70 @@ mod tests {
         // And it is a 405 under POST, like every other GET-only route.
         let (status, _) = raw(app(Arc::clone(&state)), "POST", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// **What every save on this host names, carried byte for byte** (M6.5c2,
+    /// spec §2.4, "A pin, on every save path"): the record `finalize` writes
+    /// through `AppState`'s constructor says `run_id: "web/server"`, and the
+    /// three places a server-side save goes — the store, the game-over archive
+    /// and the record route — hold the SAME bytes, `run` exactly as dealt.
+    #[tokio::test]
+    async fn every_save_this_host_writes_names_web_server_byte_for_byte() {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let dir = tempdir("run-id");
+        let store = Arc::new(MemStore::default());
+        let state = || {
+            Arc::new(AppState::with_store_chat_and_archive(
+                store.clone(),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(archive::DirArchive::new(&dir)),
+            ))
+        };
+        let dealer = state();
+        start_as(&dealer, "named", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (dealt, _) = store.read(Doc::Record, "named").unwrap().unwrap();
+        let run = serde_json::from_str::<yokohama_core::GameRecord>(&dealt)
+            .unwrap()
+            .run
+            .expect("finalize stamps the run");
+        assert_eq!(run.run_id.as_deref(), Some("web/server"), "this host names itself");
+
+        // Played to its end — the both-bot finish `a_finished_two_person_game`
+        // uses — with the dealt `run` stamped back, and persisted through the
+        // dealing state, so the game-over site archives the bytes it writes.
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session =
+            Session::new_sim(config, ENDED_SEED, vec![StartingOrderChoice::Keep(0); 2], Rules::standard())
+                .expect("a game");
+        session.set_run_seats(BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT); 2], ENDED_SEED).seat_provenance());
+        let mut finished = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if finished.session.is_over() {
+                break;
+            }
+            finished.pump_bots();
+        }
+        assert!(finished.session.is_over(), "the both-bot pump must reach a finished game");
+        finished.session.set_run_seats(run.seats.clone());
+        finished.session.set_run_id(run.run_id.as_deref().expect("a run id"));
+        dealer.games.persist("named", &finished).expect("the finished record");
+
+        let (stored, _) = store.read(Doc::Record, "named").unwrap().unwrap();
+        let archived = std::fs::read_to_string(dir.join(format!("rev{}/over/named.json", yokohama_core::SEMANTICS_REV)))
+            .expect("the game-over archive landed");
+        assert_eq!(archived, stored, "the archive holds the stored bytes");
+        // A fresh state over the same store, so the route reads the store.
+        let (status, served) = raw(app(state()), "GET", "/api/games/named/record", Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(served, stored.as_bytes(), "the route serves the stored bytes");
+        let stored_run = serde_json::from_str::<serde_json::Value>(&stored).unwrap()["run"].clone();
+        assert_eq!(stored_run, serde_json::to_value(&run).unwrap(), "`run` is what finalize wrote");
     }
 
     // -----------------------------------------------------------------------
@@ -1229,7 +1313,7 @@ mod tests {
     fn archive_app(dir: &std::path::Path) -> Arc<AppState> {
         Arc::new(AppState::with_store_chat_and_archive(
             Arc::new(MemStore::default()),
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
             chat::ChatConfig::default(),
             Arc::new(archive::DirArchive::new(dir)),
         ))
@@ -1596,7 +1680,7 @@ mod tests {
         use identity::{IdentityMode as M, CF_ACCESS_HEADER, CLAIMED_HEADER};
         let (status, body) = get_with(Arc::new(AppState::in_memory()), "/api/me", &[]).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "mode": "claimed", "user": null }));
+        assert_eq!(body, serde_json::json!({ "mode": "open", "user": null }));
         let (_, body) = get_with(
             Arc::new(AppState::in_memory()),
             "/api/me",
@@ -1607,7 +1691,7 @@ mod tests {
         let (_, body) = get_with(
             Arc::new(AppState::in_memory()),
             "/api/me",
-            &[(CLAIMED_HEADER, "not-an-email")],
+            &[(CLAIMED_HEADER, "..")],
         )
         .await;
         assert_eq!(
@@ -1615,6 +1699,14 @@ mod tests {
             serde_json::Value::Null,
             "an invalid header resolves to null here, never 401"
         );
+        // M6.5c2: a plain name is a key, normalized once in the extractor.
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory()),
+            "/api/me",
+            &[(CLAIMED_HEADER, "  Ben   Castle ")],
+        )
+        .await;
+        assert_eq!(body["user"], "ben castle", "a name is a key, normalized once");
         let (_, body) = get_with(
             Arc::new(AppState::in_memory_with(M::CfAccess)),
             "/api/me",
@@ -1622,6 +1714,57 @@ mod tests {
         )
         .await;
         assert_eq!(body, serde_json::json!({ "mode": "cf-access", "user": "a@b.c" }));
+        // M6.5c2's mode rule (spec §2.1 rule 2): at an edge door a plain name
+        // names NOBODY — state B, `user: null` — where the open door above
+        // took it as a key.
+        let (_, body) = get_with(
+            Arc::new(AppState::in_memory_with(M::CfAccess)),
+            "/api/me",
+            &[(CF_ACCESS_HEADER, "Ben Castle")],
+        )
+        .await;
+        assert_eq!(body, serde_json::json!({ "mode": "cf-access", "user": null }));
+    }
+
+    /// **A body-borne plain name at an edge door is a key nobody holds**
+    /// (M6.5c2, spec §2.1 rule 3; review H2). A create may seat `{"user":
+    /// "ben"}` under `cf-access` exactly as it may seat a misspelled address —
+    /// no new refusal — and the seat is one no caller can ever present, because
+    /// the mode rule reads a header naming `ben` as nobody. The creator's own
+    /// seat, an address, is unaffected.
+    #[tokio::test]
+    async fn a_plain_name_seated_at_an_edge_door_is_a_key_nobody_holds() {
+        use identity::{IdentityMode as M, CF_ACCESS_HEADER};
+        let router = app(Arc::new(AppState::in_memory_with(M::CfAccess)));
+        let body = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "7",
+            "seats": [{ "user": "red@t.test" }, { "user": "Ben" }], "id": "edge",
+        });
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/games")
+                    .header("content-type", "application/json")
+                    .header(CF_ACCESS_HEADER, "red@t.test")
+                    .body(Body::from(body.to_string()))
+                    .expect("a request"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(res.status(), StatusCode::CREATED, "accepted as a key, as a misspelled address is");
+        let as_ben = |uri: &'static str| {
+            router.clone().oneshot(
+                Request::builder().uri(uri).header(CF_ACCESS_HEADER, "ben").body(Body::empty()).expect("a GET"),
+            )
+        };
+        let res = as_ben("/api/games/edge/table").await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "a header naming `ben` is nobody here");
+        let res = as_ben("/api/me").await.expect("the router answers");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let me: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(me["user"], serde_json::Value::Null, "and /api/me names nobody");
     }
 
     /// A key this API does not know is a REFUSAL, not a default.
@@ -2965,7 +3108,7 @@ mod tests {
         use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
 
         let store = Arc::new(MemStore::default());
-        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
         start_as(&state, name, ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
 
         // The very game the table describes: same config, same seed, same keeps
@@ -3001,7 +3144,7 @@ mod tests {
 
         // A fresh state over the same store, so the game is rebuilt from the
         // record just written rather than served from the resident handle.
-        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
         let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{name}")).await;
         let watcher = if game["to_move"].as_u64() == Some(0) {
             "blue@wire.test"
@@ -3034,7 +3177,7 @@ mod tests {
     #[tokio::test]
     async fn a_finished_or_locked_game_refuses_every_caller_the_same_way() {
         let store = Arc::new(MemStore::default());
-        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
         start_as(&state, "faultedseat", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
 
         // A LOCKED record, stamped through the durable record exactly as a
@@ -3054,7 +3197,7 @@ mod tests {
 
         // A fresh state over the same store, so the locked game is rebuilt from
         // the record just written rather than served from the resident handle.
-        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
         let (ended, ended_id, _) = a_finished_two_person_game("ended").await;
 
         for (state, id, kind) in
@@ -3172,7 +3315,7 @@ mod tests {
     #[tokio::test]
     async fn a_locked_game_answers_every_callers_undo_with_the_lockdown_reason() {
         let store = Arc::new(MemStore::default());
-        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Claimed));
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
         start_as(&state, "faultedundo", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
 
         // One move first, so the refusal being overridden is R-P6's own and not
@@ -3202,7 +3345,7 @@ mod tests {
 
         // A fresh state over the same store, so the game is rebuilt FROM the
         // record just written rather than served from the resident handle.
-        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let locked = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
         let (_, game) = get_as(&locked, "red@wire.test", "/api/games/faultedundo").await;
         assert_eq!(game["prompt"]["kind"], "locked", "anti-vacuity — really faulted: {game}");
         assert_eq!(game["over"], serde_json::json!(false), "locked, not finished: {game}");
@@ -3548,7 +3691,7 @@ mod tests {
         }
 
         let store = Arc::new(MemStore::default());
-        let warm = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Claimed));
+        let warm = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Open));
         let open_body = serde_json::json!({
             "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
             "seats": [{ "user": red }, { "open": true }], "id": "opent", "name": "opent",
@@ -3583,7 +3726,7 @@ mod tests {
         }
         // A fresh state over the same store, so the two finished records are
         // rebuilt from disk rather than served from `warm`'s resident handles.
-        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed));
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
         for id in ["overt", "overlk"] {
             let (status, game) = get_as(&state, red, &format!("/api/games/{id}")).await;
             assert_eq!(status, StatusCode::OK, "{game}");
@@ -3809,7 +3952,7 @@ mod tests {
         let plain = Arc::new(MemStore::default());
         let warm = Arc::new(AppState::with_store(
             Arc::clone(&plain) as Arc<dyn Store>,
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         ));
         start_as(&warm, "playt", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
         start_as(&warm, "overt", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
@@ -3830,7 +3973,7 @@ mod tests {
         }
         let state = Arc::new(AppState::with_store(
             Arc::new(guarded) as Arc<dyn Store>,
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         ));
 
         // Grey watches both — an unlocked table admits without a knock — and
@@ -4291,7 +4434,7 @@ mod tests {
         let store = Arc::new(MemStore::default());
         let router = app(Arc::new(AppState::with_store(
             store.clone(),
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         )));
         a_game(&router, "faulted", &[]).await;
 
@@ -4308,7 +4451,7 @@ mod tests {
             )
             .expect("a stored lockdown");
         let router =
-            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));
+            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Open)));
 
         let (status, state) = call(&router, "GET", "/api/games/faulted", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -4408,7 +4551,7 @@ mod tests {
         assert_eq!(body["semantics_rev"], SEMANTICS_REV);
         assert_eq!(body["rules_hash"], Rules::standard().content_hash());
         assert_eq!(body["server_version"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(body["identity"], "claimed");
+        assert_eq!(body["identity"], "open");
     }
 
     /// An answer to a prompt the game is no longer asking is REFUSED, not
@@ -5426,7 +5569,7 @@ mod tests {
         let store = Arc::new(MemStore::default());
         let router = app(Arc::new(AppState::with_store(
             store.clone(),
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         )));
         a_game(&router, "faultedreplay", &[]).await;
         play(&router, "faultedreplay", 4).await;
@@ -5444,7 +5587,7 @@ mod tests {
             )
             .expect("a stored lockdown");
         let router =
-            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Claimed)));
+            app(Arc::new(AppState::with_store(store, identity::IdentityMode::Open)));
 
         let (status, hist) = call(&router, "GET", "/api/games/faultedreplay/at/1", None).await;
         assert_eq!(status, StatusCode::OK, "a projection serves a locked session: {hist}");
@@ -5927,7 +6070,7 @@ mod tests {
             Arc::new(Flaky { inner: MemStore::default(), fail_table_reads: AtomicUsize::new(0) });
         let state = Arc::new(AppState::with_store(
             Arc::clone(&store) as Arc<dyn Store>,
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         ));
         start_as(&state, "wire", 20260831, &["red@wire.test", "blue@wire.test"]).await;
 
@@ -6692,7 +6835,7 @@ mod tests {
         });
         let state = Arc::new(AppState::with_store(
             Arc::clone(&store) as Arc<dyn Store>,
-            identity::IdentityMode::Claimed,
+            identity::IdentityMode::Open,
         ));
         start_as(&state, "wire", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
 
@@ -6967,16 +7110,7 @@ mod tests {
     fn platform_calls_stay_behind_the_server_feature() {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let gated_files = ["art.rs", "assets.rs", "main.rs"];
-        let patterns = [
-            "SystemTime",
-            "Instant::now",
-            "std::fs",
-            "std::env",
-            "std::thread",
-            "std::process",
-            "tokio::",
-            "axum::",
-        ];
+        let patterns = crate::platform::CALLS;
         let mut escaped: Vec<String> = Vec::new();
         let mut gated_hits = 0usize;
         for name in gated_files {

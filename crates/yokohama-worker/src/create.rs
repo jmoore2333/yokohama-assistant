@@ -9,7 +9,9 @@
 //! turned a duplicate-key 400 into a 201 and moved an unknown field's column.
 //! The only bytes this module writes into a body are the inserted `,"id":…`
 //! member. Any other body it forwards reaches the layer exactly as it arrived,
-//! so one the layer's parser refuses is answered in axum's words, byte for byte.
+//! so one the layer's parser refuses is answered in the layer's words, byte for
+//! byte: axum's for every shape but the positional array, which since M6.5c2 is
+//! `api::NOT_AN_OBJECT`.
 
 use yokohama_web::api;
 use yokohama_web::tables::NewGame;
@@ -17,8 +19,8 @@ use yokohama_web::ApiError;
 
 use crate::{dispatch_inner, host_refusal, identity_of, ReplyData};
 
-/// The three sentences this route writes itself — spec §4's host-written list.
-const NOT_AN_OBJECT: &str = "a game must be created from a JSON object";
+/// The two sentences this route writes itself — spec §4's host-written list,
+/// less the one the layer took over in M6.5c2.
 const NULL_ID: &str = "a game id, when given, must be a string";
 const MISROUTED: &str = "the create's id does not name the table it was routed to";
 
@@ -33,11 +35,13 @@ const MISROUTED: &str = "the create's id does not name the table it was routed t
 ///   refuses — a duplicate key, an unknown field, a missing field, a non-string
 ///   `id`, a missing content type, an unparseable body, a non-object it cannot
 ///   read — goes to the layer UNCHANGED, and the layer's 400 answers it.
-/// - **A body that parses but is not a JSON OBJECT is refused 400.** serde's
-///   derived `Deserialize` reads a struct from a positional ARRAY too, and the
-///   layer answers such a body 201 (a quirk of the NAS as well, left for the
-///   cleanup cycle). But the Worker reads `id` only from an object, so a
-///   positional id could name a table that no object holds.
+/// - **A body that is not a JSON OBJECT is the layer's 400 since M6.5c2** (spec
+///   §2.6). serde's derived `Deserialize` reads a struct from a positional ARRAY
+///   too, and the layer used to answer such a body 201, a quirk of the NAS as
+///   well. The layer's `parse_json` now refuses it in its own words
+///   (`api::NOT_AN_OBJECT`), so it reaches the layer unchanged, as every body
+///   the layer refuses does. The Worker names an object from an object's `id`
+///   alone, and that holds by the layer's rule.
 /// - **A string `id` is the name the Worker routed by**, and the body goes on
 ///   unchanged. One that is NOT this object's name cannot arrive through the
 ///   Worker once the array arm holds — spec §2.2: an object is read the same way
@@ -60,12 +64,14 @@ pub fn create_inner(user: Option<&str>, body: &[u8], id: &str, content_type: Opt
         return forward(body);
     };
     // The second look, which only DECIDES: nothing it reads reaches the layer.
-    // `NewGame` is read from an object or from a positional array and from
-    // nothing else, so on a body it accepted this parse fails exactly when the
-    // body is the array. On an object it says whether an `id` key is there at
-    // all, which `game.id` cannot: `"id": null` reads as `None`.
+    // On an object it says whether an `id` key is there at all, which `game.id`
+    // cannot: `"id": null` reads as `None`. **It meets nothing but an object
+    // since M6.5c2** (spec §2.6): the layer's `parse_json` refuses any other
+    // body before this line, and this module forwards that body like every
+    // other the layer refuses. The arm stays as the invariant's guard, in the
+    // layer's own words.
     let Ok(object) = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(body) else {
-        return host_refusal(ApiError::bad_request(NOT_AN_OBJECT));
+        return host_refusal(ApiError::bad_request(api::NOT_AN_OBJECT));
     };
     match game.id {
         Some(named) if named == id => forward(body),

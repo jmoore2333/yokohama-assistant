@@ -1,5 +1,6 @@
 import compiled from "../gen/yokohama_worker_bg.wasm";
 import { createModule, type Exports, type Reply } from "../gen/factory.js";
+import { log } from "./respond";
 
 /** One call the layer made on its signal, as `Reply.bumps` lists them (the
  *  plan's names table; `crates/yokohama-worker/src/signal.rs`). */
@@ -85,11 +86,18 @@ const BUMP_VALUES = { bump: "id", bump_table: "id", bump_house_chat: "null", end
 /**
  * A reply as plain data — how the shell takes every `Reply` (the plan's names
  * table), so that no caller holds one: every getter is read, the reply is
- * FREED, and only then is the bump list parsed, so a list that does not parse
+ * FREED, and only then are the lists parsed, so a list that does not parse
  * cannot leak the reply it came from.
  *
  * A bump this shell does not know is refused, named, rather than dropped: a
  * bump nobody reads is a frame nobody sends.
+ *
+ * **The layer's own log lines are logged HERE, as the shell's** (M6.5c2, spec
+ * §2.6): every reply passes through this function, so no caller can forget
+ * them — a game-over stamp that did not land, a table the listing skipped. They
+ * report what the layer did during the call, whatever the caller's batch then
+ * does. Every field is a string (`crates/yokohama-web/src/log.rs`), and a line
+ * that breaks that is refused, named, like a bump: a number here would round.
  */
 export function readReply(r: Reply): Replied {
   const status = r.status;
@@ -98,8 +106,9 @@ export function readReply(r: Reply): Replied {
   const archive = r.archive;
   const picker = r.picker;
   const dropped = r.dropped;
+  const logs = r.logs;
   r.free();
-  return {
+  const replied: Replied = {
     status,
     body,
     bumps: parseBumps(bumps),
@@ -107,6 +116,8 @@ export function readReply(r: Reply): Replied {
     ...(picker === undefined ? {} : { picker }),
     ...(dropped === undefined ? {} : { dropped }),
   };
+  for (const line of parseLogs(logs)) log(line.event, line.fields);
+  return replied;
 }
 
 function parseBumps(text: string): Bump[] {
@@ -130,4 +141,35 @@ function parseBumps(text: string): Bump[] {
     }
   }
   return list as Bump[];
+}
+
+/** One line the layer logged during a call (`crates/yokohama-worker/src/log.rs`). */
+type LayerLine = { event: string; fields: Record<string, string> };
+
+function parseLogs(text: string): LayerLine[] {
+  let list: unknown;
+  try {
+    list = JSON.parse(text);
+  } catch {
+    throw new Error(`the module's log lines do not parse: ${text}`);
+  }
+  if (!Array.isArray(list)) throw new Error(`the module's log lines are not a list: ${text}`);
+  for (const line of list) {
+    const shaped = line !== null && typeof line === "object" && !Array.isArray(line);
+    const { event, fields } = (shaped ? line : {}) as { event?: unknown; fields?: unknown };
+    const ok =
+      shaped &&
+      Object.keys(line as object).length === 2 &&
+      typeof event === "string" &&
+      fields !== null &&
+      typeof fields === "object" &&
+      !Array.isArray(fields) &&
+      Object.values(fields as object).every((v) => typeof v === "string");
+    if (!ok) {
+      throw new Error(
+        `the module's log lines carry ${JSON.stringify(line)}, which is no line ({event, fields}, every field a string)`,
+      );
+    }
+  }
+  return list as LayerLine[];
 }

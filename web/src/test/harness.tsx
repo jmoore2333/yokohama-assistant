@@ -56,7 +56,7 @@ export const isGamesList = (call: ApiCall, scope?: "mine" | "open" | "playing"):
 /** What the server answers a request it cannot name a caller for.
  *
  *  The SHAPE is the corpus's refusal; the sentence is `identity.rs`'s own, for
- *  the `claimed` door. **The sentence is not what the client routes on** — the
+ *  the `open` door. **The sentence is not what the client routes on** — the
  *  status is, because `identity.rs` is the only place on this API that answers
  *  401 at all, while the sentence is one of three (the other two doors say "no
  *  identity reached the server…" instead). Here so that the cells about the

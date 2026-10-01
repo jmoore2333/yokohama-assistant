@@ -101,7 +101,7 @@ export function useMe(channel: Channel): Door {
  *
  *  There is no form to offer: both of these identities are set by an edge in
  *  front of the server, so the only useful thing to say is WHICH header was
- *  expected and how the player was supposed to arrive. `claimed` never reaches
+ *  expected and how the player was supposed to arrive. `open` never reaches
  *  here — it has a screen. */
 export function doorSentence(mode: Me["mode"]): string {
   return mode === "cf-access"

@@ -239,11 +239,11 @@ export default defineConfig({
             // There is NO default identity source (M6.1 R-1.3): the server
             // exits 1 before it binds anything without this, so a walk that
             // omitted it would fail at start-up rather than in a test.
-            // `claimed` is the development mode — the client attaches the
+            // `open` is the self-host door and this walk's — the client attaches the
             // header from `localStorage`, and the walk puts it there by typing
             // into the sign-in screen (`harness.ts`'s `signIn`), which is the
             // only shape that also tests the screen.
-            YOKOHAMA_WEB_IDENTITY: "claimed",
+            YOKOHAMA_WEB_IDENTITY: "open",
             // ONE directory, reused and cleared, rather than `mkdtempSync`.
             // This module is loaded by every Playwright invocation — including
             // `--list` and each worker — so a fresh temp directory per load

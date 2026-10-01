@@ -8,7 +8,7 @@
 // downstream of it knows which transport a frame came over.
 //
 // **What a socket cannot say, and why `signal.ts` probes.** A `WebSocket`
-// carries no header of the page's choosing — neither the claimed door's nor
+// carries no header of the page's choosing — neither the open door's nor
 // the `X-Requested-With` that makes Cloudflare Access answer a readable 401
 // (`api.ts`, `serverHeaders`) — and a browser reports a refused upgrade as an
 // `error` event that says nothing and a close with 1006: "user agents must not

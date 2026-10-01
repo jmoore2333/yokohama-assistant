@@ -75,25 +75,55 @@ pub(crate) fn ok_json<T: Serialize>(status: u16, v: &T) -> ApiResponse {
     ApiResponse { status, body: serde_json::to_string(v).expect("every payload serializes") }
 }
 
-/// The body `IntoResponse for ApiError` writes, byte for byte: `{"error": …}`
-/// with `"status"` beside it on the one refusal a client branches on.
+/// The body of every refusal on this API, byte for byte — `{"error": …}`, with
+/// `"status"` beside it on a refusal a client branches on at a table's status,
+/// and `"foreign_bot"` beside it on a game played against a bot this build does
+/// not run (M6.5c2). `pub` since M6.5c2 (spec §2.6's restatements): a host that
+/// answers a refusal ITSELF — the Worker module's `error_body` — writes the
+/// layer's bytes rather than a copy of the rule.
+pub fn error_body(e: &ApiError) -> String {
+    error_value(e).to_string()
+}
+
+/// [`error_body`] as a value, for `IntoResponse for ApiError`, whose `Json`
+/// serializes it — the same bytes, one rule, THREE arms. (The first draft of
+/// this export carried two; the corpus's foreign-bot 409 is what caught it.)
+pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
+    let mut body = serde_json::json!({ "error": e.message });
+    if let Some(status) = e.table_status {
+        body["status"] = status.into();
+    }
+    if let Some(pair) = &e.foreign_bot {
+        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+    }
+    body
+}
+
+/// The body `IntoResponse for ApiError` writes, byte for byte.
 pub(crate) fn error_response(e: ApiError) -> ApiResponse {
-    let body = match e.table_status {
-        Some(status) => serde_json::json!({ "error": e.message, "status": status }),
-        None => serde_json::json!({ "error": e.message }),
-    };
-    ApiResponse { status: e.status.as_u16(), body: body.to_string() }
+    ApiResponse { status: e.status.as_u16(), body: error_body(&e) }
 }
 
 fn unauthorized(msg: &str) -> ApiError {
-    ApiError { status: http::StatusCode::UNAUTHORIZED, message: msg.to_string(), table_status: None }
+    ApiError { status: http::StatusCode::UNAUTHORIZED, message: msg.to_string(), table_status: None, foreign_bot: None }
 }
+
+/// The one sentence a body that is not a JSON OBJECT is refused in (M6.5c2,
+/// spec §2.6). Every body this API reads is an object — each `T` is a struct
+/// under `deny_unknown_fields` — but serde's derived `Deserialize` ALSO reads a
+/// struct from a positional ARRAY, a form `deny_unknown_fields` does not
+/// govern: `[2,["Red","Blue"],0,null,[…]]` opened a table. `pub` so a host that
+/// forwards a create — the Worker module — refuses in these words, not its own.
+pub const NOT_AN_OBJECT: &str = "the request body must be a JSON object";
 
 /// axum 0.8.9's `Json<T>` extractor, call for call (`json.rs`): the content-type
 /// rule through `mime`, `serde_path_to_error` over `serde_json`'s deserializer,
 /// the error classified into the DATA sentence or the SYNTAX sentence, and
 /// `end()` so trailing input is the syntax sentence too. The three sentences
 /// are `JsonDataError`'s, `JsonSyntaxError`'s and `MissingJsonContentType`'s.
+/// And one rule of the layer's own, last: an object only (M6.5c2) — the one
+/// place its answer departs from axum's, and only where axum's is a table
+/// opened from a list.
 pub fn parse_json<T: DeserializeOwned>(content_type: Option<&str>, body: &[u8]) -> Result<T, ApiError> {
     let is_json = content_type
         .and_then(|ct| ct.parse::<mime::Mime>().ok())
@@ -116,6 +146,15 @@ pub fn parse_json<T: DeserializeOwned>(content_type: Option<&str>, body: &[u8]) 
         })
     })?;
     de.end().map_err(|e| ApiError::bad_request(format!("Failed to parse the request body as JSON: {e}")))?;
+    // **The object form only** (M6.5c2, spec §2.6), and checked LAST, after
+    // serde has read the body, so every body axum refuses keeps axum's sentence
+    // word for word (R-6.5a.4): this refuses only what axum ACCEPTS — a
+    // positional array serde read a struct from. A body that parsed whole, with
+    // nothing after it, is one JSON value, and its first byte past JSON's own
+    // whitespace says which kind.
+    if body.iter().find(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r')) != Some(&b'{') {
+        return Err(ApiError::bad_request(NOT_AN_OBJECT));
+    }
     Ok(value)
 }
 
@@ -477,7 +516,7 @@ pub fn admitted(
         S::Open | S::Dealing => Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: NOT_SEATED.to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }),
         S::Playing if table.can_watch(user) => Ok((table, client::Viewer::Spectator)),
         // **The lock gates watching and says so**, rather than reusing the
@@ -486,7 +525,7 @@ pub fn admitted(
         S::Playing => Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: "this table is locked — unlock it first".to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }),
     }
 }
@@ -514,7 +553,7 @@ fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
         client::Viewer::Spectator => Err(ApiError {
             status: StatusCode::FORBIDDEN,
             message: NOT_SEATED.to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }),
     }
 }
@@ -602,6 +641,19 @@ pub(crate) fn undo_allowed(
     table: &crate::table::TableDoc,
     viewer: yokohama_core::PlayerId,
 ) -> Result<(), String> {
+    // **Nobody undoes a game played against a bot this build does not run**
+    // (M6.5c2, R-6.5c2.10; spec §2.4's third mask), on the one-human path and
+    // the shared path alike, and so FIRST. Such a game reaches here only
+    // finished (`Games::live_handle` refuses one that is not), and its bot's
+    // seat is a human one inside the resident `Repl` — so the CLI's undo, which
+    // pops back to the last human move, would pop the BOT's final move and
+    // leave a game nobody can play.
+    if let Some((_, played)) = crate::bots::foreign(repl.session.record()).first() {
+        return Err(format!(
+            "undo is not offered on a game played against {}, which this server doesn't run",
+            crate::bots::label(played),
+        ));
+    }
     if table.distinct_humans() <= 1 {
         return Ok(());
     }
@@ -1067,7 +1119,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
         undo_allowed(&repl, &table, seat).map_err(|message| ApiError {
             status: StatusCode::FORBIDDEN,
             message,
-            table_status: None,
+            table_status: None, foreign_bot: None,
         })?;
     }
 
@@ -1113,7 +1165,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
         let message = status_refusal(&repl).unwrap_or_else(|| {
             format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
         });
-        return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None });
+        return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None, foreign_bot: None });
     }
 
     if let Some(expected) = &req.expect {
@@ -1125,7 +1177,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
                     "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
                      (a restart drops an open picker). Re-read the game and answer what it asks.",
                 ),
-                table_status: None,
+                table_status: None, foreign_bot: None,
             });
         }
     }
@@ -1287,7 +1339,7 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
                 return Err(ApiError {
                     status: StatusCode::FORBIDDEN,
                     message: "it is not your turn".to_string(),
-                    table_status: None,
+                    table_status: None, foreign_bot: None,
                 });
             }
             if repl.bots().is_bot(acting) {
@@ -1363,6 +1415,13 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
         }
         (repl.session.mode, repl.session.record().clone(), repl.bots().clone())
     };
+    // **A move a foreign bot made is the layer's to word** (M6.5c2,
+    // R-6.5c2.10): `account_parts` would call that seat a diagnostic that
+    // "resumed as a HUMAN seat". Outside the lock, over the clone, as the
+    // search below is.
+    if let Some(refused) = explain::foreign_why(&record, games.rules(), q.event) {
+        return Ok(refused);
+    }
     Ok(
         match yokohama_cli::why::account_parts(mode, &record, games.rules(), &bots, q.event) {
             Ok(account) => explain::Why::granted(&account, games.rules()),
@@ -1476,7 +1535,7 @@ pub fn result(games: &Games, user: &User, id: &str) -> Result<outcome::Outcome, 
         return Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "the game is not over — there is no final score yet".to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         });
     }
     Ok(outcome::Outcome::of(&repl.session.final_result()))
@@ -1589,6 +1648,27 @@ pub struct EventsQuery {
     /// Absent, the route answers at once, exactly as it always has.
     #[serde(default)]
     pub wait: Option<u64>,
+}
+
+/// The longest a `?wait` may hold (spec §3.3).
+///
+/// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
+/// silently given 25 would read the early answer as "nothing changed for two
+/// minutes", which is the same failure `deny_unknown_fields` exists to prevent
+/// one field over. `pub` since M6.5c2 (spec §2.6's restatements): the Worker
+/// module's `events` route is its own and refuses with the layer's cap and
+/// sentence through [`check_wait`] rather than a copy.
+pub const MAX_WAIT_SECONDS: u64 = 25;
+
+/// `?wait` above [`MAX_WAIT_SECONDS`] refused in the handler's own words; no
+/// `wait`, or one at or below the cap, answers `Ok`.
+pub fn check_wait(wait: Option<u64>) -> Result<(), ApiError> {
+    match wait {
+        Some(w) if w > MAX_WAIT_SECONDS => Err(ApiError::bad_request(format!(
+            "a request can be held for at most {MAX_WAIT_SECONDS} seconds, not {w}"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// The `Events` object for a live session, from the caller's seat.
@@ -1802,7 +1882,7 @@ pub fn at_k(
     client::HistoricalFrame::at(&repl, k, viewer).map_err(|e| ApiError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
-        table_status: None,
+        table_status: None, foreign_bot: None,
     })
 }
 
@@ -1841,8 +1921,8 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     if viewer == client::Viewer::Spectator {
         return Err(ApiError {
             status: StatusCode::FORBIDDEN,
-            message: "the record is the players' — watch, download nothing".to_string(),
-            table_status: None,
+            message: "the record is the players' — a spectator downloads nothing".to_string(),
+            table_status: None, foreign_bot: None,
         });
     }
     let handle = games.handle(id)?;
@@ -1851,7 +1931,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         return Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "the record is available once the game is over".to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         });
     }
     let (json, _) = games
@@ -1933,7 +2013,10 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
         .map_err(|e| ApiError::bad_request(format!("the table document does not parse: {e}")))?;
     let why = if facts.over { Why::Over } else { Why::Abandoned };
     let prefix = format!("browser/{}/", caller_segment(user));
-    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id);
+    // Unreachable as a refusal — the key grammar and `is_safe_id` admit no `.`
+    // or `..` — and answered in the put's own failure words if it ever is.
+    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id)
+        .map_err(|e| ApiError::server_error(format!("the archive could not be written: {e}")))?;
     match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
         Ok(outcome) => Ok(ArchiveReply {
             leaf: why.dir(),
@@ -1942,10 +2025,10 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
         }),
         // The path is in the archive's own error for the operator's log; the
         // client is told what it can do about it and not where the file is.
-        Err(PutError::Conflict(_)) => Err(ApiError {
+        Err(PutError::Conflict { .. }) => Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "a different record is archived under this id".to_string(),
-            table_status: None,
+            table_status: None, foreign_bot: None,
         }),
         Err(PutError::Failed(e)) => {
             Err(ApiError::server_error(format!("the archive could not be written: {e}")))
@@ -2142,6 +2225,115 @@ mod tests {
         assert!(e.message.starts_with("Failed to deserialize query string: "), "{}", e.message);
     }
 
+    /// **A body that is not a JSON object is refused in the layer's own words**
+    /// (M6.5c2, spec §2.6) — and ONLY where serde would have read it.
+    /// - **The refused.** Every body type the route table reads, each as a
+    ///   positional array serde accepts today (asserted, so the refusal is
+    ///   never read off a body serde would refuse anyway), answers
+    ///   [`NOT_AN_OBJECT`].
+    /// - **Axum's words, kept (R-6.5a.4).** A malformed array and a short one
+    ///   keep axum's own sentences, because the object rule runs after serde
+    ///   has answered.
+    #[test]
+    fn a_positional_array_body_is_refused_and_every_other_body_keeps_axums_sentence() {
+        fn refused<T: DeserializeOwned>(body: &[u8]) -> ApiError {
+            let text = String::from_utf8_lossy(body).to_string();
+            assert!(serde_json::from_slice::<T>(body).is_ok(), "premise: serde reads {text} as the struct");
+            parse_json::<T>(Some("application/json"), body).err().unwrap_or_else(|| panic!("{text} was read"))
+        }
+        for e in [
+            refused::<crate::tables::NewGame>(br#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#),
+            refused::<Input>(br#"["1"]"#),
+            refused::<Join>(b"[1]"),
+            refused::<Keep>(b"[0, 1]"),
+            refused::<ChatPost>(br#"["hi"]"#),
+            refused::<Unlock>(br#"["sesame"]"#),
+            refused::<ArchivePost>(br#"["{}", "{}"]"#),
+            refused::<Input>(b"\n  [\"1\"]\n"),
+        ] {
+            assert_eq!((e.status, e.message.as_str()), (StatusCode::BAD_REQUEST, NOT_AN_OBJECT));
+        }
+        let ct = Some("application/json");
+        let e = parse_json::<Input>(ct, br#"["1""#).expect_err("a malformed array");
+        assert!(e.message.starts_with("Failed to parse the request body as JSON: "), "{}", e.message);
+        let e = parse_json::<Keep>(ct, b"[0]").expect_err("a short array");
+        assert!(e.message.starts_with("Failed to deserialize the JSON body into the target type: "), "{}", e.message);
+        let read = parse_json::<Input>(ct, b" {\"line\":\"1\"} \n").ok().map(|i| i.line);
+        assert_eq!(read.as_deref(), Some("1"), "an object, JSON whitespace around it, reads");
+    }
+
+    /// Through the front door: a positional create opens no table.
+    #[test]
+    fn a_positional_create_opens_no_table() {
+        let games = crate::games::test_support::games();
+        let red = User::parse("red@t.test").expect("an address");
+        let body = br#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
+        let res = dispatch(
+            &games,
+            &LOCAL_HOST,
+            Ok(&red),
+            &ApiRequest { method: "POST", path: "/api/games", query: "", content_type: Some("application/json"), body },
+        );
+        assert_eq!((res.status, res.body), (400, serde_json::json!({ "error": NOT_AN_OBJECT }).to_string()));
+        assert!(games.store().list(crate::store::Doc::Table).expect("a listing").is_empty(), "no table opened");
+    }
+
+    /// **`error_body` is the body `dispatch` writes for a refusal** (M6.5c2,
+    /// spec §2.6's restatements) — all THREE shapes: bare (an unknown
+    /// endpoint's 404), with `"status"` (a dealing table's 409), and with
+    /// `"foreign_bot"` (a game not over against a bot this build does not run).
+    /// The Worker module restates it today; once it imports this, a drift is
+    /// impossible — and the third shape is the one a restatement dropped when
+    /// this export was first written.
+    #[test]
+    fn error_body_is_the_body_dispatch_writes() {
+        use crate::games::test_support::{games, two_people, BOT_TO_MOVE_AT, CORPUS_SEED};
+        let games = games();
+        let red = User::parse("red@t.test").expect("an address");
+        let get = |games: &Games, path: &str| {
+            dispatch(games, &LOCAL_HOST, Ok(&red), &ApiRequest { method: "GET", path, query: "", content_type: None, body: b"" })
+        };
+        let res = get(&games, "/api/nope");
+        assert_eq!((res.status, res.body), (404, error_body(&ApiError::not_found("no such endpoint: /api/nope"))));
+        games.create(&two_people("dealing", CORPUS_SEED), &red).expect("a dealing table");
+        let res = get(&games, "/api/games/dealing");
+        assert_eq!((res.status, res.body.clone()), (409, error_body(&ApiError::dealing())));
+        assert!(res.body.contains(r#""status":"dealing""#), "anti-vacuity: the second shape: {}", res.body);
+        // The third shape, through the same door Task 4's cells use.
+        let foreign = holding_foreign("lookahead-v1", Some(BOT_TO_MOVE_AT));
+        let local = User::parse("local@browser").expect("an address");
+        let res = dispatch(
+            &foreign,
+            &LOCAL_HOST,
+            Ok(&local),
+            &ApiRequest { method: "GET", path: &format!("/api/games/{PLAYED_ID}"), query: "", content_type: None, body: b"" },
+        );
+        let e: ApiError = crate::games::GameError::ForeignBot {
+            played: "V2 lookahead".to_string(),
+            runs: crate::bots::label(&crate::bots::production()),
+        }
+        .into();
+        assert_eq!((res.status, res.body.clone()), (409, error_body(&e)));
+        assert!(res.body.contains(r#""foreign_bot":{"played":"V2 lookahead""#), "anti-vacuity: the third shape: {}", res.body);
+    }
+
+    /// **The wait cap is the layer's, exported** (M6.5c2): 25 holds, 26 is a
+    /// 400 in the handler's own words — a refusal, never a clamp — and no
+    /// `wait` holds nothing. The axum handler calls this;
+    /// `events_can_be_held_until_a_bump_and_the_wait_is_bounded` (`lib.rs`)
+    /// pins it there end to end.
+    #[test]
+    fn a_wait_above_the_cap_is_refused_never_clamped() {
+        assert_eq!(MAX_WAIT_SECONDS, 25);
+        assert!(check_wait(None).is_ok() && check_wait(Some(0)).is_ok() && check_wait(Some(25)).is_ok());
+        let e = check_wait(Some(26)).expect_err("26 is over the cap");
+        assert_eq!(
+            (e.status, e.message.as_str()),
+            (StatusCode::BAD_REQUEST, "a request can be held for at most 25 seconds, not 26"),
+        );
+        assert!(check_wait(Some(u64::MAX)).is_err());
+    }
+
     // -----------------------------------------------------------------------
     // The archive route's own behaviour, through `dispatch` (M6.5b2, Task 8)
     // -----------------------------------------------------------------------
@@ -2195,6 +2387,7 @@ mod tests {
             std::sync::Arc::new(crate::signal::NoSignal),
             std::sync::Arc::new(|| 1_789_000_000u64),
             archive,
+            crate::games::RunHost::Server,
         )
     }
 
@@ -2238,6 +2431,158 @@ mod tests {
         (res.status, v)
     }
 
+    // -----------------------------------------------------------------------
+    // M6.5c2: the foreign-bot rule, through `dispatch` (R-6.5c2.10)
+    // -----------------------------------------------------------------------
+
+    /// One call through `dispatch`, as `who`, on the local host's facts.
+    fn ask(games: &Games, who: &str, method: &str, path: &str, query: &str, body: &str) -> (u16, serde_json::Value) {
+        let user = User::parse(who).expect("an address");
+        let res = dispatch(
+            games,
+            &LOCAL_HOST,
+            Ok(&user),
+            &ApiRequest {
+                method,
+                path,
+                query,
+                content_type: (!body.is_empty()).then_some("application/json"),
+                body: body.as_bytes(),
+            },
+        );
+        (res.status, serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// A `Games` holding the committed pair as a game against `controller`,
+    /// cut at `cut` events when given.
+    fn holding_foreign(controller: &str, cut: Option<usize>) -> Games {
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        let (record, table) = crate::games::test_support::foreign_pair(controller, cut);
+        games.load_document(crate::store::Doc::Record, PLAYED_ID, &record).unwrap();
+        games.load_document(crate::store::Doc::Table, PLAYED_ID, &table).unwrap();
+        games
+    }
+
+    /// **Every game route refuses a game not over against a foreign bot, in
+    /// one typed 409** (M6.5c2, R-6.5c2.10) — the sentence naming both labels,
+    /// and the pair beside it for the client to branch on. The table still
+    /// reads (the lobby row says `runs_here: false`), and Abandon, which never
+    /// rebuilds, still deletes it.
+    #[test]
+    fn every_game_route_refuses_an_unfinished_foreign_game_in_one_typed_409() {
+        let games = holding_foreign("lookahead-v1", Some(crate::games::test_support::BOT_TO_MOVE_AT));
+        let runs = crate::bots::label(&crate::bots::production());
+        let want = serde_json::json!({
+            "error": format!("This game was played against V2 lookahead. This server now runs {runs} and can't continue it."),
+            "foreign_bot": { "played": "V2 lookahead", "runs": runs },
+        });
+        let base = format!("/api/games/{PLAYED_ID}");
+        for (method, route, query, body) in [
+            ("GET", "", "", ""),
+            ("POST", "/input", "", r#"{"line":"1"}"#),
+            ("GET", "/ports", "", ""),
+            ("GET", "/labs", "", ""),
+            ("GET", "/areas", "", ""),
+            ("GET", "/log", "", ""),
+            ("GET", "/at", "from=0&to=1", ""),
+            ("GET", "/at/0", "", ""),
+            ("GET", "/suggest", "", ""),
+            ("GET", "/why", "", ""),
+            ("GET", "/index/orders", "", ""),
+            ("GET", "/result", "", ""),
+            ("GET", "/record", "", ""),
+            ("GET", "/chat", "", ""),
+        ] {
+            let (status, v) = ask(&games, "local@browser", method, &format!("{base}{route}"), query, body);
+            assert_eq!((status, &v), (409, &want), "{method} {base}{route}");
+        }
+        let (status, v) = ask(&games, "local@browser", "GET", &format!("{base}/table"), "", "");
+        assert_eq!(status, 200, "{v}");
+        assert_eq!(v["bot"], serde_json::json!({ "label": "V2 lookahead", "runs_here": false }));
+        let (status, v) = ask(&games, "local@browser", "DELETE", &base, "", "");
+        assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+    }
+
+    /// **A finished game against a foreign bot opens, scores and downloads —
+    /// and the four places the CLI's seat conversion would show are masked**
+    /// (M6.5c2, R-6.5c2.10; review R2-M1). `v2-padded` is a named identity
+    /// this CLI refuses to run, so `Repl::new` turns seat 1 into a human one
+    /// inside the resident `Repl`, exactly as a V4 game will read once V5 ships.
+    #[test]
+    fn a_finished_foreign_game_opens_scores_downloads_and_masks_the_conversion() {
+        let games = holding_foreign("v2-padded", None);
+        let base = format!("/api/games/{PLAYED_ID}");
+        let (status, state) = ask(&games, "local@browser", "GET", &base, "", "");
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["over"], true);
+        // 1. the warning: the WHOLE array, so a reworded CLI line fails here.
+        assert_eq!(state["warnings"], serde_json::json!([]), "no conversion line, and nothing else");
+        // 4. the Players panel says bot where the record does, and agrees with `bots`.
+        assert_eq!(state["bots"], serde_json::json!([{ "seat": 1, "label": "V2" }]));
+        let players = state["frame"]["dashboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|p| p.get("Players"))
+            .expect("a Players panel");
+        let is_bot: Vec<bool> =
+            players["players"].as_array().unwrap().iter().map(|p| p["is_bot"].as_bool().unwrap()).collect();
+        assert_eq!(is_bot, [false, true], "the panel and `bots` agree");
+        // It scores and downloads as today.
+        let (status, _) = ask(&games, "local@browser", "GET", &format!("{base}/result"), "", "");
+        assert_eq!(status, 200);
+        let (status, _) = ask(&games, "local@browser", "GET", &format!("{base}/record"), "", "");
+        assert_eq!(status, 200);
+        // 2. `why`: bare, and on a move the bot made (event 4), names the bot —
+        // never "a human's move"; a human's own move (event 0) is still the CLI's.
+        let foreign = serde_json::json!({
+            "ok": null,
+            "refusal": { "kind": "foreign_bot", "message": "This move was made by V2, which this server doesn't run." },
+        });
+        for query in ["", "event=4"] {
+            let (status, v) = ask(&games, "local@browser", "GET", &format!("{base}/why"), query, "");
+            assert_eq!((status, &v), (200, &foreign), "why?{query}");
+        }
+        let (_, v) = ask(&games, "local@browser", "GET", &format!("{base}/why"), "event=0", "");
+        assert_eq!(v["refusal"]["kind"], "human_seat", "a person's move is the CLI's to word: {v}");
+        // 3. undo: refused at this one-human table, and the game stays finished.
+        let (status, v) = ask(&games, "local@browser", "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
+        assert_eq!(status, 403, "{v}");
+        assert_eq!(v["error"], "undo is not offered on a game played against V2, which this server doesn't run");
+        let (_, after) = ask(&games, "local@browser", "GET", &base, "", "");
+        assert_eq!((after["over"].clone(), after["events"].clone()), (serde_json::json!(true), state["events"].clone()));
+    }
+
+    /// **(Review Focus 3) A SPECTATOR — seated nowhere — opening a finished game
+    /// played against a foreign bot.** The Players panel says bot, `why` names
+    /// the bot's version rather than "a human's move", the watcher's undo is the
+    /// not-seated refusal, and nothing a finished game shows a watcher today is
+    /// refused.
+    #[test]
+    fn a_spectator_reads_a_finished_foreign_game_as_the_bots() {
+        let games = holding_foreign("v2-padded", None);
+        let base = format!("/api/games/{PLAYED_ID}");
+        let (status, state) = ask(&games, "grey@t.test", "GET", &base, "", "");
+        assert_eq!(status, 200, "{state}");
+        assert_eq!(state["seat"], serde_json::Value::Null, "premise: a watcher");
+        assert_eq!(state["bots"], serde_json::json!([{ "seat": 1, "label": "V2" }]));
+        let players = state["frame"]["dashboard"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|p| p.get("Players"))
+            .expect("a Players panel");
+        assert_eq!(players["players"][1]["is_bot"], true, "the panel says the bot played seat 1");
+        let (_, why) = ask(&games, "grey@t.test", "GET", &format!("{base}/why"), "", "");
+        assert_eq!(why["refusal"]["kind"], "foreign_bot", "{why}");
+        assert_eq!(why["refusal"]["message"], "This move was made by V2, which this server doesn't run.");
+        let (status, v) = ask(&games, "grey@t.test", "POST", &format!("{base}/input"), "", r#"{"line":"undo"}"#);
+        assert_eq!((status, v["error"].as_str()), (403, Some(NOT_SEATED)), "a watcher writes nothing: {v}");
+        for route in ["/result", "/log", "/at/0", "/ports", "/labs", "/areas", "/index/orders"] {
+            let (status, v) = ask(&games, "grey@t.test", "GET", &format!("{base}{route}"), "", "");
+            assert_eq!(status, 200, "{route}: {v}");
+        }
+    }
     /// **The archive route, driven through `dispatch` itself** — written BEFORE
     /// `archive_post`'s checks moved into [`crate::backup::check_pair`] and
     /// re-run afterwards unedited, which is the whole of why it exists

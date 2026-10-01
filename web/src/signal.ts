@@ -22,7 +22,7 @@
 //
 // **The stream's reader is a `fetch`, not an `EventSource`** (spec §0.1) —
 // `sse.ts` says why in one line: `EventSource` cannot carry a header, and the
-// `claimed` door is one. It is also the reason a hidden tab can let go at all,
+// `open` door is one. It is also the reason a hidden tab can let go at all,
 // since an `AbortController` comes with the `fetch` and not with the other.
 //
 // **On the Worker the reader is a `WebSocket`** (M6.5c, R-6.5c.6; spec §2.7):

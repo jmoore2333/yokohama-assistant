@@ -56,7 +56,7 @@ const TEST_DOMAIN: &str = ".test";
 /// What a put that met no receipt answers: a `Failed`, whose words each of the
 /// layer's three sites puts inside its own sentence — the abandon's and the
 /// browser save's refusals, and game over's log line.
-const DEFERRED: &str = "deferred to the host";
+pub(crate) const DEFERRED: &str = "deferred to the host";
 
 /// A browser's save on an instance given no caller: every object but an
 /// Archive object.
@@ -197,14 +197,16 @@ impl Archive for ReceiptArchive {
         table_json: &str,
     ) -> Result<PutOutcome, PutError> {
         let root = self.root(prefix, table_json)?;
-        let (record_key, table_key) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id);
+        let (record_key, table_key) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id).map_err(PutError::Failed)?;
         let (record_key, table_key) = (format!("{root}{record_key}"), format!("{root}{table_key}"));
         let key = plan_key(&record_key, &table_key, record_json, table_json);
         if let Some(receipt) = self.receipts.lock().expect("the receipts").remove(&key) {
             return match receipt.outcome {
                 Kind::Landed => Ok(PutOutcome::Landed),
                 Kind::Identical => Ok(PutOutcome::Identical),
-                Kind::Conflict => Err(PutError::Conflict(record_key)),
+                // `held` rides the receipt once the shell hands the held text back
+                // (M6.5c2's cycle C); until then this archive cannot say.
+                Kind::Conflict => Err(PutError::Conflict { key: record_key, held: None }),
                 Kind::Failed => Err(PutError::Failed(receipt.detail)),
             };
         }
@@ -298,8 +300,9 @@ fn parse_outcome(json: &str) -> Result<Outcome, String> {
 /// - `stamped` says whether the stamp LANDED: whether the stored table's
 ///   `archived_at` is set after the retry. `archive_over_retry` answers
 ///   `Ok(())` either way, because inside `archive_if_over` a refused put or a
-///   failed stamp is only an `eprintln!`, and that is mute on this host — so
-///   this reads the table the stamp is written to;
+///   failed stamp is a log line — which reaches the shell since M6.5c2, but is
+///   a report and not an answer — so this reads the table the stamp is written
+///   to;
 /// - `over` says whether the game is over at retry time: the resident
 ///   handle's reading, the one `archive_if_over` takes, and never the table's
 ///   `turn` mirror, a cache that can be stale.
@@ -668,6 +671,24 @@ mod tests {
         assert_eq!((stored("table", "abandon"), stored("record", "abandon")), (None, None), "deleted");
     }
 
+    /// **A game dealt on this host names it, and the plan carries it**
+    /// (M6.5c2, spec §2.4): the record `finalize` wrote here says
+    /// `run_id: "web/worker"`, and the plan an abandon defers holds those
+    /// stored bytes — `run` and all — for R2.
+    #[test]
+    fn a_game_dealt_here_names_web_worker_and_its_plan_carries_the_stored_bytes() {
+        let _s = serial();
+        init_inner(&r2(None)).unwrap();
+        playing_with_a_move("named", RED, BLUE);
+        let record = stored("record", "named").expect("the game's record");
+        let v: Value = serde_json::from_str(&record).unwrap();
+        assert_eq!(v["run"]["run_id"], "web/worker", "finalize stamps where it was played");
+        let _p = pin(1_789_000_950);
+        let first = call(RED, "DELETE", "/api/games/named", None);
+        assert_eq!(first.status, 500, "premise: the abandon defers its put — {}", first.body);
+        assert_eq!(plan_of(&first)["record"], record, "the plan's record is the stored bytes, `run` and all");
+    }
+
     /// A receipt whose digests differ is ABSENT (a re-dispatch at a different
     /// reading stamps a different `archived_at`, so its plan's key differs).
     #[test]
@@ -842,8 +863,14 @@ mod tests {
     /// bot's agent seed are both above 2^53, so no TypeScript may touch them). The
     /// cut IS deterministic, so this cell is a DRIFT check: it rebuilds the partial
     /// and compares it with the committed file, and writes it only under
-    /// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, unchanged,
-    /// under its OWN id `local-242a5429453c593c` (plan review m12).
+    /// `UPDATE_WORKER_FIXTURES=1`. The table is the committed pair's, under its OWN
+    /// id `local-242a5429453c593c` (plan review m12), WITH the record's bot in its
+    /// turn mirror — what a persist under the dealing build writes (M6.5c2, P-4),
+    /// read through the layer's `bots::recorded`, the source `mirror_of` reads.
+    /// The two files differ by exactly that field: the cell's premise holds the
+    /// pair's table to a byte-for-byte round trip through `TableDoc`. Without the
+    /// field the rebuild's persist would rewrite the table, and the pool's
+    /// owed-game cells would lose their premises.
     #[test]
     fn the_owed_game_over_fixture_is_the_committed_pair_cut_at_its_last_bot_run() {
         let _s = serial();
@@ -856,6 +883,15 @@ mod tests {
             "premise: the pair's own id, and the bot at seat 1",
         );
         let record: GameRecord = serde_json::from_str(&full).unwrap();
+        let mut owed: yokohama_web::table::TableDoc = serde_json::from_str(&table).unwrap();
+        assert_eq!(
+            serde_json::to_string_pretty(&owed).unwrap(),
+            table,
+            "premise: the pair's table round-trips through `TableDoc` byte for byte, so the owed table differs by its `bot` alone",
+        );
+        owed.turn.as_mut().expect("a finished game's mirror").bot =
+            yokohama_web::bots::recorded(&record).into_iter().next().map(|(_, d)| d);
+        let table = serde_json::to_string_pretty(&owed).unwrap();
         let rules = Rules::standard();
         // Each event's mover: the player to move at the state before it, the
         // attribution the layer's undo reads (`undo_allowed` in
@@ -884,7 +920,11 @@ mod tests {
             partial,
             "the committed partial is the cut this cell builds (regenerate with UPDATE_WORKER_FIXTURES=1)",
         );
-        assert_eq!(read(dir.join("owed-game-over.table.json")), table, "the committed table is the pair's, unchanged");
+        assert_eq!(
+            read(dir.join("owed-game-over.table.json")),
+            table,
+            "the committed table is the pair's with the record's bot in its mirror (regenerate with UPDATE_WORKER_FIXTURES=1)",
+        );
     }
 
     /// Game over defers too, and the stamp completes it (spec §2.6's game-over
@@ -1149,8 +1189,8 @@ mod tests {
     /// refused naming the archive; the game-over stamp is not written.
     ///
     /// The receipt's `detail` differs from the record key on purpose: the
-    /// conflict the layer words is `PutError::Conflict(record_key)`, the key
-    /// the plan was made for.
+    /// conflict the layer words is `PutError::Conflict { key: record_key, .. }`,
+    /// the key the plan was made for.
     #[test]
     fn a_conflict_receipt_refuses_the_abandon_and_leaves_game_over_unstamped() {
         let _s = serial();
@@ -1177,10 +1217,69 @@ mod tests {
         assert_eq!(archived_at(OWED), None, "nothing stamped");
     }
 
+    /// **The layer's log reaches the reply — but a DEFERRED put is not a line**
+    /// (M6.5c2, spec §2.6). On this host every game-over put is deferred first:
+    /// `ReceiptArchive::put` records the plan and answers `Failed(DEFERRED)`,
+    /// which the layer logs as `archive-over-refused` — true of the put and
+    /// false of the save, whose plan rides this very reply for the shell to
+    /// upload and log itself (`archive-landed` and the rest). So `ShellLog`
+    /// drops that one line, by this crate's OWN word, and forwards every other:
+    /// the retry that meets a `conflict` receipt is the layer's refusal, carried
+    /// whole. Mutants: the drop removed (the first reply carries a line); every
+    /// line dropped, or the drain left out of `from_the_layer` (the second
+    /// carries none).
+    #[test]
+    fn a_deferred_put_is_not_a_line_and_a_refused_retry_is_the_layers() {
+        let _s = serial();
+        let _p = pin(1_789_000_700);
+        init_inner(&r2(None)).unwrap();
+        let r = pump_owed_game_over();
+        let plan = plan_of(&r);
+        assert!(r.logs.is_empty(), "the deferral is its plan's to report: {:?}", r.logs);
+
+        receipt_inner(key(&plan), &outcome("conflict", "the key holds other bytes")).unwrap();
+        let s = stamp_archive_inner(OWED);
+        assert_eq!(s.body, r#"{"stamped":false,"over":true}"#, "premise: the conflict left the save unstamped");
+        let error = format!("rev7/over/{OWED}.json holds a different record — a game is archived once");
+        assert_eq!(
+            s.logs,
+            vec![crate::log::LogLine {
+                event: yokohama_web::log::OVER_PUT_REFUSED,
+                fields: json!({ "id": OWED, "error": &error }),
+            }],
+        );
+        // Through the getter the shell reads: one `{"event", "fields"}` per line.
+        let text = crate::Reply::from(s.clone()).logs();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!([{ "event": "archive-over-refused", "fields": { "id": OWED, "error": &error } }]),
+        );
+    }
+
+    /// **The layout's refusal reaches this archive as a FAILURE, and no plan is
+    /// recorded** (M6.5c2, spec §2.1's defence in depth; review R2-m3). No
+    /// caller can hand the layer a `.` or `..` component — the key grammar and
+    /// `is_safe_id` close both — so the put is called directly, as the layer
+    /// would call it with an id that slipped through: a `Failed`, never a
+    /// conflict the shell would read as "a different record is there", and
+    /// never a plan it would upload.
+    #[test]
+    fn a_path_the_layout_refuses_is_a_failure_and_records_no_plan() {
+        let archive = ReceiptArchive::new(None);
+        let table = json!({ "created_by": RED }).to_string();
+        let put = archive.put("", Why::Over, "..", "{}", &table);
+        assert!(matches!(&put, Err(PutError::Failed(why)) if why.contains("..")), "{put:?}");
+        assert!(archive.pending.lock().unwrap().is_none(), "nothing deferred, so nothing uploads");
+        // Anti-vacuity: the same put under a safe id IS deferred, so the arm
+        // above read the layout's refusal and not an archive that plans nothing.
+        let _ = archive.put("", Why::Over, "sim-1", "{}", &table);
+        assert!(archive.pending.lock().unwrap().is_some(), "a safe id is planned");
+    }
+
     /// `receipt` takes exactly the outcome the shell writes (§"Names shared
     /// across tasks") — an OBJECT with one of the four words and a detail — and
     /// only where a put can have been deferred; and `init` takes an archive
-    /// caller only as an address.
+    /// caller only as a key — an email or (M6.5c2) a plain name.
     #[test]
     fn a_receipt_is_the_outcome_object_and_needs_the_archive_on() {
         let _s = serial();
@@ -1202,7 +1301,10 @@ mod tests {
             receipt_inner("a-key", &outcome(kind, "x")).unwrap_or_else(|e| panic!("{kind}: {e}"));
         }
 
-        let err = init_inner(&r2(Some("nobody"))).unwrap_err();
+        let err = init_inner(&r2(Some(".."))).unwrap_err();
         assert!(err.contains("caller"), "{err}");
+        // Anti-vacuity, and the open door's premise (M6.5c2): a plain name is a
+        // caller the key grammar accepts.
+        init_inner(&r2(Some("  Ben   Castle "))).expect("a plain name is a caller");
     }
 }
