@@ -142,7 +142,7 @@ deployment never matched it, and the file has been corrected.)
 ```
 POST /containers/create?name=yokohama-web
 { "Image": "yokohama-web:0.5.0",
-  "Env": ["YOKOHAMA_WEB_IDENTITY=claimed"],
+  "Env": ["YOKOHAMA_WEB_IDENTITY=claimed", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
                   "Mounts": [{ "Type": "volume", "Source": "yokohama-web-data",
@@ -155,6 +155,14 @@ image started without it **exits 1** naming the three accepted values. A deploy
 from this recipe with the line dropped does not come up. The mode belongs to
 the container because it is a statement about what is in FRONT of the container,
 which the image cannot know.
+
+**The second `Env` entry is the archive (M6.5a, umbrella R-6.5.4), and it is
+on the SAME named volume as the store**: a finished game is written under
+`/data/archive/rev7/over/` and an abandoned one under `…/abandoned/`, each as
+the record `<id>.json` beside its stripped table document `<id>.table.json`, once
+per game id — so the NAS collects saves during development, and `/api/health`
+answers `"archive": "dir"`. Unset, the archive is off and health says `"off"`;
+the image sets no default, for the reason it sets no identity.
 
 **A named volume, not a bind mount.** The image runs as uid 10001 and `chown`s
 `/data` at build time; a named volume inherits that ownership on first use,
@@ -948,6 +956,110 @@ body is §3.10's, unchanged. The close `docs/plans/2026-09-19-web-frontend-m6.4-
   says; rolling to m6.4 loses only the five review fixes and nothing on the
   volume. **Fourteen tags now sit on the NAS.**
 
+### 3.12 M6.5a is live — the ninth deployment, 2026-09-20 (a record, not a plan)
+
+The first release with the SECOND `Env` entry: `YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive`
+(umbrella R-6.5.4, M6.5a R-6.5a.9), on the store's own named volume. Deployed on the
+owner's in-session authorization ("if we should then let's do so", after a fresh
+whole-branch read of the close and the deploy-facing surfaces at HEAD — nothing found
+that would block it; the two things it did find are the rollback caveat below and a
+LEAVE item on the M6.5b handover). What changed for a player is one button and one
+label: **Save game file** on a finished game's header, and "Abandon and save" on a
+playing table. What changed underneath is the whole cycle (the M6.5a close
+`docs/plans/2026-09-20-web-frontend-m6.5a-close.md` §1): the table layer out from
+under axum, the archive of finished and abandoned games, the record route. Every
+committed wire payload but two is byte-identical to `0.5.0-m6.4.1`'s.
+
+- **Build:** `web-room-m6.5` at `8a6b391` (the close's docs commit over the close
+  HEAD `42832f8`; PR #35 against `web-room-m6.4`, CI green on all three jobs). The
+  musl cross-compile per §1: `Finished release in 7.20s` (a warm dependency cache —
+  only the crate itself recompiled); the binary is `ELF 64-bit LSB pie executable,
+  x86-64, static-pie linked`, **6,525,776 bytes** — 271 KB SMALLER than §3.11's
+  6,796,984, the reason not measured (twenty handlers left axum's extractor generics
+  this cycle, which is the obvious candidate and not a finding). `web/dist` carries
+  the M6.5a client, bundle `index-Du-Mt0Ao.js` (§3.11's was `index-CbONnoLE.js`).
+  Context tarball **14,066,259 B** (sha256 prefix `099534dc04ccdfa6`), cut at
+  **14:02:59Z** and served by `python3 -m http.server 8899 --bind 0.0.0.0` on the
+  workstation at **192.168.1.16**; the NAS (192.168.1.173) fetched it in one GET at
+  14:03:49Z and the file server was stopped at 14:04:16Z. Before the build, the
+  per-edit gates at HEAD read: web **259** (247 lib + 2 gate + 10 wire), clippy clean,
+  the wasm check line clean, typecheck clean, vitest **640** in 38.
+- **Image:** `yokohama-web:0.5.0-m6.5a`, Id
+  `sha256:ee64642fc70738fb0eab2b24399fb0dec9bc5c42b9214e975c1d70d842a868e5`,
+  **26,453,918 B** (§3.11's 26,723,904), created **14:04:00Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.5a&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2).
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.4.1` container
+  (`a62b17ad…`, created 2026-09-20 00:37:58Z) at ~14:04:18Z → `DELETE
+  /containers/yokohama-web` → `POST /containers/create?name=yokohama-web` with §3's
+  body — **both `Env` entries**, `YOKOHAMA_WEB_IDENTITY=claimed` and
+  `YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive`, the two labels, `NetworkMode:
+  cf-internal`, `RestartPolicy: unless-stopped`, the named volume `yokohama-web-data`
+  → `/data` — → container Id
+  `579cd1ffb1e744ecf63a980a6b7f58f7c37c212afa2356d7363e6b7369aa0580`, created
+  **14:04:31Z**, started **14:04:35Z**. Same address on `cf-internal`
+  (**172.21.0.4**), so cloudflared was not restarted; the named volume rode across.
+  **The server created `/data/archive` itself at start** (`DirArchive::from_env`'s
+  `create_dir_all`), owned by uid 10001 `yokohama:nogroup` — the named volume's
+  ownership rule in §3 holds for the archive as it does for the store.
+- **Verified through the tunnel at 14:04:50Z** (WARP connected):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","archive":"dir","lobby_chat":true,"chat_keep":500,"chat_text":500}`
+    — the `"archive": "dir"` this section's placeholder named as the check.
+  - `GET /` serves `index-Du-Mt0Ao.js`, which exists only in this build.
+  - The owner's one table (`sim-54b139c22c136cb0`, a SCHEMA-2 document written under
+    M6.4, playing, at its turn) is listed under `scope=mine` and reads with every new
+    field at its default — the schema-3 read of a schema-2 file, live. A bare
+    `GET /api/games` is **401**; `GET …/record` on that running game is **409**
+    "the record is available once the game is over".
+  - **The abandon site (14:05:46Z):** a throwaway table `sim-8ee721d4abc0b774` (2P,
+    `deploy-verify-a@m65.test` + the bot) created 201, its keep made, ONE move
+    (`EndAdditionalPhase`) applied, then `DELETE` **204** and `…/table` **404**
+    after. Off the volume: `/data/archive/rev7/abandoned/sim-8ee721d4abc0b774.json`
+    (974 B, one event, `terminal_digest` `43fe3db5b3751098`) and `.table.json`
+    (614 B, `schema: 3`, `lock: null`, `unlocked: []`, `archived_at: 1789913146`);
+    the store's copy gone.
+  - **The game-over site (14:05:49Z → 14:15:29Z):** a throwaway table
+    `sim-445fb0ef81e7b844` (same seats) played to the END through the JSON API by a
+    scripted random walk — the e2e harness's click policy at the wire (options and
+    picks by number, one to three areas then `confirm`, a retreat count and
+    `confirm` at its last step, `cancel` on a refused placement); the script lives
+    in the session's scratchpad, not the repo. **338 events, the Church track
+    filled, the bot won 97 to 12.** Off the volume:
+    `/data/archive/rev7/over/sim-445fb0ef81e7b844.json` (32,894 B) is
+    **byte-identical** to `/data/games/sim-445fb0ef81e7b844.json` (`cmp`; both
+    sha256 `99f8e7dcfbbd8ce7…`) AND to the body `GET …/record` served to the seat
+    holder (the same sha256, computed on the workstation) — the three copies are one
+    string; `.table.json` (609 B, `schema: 3`, `over: true`, `winner: 1`, no lock,
+    no roster, `archived_at: 1789913729`), and the store's table document carries
+    the same stamp. **The served record loads in the terminal**: `cargo run -p
+    yokohama-cli -- <file>` opened it at GAME OVER — the Church track filled — and
+    `why` reconstructed the bot's last move (event 337, `v4-step9-draft1`) with no
+    refusal. The throwaway was then deleted (**204**; already stamped, so `delete`
+    put nothing — the archive still holds exactly the two pairs above) and the
+    volume is back to the owner's one table. The record is kept gitignored at
+    `docs/temp/owner-games/web-2026-09-20-deploy-check-sim-445fb0ef81e7b844.json`.
+  - The container's stderr after both games is the one `listening on` line — no
+    `archive of … failed` line, which is the only sign this host has (close §7).
+- **A gotcha for scripted checks through the tunnel:** Cloudflare's browser-integrity
+  check answers **403 `error code: 1010`** to `Python-urllib`'s default user agent
+  (curl's passes). It is the edge, not the server, and the fix is any other
+  `User-Agent` string. The first two driver runs failed on it.
+- **Downtime:** the ~17 s between `stop` and `start`; nobody was playing (the owner's
+  bot table sat at its turn).
+- **Rollback:** `yokohama-web:0.5.0-m6.4.1` stays on the NAS; recreate from that tag
+  with §3's body (the archive entry is harmless to an older binary, which ignores
+  it). **NEW since this release, and it cuts the other way from every rollback before
+  it: `TABLE_SCHEMA` is 3, and a table CREATED under `0.5.0-m6.5a` is written at
+  schema 3, which the `0.5.0-m6.4.1` binary REFUSES to read** ("schema 3 — this
+  server reads up to 2; a newer server wrote it"): its listing SKIPS such a table
+  with a line on stderr and every direct read of it fails. Tables created before
+  this release stay at schema 2 — only `create` stamps the schema; every other write
+  keeps the document's own — so the owner's table is safe either way, and a
+  schema-3 table comes back untouched when the newer binary is restored. Rolling to
+  m6.4.1 loses the record route, the button and the archive sites, and nothing on
+  the volume. **Fifteen tags now sit on the NAS.**
+
 ---
 
 ## 4. Modal — the upgrade path, not yet deployed
@@ -992,6 +1104,10 @@ measurement says it should go on doing so.
   replay. Drop the `Env` line when recreating from a pre-M6.1 tag — that
   binary ignores `YOKOHAMA_WEB_IDENTITY` and leaving it in is harmless, but
   the line is only meaningful from `0.5.0-m6.1` on.
+- **Across M6.5a it is a SCHEMA rollback as well.** A table created under
+  `0.5.0-m6.5a` or later is a schema-3 document, and every binary before it refuses
+  one (§3.12): the lobby drops the row and its reads fail until the newer binary is
+  back. Tables from before that release keep their schema and are unaffected.
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.

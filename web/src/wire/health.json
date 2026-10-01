@@ -1,4 +1,5 @@
 {
+  "archive": "off",
   "chat_keep": 500,
   "chat_text": 500,
   "identity": "claimed",

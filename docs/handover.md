@@ -6,7 +6,16 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-19, at the CLOSE of **M6.4 "chat"** — the wrap-up the paused session owed is
+**Updated:** 2026-09-20 (sixth session), at the DEPLOY of **M6.5a "the seam"** as
+`yokohama-web:0.5.0-m6.5a` (`deploy/RUNBOOK.md` §3.12 — both archive sites read off the volume, the
+archived record byte-identical to the store's and to the record route's body, the served record
+loaded in the terminal) after a fresh whole-branch review of the close at HEAD, with the M6.5b
+brainstorm following in the same session; the fifth session, earlier the same day, executed and
+closed M6.5a (Track 3). The update before those was 2026-09-19 (fourth session), at the RE-CHARTER of **M6.5 "the hosting move"** as
+WebAssembly + Durable Objects: the brainstorm with you, your thirteen rulings, and the umbrella spec
+`docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` landed on the stacked branch `web-room-m6.5`
+(Track 3 carries it; M6.5a "the seam" is next). The previous update, earlier the same day, was the
+CLOSE of **M6.4 "chat"** — the wrap-up the paused session owed is
 done: the scoped re-review of the fix wave (42 of 43, 0 open), the mutation battery (**22 of 22
 caught, none survived**), the HEADED three-browser live review of the live site in both layouts
 (**SHIP WITH FIXES** — 0 Critical / 1 Important / 4 Minor, all five fixed, re-reviewed SHIP and
@@ -44,19 +53,24 @@ that, the web-lane merge (`abe4eec`) with the AI-lane re-entry handover
   reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
   artifact, then the findings document, then the two rulings together (Track 1).
 - **The web client** merged to master 2026-09-11 and is live at `yokohama.moore.nyc` behind
-  Cloudflare Access, now **`yokohama-web:0.5.0-m6.4.1`** on the NAS via Portainer. Nothing about it
-  moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
+  Cloudflare Access, now **`yokohama-web:0.5.0-m6.5a`** on the NAS via Portainer (since 2026-09-20
+  14:04:35Z, `deploy/RUNBOOK.md` §3.12). Nothing about it moves the bot. **M6 "the room" is PLANNED (2026-09-14) and its first FOUR cycles have SHIPPED**:
   M6.1 "identity and seats" (live 2026-09-15, `docs/plans/2026-09-15-web-frontend-m6.1-close.md`),
   M6.2 "the lobby" (live 2026-09-16, `docs/plans/2026-09-16-web-frontend-m6.2-close.md`),
   M6.3 "transport and spectating" (live 2026-09-16,
   `docs/plans/2026-09-16-web-frontend-m6.3-close.md`) and **M6.4 "chat" (live 2026-09-17, the
   point release 2026-09-20, `docs/plans/2026-09-19-web-frontend-m6.4-close.md`)**: two players talk
   during a game, a third reads and answers, the lobby talks, and the first HEADED review of the live
-  site found — and the point release fixed — what four headless reviews could not see. **Four pull
+  site found — and the point release fixed — what four headless reviews could not see. **Five pull
   requests now**: `web-room` is PR #31 against master, `web-room-m6.2` PR #32 against `web-room`,
-  `web-room-m6.3` PR #33 against `web-room-m6.2`, and **PR #34** is `web-room-m6.4` against
-  `web-room-m6.3` — nothing merged, **merge order is yours**. **M6.5 (the hosting move) enters from
-  `docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md`** and is ready to brainstorm (Track 3).
+  `web-room-m6.3` PR #33 against `web-room-m6.2`, `web-room-m6.4` PR #34 against `web-room-m6.3`,
+  and **PR #35** is `web-room-m6.5` against `web-room-m6.4` — nothing merged, **merge order is yours**. **M6.5 (the hosting move) was
+  RE-CHARTERED on 2026-09-19 as WebAssembly + Durable Objects** — its authority is the umbrella spec
+  `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` on branch `web-room-m6.5` (stacked on
+  `web-room-m6.4` at `faf1a88`, your call), three sub-cycles a/b/c. **M6.5a "the seam" is CLOSED AND
+  LIVE (2026-09-20, `docs/plans/2026-09-20-web-frontend-m6.5a-close.md`; the table layer builds for
+  `wasm32-unknown-unknown` and finished and abandoned games are archived on the NAS); M6.5b
+  "single-player in the browser" is next** (Track 3).
 - **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
   `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
 - **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`); the fifteen-gate
@@ -140,7 +154,99 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.4 "chat" CLOSED (`0.5.0-m6.4.1` live, PR #34 open against `web-room-m6.3`); M6.5 "the hosting move" is next from its handover (web lane)
+## Track 3 — The web client: M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" next (web lane)
+
+**M6.5a is DONE, DEPLOYED and reviewed; M6.5b's brainstorm is next.** (1) **The deploy is done:**
+`yokohama-web:0.5.0-m6.5a`, built from `8a6b391` (the close's docs commit over `42832f8`), live in
+container `579cd1ff…` since **14:04:35Z** with BOTH `Env` entries — `deploy/RUNBOOK.md` §3.12 is the
+record. `/api/health` reads `"archive": "dir"`; a throwaway table abandoned after one move left
+`/data/archive/rev7/abandoned/<id>.json` + `.table.json` (schema 3, no lock, no roster, the stamp set)
+and a throwaway game played to the end through the API left the pair under `over/`, its record
+**byte-identical** to the store's copy and to the body `GET …/record` served (one sha256 for all
+three), and that served record loaded in the terminal with `why` reconstructing the bot's last move
+with no refusal. Both throwaways were deleted afterwards; the volume is back to your one table, which
+is a schema-2 document the new binary reads with every new field at its default. (2) **PR #35** is
+open against `web-room-m6.4` (https://github.com/jmoore2333/yokohama-assistant/pull/35; CI green on
+all three jobs) — the stack is #31 → #32 → #33 → #34 → #35 and merge order is yours. (3) **The
+fresh review before the deploy found nothing that blocks it and two things to carry forward**, both
+recorded here and in the RUNBOOK rather than changed on the reviewed branch: **a schema rollback
+caveat** — `TABLE_SCHEMA` is 3, only `create` stamps it, and every binary before `0.5.0-m6.5a`
+REFUSES a schema-3 document (the lobby drops the row, its reads fail) until the newer binary is back
+(RUNBOOK §3.12, §5); and **a LEAVE for the M6.5b spec** — `delete` chooses the archive leaf by
+STATUS, so a FINISHED game with no stamp (finished before this release, or one whose game-over put
+failed) is archived under `abandoned/` at its delete: the leaf lies, the archived table's `turn.over`
+tells the truth, and the one-line fix is to choose `Why::Over` when the mirror says over — a spec
+sentence for M6.5b, not a hot change. (A third, cosmetic: an already-archived finished game's lobby
+row still reads "Abandon and save" while nothing more is saved — beside the close's owner item 4.)
+**Next: open M6.5b** from `docs/plans/2026-09-20-web-frontend-m6.5b-handover.md` — its spec is
+written at its start (R-6.5.7), and §3 of the handover lists the decisions that spec takes first (the
+local identity, the JS clock, the Worker, the two tabs, the bot seed, a local abandon). What shipped,
+in one breath: the table layer is out from under axum — the crate builds for `wasm32-unknown-unknown`
+without its `server` half (CI checks it; a source-scanning cell ENFORCES one `#[cfg(feature =
+"server")]` per item), every route is a typed `pub fn` behind one table and one `dispatch` in
+`api.rs` whose 400 sentences are axum's word for word and pinned against axum, the signal/clock/archive
+are seams on `Games`, finished and abandoned games are archived once under `rev7/over/` and
+`rev7/abandoned/`, a seat holder can download a finished record as the store's exact bytes, and the
+client saves it without parsing it. **The record of record is the close
+`docs/plans/2026-09-20-web-frontend-m6.5a-close.md`** — §2 the counts in one sequence (web 259 · CLI
+851 + 2 · vitest 640 in 38 · e2e 39 in 8 · corpus 83 · the five fenced crates and the CLI untouched ·
+`SEMANTICS_REV` 7; re-read at `8a6b391` before the deploy: web 259, clippy, the wasm check, typecheck,
+vitest 640 — all green), §4 the reviews (two per-task, one mid-point, one whole-branch, each with a
+fix wave; the fifteen-mutation battery at 15 of 15), §5 the rulings with their costs, §6 the LEAVE
+list and FIVE owner items (the first, the deploy, now done), §7 what it does NOT claim (nothing RUNS
+in wasm; one host). **You ruled mid-cycle** that small tasks execute INLINE with broad review rather
+than per-task SDD; the close records it and the memory carries it.
+
+**M6.5 was re-chartered on 2026-09-19** in a brainstorm with you, and the umbrella spec
+`docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` is its authority (branch `web-room-m6.5`,
+stacked on `web-room-m6.4` at `faf1a88` by your ruling). What changed: the engine, the production bot
+and the whole seam the web crate consumes were MEASURED to compile to `wasm32-unknown-unknown`
+unchanged (1.30 MB raw / 387 KB gzip with the `Repl` seam; the bot ~1.5 ms per decision native), so
+the container, Postgres and the origin-poked notifier are gone — hosted multiplayer runs inside Durable
+Objects (one object per table IS the store, the lock and the signal; a house object is the lobby's
+projection), single-player runs entirely in the browser as a primary channel, and the axum binary in
+Docker stays exactly as it is as the self-host path. Your thirteen rulings are the spec's §1
+(R-6.5.1–R-6.5.13): R-P5 amended (the object's SQLite replaces Postgres); the Access allow-list door
+(the email roster, the password oracles and moderation stay LEAVE items on it); the R2 archive in the
+file store's own layout with **abandon-and-save** (once per game id, never versions; a directory on
+the NAS so saves are collected during development); single-player entirely local with a strict-
+replay-verified "Send to the archive"; the order a → b → c; **test in the live setup during
+development**, not only under `wrangler dev`. **The adversarial read of the spec against HEAD is DONE
+and its fix wave landed** (4 HIGH / 11 MEDIUM / 12 MINOR / 10 OPEN, 71 claims verified true; the
+report and the cut-surface survey sit in the gitignored `.superpowers/sdd/2026-09-19-web-frontend-m6.5-hosting/`):
+the four HIGHs were real — the wasm check line cannot see a `SystemTime` call (the clock gets its own
+scanning fence), "82 payloads on all three hosts" contradicted the browser host (the ruling now
+reads "every payload a host SERVES"), Worker-level Access does not support WebSockets (the door is a
+HOSTNAME-based Access application and `ctx.access` is recorded unavailable), and an open sub-picker
+dies at every hibernation (named, with M6.5c to choose the fix) — and the survey found the layering
+inverted (the cut runs THROUGH `Games`, §2.1 rewritten). **A second wave landed from the merged
+standing review you brought (16 items), each proven or refuted against the mechanism first**: the
+placement reservoir's `usize` draw really is width-dependent (reproduced: the same stream draws
+206 native / 281 wasm) and really is unreached at 2P (the code's own pin), so it is O-11, owed
+only if 3–4P bots come in scope; seventeen worlds / 7,826 moves played natively and under Node's
+WASI came out byte-identical (§0.3, support for M6.5b's pin); `replay_strict` skips the digest
+when absent (a fourth check); input gates open during a house push or R2 put (revisions, a
+pending-deliveries list, delete ordering); the SQLite row cap is 2 MB (~20,000 events of
+headroom); the DO CPU limit reads 30 s unqualified; `workers.dev` off. **The M6.5a spec is
+WRITTEN** — `docs/plans/2026-09-19-web-frontend-m6.5a-seam-spec.md`, sixteen rulings R-6.5a.1–16:
+the cut through `Games`, `ApiError` on the `http` crate, ONE route table in a new `api.rs` with
+axum reduced to an adapter (the corpus and the 74 route cells then prove the dispatcher before a
+second host exists), the rejection sentences reproduced and pinned against axum's, the `server`
+feature over optional axum/tokio, the clock seam with its scanning fence, the `Signal` trait, the
+archive trait with a directory implementation and one layout function, `archived_at` at schema 3,
+the two archive sites with their two failure rules, the record route, "Save game file", and the
+corpus rules — plus five pre-plan flags from a second review, each verified (HEAD as GET, the
+per-mode 401 carried, the trait's four `&str` methods, `eprintln!` probed on the target). **The
+M6.5a PLAN is WRITTEN** — `docs/plans/2026-09-19-web-frontend-m6.5a-plan.md`, eleven tasks in
+dependency order (signal trait → clock → chat on `Games` → the `server` feature + scanning fence →
+`api.rs` + the four public routes → every route through the adapter → the archive module → the two
+archive sites → the record route → the client → the deploy note), six plan-level rulings, the close
+checklist. **Next: execution under R-P11 in a FRESH session, subagent-driven, from
+`docs/plans/2026-09-19-web-frontend-m6.5a-execution-handover.md`** (its §4 is the resume point:
+the SDD workspace, Task 1 to an Opus implementer, the close checklist), then the deploy as
+`0.5.0-m6.5a` and the close; the M6.5b and M6.5c specs are written at their cycles' starts from
+M6.5a's close. Nothing of the plan is executed yet — every commit on the branch is a document. The spec's §6 is what it does
+NOT claim and §6.1 the ten open items; nothing hosted is verified yet.
 
 **M6.4 "chat" is CLOSED and LIVE** as `yokohama-web:0.5.0-m6.4.1` (container `a62b17ad…` since
 00:38:01Z on 2026-09-20; `deploy/RUNBOOK.md` §3.10 is the `0.5.0-m6.4` record and §3.11 the point
@@ -160,12 +266,12 @@ fenced crates and the CLI untouched · `SEMANTICS_REV` 7). **The record of recor
 the rulings with their costs, §6.3 SEVEN owner items (the vs-bot gate livelock, the e2e `CAP`, the
 disk, the house chat's undeletable lines — five sit there now — the lobby's three reads per house
 message, the per-process chat state a multi-replica host breaks, and WARP not staying on by itself),
-§7 what it does NOT claim. **M6.5's entry artifact is
-`docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md`**; its §5 carries the questions the
-brainstorm must settle, including M6.3's email-roster item and the `unlock`/`join` password oracles,
-which moved there from the owner items. **PR #34 is open** and merge order is yours — #31 → #32 →
-#33 → #34 — and one decision is worth taking before M6.5's branch is cut: whether to merge the stack
-first, which changes M6.5's base. The SDD workspace (gitignored) keeps the 117 review photographs.
+§7 what it does NOT claim. **M6.5's entry artifact was
+`docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md`**, now superseded by the umbrella spec
+above (its §0.5 says exactly where); the handover's §5 questions on the roster and the password
+oracles are LEAVE items on the Access door by R-6.5.3. **PR #34 is open** and merge order is yours —
+#31 → #32 → #33 → #34; M6.5 is stacked on top by your ruling, so a merge of the stack at any point
+only retargets its PR. The SDD workspace (gitignored) keeps the 117 review photographs.
 
 
 **M6.3 "transport and spectating" is SHIPPED AND LIVE** as `yokohama-web:0.5.0-m6.3` (container
@@ -317,9 +423,11 @@ from `ifconfig` for the context-tarball fetch, and a Cloudflare "Just a moment�
 
 - AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
   `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
-- Web lane: `docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md` (M6.5's entry), then the M6.4
-  close `docs/plans/2026-09-19-web-frontend-m6.4-close.md` (the record of what shipped; the M6.3, M6.2
-  and M6.1 closes are the three before it), then the room plan
+- Web lane: `docs/plans/2026-09-19-web-frontend-m6.5-hosting-spec.md` (M6.5's authority — the umbrella;
+  §0 what is true at HEAD, §1 the rulings, §3 the three sub-cycles), then the handover it supersedes
+  `docs/plans/2026-09-19-web-frontend-m6.5-hosting-handover.md` (§2 the seams as M6.4 left them, §6 the
+  process), then the M6.4 close `docs/plans/2026-09-19-web-frontend-m6.4-close.md` (the record of what
+  shipped; the M6.3, M6.2 and M6.1 closes are the three before it), then the room plan
   `docs/plans/2026-09-14-web-frontend-m6-room-plan.md` §0 and §2; what M6.4 inherited is
   `docs/plans/2026-09-16-web-frontend-m6.4-chat-handover.md` and what M6 inherited is
   `docs/plans/2026-09-06-web-frontend-m6-handover.md`; operations `deploy/RUNBOOK.md`.

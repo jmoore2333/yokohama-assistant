@@ -15,13 +15,20 @@
 
 use std::fmt;
 use std::str::FromStr;
+
+use http::HeaderMap;
+
+#[cfg(feature = "server")]
 use std::sync::Arc;
-
+#[cfg(feature = "server")]
 use axum::extract::FromRequestParts;
+#[cfg(feature = "server")]
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode};
-
+#[cfg(feature = "server")]
+use http::StatusCode;
+#[cfg(feature = "server")]
 use crate::{ApiError, AppState};
+// ---- end server ----
 
 pub const CLAIMED_HEADER: &str = "x-yokohama-claimed-user";
 pub const CF_ACCESS_HEADER: &str = "cf-access-authenticated-user-email";
@@ -52,10 +59,6 @@ impl IdentityMode {
         }
     }
 
-    pub fn from_env() -> Result<Self, String> {
-        Self::from_env_value(std::env::var(ENV_VAR).ok().as_deref())
-    }
-
     /// The whole of [`Self::from_env`] except the read, so the UNSET case is
     /// testable without mutating the process environment under a threaded test
     /// runner. An absent variable is the same refusal an unknown value is —
@@ -65,6 +68,17 @@ impl IdentityMode {
         Self::from_str(v.unwrap_or(""))
     }
 }
+
+#[cfg(feature = "server")]
+impl IdentityMode {
+    /// The read, split from [`Self::from_env_value`] so the parse is testable
+    /// without the process environment — and `server`-only since M6.5a, because
+    /// a host with no environment (the browser, a Worker) names its mode itself.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_env_value(std::env::var(ENV_VAR).ok().as_deref())
+    }
+}
+// ---- end server ----
 
 impl FromStr for IdentityMode {
     type Err = String;
@@ -146,8 +160,10 @@ pub fn resolve(mode: IdentityMode, headers: &HeaderMap) -> Result<User, String> 
 
 /// The extractor every `/api/games` route takes. A missing identity is a 401 in
 /// this API's `{"error": …}` shape.
+#[cfg(feature = "server")]
 pub struct Identity(pub User);
 
+#[cfg(feature = "server")]
 impl FromRequestParts<Arc<AppState>> for Identity {
     type Rejection = ApiError;
 
@@ -161,6 +177,8 @@ impl FromRequestParts<Arc<AppState>> for Identity {
             })
     }
 }
+
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {

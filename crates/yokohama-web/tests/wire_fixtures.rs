@@ -138,6 +138,10 @@ struct Api {
     /// and the assertion it carries is a real one: the record is written at
     /// FINALIZE, not at create.
     state: Arc<AppState>,
+    /// How many of this walk's calls were ALSO answered by the layer's dispatcher
+    /// directly and compared byte for byte — see [`Api::call_as`]. The count is
+    /// the anti-vacuity of `the_dispatcher_answers_what_the_router_answers`.
+    compared: std::cell::Cell<usize>,
 }
 
 impl Api {
@@ -153,7 +157,7 @@ impl Api {
     /// than from an extra route on the first.
     fn with_chat(chat: yokohama_web::chat::ChatConfig) -> Self {
         let state = Arc::new(AppState::in_memory_with_chat(chat));
-        Self { router: app(Arc::clone(&state)), state }
+        Self { router: app(Arc::clone(&state)), state, compared: std::cell::Cell::new(0) }
     }
 
     /// A call as [`WALKER`], which is every call the walk makes that is not a
@@ -181,16 +185,18 @@ impl Api {
         if let Some(who) = who {
             req = req.header("x-yokohama-claimed-user", who);
         }
-        let req = match body {
-            Some(v) => req
+        let body_bytes: Option<Vec<u8>> = body.as_ref().map(|v| serde_json::to_vec(v).expect("a body"));
+        let req = match &body_bytes {
+            Some(b) => req
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&v).expect("a body")))
+                .body(Body::from(b.clone()))
                 .expect("a request"),
             None => req.body(Body::empty()).expect("a request"),
         };
         let res = self.router.clone().oneshot(req).await.expect("the router answers");
         let status = res.status();
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        self.compare_with_dispatch(who, method, uri, body_bytes.as_deref(), status, &bytes);
         let value = if bytes.is_empty() {
             Value::Null
         } else {
@@ -199,6 +205,71 @@ impl Api {
             })
         };
         (status, value)
+    }
+
+    /// **R-6.5a.14, read at its real size**: the layer's `dispatch`, called
+    /// DIRECTLY with the same method, path, query, body and identity, must
+    /// answer what the router just answered — status and body, byte for byte.
+    /// After M6.5a the router IS the adapter over that same `dispatch`, so what
+    /// this proves is that the ADAPTER's request conversion is faithful — the
+    /// path/query split, the content type, the body bytes, the identity, the
+    /// status round-trip — and not that two implementations agree; a second
+    /// host's corpus claim is that host's own cell (M6.5b). Compared HERE, at
+    /// capture time and against the same state (SDD ruling P-1): a replay after
+    /// the walk would meet a different table (`table_dealing` against a playing
+    /// one), and a replay of a 2xx write would apply the move twice. So every
+    /// READ (GET/HEAD) and every REFUSAL (4xx) is compared; a write that landed
+    /// is not. The three transport routes and `/api/art` are the host's own and
+    /// are skipped.
+    fn compare_with_dispatch(
+        &self,
+        who: Option<&str>,
+        method: &str,
+        uri: &str,
+        body: Option<&[u8]>,
+        status: StatusCode,
+        bytes: &[u8],
+    ) {
+        let (path, query) = uri.split_once('?').unwrap_or((uri, ""));
+        let hosts_own = path.ends_with("/events")
+            || path.ends_with("/stream")
+            || path == "/api/stream"
+            || path == "/api/art";
+        if hosts_own || !(method == "GET" || method == "HEAD" || status.is_client_error()) {
+            return;
+        }
+        let user = who.map(|w| yokohama_web::identity::User::parse(w).expect("a valid identity"));
+        let sentence = yokohama_web::identity::resolve(self.state.identity, &axum::http::HeaderMap::new())
+            .expect_err("no header, no user");
+        let identity: yokohama_web::api::Identity<'_> = match &user {
+            Some(u) => Ok(u),
+            None => Err(sentence.as_str()),
+        };
+        let host = yokohama_web::api::Host {
+            identity_name: self.state.identity.name(),
+            signal_kind: yokohama_web::SIGNAL_KIND,
+        };
+        let out = yokohama_web::api::dispatch(
+            &self.state.games,
+            &host,
+            identity,
+            &yokohama_web::api::ApiRequest {
+                method,
+                path,
+                query,
+                content_type: body.map(|_| "application/json"),
+                body: body.unwrap_or(b""),
+            },
+        );
+        assert_eq!(out.status, status.as_u16(), "{method} {uri}: status through dispatch vs the router");
+        assert_eq!(
+            out.body.as_bytes(),
+            bytes,
+            "{method} {uri}: body through dispatch vs the router\n  dispatch: {}\n  router:   {}",
+            out.body,
+            String::from_utf8_lossy(bytes)
+        );
+        self.compared.set(self.compared.get() + 1);
     }
 
     async fn get(&self, uri: &str) -> Value {
@@ -470,6 +541,11 @@ fn art_dir() -> PathBuf {
 ///    pressed Confirm and paid a yen no surface had stated.
 async fn walk() -> Vec<(String, Value)> {
     let api = Api::new();
+    walk_with(&api).await
+}
+
+/// The walk over a caller's [`Api`], so a cell can read what the walk counted.
+async fn walk_with(api: &Api) -> Vec<(String, Value)> {
 
     // **The opening sequence, and every payload it produces** (M6.1 §4). A
     // create opens a DEALING table; each seat fetches its own two cards and
@@ -837,7 +913,7 @@ async fn walk() -> Vec<(String, Value)> {
         }
     };
 
-    let mut state = as_actor(&api, created).await;
+    let mut state = as_actor(api, created).await;
 
     // ---- M6.4: the table's chat, BEFORE the first move --------------------
     //
@@ -1143,6 +1219,14 @@ async fn walk() -> Vec<(String, Value)> {
             // digits — four is refused at the FENCE, which is a different
             // answer) and the REPL then declines as out of range.
             out.push(("refused".to_string(), api.send_as(mover, "999").await));
+
+            // **The record route while the game RUNS** (M6.5a, R-6.5a.14): the
+            // 409 the client would render if it asked early. The 200 body is
+            // NEVER committed — it is the record, seed and all; the seed pin
+            // reads it as its second anti-vacuity partner instead.
+            let (status, record_409) = api.call("GET", "/api/games/wire/record", None).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{record_409}");
+            out.push(("record_409".to_string(), record_409));
             continue;
         }
 
@@ -1253,7 +1337,7 @@ async fn walk() -> Vec<(String, Value)> {
             "game_over" => break,
             other => panic!("unknown prompt kind {other:?}: {state}"),
         };
-        state = as_actor(&api, api.send_as(mover, &line).await).await;
+        state = as_actor(api, api.send_as(mover, &line).await).await;
     }
 
     capture(&mut out, &mut seen, "game_over", &state);
@@ -1780,6 +1864,23 @@ async fn no_committed_payload_carries_the_setup_seed() {
         !serde_json::to_string(&created).expect("serializable").contains(&decimal),
         "the create that wrote that document answered with the seed in it",
     );
+
+    // **The SECOND anti-vacuity partner** (M6.5a, R-6.5a.14): the record route's
+    // 200 body DOES carry the seed — it IS the record — and it is never
+    // committed. A finished game is needed, and the walk's own is one at its
+    // end; so the walk runs once more here, on its own state.
+    let api = Api::new();
+    let _ = walk_with(&api).await;
+    let (status, record) = api.call("GET", "/api/games/wire/record", None).await;
+    assert_eq!(status, StatusCode::OK, "{record}");
+    assert!(
+        serde_json::to_string(&record).expect("serializable").contains(&decimal),
+        "the record carries the seed; the search above would otherwise be looking for nothing",
+    );
+    assert!(
+        !wire_dir().join("record.json").exists(),
+        "a record fixture would put the seed in the corpus",
+    );
 }
 
 /// **No payload carries the table password, its salt or its hash** (M6.2 §5.7).
@@ -2284,6 +2385,32 @@ async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     );
 
     assert!(!update, "UPDATE_WIRE_FIXTURES was set: fixtures were REWRITTEN, not checked");
+}
+
+/// R-6.5a.14: the layer's dispatcher answers what the router answers, for every
+/// committed non-transport READ and REFUSAL. **What that pins is the axum
+/// ADAPTER's conversion** — both sides of every pair are the same `dispatch`
+/// behind the same layer, so a change inside `api.rs` moves both and is caught
+/// by the corpus compare and the route cells instead (spec §6.3 mutation 4's
+/// real catchers). The comparison itself runs inside [`Api::call_as`] at capture
+/// time (SDD ruling P-1); this cell walks the corpus and asserts how many pairs
+/// were compared, so a `call_as` that stopped comparing fails here rather than
+/// going quiet.
+#[tokio::test]
+async fn the_dispatcher_answers_what_the_router_answers() {
+    let api = Api::new();
+    let payloads = walk_with(&api).await;
+    let compared = api.compared.get();
+    // Measured 2026-09-20 at the M6.5a Task 6 head: 234 pairs over a walk of 74
+    // payloads (every read and refusal, some payloads several reads), all equal.
+    // The floor is nine tenths of that reading, so a walk that grows keeps
+    // passing and one that lost a tenth of its reads does not.
+    const FLOOR: usize = 210;
+    assert!(
+        compared >= FLOOR,
+        "the walk compared only {compared} calls through dispatch (over {} payloads) — the floor is {FLOOR}",
+        payloads.len()
+    );
 }
 
 /// **Every committed message carries the FROZEN clock, which is what proves the

@@ -24,8 +24,9 @@ use yokohama_cli::repl::Repl;
 use yokohama_cli::session::Session;
 use yokohama_core::{GameRecord, Rules};
 
-use crate::chat::ChatLimits;
-use crate::signal::Signals;
+use crate::archive::{Archive, NoArchive};
+use crate::chat::{ChatConfig, ChatLimits};
+use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
 use crate::table::{TableStatus, TurnMirror};
 
@@ -103,6 +104,21 @@ pub(crate) fn mirror_of(repl: &Repl) -> TurnMirror {
     }
 }
 
+/// How this crate reads a wall clock (M6.5a, R-6.5a.6).
+///
+/// A seam rather than a call, because `std::time::SystemTime::now` is a
+/// PLATFORM call: on `wasm32-unknown-unknown` it does not fail to compile, it
+/// panics at run time — so a table layer that reached for it directly would
+/// build for the browser and then die stamping its first document. The host
+/// supplies the reading instead — [`crate::table::now_unix`] today, whatever a
+/// wasm host can read when there is one — and nothing below knows which it was
+/// handed.
+///
+/// It is also what lets a cell pin a stamp by VALUE. Everything else this type
+/// writes is a function of the seeds and the identities; a wall clock is not,
+/// which is why the committed corpus has to normalise it away.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -151,8 +167,8 @@ pub struct Games {
     /// holding a handle cannot write the record back after `DELETE` removed it.
     /// Cleared by `create`, so a name can be reused.
     pub(crate) deleted: Mutex<std::collections::HashSet<GameId>>,
-    /// The change signal (M6.3, spec §2): one `watch` channel per table and
-    /// one for the house, bumped AFTER each of this type's writes lands.
+    /// The change signal (M6.3, spec §2), bumped AFTER each of this type's
+    /// writes lands — **a trait object since M6.5a** (R-6.5a.8).
     ///
     /// It lives here because every write site does, and only because of that:
     /// [`crate::signal`] knows nothing about a game, a table or a seat, and
@@ -160,7 +176,13 @@ pub struct Games {
     /// something this process wrote has changed, for the streams in front of
     /// it to answer — so a failed or refused write bumps nothing, and every
     /// call below sits on a success path.
-    pub(crate) signals: Signals,
+    ///
+    /// The axum host passes [`crate::signal::Signals`] (one `watch` channel per
+    /// table and one for the house) and keeps its own handle to subscribe on; a
+    /// host with nothing to wake passes [`NoSignal`]. This type cannot tell
+    /// them apart, and that is the point: what a write site owes is the CALL,
+    /// and what becomes of it is the transport's.
+    pub(crate) signal: Arc<dyn Signal>,
     /// The newest chat number per table this process has seen (M6.4, R-plan-5):
     /// seeded from the document on a miss, advanced by every append, dropped by
     /// a delete and by a create.
@@ -182,8 +204,24 @@ pub struct Games {
     /// both read `last`, both write `last + 1`, and the compare-and-swap saves
     /// only whichever of them the store sees second.
     pub(crate) house_lock: Mutex<()>,
-    /// The retention numbers (R-6.4.8), from the launch variables.
-    pub(crate) limits: ChatLimits,
+    /// The lobby switch and the retention numbers (R-6.4.6, R-6.4.8), from the
+    /// launch variables — on the layer rather than on the host's state since
+    /// M6.5a (R-6.5a.1), so the house switch and the two text checks read one
+    /// set of facts on every host.
+    pub chat: ChatConfig,
+    /// The wall clock this type stamps documents from — see [`Clock`] for why
+    /// it is a seam and not a call.
+    ///
+    /// **Two callers, both in [`crate::tables`]**: the `created_at` a `create`
+    /// writes onto a table document, and the one an append writes onto a
+    /// message. Nothing here reads a clock back, and nothing compares two
+    /// readings, so a host is free to hand over a constant.
+    pub(crate) clock: Clock,
+    /// Where a finished or abandoned game's record and table document go
+    /// (M6.5a, R-6.5a.9) — `NoArchive` for a host that keeps none, the
+    /// directory on the NAS, M6.5c's bucket. Asked at the two sites of
+    /// R-6.5a.11 and nowhere else.
+    pub(crate) archive: Arc<dyn Archive>,
 }
 
 /// How many `Repl`s stay resident.
@@ -209,9 +247,51 @@ impl Games {
     }
 
     /// [`Games::new`] with the chat's retention numbers given rather than
-    /// defaulted — how `main` passes the launch variables, and how a test asks
-    /// for a keep small enough to watch a trim happen.
+    /// defaulted — how a test asks for a keep small enough to watch a trim
+    /// happen. **Its signal is [`NoSignal`]**, so a cell that watches a bump
+    /// calls [`Games::with_parts`] and keeps the handle it passed; **its clock
+    /// ticks** — 1, 2, 3, one per reading, see [`Games::ticking_clock`] — so a
+    /// cell that pins a stamp by VALUE reaches for [`Games::with_clock`].
     pub fn with_limits(rules: Arc<Rules>, store: Arc<dyn Store>, limits: ChatLimits) -> Self {
+        Self::with_parts(
+            rules,
+            store,
+            ChatConfig { lobby: true, limits },
+            Arc::new(NoSignal),
+            Self::ticking_clock(),
+            Arc::new(NoArchive),
+        )
+    }
+
+    /// A clock that reads 1, 2, 3, … — one tick per reading, no platform call.
+    ///
+    /// The default for a `Games` built without a host (R-6.5a.6): the wall clock
+    /// is `server`-only and `AppState` passes it, and a constant would make
+    /// every table's `created_at` a tie, turning each "newest first" cell into a
+    /// claim about the id tie-break instead. Small integers, not unix seconds —
+    /// a cell that wants a stamp that LOOKS like a time injects one through
+    /// [`Games::with_clock`].
+    pub(crate) fn ticking_clock() -> Clock {
+        let ticks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        Arc::new(move || ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1)
+    }
+
+    /// The one constructor that builds anything: every part this type holds
+    /// that a host may choose, given rather than defaulted.
+    ///
+    /// How `main` builds the layer (M6.5a, R-6.5a.8) — the signal is a trait
+    /// object, so the host builds its own and passes a clone, keeping the
+    /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
+    /// The two constructors above are this one with the chat facts, the signal
+    /// or the clock chosen for them.
+    pub fn with_parts(
+        rules: Arc<Rules>,
+        store: Arc<dyn Store>,
+        chat: ChatConfig,
+        signal: Arc<dyn Signal>,
+        clock: Clock,
+        archive: Arc<dyn Archive>,
+    ) -> Self {
         Self {
             rules,
             store,
@@ -220,28 +300,48 @@ impl Games {
             table_lock: Mutex::new(()),
             locks: Mutex::new(HashMap::new()),
             deleted: Mutex::new(std::collections::HashSet::new()),
-            signals: Signals::default(),
+            signal,
             chat_last: Mutex::new(HashMap::new()),
             house_lock: Mutex::new(()),
-            limits,
+            chat,
+            clock,
+            archive,
         }
+    }
+
+    /// This `Games` with a different [`Archive`] — the builder step a cell
+    /// that watches a put reaches for, as [`Games::with_clock`] is for a stamp.
+    pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
+        self.archive = archive;
+        self
+    }
+
+    /// This `Games` with a different [`Clock`].
+    ///
+    /// A builder step rather than a constructor of its own: a cell that pins a
+    /// stamp by VALUE wants the in-memory layer every other cell builds with
+    /// one part of it changed, and spelling [`Games::with_parts`] out there
+    /// would restate the store, the retention numbers and the signal in order
+    /// to say something about none of them.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     pub fn store(&self) -> &Arc<dyn Store> {
         &self.store
     }
 
+    /// The rules this layer's games are built with — one `Rules::standard()` per
+    /// process, held here since M6.5a (the host keeps no handle of its own).
+    pub fn rules(&self) -> &Rules {
+        &self.rules
+    }
+
     /// The chat's retention numbers, for the route that has to WORD the text
     /// cap in a refusal rather than restate it.
     pub fn limits(&self) -> ChatLimits {
-        self.limits
-    }
-
-    /// The change signal every write site bumps ([`Games::signals`] the field).
-    /// The routes in front of this type subscribe through it; nothing here
-    /// reads one back.
-    pub fn signals(&self) -> &Signals {
-        &self.signals
+        self.chat.limits
     }
 
     /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
@@ -536,12 +636,66 @@ impl Games {
         written.insert(id.to_string(), version);
         drop(written);
         self.mirror_turn(id, repl);
+        // The game-over archive site (M6.5a, R-6.5a.11), after the mirror and
+        // before the bump: the bytes just written are what is archived.
+        self.archive_if_over(id, repl, &json);
         // **After the mirror, not before it** (spec §2): the lobby's
         // whose-turn and over lines are read off the mirror, so a bump sent
         // between the record write and the refresh wakes a lobby that then
         // reads the previous turn and hears nothing more.
-        self.signals.bump(id);
+        self.signal.bump(id);
         Ok(())
+    }
+
+    /// R-6.5a.11's game-over site. **Best effort, and the move is answered 200
+    /// regardless**: the record is already written, the store is the durable
+    /// copy, and a failure here is logged and leaves `archived_at` UNSET —
+    /// which is what says a retry is owed (the next abandon, or the operator;
+    /// umbrella R-6.5.4). Runs once: a table already stamped is not put again,
+    /// which is also what keeps a vs-bot game undone past its end and finished
+    /// a second time at its FIRST completion in the archive (spec §10).
+    ///
+    /// `record_json` is the text the store write above took, so the archived
+    /// bytes ARE the stored bytes — never a re-serialization.
+    fn archive_if_over(&self, id: &str, repl: &Repl, record_json: &str) {
+        if !crate::archive::is_on(&self.archive) || !repl.session.is_over() {
+            return;
+        }
+        let Ok(Some((mut doc, version))) = self.read_table(id) else { return };
+        if doc.archived_at.is_some() {
+            return;
+        }
+        doc.archived_at = Some((self.clock)());
+        let table_json = crate::archive::strip_for_archive(&doc);
+        match self.archive.put(crate::archive::Why::Over, id, record_json, &table_json) {
+            Ok(()) => {
+                // The stamp is what keeps this game to ONE archive copy: the next
+                // abandon puts under `abandoned/`, a DIFFERENT path, so a put that
+                // landed without its stamp would be archived a second time there
+                // rather than refused (`archive::paths` is per reason). Retried
+                // once on a version conflict — an `unlock` or a `join` writing the
+                // document in the same instant is the only other writer left at
+                // game over — and every other outcome is logged, because a landed
+                // copy with no stamp is the case an operator most needs to hear.
+                match self.write_table(&doc, Some(version)) {
+                    Ok(_) => {}
+                    Err(WriteError::Conflict { .. }) => match self.read_table(id) {
+                        Ok(Some((mut again, v2))) => {
+                            again.archived_at = doc.archived_at;
+                            if let Err(e) = self.write_table(&again, Some(v2)) {
+                                eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}");
+                            }
+                        }
+                        Ok(None) => eprintln!("archive of {id:?} at game over landed, but its table is gone"),
+                        Err(e) => eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}"),
+                    },
+                    Err(WriteError::Io(e)) => {
+                        eprintln!("archive of {id:?} at game over landed, but its stamp did not: {e}")
+                    }
+                }
+            }
+            Err(e) => eprintln!("archive of {id:?} at game over failed: {e}"),
+        }
     }
 
     /// Refresh the list's two mirrored integers (R-plan-3).
@@ -627,9 +781,77 @@ pub fn bring_alive(repl: &mut Repl) -> String {
 mod tests {
     use super::test_support::*;
     use super::*;
+    use crate::chat::Author;
     use crate::store::MemStore;
     use crate::tables::WireSeed;
     use yokohama_core::PlayerId;
+
+    /// **Every bump site answers under [`NoSignal`]** (M6.5a, R-6.5a.8, spec
+    /// §2.4).
+    ///
+    /// The premise, and it is a premise rather than an assertion: the layer is
+    /// built by [`test_support::games`], which installs `NoSignal` because
+    /// `Games::new` defaults to it. Nothing here can check that at run time — a
+    /// `dyn Signal` does not say which one it is — so the dependence is written
+    /// down at that helper as well, where a change to the default would be
+    /// made.
+    ///
+    /// The walk drives one write of every kind that bumps and REQUIRES each to
+    /// answer `Ok`: `create`, the finalize's `flip_to_playing` and `persist`
+    /// reach `bump`, `keep` and `chat_append` reach `bump_table`,
+    /// `house_append` reaches `bump_house_chat`, and `delete` reaches `end` —
+    /// **all four trait methods, on the implementation that does nothing**.
+    ///
+    /// **What it adds over the cells beside it.** Many cells in this binary
+    /// build with `games()` and so cross some of these sites under `NoSignal`
+    /// on their way to asserting something else; a bump site that had kept a
+    /// `Signals`-shaped assumption would break one of them and be reported as
+    /// whatever that cell was about. This one exists for the crossing itself.
+    /// It is the only `NoSignal` cell that drives all four methods THROUGH
+    /// this type's write sites — measured, the nearest other reaches three
+    /// (`a_delete_removes_the_chat_and_its_count`, which sends no house
+    /// message) — so a failure here names the signal rather than a symptom.
+    /// Mutation-proven: each of `NoSignal`'s four bodies was made to panic in
+    /// turn, and this cell failed on all four.
+    ///
+    /// It is not a claim about what a bump DOES: under `NoSignal` there is
+    /// nothing to observe, which is the point.
+    #[test]
+    fn every_bump_site_answers_under_no_signal() {
+        let games = games();
+        let (red, blue) = (who("red@t.test"), who("blue@t.test"));
+
+        // `create` — the bump at the end of its success arm.
+        let id = games.create(&two_people("quiet", CORPUS_SEED), &red).expect("a table").id;
+
+        // `keep` — `bump_table` each time, and the LAST human keep finalizes,
+        // so the flip to `playing` reaches `bump` as well.
+        games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
+        games.keep(&id, &blue, PlayerId::new(1), 1, None).expect("blue's keep, the finalize");
+        // The premise of the line above: a table still dealing has no record,
+        // so a handle at all is the finalize having run.
+        let handle = games.handle(&id).expect("the finalize built a session");
+
+        // `persist` — `bump`, after an applied move.
+        {
+            let mut repl = handle.lock().expect("the handle");
+            let before = repl.session.record().events.len();
+            repl.step("1");
+            assert!(repl.session.record().events.len() > before, "the step applied a move");
+            games.persist(&id, &repl).expect("the move is persisted");
+        }
+
+        // `chat_append` — `bump_table`; `house_append` — `bump_house_chat`.
+        let seat = Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("Red".into()) };
+        games.chat_append(&id, seat, "hello").expect("a table message");
+        games
+            .house_append(Author::Watcher { user: "red@t.test".into(), name: None }, "hi all")
+            .expect("a house message");
+
+        // `delete` — `end`, the one method the others cannot reach.
+        games.delete(&id, &red).expect("the creator's delete");
+        assert!(games.read_table(&id).expect("a readable store").is_none(), "the table is gone");
+    }
 
     /// **The mirror follows the game, because a list that lies about whose turn
     /// it is is worse than one that says nothing.**
@@ -1194,12 +1416,12 @@ mod tests {
     #[test]
     fn a_persisted_move_bumps_the_table_and_the_house() {
         let store = Arc::new(MemStore::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
         let id = "bumped".to_string();
         let handle = playing(&games, &req("bumped"), &["red@t.test"]);
 
-        let mut rx = games.signals().subscribe(&id);
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
         let before = stored_events(&store, &id);
@@ -1230,7 +1452,7 @@ mod tests {
     /// the one a bump placed at the TOP of the function would sail past.
     #[test]
     fn a_refused_write_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let id = "refused".to_string();
         let handle = playing(&games, &req("refused"), &["red@t.test"]);
         let red = who("red@t.test");
@@ -1240,8 +1462,8 @@ mod tests {
         // `delete` itself ENDS the table's channel, so the subscription for
         // this assertion is taken after it — a fresh sender that has seen
         // nothing, exactly as `signal.rs`'s own end cell describes.
-        let rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
 
         games.persist(&id, &repl).expect_err("the in-flight write is refused");
 
@@ -1296,12 +1518,12 @@ mod tests {
         }
 
         let store = Arc::new(FailingWrites::default());
-        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
         let id = "wfail".to_string();
         let handle = playing(&games, &req("wfail"), &["red@t.test"]);
 
-        let rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         store.failing.store(true, Ordering::SeqCst);
 
         let mut repl = handle.lock().expect("the handle");
@@ -1390,8 +1612,8 @@ mod tests {
             at: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let id = "mirror".to_string();
         let handle = playing(&games, &req("mirror"), &["red@t.test"]);
 
@@ -1409,8 +1631,8 @@ mod tests {
         doc.turn = None;
         games.write_table(&doc, Some(version)).expect("the mirror is cleared");
 
-        let mut rx = games.signals().subscribe(&id);
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
         store.armed.store(true, Ordering::SeqCst);
@@ -1457,11 +1679,42 @@ pub(crate) mod test_support {
 
     use super::Games;
     use crate::identity::User;
+    use crate::signal::Signals;
     use crate::store::{Doc, MemStore, Store};
     use crate::tables::{NewGame, SeatSpec, WireSeed};
 
+    /// The in-memory layer most cells drive.
+    ///
+    /// **Its signal is [`crate::signal::NoSignal`]**, because `Games::new`
+    /// defaults to it (M6.5a, R-6.5a.8). That is a premise
+    /// `every_bump_site_answers_under_no_signal` rests on and cannot assert —
+    /// a `dyn Signal` does not say which one it is — so a change to the
+    /// default belongs with a re-read of that cell. Every cell in THIS module that watches a
+    /// bump uses [`watched_games`] instead (the route cells watch through
+    /// `AppState`'s own `signals`).
     pub(crate) fn games() -> Games {
         Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
+    }
+
+    /// A [`Games`] over `store`, **and the signal handle to subscribe on**.
+    ///
+    /// The signal is a trait object inside `Games` since M6.5a (R-6.5a.8) and
+    /// there is no way back out of it — bumping is all a write site may do — so
+    /// a cell that WATCHES a bump builds the [`Signals`] itself and keeps its
+    /// half, exactly as `AppState` does. [`games`] above stays the helper for
+    /// every cell that does not watch: its signal is the `NoSignal` that
+    /// `Games::new` defaults to.
+    pub(crate) fn watched_games(store: Arc<dyn Store>) -> (Games, Arc<Signals>) {
+        let signals = Arc::new(Signals::default());
+        let games = Games::with_parts(
+            Arc::new(Rules::standard()),
+            store,
+            crate::chat::ChatConfig::default(),
+            signals.clone(),
+            Games::ticking_clock(),
+            Arc::new(crate::archive::NoArchive),
+        );
+        (games, signals)
     }
 
     /// The corpus seed. **At this seed seat 1's argmax is card 1** (57 against
@@ -1535,6 +1788,99 @@ pub(crate) mod test_support {
             }
         }
         games.handle(&id).expect("playing")
+    }
+
+    /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts, or
+    /// refuses every one of them — the two shapes the archive-site cells need.
+    pub(crate) struct RecordingArchive {
+        pub puts: Mutex<Vec<(crate::archive::Why, String, String, String)>>,
+        pub fail: bool,
+    }
+
+    impl RecordingArchive {
+        pub(crate) fn recording() -> Arc<Self> {
+            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: false })
+        }
+        pub(crate) fn failing() -> Arc<Self> {
+            Arc::new(Self { puts: Mutex::new(Vec::new()), fail: true })
+        }
+    }
+
+    impl crate::archive::Archive for RecordingArchive {
+        fn put(&self, why: crate::archive::Why, id: &str, r: &str, t: &str) -> Result<(), String> {
+            if self.fail {
+                return Err("disk on fire".to_string());
+            }
+            self.puts.lock().unwrap().push((why, id.to_string(), r.to_string(), t.to_string()));
+            Ok(())
+        }
+        fn kind(&self) -> &'static str {
+            "recording"
+        }
+    }
+
+    /// The two-person table `id`, dealt from [`CORPUS_SEED`], played to the END
+    /// by pumping BOTH seats as bots in process and PERSISTING after every pump
+    /// — the way `input` persists after every move; a pump plays a run of up to
+    /// 200 moves, so this is two or three persists — so the game-over site sees
+    /// more than one persist and exactly one of them is the end. Returns how
+    /// many persists it made and the finished `Repl`.
+    pub(crate) fn play_to_the_end(games: &Games, id: &str) -> (usize, Repl) {
+        let mut repl = both_seats_as_bots(games, id);
+        let mut persists = 0;
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+            games.persist(id, &repl).expect("a persist");
+            persists += 1;
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        (persists, repl)
+    }
+
+    /// A two-person table with ONE bot-pumped move persisted: playing, with
+    /// events, and nowhere near over.
+    pub(crate) fn one_move_in(games: &Games, id: &str) -> Repl {
+        let mut repl = both_seats_as_bots(games, id);
+        repl.pump_bots();
+        assert!(!repl.session.is_over());
+        games.persist(id, &repl).expect("a persist");
+        repl
+    }
+
+    /// The table `id` opened and dealt through `Games` ([`playing`]), and a
+    /// SECOND `Repl` over the very game it describes — same seed, same colours,
+    /// same keeps (card 1 at every seat, `Keep(0)`) — with both seats as bots,
+    /// so `pump_bots` drives it. A `Repl` learns its bots at construction from
+    /// the session's run provenance and `Session` is not `Clone`, which is why
+    /// the table's own handle cannot simply be told to play itself; `persist`
+    /// compares record identity by SEED, so this one persists in its place.
+    fn both_seats_as_bots(games: &Games, id: &str) -> Repl {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, StartingOrderChoice};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let (colors, start) = {
+            let live = handle.lock().unwrap();
+            let state = live.session.state();
+            (state.config.player_colors.clone(), state.config.start_player)
+        };
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = colors;
+        config.start_player = start;
+        let mut session = Session::new_sim(
+            config,
+            CORPUS_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("the very game the table describes");
+        let bots =
+            BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], CORPUS_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        Repl::new(session)
     }
 
     /// A [`MemStore`] that COUNTS its writes.

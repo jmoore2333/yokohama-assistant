@@ -7,6 +7,15 @@ authors.workspace = true
 # `cargo package` would bundle `assets/art/` — third-party, no license grant, see ASSETS.md.
 publish = false
 
+# M6.5a (R-6.5a.5): the table layer builds for `wasm32-unknown-unknown` without
+# its server half. `server` is on by default and is the ONLY thing that pulls
+# axum, tokio and tokio-stream in — cargo features are additive and tokio's
+# `time` builds for the target only to panic, so the DEPENDENCY is what is
+# gated, not a call inside it.
+[features]
+default = ["server"]
+server = ["dep:axum", "dep:tokio", "dep:tokio-stream"]
+
 [dependencies]
 # The engine, and the CLI's library half. `yokohama-cli` is a lib as well as a
 # bin, and this crate consumes exactly the parts of it that were never about a
@@ -42,6 +51,18 @@ yokohama-core = { path = "../yokohama-core" }
 yokohama-cli = { path = "../yokohama-cli" }
 serde.workspace = true
 serde_json.workspace = true
+# M6.5a (R-6.5a.2): the layer's refusal type is typed on the `http` crate directly —
+# the same type axum re-exports — so the layer compiles without axum.
+http = "1"
+# M6.5a (R-6.5a.4): the layer's parsers make the SAME calls axum's extractors make
+# so the rejection sentences are byte-equal by construction — `mime` for the
+# content-type rule, `serde_path_to_error` for the field path in the sentence,
+# `serde_urlencoded` + `form_urlencoded` for a query exactly as `Query<T>` reads
+# one. All four are already in the lock through axum and all four build for wasm.
+mime = "0.3"
+serde_path_to_error = "0.1"
+serde_urlencoded = "0.7"
+form_urlencoded = "1"
 
 # THE dependency decision for this crate, owner-ruled 2026-08-30. The workspace
 # had no async runtime and no HTTP framework: `yokohama-bridge` hand-rolls
@@ -62,8 +83,8 @@ serde_json.workspace = true
 #
 # The blast radius is one leaf crate: `yokohama-core` gains nothing, and no
 # other crate in the workspace depends on this one.
-axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"], optional = true }
 
 # M6.2 (owner-ruled 2026-09-15, spec R-2.8): the table password. The workspace
 # has no hash crate — `fnv1a_64` in yokohama-core is a digest, not a password
@@ -78,10 +99,24 @@ sha2 = "0.10"
 # turns a receiver into the `Stream` axum's SSE response consumes. tokio's `time`
 # joins the list in the same cycle, for the SSE heartbeat, the `?wait` arm's
 # `timeout` and the stream cells' deadlined reads (controller ruling R-2.1).
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
 
 [dev-dependencies]
 # Route tests drive the router through `ServiceExt::oneshot` -- no socket, no
 # port, no runtime teardown to get wrong. A test that binds a real port is a
 # test that flakes on a busy machine and cannot run in parallel with itself.
 tower = { version = "0.5", features = ["util"] }
+
+# M6.5a (R-6.5a.7): the ONE blocker between this crate and wasm32-unknown-unknown
+# is getrandom's `js` feature, reached through rand from core's OsRng. Enabling it
+# here unifies onto core's dependency and leaves core's manifest byte-identical.
+# Version-pinned: getrandom 0.3 renames the feature and needs a RUSTFLAGS cfg.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+# The server binary exists only with its feature; `cargo check --no-default-features`
+# skips it rather than failing on a `main` with no runtime.
+[[bin]]
+name = "yokohama-web"
+path = "src/main.rs"
+required-features = ["server"]

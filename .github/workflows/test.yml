@@ -42,8 +42,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # M6.5a: the toolchain is named here rather than left to `@stable`, and the
+      # wasm target is installed WITH it — `rust-toolchain.toml` pins 1.97.1, so a
+      # bare `rustup target add` under `@stable` could land the target on a
+      # toolchain cargo never uses. Keep this in step with rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          targets: wasm32-unknown-unknown
       - run: cargo test -p yokohama-web --lib --test wire_fixtures
+      # M6.5a (R-6.5a.7): the layer builds for the browser and the Worker without
+      # its server half. This proves the DEPENDENCY fence (no axum, no mio); the
+      # platform-call fence is `platform_calls_stay_behind_the_server_feature`,
+      # which runs in the line above.
+      - run: cargo check -p yokohama-web --no-default-features --target wasm32-unknown-unknown
 
   # **The browser client, which nothing here could make red until M3.5.**
   #

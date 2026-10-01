@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isSignedOut, onUnauthorized, setChatText, setLobbyChat, setSignalKind } from "./api";
+import { api, ApiError, isSignedOut, onUnauthorized, setArchiveKind, setChatText, setLobbyChat, setSignalKind } from "./api";
 import { SignIn } from "./SignIn";
 import { doorSentence, useMe } from "./whoami";
 import { Board } from "./Board";
@@ -72,6 +72,25 @@ async function fetchRun(game: string, prev: number, next: number): Promise<Run> 
  *  never starts (spec §9.5 mutation 10). A tag and a payload cannot collide
  *  that way. */
 export type Arrival = { via: "reply" } | { via: "signal"; viewer: PlayerId | null };
+
+/** Fetch the finished game's record as text and hand it to the browser as a
+ *  download named `<id>.json`. An object URL over a Blob of the very string, so
+ *  nothing between the server's bytes and the file parses or re-serializes; the
+ *  URL is revoked once the click has taken it. */
+async function saveGameFile(game: string): Promise<void> {
+  const text = await api.recordText(game);
+  const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${game}.json`;
+  // Attached for the click and revoked on the next tick: a detached anchor and
+  // a synchronous revoke both work in Chromium and have both cancelled the
+  // download in other engines.
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 export function App() {
   // **The door, read before any screen is chosen** (M6.1 §7.1). Every
@@ -561,6 +580,8 @@ export function App() {
         setSignalKind(h.signal);
         setLobbyChat(h.lobby_chat);
         setChatText(h.chat_text);
+        // And the archive (M6.5a, R-6.5a.13), for the Abandon control's label.
+        setArchiveKind(h.archive);
       })
       .catch(() => {});
   }, []);
@@ -1263,6 +1284,25 @@ export function App() {
             </>
           )}
         </span>
+        {/* **Save game file** (M6.5a, R-6.5a.13): the finished game's record, as
+            the bytes the server holds, downloaded as `<id>.json`. Only once the
+            game is over — the record carries the setup seed until the last
+            move, and the server answers 409 before then. The text is never
+            parsed on the way (see `api.recordText`), so the file a player saves
+            is the file the CLI loads. */}
+        {state.over ? (
+          <button
+            type="button"
+            className="ghost"
+            onClick={() =>
+              void saveGameFile(state.id).catch((e) =>
+                setError(e instanceof ApiError ? e.message : String(e)),
+              )
+            }
+          >
+            Save game file
+          </button>
+        ) : null}
       </header>
 
       {/* How close the game is to ending, in the CLI's own words. Without it a

@@ -698,6 +698,7 @@ mod tests {
             turn: None,
             lock: None,
             unlocked: Vec::new(),
+            archived_at: None,
         }
     }
 

@@ -38,9 +38,8 @@ use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, evict_down_to, mirror_of, GameError, Games};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
-use crate::table::{
-    now_unix, DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror,
-};
+use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror};
+use yokohama_core::GameRecord;
 
 /// The shape version stamped on every table document this build writes.
 ///
@@ -49,7 +48,7 @@ use crate::table::{
 /// schema-1 document READS here unchanged; the number is what lets an OLDER
 /// server refuse a document a newer one wrote, which is the direction that
 /// cannot be made safe by defaults.
-const TABLE_SCHEMA: u32 = 2;
+const TABLE_SCHEMA: u32 = 3;
 
 /// The bot stream seed a THROWAWAY table is built with.
 ///
@@ -395,6 +394,12 @@ fn check_shape(doc: &TableDoc) -> Result<(), String> {
     }
     if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
         return Err(format!("{bad:?} on the watcher list is not an address this server writes"));
+    }
+    // M6.5a's stamp, bounded like a message's `created_at` (R-6.5a.10).
+    if let Some(at) = doc.archived_at {
+        if at > crate::chat::MAX_CREATED_AT {
+            return Err(format!("archived_at {at} is past {}", crate::chat::MAX_CREATED_AT));
+        }
     }
     for (i, seat) in doc.seats.iter().enumerate() {
         if let SeatDoc::Human { name: Some(name), .. } = seat {
@@ -743,7 +748,7 @@ impl Games {
             id,
             name: req.name.as_deref().map(str::trim).map(str::to_string),
             created_by: creator.as_str().to_string(),
-            created_at: now_unix(),
+            created_at: (self.clock)(),
             players: req.players,
             colors: config.player_colors.clone(),
             start_seat: config.start_player.0,
@@ -757,6 +762,7 @@ impl Games {
             // refused lives there and the trim must agree with it here.
             lock: req.password.as_deref().map(str::trim).map(Lock::new),
             unlocked: Vec::new(),
+            archived_at: None,
         };
         match self.write_table(&doc, None) {
             Ok(_) => {
@@ -766,7 +772,7 @@ impl Games {
                 // other route, which is the same reason the tombstone set is
                 // cleared a few lines above.
                 self.chat_last.lock().expect("games lock").remove(&doc.id);
-                self.signals.bump(&doc.id);
+                self.signal.bump(&doc.id);
                 Ok(doc.view(creator))
             }
             Err(WriteError::Conflict { .. }) => {
@@ -910,10 +916,10 @@ impl Games {
     ) -> Result<Message, GameError> {
         let (mut doc, version) = self.read_chat(key, players)?;
         doc.id = key.to_string();
-        let message = Message { seq: doc.last + 1, created_at: now_unix(), author, text };
+        let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text };
         doc.last = message.seq;
         doc.messages.push(message.clone());
-        doc.trim(self.limits.keep);
+        doc.trim(self.chat.limits.keep);
         self.write_chat(key, &doc, players, version)?;
         Ok(message)
     }
@@ -937,7 +943,7 @@ impl Games {
         author: Author,
         text: &str,
     ) -> Result<Message, GameError> {
-        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         let lock = self.lock_for(id);
         let _serialized = lock.lock().expect("table lock");
         let (table, _) = self
@@ -948,7 +954,7 @@ impl Games {
         // leaves the number alone, which is the whole of R-6.4.9.
         self.chat_last.lock().expect("games lock").insert(id.to_string(), message.seq);
         // AFTER the write, never before (the gated cell).
-        self.signals.bump_table(id);
+        self.signal.bump_table(id);
         Ok(message)
     }
 
@@ -959,10 +965,10 @@ impl Games {
     /// the house has no seats, and the shape rule says so rather than this
     /// function restating it.
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
-        let text = check_text(text, &self.limits).map_err(GameError::BadRequest)?;
+        let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         let _serialized = self.house_lock.lock().expect("house lock");
         let message = self.append_locked(HOUSE, None, author, text)?;
-        self.signals.bump_house_chat();
+        self.signal.bump_house_chat();
         Ok(message)
     }
 
@@ -1252,7 +1258,7 @@ impl Games {
                 // the same flip twice. A `watch` coalesces, so the second
                 // would be harmless — and it would still be a bump for a write
                 // that did not happen, which is the rule this file keeps.
-                self.signals.bump(id);
+                self.signal.bump(id);
                 Ok((doc, version))
             }
             // Another writer flipped it first. Its answer is as good as ours —
@@ -1399,7 +1405,7 @@ impl Games {
                 // The house too: a seat filled is a row on the open list that
                 // changed, and a join that FILLED the table is a row that left
                 // it — the same write, so the same bump.
-                self.signals.bump(id);
+                self.signal.bump(id);
                 Ok(doc.view(user))
             }
             // Somebody took this seat between the read and here. The stored
@@ -1501,7 +1507,7 @@ impl Games {
         // line has moved and no lobby row has. If this keep is the last one,
         // the finalize below reaches the house through `flip_to_playing` —
         // which is a second write and therefore rightly a second bump.
-        self.signals.bump_table(id);
+        self.signal.bump_table(id);
         if doc.all_humans_kept() {
             let (doc, _) = self.finalize(doc)?;
             return Ok(doc.view(user));
@@ -1660,6 +1666,37 @@ impl Games {
                 doc.created_by
             )));
         }
+        // **Abandon and save** (M6.5a, R-6.5a.11; umbrella R-6.5.5): a playing
+        // table with at least one event and no archive stamp is archived
+        // BEFORE anything is unlinked — and if the put fails the delete is
+        // REFUSED, nothing tombstoned, nothing removed, because the save is the
+        // point of the control and the creator can simply try again. A table
+        // already stamped (at game over, or by an earlier failed delete whose
+        // put landed) is deleted without a second put; an open or dealing
+        // table, or a playing one with no events, deletes as before.
+        if crate::archive::is_on(&self.archive)
+            && doc.status == TableStatus::Playing
+            && doc.archived_at.is_none()
+        {
+            let record = self.store.read(Doc::Record, id).map_err(GameError::Server)?;
+            if let Some((record_json, _)) = record {
+                let events = serde_json::from_str::<GameRecord>(&record_json)
+                    .map(|r| r.events.len())
+                    .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
+                if events > 0 {
+                    let mut stamped = doc.clone();
+                    stamped.archived_at = Some((self.clock)());
+                    let table_json = crate::archive::strip_for_archive(&stamped);
+                    self.archive
+                        .put(crate::archive::Why::Abandoned, id, &record_json, &table_json)
+                        .map_err(|why| {
+                            GameError::Server(format!(
+                                "the archive could not be written ({why}) — the table was not deleted"
+                            ))
+                        })?;
+                }
+            }
+        }
         // **The tombstone goes down BEFORE the unlink, and the order is the
         // whole of it.** `create` CLEARS this id from the set, and since the
         // lock split (R-2.9) `create` holds a different mutex from this one, so
@@ -1690,7 +1727,7 @@ impl Games {
         // to read, so every stream on this table has to close rather than
         // fetch a 404. The house is bumped inside `end`, so a lobby drops the
         // row.
-        self.signals.end(id);
+        self.signal.end(id);
         Ok(())
     }
 }
@@ -1918,6 +1955,37 @@ mod tests {
             games.store().read(Doc::Record, "order").unwrap().is_none(),
             "no record until the last keep",
         );
+    }
+
+    /// **Every stamp this type writes is the injected clock's reading**
+    /// (R-6.5a.6): the table a `create` writes, and the message an append
+    /// writes, which are the only two callers in the crate.
+    ///
+    /// One cell rather than two, because the claim is the SEAM and not either
+    /// site — a `now_unix()` left behind at one of them reads the host's wall
+    /// clock, which is nowhere near this reading, and fails here. That is also
+    /// why the reading is a fixed past instant and not anything derived from
+    /// the host's own clock: a cell comparing against `now_unix()` would pass
+    /// on exactly the code this task exists to remove.
+    ///
+    /// **What it is not**: a fence against `SystemTime` reached for anywhere
+    /// else. R-6.5a.6 gives that to a source-scanning cell, because a compile
+    /// for wasm cannot see a platform call that only panics at run time. What
+    /// this holds is that the two callers ask [`Games`] rather than the clock.
+    ///
+    /// **Mutation-proven at both ends**: `now_unix()` was put back at the
+    /// create site and at the append site in turn, and the cell failed on each
+    /// — on the assertion belonging to the site that moved, so a failure here
+    /// names which of the two it was.
+    #[test]
+    fn a_table_and_a_message_are_stamped_by_the_clock_the_games_was_built_with() {
+        let games = games().with_clock(Arc::new(|| 1_700_000_000));
+        let red = who("red@t.test");
+        let view = games.create(&req("clock"), &red).expect("a table");
+        let (doc, _) = games.read_table(&view.id).expect("a readable store").expect("the table");
+        assert_eq!(doc.created_at, 1_700_000_000, "the table's stamp is the injected reading");
+        let m = games.chat_append(&view.id, red_seat(), "hello").expect("an append");
+        assert_eq!(m.created_at, 1_700_000_000, "and so is a message's");
     }
 
     /// **R-P10, in the evaluator's own words.** The weights were fitted at two
@@ -2241,10 +2309,10 @@ mod tests {
         let games = games();
         let (red, blue, green) = (who("red@t.test"), who("blue@t.test"), who("green@t.test"));
         games.create(&two_people("first", CORPUS_SEED), &red).unwrap();
-        // `created_at` is unix SECONDS (R-plan-1), so two creates in one second
-        // are one instant and the order would be the id tie-break rather than
-        // the claim this cell makes.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // The test clock ticks once per reading (`Games::ticking_clock`), so the
+        // second create is NEWER by construction and this cell's claim is about
+        // the sort's first key, not the id tie-break. (Under the wall clock it
+        // slept 1.1 s here, because `created_at` is unix SECONDS.)
         let handle = playing(&games, &req_seeded("second", CORPUS_SEED), &["red@t.test"]);
         drop(handle);
         let mine = games.list_for(&red).unwrap();
@@ -2391,6 +2459,146 @@ mod tests {
             .expect("the process is alive, so the server can still open a table");
     }
 
+    // ---------------------------------------------------------------------
+    // The two archive sites (M6.5a, R-6.5a.11).
+    // ---------------------------------------------------------------------
+
+    fn stripped(table_json: &str) -> TableDoc {
+        serde_json::from_str(table_json).expect("the archived table document reads")
+    }
+
+    /// The game-over site: one put, at the end, carrying the STORED bytes and a
+    /// stripped table document; the stamp lands.
+    #[test]
+    fn a_game_that_ends_is_archived_once_with_the_stored_bytes() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let (persists, repl) = play_to_the_end(&games, "over");
+        // A both-bot pump plays a RUN (up to 200 moves) per call, so a 2P game is
+        // two or three persists — enough that "once" is a claim and not a count.
+        assert!(persists >= 2, "anti-vacuity: the game took {persists} persists to end");
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1, "one put at game over, not one per persist ({persists})");
+        assert_eq!(puts[0].0, crate::archive::Why::Over);
+        assert_eq!(puts[0].1, "over");
+        let (stored, _) = games.store().read(Doc::Record, "over").unwrap().unwrap();
+        assert_eq!(puts[0].2, stored, "the archived record is the stored bytes, not a re-serialization");
+        let (doc, _) = games.read_table("over").unwrap().unwrap();
+        assert!(doc.archived_at.is_some(), "the stamp landed");
+        let archived = stripped(&puts[0].3);
+        assert_eq!(archived.archived_at, doc.archived_at, "the archived copy carries the same stamp");
+        assert_eq!(archived.lock, None);
+        assert!(archived.unlocked.is_empty());
+        assert_eq!(archived.status, TableStatus::Playing, "anti-vacuity: it is the table's document");
+        // A persist AFTER the end adds no second put.
+        drop(puts);
+        games.persist("over", &repl).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "stamped tables are not put again");
+    }
+
+    /// The first failure rule: a put that fails at game over is logged, the
+    /// move is still answered, and the stamp stays UNSET — the retry mark.
+    #[test]
+    fn a_failing_archive_at_game_over_still_answers_the_move() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let (_, _repl) = play_to_the_end(&games, "over-fails"); // every persist returned Ok
+        let (doc, _) = games.read_table("over-fails").unwrap().unwrap();
+        assert_eq!(doc.archived_at, None, "unset says a retry is owed");
+        assert!(games.handle("over-fails").is_ok(), "the game is still served");
+    }
+
+    /// The abandon site: a playing table with events is put under `abandoned/`
+    /// and THEN deleted.
+    #[test]
+    fn abandoning_a_playing_table_with_events_archives_then_deletes() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let _repl = one_move_in(&games, "quit");
+        games.delete("quit", &who("red@t.test")).unwrap();
+        let puts = archive.puts.lock().unwrap();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].0, crate::archive::Why::Abandoned);
+        assert_eq!(puts[0].1, "quit");
+        let archived = stripped(&puts[0].3);
+        assert!(archived.archived_at.is_some(), "the archived copy is stamped");
+        let record: GameRecord = serde_json::from_str(&puts[0].2).unwrap();
+        assert!(!record.events.is_empty(), "anti-vacuity: the archived record has the move");
+        assert!(games.read_table("quit").unwrap().is_none(), "deleted after the put");
+        assert!(games.store().read(Doc::Record, "quit").unwrap().is_none());
+    }
+
+    /// Nothing to save, nothing put: an open table, a dealing table, a playing
+    /// table with NO events, and a table already archived at game over.
+    #[test]
+    fn abandoning_an_open_dealing_moveless_or_archived_table_archives_nothing() {
+        let archive = RecordingArchive::recording();
+        let games = games().with_archive(archive.clone());
+        let red = who("red@t.test");
+        // Open.
+        let mut open = two_people("open", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).unwrap();
+        games.delete("open", &red).unwrap();
+        // Dealing.
+        games.create(&two_people("dealing", CORPUS_SEED), &red).unwrap();
+        games.delete("dealing", &red).unwrap();
+        // Playing, no move yet.
+        let handle = playing(&games, &two_people("fresh", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        drop(handle);
+        games.delete("fresh", &red).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 0, "open, dealing and moveless tables save nothing");
+        // Finished — archived at over (one put) — then abandoned: no second put.
+        play_to_the_end(&games, "done");
+        assert_eq!(archive.puts.lock().unwrap().len(), 1);
+        games.delete("done", &red).unwrap();
+        assert_eq!(archive.puts.lock().unwrap().len(), 1, "the already-archived table added nothing");
+        assert!(games.read_table("done").unwrap().is_none(), "and it was deleted");
+    }
+
+    /// The second failure rule: an abandon whose put fails is REFUSED, with a
+    /// sentence naming the archive, and the table stays exactly as it was.
+    #[test]
+    fn an_abandon_whose_put_fails_is_refused_and_the_table_stays() {
+        let games = games().with_archive(RecordingArchive::failing());
+        let _repl = one_move_in(&games, "stuck");
+        let red = who("red@t.test");
+        let err = games.delete("stuck", &red).unwrap_err();
+        assert!(
+            matches!(&err, GameError::Server(m) if m.starts_with("the archive could not be written (") && m.ends_with("— the table was not deleted")),
+            "{err}"
+        );
+        assert!(err.to_string().contains("disk on fire"), "the archive's own reason is in the sentence: {err}");
+        let (doc, _) = games.read_table("stuck").unwrap().expect("nothing deleted");
+        assert_eq!(doc.archived_at, None, "no stamp without a put");
+        assert!(games.store().read(Doc::Record, "stuck").unwrap().is_some(), "the record is intact");
+        assert!(games.handle("stuck").is_ok(), "no tombstone: the game still answers");
+        // And a stranger's delete is still the seat refusal, before the archive
+        // is asked at all.
+        assert!(matches!(games.delete("stuck", &who("green@t.test")), Err(GameError::Forbidden(_))));
+    }
+
+    /// R-6.5a.10: a schema-2 document — everything M6.2 wrote — reads with
+    /// `archived_at` absent, and the new stamp is bounded on write exactly as
+    /// a message's `created_at` is.
+    #[test]
+    fn a_schema_two_table_document_reads_with_archived_at_absent_and_a_bound_is_kept_on_write() {
+        let json = r#"{"schema":2,"id":"old","name":"old","created_by":"red@t.test",
+            "created_at":1789000000,"players":2,"colors":["Red","Blue"],"start_seat":0,
+            "seats":[{"kind":"human","user":"red@t.test"},{"kind":"human","user":"blue@t.test"}],
+            "keeps":[null,null],"seed":7,"status":"dealing","turn":null}"#;
+        let doc: TableDoc = serde_json::from_str(json).expect("a schema-2 document reads");
+        assert_eq!(doc.schema, 2);
+        assert_eq!(doc.archived_at, None);
+        assert_eq!(check_shape(&doc), Ok(()), "and it is a shape this server still accepts");
+        let mut bad = doc.clone();
+        bad.archived_at = Some(crate::chat::MAX_CREATED_AT + 1);
+        let why = check_shape(&bad).unwrap_err();
+        assert!(why.contains("archived_at"), "{why}");
+        let mut fine = doc;
+        fine.archived_at = Some(crate::chat::MAX_CREATED_AT);
+        assert_eq!(check_shape(&fine), Ok(()), "the ceiling itself is allowed");
+    }
+
     /// Every M6.2 shape arm, read as the SENTENCE it answers with.
     ///
     /// Built in Rust rather than as JSON, and that is the point: the arms
@@ -2422,6 +2630,7 @@ mod tests {
             turn: None,
             lock: None,
             unlocked: Vec::new(),
+            archived_at: None,
         };
         assert_eq!(check_shape(&valid()), Ok(()), "the fixture itself is well formed");
 
@@ -3534,7 +3743,7 @@ mod tests {
         let red = who("red@t.test");
         let blue = who("blue@t.test");
         open_two(&games, "o1", None);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // One tick per create under the test clock — no wall-clock sleep needed.
         games.create(&two_people("mine-only", CORPUS_SEED), &red).unwrap();
         let mut r = req("o2");
         r.seats = vec![
@@ -3700,9 +3909,9 @@ mod tests {
     /// wakes on its first write rather than waiting for its second.
     #[test]
     fn a_create_bumps_the_table_and_the_house() {
-        let games = games();
-        let mut rx = games.signals().subscribe("made");
-        let house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let mut rx = signals.subscribe("made");
+        let house = signals.subscribe_house();
         assert_eq!(rx.borrow().seq, 0, "nothing has happened at this id yet");
 
         games.create(&req("made"), &who("red@t.test")).expect("a table");
@@ -3720,12 +3929,12 @@ mod tests {
     /// placed anywhere but the success arm falls into.
     #[test]
     fn a_refused_create_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&req("twice"), &red).expect("a table");
 
-        let rx = games.signals().subscribe("twice");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("twice");
+        let house = signals.subscribe_house();
         games.create(&req("twice"), &red).expect_err("the name is taken");
 
         assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
@@ -3737,10 +3946,10 @@ mod tests {
     /// is something the lobby shows.
     #[test]
     fn a_join_bumps_the_table_and_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         open_two(&games, "j", None);
-        let mut rx = games.signals().subscribe("j");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("j");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3760,10 +3969,10 @@ mod tests {
     /// the success arm.
     #[test]
     fn a_refused_join_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         open_two(&games, "jr", Some("hunter2"));
-        let rx = games.signals().subscribe("jr");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("jr");
+        let house = signals.subscribe_house();
 
         games
             .join("jr", &who("blue@t.test"), PlayerId::new(1), None, Some("nope"))
@@ -3786,11 +3995,11 @@ mod tests {
     /// would assert the opposite of what it claims to and pass.
     #[test]
     fn a_keep_that_does_not_finalize_bumps_the_table_and_not_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         games.create(&two_people("k", CORPUS_SEED), &red).expect("a table");
-        let mut rx = games.signals().subscribe("k");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("k");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3815,13 +4024,13 @@ mod tests {
     /// at a seat that has already chosen.
     #[test]
     fn a_refused_keep_bumps_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&two_people("kr", CORPUS_SEED), &red).expect("a table");
         games.keep("kr", &red, PlayerId::new(0), 1, None).expect("red's keep");
 
-        let rx = games.signals().subscribe("kr");
-        let house = games.signals().subscribe_house();
+        let rx = signals.subscribe("kr");
+        let house = signals.subscribe_house();
         games.keep("kr", &red, PlayerId::new(0), 2, None).expect_err("seat 0 has already chosen");
 
         assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
@@ -3844,11 +4053,11 @@ mod tests {
     /// at all, which is how this one was written and what it failed on.
     #[test]
     fn a_delete_ends_the_table_and_bumps_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         games.create(&req("gone"), &red).expect("a table");
-        let mut rx = games.signals().subscribe("gone");
-        let mut house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe("gone");
+        let mut house = signals.subscribe_house();
         rx.borrow_and_update();
         house.borrow_and_update();
 
@@ -3865,10 +4074,10 @@ mod tests {
     /// close because somebody who could not delete it tried.
     #[test]
     fn a_refused_delete_ends_nothing() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         games.create(&two_people("dr", CORPUS_SEED), &red).expect("a table");
-        let mut rx = games.signals().subscribe("dr");
+        let mut rx = signals.subscribe("dr");
         rx.borrow_and_update();
 
         games.delete("dr", &blue).expect_err("delete is the creator's");
@@ -3953,14 +4162,14 @@ mod tests {
             at_flip: Mutex::new(at_flip_tx),
             go_flip: Mutex::new(go_flip_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
         let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
         games.keep(&id, &red, PlayerId::new(0), 1, None).expect("red's keep");
 
-        let mut rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         let before = rx.borrow_and_update().seq;
 
         let keeper = {
@@ -4009,11 +4218,11 @@ mod tests {
     /// than being handed the last message a second time.
     #[test]
     fn a_chat_append_writes_then_bumps_the_table_and_not_the_house() {
-        let games = games();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
         let red = who("red@t.test");
         let id = games.create(&two_people("chatty", CORPUS_SEED), &red).expect("a table").id;
-        let mut rx = games.signals().subscribe(&id);
-        let house = games.signals().subscribe_house();
+        let mut rx = signals.subscribe(&id);
+        let house = signals.subscribe_house();
         rx.borrow_and_update();
         let m = games.chat_append(&id, red_seat(), "  hello ").expect("an append");
         assert_eq!((m.seq, m.text.as_str()), (1, "hello"));
@@ -4219,8 +4428,8 @@ mod tests {
     /// so reaching it means this process built a message it should not have.
     #[test]
     fn a_house_append_bumps_the_house_chat_counter_only() {
-        let games = games();
-        let mut house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let mut house = signals.subscribe_house();
         house.borrow_and_update();
         let m = games
             .house_append(Author::Watcher { user: "g@t.test".into(), name: Some("G".into()) }, "hi all")
@@ -4331,11 +4540,11 @@ mod tests {
             at_write: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
         let red = who("red@t.test");
         let id = games.create(&two_people("parked", CORPUS_SEED), &red).expect("a table").id;
-        let mut rx = games.signals().subscribe(&id);
+        let mut rx = signals.subscribe(&id);
         rx.borrow_and_update();
 
         let writer = {
@@ -4573,9 +4782,9 @@ mod tests {
             at_write: Mutex::new(at_tx),
             go: Mutex::new(go_rx),
         });
-        let games =
-            Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
-        let mut house = games.signals().subscribe_house();
+        let (games, signals) = watched_games(Arc::clone(&store) as Arc<dyn Store>);
+        let games = Arc::new(games);
+        let mut house = signals.subscribe_house();
         house.borrow_and_update();
 
         let writer = {

@@ -31,9 +31,31 @@
 //! 3. **Seeds are drawn over the full `u64`.** `yokohama_core`'s `agent.rs`
 //!    records that the public board is an injective fingerprint of the setup
 //!    seed, so a sequential or timestamp seed would hand over the hidden set.
+//!
+//! **The `server` feature and its source convention (M6.5a, R-6.5a.5–7).** The
+//! table layer — `Games` and everything it reaches — builds for
+//! `wasm32-unknown-unknown` with `--no-default-features`; axum, tokio and every
+//! platform call live behind the `server` feature. Two fences hold that, and
+//! neither is the other's fallback: the CI check line proves the DEPENDENCY
+//! fence (no axum, no mio), and `platform_calls_stay_behind_the_server_feature`
+//! below proves the PLATFORM-CALL fence by reading this crate's own source,
+//! because a `SystemTime::now()` compiles for the target and only panics there.
+//! The cell ENFORCES a convention rather than trusting the compiler: a
+//! `server`-only item carries its own `#[cfg(feature = "server")]` (an attribute
+//! gates ONE item), a run of them is marked as a region that ends with a comment
+//! line `// ---- end server ----` at column 0 — the marker is a reading aid; an
+//! item inside a region WITHOUT its own attribute is named by the cell — and a
+//! whole-`server` file begins with `#![cfg(feature = "server")]`. A platform call
+//! on an ungated item is named by file and line, wherever in the file it sits
+//! (the top-level test module is the one span the cell does not read).
 
+#[cfg(feature = "server")]
 pub mod art;
+#[cfg(feature = "server")]
 pub mod assets;
+// ---- end server ----
+pub mod api;
+pub mod archive;
 pub mod chat;
 pub mod client;
 pub mod explain;
@@ -46,24 +68,40 @@ pub mod store;
 pub mod table;
 pub mod tables;
 
+/// The payload and request types live in the layer (M6.5a, R-6.5a.3); their
+/// paths are kept here for the cells, the corpus and the client contract that
+/// name them.
+pub use api::{
+    ChatPage, ChatPost, ChatQuery, Events, EventsQuery, GamesList, Health, IndexQuery, Input, Join,
+    Keep, Labels, ListQuery, LogQuery, Me, Unlock, WhyQuery,
+};
+
+use http::StatusCode;
+
+#[cfg(feature = "server")]
 use std::sync::Arc;
 
-use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request, State};
+#[cfg(feature = "server")]
+use axum::extract::rejection::QueryRejection;
+#[cfg(feature = "server")]
+use axum::extract::{FromRequestParts, Path, Query, State};
+#[cfg(feature = "server")]
 use axum::http::request::Parts;
-use axum::http::StatusCode;
+#[cfg(feature = "server")]
 use axum::response::{IntoResponse, Response};
+#[cfg(feature = "server")]
 use axum::{
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use yokohama_core::{Rules, SEMANTICS_REV};
+#[cfg(feature = "server")]
+use yokohama_core::Rules;
 
-use crate::client::ClientState;
+#[cfg(feature = "server")]
 use crate::games::Games;
-use crate::tables::NewGame;
+#[cfg(feature = "server")]
 use crate::store::{FsStore, MemStore, Store};
+// ---- end server ----
 
 /// A refused request, as the client sees it.
 ///
@@ -156,6 +194,7 @@ impl From<games::GameError> for ApiError {
     }
 }
 
+#[cfg(feature = "server")]
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = match self.table_status {
@@ -166,51 +205,33 @@ impl IntoResponse for ApiError {
     }
 }
 
+#[cfg(feature = "server")]
 type ApiResult<T> = Result<Json<T>, ApiError>;
 
-/// This API's request-BODY extractor, and the reason it is not `axum::Json`.
+/// This API's QUERY-STRING extractor, and the reason it is not `axum::Query` —
+/// since M6.5a the ONLY axum extractor left here, because request bodies reach
+/// the layer as bytes through the adapter and `api::parse_json`, the layer's own
+/// fence, which reproduces axum's sentences. It stays for the one route a host
+/// writes itself, `events?after=&wait=`.
 ///
 /// Two defects, both measured, both closed here:
 ///
-/// 1. **A rejection did not carry a sentence.** `axum::Json`'s own rejection is
-///    a PLAIN-TEXT body, and `web/src/api.ts` builds its `ApiError` by reading
-///    `.error` off the body — so `{not json` reached the player as a bare status
-///    code with nothing to show. Every refusal on this API is one shape, and
-///    that has to include the ones raised before a handler runs.
-/// 2. **A shape error was a 422.** Honest for a generic JSON extractor, but
-///    this API has one meaning for "your request was wrong" and it is 400.
+/// 1. **A rejection did not carry a sentence.** axum's own rejection is a
+///    PLAIN-TEXT body, and `web/src/api.ts` builds its `ApiError` by reading
+///    `.error` off the body — so a malformed request reached the player as a
+///    bare status code with nothing to show. Every refusal on this API is one
+///    shape, and that has to include the ones raised before a handler runs.
+/// 2. **A shape error was a 422.** Honest for a generic extractor, but this API
+///    has one meaning for "your request was wrong" and it is 400.
 ///
-/// The wrapped types carry `#[serde(deny_unknown_fields)]`, which is the half
-/// that matters: `#[serde(default)]` is right for an ABSENT optional field and
-/// wrong for a field the caller believed it was setting. Before the fence, a
-/// client that renamed `start_seat` to `startSeat` got a 201 and a DIFFERENT
-/// GAME. Because the fence sits at the extractor rather than in a handler, a
-/// malformed body is refused before any lookup — so a bad body against a
-/// missing game answers 400, not 404, which is the right precedence.
-pub struct JsonBody<T>(pub T);
-
-impl<T, S> FromRequest<S> for JsonBody<T>
-where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        Json::<T>::from_request(req, state)
-            .await
-            .map(|Json(value)| Self(value))
-            .map_err(|rejection| ApiError::bad_request(rejection.body_text()))
-    }
-}
-
-/// The same fence over a QUERY STRING, for the same reasons.
-///
-/// `?tale=5` for `?tail=5` is otherwise a silent full log: the key is dropped,
-/// the `Option` defaults to `None`, and the caller is answered confidently with
-/// something it did not ask for.
+/// The wrapped type carries `#[serde(deny_unknown_fields)]`, which is the half
+/// that matters: `?tale=5` for `?tail=5` is otherwise a silent full log — the
+/// key is dropped, the `Option` defaults to `None`, and the caller is answered
+/// confidently with something it did not ask for.
+#[cfg(feature = "server")]
 pub struct QueryArgs<T>(pub T);
 
+#[cfg(feature = "server")]
 impl<T, S> FromRequestParts<S> for QueryArgs<T>
 where
     Query<T>: FromRequestParts<S, Rejection = QueryRejection>,
@@ -237,6 +258,7 @@ where
 /// It reaches the client on `/api/health` beside the identity mode, for the
 /// same reason that field is there: it is a deployment fact a client cannot
 /// infer from a successful call.
+#[cfg(feature = "server")]
 pub const SIGNAL_KIND: &str = "sse";
 
 /// The SSE comment cadence in production (R-3.12).
@@ -245,15 +267,18 @@ pub const SIGNAL_KIND: &str = "sse";
 /// is the whole of the choice: a stream that says nothing for longer than
 /// either is a stream the infrastructure closes while both ends believe it is
 /// open.
+#[cfg(feature = "server")]
 pub const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(25);
 
-/// Everything a handler may reach.
+/// Everything a transport handler may reach: the layer's state, the identity
+/// door, the streams' cadence and the streams' channels.
 ///
 /// `Rules::standard()` is not cheap and is immutable once built, so it is
 /// constructed once per process and shared by reference — the same discipline
-/// the CLI's `main` uses.
+/// the CLI's `main` uses — and since M6.5a it is held by [`Games`] alone
+/// (`Games::rules()`), which is where every reader of it now is.
+#[cfg(feature = "server")]
 pub struct AppState {
-    pub rules: Arc<Rules>,
     pub games: Games,
     /// Which header names the caller (R-1.2). Read once at start; no default.
     pub identity: identity::IdentityMode,
@@ -265,15 +290,34 @@ pub struct AppState {
     /// the wire at all is to build a state whose cadence is 50 ms and read two
     /// of them off a body. Every production constructor sets [`HEARTBEAT`].
     pub heartbeat: std::time::Duration,
-    /// The lobby switch and the two retention caps (M6.4, R-6.4.6, R-6.4.8),
-    /// read once at start; each has a default.
-    pub chat: chat::ChatConfig,
+    /// The transport's half of the change signal (M6.5a, R-6.5a.8).
+    ///
+    /// [`Games`] holds the same object as an `Arc<dyn signal::Signal>` and can
+    /// only BUMP it; the streams live here and are the only things that read a
+    /// bump back, so the concrete [`signal::Signals`] — the one type that can
+    /// hand out a receiver — is held here rather than fetched back out of the
+    /// layer below.
+    pub signals: Arc<signal::Signals>,
 }
 
+#[cfg(feature = "server")]
 impl AppState {
     /// Backed by a directory on disk.
-    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Self {
-        Self::with_store_and_chat(Arc::new(FsStore::new(store::default_dir())), identity, chat)
+    /// The production state: the file store, and the archive the environment
+    /// names (M6.5a, R-6.5a.9) — `YOKOHAMA_WEB_ARCHIVE_DIR` unset is no archive;
+    /// set to a directory that cannot be created is an `Err` `main` exits 1
+    /// on, naming the variable, the shape `ChatConfig::from_env` already has.
+    pub fn new(identity: identity::IdentityMode, chat: chat::ChatConfig) -> Result<Self, String> {
+        let archive: Arc<dyn archive::Archive> = match archive::DirArchive::from_env()? {
+            Some(dir) => Arc::new(dir),
+            None => Arc::new(archive::NoArchive),
+        };
+        Ok(Self::with_store_chat_and_archive(
+            Arc::new(FsStore::new(store::default_dir())),
+            identity,
+            chat,
+            archive,
+        ))
     }
 
     /// Backed by memory, in `claimed` mode — the mode every test drives with a
@@ -305,981 +349,47 @@ impl AppState {
         Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
     }
 
-    /// The one constructor that builds anything; every constructor above is
-    /// this one with a store, an identity or a chat chosen for it.
+    /// Every constructor above is this one with a store, an identity or a chat
+    /// chosen for it, and this one is [`Self::with_store_chat_and_archive`] with
+    /// no archive — since M6.5a THAT is the one constructor that builds anything.
     ///
-    /// The limits reach [`Games`] as well as this state, and the two are not a
-    /// duplicate: the appender enforces them and `/api/health` reports them,
-    /// and neither half can read the other's.
+    /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
+    /// appender enforces them and `/api/health` reports them off the same
+    /// object, so a host passes them in once and nothing on this state can drift
+    /// from what the layer enforces.
     pub fn with_store_and_chat(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
         chat: chat::ChatConfig,
     ) -> Self {
+        Self::with_store_chat_and_archive(store, identity, chat, Arc::new(archive::NoArchive))
+    }
+
+    /// The one constructor that builds anything — the store, the identity door,
+    /// the chat facts and the archive all given (M6.5a). Every constructor above
+    /// is this one with something chosen for it; `in_memory*` keep no archive.
+    pub fn with_store_chat_and_archive(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+    ) -> Self {
         let rules = Arc::new(Rules::standard());
+        let signals = Arc::new(signal::Signals::default());
         Self {
-            rules: Arc::clone(&rules),
-            games: Games::with_limits(rules, store, chat.limits),
+            games: Games::with_parts(
+                rules,
+                store,
+                chat,
+                signals.clone(),
+                Arc::new(table::now_unix),
+                archive,
+            ),
             identity,
             heartbeat: HEARTBEAT,
-            chat,
+            signals,
         }
     }
-}
-
-/// What a client must agree with this server about before anything else is
-/// worth asking.
-///
-/// `semantics_rev` and `rules_hash` are the two compatibility keys the engine
-/// itself uses — a save stops resuming across a `semantics_rev` bump BY DESIGN,
-/// and `rules_hash` moves whenever card, site, token or board data does. A
-/// client that caches card art or option shapes checks these, not the server
-/// version, which is provenance only.
-#[derive(Debug, Clone, Serialize)]
-pub struct Health {
-    pub server_version: &'static str,
-    pub semantics_rev: u32,
-    pub rules_hash: String,
-    /// Which identity source this deployment is configured with, by name — the
-    /// one deployment fact a client cannot infer from a successful call.
-    pub identity: &'static str,
-    /// Which change transport to read: [`SIGNAL_KIND`] (M6.3, R-plan-4).
-    ///
-    /// The second such fact, and it is here for the same reason as the first:
-    /// the client's polling hook has to know whether to open `…/stream` or to
-    /// hold a request against `…/events?wait=25`, and it cannot tell from a
-    /// successful call to anything else.
-    pub signal: &'static str,
-    /// Whether the house chat routes answer (M6.4, R-6.4.6). Off, the client
-    /// draws no lobby panel and asks nothing.
-    pub lobby_chat: bool,
-    /// Messages retained per chat document; `null` for `all` (R-6.4.8).
-    pub chat_keep: Option<u64>,
-    /// Characters per message, so the client sizes its input from the
-    /// server's rule and never from a copy (R-6.4.8).
-    pub chat_text: u64,
-}
-
-async fn health(State(state): State<Arc<AppState>>) -> Json<Health> {
-    Json(Health {
-        server_version: env!("CARGO_PKG_VERSION"),
-        semantics_rev: SEMANTICS_REV,
-        rules_hash: state.rules.content_hash(),
-        identity: state.identity.name(),
-        signal: SIGNAL_KIND,
-        lobby_chat: state.chat.lobby,
-        chat_keep: state.chat.limits.keep.map(|n| n as u64),
-        chat_text: state.chat.limits.text as u64,
-    })
-}
-
-/// What `/api/me` answers. Never a 401: null is the answer that tells the client
-/// which screen to show (spec §2.3).
-#[derive(Debug, Clone, Serialize)]
-pub struct Me {
-    pub mode: &'static str,
-    pub user: Option<String>,
-}
-
-/// **Who the server thinks you are — and it never refuses to say "nobody".**
-///
-/// The one route that reads the identity headers WITHOUT the extractor, because
-/// the extractor's answer to an absent identity is a 401 and that is precisely
-/// the case this route exists to report. A client with no identity yet needs a
-/// fact back: the mode, so it knows whether a sign-in screen is even meaningful
-/// here, and `user`, which is `null` when nobody is named.
-async fn me(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Json<Me> {
-    Json(Me {
-        mode: state.identity.name(),
-        user: identity::resolve(state.identity, &headers).ok().map(|u| u.as_str().to_string()),
-    })
-}
-
-/// Every static enum the wire carries, in words.
-///
-/// The models are typed and never worded — `screen_model`'s own contract — so a
-/// client needs the wording layer's answers once, and these never change during
-/// a game. Built from DATA rather than a hand-kept variant list: the tile set,
-/// the phase chain, the registries and the achievement registry are what the
-/// engine itself enumerates, so a new variant appears here without anyone
-/// remembering to add it.
-#[derive(Debug, Clone, Serialize)]
-pub struct Labels {
-    pub area_types: std::collections::BTreeMap<String, String>,
-    pub phases: std::collections::BTreeMap<String, String>,
-    pub phase_chain: Vec<String>,
-    pub tech_effects: std::collections::BTreeMap<String, String>,
-    pub achievements: std::collections::BTreeMap<String, String>,
-    /// The evaluator's 34 features, in words (M3).
-    ///
-    /// Keyed by `Feature::name()`, the stable snake_case token the payload
-    /// itself carries — so the wire keeps the identity and this map carries the
-    /// presentation, exactly as every other entry here does. Authored in
-    /// `explain::feature_labels`, never in `yokohama-core`.
-    pub features: std::collections::BTreeMap<String, String>,
-}
-
-fn key_of<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        other => format!("{other:?}"),
-    }
-}
-
-async fn labels(State(state): State<Arc<AppState>>) -> Json<Labels> {
-    use yokohama_cli::describe;
-    use yokohama_cli::screen_model::{achievement_registry, PHASE_CHAIN};
-
-    let mut area_types = std::collections::BTreeMap::new();
-    for t in yokohama_core::full_tile_set() {
-        area_types.insert(key_of(&t), describe::area_type_name(t).to_string());
-    }
-    let mut phases = std::collections::BTreeMap::new();
-    for p in PHASE_CHAIN {
-        phases.insert(key_of(&p), describe::phase_name(p).to_string());
-    }
-    let mut tech_effects = std::collections::BTreeMap::new();
-    for card in state.rules.techs.iter_sorted_by_id() {
-        tech_effects
-            .insert(key_of(&card.effect), describe::tech_effect_text(card.effect).to_string());
-    }
-    let mut achievements = std::collections::BTreeMap::new();
-    for a in achievement_registry() {
-        achievements
-            .insert(key_of(&a.achievement_type), describe::achievement_desc(a.achievement_type));
-    }
-
-    Json(Labels {
-        area_types,
-        phases,
-        phase_chain: PHASE_CHAIN.iter().map(|p| describe::phase_chain_name(*p).to_string()).collect(),
-        tech_effects,
-        achievements,
-        features: crate::explain::feature_labels(),
-    })
-}
-
-// **`identity::Identity` is on all twenty-three `/api/games` handlers**, and
-// since M6.1 §5.3 every one of them USES the `User` it carries: a game route
-// resolves the caller to a seat before it touches the `Repl`, and builds what it
-// serves for that seat. A caller with no seat here is a 403 (R-1.5) rather than
-// a payload, and a dealing table is a 409 carrying a status a client can branch
-// on rather than a 404 it cannot.
-//
-// Twenty-three handlers over twenty-one bodies — `ports`, `labs` and `areas` are
-// three handlers from the one `surface!` macro below. **The number was stale
-// before M6.4 touched it** (it said eighteen, and M6.2's `join` and `unlock` and
-// M6.3's `stream` had already landed), which is what a count in a comment does;
-// it is recounted here rather than incremented. The HOUSE pair is not among
-// them: `/api/chat` is not a game route and has no table to scope.
-
-/// **Who is asking, and may they read this table at all** (M6.3, spec §3.5).
-///
-/// Every session route starts here, and it is M6.1's `seated` widened by
-/// exactly one case: a signed-in caller with no seat, at a table that is PLAYING or
-/// finished, whose lock they have presented (or which has none), is admitted as
-/// a [`client::Viewer::Spectator`]. Nothing else moves — a stranger at a
-/// `dealing` table is refused exactly as before, because nobody watches a deal,
-/// and that is the moment the other seats' cards are in flight.
-///
-/// **It returns NO handle**, which is the second difference and the reason
-/// `events` and `stream` can share it: a table that is open or dealing has no
-/// record, and a function that fetched one would have to refuse those two
-/// before the routes that must answer them got a look. A route that needs a
-/// session asks [`games::Games::handle`] afterwards and gets the same 409 it
-/// always did.
-///
-/// **The table is read FIRST, as `seated` read it**, so a stranger holding an
-/// id learns that it is not theirs before learning anything about what is
-/// happening at it.
-///
-/// **The seat holder's arm takes the handle and drops it**, because
-/// [`client::viewer_seat`] needs the acting seat to answer "the acting seat
-/// when the caller holds it" — which is what `seated` and `viewer_of`, the two
-/// functions this replaces, did between them. At `open` and `dealing` there is no session to ask, and every
-/// route that reaches a handle from there refuses with the status first, so the
-/// caller's lowest seat stands in — and since M6.4 the chat post READS it:
-/// before the deal a multi-seat caller posts as their lowest seat, and once the
-/// table is playing as the acting seat WHEN THEY HOLD IT, else again as their
-/// lowest (spec §3.2, [`client::viewer_seat`]). Pinned by
-/// `a_two_seat_caller_posts_as_the_lowest_seat_before_the_deal_and_the_acting_one_after`.
-fn admitted(
-    state: &AppState,
-    id: &str,
-    user: &identity::User,
-) -> Result<(crate::table::TableDoc, client::Viewer), ApiError> {
-    use crate::table::TableStatus as S;
-    let table = state.games.table_for_anyone(id, user)?;
-    if !table.seats_of(user).is_empty() {
-        let seat = match table.status {
-            S::Playing => {
-                let handle = state.games.handle(id)?;
-                let repl = handle.lock().expect("a game");
-                client::viewer_seat(&table, user, repl.session.state())
-                    .expect("a seat holder has a viewer seat")
-            }
-            S::Open | S::Dealing => table.seats_of(user)[0],
-        };
-        return Ok((table, client::Viewer::Seat(seat)));
-    }
-    match table.status {
-        // `table_for_anyone` already refuses a stranger at `dealing`; `open`
-        // reaches here because `GET …/{id}/table` is allowed to answer it
-        // (R-2.7) and every other route is not.
-        S::Open | S::Dealing => Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: NOT_SEATED.to_string(),
-            table_status: None,
-        }),
-        S::Playing if table.can_watch(user) => Ok((table, client::Viewer::Spectator)),
-        // **The lock gates watching and says so**, rather than reusing the
-        // not-seated sentence: this caller CAN do something about it, and the
-        // client draws the unlock face from exactly this answer.
-        S::Playing => Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: "this table is locked — unlock it first".to_string(),
-            table_status: None,
-        }),
-    }
-}
-
-/// The one sentence a route answers a caller with no business at this table
-/// with, written once so the routes that share it cannot drift apart.
-///
-/// **It is not the only refusal a stranger earns, and the sets are more than
-/// one BY DESIGN (R-4.4).** At a locked playing table the writes that resolve
-/// the caller inside `Games` rather than through `admitted` — `deal` and the
-/// table's `DELETE` — answer this, while every READ answers "this table is
-/// locked — unlock it first", because a reader can do something about a lock
-/// and a writer cannot. **`keep` is in neither set**: it answers its own older
-/// sentence, "seat N is not yours", at every status, which names a SEAT and
-/// never a status and so tells a stranger nothing the other two do not. The
-/// stranger sweep pins all three route by route, so a refusal moving between
-/// the sets is a failing cell rather than a silent widening.
-const NOT_SEATED: &str = "you are not seated at this table";
-
-/// The refusal a WRITE route gives an admitted spectator: the same sentence a
-/// caller with no seat has always heard, because that is what they are.
-fn spectators_write_nothing(viewer: client::Viewer) -> Result<(), ApiError> {
-    match viewer {
-        client::Viewer::Seat(_) => Ok(()),
-        client::Viewer::Spectator => Err(ApiError {
-            status: StatusCode::FORBIDDEN,
-            message: NOT_SEATED.to_string(),
-            table_status: None,
-        }),
-    }
-}
-
-/// Who holds `seat` at this table, for a refusal that names them.
-///
-/// A bot has no email and is named as what it is. The `None` arm is the same
-/// unreachable-by-construction shape as [`admitted`]'s viewer seat:
-/// `Games::read_table` refuses a document whose `seats` disagrees with its
-/// `players`.
-fn holder_of(table: &crate::table::TableDoc, seat: yokohama_core::PlayerId) -> &str {
-    match table.seats.get(usize::from(seat.0)) {
-        Some(crate::table::SeatDoc::Human { user, .. }) => user,
-        _ => "the bot",
-    }
-}
-
-/// The sentence a refusal carries when the GAME'S OWN STATUS is the reason a
-/// caller cannot act — the lockdown's reason, or the CLI's own
-/// `ApplyError::GameOver` line, in `client::prompt_of`'s precedence so a game
-/// that is both faulted and finished reports the fault. `None` on a live game,
-/// where the reason is about the caller instead.
-///
-/// **Single-sourced because TWO fences in [`input`] need it and they must not
-/// disagree** (R-4.3 with R-5.1). R-4.3 ruled that a non-acting caller at a
-/// finished game hears the game's own sentence rather than one about seats;
-/// R-5.1 then put R-P6's undo rule in FRONT of that fence. Without this, a
-/// watcher's `undo` at a finished game started answering "undo is not offered
-/// once your turn has passed" — still a 403, still no rewind, but a ruled
-/// sentence overturned by an ordering change rather than by a decision.
-///
-/// The two readers are [`undo_allowed`], which refuses outright at either
-/// status (R-5.2), and the acting-seat fence, which uses it in place of naming
-/// a seat. `None` means the game is live and the reason is about the caller.
-fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> {
-    repl.session.record().lockdown.clone().or_else(|| {
-        repl.session.is_over().then(|| yokohama_cli::session::ApplyError::GameOver.to_string())
-    })
-}
-
-/// **How far back an undo may reach** (R-P6), checked before `Repl::step`.
-///
-/// ONE distinct person at the table — vs-bot, or one person sitting in every
-/// human seat — keeps today's undo untouched: the rule exists to stop somebody
-/// erasing ANOTHER PERSON's move, and where there is no other person there is
-/// nothing to protect. Fencing there would also break the only mode this server
-/// has shipped, since the trailing event at a vs-bot table is the bot's and its
-/// mover is never the caller.
-///
-/// Otherwise the game must still be RUNNING — finished or faulted, it is not
-/// rewound by anybody (R-5.2: a finished game has no turn in progress for
-/// anyone, so nobody's turn is incomplete, and one player reopening a game the
-/// other has watched end is what R-P6 exists to stop; a faulted record is the
-/// one thing here that exists to be read afterwards) — and the undo may then
-/// reach back into the caller's own turn and no further: the trailing event's
-/// mover is the caller's seat AND the current player is still that seat.
-///
-/// **The two halves refuse different callers.** Without the MOVER half, the
-/// seat that is to move pops whatever the PREVIOUS player did last — measured
-/// on this server before the rule: blue's `undo`, sent before blue had moved at
-/// all, returned 200 and popped red's move. Without the CURRENT-PLAYER half, a
-/// caller whose own move is the trailing event undoes it after their turn has
-/// already ended, which is the case R-P6 closes by name.
-///
-/// **This runs BEFORE the acting-seat fence** (R-5.1), which is what makes the
-/// second half reachable: the fence would otherwise refuse that caller first,
-/// with a sentence about whose turn it is instead of about the button they
-/// pressed. Both sentences are true and neither mutates, so the order chooses
-/// only which one is heard. The fence still runs afterwards, for this line and
-/// every other — where this function waves a line through (a table with one
-/// person at it) the fence is what guards, exactly as before.
-///
-/// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
-/// — replay-derived**, which is the CLI's own attribution for exactly this
-/// question (`repl.rs`'s undo unwinds by replay, not by a boundary stack, so it
-/// survives a save and reload). A `GameEvent` carries no seat of its own, and a
-/// second attribution here would be a second thing to keep true.
-///
-/// What pops is `Session::undo`'s unit — one `Move` with the reveals bound to
-/// it, or a trailing standalone reveal — and never more: admission requires
-/// that event to be the caller's own, so a bot run can never be sitting in
-/// front of it, even at a mixed table where one seat is a bot.
-fn undo_allowed(
-    repl: &yokohama_cli::repl::Repl,
-    table: &crate::table::TableDoc,
-    viewer: yokohama_core::PlayerId,
-) -> Result<(), String> {
-    if table.distinct_humans() <= 1 {
-        return Ok(());
-    }
-    // **A game that is FINISHED or FAULTED is not rewound by anybody** (R-5.2),
-    // the seat that is to move included, and so BEFORE the conjunction below —
-    // which can hold at either status, since the state still names a current
-    // player and the trailing event can be that player's. Measured on the code
-    // without this arm: at a finished two-person game the acting holder's
-    // `undo` returned 200 and took the record from 357 events to 200; at a
-    // faulted one it returned 200 with a refusal in prose, while the watcher
-    // beside them got a 403 — two callers, one game, two different answers.
-    //
-    // The sentence is the GAME's own status rather than R-P6's, from the same
-    // helper the acting-seat fence reads, so the two cannot drift (R-4.3 with
-    // R-5.1). It returns `None` on a live game, which is where R-P6 speaks.
-    if let Some(status) = status_refusal(repl) {
-        return Err(status);
-    }
-    let record = repl.session.record();
-    let len = record.events.len();
-    // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
-    // a game whose first prompt has not been answered yet. `Session::undo`'s
-    // own words for the same condition, so the answer reads the same whichever
-    // of the two paths reaches it.
-    if len == 0 {
-        return Err("nothing to undo".to_string());
-    }
-    let mover = yokohama_core::state_at(record, len - 1, repl.session.rules())
-        .map_err(|e| e.message)?
-        .current_player;
-    if mover == viewer && repl.session.state().current_player == viewer {
-        Ok(())
-    } else {
-        Err("undo is not offered once your turn has passed".to_string())
-    }
-}
-
-/// What `GET /api/games` is being asked (§3.3).
-///
-/// `deny_unknown_fields` through [`QueryArgs`] for the reason that extractor
-/// exists: `?scoped=open` would otherwise default silently to `mine` and answer
-/// a lobby asking for open tables with the caller's own — confidently, and with
-/// something it did not ask for.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ListQuery {
-    #[serde(default)]
-    pub scope: Option<String>,
-    #[serde(default)]
-    pub limit: Option<usize>,
-    #[serde(default)]
-    pub before: Option<String>,
-}
-
-/// The lobby: `{ "games": [...], "next": … }` rather than a bare array.
-///
-/// An object because a list is a place fields get added to — and `next` is the
-/// field it was: a client reading a bare array would have had to change shape to
-/// learn there was a second page.
-#[derive(Debug, Clone, Serialize)]
-pub struct GamesList {
-    pub games: Vec<crate::table::TableView>,
-    /// The cursor for the NEXT page, or `null` when this is the last one.
-    /// `<created_at>,<id>` — the row this page ended at, in the listing's own
-    /// order; a client sends it straight back as `before`.
-    pub next: Option<String>,
-}
-
-async fn list_games(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    QueryArgs(q): QueryArgs<ListQuery>,
-) -> ApiResult<GamesList> {
-    use crate::tables::{Scope, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
-    let scope = match q.scope.as_deref() {
-        None => Scope::Mine,
-        Some(s) => s.parse::<Scope>().map_err(ApiError::bad_request)?,
-    };
-    let limit = q.limit.unwrap_or(LIST_LIMIT_DEFAULT);
-    // Both ends refused rather than clamped: a caller that asked for 0 or for
-    // 500 believed something about this API, and answering it with 1 or with
-    // 100 leaves it believing that. `Games::list` guards `0` again for the same
-    // reason it is refused here — see its doc.
-    if limit == 0 || limit > LIST_LIMIT_MAX {
-        return Err(ApiError::bad_request(format!("limit {limit} — 1 to {LIST_LIMIT_MAX}")));
-    }
-    let before = match q.before.as_deref() {
-        None => None,
-        Some(c) => {
-            let (at, id) = c
-                .split_once(',')
-                .ok_or_else(|| ApiError::bad_request("before is <created_at>,<id>"))?;
-            let at: u64 =
-                at.parse().map_err(|_| ApiError::bad_request("before is <created_at>,<id>"))?;
-            Some((at, id.to_string()))
-        }
-    };
-    let (games, next) =
-        state.games.list(&user, scope, limit, before).map_err(ApiError::server_error)?;
-    Ok(Json(GamesList { games, next }))
-}
-
-/// **201 with the TABLE, and no game yet.** Nothing is dealt into anyone's hand
-/// by this call: the seats are bound and every human seat is owed a deal it
-/// fetches for itself.
-async fn create_game(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    JsonBody(req): JsonBody<NewGame>,
-) -> Result<(StatusCode, Json<crate::table::TableView>), ApiError> {
-    let view = state.games.create(&req, &user)?;
-    Ok((StatusCode::CREATED, Json(view)))
-}
-
-/// The table as this caller may read it.
-///
-/// **The one route R-2.7 widens**: at `Open` any signed-in caller is answered,
-/// because a join link is an address and the person following one has to see
-/// what they are joining. At every other status this is `Games::table`'s fence
-/// unchanged, and `my_seats` on the view may therefore be EMPTY.
-async fn get_table(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> ApiResult<crate::table::TableView> {
-    let doc = state.games.table_for_anyone(&id, &user)?;
-    Ok(Json(doc.view(&user)))
-}
-
-/// The caller's own two cards, over the set table. A seated caller's, or a 403.
-async fn deal(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> ApiResult<crate::table::DealView> {
-    Ok(Json(state.games.deal(&id, &user)?))
-}
-
-/// Which of the two dealt cards a seat keeps.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Keep {
-    pub seat: u8,
-    pub card: u8,
-    /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
-    /// only when it has no name yet — see [`Games::keep`](games::Games::keep).
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-/// Taking an open seat at an open table (M6.2, §3.2).
-///
-/// The password is the TABLE's and not the caller's: a table without a lock
-/// ignores one, and a table with a lock refuses without it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Join {
-    pub seat: u8,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub password: Option<String>,
-}
-
-async fn join(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    JsonBody(req): JsonBody<Join>,
-) -> ApiResult<crate::table::TableView> {
-    // The same fallible parse `keep` makes, and for the same reason: the number
-    // came off the wire and `PlayerId::new` panics at four and above.
-    let seat = yokohama_core::PlayerId::try_new(req.seat)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.games.join(&id, &user, seat, req.name.as_deref(), req.password.as_deref())?))
-}
-
-/// The table's password, presented once so this caller may WATCH (M6.3, §3.4).
-///
-/// **The table's and not the caller's** — the same sentence [`Join`] carries,
-/// and for the same reason: it gates a shared game behind a door Cloudflare
-/// Access has already opened, and nobody's identity rests on it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Unlock {
-    pub password: String,
-}
-
-/// `POST /api/games/{id}/unlock` — knock, and be remembered.
-///
-/// The whole of the ladder is [`games::Games::unlock`]'s, held under the
-/// table's own lock; this handler carries no rule of its own. It answers the
-/// `TableView`, whose `can_watch` now reads true, so a client that was
-/// drawing the unlock face has the payload it needs to draw the game instead
-/// without a second request.
-async fn unlock(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    JsonBody(req): JsonBody<Unlock>,
-) -> ApiResult<crate::table::TableView> {
-    Ok(Json(state.games.unlock(&id, &user, &req.password)?))
-}
-
-/// A message to post (M6.4, spec §3.2). `name` is a WATCHER's (and anyone's
-/// at the house); a seated caller sending one is a 400, because a seat's name
-/// is the seat's (R-6.4.2).
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChatPost {
-    pub text: String,
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-/// The cursor: messages numbered ABOVE it (spec §3.1). Typed, so a negative
-/// cursor is serde's 400.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChatQuery {
-    #[serde(default)]
-    pub after: Option<u64>,
-}
-
-/// What the read answers: the retained messages above the cursor, and the
-/// newest number ever assigned — the client's next cursor.
-///
-/// **`last` is the DOCUMENT's and not the page's**, which is what makes a
-/// cursor survive a trim: a client that asks from a number the retention has
-/// already dropped is told where the room has got to rather than left to infer
-/// it from an empty page.
-#[derive(Debug, Clone, Serialize)]
-pub struct ChatPage {
-    pub messages: Vec<chat::Message>,
-    pub last: u64,
-}
-
-/// `GET /api/games/{id}/chat?after=N` — admitted exactly as a read is.
-///
-/// **The same [`admitted`] every projection takes, and deliberately not a rule
-/// of its own** (spec §3.2): a seat holder at every status, a watcher once the
-/// table admits them, and the lock's own sentence for the caller who has not
-/// knocked.
-///
-/// **Which is NARROWER than seeing the table, and the gap is the point.**
-/// `GET …/table` and `…/events` answer any signed-in caller at an OPEN table
-/// (R-2.7, R-4.3) so that someone who followed a join link can read the seat
-/// picker and watch for the seats to fill; the chat takes no such widening. A
-/// stranger on that screen reads the table and the message COUNT off the
-/// signal, and is 403 on the messages themselves — pinned by
-/// `events_carries_the_chat_count_at_open_dealing_and_playing`, which asserts
-/// both halves of that one caller in two adjacent lines. A room is readable by
-/// the people `admitted` admits, not by everyone who can see the door.
-async fn chat_read(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    QueryArgs(q): QueryArgs<ChatQuery>,
-) -> ApiResult<ChatPage> {
-    admitted(&state, &id, &user)?;
-    let (messages, last) = state.games.chat_page(&id, q.after.unwrap_or(0))?;
-    Ok(Json(ChatPage { messages, last }))
-}
-
-/// `POST /api/games/{id}/chat` — the one write a watcher may make (R-6.4.11).
-///
-/// The order is the spec's §3.2 and is pinned by adjacent-pair probes:
-/// admission, the text, the seat/name rule, the watcher's name, the append.
-/// Every step before the append is a refusal this caller can fix, and the text
-/// is checked before the APPEND takes the table's lock, so a message that will
-/// be refused never makes anyone wait behind another message. (Not "before any
-/// lock": `admitted` runs first, and on a dealing table where every human has
-/// kept it goes through `settle`, which takes that table's lock to finish the
-/// deal.)
-async fn chat_post(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    JsonBody(req): JsonBody<ChatPost>,
-) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
-    let (table, viewer) = admitted(&state, &id, &user)?;
-    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
-    let author = author_of(&table, viewer, &user, req.name.as_deref())?;
-    let message = state.games.chat_append(&id, author, &text)?;
-    Ok((StatusCode::CREATED, Json(message)))
-}
-
-/// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
-///
-/// **A seat's name is read off the TABLE and never off the body**, which is the
-/// whole of the rule: a name in a message is a claim about who is speaking, and
-/// at a seat the table has already settled that claim. A seated caller who
-/// sends one is refused rather than quietly overridden, because a client that
-/// believed it was setting a name and was answered 201 would go on sending it.
-fn author_of(
-    table: &crate::table::TableDoc,
-    viewer: client::Viewer,
-    user: &identity::User,
-    name: Option<&str>,
-) -> Result<chat::Author, ApiError> {
-    match viewer {
-        client::Viewer::Seat(seat) => {
-            if name.is_some() {
-                return Err(ApiError::bad_request("a seated caller is named by their seat"));
-            }
-            let stored = match table.seats.get(usize::from(seat.0)) {
-                Some(crate::table::SeatDoc::Human { name, .. }) => name.clone(),
-                _ => None,
-            };
-            Ok(chat::Author::Seat { seat: seat.0, user: user.as_str().to_string(), name: stored })
-        }
-        client::Viewer::Spectator => {
-            let name = name.map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
-            Ok(chat::Author::Watcher { user: user.as_str().to_string(), name })
-        }
-    }
-}
-
-/// The house switch (R-6.4.6): a 404 with a sentence, before anything else.
-///
-/// A 404 rather than a 403, because with the lobby chat off the route is not
-/// something this deployment refuses you — it is something this deployment does
-/// not have. The client reads the same fact off `/api/health` and draws no
-/// panel at all; the sentence is for whoever asks anyway.
-fn lobby_chat_on(state: &AppState) -> Result<(), ApiError> {
-    if state.chat.lobby {
-        Ok(())
-    } else {
-        Err(ApiError::not_found("the lobby chat is off"))
-    }
-}
-
-/// `GET /api/chat?after=N` — the house. Any signed-in caller.
-async fn house_chat_read(
-    identity::Identity(_user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    QueryArgs(q): QueryArgs<ChatQuery>,
-) -> ApiResult<ChatPage> {
-    lobby_chat_on(&state)?;
-    let (messages, last) = state.games.house_page(q.after.unwrap_or(0))?;
-    Ok(Json(ChatPage { messages, last }))
-}
-
-/// `POST /api/chat` — the house. Every author is a `Watcher`: the house has
-/// no seats.
-///
-/// Which is not a simplification but the shape rule's own answer: the house
-/// document is checked with `players: None`, and a `Seat` author there is
-/// refused on write. There is nothing to be seated at.
-async fn house_chat_post(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    JsonBody(req): JsonBody<ChatPost>,
-) -> Result<(StatusCode, Json<chat::Message>), ApiError> {
-    lobby_chat_on(&state)?;
-    let text = chat::check_text(&req.text, &state.chat.limits).map_err(ApiError::bad_request)?;
-    let name = req.name.as_deref().map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
-    let author = chat::Author::Watcher { user: user.as_str().to_string(), name };
-    let message = state.games.house_append(author, &text)?;
-    Ok((StatusCode::CREATED, Json(message)))
-}
-
-async fn keep(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    JsonBody(req): JsonBody<Keep>,
-) -> ApiResult<crate::table::TableView> {
-    // **`PlayerId::new` PANICS at four and above**, and this number came off the
-    // wire — so it is parsed through the fallible constructor and refused as a
-    // 400. A panic here would poison nothing (the seat is read before any lock)
-    // but would still drop the connection with no sentence in it.
-    let seat = yokohama_core::PlayerId::try_new(req.seat)
-        .map_err(|e| ApiError::bad_request(e.to_string()))?;
-    Ok(Json(state.games.keep(&id, &user, seat, req.card, req.name.as_deref())?))
-}
-
-async fn get_game(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> ApiResult<ClientState> {
-    // Admitted first, so a caller with no business here is a 403 rather than a
-    // frame; then the frame is built for that caller — the hand on it is their
-    // own and every other seat's is a count (R-1.7), or, for a watcher, every
-    // seat's is (M6.3, R-3.7).
-    let (_table, viewer) = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let repl = handle.lock().expect("a game");
-    Ok(Json(ClientState::of(&id, &repl, viewer, Vec::new())))
-}
-
-async fn delete_game(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    state.games.delete(&id, &user)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-/// What the client sends to act.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Input {
-    /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
-    /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
-    /// of it; see [`crate::grammar`] for the fence and why it exists.
-    pub line: String,
-    /// The `prompt.kind` the client was looking at when it chose this line.
-    ///
-    /// **This is what stops a number meaning a different move.** In-flight
-    /// sub-prompt state lives only in the resident `Repl` — `SubPrompt` is not
-    /// in the `GameRecord` and does not belong there — so a game evicted or a
-    /// process restarted rebuilds with `SubPrompt::None`. The client, which
-    /// never re-fetches, keeps sending area ids from an open placement picker,
-    /// and `pick_option` reads them against the MAIN option list. Measured
-    /// across two processes over one store: a client holding
-    /// `{"kind":"place_a","selected":[3,7]}` clicked area 3, and the rebuilt
-    /// `Repl` applied option 3 — "Place no assistants" — spending the turn's
-    /// placement on nothing the player chose.
-    ///
-    /// Optional, so `curl` and the integration test stay terse; when present it
-    /// is checked, and a mismatch is a refusal that names both prompts instead
-    /// of a move nobody asked for.
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// The one mutation.
-///
-/// Deliberately a single endpoint over `Repl::step`, not a family of typed
-/// verbs. `step` already IS the state machine — it validates against the
-/// engine's legal list, opens and closes sub-pickers, and pumps any bot seats
-/// that are owed a move afterwards. A second dispatcher here would be a
-/// reimplementation of it, and the two would drift; the client's typed
-/// affordances come from `PromptState` telling it what to send, not from the
-/// server growing a verb per interaction.
-///
-/// **The line is fenced before it gets there.** `step` is the terminal's front
-/// door and answers to more than the game — it writes files, and it opens
-/// sticky overlays in which a number stops meaning a move. [`crate::grammar`]
-/// carries the allowlist and the reasoning; the fence is here, at the boundary,
-/// rather than inside `grammar` calling `step`, so that reading this handler
-/// shows both that a line is checked and that a checked line goes through
-/// untouched.
-async fn input(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    JsonBody(req): JsonBody<Input>,
-) -> ApiResult<ClientState> {
-    if !grammar::is_gameplay_line(&req.line) {
-        return Err(ApiError::bad_request(grammar::refusal(&req.line)));
-    }
-    let (table, viewer) = admitted(&state, &id, &user)?;
-    // **A watcher writes nothing, and hears it before the handle is touched**
-    // (M6.3, R-3.6). Above the undo rule and the acting-seat fence because both
-    // of those are about a SEAT, and this caller has none: R-P6 would read the
-    // trailing event's mover against a seat that does not exist.
-    spectators_write_nothing(viewer)?;
-    // The seat the rules below compare against. Total by the refusal one line
-    // up, and written as a `match` rather than an `unwrap` so a third `Viewer`
-    // variant is a compile error here instead of a panic in production.
-    let seat = match viewer {
-        client::Viewer::Seat(s) => s,
-        client::Viewer::Spectator => return Err(spectators_write_nothing(viewer).unwrap_err()),
-    };
-    let handle = state.games.handle(&id)?;
-    let mut repl = handle.lock().expect("a game");
-
-    // **An undo reaches back into your own turn and no further** (R-P6).
-    //
-    // The check is HERE rather than inside `step` because it needs the TABLE:
-    // the rule turns on how many PEOPLE sit at this one, which is a fact of the
-    // seat bindings and not of the record. Before `step`, because
-    // `Session::undo` pops events and a refusal afterwards would be a refusal
-    // of something that already happened.
-    //
-    // **And before the acting-seat fence, deliberately** (R-5.1). Both refuse
-    // the same caller — a player whose turn has passed is neither the acting
-    // seat nor entitled to undo — and both are a 403 that mutates nothing, so
-    // the only thing the order decides is which true sentence they hear. "Undo
-    // is not offered once your turn has passed" answers the button they
-    // pressed; "it is seat 1's turn" answers a question they did not ask. The
-    // fence is untouched and still runs, for this line and every other.
-    if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, seat).map_err(|message| ApiError {
-            status: StatusCode::FORBIDDEN,
-            message,
-            table_status: None,
-        })?;
-    }
-
-    // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
-    //
-    // `viewer_seat` returns the acting seat whenever the caller holds it, so
-    // this comparison IS "do you hold the seat that is to move" — one person in
-    // several seats passes it at every one of them, which is what keeps a hot
-    // seat playable. Everyone else is refused by a sentence that names whose
-    // turn it is, because "403" alone tells a player nothing about what to do
-    // next: wait, or look at another table.
-    //
-    // Before `step`, so a refused caller cannot advance the game, and before
-    // the `expect` check below, so a watcher is told whose turn it is rather
-    // than handed a prompt-moved-on conflict about a prompt that was never
-    // theirs.
-    //
-    // **The fence never drops. Only its WORDING changes** (R-4.3).
-    //
-    // A finished game has no turn and a locked one accepts no gameplay, so
-    // naming a seat there is a false sentence — the false half of a pair, since
-    // the holder of that same seat is told the truth by `step`. But the first
-    // fix for that let a non-acting caller's POST through to `step` when the
-    // game was over, and `undo` is an allowlisted gameplay line that
-    // `Session::undo` applies with no game-over guard of its own. Measured on
-    // that code: a seated WATCHER posted `undo` at a finished game, got 200,
-    // and the record went from 357 events to 200 with `over` back to false —
-    // any seated player could rewind a completed shared game, and this server
-    // persisted it because `events.len()` had changed.
-    //
-    // So the comparison is unconditional and the SENTENCE is chosen: the
-    // lockdown's own reason, the CLI's own `ApplyError::GameOver` line, or whose
-    // turn it is. The acting seat's holder's path is untouched in all three.
-    //
-    // **The measured defect stays closed with R-P6's check now in front of
-    // this one** (R-5.1): that seated watcher's `undo` is refused by
-    // `undo_allowed` before it arrives here, because the watcher is not the
-    // current player. Where `undo_allowed` waves a line through — a table with
-    // ONE person at it — this comparison is what guards, exactly as it did
-    // before. Neither check is the other's fallback; both run.
-    let acting = repl.session.state().current_player;
-    if acting != seat {
-        let message = status_refusal(&repl).unwrap_or_else(|| {
-            format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
-        });
-        return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None });
-    }
-
-    if let Some(expected) = &req.expect {
-        let actual = crate::client::prompt_kind(&repl);
-        if expected != actual {
-            return Err(ApiError {
-                status: StatusCode::CONFLICT,
-                message: format!(
-                    "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
-                     (a restart drops an open picker). Re-read the game and answer what it asks.",
-                ),
-                table_status: None,
-            });
-        }
-    }
-
-    let before = repl.session.record().events.len();
-    let locked_before = repl.session.is_locked();
-    let out = repl.step(&req.line);
-
-    // A FAILED SAVE IS NOT A FAILED MOVE, and must not be reported as one.
-    //
-    // `step` has already mutated the resident `Repl`; every later request
-    // reuses that handle. Returning the store's error as a 400 told the client
-    // its move was refused while the server kept it — measured with the store
-    // directory at mode 0555: the client got `400 Permission denied` and the
-    // very next GET showed the move applied, with the durable record still one
-    // event behind. So the applied state is returned, and the failure is said
-    // OUT LOUD as a warning: the move happened, and it is not saved.
-    // A LOCKDOWN MUST BE WRITTEN THROUGH even though it adds no event.
-    //
-    // `Repl::step` engages one AFTER an apply has failed, so `events.len()` is
-    // unchanged and an event-count gate skips the write. `Session::lock_down`
-    // tries to persist itself via `autosave`, but that is a no-op here —
-    // `from_record` and `new_sim` both leave `save_path` as `None`, so this
-    // layer is the only writer. Without this the container sleeps, the game is
-    // rebuilt from a record with no `lockdown`, `Repl::new` restores
-    // `locked = false`, and a desynced game is handed back playable with the
-    // fault's reason lost from the record it was deliberately written into.
-    let mut warnings = Vec::new();
-    if repl.session.record().events.len() != before || repl.session.is_locked() != locked_before {
-        if let Err(e) = state.games.persist(&id, &repl) {
-            warnings.push(format!("APPLIED BUT NOT SAVED — {e}"));
-        }
-    }
-
-    // STRIP THE TERMINAL PROMPT BLOCK, keep the deltas.
-    //
-    // `Repl::out` composes `text` as "what just happened" plus a rendered
-    // screen — for the main decision that screen is `prompt()`, which the
-    // browser already draws structurally from `PromptState`. Passing it through
-    // meant the client printed the numbered options a second time as dead text,
-    // a bare `>` caret, and the CLI's standing hint: "'view' any surface · '?'
-    // the card index · 'help' for commands" — three words this same server
-    // REFUSES, in a client with no text input to type them into. The browser was
-    // instructing the player in a grammar it cannot accept.
-    //
-    // The suffix is removed by IDENTITY, not by pattern-matching prose:
-    // `prompt()` is `pub` and pure over the post-step state, so it returns
-    // exactly what `out` appended. A sub-prompt's block is deliberately KEPT —
-    // it carries the live legality verdict and the placement fee, which have no
-    // structured equivalent on the wire yet, so dropping it would lose the only
-    // statement of a cost the player is about to pay.
-    let body = if matches!(repl.sub, yokohama_cli::repl::SubPrompt::None) {
-        let tail = repl.prompt();
-        out.text.strip_suffix(&tail).unwrap_or(&out.text).to_string()
-    } else {
-        out.text.clone()
-    };
-    let messages: Vec<String> =
-        body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
-    // **The reply is the CALLER's view, not the new mover's.** A move that ends
-    // a turn therefore answers its own mover with a `watching` prompt, which is
-    // the true thing to say: the game has moved on and this person is not the
-    // one it is waiting for.
-    let mut client = ClientState::of(&id, &repl, viewer, messages);
-    // **The banner must not say "saved" on the payload that says it is not.**
-    //
-    // `TitleModel::autosaved` is a literal `true` in `client.rs` — correct as a
-    // statement about this server, which persists after every applied move — but
-    // when THIS write failed the payload carried both "· saved" in the banner and
-    // "APPLIED BUT NOT SAVED" three inches below it, on the same screen. The
-    // warning is the true one; the banner is corrected to agree with it here,
-    // where the write's outcome is actually known.
-    if !warnings.is_empty() {
-        client.frame.title.autosaved = false;
-    }
-    client.warnings.extend(warnings);
-    Ok(Json(client))
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,442 +424,13 @@ async fn input(
 // idempotent. It is recorded here so the next reader does not trust a sentence
 // over the code.
 
-/// A handler that reads one game and projects it.
-///
-/// The three lock-and-project routes differ only in which builder they call, so
-/// the borrow, the not-found, the seat fence and the lock live once. A fourth
-/// copy of this wiring is a fourth chance to forget one of them.
-///
-/// **Seated, and no viewer.** All three of these are the public table — the two
-/// offer boards and the area reference — and none carries a hand or a seat's
-/// own anything, so there is nothing here for a viewer to scope. The fence in
-/// front of them is still the seat one: what the three would leak to a stranger
-/// is the offer at a table they have no business at.
-macro_rules! surface {
-    ($name:ident, $model:ty, $build:expr) => {
-        async fn $name(
-            identity::Identity(user): identity::Identity,
-            State(state): State<Arc<AppState>>,
-            Path(id): Path<String>,
-        ) -> ApiResult<$model> {
-            let _admitted = admitted(&state, &id, &user)?;
-            let handle = state.games.handle(&id)?;
-            let repl = handle.lock().expect("a game");
-            let f: fn(&yokohama_core::GameState, &Rules) -> $model = $build;
-            Ok(Json(f(repl.session.state(), repl.session.rules())))
-        }
-    };
-}
-
-surface!(ports, yokohama_cli::screen_model::PortsPanel, yokohama_cli::screen_model::build_ports);
-surface!(labs, yokohama_cli::screen_model::LabsPanel, yokohama_cli::screen_model::build_labs);
-surface!(areas, yokohama_cli::screen_model::AreasPanel, yokohama_cli::screen_model::build_areas);
-
-/// How much of the log a request gets when it does not say.
-///
-/// **The whole thing.** The CLI tails it because a terminal has 24 lines to
-/// spend; a browser has a scrollbar, and truncating by default would make the
-/// most common request the one that quietly hides the move you are looking for.
-/// `?tail=N` trims for a caller that wants a summary, and `LogPanel::total`
-/// stays truthful either way, so a client can always say how many it is not
-/// showing.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LogQuery {
-    #[serde(default)]
-    pub tail: Option<usize>,
-}
-
-/// `GET /api/games/{id}/suggest` — what the production contestant would play on
-/// the viewing seat's own view.
-///
-/// **The first route in this crate that COMPUTES something**, which is why the
-/// module doc's "if it ever computes something about the game, that is a bug"
-/// carries its one exception: this reads an OPINION about a state and never
-/// advances one. It applies nothing, records nothing and autosaves nothing —
-/// `suggest`'s contract in the terminal, kept exactly — so GET is honest about
-/// the effect, and it is idempotent in the strong sense the CLI already
-/// guarantees: byte-identical on repeat, keyed by game identity, seat and move
-/// count.
-///
-/// **A refusal is a 200, not a 4xx.** Being asked to advise on a bot's seat is
-/// an ANSWER; only a missing game (404) or a malformed request (400) is an
-/// error. The four conditions are `repl::suggest_cmd`'s own, restated because
-/// they live in the terminal's command wrapper rather than in `suggest.rs` — a
-/// handler that called `suggest::suggest` directly would inherit none of them
-/// and would happily search a live game, which the module doc forbids.
-///
-/// **The lock is dropped before the search runs.** Every other handler holds the
-/// per-game `Mutex<Repl>` across its whole body, which is right for a projection
-/// and wrong for a multi-second search: it would block every request for this
-/// game, including the poll that draws the board. `GameState` is history-free
-/// and cheap to clone for exactly this reason.
-async fn suggest(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> ApiResult<explain::SuggestResponse> {
-    use explain::SuggestRefusal as R;
-    let (table, viewer) = admitted(&state, &id, &user)?;
-    // **A watcher gets the not-seated sentence, not the advisor's panel**
-    // (M6.3, R-3.6). The R-1.8 refusal below is for a non-acting HOLDER — "it
-    // is not your turn" is a true thing to tell somebody who has a turn coming.
-    spectators_write_nothing(viewer)?;
-    let handle = state.games.handle(&id)?;
-
-    // **R-1.8: the acting seat's holder only, and this is a 403 rather than a
-    // typed refusal.** The four refusals in the ladder are ANSWERS about the
-    // game — it is over, it is locked, a bot is thinking — and a client renders
-    // each as a sentence in the advisor panel. "This is not your seat" is not
-    // that: it is the same access answer every other route on this table gives,
-    // and serving it as a 200 would put the advisor's own panel in front of a
-    // person who must not be ranking that seat's moves.
-    //
-    // **It sits AFTER the three refusals that are true of the GAME, and that
-    // ordering was a review finding.** A finished game has no turn, so telling
-    // a watcher "it is not your turn" there is false — and the holder of the
-    // same seat was being told the truth on the same table. Whatever the game
-    // itself has to say, every caller hears it; the seat answer is for the case
-    // where the game is genuinely waiting for somebody.
-    //
-    // It still subsumes `SuggestRefusal::BotSeat` at a table where no human
-    // holds the bot's seat, which is every table: a bot seat is nobody's, so
-    // the caller is refused here first. That refusal stays declared because it
-    // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
-    // verbatim rather than a subset of it.
-    let read = {
-        let repl = handle.lock().expect("a game");
-        let refuse = if repl.session.record().lockdown.is_some() {
-            Some(R::Locked)
-        } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
-            Some(R::LiveMode)
-        } else if repl.session.is_over() {
-            Some(R::GameOver)
-        } else {
-            let acting = repl.session.state().current_player;
-            if !table.seats_of(&user).contains(&acting) {
-                return Err(ApiError {
-                    status: StatusCode::FORBIDDEN,
-                    message: "it is not your turn".to_string(),
-                    table_status: None,
-                });
-            }
-            if repl.bots().is_bot(acting) {
-                Some(R::BotSeat)
-            } else {
-                None
-            }
-        };
-        match refuse {
-            Some(r) => Err(r),
-            None => {
-                let seat = repl.session.state().current_player;
-                Ok((
-                    seat,
-                    repl.session.state().clone(),
-                    yokohama_cli::suggest::stream_seed(repl.session.record(), seat),
-                ))
-            }
-        }
-    };
-
-    let (seat, game, seed) = match read {
-        Err(r) => return Ok(Json(explain::SuggestResponse::refused(r.kind(), r.message()))),
-        Ok(parts) => parts,
-    };
-
-    Ok(Json(match yokohama_cli::suggest::suggest(&game, &state.rules, seat, seed) {
-        Ok(s) => explain::SuggestResponse::granted(explain::Suggest::of(&s, &game, &state.rules)),
-        // The agent's own errors are surfaced VERBATIM rather than swallowed —
-        // `SuggestError::Inconsistent` describes itself as a bug worth
-        // reporting, and a generic "no suggestion" would throw that away.
-        Err(e) => explain::SuggestResponse::refused("search", e.to_string()),
-    }))
-}
-
-/// `GET /api/games/{id}/why[?event=n]` — a bot move, reconstructed by replay.
-///
-/// `event` is the log's printed 0-based index; omitted means the most recent bot
-/// move, which is what bare `why` does in the terminal.
-///
-/// **The refusals are `why::account_parts`', and not one of them is re-derived
-/// here.** That function's own doc is the instruction: *"it must not
-/// reimplement the first half: the refusals ARE the honesty gate."* A
-/// reconstruction that does not equal the recorded move refuses, naming both
-/// moves and both versions — and that refusal reaches the browser as data,
-/// because a branch nobody has ever seen is where defects live.
-///
-/// Same lock discipline as `suggest`, for the same reason: the reconstruction
-/// runs the same `decide` path the pump ran.
-async fn why(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    QueryArgs(q): QueryArgs<WhyQuery>,
-) -> ApiResult<explain::Why> {
-    // Seated, and no viewer of its own: `why` already answers at the VIEWER's
-    // visibility by masking the roads not taken for every caller
-    // (`explain::HandVisibility::Masked`), so an unplayed `FulfillOrder` words
-    // as "from hand" and names no card, at every seat. What this fence adds is
-    // the seat one — an account of a search at a table the caller has no place
-    // at is not theirs to read.
-    let _admitted = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let (mode, record, bots) = {
-        let repl = handle.lock().expect("a game");
-        // **The lockdown gate fences COMPUTATION, not projection**, and this is
-        // the rule the three route families follow. M2 already settled that a
-        // read-only GET serves a locked session — `ports`/`labs`/`areas`/`log`
-        // do, and `ClientState` reports the lockdown as its prompt rather than
-        // refusing. But `why` is not a projection: it re-runs the same `decide`
-        // path against a record the driver has declared faulty, and answering
-        // with an authoritative account of a search over a suspect record is
-        // exactly what a lockdown exists to stop. `suggest` refuses for the same
-        // reason; the card indexes and the final score do not, because they read
-        // the state rather than an opinion about it.
-        if let Some(reason) = repl.session.record().lockdown.clone() {
-            return Ok(Json(explain::Why::locked(reason)));
-        }
-        (repl.session.mode, repl.session.record().clone(), repl.bots().clone())
-    };
-    Ok(Json(
-        match yokohama_cli::why::account_parts(mode, &record, &state.rules, &bots, q.event) {
-            Ok(account) => explain::Why::granted(&account, &state.rules),
-            Err(refusal) => explain::Why::refused(&refusal),
-        },
-    ))
-}
-
-/// `GET /api/games/{id}/index/{kind}` — a card index, as a VIEW.
-///
-/// The four indexes are the CLI's canonical identification mechanism, and this
-/// serves the same model the terminal draws: `screen_model::build_index` over
-/// `Repl::index_placements_for`, which is why that function was widened rather
-/// than copied — its doc defends a leak fence (no other seat's hand, because in
-/// a live game an opponent's starting order is hidden and an index that dimmed
-/// it with "in Seat 1's hand" would leak the one card the observation boundary
-/// exists to protect).
-///
-/// **The `_for` is M6.1's, and it is the difference between that fence holding
-/// and reading as though it did.** The terminal's fence is around the MOVER's
-/// hand, because the terminal's one operator is the mover; this API's reader is
-/// whoever asked. Asking the REPL for the viewer's placements keeps one fence in
-/// one place rather than writing a second one here.
-///
-/// **`target` is always `None` here, and that is the whole difference between
-/// an index the terminal opens and an index this API serves.** In the CLI an
-/// index can be open INSIDE a card capture, and then its cards carry selection
-/// numbers that answer that capture. This API has no capture — the web's input
-/// grammar refuses `?`/`index`/`orders`/`techs` precisely so that a digit never
-/// silently changes meaning — so the index is a read-only view and its cards
-/// carry no numbers.
-///
-/// The filter is parsed by the CLI's own `card_prompt::parse_filter`. There is
-/// exactly ONE card-entry grammar in this project and the web does not get a
-/// second one: a second parser would answer an ambiguous prefix differently from
-/// the terminal on the first `f s` a player typed.
-async fn card_index(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path((id, kind)): Path<(String, String)>,
-    QueryArgs(q): QueryArgs<IndexQuery>,
-) -> ApiResult<yokohama_cli::screen_model::IndexModel> {
-    use yokohama_cli::screen_model::IndexKind;
-    let kind = match kind.as_str() {
-        "orders" => IndexKind::Orders,
-        "techs" => IndexKind::Techs,
-        "goals" => IndexKind::Achievements,
-        "sites" => IndexKind::Sites,
-        other => {
-            return Err(ApiError::bad_request(format!(
-                "no card index named {other:?} — the four are orders, techs, goals and sites"
-            )))
-        }
-    };
-    let filter = match q.filter.as_deref() {
-        None => None,
-        Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
-            .map_err(ApiError::bad_request)?,
-    };
-    // **The index is scoped to the VIEWER, and that is not a formality.**
-    //
-    // `Repl::index_placements`' leak fence is real but is written from the
-    // terminal's standpoint, where the one operator's seat IS the mover's: it
-    // marks `CardLocation::OwnHand` for `current_player`. Served unscoped, a
-    // seated opponent read the acting seat's whole hand from one GET — and the
-    // public port takes then name that seat's hidden starting order. So the
-    // REPL is asked for the placements of the seat this payload is FOR, which
-    // is what keeps `OwnHand`'s own contract ("the index never says more than
-    // the dashboard") true of a dashboard that is now the caller's.
-    //
-    // **And a SPECTATOR is asked for nobody's** (M6.3, R-3.8): `None` marks no
-    // `OwnHand` row at all, which is the same sentence one step further —
-    // there is no hand here that is this reader's.
-    let (_table, viewer) = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let repl = handle.lock().expect("a game");
-    let me = match viewer {
-        client::Viewer::Seat(s) => Some(s),
-        client::Viewer::Spectator => None,
-    };
-    Ok(Json(yokohama_cli::screen_model::build_index(
-        kind,
-        repl.session.rules(),
-        &repl.index_placements_for(me),
-        &yokohama_cli::screen_model::build_achievements(repl.session.state()).cards,
-        None,
-        filter,
-    )))
-}
-
-/// Narrows an index. The grammar is the CLI's; an unparseable term is a 400
-/// carrying the CLI's own refusal, which names what it would have accepted.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IndexQuery {
-    #[serde(default)]
-    pub filter: Option<String>,
-}
-
-/// `GET /api/games/{id}/result` — the finished game, ranked, with every seat's
-/// score broken into the categories the engine scored it in.
-///
-/// **A 409 while the game is still running**, not an empty payload: asking for
-/// the result of an unfinished game is a client mistake, and `final_result`
-/// would answer with a standing nobody has earned.
-async fn result(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> ApiResult<outcome::Outcome> {
-    let _admitted = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let repl = handle.lock().expect("a game");
-    if !repl.session.is_over() {
-        return Err(ApiError {
-            status: StatusCode::CONFLICT,
-            message: "the game is not over — there is no final score yet".to_string(),
-            table_status: None,
-        });
-    }
-    Ok(Json(outcome::Outcome::of(&repl.session.final_result())))
-}
-
-/// Which event `why` should account for. Absent means the most recent bot move.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct WhyQuery {
-    #[serde(default)]
-    pub event: Option<usize>,
-}
-
-/// `GET /api/games/{id}/log` — the move trail, worded as it read when it applied.
-///
-/// The text comes from `Session::event_description`, which describes an event
-/// against the state it applied IN and caches the result. Re-describing now
-/// would re-price a trading-house take at today's progression and re-address a
-/// movement fee to today's president owners — a log that rewrites its own
-/// history as the game moves. This route therefore reads the cache and never
-/// builds a description.
-/// **Seated, and no viewer — stated because it is the one projection where a
-/// reader would expect masking.** The CLI's event wording names an order card
-/// only at the PUBLIC moments it is named at a table, and words the one secret
-/// as "hidden starting order" (M6.1 §5.3). So there is nothing here to scope to
-/// a seat, and a per-viewer log would be a second, divergent wording of events
-/// that were already described once, against the state they applied in.
-async fn log(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    QueryArgs(q): QueryArgs<LogQuery>,
-) -> ApiResult<yokohama_cli::screen_model::LogPanel> {
-    let _admitted = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let repl = handle.lock().expect("a game");
-    let total = repl.session.record().events.len();
-    let first = q.tail.map_or(0, |n| total.saturating_sub(n));
-    let described: Vec<(usize, String)> =
-        (first..total).map(|i| (i, repl.session.event_description(i).to_string())).collect();
-    Ok(Json(yokohama_cli::screen_model::build_log(total, described)))
-}
-
-/// How much of the game a poll gets: the SIGNAL, in five fields (room plan
-/// R-P9, spec §6; the fifth is M6.4's).
-///
-/// **A few bytes, and no frame is built.** This is the endpoint the client asks
-/// every three seconds while it is somebody else's turn, and the whole point of
-/// R-P9 is that the signal is separate from the fetch: the client learns that
-/// this game now has N events and seat S to move, and asks for frames only when
-/// that moved. Serving a `ClientState` here instead would make the poll cost a
-/// whole board, a dashboard and a decision list, most of them identical to the
-/// one already on screen.
-///
-/// **`status` is the field that lets ONE poll serve two screens.** A dealing
-/// table answers `dealing` with `events` 0 and `to_move` null, so the setup
-/// screen watches for its own start on the same endpoint the game watches for
-/// the opponent's move, and the client has one timer rather than two.
-///
-/// **`your_turn` is per-caller, and it is why this route resolves a seat.**
-/// `to_move` alone would make every client compute it from a seat number it
-/// would have to be holding correctly; answering it here means the poll's
-/// consumer branches on one boolean. It is false once the game is over, so a
-/// finished game never reads as waiting for the reader.
-#[derive(Debug, Clone, Serialize)]
-pub struct Events {
-    pub events: usize,
-    pub to_move: Option<yokohama_core::PlayerId>,
-    pub status: &'static str,
-    pub your_turn: bool,
-    /// The table's newest message number, 0 with none (M6.4, R-6.4.7) — the
-    /// fifth field, and the one that makes a message a count on the signal and
-    /// a fetch for the text.
-    ///
-    /// It is the DOCUMENT's `last` and never the number retained, so a trim
-    /// does not walk it backwards and a client comparing it against its own
-    /// cursor cannot be told to fetch a room that has not spoken.
-    pub chat: u64,
-}
-
-/// The resume cursor, VALIDATED AND NOT ACTED ON in this cycle (spec §6).
-///
-/// **It is here now so the transport can change without the client changing.**
-/// M6.3 chooses among a held request, server-sent events and a Durable Object
-/// notifier, and every one of those answers "what has happened since N" — so
-/// the polled form takes the same parameter and answers immediately whether or
-/// not `events` has moved past it. A client written against this cycle keeps
-/// working when the transport underneath it is replaced.
-///
-/// Typed `usize`, so a negative or non-numeric cursor is a 400 from serde
-/// rather than a value this handler would have to range-check; and
-/// `deny_unknown_fields` through [`QueryArgs`] makes a MISSPELLED cursor a 400
-/// too, rather than a silent `None` that polls from the beginning forever.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EventsQuery {
-    #[serde(default)]
-    pub after: Option<usize>,
-    /// Hold this request open for up to N seconds, or until the table bumps
-    /// (R-plan-5, spec §3.3).
-    ///
-    /// **The held-request transport, shipped whether or not it is the one the
-    /// client reads.** R-3.1 decides between server-sent events and this on a
-    /// measurement through the real tunnel; carrying both costs one cell here
-    /// and makes the fallback a one-line change in the client's reader rather
-    /// than a second plan. It subscribes to the same channel `…/stream` does
-    /// and answers the same object, so a client that swaps transports swaps
-    /// nothing else.
-    ///
-    /// Absent, the route answers at once, exactly as it always has.
-    #[serde(default)]
-    pub wait: Option<u64>,
-}
-
 /// The longest a `?wait` may hold (spec §3.3).
 ///
 /// Above it is a **400 and not a clamp**: a caller that asked for 120 and was
 /// silently given 25 would read the early answer as "nothing changed for two
 /// minutes", which is the same failure `deny_unknown_fields` exists to prevent
 /// one field over.
+#[cfg(feature = "server")]
 const MAX_WAIT_SECONDS: u64 = 25;
 
 /// `GET /api/games/{id}/events` — the change signal, polled form.
@@ -1780,6 +461,7 @@ const MAX_WAIT_SECONDS: u64 = 25;
 /// subscribes, then answers on the first bump or at the deadline. Both arms
 /// answer the same way — a held request that times out is not an error, it is
 /// "nothing has changed".
+#[cfg(feature = "server")]
 async fn events(
     State(state): State<Arc<AppState>>,
     identity::Identity(user): identity::Identity,
@@ -1797,96 +479,13 @@ async fn events(
         // request for a table the caller may not read — or that does not
         // exist — would be a refusal delayed by 25 seconds and an entry in a
         // map that nothing prunes.
-        let _admitted = events_at(&state, &id, &user)?;
-        let mut rx = state.games.signals().subscribe(&id);
+        let _admitted = api::events_at(&state.games, &id, &user)?;
+        let mut rx = state.signals.subscribe(&id);
         // Either arm is an answer: the bump, the deadline, or a closed channel
         // (the table was deleted, which the read below reports as a 404).
         let _ = tokio::time::timeout(std::time::Duration::from_secs(wait), rx.changed()).await;
     }
-    Ok(Json(events_at(&state, &id, &user)?))
-}
-
-/// The `Events` object for a live session, from the caller's seat.
-///
-/// **One function, two transports.** `events` and `…/stream` must answer the
-/// same object or the client's compare is against two different things; the
-/// stream's own cell asserts the first frame equals an `events` read BY VALUE,
-/// which is the property this function makes true by construction rather than
-/// by agreement between two bodies.
-fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: u64) -> Events {
-    let s = repl.session.state();
-    let over = repl.session.is_over();
-    Events {
-        events: repl.session.record().events.len(),
-        to_move: Some(s.current_player),
-        status: if over { "over" } else { "playing" },
-        // **False for a spectator by construction** (M6.3): a watcher is never
-        // the one the game is waiting for, and a poll consumer branching on
-        // this boolean must never draw them a decision zone.
-        your_turn: !over && matches!(viewer, client::Viewer::Seat(x) if s.current_player == x),
-        // A PARAMETER rather than a read, because this function holds a `Repl`
-        // and the count lives nowhere near one: a chat message is not an event
-        // and must never move the number a client re-fetches a board on.
-        chat,
-    }
-}
-
-/// The reading `events` answers with, at every table status.
-///
-/// **The admission is this function's, and it is what `…/stream` shares.** The
-/// stream is "the events route, pushed" (spec §3.1), so anything the events
-/// route would refuse the stream refuses identically and at the same point —
-/// including before it subscribes to anything.
-///
-/// The OPEN and DEALING arms answer without a session and must: neither table
-/// has a record, so a handler that reached `Games::handle` first would hand the
-/// open-table screen and the setup screen a 409 instead of the reading each is
-/// watching for.
-///
-/// **At OPEN the admission is the TABLE's own and not [`admitted`]'s** (spec
-/// §3.5 row 2, controller ruling R-4.3): any signed-in caller is answered,
-/// which is the same widening `GET …/{id}/table` has had since R-2.7 and is
-/// there for the same person. Someone who followed a join link is sitting on
-/// the open-table screen waiting for the seats to fill; a 403 would end their
-/// stream and bounce them to the lobby, which is the one thing the screen must
-/// not do. It is the ONLY row where the two part company — every other read at
-/// an open table is still `admitted`'s 403 — and it stops at `open`: `dealing`
-/// and `playing` fall straight through, so a stranger at a deal is refused and
-/// a locked game still asks for its password.
-fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events, ApiError> {
-    // The table is read FIRST, exactly as `admitted` reads it, so the open arm
-    // and the fall-through see one document and one `settle`.
-    let table = state.games.table_for_anyone(id, user)?;
-    // **Read ONCE, above all three arms**, because every one of them answers
-    // it: an open table where the seats are still filling is exactly where the
-    // people at it are talking. It sits AFTER the table read, which is as far
-    // as the guard goes and no further: an id that is not there, or a stranger
-    // at a DEAL, is refused by `table_for_anyone` above and never reaches the
-    // chat document. A stranger at a locked PLAYING table passes that read and
-    // does reach it — one read and, on a miss, a cache seed — and is then
-    // refused by `admitted` below. Nothing of it crosses the wire: the 403
-    // carries no count.
-    let chat = state.games.chat_last(id);
-    if table.status == crate::table::TableStatus::Open {
-        return Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat });
-    }
-    let (table, viewer) = admitted(state, id, user)?;
-    match table.status {
-        // Unreachable behind the return above, and written rather than
-        // collapsed into the fall-through: a status this function answers by
-        // name is a status a reader can find.
-        crate::table::TableStatus::Open => {
-            Ok(Events { events: 0, to_move: None, status: "open", your_turn: false, chat })
-        }
-        crate::table::TableStatus::Dealing => {
-            Ok(Events { events: 0, to_move: None, status: "dealing", your_turn: false, chat })
-        }
-        crate::table::TableStatus::Playing => {
-            let handle = state.games.handle(id)?;
-            let repl = handle.lock().expect("a game");
-            Ok(events_of(&repl, viewer, chat))
-        }
-    }
+    Ok(Json(api::events_at(&state.games, &id, &user)?))
 }
 
 /// `GET /api/games/{id}/stream` — the change signal, PUSHED (spec §3.1).
@@ -1928,6 +527,7 @@ fn events_at(state: &AppState, id: &str, user: &identity::User) -> Result<Events
 /// is a worse answer than saying nothing. Neither arm closes anything by
 /// itself: what closes a connection is the client acting on `end`, or the
 /// delete that is the only ordinary cause.
+#[cfg(feature = "server")]
 async fn stream(
     identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1936,8 +536,8 @@ async fn stream(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
-    events_at(&state, &id, &user)?;
-    let rx = state.games.signals().subscribe(&id);
+    api::events_at(&state.games, &id, &user)?;
+    let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
     let frames = tokio_stream::wrappers::WatchStream::new(rx).map(move |bump| {
         if bump.end {
@@ -1945,7 +545,7 @@ async fn stream(
                 Event::default().event("end").data(r#"{"reason":"deleted"}"#),
             );
         }
-        match events_at(&state, &id, &user) {
+        match api::events_at(&state.games, &id, &user) {
             Ok(e) => Ok(Event::default()
                 .event("signal")
                 .json_data(e)
@@ -1990,6 +590,7 @@ async fn stream(
 ///
 /// Identity is required and is the whole of the admission — the house is not a
 /// table and has nothing to scope.
+#[cfg(feature = "server")]
 async fn house_stream(
     identity::Identity(_user): identity::Identity,
     State(state): State<Arc<AppState>>,
@@ -1997,7 +598,7 @@ async fn house_stream(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
-    let rx = state.games.signals().subscribe_house();
+    let rx = state.signals.subscribe_house();
     let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
         Ok::<_, std::convert::Infallible>(
             Event::default()
@@ -2008,82 +609,75 @@ async fn house_stream(
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
 }
 
-/// `GET /api/games/{id}/at/{k}` — the position as it stood after `k` events.
-///
-/// **A projection, and therefore it SERVES A LOCKED SESSION.** The rule is the
-/// one stated beside `why` above: the lockdown gate fences COMPUTATION, not
-/// projection. A locked game is precisely the one whose history you want to
-/// read — the lockdown means the driver found a fault, and this route is the
-/// instrument for finding where. So there is no lockdown check here, and adding
-/// one would be the bug.
-///
-/// **`k` counts events APPLIED, not an event index**, so the domain is
-/// `0..=events.len()` INCLUSIVE at both ends: `0` is the post-setup position the
-/// first event was decided in, and `len` is the game as it now stands. The track
-/// a client draws therefore has `len + 1` stops and the last one names no event.
-/// Note the asymmetry with `why`, which addresses an EVENT and so requires
-/// `n < len` — a client that calls both at the same stop gets one avoidable
-/// refusal at the top.
-///
-/// **The range is checked HERE, against a length this handler already holds,
-/// and every error from `state_at` is then a 500.** The alternative — reading
-/// `ReplayError::event_index` to tell past-the-end from a failing event — cannot
-/// be done correctly: `ReplayError` is a struct, not an enum, and its own doc
-/// says the past-the-end convention is shared with `replay_strict`'s
-/// terminal-digest mismatch, so *"a caller branching on `event_index` alone
-/// cannot tell those from a last-event failure — the message text is the
-/// discriminator."* Checking first makes that ambiguity unreachable rather than
-/// navigating it, and it cannot rot.
-///
-/// **Nothing here indexes `event_description`.** That method is a bare `Vec`
-/// index and `k == len` is a legal position with no event at it, so reaching for
-/// a description here would panic on a client-supplied number — under the
-/// per-game mutex, in a crate with no `CatchPanicLayer`, poisoning that game
-/// until it is evicted. The log route already serves the words; this one serves
-/// the position.
-///
-/// **The lock is HELD across the body**, unlike `suggest` and `why`. Those two
-/// drop it because they run a multi-second search; this is a replay measured in
-/// milliseconds, `input` already holds the same mutex across a bot search AND a
-/// store write, and the clone that dropping would require copies every `Move` in
-/// the record. Following `why`'s pattern here would cost more than it saves.
-async fn at_k(
-    identity::Identity(user): identity::Identity,
-    State(state): State<Arc<AppState>>,
-    Path((id, k)): Path<(String, usize)>,
-) -> ApiResult<client::HistoricalFrame> {
-    let (_table, viewer) = admitted(&state, &id, &user)?;
-    let handle = state.games.handle(&id)?;
-    let repl = handle.lock().expect("a game");
-    let total = repl.session.record().events.len();
-    if k > total {
-        return Err(ApiError::not_found(format!(
-            "this game has {total} events, so its last position is {total} — there is no position {k}"
-        )));
-    }
-    // **The pin is the CALLER's seat, at every `k`.** M4 pinned the lowest
-    // non-bot seat because an unauthenticated route had nothing better; an
-    // authenticated one has the caller's own, which is stable for the same
-    // reason AND is the seat the caller is entitled to. So a sweep over
-    // `0..=total` still harvests exactly one seat's hands — and now it is the
-    // sweeper's own.
-    //
-    // **And a SPECTATOR's sweep harvests nothing at all** (M6.3, R-3.7): every
-    // hand is hidden at every `k` and `seat` is null.
-    client::HistoricalFrame::at(&repl, k, viewer).map(Json).map_err(|e| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
-        table_status: None,
-    })
-}
-
 /// The art manifest, or an honest 404.
 ///
+/// The ONE piece of axum between a request and the layer (R-6.5a.3). Identity
+/// is resolved here with today's extractor logic and handed to the layer as the
+/// host's sentence; the body and query reach the layer as bytes and text. The
+/// body limit is axum's own default (2 MiB), so nothing this API accepted
+/// before is refused now.
+#[cfg(feature = "server")]
+async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 2 << 20).await {
+        Ok(b) => b,
+        Err(e) => {
+            return ApiError::bad_request(format!("the body could not be read: {e}")).into_response()
+        }
+    };
+    let resolved = identity::resolve(state.identity, &parts.headers);
+    let identity: api::Identity<'_> = match &resolved {
+        Ok(u) => Ok(u),
+        Err(m) => Err(m.as_str()),
+    };
+    let content_type = parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
+    let request = api::ApiRequest {
+        method: parts.method.as_str(),
+        path: parts.uri.path(),
+        query: parts.uri.query().unwrap_or(""),
+        content_type,
+        body: &bytes,
+    };
+    // Art is a server route (the manifest reads the gated `art` module), listed
+    // in the layer's table for the 405/404 arithmetic and answered here.
+    if request.path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
+        let mut response = match art_manifest().await {
+            Ok(j) => j.into_response(),
+            Err(e) => e.into_response(),
+        };
+        // HEAD leaves with an empty body here too, as it does through `dispatch`.
+        if parts.method == http::Method::HEAD {
+            *response.body_mut() = axum::body::Body::empty();
+        }
+        return response;
+    }
+    let host = api::Host { identity_name: state.identity.name(), signal_kind: SIGNAL_KIND };
+    let out = api::dispatch(&state.games, &host, identity, &request);
+    let mut response = Response::new(axum::body::Body::from(out.body.clone()));
+    *response.status_mut() = StatusCode::from_u16(out.status).expect("a known status");
+    if !out.body.is_empty() {
+        response
+            .headers_mut()
+            .insert(http::header::CONTENT_TYPE, http::HeaderValue::from_static("application/json"));
+    }
+    // axum's 405 carried an `Allow` header naming the methods the path takes;
+    // `any()` skips it, so the adapter puts it back from the layer's own table
+    // (R-6.5a.3: "axum's 405 shape, reproduced").
+    if out.status == 405 {
+        let allow = api::allowed_methods(request.path).join(",");
+        response
+            .headers_mut()
+            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allow).expect("ASCII method names"));
+    }
+    response
+}
+
 /// **A checkout with no cropped art is a supported state**, not a broken one:
 /// the client falls back to drawing what it drew before there was any art. So
 /// the absence answers as a refusal with the sentence that explains it — which
 /// names the regeneration command, because the one thing a reader needs here is
 /// how to make it stop being absent.
+#[cfg(feature = "server")]
 async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
     art::load(&art::art_dir()).map(Json).map_err(|e| {
         ApiError::not_found(format!("{e} — run `python3 docs/tools/mkcardart.py` from the repo root"))
@@ -2101,6 +695,7 @@ async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
 /// one: a missing picture answering with HTML is a broken image whose message
 /// blames the decoder. Everything else is the client, with the SPA fallback
 /// `assets::serve` describes.
+#[cfg(feature = "server")]
 async fn fallback(uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
         return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
@@ -2113,41 +708,29 @@ async fn fallback(uri: axum::http::Uri) -> Response {
 
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
+#[cfg(feature = "server")]
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/health", get(health))
-        .route("/api/me", get(me))
-        .route("/api/labels", get(labels))
-        .route("/api/art", get(art_manifest))
-        .route("/api/games", get(list_games).post(create_game))
-        .route("/api/games/{id}", get(get_game).delete(delete_game))
-        .route("/api/games/{id}/table", get(get_table))
-        .route("/api/games/{id}/deal", get(deal))
-        .route("/api/games/{id}/keep", post(keep))
-        .route("/api/games/{id}/join", post(join))
-        .route("/api/games/{id}/unlock", post(unlock))
-        .route("/api/games/{id}/chat", get(chat_read).post(chat_post))
-        .route("/api/games/{id}/input", post(input))
-        .route("/api/games/{id}/ports", get(ports))
-        .route("/api/games/{id}/labs", get(labs))
-        .route("/api/games/{id}/areas", get(areas))
-        .route("/api/games/{id}/log", get(log))
         .route("/api/games/{id}/events", get(events))
         .route("/api/games/{id}/stream", get(stream))
         .route("/api/stream", get(house_stream))
-        .route("/api/chat", get(house_chat_read).post(house_chat_post))
-        .route("/api/games/{id}/at/{k}", get(at_k))
-        .route("/api/games/{id}/suggest", get(suggest))
-        .route("/api/games/{id}/why", get(why))
-        .route("/api/games/{id}/index/{kind}", get(card_index))
-        .route("/api/games/{id}/result", get(result))
+        // Every other `/api/…` route is the layer's (R-6.5a.3): one catch-all
+        // to the adapter, plus `/api/games` itself, which has no `{*rest}` tail.
+        .route("/api/{*rest}", axum::routing::any(adapter))
+        .route("/api/games", axum::routing::any(adapter))
         .with_state(state)
         .fallback(fallback)
 }
+// ---- end server ----
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::NOT_SEATED;
+    use yokohama_core::SEMANTICS_REV;
+    // The four bumps are the trait's since M6.5a (R-6.5a.8); the cells that
+    // drive one by hand need it in scope.
+    use crate::signal::Signal;
     use crate::store::Doc;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -2181,6 +764,214 @@ mod tests {
 
     async fn post_json(uri: &str, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
         raw_post(uri, serde_json::to_vec(&body).expect("a body")).await
+    }
+
+    /// A request under any METHOD, answered as raw bytes — for the cells about
+    /// the adapter's shape (HEAD, 405, the JSON 404) and, from Task 9, the record
+    /// route's exact bytes. `who` is the claimed identity, or none.
+    async fn raw(app: Router, method: &str, uri: &str, who: Option<&str>) -> (StatusCode, Vec<u8>) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(who) = who {
+            builder = builder.header(identity::CLAIMED_HEADER, who);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).expect("a request"))
+            .await
+            .expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
+    /// R-6.5a.4's pin: the layer's JSON rejection is axum's own `body_text()`,
+    /// word for word, for a canonical bad body (an unknown key under
+    /// `deny_unknown_fields`). An axum upgrade that rewords fails here, not in
+    /// a client.
+    #[tokio::test]
+    async fn the_layers_json_rejection_is_axums_word_for_word() {
+        use axum::extract::FromRequest;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"line":"1","nope":1}"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted an unknown key"),
+        };
+        let ours = api::parse_json::<Input>(Some("application/json"), br#"{"line":"1","nope":1}"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+        // And the SYNTAX arm, which is a different rejection type with a
+        // different sentence.
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(r#"{"line":"1"} trailing"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted trailing input"),
+        };
+        let ours = api::parse_json::<Input>(Some("application/json"), br#"{"line":"1"} trailing"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+        assert!(ours.message.starts_with("Failed to parse the request body as JSON: "), "{}", ours.message);
+        // And the MISSING content type, the third rejection type — pinned against
+        // axum's own rather than a literal, so an upgrade that rewords it is
+        // caught here (R-6.5a.4 asks that each of the four be pinned).
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/x")
+            .body(axum::body::Body::from(r#"{"line":"1"}"#))
+            .unwrap();
+        let axum_text = match axum::Json::<Input>::from_request(req, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted a body with no content type"),
+        };
+        let ours = api::parse_json::<Input>(None, br#"{"line":"1"}"#).unwrap_err();
+        assert_eq!(ours.message, axum_text);
+    }
+
+    /// R-6.5a.3's 405 is axum's SHAPE: an empty body AND the `Allow` header
+    /// naming the path's methods — HEAD beside GET, as axum lists it — read off
+    /// the layer's table by the adapter, since `any()` drops the one axum's
+    /// `MethodRouter` wrote.
+    #[tokio::test]
+    async fn a_405_carries_axums_allow_header() {
+        let app = app(Arc::new(AppState::in_memory()));
+        let res = app
+            .clone()
+            .oneshot(Request::builder().method("DELETE").uri("/api/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD"));
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/games/sim-1")
+                    .header(identity::CLAIMED_HEADER, WHO)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD,DELETE"));
+        assert_eq!(api::allowed_methods("/api/nothing"), Vec::<&str>::new(), "no path, no methods");
+    }
+
+    #[tokio::test]
+    async fn the_layers_query_rejection_is_axums_word_for_word() {
+        use axum::extract::FromRequestParts;
+        let (mut parts, _) = axum::http::Request::builder().uri("/x?limit=abc").body(()).unwrap().into_parts();
+        let axum_text = match axum::extract::Query::<ListQuery>::from_request_parts(&mut parts, &()).await {
+            Err(rej) => rej.body_text(),
+            Ok(_) => panic!("axum accepted limit=abc"),
+        };
+        assert_eq!(api::parse_query::<ListQuery>("limit=abc").unwrap_err().message, axum_text);
+        // The sentence names the FIELD, which is the part a plain
+        // `serde_urlencoded::from_str` would have dropped.
+        assert!(axum_text.contains("limit"), "{axum_text}");
+    }
+
+    /// R-6.5a.3's 401 pin: a game route handed the host's `Err` sentence answers
+    /// that sentence, in this API's shape, in every identity mode — the layer
+    /// carries the host's words and never writes its own.
+    #[tokio::test]
+    async fn an_err_identity_through_dispatch_is_the_extractors_401_sentence_in_every_mode() {
+        for mode in [
+            identity::IdentityMode::Claimed,
+            identity::IdentityMode::CfAccess,
+            identity::IdentityMode::Worker,
+        ] {
+            let sentence = identity::resolve(mode, &http::HeaderMap::new()).unwrap_err();
+            let state = AppState::in_memory_with(mode);
+            let host = api::Host { identity_name: mode.name(), signal_kind: SIGNAL_KIND };
+            let out = api::dispatch(
+                &state.games,
+                &host,
+                Err(&sentence),
+                &api::ApiRequest { method: "GET", path: "/api/games", query: "", content_type: None, body: b"" },
+            );
+            assert_eq!(out.status, 401, "{}", mode.name());
+            assert_eq!(out.body, serde_json::json!({ "error": sentence }).to_string(), "{}", mode.name());
+        }
+    }
+
+    /// R-6.5a.4's third pin: the `{k}` segment's rejection is axum's
+    /// `Path<(String, usize)>` text word for word — read off a throwaway axum
+    /// router, because a `Path` cannot be extracted outside one — and the real
+    /// app answers a signed-in caller the same 400 BEFORE any table lookup, the
+    /// precedence axum's extractor order gave it.
+    #[tokio::test]
+    async fn the_layers_path_rejection_is_axums_word_for_word() {
+        let probe = Router::new().route(
+            "/api/games/{id}/at/{k}",
+            get(|Path((id, k)): Path<(String, usize)>| async move { format!("{id}:{k}") }),
+        );
+        let res = probe
+            .oneshot(Request::builder().uri("/api/games/x/at/abc").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let axum_text =
+            String::from_utf8(axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
+        assert_eq!(api::parse_path_usize(1, "abc").unwrap_err().message, axum_text);
+        let (status, body) =
+            raw(app(Arc::new(AppState::in_memory())), "GET", "/api/games/nowhere/at/abc", Some(WHO)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "the segment is refused before the table is looked up");
+        assert_eq!(body, serde_json::json!({ "error": axum_text }).to_string().as_bytes());
+    }
+
+    /// R-6.5a.12: the record route's three answers — 409 while the game runs,
+    /// 403 for a watcher of a finished game, and for a seat holder the store's
+    /// EXACT bytes, digest included (the anti-vacuity: the stored record really
+    /// carries a `terminal_digest`, so byte-equality is a claim about something).
+    #[tokio::test]
+    async fn the_record_route_is_409_while_running_403_for_a_watcher_and_the_stored_bytes_when_over() {
+        let (state, name, _) = a_finished_two_person_game("rec").await;
+        start_as(&state, "running", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, body) = get_as(&state, "red@wire.test", "/api/games/running/record").await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], "the record is available once the game is over");
+        assert!(body.get("status").is_none(), "no table status rides the 409: {body}");
+        // A watcher of the FINISHED game: signed in, no seat, no lock to knock on.
+        let (status, body) = get_as(&state, "green@wire.test", &format!("/api/games/{name}/record")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "the record is the players' — watch, download nothing");
+        // A seat holder gets the store's exact bytes.
+        let (status, raw_bytes) =
+            raw(app(Arc::clone(&state)), "GET", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (stored, _) = state.games.store().read(store::Doc::Record, name).unwrap().unwrap();
+        assert_eq!(raw_bytes, stored.as_bytes(), "the body is the stored record, not a re-serialization");
+        assert!(stored.contains("\"terminal_digest\""), "anti-vacuity: the stored record carries its digest");
+        // And it is a 405 under POST, like every other GET-only route.
+        let (status, _) = raw(app(Arc::clone(&state)), "POST", &format!("/api/games/{name}/record"), Some("red@wire.test")).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    /// R-6.5a.3: HEAD reaches the GET arm and leaves with an empty body — axum's
+    /// `get` served HEAD that way, and a proxy or health checker may send one.
+    #[tokio::test]
+    async fn head_on_a_get_route_is_200_with_an_empty_body() {
+        let (status, body) = raw(app(Arc::new(AppState::in_memory())), "HEAD", "/api/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_known_path_under_the_wrong_method_is_405_and_an_unknown_path_is_the_json_404() {
+        let app = app(Arc::new(AppState::in_memory()));
+        let (status, body) = raw(app.clone(), "DELETE", "/api/health", None).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+        assert!(body.is_empty(), "axum's 405 has no body: {}", String::from_utf8_lossy(&body));
+        let (status, body) = raw(app, "GET", "/api/nothing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body, br#"{"error":"no such endpoint: /api/nothing"}"#);
     }
 
     async fn raw_post(uri: &str, body: Vec<u8>) -> (StatusCode, serde_json::Value) {
@@ -3211,7 +2002,8 @@ mod tests {
     ///
     /// Four refusals and then the one that answers, because the refusals are
     /// what a client meets when it gets a parameter wrong and a silent default
-    /// is the failure mode `QueryArgs` exists to stop: `?scoped=open` would
+    /// is the failure mode the layer's `parse_query` exists to stop (as `QueryArgs`
+    /// did): `?scoped=open` would
     /// otherwise return the caller's OWN tables with a 200 on it.
     #[tokio::test]
     async fn list_games_validates_its_query() {
@@ -6268,7 +5060,7 @@ mod tests {
     #[tokio::test]
     async fn the_stream_refuses_an_id_that_is_not_there_without_making_a_sender() {
         let state = Arc::new(AppState::in_memory());
-        assert_eq!(state.games.signals().senders(), 0);
+        assert_eq!(state.signals.senders(), 0);
         let (status, text, _) = stream_frames(
             Arc::clone(&state),
             "/api/games/nope/stream",
@@ -6278,7 +5070,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
         assert_eq!(
-            state.games.signals().senders(),
+            state.signals.senders(),
             0,
             "a refused stream subscribed to something",
         );
@@ -6371,7 +5163,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         store.fail_table_reads.store(1, Ordering::SeqCst);
-        state.games.signals().bump_table("wire");
+        state.signals.bump_table("wire");
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         assert_eq!(
             store.fail_table_reads.load(Ordering::SeqCst),
@@ -6380,7 +5172,7 @@ mod tests {
         );
 
         // And the connection is still there to answer it.
-        state.games.signals().bump_table("wire");
+        state.signals.bump_table("wire");
 
         let (status, text, ended) = reader.await.expect("the reader task");
         assert_eq!(status, StatusCode::OK, "{text}");
@@ -6474,7 +5266,7 @@ mod tests {
         for (table, sentence) in
             [("shut", "this table is locked — unlock it first"), ("dealt", NOT_SEATED)]
         {
-            let before = state.games.signals().senders();
+            let before = state.signals.senders();
             let (status, text, _) = stream_frames(
                 Arc::clone(&state),
                 &format!("/api/games/{table}/stream"),
@@ -6485,7 +5277,7 @@ mod tests {
             assert_eq!(status, StatusCode::FORBIDDEN, "{table}: {text}");
             assert!(text.contains(sentence), "{table}: {text}");
             assert_eq!(
-                state.games.signals().senders(),
+                state.signals.senders(),
                 before,
                 "{table}: a refused stream subscribed",
             );
@@ -6981,7 +5773,7 @@ mod tests {
             ..chat::ChatConfig::default()
         }));
         // Not `mut`: this cell only asks `has_changed`, which borrows shared.
-        let house = off.games.signals().subscribe_house();
+        let house = off.signals.subscribe_house();
         for (method, body) in [("GET", None), ("POST", Some(serde_json::json!({ "text": "x" })))] {
             let (status, got) = request_as(&off, "grey@wire.test", method, "/api/chat", body).await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{method}: {got}");
@@ -7376,5 +6168,130 @@ mod tests {
         assert_eq!(frames_after_chat.len(), 1, "one message, one frame: {frames_after_chat:?}");
         assert_eq!(frames_after_chat[0]["chat"], 1);
         assert_eq!(frames_after_chat[0]["seq"], 0);
+    }
+
+    /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles
+    /// for the target and panics there), so the crate's own source is read at run
+    /// time with each file's top-level test module cut OUT (the code below it is
+    /// scanned too), and any platform call outside the `server`-gated files or a
+    /// `#[cfg(feature = "server")]`-gated item is named. **The convention is
+    /// ENFORCED, not followed** (the whole-branch review's IMP-2): inside a region
+    /// every column-0 item must carry its own attribute, or the cell names it as
+    /// ungated — so a region's end marker is documentation for the reader and an
+    /// item slipped in between two gated ones cannot hide behind them. Two
+    /// anti-vacuity partners: the gated files must exist, and at least one gated
+    /// site must match, so a pattern that matches nothing is caught as loudly as
+    /// a call that escaped.
+    #[test]
+    fn platform_calls_stay_behind_the_server_feature() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let gated_files = ["art.rs", "assets.rs", "main.rs"];
+        let patterns = [
+            "SystemTime",
+            "Instant::now",
+            "std::fs",
+            "std::env",
+            "std::thread",
+            "std::process",
+            "tokio::",
+            "axum::",
+        ];
+        let mut escaped: Vec<String> = Vec::new();
+        let mut gated_hits = 0usize;
+        for name in gated_files {
+            assert!(src.join(name).exists(), "gated file {name} is missing — update the list");
+        }
+        for entry in std::fs::read_dir(&src).expect("src is readable") {
+            let path = entry.expect("an entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            let text = std::fs::read_to_string(&path).expect("readable");
+            // The TOP-LEVEL test module is cut OUT and everything else is scanned —
+            // the code above it and the code below it. Top-level means column 0,
+            // so an inner `#[cfg(test)]` on a test-only item (`signal.rs`'s
+            // `senders`, `games.rs`'s `evict_for_test`) does not end the scan
+            // early (the mid-point review measured `games.rs:675-706` and
+            // `signal.rs:128-169` unscanned under the old rule), and a platform
+            // call written below `mod tests` is read (the battery's residual).
+            let lines: Vec<&str> = text.lines().collect();
+            let test_start = lines.iter().position(|l| *l == "#[cfg(test)]");
+            let test_end = test_start.map(|start| {
+                lines[start..].iter().position(|l| *l == "}").map_or(lines.len(), |k| start + k + 1)
+            });
+            let in_test_module = |i: usize| test_start.is_some_and(|s| i >= s && i < test_end.unwrap());
+            let first_code = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+            let whole_file_gated = gated_files.contains(&name.as_str())
+                || lines[first_code].starts_with("#![cfg(feature = \"server\")]");
+            // A region starts at a line reading `#[cfg(feature = "server")]` and
+            // ends at a line starting at column 0 with `// ---- end server ----`.
+            // Inside a region, EVERY item that starts at column 0 must carry its
+            // own attribute (an attribute gates one item — the compiler's rule),
+            // else it is named as an ungated item inside a region: the region is a
+            // reading aid, not a gate. An item runs from its first column-0 line to
+            // the next column-0 `}` unless that first line ends in `;`.
+            let starts_item = |l: &str| {
+                let item = [
+                    "pub ", "fn ", "async fn ", "struct ", "enum ", "impl", "const ", "static ", "type ", "use ",
+                    "mod ", "trait ", "macro_rules!",
+                ];
+                item.iter().any(|k| l.starts_with(k))
+                    || (l.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && l.contains("!("))
+            };
+            let mut in_region = false;
+            let mut armed = false; // a `#[cfg(feature = "server")]` seen, its item not yet reached
+            let mut item_gated = false; // the current item carries the attribute
+            let mut item_open = false; // inside an item that runs to a column-0 `}`
+            for (n, line) in lines.iter().enumerate() {
+                if in_test_module(n) {
+                    continue;
+                }
+                if line.trim_start().starts_with("#[cfg(feature = \"server\")]") {
+                    in_region = true;
+                    armed = true;
+                    continue;
+                }
+                if line.starts_with("// ---- end server ----") {
+                    in_region = false;
+                    armed = false;
+                    continue;
+                }
+                if !item_open && starts_item(line) {
+                    if in_region && !armed {
+                        escaped.push(format!(
+                            "{name}:{}: ungated item inside a server region: {}",
+                            n + 1,
+                            line.trim()
+                        ));
+                    }
+                    item_gated = armed;
+                    armed = false;
+                    // Closed on its own line when it ends in `;` or `}` (a one-line
+                    // `impl X {}` or `struct X;`); otherwise open until a column-0
+                    // closer — `}`, or `]`/`)` for a const array or tuple.
+                    let end = line.trim_end();
+                    item_open = !(end.ends_with(';') || end.ends_with('}'));
+                } else if item_open && (line.starts_with('}') || line.starts_with(']') || line.starts_with(')')) {
+                    item_open = false;
+                }
+                let in_gate = whole_file_gated || item_gated;
+                for p in patterns {
+                    if line.contains(p) && !line.trim_start().starts_with("//") {
+                        if in_gate {
+                            gated_hits += 1;
+                        } else {
+                            escaped.push(format!("{name}:{}: {}", n + 1, line.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(gated_hits > 0, "no gated site matched any pattern — the patterns are stale");
+        assert!(
+            escaped.is_empty(),
+            "platform calls outside the server feature:\n{}",
+            escaped.join("\n")
+        );
     }
 }

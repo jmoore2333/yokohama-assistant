@@ -113,7 +113,16 @@ async fn main() {
         }
     };
 
-    let state = Arc::new(AppState::new(identity, chat));
+    // The archive directory is the third variable read here (M6.5a, R-6.5a.9):
+    // unset is no archive, a directory that cannot be created is a refusal to
+    // start that names the variable.
+    let state = match AppState::new(identity, chat) {
+        Ok(s) => Arc::new(s),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
     let listener = match tokio::net::TcpListener::bind((host.as_str(), port)).await {
         Ok(l) => l,
         Err(e) => {
