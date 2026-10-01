@@ -338,6 +338,28 @@ impl Games {
         &self.rules
     }
 
+    /// A host's side channel INTO the store (M6.5b, R-6.5b.4): a document
+    /// written with no version — a CREATE, refused if present — for a Worker
+    /// filling a fresh store at boot or on a lock acquisition.
+    ///
+    /// It bypasses this type on purpose. The pair a browser holds is a state
+    /// the player was already shown, so there is nothing for `Games` to decide
+    /// about it; the `Repl` is rebuilt from the record on first touch through
+    /// [`Games::handle`] exactly as an absent handle is. Versionless because
+    /// the store it fills is fresh — the Worker `init()`s before it loads — so
+    /// the `Store` trait needs no overwrite-without-a-version arm, and a load
+    /// that DOES meet a present document is a bug in the caller and says so.
+    pub fn load_document(&self, doc: Doc, id: &str, text: &str) -> Result<(), String> {
+        self.store.write_if_version(doc, id, text, None).map(|_| ()).map_err(|e| e.to_string())
+    }
+
+    /// The side channel OUT: the store's exact bytes, for the host's own
+    /// persistence and its file save. `None` is absent; an unreadable present
+    /// document is the `Err` the `Store` trait distinguishes it as.
+    pub fn read_document(&self, doc: Doc, id: &str) -> Result<Option<String>, String> {
+        self.store.read(doc, id).map(|r| r.map(|(text, _)| text))
+    }
+
     /// The chat's retention numbers, for the route that has to WORD the text
     /// cap in a refusal rather than restate it.
     pub fn limits(&self) -> ChatLimits {
@@ -667,8 +689,13 @@ impl Games {
         }
         doc.archived_at = Some((self.clock)());
         let table_json = crate::archive::strip_for_archive(&doc);
-        match self.archive.put(crate::archive::Why::Over, id, record_json, &table_json) {
-            Ok(()) => {
+        // The server's OWN games carry the empty caller prefix (R-6.5b.15): the
+        // `browser/<segment>/` tree is for games a browser sent.
+        match self.archive.put("", crate::archive::Why::Over, id, record_json, &table_json) {
+            // Both outcomes are a landed copy: `Identical` means an earlier put
+            // of these very bytes landed and only its stamp did not (M6.5b,
+            // spec §2.4), so the retry stamps rather than being refused.
+            Ok(_) => {
                 // The stamp is what keeps this game to ONE archive copy: the next
                 // abandon puts under `abandoned/`, a DIFFERENT path, so a put that
                 // landed without its stamp would be archived a second time there
@@ -1664,6 +1691,37 @@ mod tests {
         let (doc, _) = games.read_table(&id).expect("a readable store").expect("the table");
         assert!(doc.turn.is_some(), "the refreshed mirror a woken lobby reads");
     }
+
+    /// **The host's two side channels into and out of the store** (M6.5b,
+    /// R-6.5b.4): a versionless write is a CREATE, and the read gives back the
+    /// exact bytes.
+    ///
+    /// Both halves are load-bearing for the browser host. `load_document` is
+    /// what a Worker fills a fresh `MemStore` with at boot and on every lock
+    /// acquisition, and it must REFUSE a present document rather than
+    /// overwrite one: a second load over a live game would silently roll the
+    /// game back to whatever the caller happened to be holding. And the read
+    /// must be byte-for-byte, because what the Worker writes back to IndexedDB
+    /// is compared with what it last wrote — a re-serialization would differ
+    /// in whitespace or key order and make every read look like a change.
+    #[test]
+    fn a_versionless_load_creates_once_and_reads_back_byte_for_byte() {
+        let games = games();
+        let text = r#"{"schema":3,"id":"local-1"}"#;
+        games.load_document(Doc::Table, "local-1", text).expect("a fresh document is created");
+        let again = games.load_document(Doc::Table, "local-1", r#"{"schema":3,"id":"other"}"#);
+        assert!(again.is_err(), "a present document is refused, not overwritten: {again:?}");
+        assert_eq!(
+            games.read_document(Doc::Table, "local-1").expect("a readable store").as_deref(),
+            Some(text),
+            "the store's exact bytes, and the refused write left them alone",
+        );
+        assert_eq!(
+            games.read_document(Doc::Record, "local-1").expect("a readable store"),
+            None,
+            "absent is None, and a table is not a record",
+        );
+    }
 }
 
 /// The helpers both halves of this crate's game tests share.
@@ -1790,10 +1848,22 @@ pub(crate) mod test_support {
         games.handle(&id).expect("playing")
     }
 
+    /// One remembered put, as [`RecordingArchive`] saw it.
+    ///
+    /// A named struct rather than the tuple it was until M6.5b: the prefix is a
+    /// fifth thing to check and `puts[0].4` reads like nothing at all.
+    pub(crate) struct Put {
+        pub prefix: String,
+        pub why: crate::archive::Why,
+        pub id: String,
+        pub record: String,
+        pub table: String,
+    }
+
     /// An [`Archive`](crate::archive::Archive) that REMEMBERS its puts, or
     /// refuses every one of them — the two shapes the archive-site cells need.
     pub(crate) struct RecordingArchive {
-        pub puts: Mutex<Vec<(crate::archive::Why, String, String, String)>>,
+        pub puts: Mutex<Vec<Put>>,
         pub fail: bool,
     }
 
@@ -1807,12 +1877,25 @@ pub(crate) mod test_support {
     }
 
     impl crate::archive::Archive for RecordingArchive {
-        fn put(&self, why: crate::archive::Why, id: &str, r: &str, t: &str) -> Result<(), String> {
+        fn put(
+            &self,
+            prefix: &str,
+            why: crate::archive::Why,
+            id: &str,
+            r: &str,
+            t: &str,
+        ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
             if self.fail {
-                return Err("disk on fire".to_string());
+                return Err(crate::archive::PutError::Failed("disk on fire".to_string()));
             }
-            self.puts.lock().unwrap().push((why, id.to_string(), r.to_string(), t.to_string()));
-            Ok(())
+            self.puts.lock().unwrap().push(Put {
+                prefix: prefix.to_string(),
+                why,
+                id: id.to_string(),
+                record: r.to_string(),
+                table: t.to_string(),
+            });
+            Ok(crate::archive::PutOutcome::Landed)
         }
         fn kind(&self) -> &'static str {
             "recording"

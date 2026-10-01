@@ -70,6 +70,8 @@ import type {
   FrameModel,
   Health,
   HistoricalFrame,
+  RunFrames,
+  ArchiveReply,
   IndexModel,
   Labels,
   LabsPanel,
@@ -115,6 +117,15 @@ import log from "./log.json";
 import me from "./me.json";
 import meSignedOut from "./me_signed_out.json";
 import atK from "./at_k.json";
+import run from "./run.json";
+import archivePost from "./archive_post.json";
+import archivePostIdentical from "./archive_post_identical.json";
+import archivePostAbandoned from "./archive_post_abandoned.json";
+import archive409 from "./archive_409.json";
+import archive400Rev from "./archive_400_rev.json";
+import archive400Digest from "./archive_400_digest.json";
+import archive400Replay from "./archive_400_replay.json";
+import archive400Table from "./archive_400_table.json";
 import options from "./options.json";
 import options4p from "./options_4p.json";
 import optionsMany from "./options_many.json";
@@ -344,6 +355,22 @@ const _areas: Widen<AreasPanel> = areas;
 const _areas4p: Widen<AreasPanel> = areas4p;
 const _log: Widen<LogPanel> = log;
 const _atK: Widen<HistoricalFrame> = atK;
+const _run: Widen<RunFrames> = run;
+// M6.5b: the three answers the archive route gives a game that was accepted —
+// a finished one filed under `over/`, the same send again (a retry, 200), and a
+// PARTIAL one under `abandoned/`, which is the leaf the server's own replay
+// chose. The three together are what say the leaf is not read off the body.
+const _archivePost: Widen<ArchiveReply> = archivePost;
+const _archivePostIdentical: Widen<ArchiveReply> = archivePostIdentical;
+const _archivePostAbandoned: Widen<ArchiveReply> = archivePostAbandoned;
+// And its five refusals, committed for the SENTENCES the client shows as sent:
+// four things to fix in the record or the pair, and one — the 409 — that is not
+// a fix at all but the answer on which the game is KEPT.
+const _archive409: Widen<ApiErrorBody> = archive409;
+const _archive400Rev: Widen<ApiErrorBody> = archive400Rev;
+const _archive400Digest: Widen<ApiErrorBody> = archive400Digest;
+const _archive400Replay: Widen<ApiErrorBody> = archive400Replay;
+const _archive400Table: Widen<ApiErrorBody> = archive400Table;
 const _artManifest: Widen<ArtManifest> = artManifest;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
@@ -463,7 +490,9 @@ void [
   _events, _eventsDealing, _eventsOpen,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
-  _ports, _labs, _areas, _areas4p, _log, _atK, _artManifest, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _feeNonzero,
+  _archivePost, _archivePostIdentical, _archivePostAbandoned,
+  _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
   _suggest, _why, _whyRefused, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
@@ -536,6 +565,12 @@ const PORTS = ["boards", "deck_remaining"] as const;
 const LABS = ["boards", "deck_remaining"] as const;
 const AREAS = ["rows"] as const;
 const LOG = ["total", "entries"] as const;
+// The run payload (M6.5b): a list of `HISTORICAL_FRAME`s and nothing else.
+const RUN = ["frames"] as const;
+// The archive reply (M6.5b). `identical` is on EVERY reply, `false` on a 201:
+// a field the client reads only on a 200 would be a field a server could stop
+// sending without anything saying so.
+const ARCHIVE_REPLY = ["leaf", "path", "identical"] as const;
 // The replay payload. Its shape is defined by what it does NOT carry — see
 // `HistoricalFrame` in `types.ts` — so this list is the fence that keeps a
 // present-tense field from being quietly added back on the server.
@@ -616,6 +651,8 @@ const _po: KeysOf<PortsPanel, typeof PORTS> = PORTS;
 const _la: KeysOf<LabsPanel, typeof LABS> = LABS;
 const _ar: KeysOf<AreasPanel, typeof AREAS> = AREAS;
 const _lo: KeysOf<LogPanel, typeof LOG> = LOG;
+const _rn: KeysOf<RunFrames, typeof RUN> = RUN;
+const _av: KeysOf<ArchiveReply, typeof ARCHIVE_REPLY> = ARCHIVE_REPLY;
 const _lb: KeysOf<Labels, typeof LABELS> = LABELS;
 const _he: KeysOf<Health, typeof HEALTH> = HEALTH;
 // `_me` is taken by the widened assignment above, so the key list takes `_mk`.
@@ -655,7 +692,7 @@ void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc,
       _ev,
       _tv, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
-      _tl, _ct, _ig, _ic, _hf,
+      _tl, _ct, _ig, _ic, _hf, _rn, _av,
       _cg, _cm, _as, _aw];
 
 /** The key lists, for the runtime half in `contract.test.ts`. */
@@ -672,6 +709,8 @@ export const KEYS = {
   labs: LABS,
   areas: AREAS,
   log: LOG,
+  run: RUN,
+  archiveReply: ARCHIVE_REPLY,
   labels: LABELS,
   health: HEALTH,
   me: ME,
@@ -724,6 +763,15 @@ const as = <T>(v: unknown): T => v as T;
 
 export const wire = {
   atK: as<HistoricalFrame>(atK),
+  run: as<RunFrames>(run),
+  archivePost: as<ArchiveReply>(archivePost),
+  archivePostIdentical: as<ArchiveReply>(archivePostIdentical),
+  archivePostAbandoned: as<ArchiveReply>(archivePostAbandoned),
+  archive409: as<ApiErrorBody>(archive409),
+  archive400Rev: as<ApiErrorBody>(archive400Rev),
+  archive400Digest: as<ApiErrorBody>(archive400Digest),
+  archive400Replay: as<ApiErrorBody>(archive400Replay),
+  archive400Table: as<ApiErrorBody>(archive400Table),
   options: as<ClientState>(options),
   optionsMany: as<ClientState>(optionsMany),
   options4p: as<ClientState>(options4p),

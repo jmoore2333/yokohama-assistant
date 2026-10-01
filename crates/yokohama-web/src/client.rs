@@ -599,12 +599,54 @@ impl HistoricalFrame {
     /// `Session::from_record`'s job, on the path where a record enters from
     /// disk.
     pub fn at(repl: &Repl, k: usize, viewer: Viewer) -> Result<Self, yokohama_core::ReplayError> {
+        let state = yokohama_core::state_at(repl.session.record(), k, repl.session.rules())?;
+        Ok(Self::from_state(repl, k, &state, viewer))
+    }
+
+    /// The frames of every position in `[from, to)`, by ONE forward pass: the
+    /// state at `from` once, then one event applied per position (M6.5b,
+    /// R-6.5b.10). `at(k)` for each `k` would replay the record from its start
+    /// `to - from` times; this replays it once. **The caller range-checks
+    /// `from` and `to`**, for the reason `at` gives: a `ReplayError` cannot
+    /// tell past-the-end from a failing event. An error from a step is
+    /// reported at the RECORD's index, not the slice's.
+    pub fn run(
+        repl: &Repl,
+        from: usize,
+        to: usize,
+        viewer: Viewer,
+    ) -> Result<Vec<Self>, yokohama_core::ReplayError> {
+        let record = repl.session.record();
+        let rules = repl.session.rules();
+        let mut state = yokohama_core::state_at(record, from, rules)?;
+        let mut frames = Vec::with_capacity(to.saturating_sub(from));
+        for k in from..to {
+            frames.push(Self::from_state(repl, k, &state, viewer));
+            if k + 1 < to {
+                state = yokohama_core::replay_from(&state, &record.events[k..k + 1], rules)
+                    .map_err(|e| yokohama_core::ReplayError {
+                        event_index: e.event_index + k,
+                        message: e.message,
+                    })?;
+            }
+        }
+        Ok(frames)
+    }
+
+    /// The projection of ONE position, given its state — what `at` and `run`
+    /// share, so the two cannot drift (a run's frame IS `at`'s, by
+    /// construction and by the cell that compares them by value).
+    pub fn from_state(
+        repl: &Repl,
+        k: usize,
+        state: &yokohama_core::GameState,
+        viewer: Viewer,
+    ) -> Self {
         let session = &repl.session;
         let record = session.record();
         let total = record.events.len();
         let rules = session.rules();
-        let state = yokohama_core::state_at(record, k, rules)?;
-        let seat = built_for(&state, viewer);
+        let seat = built_for(state, viewer);
 
         // **Paid deliberately, not defensively.** `build_board` derives
         // `tile.reachable` from the legal list, so a historical board built with
@@ -612,11 +654,11 @@ impl HistoricalFrame {
         // vanishes with NO error. `state_at` already ran one enumeration per
         // replayed Move event through the checked `apply_move`, so one more is
         // strictly cheaper than one more event.
-        let legal = yokohama_core::get_legal_moves(&state, rules);
-        let over = yokohama_core::is_game_over(&state);
+        let legal = yokohama_core::get_legal_moves(state, rules);
+        let over = yokohama_core::is_game_over(state);
 
         let mut frame = screen_model::build_frame(
-            &state,
+            state,
             rules,
             &facts_for(repl, viewer),
             seat,
@@ -639,7 +681,7 @@ impl HistoricalFrame {
         );
         drop_hand_for(viewer, &mut frame);
 
-        Ok(Self {
+        Self {
             index: k,
             total,
             seat: match viewer {
@@ -649,18 +691,18 @@ impl HistoricalFrame {
             to_move: state.current_player,
             frame,
             over,
-            end_triggers: yokohama_cli::render::end_trigger_line(&state),
+            end_triggers: yokohama_cli::render::end_trigger_line(state),
             deck_remaining: state.order_deck.len(),
             end_game_triggered: state.end_game_triggered,
             scores: over.then(|| {
-                yokohama_core::calculate_final_scores(&state, &rules.orders, &rules.techs)
+                yokohama_core::calculate_final_scores(state, &rules.orders, &rules.techs)
                     .into_iter()
                     .map(|(seat, total)| ScoreRow { seat, total })
                     .collect()
             }),
-            ports: screen_model::build_ports(&state, rules),
-            labs: screen_model::build_labs(&state, rules),
-        })
+            ports: screen_model::build_ports(state, rules),
+            labs: screen_model::build_labs(state, rules),
+        }
     }
 }
 

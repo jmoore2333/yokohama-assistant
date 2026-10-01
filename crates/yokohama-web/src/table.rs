@@ -304,6 +304,64 @@ impl TableDoc {
             .find(|p| self.keeps.get(usize::from(p.0)).is_none_or(Option::is_none))
     }
 
+    /// R-6.5b.6 check (4): this document describes `record`'s game.
+    ///
+    /// Compared: the player count, the colours, the start seat, the seed, and
+    /// every keep the document CLAIMS (`Some(n)`, 1-based) against
+    /// `choices[i] == Keep(n - 1)` — the `- 1` of `tables::choices_of`, whose
+    /// operand type settles this one.
+    ///
+    /// **A `None` keep is NOT compared, and that is the rule rather than a
+    /// leniency**: a bot seat's keep lives in the record and never here —
+    /// `create` fills `keeps` with `None`, only a seat holder may `keep`, and
+    /// `choices_of` recomputes the bot's from `bot_keep` at finalize — so every
+    /// real local pair reads `[Some(n), None]` against two `Keep`s, and a rule
+    /// that compared the `None` would refuse every genuine send.
+    ///
+    /// Nothing here reads a field the record does not have: the stored seed, the
+    /// config and the choices are exactly what `new_game` and `finalize_setup`
+    /// were given, so agreement means the two documents describe one game.
+    pub fn agrees_with(&self, record: &yokohama_core::GameRecord) -> Result<(), String> {
+        if usize::from(self.players) != usize::from(record.config.player_count) {
+            return Err(format!(
+                "players: the table says {}, the record {}",
+                self.players, record.config.player_count
+            ));
+        }
+        if self.colors != record.config.player_colors {
+            return Err("colors: the table and the record disagree".to_string());
+        }
+        if self.start_seat != record.config.start_player.0 {
+            return Err(format!(
+                "start_seat: the table says {}, the record {}",
+                self.start_seat, record.config.start_player.0
+            ));
+        }
+        if self.seed != record.seed {
+            return Err("seed: the table and the record disagree".to_string());
+        }
+        for (i, keep) in self.keeps.iter().enumerate() {
+            if let Some(n) = keep {
+                // **`checked_sub`, because this is `pub` and the numbering is
+                // 1-based.** `Some(0)` names no card; through the route it
+                // cannot arrive — `check_shape` bounds every keep to 1 or 2
+                // before anything reads it — but a caller of this function has
+                // made no such promise, and the bare `- 1` underflowed rather
+                // than refusing.
+                let Some(index) = n.checked_sub(1) else {
+                    return Err(format!("keep: seat {i} claims card 0, which is not a card"));
+                };
+                let expected = yokohama_core::StartingOrderChoice::Keep(index);
+                if record.choices.get(i) != Some(&expected) {
+                    return Err(format!(
+                        "keep: seat {i} kept card {n} by the table and not by the record"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn is_creator(&self, user: &User) -> bool {
         self.created_by == user.as_str()
     }
@@ -505,6 +563,99 @@ mod tests {
         let d = doc();
         let back: TableDoc = serde_json::from_str(&serde_json::to_string(&d).unwrap()).unwrap();
         assert_eq!(serde_json::to_string(&back).unwrap(), serde_json::to_string(&d).unwrap());
+    }
+
+    /// **The real local pair's shape** (M6.5b, R-6.5b.6): a 2P PLAYING table
+    /// with one person and one bot, so `keeps` reads `[Some(n), None]`.
+    ///
+    /// A third builder rather than a widened [`doc`], for the same reason
+    /// [`open_doc`] is one: `check_shape` refuses each other's status paired
+    /// with each other's seats. This one is the shape a browser game really
+    /// sends, and the cell below would pass on a synthetic all-human pair while
+    /// refusing every real input.
+    fn playing_doc() -> TableDoc {
+        TableDoc {
+            schema: 3,
+            id: "local-1".into(),
+            name: None,
+            created_by: "a@t.test".into(),
+            created_at: 1_789_000_000,
+            players: 2,
+            colors: vec![PlayerColor::Red, PlayerColor::Blue],
+            start_seat: 0,
+            seats: vec![SeatDoc::Human { user: "a@t.test".into(), name: None }, SeatDoc::Bot],
+            keeps: vec![Some(1), None],
+            seed: 7,
+            status: TableStatus::Playing,
+            turn: None,
+            lock: None,
+            unlocked: Vec::new(),
+            archived_at: None,
+        }
+    }
+
+    /// The record the document above describes, built the way `record.rs`'s own
+    /// tests build one.
+    ///
+    /// **A human keep `Some(n)` is `Keep(n - 1)`; a bot's `None` is whatever the
+    /// bot kept** — `Keep(1)` here, deliberately NOT the card the table claims
+    /// for seat 0 — and is not compared.
+    fn record_for(doc: &TableDoc) -> yokohama_core::GameRecord {
+        use yokohama_core::{GameConfig, PlayerId, Rules, StartingOrderChoice};
+        let mut config = GameConfig::for_player_count(doc.players);
+        config.player_colors = doc.colors.clone();
+        config.start_player = PlayerId::new(doc.start_seat);
+        let choices = doc
+            .keeps
+            .iter()
+            .map(|k| StartingOrderChoice::Keep(k.map(|n| n - 1).unwrap_or(1)))
+            .collect();
+        yokohama_core::GameRecord::new(doc.seed, config, choices, &Rules::standard())
+    }
+
+    /// R-6.5b.6 check (4): the five compared fields each refused BY NAME, and
+    /// the real browser-played pair ACCEPTED.
+    ///
+    /// The accepting arm is the one that matters: five refusals over a
+    /// synthetic all-human pair would pass while the only input this route ever
+    /// really sees — one human keep beside a bot's `None` — was refused.
+    #[test]
+    fn a_table_agrees_with_its_record_and_a_bot_keep_is_not_compared() {
+        let mut doc = playing_doc();
+        doc.keeps = vec![Some(2), None];
+        assert!(
+            doc.agrees_with(&record_for(&doc)).is_ok(),
+            "the real local pair: one human keep, one bot None"
+        );
+        let rec = record_for(&doc);
+        let mut d = doc.clone();
+        d.players = 3;
+        assert!(d.agrees_with(&rec).unwrap_err().contains("players"));
+        let mut d = doc.clone();
+        d.colors.reverse();
+        assert!(d.agrees_with(&rec).unwrap_err().contains("colors"));
+        let mut d = doc.clone();
+        d.start_seat = 1;
+        assert!(d.agrees_with(&rec).unwrap_err().contains("start_seat"));
+        let mut d = doc.clone();
+        d.seed += 1;
+        assert!(d.agrees_with(&rec).unwrap_err().contains("seed"));
+        let mut d = doc.clone();
+        d.keeps[0] = Some(1);
+        assert!(
+            d.agrees_with(&rec).unwrap_err().contains("keep"),
+            "a CLAIMED keep that disagrees is refused"
+        );
+        // A keep of `0`: the numbering here is 1-based, so there is no such
+        // card. Unreachable through the route — `check_shape` bounds a keep to
+        // 1 or 2 before `agrees_with` is ever called — but this is `pub`, and
+        // the arithmetic used to underflow rather than refuse.
+        let mut d = doc.clone();
+        d.keeps[0] = Some(0);
+        assert!(
+            d.agrees_with(&rec).unwrap_err().contains("card 0"),
+            "a keep of card 0 is refused by name, not by an underflow"
+        );
     }
 
     /// M6.2's shape: an OPEN table with two unfilled seats, a display name on

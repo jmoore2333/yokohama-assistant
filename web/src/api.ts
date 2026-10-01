@@ -1,5 +1,6 @@
 import type {
   AreasPanel,
+  ArchiveReply,
   ArtManifest,
   ChatMessage,
   ChatPage,
@@ -14,6 +15,7 @@ import type {
   LabsPanel,
   HistoricalFrame,
   LogPanel,
+  RunFrames,
   Me,
   PortsPanel,
   IndexModel,
@@ -22,6 +24,22 @@ import type {
   TableView,
   WhyResponse,
 } from "./types";
+import { localCall, localPair } from "./local/client";
+import { facts, patchServerFacts, serverFacts, setServerFacts, type ArchiveKind, type Host } from "./local/facts";
+import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
+
+/** Which host a game belongs to, and what a local one is called (R-6.5b.12).
+ *
+ *  **Defined in `local/ids.ts` and re-exported HERE**, which is where every
+ *  page reader takes it from: `call`, `recordText`, the transport's arm and
+ *  the screen's own reads all go through this one predicate, so "which host is
+ *  this game's?" is asked one way. The definition itself lives one file down
+ *  because the WORKER draws the ids and compiles without the DOM, while this
+ *  module reads `localStorage`. **`LOCAL_USER` rides with them** (R-6.5b.1):
+ *  the create form seats it, and the Worker hands it to `dispatch`. */
+export { isLocal, LOCAL_PREFIX, LOCAL_USER };
+export type { ArchiveKind, Host };
+export { setServerFacts };
 
 /** A refusal from the server, carrying the sentence it refused with — and the
  *  STATUS it arrived with, because one caller has to branch on which refusal
@@ -188,14 +206,14 @@ export function identityHeaders(): Record<string, string> {
  *  a wrong guess here costs a failed open and one trip round the ladder, not a
  *  screen that never updates.
  *
- *  Module-level rather than context: it is one value for the life of the page,
- *  read by a hook that must not re-run when it is set. */
-let kind: "sse" | "held" = "sse";
-
-export const signalKind = (): "sse" | "held" => kind;
+ *  **Per SOURCE since M6.5b** (spec §2.3): the value lives in
+ *  `local/facts.ts`, keyed by server or local, and this reads the SERVER's.
+ *  Its `"sse" | "held"` union is untouched — the transport arm never asks this
+ *  about a local game, because it reads `Source.host` instead. */
+export const signalKind = (): "sse" | "held" => serverFacts().signal;
 
 export const setSignalKind = (k: "sse" | "held"): void => {
-  kind = k;
+  patchServerFacts({ signal: k });
 };
 
 /** Whether this DEPLOYMENT answers the house chat (M6.4, R-6.4.6), read once
@@ -206,12 +224,10 @@ export const setSignalKind = (k: "sse" | "held"): void => {
  *  is ON, so a health that does not answer leaves the client asking for a panel
  *  the server may refuse with a 404 it already renders — a wrong guess here
  *  costs one refusal, never a screen that never appears. */
-let lobby = true;
-
-export const lobbyChat = (): boolean => lobby;
+export const lobbyChat = (): boolean => serverFacts().lobbyChat;
 
 export const setLobbyChat = (on: boolean): void => {
-  lobby = on;
+  patchServerFacts({ lobbyChat: on });
 };
 
 /** Characters per message, from the same `/api/health` (R-6.4.8) — what the
@@ -222,30 +238,58 @@ export const setLobbyChat = (on: boolean): void => {
  *  the day an operator changes it — and wrong in the direction where the box
  *  accepts what the server will refuse. The default matches the server's own
  *  only so a client that has not reached `/api/health` yet has a box. */
-let textCap = 500;
-
-export const chatText = (): number => textCap;
+export const chatText = (): number => serverFacts().chatText;
 
 export const setChatText = (n: number): void => {
-  textCap = n;
+  patchServerFacts({ chatText: n });
 };
 
 /** Which archive this deployment writes finished and abandoned games to
  *  (M6.5a, R-6.5a.13), read once from `GET /api/health` at boot; `"off"` until
  *  then, and the Abandon control's label is the one thing that reads it. A
  *  health that does not answer leaves it off, which costs a label that says
- *  less than the server does — never one that promises a save it will not make. */
-export type ArchiveKind = "off" | "dir" | "r2";
-
-let archive: ArchiveKind = "off";
-
-export const archiveKind = (): ArchiveKind => archive;
+ *  less than the server does — never one that promises a save it will not make.
+ *
+ *  **One named CROSS-READ** (spec §2.3): a LOCAL game's Abandon label reads
+ *  this — the server's — because "Abandon and save" sends the pair to the
+ *  server's archive. Every other fact a local screen reads is
+ *  `facts("local")`'s. */
+export const archiveKind = (): ArchiveKind => facts("server").archive;
 
 export const setArchiveKind = (k: ArchiveKind): void => {
-  archive = k;
+  patchServerFacts({ archive: k });
 };
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** The move happened and the browser would not keep it (spec §4).
+ *
+ *  **The server's own wording, and the server's own place for it**
+ *  (`api.rs:1105`): a warning on the applied reply, never a refusal — the move
+ *  DID happen. One rule and one sentence across both hosts, so a player who
+ *  has run out of quota reads the same line whichever host they are on. */
+function withUnsaved<T>(out: T, reason: string | null): T {
+  const warned = out as { warnings?: unknown };
+  if (out && typeof out === "object" && Array.isArray(warned.warnings)) {
+    warned.warnings = [
+      ...(warned.warnings as string[]),
+      `APPLIED BUT NOT SAVED — ${reason ?? "the browser refused the write"}`,
+    ];
+  }
+  return out;
+}
+
+async function call<T>(method: string, path: string, body?: unknown, host?: Host): Promise<T> {
+  // **The id decides, unless the caller says** (R-6.5b.12). Five routes carry
+  // no id — the create, the listing, `/api/health`, `/api/me`, `/api/labels` —
+  // and for those the caller passes its intent; everything else is answered by
+  // whichever host owns the game in the path.
+  const local = host === "local" || (host === undefined && isLocalOf(path));
+  if (local) {
+    // `identityHeaders()` is not read here: the Worker adds `local@browser`
+    // and nothing on this device signs in.
+    const r = await localCall(method, path, body);
+    const out = settle<T>(r.status, "", r.text);
+    return r.saved ? out : withUnsaved(out, r.reason);
+  }
   const headers: Record<string, string> = { ...identityHeaders() };
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
@@ -253,8 +297,23 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  const text = await res.text();
+  return settle<T>(res.status, res.statusText, await res.text());
+}
 
+/** Whether a path names a LOCAL game. Its own function so the two callers —
+ *  `call` and nothing else today — read one sentence. */
+const isLocalOf = (path: string): boolean => {
+  const game = gameIdOf(path);
+  return game !== null && isLocal(game);
+};
+
+/** Read the status, parse the body, refuse or hand it over — the tail both
+ *  hosts share.
+ *
+ *  Extracted verbatim from `call` at M6.5b: a local reply arrives as a status
+ *  and a string exactly as a fetched one does, and a second copy of this would
+ *  be a second place where a refusal is worded or a 401 reaches the door. */
+function settle<T>(status: number, statusText: string, text: string): T {
   // **The status is read BEFORE the body is parsed, and the parse cannot throw
   // over it.** This used to be an unguarded `JSON.parse` above the `res.ok`
   // check, so any non-JSON response became a `SyntaxError` and the status code —
@@ -272,24 +331,25 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     }
   }
 
-  if (!res.ok) {
+  // `statusText` is empty over HTTP/2 and for a local reply, which has no
+  // status LINE at all — so the fallback is trimmed rather than left with a
+  // trailing space.
+  const bare = `${status} ${statusText}`.trim();
+  if (status < 200 || status >= 300) {
     const message =
       !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
         ? String((parsed as { error: unknown }).error)
-        : `${res.status} ${res.statusText}`;
+        : bare;
     // **Before the throw, so it reaches the door whatever the caller does with
     // the refusal** — including discarding it, which one caller does.
-    if (res.status === 401) unauthorized?.(message);
-    throw new ApiError(message, res.status, parseFailed ? null : parsed);
+    if (status === 401) unauthorized?.(message);
+    throw new ApiError(message, status, parseFailed ? null : parsed);
   }
   if (parseFailed) {
     // A 2xx that is not JSON is this API answering with something it does not
     // serve — an interstitial, a proxy page. Say that, rather than a parser's
     // complaint about the first character of it.
-    throw new ApiError(
-      `${res.status} ${res.statusText}: the server answered with something that is not JSON`,
-      res.status,
-    );
+    throw new ApiError(`${bare}: the server answered with something that is not JSON`, status);
   }
   return parsed as T;
 }
@@ -345,6 +405,10 @@ export interface UnlockRequest {
 
 const id = (s: string) => encodeURIComponent(s);
 
+/** The most positions one run call answers — the server's `RUN_CAP` (M6.5b).
+ *  Above it the run is paged in cap-sized calls; the server never clamps. */
+export const RUN_CAP = 64;
+
 /** `?a=1&b=2` for the arguments that were given, and `""` for none. Written for
  *  `events`, which since M6.3 takes two optional numbers and would otherwise
  *  need four spellings of its own path. */
@@ -363,6 +427,22 @@ const query = (args: Record<string, number | undefined>): string => {
  *  sentence, a 401 reaches the door — but a 200 body is handed on as the string
  *  it arrived as. */
 export async function recordText(game: string): Promise<string> {
+  if (isLocal(game)) {
+    // **The Worker's SIDE CHANNEL, not the `…/record` route** (spec §2.3): the
+    // local dispatch answers that route exactly as the corpus pins it — a 409
+    // while the game runs — and R-6.5b.7 offers "Save game file" at any point,
+    // because it is the player's own seed on the player's own disk. The bytes
+    // are the store's, and are not parsed on the way here either.
+    // **ONE queued read of BOTH documents** (spec §2.2's export snapshot, review
+    // finding #6): the record alone is what this call wants, but a second
+    // message for the table — which "Send to the archive" needs beside it —
+    // could fall either side of a move.
+    const text = (await localPair(game)).record;
+    if (text === null) {
+      throw new ApiError("this game has no saved record on this device", 404, null);
+    }
+    return text;
+  }
   const res = await fetch(`/api/games/${id(game)}/record`, { headers: { ...identityHeaders() } });
   const text = await res.text();
   if (!res.ok) {
@@ -394,11 +474,17 @@ const chatPath = (scope: ChatScope, after?: number): string =>
 export const api = {
   /** Who the server thinks we are, and which header it reads. Never refuses:
    *  `user: null` is the answer, not an error. */
-  me: () => call<Me>("GET", "/api/me"),
+  me: (host?: Host) => call<Me>("GET", "/api/me", undefined, host),
   /** The engine's compatibility keys, the identity mode, and — since M6.3 —
    *  which change transport to read. Fetched once at boot. */
-  health: () => call<Health>("GET", "/api/health"),
-  labels: () => call<Labels>("GET", "/api/labels"),
+  health: (host?: Host) => call<Health>("GET", "/api/health", undefined, host),
+  /** The words on the cards.
+   *
+   *  **`host` is what makes them survive an unreachable API** (spec §2.3): the
+   *  server is asked first, under a five-second bound, and the WORKER answers
+   *  when that read fails or times out — the module carries the same registry
+   *  the server does. */
+  labels: (host?: Host) => call<Labels>("GET", "/api/labels", undefined, host),
   /** 404s when the server has no cropped art. That is a supported state, not an
    *  error: callers treat the rejection as "no art" and draw without it. */
   art: () => call<ArtManifest>("GET", "/api/art"),
@@ -414,14 +500,27 @@ export const api = {
    *  `before` is the previous page's `next` cursor, sent back untouched — no
    *  `limit` from here, because the server's default page is the one this
    *  client asks for. */
-  list: (scope: "mine" | "open" | "playing" = "mine", before?: string) =>
+  list: (scope: "mine" | "open" | "playing" = "mine", before?: string, host?: Host) =>
     call<GamesList>(
       "GET",
       `/api/games?scope=${scope}${before ? `&before=${encodeURIComponent(before)}` : ""}`,
+      undefined,
+      host,
     ),
   /** Opens a table, and starts NOTHING: the reply is `status: "dealing"` and
    *  every seat is owed a deal it fetches for itself. */
-  create: (req: NewGameRequest) => call<TableView>("POST", "/api/games", req),
+  create: (req: NewGameRequest, host?: Host) => call<TableView>("POST", "/api/games", req, host),
+
+  /** Send a local game to the SERVER's archive (R-6.5b.6) — the record and the
+   *  local table document, both as the strings they are stored as.
+   *
+   *  **Explicitly the server**, and the one call a local game makes over the
+   *  network: the record's bytes are what the terminal digest is over, so they
+   *  are sent exactly as the browser holds them. The server parses both,
+   *  replays strictly and chooses the leaf from the replayed state — never
+   *  from what this client says. */
+  archive: (record: string, table: string) =>
+    call<ArchiveReply>("POST", "/api/archive", { record, table }, "server"),
   /** Who sits where, and how far the dealing has got.
    *
    *  **The one route widened to any signed-in caller at an OPEN table**
@@ -496,6 +595,13 @@ export const api = {
    *  caller's own hands and nobody else's. */
   at: (game: string, k: number) =>
     call<HistoricalFrame>("GET", `/api/games/${id(game)}/at/${k}`),
+
+  /** The frames of `[from, to)` — ONE forward replay on the server instead of
+   *  one `at/{k}` per position (M6.5b, R-6.5b.10). `to` may be `events + 1`:
+   *  the run then ends on the live frame. Above `RUN_CAP` positions the server
+   *  answers a 400 naming the cap, so `fetchRun` pages. */
+  run: (game: string, from: number, to: number) =>
+    call<RunFrames>("GET", `/api/games/${id(game)}/at?from=${from}&to=${to}`),
 
   /** What the production bot would play on this seat's own view.
    *

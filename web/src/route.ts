@@ -13,13 +13,24 @@
 
 import { useEffect, useState } from "react";
 
-export type Route = { kind: "lobby" } | { kind: "new" } | { kind: "table"; id: string };
+export type Route =
+  | { kind: "lobby" }
+  /** The setup form. **`local` says WHICH host the table is opened on**
+   *  (M6.5b, R-6.5b.8): `#/new/local` seats you and the bot in this browser
+   *  and is reachable with no door at all, which is what makes "Play the bot
+   *  here" work on an API that cannot be reached. Absent rather than `false`
+   *  for the server's create, so every existing caller's `{kind: "new"}` is
+   *  still the same route. */
+  | { kind: "new"; local?: true }
+  | { kind: "table"; id: string };
 
-/** `#/` the lobby, `#/new` the form, `#/t/<id>` a table (R-2.5). Anything
- *  else is the lobby, so a stale or mistyped link lands somewhere useful. */
+/** `#/` the lobby, `#/new` and `#/new/local` the form, `#/t/<id>` a table
+ *  (R-2.5). Anything else is the lobby, so a stale or mistyped link lands
+ *  somewhere useful. */
 export function parseRoute(hash: string): Route {
   const path = hash.startsWith("#") ? hash.slice(1) : hash;
   if (path === "/new") return { kind: "new" };
+  if (path === "/new/local") return { kind: "new", local: true };
   const m = /^\/t\/([^/]+)$/.exec(path);
   // `decodeURIComponent` throws on a malformed escape (`%zz`), which is a
   // hand-typed link and not a bug in this client — so it reads as the lobby
@@ -40,7 +51,7 @@ export function hashOf(route: Route): string {
     case "lobby":
       return "#/";
     case "new":
-      return "#/new";
+      return route.local ? "#/new/local" : "#/new";
     case "table":
       return `#/t/${encodeURIComponent(route.id)}`;
   }
@@ -58,9 +69,19 @@ export function navigate(route: Route): void {
   if (window.location.hash !== next) window.location.hash = next;
 }
 
-/** Two routes are the same screen. */
-const same = (a: Route, b: Route): boolean =>
-  a.kind === b.kind && (a.kind !== "table" || a.id === (b as { id: string }).id);
+/** Two routes are the same screen.
+ *
+ *  **The kind alone is not the question, for two of the three arms.** A table
+ *  is named by its id, and since M6.5b a create is named by its HOST too: the
+ *  two forms are two screens, and a sameness test that read the kind would
+ *  hand a player who asked for the local form the server's, because the hook
+ *  below would keep the object it already had. */
+const same = (a: Route, b: Route): boolean => {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "table") return a.id === (b as { id: string }).id;
+  if (a.kind === "new") return a.local === (b as { local?: true }).local;
+  return true;
+};
 
 /** The route is the hash: read at mount, followed on `hashchange`, so back and
  *  forward work without any state of this component's own.

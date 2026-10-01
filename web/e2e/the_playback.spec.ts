@@ -11,10 +11,21 @@ test("a bot turn plays out on the table, every position in order, and ends on th
   await page.setViewportSize({ width: 1710, height: 869 });
   await startGame(page, { players: 2 });
   await page.getByLabel("Cadence").selectOption("1000");
+  // **The positions the walk ASKED FOR, off the run route** (M6.5b, R-6.5b.10).
+  // Until this cycle the walk fetched `/at/{k}` once per position and this
+  // counted the requests; it now makes ONE half-open `…/at?from=&to=` call and
+  // the server replays the record once for the whole run. What the cell is
+  // about has not moved — one position per event plus the one before the run,
+  // ascending and contiguous — so the range is expanded here and every
+  // assertion below reads exactly as it did.
   const positions: number[] = [];
   page.on("request", (r) => {
-    const m = /\/at\/(\d+)$/.exec(new URL(r.url()).pathname);
-    if (m) positions.push(Number(m[1]));
+    const url = new URL(r.url());
+    if (!url.pathname.endsWith("/at")) return;
+    const from = Number(url.searchParams.get("from"));
+    const to = Number(url.searchParams.get("to"));
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+    for (let k = from; k < to; k += 1) positions.push(k);
   });
   const pick = rng(0x504c_4159); // "PLAY"
   let observed = false;

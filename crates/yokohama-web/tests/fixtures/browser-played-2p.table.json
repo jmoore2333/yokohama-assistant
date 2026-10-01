@@ -1,0 +1,37 @@
+{
+  "schema": 3,
+  "id": "local-242a5429453c593c",
+  "name": null,
+  "created_by": "local@browser",
+  "created_at": 1789956559,
+  "players": 2,
+  "colors": [
+    "Red",
+    "Blue"
+  ],
+  "start_seat": 0,
+  "seats": [
+    {
+      "kind": "human",
+      "user": "local@browser",
+      "name": null
+    },
+    {
+      "kind": "bot"
+    }
+  ],
+  "keeps": [
+    1,
+    null
+  ],
+  "seed": 1009902671473821048,
+  "status": "playing",
+  "turn": {
+    "to_move": 1,
+    "over": true,
+    "winner": 1
+  },
+  "lock": null,
+  "unlocked": [],
+  "archived_at": null
+}

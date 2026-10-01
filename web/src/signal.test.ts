@@ -697,3 +697,44 @@ describe("the hook's own rules, whatever the transport", () => {
     expect(stub.calls).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M6.5b: a LOCAL game has no signal (R-6.5b.12, spec §2.3).
+//
+// The cell that must fail against a client with no `host` arm is the first
+// one: `vi.getTimerCount() === 0` across sixty fake seconds AND no request at
+// all. Nothing to wait for is the reason — the bot's trailing run returns
+// inside the reply that caused it, and nobody else sits at the table.
+
+describe("the signal, for a game this browser answers", () => {
+  it("opens nothing, asks nothing and arms NO timer, and still reads live", async () => {
+    const { stub } = streamed();
+    const seen: Events[] = [];
+    const { result } = renderHook(() => useSignal("local-1", true, (e) => seen.push(e)));
+    await settle();
+    expect(stub.calls).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(stub.calls).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(seen).toEqual([]);
+    // "live" is TRUE and not a placeholder: the host answering this game is
+    // in this tab.
+    expect(result.current).toBe("live");
+  });
+
+  it("leaves the lobby's own stream open while a local game is on screen", async () => {
+    // Spec §6.2 (I-6): the lobby's and the open table's sources never say
+    // `host`, so the server's streams are untouched by what game is being
+    // played beside them. The anti-vacuity half of the cell above — the same
+    // arrangement, the same clock, one stream opened and not the other.
+    const { stream, stub } = streamed();
+    renderHook(() => useSignal("local-1", true, () => {}));
+    renderHook(() => usePolled(wakeSource("lobby"), true, () => {}));
+    await until(() => stream.opens() > 0, "the lobby's stream was opened");
+    expect(stub.matching("GET", "/api/games/lobby/stream")).toHaveLength(1);
+    expect(stub.matching("GET", "/api/games/local-1/stream")).toHaveLength(0);
+  });
+});

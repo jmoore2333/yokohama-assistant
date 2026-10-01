@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { api, ApiError, isSignedOut, onUnauthorized, setArchiveKind, setChatText, setLobbyChat, setSignalKind } from "./api";
-import { SignIn } from "./SignIn";
-import { doorSentence, useMe } from "./whoami";
+import { Abandon } from "./Abandon";
+import { api, ApiError, archiveKind, isLocal, isSignedOut, LOCAL_USER, onUnauthorized, RUN_CAP, setServerFacts } from "./api";
+import { Door } from "./Door";
+import { useMe } from "./whoami";
 import { Board } from "./Board";
 import { seatClass } from "./Cards";
 import { Chat } from "./Chat";
@@ -11,6 +12,9 @@ import { Decision } from "./Decision";
 import { GameMenu } from "./GameMenu";
 import { Dealing } from "./Dealing";
 import { Lobby } from "./Lobby";
+import { LockScreen, LOST_SENTENCE } from "./LockScreen";
+import { localPair } from "./local/client";
+import { useLocalHold, type LockState } from "./local/useLocalHold";
 import { NewGame } from "./NewGame";
 import { OpenTable } from "./OpenTable";
 import { Unlock } from "./Unlock";
@@ -43,23 +47,61 @@ import type {
   TableView,
 } from "./types";
 
-/** The positions `prev..=next` and the log's tail, in parallel.
+/** The positions `prev..=next` and the log's tail.
  *
  *  **`prev` is fetched too**, and that is the whole reason this takes a range
  *  rather than the reply's own count: a step's highlight is a DIFF, so the
  *  first step needs a full position on the side the reply came from, and the
  *  live payload is not one — it carries no port and no laboratory.
  *
+ *  **ONE call to the run route, since M6.5b (R-6.5b.10)**: the route is
+ *  half-open and the run ends on the LIVE frame, so `to` is `next + 1`; the
+ *  server replays the record once for the whole run where one `at/{k}` per
+ *  position replayed it from the start `next - prev + 1` times. A run longer
+ *  than the cap is PAGED in cap-sized calls (a spectator reconnecting after a
+ *  long absence — one call is the common case); the server refuses a longer
+ *  ask with a 400 rather than clamping it, so a page is never silently short.
+ *
  *  Outside the component because it closes over nothing: `api` is a module and
  *  `buildRun` is pure, so a hook would only make its identity churn. */
 async function fetchRun(game: string, prev: number, next: number): Promise<Run> {
-  const ks = Array.from({ length: next - prev + 1 }, (_, i) => prev + i);
-  const [frames, log] = await Promise.all([
-    Promise.all(ks.map((k) => api.at(game, k))),
-    api.log(game, next - prev),
-  ]);
+  const frames: HistoricalFrame[] = [];
+  for (let from = prev; from <= next; from += RUN_CAP) {
+    const to = Math.min(next + 1, from + RUN_CAP);
+    frames.push(...(await api.run(game, from, to)).frames);
+  }
+  const log = await api.log(game, next - prev);
   return buildRun(prev, frames, log);
 }
+
+/** How long the SERVER is given to answer a boot read before this client acts
+ *  on the silence.
+ *
+ *  **Two reads are bounded by it, and they act on it differently.** The words
+ *  on the cards fall back to the module (spec §2.3); the health read is
+ *  declared NOT LANDED, which is the state R-6.5b.2 names — "the API refusing
+ *  OR NOT ANSWERING" — and the first screen says "not connected" for it. Long
+ *  enough that a slow link is not read as an outage, short enough that a
+ *  player is not left watching raw serde names, or a `connecting…` that no
+ *  timeout of the platform's will ever end, while a dead connection expires on
+ *  its own. */
+const BOUND_MS = 5_000;
+
+/** `p`, or a rejection once `ms` has passed.
+ *
+ *  **Because a read that HANGS never rejects.** `fetch` against a server that
+ *  accepts the connection and then says nothing settles neither way, so a
+ *  `.catch` alone is a fallback that can never be reached — the
+ *  pre-execution review's point, and the reason this is a race rather than a
+ *  catch. The loser's timer is left to fire and reject a promise nobody is
+ *  holding, which is harmless: `Promise.race` has already settled.
+ *
+ *  Outside the component because it closes over nothing. */
+const bounded = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timed out")), ms)),
+  ]);
 
 /** How a run REACHED this browser, and who is watching it (spec §5.2).
  *
@@ -116,6 +158,15 @@ export function App() {
   }, [signedOut]);
   const [labels, setLabels] = useState<Labels | null>(null);
   const [art, setArt] = useState<ArtManifest | null>(null);
+  /** Whether `GET /api/health` LANDED — the one thing this client asks about
+   *  the server's reachability, as opposed to about its answers (M6.5b,
+   *  R-6.5b.2).
+   *
+   *  `null` until it answers, which is a real third state: nothing has come
+   *  back yet, and "not connected" would be a claim this browser cannot make.
+   *  It is the health read and not the door's because the door has four
+   *  answers of its own and only one of them is about reachability. */
+  const [serverUp, setServerUp] = useState<boolean | null>(null);
   const [state, setState] = useState<ClientState | null>(null);
   /** The table being DEALT, when there is one (M6.1 §7.4).
    *
@@ -141,6 +192,38 @@ export function App() {
    *  re-fetch what `open` has already read. `show` clears it exactly as it
    *  clears the other two. */
   const [unlock, setUnlock] = useState<{ id: string; table: TableView } | null>(null);
+  /** A game in THIS BROWSER whose save no longer rebuilds (spec §4).
+   *
+   *  **The sixth screen, and it exists so a refusal is not a trap.** A
+   *  `SEMANTICS_REV` bump stops a save resuming by design, and
+   *  `Session::from_record` then refuses with a 500 carrying the engine's own
+   *  sentence — a REPLY, never the module trapping, so nothing is restarted and
+   *  nothing is recovered. What is left is still the player's: the bytes can be
+   *  saved to a file and the game can be abandoned, neither of which rebuilds
+   *  anything. Bouncing to the lobby with the sentence would have offered them
+   *  neither. The table document is held beside the id for the same reason
+   *  `unlock` holds one: the abandon control states what it is about, and this
+   *  screen cannot re-read a game that will not open.
+   *
+   *  A SERVER game that refuses this way is a different matter — it is the
+   *  server's record, on a server whose other games are fine — and keeps the
+   *  bounce it has always had. */
+  const [broken, setBroken] = useState<{ id: string; table: TableView; sentence: string } | null>(
+    null,
+  );
+  /** Where the archive put a local game this session, keyed by id (spec §2.5).
+   *
+   *  **Why it is remembered at all**: the local table document carries no
+   *  stamp — the send never goes through the module — so nothing on disk says
+   *  a copy has been made, and the control would otherwise invite a second
+   *  send of bytes the server already holds. It lives for the page, so a trip
+   *  to the lobby and back does not put the button back; a RELOAD does, and the
+   *  server answers that second click `identical`. */
+  const [archived, setArchived] = useState<Record<string, string>>({});
+  /** A send to the archive is OUT. A ref for `inFlight`'s reason and not the
+   *  darkened control's: the control darkens on the ANSWER, and two clicks in
+   *  one tick are both dispatched before any answer exists. */
+  const archiving = useRef(false);
   /** The table the game on screen belongs to — who sits where, and which of
    *  those seats are the caller's.
    *
@@ -356,6 +439,9 @@ export function App() {
       setDealing(null);
       setOpenTable(null);
       setUnlock(null);
+      // The refusal about a save that would not rebuild goes with the game it
+      // was about, exactly as the other four screens do.
+      setBroken(null);
       setTable(null);
       setRun(null);
       setWalk(null);
@@ -475,7 +561,22 @@ export function App() {
           tableOnScreen.current = id;
           return;
         }
-        const next = await api.get(id);
+        // **A local save that no longer rebuilds is a SCREEN, not a bounce**
+        // (spec §4). The engine refuses the rebuild with a 500 carrying its own
+        // sentence; the row stays listed, the bytes stay saveable and the game
+        // stays abandonable, and none of that is reachable from the lobby.
+        let next: ClientState;
+        try {
+          next = await api.get(id);
+        } catch (e) {
+          if (isLocal(id) && e instanceof ApiError && e.status >= 500) {
+            show(null);
+            setBroken({ id, table: doc, sentence: e.message });
+            tableOnScreen.current = id;
+            return;
+          }
+          throw e;
+        }
         show(next, opening);
         // AFTER `show`, which clears it: React batches both into one render, so
         // the last write is the one that stands.
@@ -486,6 +587,48 @@ export function App() {
     },
     [show],
   );
+
+  /** The local game this tab must OWN before it reads anything — the ROUTE's
+   *  id and never `state.id` (P-5, spec §2.2).
+   *
+   *  **The order is the claim.** A cold `GET /api/games/{id}` on a local game
+   *  PUMPS the bot inside the module, so a read taken before the lock answers
+   *  can change a record another tab is writing. Deriving ownership from a
+   *  `ClientState` would mean reading first and asking afterwards. `null` for
+   *  every other screen, which the hook answers `"none"` to. */
+  const lockId = route.kind === "table" && isLocal(route.id) ? route.id : null;
+  const lock = useLocalHold(lockId);
+  const { takeover: steal } = lock;
+  /** The lock's answer FOR THE GAME THE ADDRESS NAMES, and `"none"` for any
+   *  other — which is what every reader below is entitled to.
+   *
+   *  **The id check is the fix, and a reset inside the hook could not be**
+   *  (review Important 1). React flushes one commit's passive effects in a
+   *  single pass, so on the commit where the route moves from one local game
+   *  to another, the route effect's closure holds the state rendered for the
+   *  game being LEFT. That state is `"held"`, and reading it would admit the
+   *  cold `GET` that PUMPS THE BOT in a record this tab does not own — the
+   *  exact harm P-5 exists to stop. Asking whether the answer is ABOUT this
+   *  game closes it, because the stale value carries the stale id with it. */
+  const lockState: LockState = lock.id === lockId ? lock.state : "none";
+
+  /** Take the game anyway — Take over from the tab that found it open
+   *  elsewhere, Take back from the one it was stolen from.
+   *
+   *  **Who re-reads afterwards depends on which of the two this is, and the
+   *  ref is what tells them apart.** Coming from Take over there is no game on
+   *  screen: the route effect opens it the moment the lock says `"held"`, and
+   *  a second `open` here would be the same table fetched twice. Coming from
+   *  Take back the game IS on screen and the route has not changed, so that
+   *  effect does nothing — and without this re-read the board would stay at the
+   *  position it held when it lost the lock, missing every move the other tab
+   *  made. */
+  const retake = useCallback(async () => {
+    const id = lockId;
+    if (id === null) return;
+    await steal();
+    if (tableOnScreen.current === id) await open(id);
+  }, [lockId, steal, open]);
 
   /** **The route decides the screen, in ONE place.**
    *
@@ -500,8 +643,34 @@ export function App() {
    *  call is still awaiting `GET …/table` and every state-shaped test is still
    *  false. Both refs' own doc comments carry the measurement. */
   useEffect(() => {
-    if (!door.me?.user) return;
     if (route.kind === "table") {
+      // **A LOCAL table needs no door** (M6.5b, spec §2.3). The games in this
+      // browser are answered by a module in this browser: nobody signs in to
+      // reach them, and the gate that holds every other route back would leave
+      // a `#/t/local-…` link dead on a page whose server cannot be reached —
+      // which is the whole of what R-6.5b.2 promises.
+      //
+      // **Inside the table arm since Task 5**, and that is not a move for
+      // tidiness: as a guard over the whole effect it also held back the tail
+      // below, so a signed-out player leaving a local game for `#/` or
+      // `#/new/local` kept the game on screen at an address that no longer
+      // named it.
+      if (!door.me?.user && !isLocal(route.id)) return;
+      // **Nothing is read until the lock has answered FOR THIS GAME** (P-5,
+      // spec §2.2) — the dealing screen included, since a keep is a write like
+      // any other. While the answer is `"elsewhere"` this table is another
+      // tab's and the screen below draws that instead; `"lost"` leaves the game
+      // exactly where it is and waits for Take back.
+      if (isLocal(route.id) && lockState !== "held") {
+        // **And a game the address no longer names goes off the screen.** The
+        // arm returns before `open`, which is what would otherwise have cleared
+        // it — so without this the game being LEFT stays drawn, answerable, at
+        // an address that names a different table. `tableOnScreen` is the test
+        // rather than `state`, because the deal and the open table are on
+        // screen without one.
+        if (tableOnScreen.current !== null && tableOnScreen.current !== route.id) show(null);
+        return;
+      }
       if (tableOnScreen.current !== route.id && openingId.current !== route.id) {
         // **A refusal is about the table you were opening, so opening another
         // one clears it.** Without this a "you are not seated at this table"
@@ -533,7 +702,7 @@ export function App() {
     }
     // `#/` or `#/new`: no game, no deal and no table on screen.
     if (tableOnScreen.current) show(null);
-  }, [route, door.me?.user, open, show]);
+  }, [route, door.me?.user, lockState, open, show]);
 
   // **The final standing comes from `/result`, because `scores` cannot carry
   // it.** `ClientState.scores` is `{seat, total}[]` in SEAT order with no rank
@@ -558,7 +727,20 @@ export function App() {
   }, [state?.over, state?.id]);
 
   useEffect(() => {
-    api.labels().then(setLabels).catch(() => setLabels(null));
+    // **The words on the cards survive an unreachable API** (spec §2.3,
+    // R-6.5b.8). The SERVER is asked first — it is the one that may have been
+    // updated — under a bound, and the Worker answers when that read fails OR
+    // times out. The bound is what makes the fallback reachable at all: a
+    // hanging read never rejects, so a `.catch` alone would wait for ever and
+    // the cards would keep their raw serde names for the life of the page.
+    //
+    // The Worker is otherwise left alone here: it is started by the local
+    // section's own listing, and a visitor who only plays hosted games never
+    // pays for the module twice.
+    bounded(api.labels(), BOUND_MS)
+      .catch(() => api.labels("local"))
+      .then(setLabels)
+      .catch(() => setLabels(null));
     // A 404 here means the server has no cropped art. That is a supported
     // state, not a failure: every card falls back to its typed values, which is
     // exactly the surface that existed before there was any art.
@@ -574,16 +756,41 @@ export function App() {
     // deployment answers the house chat at all, and how long a message may be.
     // A health that does not answer leaves both at their defaults, which costs
     // one refused request rather than a panel that never appears.
-    api
-      .health()
+    //
+    // **And whether it LANDED is a second question, bounded** (R-6.5b.2,
+    // review fix 1). The ruling names two ways for the read to fail — the API
+    // refusing, and the API not answering — and only the first of them
+    // rejects: a `fetch` accepted by a server that then says nothing settles
+    // neither way, so an unbounded read left the first screen reading
+    // `connecting…` for the life of the page for exactly the case the ruling
+    // is about. The bound is the same one the words use.
+    //
+    // **The unbounded read keeps its own chain**, so a server that answers
+    // LATE is still a server that answered: it sets the facts and puts the
+    // sections back, where the race's loser would have been dropped on the
+    // floor.
+    const health = api.health();
+    health
+      // **Reachability first, then the payload.** A body this client cannot
+      // make facts of is still evidence the server is there, and the throw
+      // that a malformed one raises must not cost the screen its listings.
+      // **All four facts in ONE statement since M6.5b**: they are the SERVER's
+      // record in `local/facts.ts`, keyed beside the local host's constants,
+      // and this read is the one thing that sets it.
       .then((h) => {
-        setSignalKind(h.signal);
-        setLobbyChat(h.lobby_chat);
-        setChatText(h.chat_text);
-        // And the archive (M6.5a, R-6.5a.13), for the Abandon control's label.
-        setArchiveKind(h.archive);
+        setServerUp(true);
+        setServerFacts(h);
       })
+      // Handled by the bounded chain below; swallowed here so a refusal is not
+      // an unhandled rejection as well as a state.
       .catch(() => {});
+    // **Only from `null`** (whole-branch review, Minor #2). The bound answers
+    // the question "has anything come back yet?", and a LISTING that landed
+    // is an answer: `Lobby`'s `onReached` sets this true the moment one does,
+    // whatever the health read is doing. An unconditional `false` here took a
+    // working lobby off the screen and replaced it with "not connected"
+    // whenever the health read alone was the slow one.
+    bounded(health, BOUND_MS).catch(() => setServerUp((v) => v ?? false));
   }, []);
 
   const arrive = useCallback(
@@ -686,6 +893,18 @@ export function App() {
   const send = useCallback(
     async (line: string) => {
       if (!state || inFlight.current) return;
+      // **A move made after this tab lost the lock is refused HERE, before the
+      // Worker is asked** (spec §4). The answer bar has already been replaced
+      // by the lock's own strip, but the BOARD is an input while a placement
+      // picker is open and it is not inside that bar — so this is the guard
+      // that makes "read-only" true rather than nearly true. Refusing in the
+      // page is the point: a reply from a call in flight when the lock was
+      // lost is not written back, so a move that reached the module would show
+      // something that will not be kept.
+      if (lockState === "lost") {
+        setError(LOST_SENTENCE);
+        return;
+      }
       // The game this request belongs to, read once: `state` is re-created on
       // every render and the checks below are about the game we posted TO.
       const game = state.id;
@@ -792,7 +1011,7 @@ export function App() {
         setBusy(false);
       }
     },
-    [state, landed, table, arrive],
+    [state, landed, table, arrive, lockState],
   );
 
   /** The OTHER way a change reaches this screen: somebody else made it (M6.1
@@ -905,25 +1124,29 @@ export function App() {
     if (surface !== "log") setScrubK(null);
   }, [surface]);
 
-  // ---- the door, below every hook and above every screen (M6.1 §7.1) -------
+  // ---- the door, below every hook and no longer in front of the page ------
   //
-  // Four answers, in order, and the ORDER is the rule:
-  //
-  // 1. `/api/me` refused. Say so and offer nothing — a sign-in form over a
-  //    server that cannot answer would take a name and lose it.
-  // 2. It has not answered yet: draw NOTHING. A default either way flashes the
-  //    wrong screen at half the players for one round trip, and the one that
-  //    flashes is the sign-in form at people who are already signed in.
-  // 3. Nobody is signed in under `claimed` — the one door this browser can
-  //    knock on. The form.
-  // 4. Nobody is signed in under Cloudflare Access or the edge Worker. There is
-  //    no form to offer: the identity comes from in front of the server, so the
-  //    only useful thing to say is which header was expected.
-  if (door.error) return <div className="setup door-error">{door.error}</div>;
-  if (!door.me) return null;
-  if (door.me.mode === "claimed" && !door.me.user)
-    return <SignIn onSignedIn={() => refresh()} notice={door.notice ?? undefined} />;
-  if (!door.me.user) return <div className="setup door-error">{doorSentence(door.me.mode)}</div>;
+  // **Four answers, and since M6.5b none of them is a GATE** (spec §2.5,
+  // R-6.5b.8). They were four `return`s here — a refusal, a silence, the
+  // sign-in form and the sentence naming the expected header — and each of
+  // them drew nothing else at all, including the games in this browser's own
+  // IndexedDB, which need no door to play. `Door` renders the same four
+  // bodies, in the same order and for the same reasons, as the CONTENT of the
+  // part of the first screen the server owns; `firstScreen` below is what puts
+  // them there.
+  const signedIn = door.me?.user ?? null;
+  /** The API could not be reached AT ALL: the health read failed and the door
+   *  has never answered either.
+   *
+   *  **One sentence beats two complaints.** Both reads failed for the same
+   *  reason, and the door's own words for it — "TypeError: Failed to fetch",
+   *  or a sign-in form over a server that would take a name and lose it — say
+   *  less than "not connected" and offer more. Where the door DID answer, its
+   *  four answers stand: the server is demonstrably reachable, whatever the
+   *  health read made of it. */
+  const unreachable = serverUp === false && door.me === null;
+  const doorContent =
+    signedIn || unreachable ? null : <Door door={door} onSignedIn={() => refresh()} />;
 
   // **Who you are, and how to stop being them.**
   //
@@ -934,7 +1157,7 @@ export function App() {
   // The button exists under `claimed` ONLY. Under the two edge doors there is
   // nothing stored to clear, and a control that looked like it logged you out
   // while Access kept letting you in would be a lie on screen.
-  const signOutButton = door.me.mode === "claimed" && (
+  const signOutButton = signedIn && door.me?.mode === "claimed" && (
     <button type="button" className="ghost" onClick={signOut}>
       sign out
     </button>
@@ -951,14 +1174,52 @@ export function App() {
   // is not a seat at this table, and the strip is the one line on the banner
   // that says which of the two you are here — sign-out still lives in the Game
   // menu, where every screen with a menu keeps it.
+  //
+  // **And "On this device" wherever the screen is a local game's** (M6.5b,
+  // R-6.5b.1). Not merely where there is nobody to be: the module answers as
+  // `local@browser` whatever address this browser signed in at, so "You are
+  // red@…" over a game played by this device names somebody who holds no seat
+  // at it. The same word therefore covers the signed-out case, where "You are
+  // null" is not a thing to print.
+  const onThisDevice =
+    (state !== null && isLocal(state.id)) ||
+    (dealing !== null && isLocal(dealing)) ||
+    (route.kind === "new" && route.local) ||
+    broken !== null ||
+    lockId !== null;
   const whoStrip = (
-    <span className="meta who">{spectating ? "You are watching" : `You are ${door.me.user}`}</span>
+    <span className="meta who">
+      {spectating
+        ? "You are watching"
+        : onThisDevice || !signedIn
+          ? "On this device"
+          : `You are ${signedIn}`}
+    </span>
   );
   const who = (
     <>
       {whoStrip}
       {signOutButton}
     </>
+  );
+
+  /** The first screen: the frame, the games in THIS BROWSER, and then whatever
+   *  the server's part of it has to say — the lobby's three listings, the
+   *  door's own answer, or the one line that says the API cannot be reached.
+   *
+   *  **Every screen behind a door lands here when there is no user** (spec
+   *  §2.5). The four `return`s that used to do that job drew nothing else;
+   *  this draws the door's words with the local section above them, which is
+   *  the whole of R-6.5b.8. */
+  const firstScreen = (notice?: string | null) => (
+    <Lobby
+      me={signedIn}
+      who={signedIn ? who : undefined}
+      notice={notice ?? null}
+      door={doorContent}
+      serverUp={serverUp}
+      onReached={() => setServerUp(true)}
+    />
   );
 
   // `enabled`/`toggleSection` are THIS component's, deliberately: the set table
@@ -971,13 +1232,91 @@ export function App() {
   // `#/t/<id>` is whichever of the three a table's own status makes it, which is
   // `open`'s question and the route effect's answer.
   if (!state) {
+    // **Another tab has this game open** (R-6.5b.5), and nothing has been read:
+    // FIRST here, before the deal and before the game, because the dealing
+    // screen writes too and the lock is taken at OPEN time for all of it.
+    if (lockId !== null && (lockState === "elsewhere" || lockState === "lost"))
+      return (
+        <LockScreen
+          state={lockState}
+          onTakeover={retake}
+          onLeave={() => toLobby()}
+          who={who}
+        />
+      );
+    // **A save in this browser that no longer rebuilds** (spec §4): the
+    // engine's own sentence, the bytes still saveable and the game still
+    // abandonable — neither of which asks the module to replay anything.
+    if (broken)
+      return (
+        <div className="setup broken-save">
+          <div className="who-strip">{who}</div>
+          <h2>{broken.table.name ?? broken.id}</h2>
+          <div className="error">{broken.sentence}</div>
+          <div className="field unlock-controls">
+            <button
+              type="button"
+              className="ghost"
+              onClick={() =>
+                void saveGameFile(broken.id).catch((e) =>
+                  setError(e instanceof ApiError ? e.message : String(e)),
+                )
+              }
+            >
+              Save game file
+            </button>
+            {/* **NOT `local`, deliberately** (spec §4: "Abandon still works").
+                `local` means "send this game to the archive first", and the
+                archive would refuse exactly this record — it is the rebuild
+                that has stopped working. Sending first would leave a game that
+                can never be abandoned; the bytes beside this button are the
+                copy that still works. The label follows, and reads "Abandon".
+              */}
+            <Abandon table={broken.table} onDone={() => toLobby()} onError={setError} />
+            <button type="button" className="ghost" onClick={() => toLobby()}>
+              Lobby
+            </button>
+          </div>
+          {error && <div className="error">{error}</div>}
+        </div>
+      );
+    // **The two screens a game in this browser reaches with the door shut**
+    // (spec §2.5): the local create, and the deal it opens. Both are seated by
+    // `LOCAL_USER`, because the module answers as that one address whatever
+    // this browser signed in at — a dealing screen handed the signed-in name
+    // would find no seat of its own at a table this device owns outright.
+    if (route.kind === "new" && route.local)
+      // **Keyed by HOST** (whole-branch review, Minor #1). The two forms sit at
+      // the same position in this tree, so React reconciles one into the other
+      // and the STATE goes with it: `#/new` with Players set to 4, then a
+      // hand-typed `#/new/local`, kept the 4 beside two seats and the module
+      // refused the create in `check_shape`'s words. A key is what makes the
+      // switch a remount.
+      return <NewGame key="local" local me={LOCAL_USER} onCreated={(t) => open(t.id)} who={who} />;
+    if (dealing && isLocal(dealing))
+      return (
+        <Dealing
+          game={dealing}
+          me={LOCAL_USER}
+          art={art}
+          labels={labels}
+          sections={enabled}
+          onToggleSection={toggleSection}
+          onPlaying={() => open(dealing, true)}
+          onLeave={toLobby}
+          who={who}
+        />
+      );
+    // Every screen below is the SERVER's, and the door is what stands in front
+    // of it — as content on the first screen rather than as a gate.
+    if (!signedIn) return firstScreen(error);
     if (route.kind === "new")
-      return <NewGame me={door.me.user} onCreated={(t) => open(t.id)} who={who} />;
+      return <NewGame key="server" me={signedIn} onCreated={(t) => open(t.id)} who={who} />;
     if (dealing)
       return (
         <Dealing
           game={dealing}
-          me={door.me.user}
+          me={signedIn}
           art={art}
           labels={labels}
           sections={enabled}
@@ -994,7 +1333,7 @@ export function App() {
       return (
         <OpenTable
           game={openTable}
-          me={door.me.user}
+          me={signedIn}
           // **Re-OPEN it, and let the status pick the screen** (spec §5.4).
           // What the open table knows is that it is no longer open; whether
           // that is the deal or a game already running is `open`'s own
@@ -1047,8 +1386,15 @@ export function App() {
           who={who}
         />
       );
-    return <Lobby me={door.me.user} who={who} notice={error} />;
+    return firstScreen(error);
   }
+
+  // **A SERVER game still needs a door, and a local one does not.** The screen
+  // below asks the routes this caller is admitted to; with nobody at the door
+  // there is no such caller, so the first screen — carrying the door's own
+  // words — is where that lands. A `local-` game is answered by the module in
+  // this browser and has no such question.
+  if (!isLocal(state.id) && !signedIn) return firstScreen(error);
 
   const players = state.frame.dashboard.find((p) => "Players" in p);
   const colors: PlayerColor[] =
@@ -1114,6 +1460,52 @@ export function App() {
         : null;
   const highlights = shown?.changes ?? null;
   const highlightBy = shown ? colors[shown.mover] : undefined;
+
+  /** Copy this finished local game to the SERVER's archive (R-6.5b.6, spec
+   *  §2.5).
+   *
+   *  **Both documents, in ONE snapshot, unparsed** (spec §2.2): the record's
+   *  bytes are what its terminal digest is over and its seed is a `u64` that
+   *  `JSON.parse` would round, and the server checks the table against the
+   *  record — two queued reads can fall either side of a move. The server
+   *  chooses the leaf from the replayed state; nothing here says where the
+   *  copy should go.
+   *
+   *  A 201 and a 200 `identical` both say a complete copy is at a path the
+   *  server names, so both are reported and both darken the control. Every
+   *  refusal is shown as the server sent it and leaves the control alone —
+   *  nothing about this game has changed. */
+  const sendToArchive = async () => {
+    // **One send per click, and a ref because state would not do** (whole-
+    // branch review, Minor #4; `inFlight`'s own reasoning above). React
+    // batches, so two clicks in a tick both read a state flag as false and
+    // both post — and the SECOND lands as `identical`, so a first send
+    // reported itself as "already archived". The control darkens on the
+    // answer, which is too late to be the guard.
+    if (archiving.current) return;
+    archiving.current = true;
+    setError(null);
+    try {
+      const pair = await localPair(state.id);
+      if (pair.record === null || pair.table === null) {
+        setError("this game has no saved record on this device");
+        return;
+      }
+      const r = await api.archive(pair.record, pair.table);
+      setArchived((a) => ({
+        ...a,
+        [state.id]: `${r.identical ? "already archived" : "archived"} under ${r.path}`,
+      }));
+    } catch (e) {
+      // The server's own sentence where it gave one; spec §4's words where the
+      // request never reached it. Nothing was sent, so nothing is claimed.
+      setError(e instanceof ApiError ? e.message : "the archive could not be reached");
+    } finally {
+      // Released either way: a refusal leaves this game exactly as it was, and
+      // sending again is the right thing to be able to do.
+      archiving.current = false;
+    }
+  };
 
   // The board is an input surface only while a placement picker is open — the
   // one place the engine is asking "which areas", rather than "which option".
@@ -1284,13 +1676,19 @@ export function App() {
             </>
           )}
         </span>
-        {/* **Save game file** (M6.5a, R-6.5a.13): the finished game's record, as
-            the bytes the server holds, downloaded as `<id>.json`. Only once the
-            game is over — the record carries the setup seed until the last
-            move, and the server answers 409 before then. The text is never
-            parsed on the way (see `api.recordText`), so the file a player saves
-            is the file the CLI loads. */}
-        {state.over ? (
+        {/* **Save game file** (M6.5a, R-6.5a.13): the game's record, as the
+            bytes whoever holds it holds, downloaded as `<id>.json`. The text is
+            never parsed on the way (see `api.recordText`), so the file a player
+            saves is the file the CLI loads.
+
+            **When it is offered differs by host, and the reason is whose seed
+            it is.** A HOSTED record is the server's and carries the setup seed
+            until the last move, so `…/record` answers 409 before then and the
+            control waits for the game to end. A LOCAL one is the player's own
+            seed on the player's own disk (R-6.5b.7), read off the Worker's side
+            channel rather than through that route — so it is offered at any
+            point. */}
+        {state.over || isLocal(state.id) ? (
           <button
             type="button"
             className="ghost"
@@ -1302,6 +1700,39 @@ export function App() {
           >
             Save game file
           </button>
+        ) : null}
+        {/* **A tab that has LOST the lock writes nothing** (spec §4, review
+            Important 2), so both controls below go the way the answer bar
+            goes. The Worker fences a delete from a tab that does not hold the
+            game — it answers `not-held` and keeps the pair — so a live Abandon
+            would report a delete that did not happen and return to a lobby
+            still listing the game; and with an archive on it would post a
+            STALE record first. "Save game file" stays, because it reads bytes
+            and writes nothing. */}
+        {/* **Send to the archive** (spec §2.5): a finished game in this browser,
+            copied to the server that keeps one. Dark where the server keeps
+            none — a control promising a save it cannot make is what the label
+            rule forbids — and dark again once the copy has landed, since the
+            local document carries no stamp and there is nothing further to
+            send. A reload puts it back, and the server answers that second
+            click `identical`. */}
+        {state.over && isLocal(state.id) && archiveKind() !== "off" && lockState !== "lost" ? (
+          archived[state.id] ? (
+            <span className="meta archived" role="status">
+              {archived[state.id]}
+            </span>
+          ) : (
+            <button type="button" className="ghost" onClick={() => void sendToArchive()}>
+              Send to the archive
+            </button>
+          )
+        ) : null}
+        {/* **The abandon lives on a LOCAL game's own screen** (P-6), where this
+            tab holds its lock — the lobby's rows withhold it. It reads "Abandon
+            and save" when the SERVER keeps an archive, because that is where
+            the copy goes. */}
+        {isLocal(state.id) && table && lockState !== "lost" ? (
+          <Abandon table={table} local onDone={() => toLobby()} onError={setError} />
         ) : null}
       </header>
 
@@ -1427,13 +1858,17 @@ export function App() {
             may write to (R-6.4.1) — and `sendName` is what tells the two apart:
             a seat is named by its seat, and sending a name for one is a 400
             rather than a quiet override (R-6.4.2). */}
-        <Chat
-          key={state.id}
-          scope={{ kind: "table", id: state.id }}
-          count={chatCount}
-          colors={colors}
-          sendName={spectating}
-        />
+        {/* **No Chat panel on a local game** (spec §2.5): the house is the
+            server's, and a table in this browser has one person at it. */}
+        {!isLocal(state.id) && (
+          <Chat
+            key={state.id}
+            scope={{ kind: "table", id: state.id }}
+            count={chatCount}
+            colors={colors}
+            sendName={spectating}
+          />
+        )}
       </aside>
 
       {surface && (
@@ -1498,6 +1933,13 @@ export function App() {
               skip
             </button>
           </div>
+        ) : lockState === "lost" ? (
+          /* **Another tab took this game** (spec §4). The board, the log and
+             every panel stay where they are — what is gone is the ability to
+             answer, because the writer is elsewhere. `send` refuses the board's
+             own clicks for the same reason, which is what makes this read-only
+             rather than nearly so. */
+          <LockScreen state="lost" onTakeover={retake} inline />
         ) : (
           <Decision
             state={state}

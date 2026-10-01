@@ -12,24 +12,19 @@
 # over rather than where it would be tested.
 
 # ---------------------------------------------------------------------------
-# 1. The browser client. Vite output only; none of this reaches the runtime
-#    image except `dist/`.
-# ---------------------------------------------------------------------------
-FROM node:22-slim AS client
-WORKDIR /app
-
-# Manifests first so `npm ci` is cached independently of the source. A source
-# edit then costs a rebuild of the bundle and not of node_modules.
-COPY web/package.json web/package-lock.json ./
-RUN npm ci
-
-COPY web/ ./
-RUN npm run build
-
-# ---------------------------------------------------------------------------
-# 2. The server. `rust-toolchain.toml` pins the compiler, so this stage
-#    resolves the SAME 1.97.1 both workstations use rather than whatever the
-#    base image happens to ship — the pin is the point of having one.
+# 1. The server, AND the browser host's WebAssembly module. `rust-toolchain.toml`
+#    pins the compiler, so this stage resolves the SAME 1.97.1 both workstations
+#    use rather than whatever the base image happens to ship — the pin is the
+#    point of having one.
+#
+#    **Why the module is built here and copied down.** Since M6.5b the client's
+#    `npm run build` is `build:wasm && build:client`, and `build:wasm` needs
+#    cargo, the `wasm32-unknown-unknown` target and `wasm-bindgen` — none of
+#    which a `node:22-slim` image has, and the client stage is not even given
+#    the workspace's manifests. So this stage, which has all three, emits the
+#    generated glue to `/out/wasm` and the client stage copies it in and runs
+#    `build:client` alone. That is also why this stage now comes FIRST:
+#    `COPY --from=` needs its source stage defined earlier in the file.
 # ---------------------------------------------------------------------------
 FROM rust:1-slim-trixie AS server
 WORKDIR /src
@@ -41,16 +36,68 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends pkg-config \
  && rm -rf /var/lib/apt/lists/*
 
-COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+# **The pin first, and the target onto the pinned toolchain.** `rustup target
+# add` applies to whichever toolchain rustup resolves at that moment, so this
+# COPY has to precede it: with `rust-toolchain.toml` in the working directory
+# rustup installs 1.97.1 and adds the target to THAT, where cargo will look for
+# it. Without the file first, the target would land on the image's own default
+# toolchain and `cargo build --target wasm32-unknown-unknown` would then fail
+# to find it — the same trap `.github/workflows/test.yml` names for CI.
+COPY rust-toolchain.toml ./
+RUN rustup target add wasm32-unknown-unknown
+
+# `wasm-bindgen-cli` at the version `crates/yokohama-wasm` depends on
+# (`wasm-bindgen = "=0.2.128"`); generator and crate must match exactly or the
+# glue refuses the module at load. Built from source with `--locked`, the same
+# command CI runs, rather than fetching a release tarball: one fewer download to
+# verify, and no per-architecture asset name to keep right. It is a few minutes
+# once, and it sits ABOVE the source COPY so Docker caches the layer and a
+# source edit never pays for it again.
+RUN cargo install wasm-bindgen-cli --version 0.2.128 --locked
+
+COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
 
 # `-p yokohama-web` pulls `yokohama-cli` and `yokohama-core` as dependencies
 # and leaves the oracle, difftest, bridge and gen-data crates unbuilt — they
 # are development tooling and nothing at runtime calls them.
+#
+# Both builds and the `wasm-bindgen` run are ONE step because `target/` is a
+# cache mount: it does not survive the layer, so anything that reads what a
+# build wrote has to read it here. `/out/wasm` is outside the mount, which is
+# what makes the glue a real artifact the next stage can copy.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release -p yokohama-web \
- && cp target/release/yokohama-web /usr/local/bin/yokohama-web
+ && cp target/release/yokohama-web /usr/local/bin/yokohama-web \
+ && cargo build --release --target wasm32-unknown-unknown -p yokohama-wasm \
+ && wasm-bindgen --target web --out-dir /out/wasm \
+      target/wasm32-unknown-unknown/release/yokohama_wasm.wasm
+
+# ---------------------------------------------------------------------------
+# 2. The browser client. Vite output only; none of this reaches the runtime
+#    image except `dist/`.
+# ---------------------------------------------------------------------------
+FROM node:22-slim AS client
+WORKDIR /app
+
+# Manifests first so `npm ci` is cached independently of the source. A source
+# edit then costs a rebuild of the bundle and not of node_modules.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+# The generated glue, from the stage that has the toolchain. It lands where
+# `npm run build:wasm` would have written it — `web/src/local/wasm/`, a source
+# directory, so Vite bundles the loader and emits the `.wasm` as a hashed asset
+# (a static import from `public/` fails Rollup's resolution). The
+# `.dockerignore` keeps a developer's own copy out of the context, so this is
+# the only way it arrives — which is what makes the module in the image the one
+# the stage above built.
+COPY --from=server /out/wasm ./src/local/wasm
+# `build:client`, not `build`: the module is already here, and running
+# `build:wasm` in this stage is exactly what has no toolchain to run it.
+RUN npm run build:client
 
 # ---------------------------------------------------------------------------
 # 3. The runtime. No toolchain, no source, no node_modules.

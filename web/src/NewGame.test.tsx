@@ -11,9 +11,11 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NewGame } from "./NewGame";
 import { DISPLAY_NAME_KEY } from "./api";
+import { resetLocalHostForTests } from "./local/client";
+import { currentWorker, stubWorker } from "./test/fakeWorker";
 import { gate, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import type { TableView } from "./types";
@@ -392,5 +394,91 @@ describe("the password", () => {
     expect(screen.queryByLabelText("Table password")).toBeNull();
     await user.click(box);
     expect(screen.getByLabelText("Table password")).toHaveValue("");
+  });
+});
+
+// ---- the LOCAL form (M6.5b, R-6.5b.8; spec §2.5) ---------------------------
+//
+// "Play the bot here" opens this same screen with everything a table in this
+// browser cannot be asked: how many seats (two), who holds them (you and the
+// bot), a password (there is nobody to keep out) and a seed — **which the form
+// never offers and never sends**, because `draw_seed` inside the module draws
+// it and the board is an injective fingerprint of it (spec §2.2).
+describe("the form for a game on this device", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+  });
+
+  const local = (props: Parameters<typeof Host>[0] = {}) => {
+    const onCreated = vi.fn();
+    render(<NewGame local me={ME} onCreated={onCreated} {...props} />);
+    return { onCreated, user: userEvent.setup() };
+  };
+
+  it("fixes the table to you and the bot, and asks nothing a local table cannot answer", () => {
+    stubWorker();
+    local();
+    // The seating is not a choice: no count, no seat rows to switch, and the
+    // two seats named in words instead.
+    expect(screen.queryByLabelText("Players")).toBeNull();
+    expect(screen.queryByLabelText(/^Seat \d/)).toBeNull();
+    expect(screen.getByText("you")).toBeInTheDocument();
+    expect(screen.getByText("the bot")).toBeInTheDocument();
+    // Nobody to keep out, and no seed to type.
+    expect(screen.queryByLabelText("Ask for a password to join")).toBeNull();
+    expect(screen.queryByLabelText("Seed")).toBeNull();
+  });
+
+  it("submits through the Worker, seated by the local player, with no seed and no id", async () => {
+    stubWorker();
+    const { onCreated, user } = local();
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+
+    // **The create went to the module and not to the network.** `fetch` is the
+    // setup file's throwing stub here, so a create that took the server's arm
+    // would fail loudly rather than quietly reaching a stub.
+    const posts = currentWorker().posted.filter(
+      (p) => p.kind === "call" && p.method === "POST" && p.path === "/api/games",
+    );
+    expect(posts).toHaveLength(1);
+    const body = JSON.parse((posts[0] as { body: string }).body) as Record<string, unknown>;
+    // Seated by the address the MODULE answers as (R-6.5b.1), never by whoever
+    // this browser signed in at: the local table's seats are `local@browser`,
+    // so a form that posted `me` would open a table its own player holds no
+    // seat at.
+    expect(body.seats).toEqual([{ user: "local@browser" }, { bot: true }]);
+    expect(body.players).toBe(2);
+    expect(body.start_seat).toBe(0);
+    expect(body.colors).toEqual(["Red", "Blue"]);
+    // The two fields a local table has no answer for, and the one the Worker
+    // draws for itself.
+    expect("seed" in body).toBe(false);
+    expect("password" in body).toBe(false);
+    expect("id" in body).toBe(false);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("still carries what the table is CALLED and what you are called at it", async () => {
+    stubWorker();
+    const { user } = local();
+    await user.type(screen.getByLabelText("Name"), "kitchen table");
+    await user.type(screen.getByLabelText("Your name"), "Jem");
+    await user.click(screen.getByRole("button", { name: "Deal" }));
+    await waitFor(() =>
+      expect(
+        currentWorker().posted.filter((p) => p.kind === "call" && p.method === "POST"),
+      ).toHaveLength(1),
+    );
+    const post = currentWorker().posted.find((p) => p.kind === "call" && p.method === "POST")!;
+    const body = JSON.parse((post as { body: string }).body) as Record<string, unknown>;
+    expect(body.name).toBe("kitchen table");
+    // R-6.5b.3: the name for a save-game review rides in the TABLE document,
+    // which is what this field writes — the record is the engine's format and
+    // knows no people.
+    expect(body.display_name).toBe("Jem");
   });
 });

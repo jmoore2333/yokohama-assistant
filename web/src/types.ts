@@ -984,3 +984,26 @@ export interface ChatPost {
 
 /** Where a chat panel is: one table, or the house. A client-side type. */
 export type ChatScope = { kind: "table"; id: string } | { kind: "house" };
+
+/** The frames of `[from, to)` in ONE reply — `GET …/at?from=&to=`, one forward
+ *  replay on the server instead of one `at/{k}` per position (M6.5b,
+ *  R-6.5b.10). Each frame is byte-equal to `/at/{k}`'s. `to` may be
+ *  `events + 1`: the run then ends on the live frame. A run longer than the
+ *  server's cap (64) is a 400 naming it, never a clamp — the client pages. */
+export interface RunFrames {
+  frames: HistoricalFrame[];
+}
+
+/** Where a game played in this browser landed when it was sent to the server's
+ *  archive — `POST /api/archive` (M6.5b, R-6.5b.6).
+ *
+ *  The leaf is the SERVER's, chosen from a strict replay of the record rather
+ *  than from anything the body said, so a client cannot file a running game as
+ *  finished. `identical` marks a retry that found its own bytes already there —
+ *  a 200 rather than a 201 — and the client proceeds on either; only a 409
+ *  ("a different record is archived under this id") keeps the game. */
+export interface ArchiveReply {
+  leaf: "over" | "abandoned";
+  path: string;
+  identical: boolean;
+}

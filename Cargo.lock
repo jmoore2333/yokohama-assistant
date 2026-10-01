@@ -929,6 +929,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yokohama-wasm"
+version = "0.5.0"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+ "yokohama-core",
+ "yokohama-web",
+]
+
+[[package]]
 name = "yokohama-web"
 version = "0.5.0"
 dependencies = [

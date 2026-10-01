@@ -89,7 +89,33 @@ if (!haveBrowser) {
  *  The server persists every applied move as its `GameRecord`, and a walk must
  *  not write into whatever the operator is actually playing. */
 function gamesDir(): string {
-  const dir = join(tmpdir(), `yokohama-e2e-${PORT}`);
+  return fresh(join(tmpdir(), `yokohama-e2e-${PORT}`));
+}
+
+/** Where the walk's server keeps its ARCHIVE (M6.5b, spec §6.5).
+ *
+ *  A browser game is copied to the SERVER by `POST /api/archive`, so the exit
+ *  walk needs a deployment that keeps one — and the only honest way to read
+ *  what landed is off the disk the server wrote it to. Its own scratch
+ *  directory beside the games, for the same reason that one is scratch: a walk
+ *  must not write into whatever the operator is actually keeping.
+ *
+ *  **A READER, not a maker.** `gamesDir` empties what it hands back, and this
+ *  module is loaded by every Playwright process — the runner's, and each test
+ *  worker's. A spec calling an emptying helper to find out where the file is
+ *  would delete the file it came to read, so the emptying is left to the `env`
+ *  map below and the spec reads this.
+ *
+ *  **Which happens at each config EVALUATION, not once per run** (whole-branch
+ *  review, vacuity #3): every process that loads this module runs `fresh()`
+ *  again, the shape `gamesDir` has had since M6.1. Harmless at `workers: 1`
+ *  unless a worker restarts mid-run. */
+export function archiveDir(): string {
+  return join(tmpdir(), `yokohama-e2e-archive-${PORT}`);
+}
+
+/** An empty directory at `dir`. */
+function fresh(dir: string): string {
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   return dir;
@@ -171,6 +197,13 @@ export default defineConfig({
             // leaked one per run, and the one holding the walk's records was
             // whichever load happened to be the server's.
             YOKOHAMA_WEB_DIR: gamesDir(),
+            // **The archive is ON for the walk** (M6.5b, spec §6.5), because
+            // the one thing "Send to the archive" claims is that a copy of the
+            // browser's own bytes reaches the server — and a deployment that
+            // keeps none answers 404 and claims nothing. It also makes a
+            // playing table's Abandon read "Abandon and save" on BOTH hosts,
+            // which is the label the archive makes true.
+            YOKOHAMA_WEB_ARCHIVE_DIR: fresh(archiveDir()),
           },
         },
       }

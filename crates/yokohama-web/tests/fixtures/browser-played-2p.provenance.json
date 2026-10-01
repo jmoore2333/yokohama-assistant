@@ -1,0 +1,8 @@
+{
+  "release": "yokohama-web 0.5.0-m6.5b (branch web-room-m6.5b at ae56532)",
+  "date": "2026-09-21",
+  "browser": "Chromium 151.0.7922.34 (Playwright)",
+  "module_sha256": "faabe11a64a5c7465e08d37e9d8bd32753a2d5cb8140df62bf2bcaacdf6b8ed2",
+  "module_build": "debug — `npm run build:wasm:debug`, which `npm run e2e` runs; the RELEASE module (`npm run build:wasm`) has the same bot and no `debug_trap`",
+  "produced_by": "web/e2e/plays_locally.spec.ts under YOKOHAMA_WEB_UPDATE_PIN=1"
+}

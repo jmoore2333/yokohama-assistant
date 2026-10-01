@@ -143,7 +143,12 @@ export async function openFromList(page: Page, id: string): Promise<void> {
   // show" with its fold control in it — so the loose name resolves to two
   // headings and every walk in this directory fails in strict mode.
   await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
-  await page.locator(".lobby .saved").first().getByRole("link", { name: id, exact: true }).click();
+  // **`.your-games` and no longer `.saved` first.** M6.5b puts "On this
+  // device" at the top of this screen, in the same `.saved` shape — so
+  // `.first()` stopped meaning "Your games" the moment the games in the
+  // browser were listed above it, which is the same drift `:not(.open-tables)`
+  // met in `joins_by_link`. The section names itself; use the name.
+  await page.locator(".lobby .your-games").getByRole("link", { name: id, exact: true }).click();
 }
 
 /**
@@ -166,9 +171,29 @@ export async function newGameForm(page: Page, email: string = WALKER): Promise<v
 }
 
 /** Start a fresh game through the lobby and the setup screen, exactly as a
- *  player does (M6.2 §5.8). */
-export async function startGame(page: Page, opts: { players?: number } = {}): Promise<Game> {
+ *  player does (M6.2 §5.8).
+ *
+ *  **`local` is the game played in THIS BROWSER** (M6.5b, R-6.5b.3): two
+ *  seats, you and the bot, created by the module in this tab's own Worker.
+ *  Everything after the create is the same screen and the same clicks — the
+ *  deal, the keep, the game — which is the point of the option rather than a
+ *  second helper.
+ *
+ *  **`signedOut` is for the one walk that has no door** (spec §6.5): with the
+ *  API refused there is no sign-in form to type into, and a local game needs
+ *  none. It is an explicit parameter and not a probe, so a walk that meant to
+ *  be signed in fails at the door rather than quietly playing without one. */
+export async function startGame(
+  page: Page,
+  opts: { players?: number; local?: boolean; signedOut?: boolean } = {},
+): Promise<Game> {
   const players = opts.players ?? 2;
+  if (opts.local) {
+    if (players !== 2) throw new Error("a local game is two seats, you and the bot (R-6.5b.3)");
+    const id = await createLocal(page, opts.signedOut ?? false);
+    await keepThroughTheDeal(page, 2);
+    return { id };
+  }
   // **The lobby is the first screen since M6.2**, and the form is one click
   // beyond it.
   await newGameForm(page);
@@ -203,6 +228,41 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
   const id = String(((await (await created).json()) as { id: string }).id);
   if (!id) throw new Error("the server did not name the table");
 
+  await keepThroughTheDeal(page, players);
+  return { id };
+}
+
+/**
+ * A local table, created through the screens a player uses (M6.5b §2.5).
+ *
+ * **The id comes off the ROUTE and not off a response**, because there is no
+ * response: a local create is a message to this tab's Worker, which draws the
+ * id itself. The address the screen lands on is where that id is readable, and
+ * reading it there also says the route was taken.
+ */
+async function createLocal(page: Page, signedOut: boolean): Promise<string> {
+  if (signedOut) await page.goto("/");
+  else await signIn(page);
+  // The lobby's own heading, which renders in every one of the server area's
+  // three states — including the one where the API cannot be reached at all,
+  // which is the state `signedOut` exists for.
+  await expect(page.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Play the bot here" }).click();
+  await expect(page.getByRole("heading", { name: "New game" })).toBeVisible();
+  await page.getByRole("button", { name: "Deal" }).click();
+  await page.waitForURL(/#\/t\/local-[0-9a-f]+$/, { timeout: 60_000 });
+  const id = page.url().split("#/t/")[1] ?? "";
+  if (!id.startsWith("local-")) throw new Error(`the local create landed at ${page.url()}`);
+  return id;
+}
+
+/**
+ * Keep one card per seat this browser holds, until the game is on screen.
+ *
+ * Shared by both hosts since M6.5b, and it is the same screen on both: the
+ * local deal is served by the module through the same route the server's is.
+ */
+async function keepThroughTheDeal(page: Page, players: number): Promise<void> {
   // **The deal, one seat at a time, served by `GET …/deal` (§4.3).** Every seat
   // this browser holds is asked in turn — one bot at two players, and above that
   // the walker in every seat, which the loop above ASKS FOR since M6.2 — and the
@@ -240,8 +300,6 @@ export async function startGame(page: Page, opts: { players?: number } = {}): Pr
     throw new Error(`the deal took ${kept} keeps at ${players} players, expected ${humans}`);
   }
   await expect(page.getByRole("heading", { name: "Yokohama" })).toBeVisible();
-
-  return { id };
 }
 
 /**

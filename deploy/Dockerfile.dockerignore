@@ -9,6 +9,16 @@ web/test-results/
 web/playwright-report/
 web/tsconfig.tsbuildinfo
 
+# M6.5b's generated glue, both targets. These are BUILD OUTPUT of
+# `npm run build:wasm` and are gitignored — but a .gitignore governs git and
+# not a build context, so without these two lines a developer's own module
+# rides into the image. The `client` stage's `COPY --from=server /out/wasm`
+# would then be overwriting a stale copy rather than delivering the only one,
+# and `wasm-node/` (which no stage wants) would ship in the client layer.
+# Measured: both were in the context before these lines existed.
+web/src/local/wasm/
+web/wasm-node/
+
 # **Third-party material that must not enter an image that gets pushed
 # anywhere.** `ASSETS.md` carves these out of the Apache-2.0 grant, and pushing
 # them to a registry is redistribution. `crates/yokohama-web/assets/art/` is the
@@ -38,8 +48,9 @@ docs/temp/
 bridge/
 
 # **Tests, out of the image build — and this is correctness, not tidiness.**
-# `web/`'s build script is `tsc -b && vite build`, and `tsconfig.json` includes
-# all of `src`, so a type error in any *.test.tsx FAILS THE PRODUCTION IMAGE.
+# The client stage's build script is `build:client`, i.e. `tsc -b && vite
+# build`, and `tsconfig.json` includes all of `src`, so a type error in any
+# *.test.tsx FAILS THE PRODUCTION IMAGE.
 # Caught the honest way: a stray probe file left in the tree by another process
 # broke this build with three TS6133 unused-variable errors in a file the
 # bundle never imports. The test suites are CI's job and the per-edit gates';

@@ -6,7 +6,23 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-09-20 (sixth session), at the DEPLOY of **M6.5a "the seam"** as
+**Updated:** 2026-09-21 (seventh session, the M6.5b EXECUTION, end to end): the session executed
+all nine tasks of `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` under your ruling (1 and 9
+inline, 2–8 subagent-driven with Opus), took the Fable whole-branch review through ONE fix wave and
+its scoped re-review, ran spec §6.6's battery (19 caught, the one survivor closed by a test
+assertion, one uncatchable by a ruling you will find in the close's §5), wrote the close
+`docs/plans/2026-09-21-web-frontend-m6.5b-close.md`, deployed `0.5.0-m6.5b` (RUNBOOK §3.13),
+pushed the branch and opened its PR, and wrote the M6.5b2 entry artifact
+`docs/plans/2026-09-21-web-frontend-m6.5b2-handover.md` — **Track 3 carries it; M6.5b2 "installable
+and offline" is next, brainstormed with you from that handover.** The previous update, 2026-09-20
+(sixth session, at its handover for a clean context): the session
+DEPLOYED **M6.5a** (`0.5.0-m6.5a`, RUNBOOK §3.12), brainstormed **M6.5b** with you, wrote its spec
+and plan and carried them through FOUR review waves (spec §9–§10), recorded your Free-tier ruling
+(R-6.5b.16), updated wrangler, and left the execution to a fresh session — **its entry artifact is
+`docs/plans/2026-09-20-web-frontend-m6.5b-execution-handover.md`**, whose §2 records the three
+things you RULED at the handover: SDD for Tasks 2–8 with Opus implementers and reviewers and inline
+for Tasks 1 and 9, the two spec defaults standing, and offline mode as its own cycle "M6.5b2"
+between M6.5b and M6.5c. The previous update the same day was at the DEPLOY of **M6.5a "the seam"** as
 `yokohama-web:0.5.0-m6.5a` (`deploy/RUNBOOK.md` §3.12 — both archive sites read off the volume, the
 archived record byte-identical to the store's and to the record route's body, the served record
 loaded in the terminal) after a fresh whole-branch review of the close at HEAD, with the M6.5b
@@ -154,9 +170,38 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" next (web lane)
+## Track 3 — The web client: M6.5b "single-player in the browser" CLOSED AND LIVE 2026-09-21 (`yokohama-web:0.5.0-m6.5b`, close HEAD `e15e369` on `web-room-m6.5b`; RUNBOOK §3.13; its PR open against `web-room-m6.5`); M6.5b2 "installable and offline" next (web lane)
 
-**M6.5a is DONE, DEPLOYED and reviewed; M6.5b's brainstorm is next.** (1) **The deploy is done:**
+**M6.5b — DONE (2026-09-21).** The record of record is the close
+`docs/plans/2026-09-21-web-frontend-m6.5b-close.md`: §1 what shipped by task, §2 the counts in
+one sequence, §4 the reviews (seven Opus task reviews with one fix round each where an Important
+was found, the Fable whole-branch review's 0 Critical / 3 Important / 11 Minor and its ten-entry
+vacuity list, the one fix wave `ee552cf`, the battery), **§5 every ruling taken on your behalf
+with its cost** — read the Task 3 detour (the self-host Dockerfile, cancelled on "we're not using
+Modal" and reinstated on "a user running locally in Docker is a goal") and the Task 8 PARKED ruling
+(the cold-pump arm of persistence-by-outcome is unreachable through the shipped client because
+every table seats you first; "who starts" on the local form is the owner item) — §6.3 the OWNER
+ITEMS (the module's 758 KB gzip and no release profile; the first-screen boot instantiating the
+module every visit; `walk.json`'s 419 KB pretty-printed; "who starts"; the archive route handing
+an untrusted record to the engine's setup path; the invisible no-Web-Locks fallback; nothing in CI
+building the self-host image), and §7 what it does NOT claim. **Your Web Locks probe on the iOS 27
+simulator is the R-6.5b.5 measurement** (PASS; §1.4). **Next: M6.5b2**, from
+`docs/plans/2026-09-21-web-frontend-m6.5b2-handover.md` — a brainstorm with you first (its §4 lists
+the decisions the spec takes first: the cache key and update lifecycle, the backup/restore
+envelope, the persistent-storage moment, what "installable" means on your phone, whether the
+module's size is budgeted there).
+
+**The previous state of this track (2026-09-20), kept for the record:** M6.5a "the seam" CLOSED AND LIVE 2026-09-20 (`yokohama-web:0.5.0-m6.5a` from `8a6b391` on `web-room-m6.5`; PR #35 open); M6.5b "single-player in the browser" was next.
+
+**Pre-execution review (owner-requested, 2026-09-20) — DISPOSED:**
+[Free-tier, offline, and save review](plans/2026-09-20-web-frontend-m6.5b-review-free-tier-offline-saves.md)
+recorded eight corrections; every one was verified against the code and TAKEN into the spec's
+fourth wave and the plan's revision (spec §10 is the disposition table); the Free-tier target is
+now R-6.5b.16 (you confirmed it), and the offline/restore work is the level-3 charter in spec §8,
+recommended as its own cycle "M6.5b2" between M6.5b and M6.5c. **Execution starts from
+`plans/2026-09-20-web-frontend-m6.5b-execution-handover.md`.**
+
+**M6.5b's SPEC and PLAN are WRITTEN on the stacked branch `web-room-m6.5b`; execution is next.** The spec `docs/plans/2026-09-20-web-frontend-m6.5b-single-player-spec.md` (R-6.5b.1–15, at `54a9a1f`) came out of the brainstorm with you and was revised three times — an Opus adversarial read (2C/10I/13M, 41 claims verified true), that reviewer's scoped re-read of the fix wave (one new Critical: the archive route's table check would have refused every real send, since a bot seat's keep lives in the record), and your own lightweight-agent read (the run route's 404 boundary one position too tight against the client's own `to = next + 1`; the lock lifecycle; a stored game that no longer rebuilds; the handover's superseded sentences) — its §9 traces every change. The plan `docs/plans/2026-09-20-web-frontend-m6.5b-plan.md` is nine tasks in dependency order (the run route → the archive route → the wasm crate → the Worker, the SDD candidate → the first screen → the local game screen → the corpus replay → the e2e and the pin → the close), each ending in the spec's own cells. **You confirmed the Free-tier target (R-6.5b.16, amending umbrella R-6.5.12; the decision-log row of 2026-09-20 carries it and M6.5c inherits the consequences), ruled the execution mode (SDD for Tasks 2–8, inline for 1 and 9), kept both spec defaults, and made offline mode its own cycle "M6.5b2". The two defaults, for the record:** `labels` is read from the server first and falls back to the Worker (the alternative wakes the Worker on every page load); the archive's caller directory is a readable transliteration (`jamoore_at_gmail.com`) that can collide, with a hash the one-line alternative. **M6.5a is DONE, DEPLOYED and reviewed.** (1) **The deploy is done:**
 `yokohama-web:0.5.0-m6.5a`, built from `8a6b391` (the close's docs commit over `42832f8`), live in
 container `579cd1ff…` since **14:04:35Z** with BOTH `Env` entries — `deploy/RUNBOOK.md` §3.12 is the
 record. `/api/health` reads `"archive": "dir"`; a throwaway table abandoned after one move left

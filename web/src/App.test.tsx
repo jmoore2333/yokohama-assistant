@@ -2,14 +2,16 @@
 
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { App } from "./App";
-import { CLAIMED_USER_KEY, chatText, lobbyChat, setChatText, setLobbyChat } from "./api";
+import { CLAIMED_USER_KEY, chatText, lobbyChat, setArchiveKind, setChatText, setLobbyChat } from "./api";
+import { resetLocalHostForTests } from "./local/client";
 import { loadSections } from "./sections";
-import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, renderApp, signedOutReply, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { currentWorker, FakeWorker, stubWorker, type FakeWorkerHooks } from "./test/fakeWorker";
+import { fakeStream, flush, until, gameMenu, gamesNamed, gate, isGamesList, openStream, positionsWalked, renderApp, runRange, signedOutReply, stubApi, type ApiCall, type ApiStub, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
-import type { Events } from "./types";
+import type { ClientState, Events } from "./types";
 
 /** The board tile for one area, as the accessible name renders it. */
 const tile = (area: number) =>
@@ -727,12 +729,49 @@ describe("the turn playback", () => {
     });
   };
 
+  /** R-6.5b.10's client half: a run longer than the server's cap is PAGED in
+   *  cap-sized calls — `from=40&to=104` (sixty-four positions) and then
+   *  `from=104&to=111` (the last seven, ending on the live frame) — with ONE
+   *  log call for the whole tail. A client that sent the whole range would be
+   *  refused (the server never clamps), and one that stopped at the cap would
+   *  walk a run seven steps short. */
+  it("pages a run longer than the cap in cap-sized run calls and reads the log once", async () => {
+    const { before, at } = botReply();
+    const replied = { ...before, events: 110 };
+    const log = {
+      total: 110,
+      entries: Array.from({ length: 70 }, (_, i) => ({ index: 40 + i, text: `Blue: step ${i}` })),
+    };
+    const stub = await renderApp(before, (call) => {
+      if (call.path.endsWith("/input")) return replied;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => ({ ...at(k), total: 110 })) };
+      if (call.path.includes("/log")) return log;
+      return undefined;
+    });
+    vi.useFakeTimers();
+    try {
+      const click = (el: Element) => act(() => void fireEvent.click(el));
+      click(firstRow());
+      await settle();
+      expect(stub.matching("GET", "/at?").map((c) => c.path.replace(/^.*\/at\?/, ""))).toEqual([
+        "from=40&to=104",
+        "from=104&to=111",
+      ]);
+      expect(positionsWalked(stub)).toHaveLength(71);
+      expect(stub.matching("GET", "/log")).toHaveLength(1);
+      expect(stub.matching("GET", "/log")[0]!.path).toMatch(/tail=70$/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fetches the run's positions, walks it when a bot moved, and skip lands live", async () => {
     const { before, replied, at, log } = botReply();
     const stub = await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -749,9 +788,11 @@ describe("the turn playback", () => {
       const click = (el: Element) => act(() => void fireEvent.click(el));
       click(firstRow());
       await settle();
-      // Positions 40..=43, in ascending order, and the log's tail of three.
-      expect(stub.matching("GET", "/at/")).toHaveLength(4);
-      expect(stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]))).toEqual([40, 41, 42, 43]);
+      // Positions 40..=43, in ascending order, from ONE run call (M6.5b:
+      // `to` is `next + 1`, the route being half-open), and the log's tail of three.
+      expect(stub.matching("GET", "/at?")).toHaveLength(1);
+      expect(stub.matching("GET", "/at?")[0]!.path).toMatch(/\/at\?from=40&to=44$/);
+      expect(positionsWalked(stub)).toEqual([40, 41, 42, 43]);
       expect(stub.matching("GET", "/log")[0]!.path).toMatch(/tail=3$/);
       // The walk is on: the deck says who is playing, the table is outlined,
       // the account lights step 1 of 3. The mover of step ONE is the player's
@@ -928,8 +969,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReplyEndingEmpty();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -965,8 +1006,8 @@ describe("the turn playback", () => {
     const { before, replied, at, log } = botReplyEndingEmpty();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -997,8 +1038,8 @@ describe("the turn playback", () => {
         return gamesNamed(before.id, "sim-other");
       if (call.method === "GET" && call.path.endsWith("/api/games/sim-other")) return other;
       if (call.path.endsWith("/input")) return replied;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -1040,14 +1081,14 @@ describe("the turn playback", () => {
     let reply: unknown = replied;
     const stub = await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return reply;
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return ownOnly(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => ownOnly(k)) };
       if (call.path.includes("/log")) return log;
       return undefined;
     });
     const user = userEvent.setup();
     await user.click(firstRow());
-    await waitFor(() => expect(stub.matching("GET", "/at/")).toHaveLength(4));
+    await waitFor(() => expect(positionsWalked(stub)).toHaveLength(4));
     expect(screen.queryByText(/is playing/)).toBeNull();
     expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
     // A reply with the SAME count (a picker step) shows its prose instead.
@@ -1072,7 +1113,7 @@ describe("the turn playback", () => {
     const heldAt = gate<unknown>();
     await renderApp(before, (call) => {
       if (call.path.endsWith("/input")) return replied;
-      if (/\/at\/\d+$/.test(call.path)) return heldAt.promise;
+      if (runRange(call.path)) return heldAt.promise;
       if (call.path.includes("/log")) return log;
       return undefined;
     });
@@ -1083,7 +1124,7 @@ describe("the turn playback", () => {
     // what says this answer is not finished with.
     await waitFor(() => expect(document.querySelectorAll("[data-busy]")).toHaveLength(1));
     expect(document.querySelector(".app[data-busy]")).not.toBeNull();
-    heldAt.resolve(at(40));
+    heldAt.resolve({ frames: [40, 41, 42, 43].map((k) => at(k)) });
     await waitFor(() => expect(document.querySelector("[data-busy]")).toBeNull());
   });
 
@@ -1135,7 +1176,8 @@ describe("opening a saved table", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1255,7 +1297,8 @@ describe("the boards a player switches during setup", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       throw new Error(`unexpected ${call.method} ${call.path}`);
     });
@@ -1337,6 +1380,36 @@ describe("the route", () => {
     expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
   });
 
+  // **The two forms are two components, keyed by host** (whole-branch review,
+  // Minor #1). They sit at the same position in `App`'s tree, so React used to
+  // reconcile one into the other and the STATE went with it: Players set to 4
+  // on the server's form, then a hand-typed `#/new/local`, and the local
+  // create posted `players: 4` beside the two seats a local table has — which
+  // the module refuses in `check_shape`'s words.
+  it("posts two players for a local table after the server's form has been set to four", async () => {
+    stubWorker();
+    const { user } = app();
+    await user.click(await screen.findByRole("button", { name: "New table" }));
+    await user.selectOptions(await screen.findByLabelText("Players"), "4");
+    // The premise, asserted: the server's form really is at four.
+    expect((screen.getByLabelText("Players") as HTMLSelectElement).value).toBe("4");
+
+    act(() => {
+      window.location.hash = "#/new/local";
+    });
+    // The local form asks none of it — which is also how this cell tells the
+    // two apart, since both headings read "New game".
+    await waitFor(() => expect(screen.queryByLabelText("Players")).toBeNull());
+    await user.click(await screen.findByRole("button", { name: "Deal" }));
+
+    const posted = currentWorker().posted.find(
+      (p) => (p as { method?: string }).method === "POST" && (p as { path?: string }).path === "/api/games",
+    ) as { body: string } | undefined;
+    const body = JSON.parse(posted?.body ?? "{}") as { players: number; seats: unknown[] };
+    expect(body.seats).toHaveLength(2);
+    expect(body.players).toBe(2);
+  });
+
   it("draws the form for a hash typed before the app mounts", async () => {
     // **The route is read at MOUNT, not only on `hashchange`.** A link is
     // followed in a cold tab, where no `hashchange` ever fires.
@@ -1360,7 +1433,8 @@ describe("the route", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1556,7 +1630,8 @@ describe("the route", () => {
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
       if (call.path.endsWith("/areas")) return wire.areas;
-      if (/\/at\/\d+$/.test(call.path)) return wire.atK;
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       return undefined;
     });
@@ -1810,6 +1885,32 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/me").length).toBeGreaterThanOrEqual(2);
   });
 
+  // **The door's FIRST answer, as content** (M6.5b, spec §2.5). The other
+  // three arms are exercised by the cells around this one — the form, the
+  // sentence, and the silence in "the first screen with no server" — and this
+  // is the one that needs arranging: `/api/me` refusing while the server is
+  // otherwise reachable, which is what tells the door's own complaint from the
+  // "not connected" line that replaces it when NOTHING answered.
+  it("draws the door's refusal beside the games on this device, rather than instead of them", async () => {
+    stubWorker();
+    const sentence = "the store could not be read";
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return { status: 500, body: { ...wire.error, error: sentence } };
+      // The server is up — that is the whole point of this arm: the door
+      // itself refused, and its words are the useful ones.
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+    // And not the line for a server nobody reached: this one answered.
+    expect(screen.queryByText("not connected")).toBeNull();
+  });
+
   it("names the door rather than offering a form when a non-claimed deployment has no user", async () => {
     stubApi((call) =>
       // The corpus carries only the `claimed` door — the fixture server runs in
@@ -1878,6 +1979,8 @@ describe("the door", () => {
   // one catch site that is an effect rather than a click handler.
   it("a 401 from the replay scrubber returns to sign-in", async () => {
     await renderApp(wire.options, (call) =>
+      // The SCRUBBER still asks `/at/{k}` one position at a time (R-6.5b.10
+      // keeps that route); the walk is the run route, the cell below.
       /\/at\/\d+$/.test(call.path) ? signedOutReply() : undefined,
     );
     const user = userEvent.setup();
@@ -1968,7 +2071,7 @@ describe("the door", () => {
       // the finished game would fetch.
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.options.id}`))
         return { ...wire.options, events: 2 };
-      if (/\/at\/\d+$/.test(call.path)) return signedOutReply();
+      if (runRange(call.path)) return signedOutReply();
       if (/\/log(\?|$)/.test(call.path)) return wire.log;
       if (call.path.endsWith("/ports")) return wire.ports;
       if (call.path.endsWith("/labs")) return wire.labs;
@@ -2092,8 +2195,8 @@ describe("the opponent's turn arrives by the signal", () => {
       if (call.path.endsWith(`/api/games/${wire.watching.id}/stream`)) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${wire.watching.id}`))
         return { ...wire.watching, events };
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     /** The RE-READS of the game, and the match is anchored on purpose:
@@ -2131,7 +2234,7 @@ describe("the opponent's turn arrives by the signal", () => {
       await settle();
       expect(screen.queryByText(/refreshing/)).toBeNull();
       expect(reloads()).toHaveLength(1);
-      expect(stub.matching("GET", "/at/")).toHaveLength(0);
+      expect(positionsWalked(stub)).toHaveLength(0);
       expect(stub.matching("GET", "/events")).toHaveLength(0);
 
       events = wire.watching.events + 2;
@@ -2142,9 +2245,7 @@ describe("the opponent's turn arrives by the signal", () => {
       // fetched: `prev..=next` is 0, 1, 2 — `prev` included, because a step's
       // highlight is a diff and the live payload is not a position.
       expect(reloads()).toHaveLength(2);
-      expect(
-        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
-      ).toEqual([0, 1, 2]);
+      expect(positionsWalked(stub)).toEqual([0, 1, 2]);
       // And the walk is on the table: the deck is the strip rather than the
       // prompt, and the account has one row per event.
       //
@@ -2177,13 +2278,13 @@ describe("the opponent's turn arrives by the signal", () => {
       // note here recorded that three of them ran against a tree that had not
       // re-rendered. A frame is pushed by hand instead, so the harness no
       // longer has a cadence of its own to be wrong about.
-      const atCalls = stub.matching("GET", "/at/").length;
+      const atCalls = positionsWalked(stub).length;
       events = wire.watching.events;
       stream.push("signal", signal());
       await until(() => reloads().length === 3, "the game was re-read again");
       await settle();
       expect(reloads()).toHaveLength(3);
-      expect(stub.matching("GET", "/at/")).toHaveLength(atCalls);
+      expect(positionsWalked(stub)).toHaveLength(atCalls);
       expect(document.querySelector("ol.account")).toBeNull();
       expect(document.querySelector(".decision.walking")).toBeNull();
     } finally {
@@ -2236,8 +2337,8 @@ describe("the opponent's turn arrives by the signal", () => {
       if (call.path.endsWith(`/api/games/${live.id}/stream`)) return stream.reply(call);
       if (call.method === "GET" && call.path.endsWith(`/api/games/${live.id}`))
         return { ...live, events };
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]));
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k)) };
       return undefined;
     });
     // Nothing has been walked yet: the account holds the reply's prose, which
@@ -2276,9 +2377,7 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(document.querySelector(".decision.walking")).not.toBeNull();
       expect(screen.getByText(/is playing · step 1 of 1/)).toBeInTheDocument();
       // `prev` is fetched with `next`, because a step's highlight is a diff.
-      expect(
-        stub.matching("GET", "/at/").map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1])),
-      ).toEqual([live.events, live.events + 1]);
+      expect(positionsWalked(stub)).toEqual([live.events, live.events + 1]);
     } finally {
       vi.useRealTimers();
     }
@@ -2319,8 +2418,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     // The hidden/visible round trip, for the reason the two cells above have
@@ -2398,8 +2497,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     const reloads = () =>
@@ -2447,9 +2546,7 @@ describe("the opponent's turn arrives by the signal", () => {
       expect(document.querySelectorAll("ol.account li")).toHaveLength(3);
       // Each position fetched ONCE: a second pass over the same range would
       // repeat them, which is what walking the same run twice looks like.
-      const positions = stub
-        .matching("GET", "/at/")
-        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      const positions = positionsWalked(stub);
       expect(positions).toEqual([base, base + 1, base + 2, base + 3]);
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
@@ -2490,8 +2587,8 @@ describe("the opponent's turn arrives by the signal", () => {
           holding.push(() => resolve({ ...wire.watching, events: answered }));
         });
       }
-      const m = /\/at\/(\d+)$/.exec(call.path);
-      if (m) return at(Number(m[1]), events);
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map((k) => at(k, events)) };
       return undefined;
     });
     const reloads = () =>
@@ -2537,9 +2634,7 @@ describe("the opponent's turn arrives by the signal", () => {
       // base→base+1 for the first pass, base+1→base+3 for the second: every
       // position fetched once, no range walked twice, and the three events
       // accounted for end to end.
-      const positions = stub
-        .matching("GET", "/at/")
-        .map((c) => Number(/\/at\/(\d+)$/.exec(c.path)![1]));
+      const positions = positionsWalked(stub);
       expect(positions).toEqual([base, base + 1, base + 1, base + 2, base + 3]);
       expect(stream.opens(), "and still one reader").toBe(opened + 1);
     } finally {
@@ -2609,6 +2704,11 @@ describe("the game screen's chat", () => {
       if (call.path.endsWith(`/api/games/${wire.options.id}/stream`)) return stream.reply(call);
       if (call.method === "POST" && call.path.endsWith("/input")) return reply.promise;
       if (call.method === "GET" && call.path.includes("/chat")) return wire.chat;
+      // The reply's own run and its log, served: the walk this cell counts is
+      // a real one, not an error path.
+      const ks = runRange(call.path);
+      if (ks) return { frames: ks.map(() => wire.atK) };
+      if (call.method === "GET" && call.path.includes("/log")) return wire.log;
       return undefined;
     });
     await waitFor(() => expect(stream.opens()).toBeGreaterThan(0));
@@ -2618,7 +2718,7 @@ describe("the game screen's chat", () => {
      *  so it would read as "something was fetched" whatever happened. */
     const frames = () =>
       stub.calls.filter((c) => c.method === "GET" && /\/api\/games\/wire$/.test(c.path));
-    const walked = () => stub.matching("GET", "/at/").length;
+    const walked = () => positionsWalked(stub).length;
 
     const user = userEvent.setup();
     await user.click(firstOptionButton());
@@ -2744,5 +2844,808 @@ describe("the game screen's chat", () => {
       setLobbyChat(true);
       setChatText(500);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M6.5b: a game played ON THIS DEVICE (R-6.5b.12, spec §6.2).
+
+describe("a local game", () => {
+  const LOCAL = "local-1";
+  /** A record whose seed would ROUND if anything on the way parsed it — the
+   *  same needle the hosted Save game file cell uses, for the same reason. */
+  const RECORD = '{"seed":18446744073709551615,"events":[]}';
+  /** The local table document, as the store holds it. Sent BESIDE the record
+   *  and never instead of it: the server checks that the two agree. */
+  const TABLE = '{"schema":3,"id":"local-1","seed":18446744073709551615}';
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    // The deployment facts are a module singleton and the archive is read from
+    // the boot health: a cell that turned the server's archive on must not
+    // leave it on for the next one.
+    setArchiveKind("off");
+  });
+
+  /** The boot reads answered, and the SERVER LISTING NOTHING — so every row on
+   *  screen is the local section's and a click on one proves where a local game
+   *  is reachable from. */
+  const bootStub = (
+    extra: (call: ApiCall) => Reply | undefined = () => undefined,
+    archive: "off" | "dir" = "off",
+  ) =>
+    stubApi((call) => {
+      const mine = extra(call);
+      if (mine !== undefined) return mine;
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      // The archive is the ONE named cross-read a local screen makes (spec
+      // §2.3), and it is read from the server's own health — never set by hand
+      // here, so the cells run the path the page runs.
+      if (call.path.endsWith("/api/health")) return { ...wire.health, archive };
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (call.path.endsWith("/api/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0 };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+
+  /** The local game screen, opened the way a player opens it: the row in "On
+   *  this device", one click. Every game route is answered by the WORKER. */
+  async function openLocal(
+    state: ClientState,
+    opts: {
+      hooks?: FakeWorkerHooks;
+      archive?: "off" | "dir";
+      server?: (call: ApiCall) => Reply | undefined;
+    } = {},
+  ): Promise<{ user: ReturnType<typeof userEvent.setup>; stub: ApiStub }> {
+    const hooks = opts.hooks ?? {};
+    stubWorker({
+      ...hooks,
+      call: (req) => {
+        const mine = hooks.call?.(req);
+        if (mine !== undefined) return mine;
+        if (req.method === "GET" && req.path === `/api/games/${LOCAL}`)
+          return { status: 200, body: state };
+        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: state };
+        return undefined;
+      },
+    });
+    const stub = bootStub(opts.server, opts.archive);
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("link", { name: LOCAL }));
+    return { user, stub };
+  }
+
+  /** Every `call` this tab has posted ON one game — the listing, which carries
+   *  no id, is deliberately not one of them. */
+  const callsOn = (id: string): string[] =>
+    currentWorker()
+      .posted.filter((p) => p.kind === "call" && p.path.startsWith(`/api/games/${id}`))
+      .map((p) => (p.kind === "call" ? `${p.method} ${p.path}` : ""));
+
+  /** The download's three globals, replaced for one cell and put back. */
+  function catchDownload() {
+    const parse = vi.spyOn(JSON, "parse");
+    const clicks: { href: string; download: string }[] = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicks.push({ href: this.href, download: this.download });
+      });
+    const create = vi.fn().mockReturnValue("blob:record");
+    Object.defineProperty(URL, "createObjectURL", { value: create, configurable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
+    return {
+      clicks,
+      create,
+      parse,
+      restore: () => {
+        click.mockRestore();
+        parse.mockRestore();
+      },
+    };
+  }
+
+  // **R-6.5b.7: at ANY point, and that is the whole of the difference.** A
+  // hosted game's record is the server's and `GET …/{id}/record` answers 409
+  // while it runs; a local one is the player's own seed on the player's own
+  // disk, read off the Worker's side channel. The hosted half of this claim is
+  // "offers no Save game file while the game runs", above.
+  it("offers Save game file while a local game is still RUNNING, and hands the bytes over untouched", async () => {
+    const caught = catchDownload();
+    try {
+      const { user, stub } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        { hooks: { pair: () => ({ record: RECORD, table: TABLE }) } },
+      );
+      await screen.findByText(/end triggers:/);
+      expect(wire.optionsMany.over, "the premise: this game is still running").toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      await waitFor(() => expect(caught.clicks).toHaveLength(1));
+      expect(caught.clicks[0]?.download).toBe(`${LOCAL}.json`);
+      const blob = caught.create.mock.calls[0]?.[0] as Blob;
+      expect(await readBlob(blob)).toBe(RECORD);
+      // Never parsed on the way — a u64 seed would come back rounded — and
+      // never fetched either: the `…/record` route answers 409 while a game
+      // runs, and this save does not go through it.
+      expect(
+        caught.parse.mock.calls.some(([s]) => s === RECORD),
+        "the record text went through JSON.parse",
+      ).toBe(false);
+      expect(stub.matching("GET", "/record")).toHaveLength(0);
+      expect(callsOn(LOCAL).some((c) => c.includes("/record"))).toBe(false);
+    } finally {
+      caught.restore();
+    }
+  });
+
+  // **The send, and the pair it sends** (R-6.5b.6, spec §2.5). One snapshot of
+  // both documents, posted to the SERVER as the strings the store holds, and
+  // the control goes dark once the copy has landed.
+  it("sends the record and the table to the server's archive unparsed, says where, and goes dark", async () => {
+    const caught = catchDownload();
+    try {
+      const { user, stub } = await openLocal(
+        { ...wire.gameOver, id: LOCAL },
+        {
+          archive: "dir",
+          hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+          server: (call) =>
+            call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+        },
+      );
+      await screen.findByText(/end triggers:/);
+
+      await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+      await waitFor(() => expect(stub.matching("POST", "/api/archive")).toHaveLength(1));
+      // The two documents as they are stored, not as this client could rebuild
+      // them: the record's bytes are what the terminal digest is over.
+      expect(stub.matching("POST", "/api/archive")[0]?.body).toEqual({
+        record: RECORD,
+        table: TABLE,
+      });
+      expect(
+        caught.parse.mock.calls.some(([s]) => s === RECORD || s === TABLE),
+        "a document went through JSON.parse on its way to the archive",
+      ).toBe(false);
+      // Where the copy went, in the server's own words for the path.
+      expect(await screen.findByText(`archived under ${wire.archivePost.path}`)).toBeInTheDocument();
+      // And dark for the rest of the session: there is nothing left to click.
+      expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+      expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+    } finally {
+      caught.restore();
+    }
+  });
+
+  // **Two clicks in one tick are ONE send** (whole-branch review, Minor #4).
+  // The control darkens on the ANSWER, so it cannot be the guard: before the
+  // wave a double click posted twice, the second landed as `identical`, and a
+  // FIRST send reported itself as "already archived".
+  //
+  // **Both clicks inside ONE `act`**, the board tile's own idiom four hundred
+  // lines up and for its reason: `userEvent` awaits between interactions, and
+  // with a render in between the control is already gone — the cell would pass
+  // with the guard removed, which is not a test of the guard. Measured: it
+  // did.
+  it("sends once however fast the archive control is clicked twice", async () => {
+    const caught = catchDownload();
+    try {
+      const landed = gate<Reply>();
+      const { stub } = await openLocal(
+        { ...wire.gameOver, id: LOCAL },
+        {
+          archive: "dir",
+          hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+          server: (call) =>
+            call.method === "POST" && call.path === "/api/archive" ? landed.promise : undefined,
+        },
+      );
+      await screen.findByText(/end triggers:/);
+
+      const button = await screen.findByRole("button", { name: "Send to the archive" });
+      act(() => {
+        fireEvent.click(button);
+        fireEvent.click(button);
+      });
+      landed.resolve(wire.archivePost as unknown as Reply);
+      await screen.findByText(`archived under ${wire.archivePost.path}`);
+      expect(stub.matching("POST", "/api/archive")).toHaveLength(1);
+      // The first send's own word, never the second's.
+      expect(screen.queryByText(/already archived/)).toBeNull();
+    } finally {
+      caught.restore();
+    }
+  });
+
+  // **The second click after a reload** (spec §2.5, §8): the local document
+  // carries no stamp, so the control is live again — and the same bytes at the
+  // same path are the server's `identical`, which is an answer and not a
+  // refusal.
+  it("says already archived when the server answers identical", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 200, body: wire.archivePostIdentical }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(
+      await screen.findByText(`already archived under ${wire.archivePostIdentical.path}`),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+  });
+
+  // A DIFFERENT record under this id: the server's sentence, and the control
+  // stays live — nothing was saved, so nothing about this game has changed.
+  it("shows the server's sentence on a 409 and leaves the control where it is", async () => {
+    const { user } = await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive"
+            ? { status: 409, body: wire.archive409 }
+            : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    await user.click(await screen.findByRole("button", { name: "Send to the archive" }));
+    expect(await screen.findByText(wire.archive409.error)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+  });
+
+  // **Dark unless the SERVER reported an archive** (spec §2.5). A deployment
+  // that keeps none would answer the send with a 404, and a control that
+  // promised a save it cannot make is the one thing the label rule forbids.
+  it("offers no Send to the archive when the server keeps none", async () => {
+    await openLocal({ ...wire.gameOver, id: LOCAL }, { archive: "off" });
+    await screen.findByText(/end triggers:/);
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // The player's own file is still theirs to save.
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+  });
+
+  // A FINISHED HOSTED game never offers it, archive or no archive: the server
+  // already holds that record, and this control exists to move one that lives
+  // in a browser. Its own cell, because it starts from the lobby — the cell
+  // above ends inside a game, and the hash outlives a `cleanup()`.
+  it("offers no Send to the archive on a hosted game, archive or not", async () => {
+    stubWorker();
+    await renderApp(wire.gameOver, (call) =>
+      call.path.endsWith("/api/health")
+        ? { ...wire.health, archive: "dir" }
+        : call.path.endsWith("/result")
+          ? wire.result
+          : undefined,
+    );
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // And no abandon on a hosted game's screen either: the lobby's row is
+    // where a server table is abandoned (R-13), and P-6's move is the local
+    // game's alone.
+    expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+  });
+
+  // **Nothing is read before the lock answers** (P-5, spec §2.2): a cold GET on
+  // a local game PUMPS the bot, so a read taken while another tab holds it
+  // would change a record this tab does not own.
+  it("draws the other tab's lock instead of reading the game at all", async () => {
+    await openLocal({ ...wire.optionsMany, id: LOCAL }, { hooks: { hold: () => false } });
+    expect(
+      await screen.findByText("This game is open in another tab"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take over" })).toBeEnabled();
+    // Not one call on this game — not the table, not the state, not a panel.
+    expect(callsOn(LOCAL)).toEqual([]);
+    // And no answer bar, because there is no game on screen to answer.
+    expect(document.querySelector("button.option")).toBeNull();
+  });
+
+  it("opens the game when Take over is clicked", async () => {
+    const { user } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      // The first ask is refused and the STEAL is taken: `{ steal: true }` is
+      // what Take over sends, and it is the one thing that separates the two.
+      { hooks: { hold: (_id, steal) => steal } },
+    );
+    await screen.findByText("This game is open in another tab");
+    await user.click(screen.getByRole("button", { name: "Take over" }));
+    await screen.findByText(/end triggers:/);
+    expect(currentWorker().posted.filter((p) => p.kind === "takeover")).toHaveLength(1);
+  });
+
+  // **The losing side** (spec §4). The screen goes read-only with Take back,
+  // and a move attempted after the loss is refused IN THE PAGE — the Worker
+  // never hears it, so nothing is shown that will not be kept.
+  it("goes read-only when another tab takes the game, and the move never reaches the Worker", async () => {
+    await openLocal({ ...wire.placeA, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    // The premise: this prompt makes the BOARD an input, which is the one
+    // control that is not inside the answer bar the loss replaces.
+    expect(wire.placeA.prompt.kind).toBe("place_a");
+    const before = callsOn(LOCAL).length;
+
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+
+    expect(await screen.findByText("This game was opened in another tab")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Take back" })).toBeEnabled();
+    expect(document.querySelector("button.option")).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /^A00 / }));
+    expect(screen.getByRole("alert")).toHaveTextContent("opened in another tab");
+    expect(callsOn(LOCAL)).toHaveLength(before);
+  });
+
+  // **A SECOND local game is not read until ITS OWN hold has answered** (P-5,
+  // review Important 1). The lock's answer carries no id of its own, so a
+  // state read off the previous game — `"held"` for the one being left — would
+  // admit the cold `GET` that PUMPS THE BOT in a record this tab does not own.
+  // No existing cell could see it: the hook's id-change cell tests the hook
+  // alone, and every in-app route into a local table passes through the lobby
+  // first, so the switch needs a pasted address — which is what this drives.
+  it("reads NOTHING of a second local game until its own hold has answered", async () => {
+    const OTHER = "local-2";
+    await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      // This tab holds the first game and NOT the second.
+      { hooks: { hold: (id) => id === LOCAL } },
+    );
+    await screen.findByText(/end triggers:/);
+
+    act(() => {
+      window.location.hash = `#/t/${OTHER}`;
+    });
+    expect(await screen.findByText("This game is open in another tab")).toBeInTheDocument();
+    // Not the table, not the state, not a panel — the whole of what P-5 is for.
+    expect(callsOn(OTHER)).toEqual([]);
+    // And the game being LEFT is off the screen, rather than sitting under an
+    // address that no longer names it.
+    expect(screen.queryByText(/end triggers:/)).toBeNull();
+  });
+
+  // **The losing tab writes NOTHING** (spec §4, review Important 2). `send` is
+  // guarded, and so must be every other control that writes: the Worker fences
+  // a delete from a tab that does not hold the game (answering `not-held`), so
+  // a live Abandon would report a delete that did not happen — and with an
+  // archive on, would post a STALE record first.
+  it("takes the header's writing controls away when the lock is lost, and keeps the read", async () => {
+    await openLocal(
+      { ...wire.gameOver, id: LOCAL },
+      { archive: "dir", hooks: { pair: () => ({ record: RECORD, table: TABLE }) } },
+    );
+    await screen.findByText(/end triggers:/);
+    // The premise: both controls are there while this tab is the writer.
+    expect(screen.getByRole("button", { name: /^abandon / })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send to the archive" })).toBeInTheDocument();
+
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+
+    await screen.findByRole("button", { name: "Take back" });
+    expect(screen.queryByRole("button", { name: /^abandon / })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send to the archive" })).toBeNull();
+    // Nothing left, nothing sent.
+    expect(currentWorker().posted.filter((p) => p.kind === "call" && p.method === "DELETE")).toEqual(
+      [],
+    );
+    // **The READ stays**, which is the line between read-only and useless: the
+    // bytes in this browser are still the player's to keep (spec §4's rule for
+    // the save that will not rebuild, and the same reason).
+    expect(screen.getByRole("button", { name: "Save game file" })).toBeInTheDocument();
+  });
+
+  // **Take back RE-READS** (spec §3: "whoever holds the lock sees every move
+  // the other tab played"). The route has not changed, so the effect that
+  // opens a table does nothing here — without an explicit re-read the board
+  // would stay at the position it held when it lost the lock.
+  it("re-reads the game when it is taken back", async () => {
+    await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    act(() => currentWorker().emit({ kind: "lost", id: LOCAL }));
+    await screen.findByRole("button", { name: "Take back" });
+    const before = callsOn(LOCAL).filter((c) => c === `GET /api/games/${LOCAL}`).length;
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Take back" }));
+    await waitFor(() =>
+      expect(
+        callsOn(LOCAL).filter((c) => c === `GET /api/games/${LOCAL}`).length,
+      ).toBeGreaterThan(before),
+    );
+    // And the answer bar is back, because this tab is the writer again.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Take back" })).toBeNull());
+  });
+
+  // **Three differences and no more** (spec §2.5): no stream, no live strip,
+  // and no Chat panel — the house is the server's and a local table has one
+  // person at it.
+  it("holds no stream, shows no live strip and draws no Chat panel", async () => {
+    const { stub } = await openLocal({ ...wire.optionsMany, id: LOCAL });
+    await screen.findByText(/end triggers:/);
+    expect(stub.calls.filter((c) => c.path.includes(`/api/games/${LOCAL}/stream`))).toEqual([]);
+    expect(callsOn(LOCAL).some((c) => c.includes("/stream") || c.includes("/events"))).toBe(false);
+    expect(document.querySelector("span.meta.link")).toBeNull();
+    expect(document.querySelector("section.panel.chat")).toBeNull();
+    // Anti-vacuity for both: the screen DID draw, and it drew panels.
+    expect(document.querySelector("header.banner")).not.toBeNull();
+    expect(document.querySelectorAll("section.panel").length).toBeGreaterThan(0);
+  });
+
+  // **The one control a local game has that a hosted one does not** (P-6): the
+  // abandon lives on the game's own screen, where this tab holds its lock, and
+  // it reads "Abandon and save" when the SERVER keeps an archive.
+  it("abandons from its own screen, saving to the server's archive first", async () => {
+    const { user, stub } = await openLocal(
+      { ...wire.optionsMany, id: LOCAL },
+      {
+        archive: "dir",
+        hooks: { pair: () => ({ record: RECORD, table: TABLE }) },
+        server: (call) =>
+          call.method === "POST" && call.path === "/api/archive" ? wire.archivePostAbandoned : undefined,
+      },
+    );
+    await screen.findByText(/end triggers:/);
+    const abandon = screen.getByRole("button", { name: /^abandon / });
+    expect(abandon).toHaveTextContent("Abandon and save");
+
+    await user.click(abandon);
+    await user.click(screen.getByRole("button", { name: /^confirm abandon / }));
+    // The send FIRST, then the local delete — the order R-6.5b.6 names.
+    await waitFor(() => expect(stub.matching("POST", "/api/archive")).toHaveLength(1));
+    await waitFor(() =>
+      expect(currentWorker().posted.filter((p) => p.kind === "call" && p.method === "DELETE")).toHaveLength(1),
+    );
+    // And back to the lobby, where the game is no longer listed.
+    await screen.findByRole("heading", { name: "On this device" });
+  });
+
+  it("shows a save that no longer rebuilds as the ENGINE's sentence, and does not restart the host", async () => {
+    // Spec §4: `Session::from_record` refusing is a 500 carrying the engine's
+    // own words — a REPLY, never a trap — so the trap recovery is not entered
+    // and its "reloaded from the last saved move" never appears. The two are
+    // deliberately different surfaces: one says the save could not be read,
+    // the other says it was recovered.
+    const sentence =
+      "this save was recorded under game-semantics revision 6, but this build plays revision 7 — the save cannot be resumed";
+    const caught = catchDownload();
+    try {
+      const { user } = await openLocal(
+        { ...wire.optionsMany, id: LOCAL },
+        {
+          // The server DOES keep an archive here, which is what makes the
+          // label assertion below a claim rather than a default.
+          archive: "dir",
+          hooks: {
+            pair: () => ({ record: RECORD, table: TABLE }),
+            call: (req) =>
+              req.path === `/api/games/${LOCAL}` && req.method === "GET"
+                ? { status: 500, body: { error: sentence } }
+                : undefined,
+          },
+        },
+      );
+
+      // **The sentence in place, on the game's own screen** — not a bounce to
+      // the lobby, which is what a refusal that is not a trap deserves.
+      await screen.findByText(sentence);
+      expect(screen.queryByText(/reloaded from the last saved move/)).toBeNull();
+      // Not a trap: one Worker for the whole cell.
+      expect(FakeWorker.instances).toHaveLength(1);
+      expect(FakeWorker.instances[0]!.terminated).toBe(false);
+
+      // **Save game file still works, because it reads BYTES** (spec §4) — the
+      // store holds a record this build cannot replay, and it is still the
+      // player's to keep.
+      await user.click(screen.getByRole("button", { name: "Save game file" }));
+      await waitFor(() => expect(caught.clicks).toHaveLength(1));
+      expect(await readBlob(caught.create.mock.calls[0]?.[0] as Blob)).toBe(RECORD);
+      // And so does Abandon, which rebuilds nothing — and it reads "Abandon"
+      // rather than "Abandon and save" even here, where the server keeps an
+      // archive, because the archive would refuse THIS record: sending first
+      // would leave a game that can never be abandoned.
+      expect(screen.getByRole("button", { name: /^abandon / })).toHaveTextContent(/^Abandon$/);
+
+      // **The row STAYS listed** (P-6): the listing reads table documents and
+      // this game's is readable, so a save that will not rebuild is still
+      // something a player can find, save as a file and abandon.
+      await user.click(screen.getByRole("button", { name: "Lobby" }));
+      expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    } finally {
+      caught.restore();
+    }
+  });
+});
+
+// ---- the first screen with no server (M6.5b, R-6.5b.2, R-6.5b.8) ----------
+//
+// **The guarantee, in two code paths.** An API that REFUSES and an API that
+// never ANSWERS are two different states of `useMe` — the first sets the
+// door's error, the second leaves it null for ever — and until this cycle
+// each of them drew nothing at all: four `return`s above every screen. The
+// games in this browser have to be reachable through both.
+describe("the first screen with no server", () => {
+  const LOCAL = "local-1";
+
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    vi.useRealTimers();
+  });
+
+  /** The local section, drawn and read. */
+  const localSection = async () => {
+    expect(await screen.findByRole("heading", { name: "On this device" })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: LOCAL })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Play the bot here" })).toBeEnabled();
+  };
+
+  /** And its action WORKING, which is the half of R-6.5b.8 an enabled button
+   *  does not prove: the form the click opens is behind the ROUTE, and the
+   *  route effect used to be gated on a door that is shut in both of these
+   *  cells. */
+  const playsHere = async () => {
+    await userEvent.setup().click(screen.getByRole("button", { name: "Play the bot here" }));
+    expect(await screen.findByRole("heading", { name: "New game" })).toBeInTheDocument();
+    // The form that needs no server: two seats, you and the bot.
+    expect(screen.getByText("the bot")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deal" })).toBeEnabled();
+  };
+
+  it("renders On this device with its games when every fetch REFUSES", async () => {
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    render(<App />);
+    await localSection();
+    // The four server sections are replaced by the one line that says what is
+    // true, rather than by a door error about a server nobody can reach.
+    expect(await screen.findByText("not connected")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+    await playsHere();
+  });
+
+  it("renders On this device when the server never answers", async () => {
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    render(<App />);
+    await localSection();
+    await playsHere();
+  });
+
+  // **R-6.5b.2 names TWO ways for the read to fail — "the API refusing or not
+  // answering" — and only one of them rejects** (review fix 1). A `fetch` a
+  // server accepts and then says nothing about settles neither way, so before
+  // the health read was bounded this arm read `connecting…` for the life of
+  // the page, and the cell above pinned the absence of the line that should
+  // have replaced it.
+  //
+  // Fake timers, and no `userEvent`: what is being read is a DEADLINE, and the
+  // only way to reach a five-second one in a test is to move the clock.
+  it("says not connected once the bound elapses on a read that never answers", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+    render(<App />);
+    await until(
+      () => screen.queryByRole("heading", { name: "On this device" }) !== null,
+      "the local section",
+    );
+    // **The anti-vacuity partner.** Nothing has come back yet, and "not
+    // connected" is a claim this browser cannot make until its own deadline
+    // says so — without this the cell would pass against a client that printed
+    // the line before it had asked.
+    expect(screen.queryByText("not connected")).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(
+      () => screen.queryByText("not connected") !== null,
+      "the not-connected line after the bound",
+    );
+    // And it replaces the sections, exactly as the refused arm's does.
+    expect(screen.queryByRole("heading", { name: "Your games" })).toBeNull();
+  });
+
+  // **A listing that LANDED is an answer, and the bound must not take it back**
+  // (whole-branch review, Minor #2). `Lobby`'s `onReached` sets `serverUp`
+  // true the moment any listing arrives — that is what brings the sections
+  // back for a player who opened the page while the API was slow — and the
+  // bound's `catch` used to write `false` over it unconditionally. A health
+  // read that is merely the slowest of the four then replaced a working lobby
+  // with "not connected".
+  it("keeps the lobby when a listing landed before the health read's bound elapsed", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    stubApi((call) => {
+      // The one read that never answers is `/api/health`: everything else
+      // lands, so the browser HAS reached this server.
+      if (call.path.endsWith("/api/health")) return new Promise<Reply>(() => {});
+      if (call.path.endsWith("/api/me")) return wire.me;
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await until(() => screen.queryByRole("heading", { name: "Your games" }) !== null, "the lobby");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    // The bound has passed and the health read is still out; the sections stay,
+    // because something else already answered.
+    expect(screen.queryByText("not connected")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Your games" })).toBeInTheDocument();
+  });
+
+  // **A late answer is still an answer** (review fix 1). The bound decides
+  // what the screen SAYS; it does not cancel the read, and the unbounded chain
+  // beside it is what makes a server that finally speaks stop being one this
+  // browser claims it cannot reach. A `Promise.race` alone would drop that
+  // answer on the floor.
+  it("stops saying not connected when the server answers after the bound", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    const health = gate<Reply>();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return health.promise;
+      // The door is held too, which is what makes the line reachable at all:
+      // with nothing answered, `connecting…` is what the server area would
+      // otherwise read for ever.
+      return new Promise<Reply>(() => {});
+    });
+    render(<App />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(() => screen.queryByText("not connected") !== null, "the not-connected line");
+
+    health.resolve(wire.health);
+    await until(
+      () => screen.queryByText(/connecting/) !== null,
+      "the door's own word, once the server answered",
+    );
+    expect(screen.queryByText("not connected")).toBeNull();
+    // And the games on this device were there throughout.
+    expect(screen.getByRole("heading", { name: "On this device" })).toBeInTheDocument();
+  });
+
+  it("plays a whole local game with every fetch REFUSING, the spy flat across three moves", async () => {
+    // **The tightened fetch-at-zero cell** (spec §6.2): at Task 4 the door was
+    // still a gate, so the boot reads were stubbed and counted as a baseline.
+    // Now the boot reads FAIL and the game is opened from the local section,
+    // which is the shape R-6.5b.8 promises.
+    const localState = { ...wire.optionsMany, id: LOCAL };
+    stubWorker({
+      call: (req) => {
+        if (req.path === `/api/games/${LOCAL}` && req.method === "GET")
+          return { status: 200, body: localState };
+        if (req.path === `/api/games/${LOCAL}/input`) return { status: 200, body: localState };
+        return undefined;
+      },
+    });
+    const spy = vi.fn(async () => {
+      throw new TypeError("Failed to fetch");
+    });
+    vi.stubGlobal("fetch", spy);
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("link", { name: LOCAL }));
+    await screen.findByText(/end triggers:/);
+
+    // Every boot read has already failed by now; from here the count must not
+    // move, and a fetch that DID go out would be one more refusal.
+    const baseline = spy.mock.calls.length;
+    const prompt = wire.optionsMany.prompt;
+    if (prompt.kind !== "options") throw new Error("fixture moved");
+    const row = () =>
+      screen.getByRole("button", {
+        name: new RegExp(prompt.rows[0]!.words.slice(0, 20).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      });
+    for (let i = 0; i < 3; i += 1) await user.click(row());
+    await waitFor(() =>
+      expect(
+        currentWorker().posted.filter((p) => p.kind === "call" && p.path.endsWith("/input")),
+      ).toHaveLength(3),
+    );
+    expect(spy.mock.calls.length).toBe(baseline);
+  });
+});
+
+// ---- the words on the cards survive an unreachable API (spec §2.3) --------
+describe("the option words", () => {
+  beforeEach(() => {
+    resetLocalHostForTests();
+  });
+  afterEach(() => {
+    resetLocalHostForTests();
+    vi.useRealTimers();
+  });
+
+  const askedLocally = () =>
+    currentWorker().posted.filter((p) => p.kind === "call" && p.path === "/api/labels");
+
+  it("reads them from the Worker when the server's labels read is REFUSED", async () => {
+    stubWorker();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/labels")) return { status: 503, body: wire.error };
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await waitFor(() => expect(askedLocally()).toHaveLength(1));
+  });
+
+  it("falls back inside the five-second bound when the server's read never settles", async () => {
+    vi.useFakeTimers();
+    stubWorker();
+    stubApi((call) => {
+      // **A read that hangs never rejects**, so a `.catch` alone would wait for
+      // ever and the cards would keep their raw serde names for the life of
+      // the page. The bound is what turns silence into an answer.
+      if (call.path.endsWith("/api/labels")) return new Promise<Reply>(() => {});
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await flush();
+    // The anti-vacuity partner: BEFORE the bound the server is still being
+    // waited on, so a cell that only looked after it would pass against a
+    // client that asked both hosts at once.
+    expect(askedLocally()).toHaveLength(0);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    await until(() => askedLocally().length === 1, "the Worker was asked for the words");
+  });
+
+  it("leaves the Worker's words alone when the server answers", async () => {
+    stubWorker();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/api/me")) return wire.meSignedOut;
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/art")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    // The local listing is read whatever happens — the section is the first
+    // thing on the screen — so the claim is about the WORDS and not about the
+    // Worker: a server that answers is never asked for them twice.
+    await waitFor(() => expect(currentWorker().posted.length).toBeGreaterThan(0));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(askedLocally()).toHaveLength(0);
   });
 });

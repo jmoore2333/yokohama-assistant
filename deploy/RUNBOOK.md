@@ -63,6 +63,29 @@ RUSTFLAGS="-C linker=$LLD -C link-self-contained=yes" \
 cd web && npm run build && cd ..     # dist/ is architecture-independent
 ```
 
+**Since M6.5b the client build BUILDS THE WASM MODULE first** (`npm run build` =
+`build:wasm && build:client`), so the workstation needs the target and the
+generator on the PINNED toolchain, once:
+
+```bash
+rustup target add wasm32-unknown-unknown                   # onto the PINNED toolchain
+cargo install wasm-bindgen-cli --version 0.2.128 --locked   # the lock's version; ~2 min from source
+```
+
+`build:wasm` compiles `crates/yokohama-wasm` in release for `wasm32-unknown-unknown`
+and runs `wasm-bindgen` twice: the web glue INTO `web/src/local/wasm/` (gitignored;
+Vite bundles it and emits the module as a hashed asset,
+`web/dist/assets/yokohama_wasm_bg-<hash>.wasm`, ~2.8 MB raw / ~760 KB gzip, served
+`immutable` since the M6.5b fix wave) and the Node glue into `web/wasm-node/` for
+`npm run test:wasm`. **Two things that bite:** (1) `npm run e2e` builds the DEBUG
+module (`build:wasm:debug`, which carries the `debug_trap` export the trap cell
+needs) and leaves it in `web/src/local/wasm/` AND `web/dist/` — so a deploy cut
+after an e2e run ships a debug module unless `npm run build` is run again; the
+preflight is `grep -c debug_trap web/src/local/wasm/yokohama_wasm.js`, which must
+print `0` before the context is cut. (2) The `.wasm` rides in the context tarball
+under `dist/assets/`, not under a `wasm/` directory — the runtime image needs no
+change for it, and `assets.rs` serves it as `application/wasm`.
+
 **Two things that will bite without this shape.** Plain
 `cargo build --target x86_64-unknown-linux-musl` on macOS **compiles fine and
 fails at LINK**, because rustc reaches for the host `cc`, and Apple's `ld` does
@@ -1059,6 +1082,92 @@ committed wire payload but two is byte-identical to `0.5.0-m6.4.1`'s.
   schema-3 table comes back untouched when the newer binary is restored. Rolling to
   m6.4.1 loses the record route, the button and the archive sites, and nothing on
   the volume. **Fifteen tags now sit on the NAS.**
+
+---
+
+### 3.13 M6.5b is live — the tenth deployment, 2026-09-21 (a record, not a plan)
+
+The first release whose client carries the WASM MODULE: single-player runs in the browser
+(M6.5b, the close `docs/plans/2026-09-21-web-frontend-m6.5b-close.md`). Deployed on the
+owner's authorization of 2026-09-20 21:58 ("the deploy authorization is present, so is a push
+and PR at the wrap"), after the Fable whole-branch review's one fix wave, its scoped re-review
+and the §6.6 battery at the fixed head. What changed for a player: the first screen opens on
+**"On this device"** with **Play the bot here**; a local game plays with no request to this
+server; **Save game file** at any point on it; **Abandon and save** and **Send to the archive**
+post the record and the local table document to the NEW `POST /api/archive`, which files them
+under `/data/archive/browser/<caller>/rev7/{over,abandoned}/`. What changed for the server:
+two routes (`GET …/at?from=&to=` and `POST /api/archive`), `Cache-Control: immutable` on the
+hashed assets, `.wasm` served as `application/wasm`. Every committed wire payload but the eleven
+new ones is byte-identical to `0.5.0-m6.5a`'s.
+
+- **Build:** `web-room-m6.5b` at `8ed985c` (the close's docs commit over the close HEAD
+  `e15e369`; PR against `web-room-m6.5` opened at the wrap). The musl cross-compile per §1:
+  `Finished release in 7.90s` (warm cache); the binary is `ELF 64-bit LSB pie executable,
+  x86-64, static-pie linked`, **6,633,736 bytes** (§3.12's 6,525,776 + 108 KB: the two routes
+  and the archive's protocol). The client build was `npm run build` — the RELEASE module, run
+  AFTER the close's e2e had left the debug one in place (§1's preflight `grep -c debug_trap
+  web/src/local/wasm/yokohama_wasm.js` read **0**): `web/dist/assets/` carries
+  `index-nGNJHvmy.js` 329,045 B, `index-CEXGGp1D.css` 34,955 B, `worker-C542ORIG.js` 13,174 B
+  (the Worker's own chunk) and **`yokohama_wasm_bg-BJZwkgIr.wasm` 2,842,659 B (758.15 kB
+  gzip), sha256 `3ca08c7b4943c19e…`**. Context tarball **14,860,814 B** (§3.12's 14,066,259 +
+  the module's compressed size; sha256 prefix `b0fd0318e62150de`), cut at **04:55:56Z**, served
+  by `python3 -m http.server 8899 --bind 0.0.0.0` on the workstation at 192.168.1.16; the NAS
+  (192.168.1.173) fetched it in one GET at 04:57:02Z; the file server was stopped at 04:58:02Z.
+  Before the build the counts at `e15e369` read (the close §2): web 274, wasm 4, CLI 851 + 2,
+  clippy and the wasm check clean, typecheck, vitest 746/42, test:wasm 2, e2e 46/9 in 4.0 min.
+- **Image:** `yokohama-web:0.5.0-m6.5b`, Id
+  `sha256:d033b1b10d49017506906a79794e9a4d429d3a5c8865cc7876e0c37ee0793d54`, **29,429,776 B**
+  (§3.12's 26,453,918 + 2.98 MB, the module), created **04:57:15Z** through
+  `POST /build?remote=http://192.168.1.16:8899/ctx.tar.gz&t=yokohama-web:0.5.0-m6.5b&dockerfile=Dockerfile&rm=true`
+  (Portainer environment 2).
+- **Swap:** `POST /containers/yokohama-web/stop` on the `0.5.0-m6.5a` container (`579cd1ff…`,
+  created 2026-09-20 14:04:31Z) at ~04:58:00Z → `DELETE /containers/yokohama-web` →
+  `POST /containers/create?name=yokohama-web` with §3's body — **both `Env` entries**, the two
+  labels, `NetworkMode: cf-internal`, `RestartPolicy: unless-stopped`, the named volume
+  `yokohama-web-data` → `/data` — → container Id
+  `1a14939b7c8fc1b6e47ac535c45f03d7b9f6e4556afd5bb35e29716157f0bf1d`, created **04:58:50Z**,
+  started **04:59:06Z**. Same address on `cf-internal` (**172.21.0.4**), so cloudflared was not
+  restarted; the named volume rode across (the owner's table and the archive intact).
+- **Verified through the tunnel at 04:59:33Z** (WARP connected; `User-Agent` set — §3.12's
+  gotcha):
+  - `GET /api/health` →
+    `{"server_version":"0.5.0","semantics_rev":7,"rules_hash":"d85445c479cb1ead","identity":"claimed","signal":"sse","archive":"dir","lobby_chat":true,"chat_keep":500,"chat_text":500}`.
+  - `GET /` serves `index-nGNJHvmy.js`, which exists only in this build.
+  - `GET /api/games` **401**.
+  - **`GET /assets/yokohama_wasm_bg-BJZwkgIr.wasm` → 200, `content-type: application/wasm`,
+    `content-length: 2842659`, `cache-control: public, max-age=31536000, immutable`** — the two
+    R-6.5b.14 and fix-wave claims, live; `worker-C542ORIG.js` the same header; `GET /` carries
+    NO `cache-control`, as the wave's cell requires.
+  - `GET /art/areas/Church.webp` 200 `image/webp`.
+  - The HEADED live review of the deployed site is `.superpowers/sdd/2026-09-20-web-frontend-m6.5b-plan/live-review.md`
+    and the close's §4.6: **SHIP WITH FIXES** — zero `/api/` requests across a whole local
+    session, both takeover directions, the abandon landed under `browser/<caller>/rev7/abandoned/`,
+    "not connected" at 5.1 s on a hung API; one Important (a chat panel on a LOCAL game's DEAL
+    screen) fixed as the point release below.
+- **Downtime:** the ~66 s between `stop` and `start` (the four swap calls were made one per
+  tool turn this time); nobody was playing.
+- **Rollback:** `yokohama-web:0.5.0-m6.5a` stays on the NAS; recreate from that tag with §3's
+  body. **Nothing in this release changes a stored document's schema** (`TABLE_SCHEMA` stays 3,
+  the record format is fenced), so unlike §3.12 a rollback across it is NOT a schema rollback:
+  every table this release created reads under `0.5.0-m6.5a`. What a rollback loses: the two
+  routes (a client at m6.5a never calls them), the module's `immutable` header, and — for a
+  browser that already holds the m6.5b client — nothing, since a local game never touches the
+  server; a browser game's "Send to the archive" would answer 404 until the newer binary is
+  back. **Sixteen tags now sit on the NAS.**
+- **The point release `0.5.0-m6.5b.1`, 06:40Z the same night** — the headed live review's one
+  Important (a Chat panel on a LOCAL game's DEAL screen, accepting messages from `local@browser`)
+  fixed at `9bd1d4b` (the RED cell `253387d` first). A client-only change: the musl binary is the
+  same 6,633,736 bytes from the same Rust; `npm run build` re-cut the bundle as `index-BEX0dlqy.js`
+  with the module and the Worker chunk unchanged by hash; context tarball 14,860,110 B, fetched by
+  the NAS at 06:39:33Z; image `yokohama-web:0.5.0-m6.5b.1` Id `sha256:a13d983096ed…` 29,429,784 B
+  created 06:39:45Z; the swap (stop ~06:39:59Z → create 06:40:14Z → start **06:40:19Z**) to
+  container `0c3e49f6b21726edc1dff9e8b4388c13a07df562bac5dbaf589cbeca8e3249dc`, same address
+  172.21.0.4, both `Env` entries, the volume across; verified through the tunnel at 06:40:33Z
+  (health `archive: dir`; `/` serves `index-BEX0dlqy.js`; `/api/games` 401; the module
+  `application/wasm` + `immutable`). Not re-walked headed and not re-run through the e2e (the
+  close §7 says so). **Seventeen tags now sit on the NAS.**
+
+---
 
 ---
 

@@ -21,7 +21,7 @@
 // from the same seed, and the game this screen opens shows them all.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { api, ApiError, displayName } from "./api";
+import { api, ApiError, displayName, isLocal } from "./api";
 import { backArt } from "./art";
 import { Board } from "./Board";
 import { BoardsMenu } from "./BoardsMenu";
@@ -365,7 +365,14 @@ export function Dealing({
             `sendName={false}`: everyone here holds a seat, and a seat is named
             by its seat — sending a name for one is a 400 rather than a quiet
             override (R-6.4.2). */}
-        <Chat scope={{ kind: "table", id: game }} count={chatCount} colors={colors} sendName={false} />
+        {/* **A LOCAL table has no chat panel** (M6.5b, spec §2.5): the house is the
+            server's and a local table has one person, so there is nobody to talk
+            to and no route to ask — the game screen already knows this; the deal
+            screen learned it from the release's headed live review (I-1), which
+            found a panel here accepting messages from `local@browser`. */}
+        {!isLocal(game) && (
+          <Chat scope={{ kind: "table", id: game }} count={chatCount} colors={colors} sendName={false} />
+        )}
       </aside>
       <div className="deck">
         <div className="decision">
