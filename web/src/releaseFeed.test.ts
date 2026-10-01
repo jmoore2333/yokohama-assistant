@@ -1,6 +1,9 @@
 // The release notice's reading (M6.5c2 cycle F, R-F2, R-FP5; spec §2.2): the
 // version comparison, and the hook that asks the feed at most once per page
-// life and at most once an hour per browser.
+// life and, whether the read is answered or refused, at most once an hour per
+// browser — a failure stores an EMPTY answer and holds the hour as an answer
+// does, so a feed that always fails costs one request an hour and not one per
+// page (the task review's Important 1).
 //
 // **A feed fixture is not a wire payload.** `web/src/wire/` holds what THIS
 // project's server says; the release feed is a third party's (GitHub's
@@ -156,8 +159,12 @@ describe("useReleaseNotice", () => {
     expect(result.current).toBeNull();
   });
 
-  // **Any failure draws nothing, and nothing retries** (spec §2.2): a server
-  // error, a network error, a body that is not JSON, and a body with no tag.
+  // **Any failure draws nothing, and holds the hour** (spec §2.2, the task
+  // review's Important 1): a server error, a network error, a body that is not
+  // JSON and a body with no tag each store an EMPTY answer — `tag` and `url`
+  // null — which nothing draws from and nothing asks again under, so a feed that
+  // always fails (a private repository's 404) costs one request an hour per
+  // browser, not one per page. Within the page life nothing retries either.
   it.each([
     ["a 500", () => answering({ message: "boom" }, 500)],
     ["a 404", () => answering({ message: "Not Found" }, 404)],
@@ -168,16 +175,70 @@ describe("useReleaseNotice", () => {
     ["a body that is not JSON", () => vi.fn(async () => new Response("<html>", { status: 200 }))],
     ["a body with no tag", () => answering({ html_url: RELEASE_PAGE })],
     ["a tag that is not a string", () => answering(latest(7))],
-  ])("answers nothing on %s, asks once and never again", async (_what, make) => {
+  ])("answers nothing on %s, asks once, and stores an empty answer", async (_what, make) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
     const fetchImpl = make();
     const { result, rerender } = renderHook(() => useReleaseNotice(fetchImpl));
     await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
-    await act(async () => {});
+    await waitFor(() => expect(localStorage.getItem(KEY)).not.toBeNull());
     expect(result.current).toBeNull();
     rerender();
     await act(async () => {});
     expect(fetchImpl, "nothing retried within the page life").toHaveBeenCalledTimes(1);
-    expect(localStorage.getItem(KEY), "a failure is not an answer, so nothing is kept").toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem(KEY) ?? "null"),
+      "a failure is kept as an empty answer, with the time it failed",
+    ).toEqual({ checkedAt: 1_000_000, tag: null, url: null });
+  });
+
+  // **The hour is held across page lives**: the failure, then a second page life
+  // inside the hour (the module's page-life state reset, as a reload does) asks
+  // nothing and draws nothing — even where the feed would now answer a newer
+  // release. Over the hour the next page life asks once.
+  it("holds the hour after a failure: a second page life inside it asks nothing and draws nothing", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(10 * HOUR);
+    const failing = answering({ message: "Not Found" }, 404);
+    const first = renderHook(() => useReleaseNotice(failing));
+    await waitFor(() => expect(localStorage.getItem(KEY)).not.toBeNull());
+    first.unmount();
+
+    vi.setSystemTime(10 * HOUR + 30 * 60 * 1000);
+    resetReleaseNoticeForTests();
+    const later = answering(latest());
+    const second = renderHook(() => useReleaseNotice(later));
+    await act(async () => {});
+    expect(second.result.current).toBeNull();
+    expect(later, "inside the hour a failure is held, not asked again").not.toHaveBeenCalled();
+    second.unmount();
+
+    vi.setSystemTime(10 * HOUR + HOUR + 1);
+    resetReleaseNoticeForTests();
+    const third = renderHook(() => useReleaseNotice(later));
+    await waitFor(() => expect(third.result.current).toEqual({ tag: "v0.7.0", url: RELEASE_PAGE }));
+    expect(later, "over the hour, one fetch").toHaveBeenCalledTimes(1);
+  });
+
+  // The boundary of the empty answer is the answer's own: under an hour holds,
+  // an hour exactly and over asks once.
+  it.each([
+    ["an hour less a millisecond old", 0, HOUR - 1],
+    ["exactly an hour old", 1, HOUR],
+    ["an hour and a millisecond old", 1, HOUR + 1],
+  ])("a stored empty answer that is %s asks %i times", async (_what, asked, age) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(10 * HOUR);
+    localStorage.setItem(KEY, JSON.stringify({ checkedAt: 10 * HOUR - age, tag: null, url: null }));
+    const fetchImpl = answering(latest());
+    const { result } = renderHook(() => useReleaseNotice(fetchImpl));
+    await act(async () => {});
+    if (asked === 0) {
+      expect(result.current).toBeNull();
+    } else {
+      await waitFor(() => expect(result.current).toEqual({ tag: "v0.7.0", url: RELEASE_PAGE }));
+    }
+    expect(fetchImpl).toHaveBeenCalledTimes(asked);
   });
 
   it("never fetches when the build has no feed", async () => {
@@ -283,6 +344,10 @@ describe("useReleaseNotice", () => {
     ["no time", JSON.stringify({ tag: "v0.7.0", url: RELEASE_PAGE })],
     ["a time that is not a number", JSON.stringify({ checkedAt: "now", tag: "v0.7.0", url: RELEASE_PAGE })],
     ["no tag", JSON.stringify({ checkedAt: 1, url: RELEASE_PAGE })],
+    // The empty answer is BOTH null: a null tag beside an address, or a tag
+    // beside a null address, is malformed and means "check".
+    ["a null tag beside an address", JSON.stringify({ checkedAt: 1, tag: null, url: RELEASE_PAGE })],
+    ["a tag beside a null address", JSON.stringify({ checkedAt: 1, tag: "v0.7.0", url: null })],
   ])("asks when what is stored is %s", async (_what, raw) => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(1_000);

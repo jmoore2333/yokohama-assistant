@@ -137,8 +137,9 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
   are the derived default and only `off` is none.
-- **The release feed is read in the visitor's browser**, once per page and, after an answer, not again in that
-  browser for an hour. Your server never sees the request; the feed's host sees it, from the visitor's address.
+- **The release feed is read in the visitor's browser**, once per page and, after a read, answered or refused, not
+  again in that browser for an hour. Your server never sees the request; the feed's host sees it, from the visitor's
+  address.
 - The blurb and the notice must hold words and no control character (a line break, a zero-width character or a bidirectional control all count). A value the build
   refuses stops the build with a message naming the variable.
 

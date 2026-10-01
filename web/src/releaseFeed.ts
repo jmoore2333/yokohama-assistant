@@ -19,9 +19,17 @@
 // time** (F-13): a reload inside the hour draws the notice again with no
 // request, and the kept tag is compared with the build at READ time, so a site
 // that has taken the release since stops saying so. A broken storage means
-// "check". **A failure is not an answer**: any non-2xx, network error, body
-// that is not JSON or body with no tag draws nothing, keeps nothing and
-// retries nothing within the page life.
+// "check".
+//
+// **A failure holds the hour as an answer does** (the task review's Important
+// 1): any non-2xx, network error, body that is not JSON or body with no string
+// tag draws nothing, retries nothing within the page life, and stores an EMPTY
+// answer — `{checkedAt, tag: null, url: null}` — which no page asks again under
+// for an hour. So a feed that always fails (a private repository's 404) costs
+// one request an hour per browser, not one per page. The store has four states:
+// nothing, malformed, stale or stamped in the future → fetch; an empty answer
+// under an hour → nothing, no fetch; a newer answer under an hour → the notice,
+// no fetch; anything over an hour → one fetch.
 //
 // **The feed is a third party's, so its words are read, never trusted.** The
 // tag is compared only after it parses as `vX.Y.Z` (a tag that does not draws
@@ -114,10 +122,13 @@ function settle(answer: ReleaseAnswer): void {
   for (const wake of [...wakes]) wake();
 }
 
-/** The kept answer, when it is under an hour old and well-formed; `null` means
- *  "check" — absent, unreadable, malformed, stale, or stamped in the future
+/** What the browser kept, when it is under an hour old and well-formed:
+ *  `{ answer }` — the release the feed named, or `null` for the EMPTY answer a
+ *  failed read leaves, which draws nothing and holds the hour — and `null` for
+ *  "check": absent, unreadable, malformed (an empty answer is BOTH `tag` and
+ *  `url` null, so a half-null one is malformed), stale, or stamped in the future
  *  (a clock set back must not silence the check for longer than an hour). */
-function keptAnswer(now: number): ReleaseAnswer | null {
+function keptAnswer(now: number): { answer: ReleaseAnswer | null } | null {
   const raw = readItem(CHECKED_KEY);
   if (raw === null) return null;
   let parsed: unknown;
@@ -129,13 +140,15 @@ function keptAnswer(now: number): ReleaseAnswer | null {
   if (typeof parsed !== "object" || parsed === null) return null;
   const { checkedAt, tag, url } = parsed as Record<string, unknown>;
   if (typeof checkedAt !== "number" || !Number.isFinite(checkedAt)) return null;
-  if (typeof tag !== "string" || typeof url !== "string") return null;
   const age = now - checkedAt;
   if (age < 0 || age >= FRESH_MS) return null;
-  return { tag, url: httpUrl(url) ?? "" };
+  if (tag === null && url === null) return { answer: null };
+  if (typeof tag !== "string" || typeof url !== "string") return null;
+  return { answer: { tag, url: httpUrl(url) ?? "" } };
 }
 
-/** One request to the feed, and `null` for every way it can fail. */
+/** One request to the feed, and `null` for every way it can fail — which the
+ *  caller keeps as the empty answer. */
 async function ask(fetchImpl: typeof fetch, feed: string): Promise<ReleaseAnswer | null> {
   try {
     const res = await fetchImpl(feed, { cache: "no-store", headers: { accept: "application/vnd.github+json" } });
@@ -150,8 +163,9 @@ async function ask(fetchImpl: typeof fetch, feed: string): Promise<ReleaseAnswer
   }
 }
 
-/** The page's one check. A no-op after the first call in a page life, and a
- *  no-op where the build has no feed. */
+/** The page's one check: the kept answer if there is a usable one, else one
+ *  request, whose result — an answer or a failure — is kept. A no-op after the
+ *  first call in a page life, and a no-op where the build has no feed. */
 async function start(fetchImpl: typeof fetch): Promise<void> {
   if (started) return;
   const feed = releaseFeedUrl();
@@ -160,13 +174,17 @@ async function start(fetchImpl: typeof fetch): Promise<void> {
   const mine = generation;
   const kept = keptAnswer(Date.now());
   if (kept !== null) {
-    settle(kept);
+    if (kept.answer !== null) settle(kept.answer);
     return;
   }
   const answer = await ask(fetchImpl, feed);
-  if (answer === null || mine !== generation) return;
-  writeItem(CHECKED_KEY, JSON.stringify({ checkedAt: Date.now(), tag: answer.tag, url: answer.url }));
-  settle(answer);
+  if (mine !== generation) return;
+  // A failure is kept too, as the empty answer: the hour is held either way.
+  writeItem(
+    CHECKED_KEY,
+    JSON.stringify({ checkedAt: Date.now(), tag: answer?.tag ?? null, url: answer?.url ?? null }),
+  );
+  if (answer !== null) settle(answer);
 }
 
 /**
