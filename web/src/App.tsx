@@ -185,7 +185,9 @@ export function App() {
   // **The release's worker, registered here and reported on the door**
   // (M6.5b2, R-6.5b2.8). It is unconditional and belongs to the APP rather
   // than to the door, because a player who arrived straight at a game should
-  // still get the release cached; what is door-only is the LINE about it. In a
+  // still get the release cached. Since cycle F the line about it is drawn on
+  // the door, the lobby and the game alike, and what is the door's alone is
+  // TAKING a release by itself (`useDoorAutoApply`, below). In a
   // development build, in a browser with no service workers, and on a page the
   // browser walk has flagged, `useReadiness` registers nothing and answers
   // `"none"` — so this costs every existing cell one render and nothing else.

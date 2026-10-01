@@ -41,7 +41,7 @@ import { siteBlurb, turnstileSiteKey, type ProjectLink } from "./buildValues";
 import { Refusal } from "./Refusal";
 import { ReleaseNotice } from "./ReleaseNotice";
 import { navigate } from "./route";
-import type { ReadinessStatus } from "./swRegister";
+import { setApplyBusy, type ReadinessStatus } from "./swRegister";
 import { challengeOnce } from "./turnstile";
 import productionBot from "./wire/production_bot.json";
 
@@ -232,6 +232,15 @@ export const LOBBY_OFFLINE = "The lobby needs a connection.";
  * navigates too**: a blocked script or a refused widget is not a dead end, it
  * is the edge's own interstitial at `/enter`, which a browser passes by itself
  * and which is the decision that counts.
+ *
+ * **The door's own apply waits for the widget** (cycle F's fix wave; the final
+ * review's Minor 1): a release found while a person is on it would reload the
+ * door under them, so the click holds the apply ([`setApplyBusy`]) until the
+ * check settles, whichever way — `BackupControls`' restore's shape. **And the
+ * button stays disabled through the navigation** (Minor 2): the card goes back
+ * to idle only when the page is SHOWN again — brought back from the history
+ * cache, a door again rather than one waiting on a widget that has gone — so
+ * a second click while `/enter` loads cannot start a second widget.
  */
 function LobbyButton(): React.ReactNode {
   const [phase, setPhase] = useState<"idle" | "checking" | "offline">("idle");
@@ -241,17 +250,20 @@ function LobbyButton(): React.ReactNode {
     if (phase !== "checking" || !el) return;
     const abort = new AbortController();
     let live = true;
+    const shown = () => setPhase("idle");
+    window.addEventListener("pageshow", shown);
     const go = () => {
       if (!live) return;
       window.location.assign("/enter");
-      // A page brought back from the history cache is a door again, not one
-      // still waiting on a widget that has gone.
-      setPhase("idle");
     };
-    challengeOnce(el, abort.signal).then(go, go);
+    setApplyBusy(true);
+    void challengeOnce(el, abort.signal)
+      .then(go, go)
+      .finally(() => setApplyBusy(false));
     return () => {
       live = false;
       abort.abort();
+      window.removeEventListener("pageshow", shown);
     };
   }, [phase]);
   return (

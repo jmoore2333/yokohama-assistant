@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, useIdentityMode } from "./api";
 import { unplayableIds } from "./backup";
+import { turnstileSiteKey } from "./buildValues";
 import { BackUpEverything, Restore, Unplayable } from "./BackupControls";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
@@ -482,10 +483,14 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  *
  * **A door this browser has never been told about gets the turnstile alone**,
  * which is the first step under every mode: it is the instruction that is true
- * whatever the answer turns out to be.
+ * whatever the answer turns out to be — **except in a build with a Turnstile
+ * site key**, which IS the open door (R-FP4; cycle F's fix wave). There a
+ * nameless visitor's game is written "not signed in" before any read has said
+ * which door this is (`outbox.ts`'s rule 6b), and the name step is the
+ * remedy, so it is named whatever this browser has been told.
  */
 function Remedy(): React.ReactNode {
-  const open = useIdentityMode() === "open";
+  const open = useIdentityMode() === "open" || Boolean(turnstileSiteKey());
   return (
     <span className="muted remedy">
       <a href="/enter">Sign in at the door</a>

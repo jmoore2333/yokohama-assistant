@@ -731,6 +731,22 @@ describe("the games waiting to reach the archive", () => {
     expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
   });
 
+  // **A keyed build IS the open door** (R-FP4; cycle F's fix wave, Task 6's
+  // deferred minor): its nameless visitor's game is written "not signed in"
+  // before any read has said which door this is (`outbox.ts`'s rule 6b), and
+  // the name step is the remedy. So the clause is drawn under a key with no
+  // door named — the arm the cell below draws WITHOUT a key, as the turnstile
+  // alone. Mutant: the clause read off the remembered door only.
+  it("names the name step under a keyed build, before any door has been named", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    stubWorker();
+    await enqueue(LOCAL, "signed-out");
+    render(<OnThisDevice />);
+    const box = await waiting();
+    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toHaveAttribute("href", "/enter");
+    expect(within(box).getByText(/then choose a name in the lobby/i)).toBeInTheDocument();
+  });
+
   // **The remedy follows the door the server NAMES, even when it is named after
   // the row is drawn** (review M-5). The identity is read through the facts
   // subscription and not off the module during render — the same shape the

@@ -214,8 +214,10 @@ test("(c) a miss: /wp-login.php is the 404 page to a fetch and to a navigation n
   page,
   browser,
 }) => {
-  // The fetches below are 404s by design: forgiven by status and path, and
-  // nothing else.
+  // The fetches below are 404s by design. The harness's RESPONSE arm forgives
+  // a 404 only at a URL holding `MISS`; its CONSOLE arm forgives by the status
+  // DIGITS alone, the path unread (`harness.ts`, `watchForBreakage`), so for
+  // this cell's life any console error whose text holds "404" is forgiven.
   const watch = watchForBreakage(page, [{ status: 404, urlIncludes: MISS }]);
 
   // ---- a fetch from the page, before any worker controls it --------------

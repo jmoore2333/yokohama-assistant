@@ -18,13 +18,13 @@
 // origin call was made.
 
 import { readFileSync } from "node:fs";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FrontDoor, multiplayerOffered } from "./FrontDoor";
 import * as values from "./buildValues";
 import { linkFor } from "./buildValues";
-import type { ReadinessStatus } from "./swRegister";
+import { applyBusy, resetDoorAutoApplyForTests, type ReadinessStatus } from "./swRegister";
 import { resetLocalHostForTests } from "./local/client";
 import { resetReleaseNoticeForTests } from "./releaseFeed";
 import { stubWorker } from "./test/fakeWorker";
@@ -329,6 +329,7 @@ describe("the door's lobby button under a site key (cycle F)", () => {
   afterEach(() => {
     resetLocalHostForTests();
     resetTurnstileForTests();
+    resetDoorAutoApplyForTests();
     for (const s of turnstileScripts()) s.remove();
     delete (window as Platform).turnstile;
   });
@@ -376,6 +377,58 @@ describe("the door's lobby button under a site key (cycle F)", () => {
     await waitFor(() => expect(rendered).toHaveLength(1));
     rendered[0]!.options["error-callback"]("300030");
     await waitFor(() => expect(went).toEqual(["/enter"]));
+  });
+
+  // **The widget holds the door's own apply** (cycle F's fix wave; the final
+  // review's Minor 1): a release found while a person is on the widget must
+  // not reload the door under them. Held from the click until the check
+  // settles — passed or failed — as a restore holds it. Mutants: no hold; the
+  // hold never released; released on one way out only.
+  it("holds the door's own apply from the click until the check settles, whichever way", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    expect(applyBusy(), "nothing is held before the click").toBe(false);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    expect(applyBusy(), "held while the script loads").toBe(true);
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    expect(applyBusy(), "held while the widget is up").toBe(true);
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    await waitFor(() => expect(applyBusy(), "released once it passed").toBe(false));
+  });
+  it("releases the door's own apply when the widget fails, too", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    expect(applyBusy()).toBe(true);
+    rendered[0]!.options["error-callback"]("300030");
+    await waitFor(() => expect(applyBusy(), "released once it failed").toBe(false));
+  });
+
+  // **The button stays disabled through the navigation** (Minor 2): the card
+  // goes back to idle only when the page is SHOWN again — brought back from
+  // the history cache — so a second click while `/enter` loads cannot start a
+  // second widget. Mutant: idle set as the navigation starts.
+  it("keeps the button disabled once it has navigated, and draws it again only when the page is shown again", async () => {
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const went = countNavigations();
+    render(<FrontDoor multiplayer />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Go to the lobby" }));
+    const rendered = arrive();
+    await waitFor(() => expect(rendered).toHaveLength(1));
+    rendered[0]!.options.callback("a-token-nobody-reads");
+    await waitFor(() => expect(went).toEqual(["/enter"]));
+    expect(screen.getByRole("button", { name: "Go to the lobby" }), "disabled while the navigation is in flight").toBeDisabled();
+    expect(rendered, "and no second widget").toHaveLength(1);
+    act(() => {
+      window.dispatchEvent(new Event("pageshow"));
+    });
+    expect(screen.getByRole("button", { name: "Go to the lobby" }), "a door again, once shown again").toBeEnabled();
   });
 
   it("says the lobby needs a connection when offline, and asks for nothing", async () => {

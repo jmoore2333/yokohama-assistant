@@ -19,7 +19,10 @@
 // time** (F-13): a reload inside the hour draws the notice again with no
 // request, and the kept tag is compared with the build at READ time, so a site
 // that has taken the release since stops saying so. A broken storage means
-// "check".
+// "check". **Two tabs opened within the same second both ask** (the final
+// review's Minor 3): each finds no kept answer and each asks the feed before
+// either has written one — two requests where one would do, once, which the
+// hourly limit absorbs. Not worth a lock across tabs.
 //
 // **A failure holds the hour as an answer does** (the task review's Important
 // 1): any non-2xx, network error, body that is not JSON or body with no string
