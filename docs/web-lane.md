@@ -410,7 +410,8 @@ anyone's to spend, with the rate-limit rule as the deployer's tool.
 
 Every variable the web lane reads, in one table (R-6.5c2.45). **The kind** says who sets it: a *build value* is
 read when the client or a module is built, a *launch variable* by the NAS/Docker binary at start, a *Worker var*
-from `worker/wrangler.jsonc`'s `vars`, a *secret* through `wrangler secret put`, *test-only* by a test or a
+from `worker/wrangler.jsonc`'s `vars`, a *deploy declaration* from a Worker configuration's `vars` too but by the
+deploy's own scripts and never by the Worker, a *secret* through `wrangler secret put`, *test-only* by a test or a
 harness, and *orchestrator-only* by the live operations of §10. A launch variable or a Worker var with a bad value
 stops the server at start (the NAS, naming it) or answers every API request 500 naming it (the Worker); the
 self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 give each one's refusals. The cell
@@ -444,7 +445,7 @@ self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 giv
 | `ACCESS_AUD` | Worker var | the same | the `yokohama` Access application's audience | the Worker | `worker/src/identity.ts` |
 | `YOKOHAMA_DEV_DOOR` | Worker var | `off` | `on`: the dev door — the Service Auth credential plus a claimed header names any address, never an operator; refused beside `open` | the Worker | `worker/src/config.ts` |
 | `YOKOHAMA_WEB_ARCHIVE` | Worker var | `off` | `r2`: the archive in the `ARCHIVE` bucket, which it needs | the Worker | `worker/src/config.ts` |
-| `YOKOHAMA_TURNSTILE` | Worker var, a deploy declaration | `off` | `on` or `off`, never read by the Worker: the deploy guard's check 12 holds it to the assets tree's `build-values.json` — `on` exactly when the client build carries a Turnstile site key — and refuses any other value | the Worker | `worker/scripts/deploy-guard.mjs` |
+| `YOKOHAMA_TURNSTILE` | deploy declaration | `off` | `on` or `off`, never read by the Worker, which declares it (`worker/src/env.ts`) only to hold it to a string: the deploy guard's check 12 holds it to the assets tree's `build-values.json` — `on` exactly when the client build carries a Turnstile site key — AND to the open identity — `on`, or a keyed build, only beside `YOKOHAMA_WEB_IDENTITY` `open` — and refuses any other value; `on` in `wrangler.open.jsonc` alone, `off` in the other four, and `on` in a pool file refused. After an `on` deploy the smoke's live mode, `node scripts/smoke-release.mjs --live <origin> --config <file>`, requires a cookie-less `GET /api/health` answered 403 `cf-mitigated: challenge` — the edge rule `worker/scripts/edge-rule.mjs` prints, in front of the API | the Worker | the guard and the smoke: `worker/scripts/deploy-guard.mjs`, `worker/scripts/smoke-release.mjs` |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | launch variable; Worker var | none: no table expires | whole days a table stands idle before it expires, saved first where the archive is on; on the NAS the hourly sweep's, which refuses to start without `YOKOHAMA_WEB_ARCHIVE_DIR`, naming both | both | `crates/yokohama-web/src/sweep.rs`, read by `crates/yokohama-web/src/main.rs`; `worker/src/config.ts` |
 | `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | launch variable; Worker var | `7`, inert while the first TTL is unset | whole days a table with a seat still empty (status `open`) stands idle before it expires, with its own marker sentence on the Worker; a `dealing` table waits the first TTL (§15) | both | the same |
 | `YOKOHAMA_WEB_COUNT_WAKES` | orchestrator-only (a Worker var by `--var`) | `off` | `on` counts every wake in `meta.wakes` and logs `wake {id, wakes}`: the exit's window | the Worker | `worker/src/config.ts` |

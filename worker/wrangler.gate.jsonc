@@ -103,6 +103,13 @@
     // The NAS's three chat variables, at the NAS's defaults.
     "YOKOHAMA_WEB_LOBBY_CHAT": "on",
     "YOKOHAMA_WEB_CHAT_KEEP": "500",
-    "YOKOHAMA_WEB_CHAT_TEXT": "500"
+    "YOKOHAMA_WEB_CHAT_TEXT": "500",
+    // The Turnstile DECLARATION (cycle F, R-FP2, R-FP4; spec §2.6): `off` — this
+    // door is behind Access and ships a client built WITHOUT a site key. The
+    // Worker reads nothing of it but that it is a string: the deploy guard's
+    // check 12 holds it to the build's stamp (`build-values.json`) and to the
+    // door, and the post-deploy smoke reads it. `on` is the open window's file
+    // alone (`wrangler.open.jsonc`).
+    "YOKOHAMA_TURNSTILE": "off"
   }
 }

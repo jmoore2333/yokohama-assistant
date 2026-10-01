@@ -5,12 +5,15 @@
 // plain `npm run deploy` reverts to the worker door (`worker/RUNBOOK.md` §19
 // is the window's record; `worker/README.md` "The two doors" is the recipe).
 //
-// Everything but the door is `wrangler.jsonc`'s — the route, the assets block,
-// the object bindings, the migration, the bucket, the archive and both TTLs —
-// and the deploy guard holds it to production's blocks (checks 5 and 6):
-// `node scripts/deploy-guard.mjs --config wrangler.open.jsonc`. It has no
-// `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` (the open door reads neither) and no
-// `YOKOHAMA_DEV_DOOR`, which the shell refuses beside `open`
+// Everything but the door and the Turnstile declaration is `wrangler.jsonc`'s —
+// the route, the assets block, the object bindings, the migration, the bucket,
+// the archive and both TTLs — and the deploy guard holds it to production's
+// blocks (checks 5 and 6) and to its `vars` but those (T8-a):
+// `node scripts/deploy-guard.mjs --config wrangler.open.jsonc`. Its
+// `YOKOHAMA_TURNSTILE` is `on` (cycle F, R-FP4), so the guard refuses it over
+// a client built without the site key: the window builds a keyed client
+// first. It has no `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` (the open door reads
+// neither) and no `YOKOHAMA_DEV_DOOR`, which the shell refuses beside `open`
 // (`src/config.ts`'s `openDoorRefusals`).
 //
 // THE OPERATOR SECRET MUST BE DELETED BEFORE THIS DEPLOYS. `YOKOHAMA_WEB_ADMINS`
@@ -53,6 +56,14 @@
     "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     "YOKOHAMA_WEB_LOBBY_CHAT": "on",
     "YOKOHAMA_WEB_CHAT_KEEP": "500",
-    "YOKOHAMA_WEB_CHAT_TEXT": "500"
+    "YOKOHAMA_WEB_CHAT_TEXT": "500",
+    // The Turnstile DECLARATION (cycle F, R-FP2, R-FP4; spec §2.6): `on` — the
+    // window ships a client built WITH the site key, and the zone's edge rule
+    // (`scripts/edge-rule.mjs`) challenges every path that is not the
+    // release's own. The Worker reads nothing of it but that it is a string:
+    // the deploy guard's check 12 refuses it over a keyless build, and the
+    // smoke's live mode then requires a cookie-less `GET /api/health` answered
+    // 403 `cf-mitigated: challenge`.
+    "YOKOHAMA_TURNSTILE": "on"
   }
 }

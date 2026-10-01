@@ -187,6 +187,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
 | `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
+| `YOKOHAMA_TURNSTILE` | *not a variable at the seventeenth; added 2026-10-01 (M6.5c2 cycle F, R-FP2, R-FP4):* a DEPLOY DECLARATION, `off` in `wrangler.jsonc`, the gate's file and the pool's two, `on` in `wrangler.open.jsonc` alone. It rides into the Worker's variables like every `vars` entry, and nothing in the Worker reads it but the check that every variable is a string. The deploy guard's check 12 and the smoke's live mode read it (the bullet below) | off: the guard refuses a keyed build beside it, and the smoke's live mode owes no edge line |
 | `YOKOHAMA_WEB_TEST_CLOCK` | **never set in production** — the pool's files only, `wrangler.test.jsonc` and, since M6.5c2, `wrangler.open.test.jsonc` *(corrected 2026-09-28)*; the deploy guard refuses `wrangler.jsonc` if it names it | the wall clock |
 
 - **A bad value answers 500 naming its variable** (spec §2.6), the Worker's form of the NAS refusing
@@ -266,6 +267,43 @@ the whole list; it leaves secrets alone.
 - **To keep every table** (R-6.5c.15): remove `YOKOHAMA_WEB_TABLE_TTL_DAYS` from `wrangler.jsonc`'s
   `vars` and deploy (§2). With it absent no table expires and no expiry deadline is armed, whatever
   `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` reads; the markers and the operator surface work as before.
+- **`YOKOHAMA_TURNSTILE`: what `on` means, and what it does not** (M6.5c2 cycle F, R-F6, R-FP2, R-FP4,
+  R-FP7; spec §2.6). One client build per door state: production, behind Access, ships a client built
+  WITHOUT the Turnstile site key and declares `off`; the open window's file ships a client built WITH
+  it and declares `on`. **`on` means** that this deploy ships that keyed build, at the open door
+  (`YOKOHAMA_WEB_IDENTITY` `open`), and that the zone's ONE edge rule is ENABLED in front of it: a
+  Managed Challenge, at the edge and at zero Worker invocations, for every request to the hostname
+  whose path is not one of the release's own static names, `/api/*` and `/enter` among them. A person
+  passes it once through the widget's pre-clearance. The deploy guard's check 12 refuses `on` over a
+  keyless build (`build-values.json`'s `turnstile_sitekey`), refuses `on` or a keyed build under any
+  identity but `open` — the client reads a site key as the open door, and behind Access would never
+  upload a nameless visitor's games — and refuses `on` in a pool file. After an `on` deploy the
+  smoke's live mode must read the rule's answer, or the deploy fails its smoke:
+
+  ```sh
+  node scripts/smoke-release.mjs --live https://yokohama.moore.nyc --config wrangler.open.jsonc
+  ```
+
+  A cookie-less `GET /api/health` with a browser User-Agent must answer 403 with
+  `cf-mitigated: challenge`. Exit 0 is that answer, or, under `off`, no request at all. Exit 1 names
+  what came back instead, or a refused argument or declaration. Its first run in a window is expected
+  to fail, since the rule is created after the deploy. **`on` does NOT mean** that the Worker does
+  anything: it reads no token, calls no siteverify, holds no secret, and answers every request as it
+  does under `off`, and `/enter` is unchanged. Nor does the declaration create, enable or disable the
+  rule. The operator does that through the API, by the rule's id: ENABLED before the hostname leaves
+  Access, and DISABLED only after Access is back, since the live tiers' service token cannot pass a
+  challenge. The rule's body comes from the assets tree, and `--verify` compares the zone's copy:
+
+  ```sh
+  node scripts/edge-rule.mjs > edge-rule.json            # the rule's JSON, from worker/assets/; exit 0
+  node scripts/edge-rule.mjs --verify < rule-from-zone.json   # 0 equal, 1 different, 2 cannot judge
+  ```
+
+  The JSON is `{ "expression", "action": "managed_challenge", "description": "yokohama — the
+  no-Access door's edge check (F)", "enabled": true }`. `--verify` compares the first three and
+  ignores `enabled` and every key the zone adds. Build the keyed client and assemble the tree BEFORE
+  printing the rule. The expression lists the tree's top-level names, and `sitemap.xml` is there only
+  when the build set `YOKOHAMA_SITE_URL`.
 
 ### The operator — `YOKOHAMA_WEB_ADMINS` and the curl playbook (spec §2.9)
 

@@ -109,7 +109,18 @@
 //    challenged fetches have no widget to pass them, and a key under `off`
 //    renders the widget under Access (R-FP4: one client build per door
 //    state). A tree with no stamp, or a stamp that is not one, is refused
-//    naming the file. Never read by the Worker at run time.
+//    naming the file. Never read by the Worker at run time. **And the
+//    identity rule** (Task 7, the orchestrator's amendment from Task 6's
+//    re-review): `on`, and a keyed stamp, stand only beside
+//    `YOKOHAMA_WEB_IDENTITY` `open`, read as the shell reads the door; under
+//    any other each is refused with ONE sentence naming the identity and the
+//    declaration, and the stamp comparison is not asked there. The client
+//    infers the open door from the presence of a site key
+//    (`web/src/outbox.ts`'s keyed-build rule), so a keyed build behind Access
+//    would silently never upload a nameless visitor's games. The open file's
+//    `on` is one of its allowed differences from production (T8-a), and a POOL
+//    file's `on` is refused whichever file is judged: the pool never deploys,
+//    so never a keyed build.
 //
 // Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
 // and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
@@ -307,6 +318,8 @@ const OPEN_DIFFERS = {
   ACCESS_TEAM_DOMAIN: undefined,
   ACCESS_AUD: undefined,
   YOKOHAMA_DEV_DOOR: undefined,
+  // The window ships a keyed build (cycle F, R-FP4): check 12 holds it there.
+  YOKOHAMA_TURNSTILE: "on",
 };
 
 /** T8-a: `sibling` equals `production` (comments are already gone, keys are
@@ -472,15 +485,39 @@ function notFoundPage(tree, failures, shown = tree) {
   }
 }
 
+/** What check 12's identity rule says, after naming the file, the
+ *  declaration and the identity (the orchestrator's amendment, Task 7). */
+const KEYED_IS_OPEN =
+  "a keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of the API";
+
+/** The identity a configuration names, as check 12's sentences show it. */
+function identityShown(door) {
+  if (door === undefined) return "nothing";
+  return typeof door === "string" && door !== "" ? door : JSON.stringify(door);
+}
+
 /** Check 12: the judged configuration `config`'s (parsed `value`) Turnstile
- *  declaration against the stamp in the tree at `tree` (printed as `shown`).
- *  Both are read whatever the other says, so a bad declaration and a missing
- *  stamp are two sentences; they are compared only when both read. */
+ *  declaration against the stamp in the tree at `tree` (printed as `shown`),
+ *  and against its door. Both are read whatever the other says, so a bad
+ *  declaration and a missing stamp are two sentences. The identity rule
+ *  comes first: `on`, or a keyed stamp, under any door but `open` is ONE
+ *  sentence naming the identity and the declaration, and the stamp is
+ *  compared with the declaration only at the open door — at any other, its
+ *  sentences' advice (build with the key, set the var on) is wrong. */
 function turnstileConsistency(config, value, tree, failures, shown = tree) {
   const declared = objectOf(value.vars)?.YOKOHAMA_TURNSTILE;
   const readable = declared === undefined || declared === "on" || declared === "off";
   if (!readable) {
     failures.push(`${config}'s vars.YOKOHAMA_TURNSTILE must be "on" or "off" (absent is off) — got ${JSON.stringify(declared)}`);
+  }
+  const door = doorOf(value);
+  const open = door === "open";
+  const on = declared === "on";
+  if (on && !open) {
+    failures.push(
+      `${config} sets YOKOHAMA_TURNSTILE on under identity ${identityShown(door)} — ${KEYED_IS_OPEN}; ` +
+        "deploy the key only with wrangler.open.jsonc",
+    );
   }
   const file = join(tree, "build-values.json");
   if (!isFile(file)) {
@@ -501,7 +538,15 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
     return;
   }
   if (!readable) return;
-  const on = declared === "on";
+  if (!open) {
+    if (!on && stamp.turnstile_sitekey) {
+      failures.push(
+        `${config} leaves YOKOHAMA_TURNSTILE off under identity ${identityShown(door)} but the assets tree's build carries a ` +
+          `site key — ${KEYED_IS_OPEN}; build the client without the key, and deploy the key only with wrangler.open.jsonc`,
+      );
+    }
+    return;
+  }
   if (on && !stamp.turnstile_sitekey) {
     failures.push(
       `${config} sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — ` +
@@ -515,11 +560,25 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
   }
 }
 
+/** The pool's two files never deploy, so never a keyed build (cycle F,
+ *  R-FP4): `YOKOHAMA_TURNSTILE` there is `off` or absent, whichever file the
+ *  guard judges. */
+function poolDeclaration(name, value, failures) {
+  const declared = objectOf(value.vars)?.YOKOHAMA_TURNSTILE;
+  if (declared !== undefined && declared !== "off") {
+    failures.push(
+      `${name}'s vars.YOKOHAMA_TURNSTILE must be "off" (absent is off) — the pool never deploys, so it never ships a keyed build; ` +
+        `got ${JSON.stringify(declared)}`,
+    );
+  }
+}
+
 /** Checks 3 to 7: the ones that need no build. `config` is the file the
  *  deploy ships (`--config`, default `wrangler.jsonc`): checks 3, 4 and 7
  *  judge it alone; check 5 holds production, the open file and each pool to
  *  spec §2.3's assets block, and check 6 holds the open file and each pool
- *  to production's object blocks, whichever file is named. */
+ *  to production's object blocks, whichever file is named. Check 12's pool
+ *  half rides here too (cycle F): neither pool file declares `on`. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -548,6 +607,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
     if (other) {
       assetsBlock(name, other.value, failures);
+      if (POOLS.includes(name)) poolDeclaration(name, other.value, failures);
       others.push([name, other]);
     }
   }
@@ -647,8 +707,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door; " +
+      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
       "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
-      "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says",
+      "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );
 }

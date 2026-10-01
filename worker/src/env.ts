@@ -76,6 +76,15 @@ export interface Env {
   YOKOHAMA_WEB_LOBBY_CHAT?: string;
   YOKOHAMA_WEB_CHAT_KEEP?: string;
   YOKOHAMA_WEB_CHAT_TEXT?: string;
+  /** `on` | `off`, absent = off: a DEPLOY DECLARATION the shell never reads
+   *  (M6.5c2 cycle F, R-FP2; spec §2.6) — whether this deploy ships a client
+   *  built with a Turnstile site key, at the open door, behind the zone's edge
+   *  rule. The deploy guard's check 12 holds it to the assets tree's
+   *  `build-values.json` and to `YOKOHAMA_WEB_IDENTITY=open`, and the
+   *  post-deploy smoke's live mode (`scripts/smoke-release.mjs --live`) reads
+   *  it. Declared here so `config.ts` holds it to a string like every other
+   *  variable; nothing else in the Worker reads it. */
+  YOKOHAMA_TURNSTILE?: string;
   /** TEST ONLY: `frozen:<seconds>` or `tick:<seconds>`, absent = the wall
    *  clock (the plan's ruling P-2). Set in `wrangler.test.jsonc` and never in
    *  production. */

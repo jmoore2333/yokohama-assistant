@@ -795,8 +795,13 @@ two committed files in `worker/static/`. Every one of the spike's findings is in
 
 - `"html_handling": "none"`. The default redirects `/index.html` to `/`, and the service worker's
   install fetches `/index.html` with `redirect: "error"`, so under the default the install fails.
-- `"not_found_handling": "none"`. The single-page-application fallback answered `index.html` with a
-  200 for a missing script, which a precache would store as the script.
+- `"not_found_handling": "404-page"` *(cycle F, R-F5; spec §2.5. It was `none` from M6.5c until
+  cycle F.)* A browser's NAVIGATION miss is answered by the asset layer with the static `404.html`
+  instead of a blank. A miss that is not a navigation still invokes the Worker whatever this says,
+  so the page is a courtesy. The fence against a scanner is the zone's edge rule
+  (`scripts/edge-rule.mjs`, RUNBOOK §3), never this. The single-page-application fallback stays
+  refused: it answered `index.html` with a 200 for a missing script, which a precache would store as
+  the script.
 - `worker/static/_redirects` holds one line, `/ /index.html 200`, which serves the root as
   `index.html` without a redirect.
 - `worker/static/_headers` restates the NAS's cache policy: hashed bundles immutable for a year,
@@ -1570,7 +1575,10 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
 - **`smoke:release`** (`scripts/smoke-release.mjs`) instantiates the RELEASE module once in Node,
   runs `init` with the archive off, asks `GET /api/health`, and refuses anything but a 200, or a
   module that exports `debug_trap`. Nothing else runs the release module before a deploy, since the
-  pool runs the debug one.
+  pool runs the debug one. Its LIVE mode, `node scripts/smoke-release.mjs --live <origin> --config
+  <file>`, runs after a deploy instead: under the file's `YOKOHAMA_TURNSTILE` `on`, a cookie-less
+  `GET /api/health` must answer 403 with `cf-mitigated: challenge`, the edge rule's answer (RUNBOOK
+  §3); under `off` it makes no request.
 
 The order matters twice. `web/`'s build comes first, because its browser walk leaves a debug module
 in `web/dist`. And after a release build, `npm run build:module:debug` comes before `npm test` in
@@ -1635,10 +1643,13 @@ brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TE
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
 chat variables keep the NAS's defaults;
-`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); and `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's
-two files. A bad value answers the API's requests 500, naming the variable, and leaves the static
-release alone; RUNBOOK §3 lists the few answers that come before the configuration is read, and the
-recipes "to deploy with no archive" and "to keep every table".
+`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `off`, a deploy declaration
+the Worker only holds to a string, which the deploy guard holds to the client build's site key and
+to the open door, and which `wrangler.open.jsonc` alone sets `on` (RUNBOOK §3); and
+`YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files. A bad value answers the API's
+requests 500, naming the variable, and leaves the static release alone; RUNBOOK §3 lists the few
+answers that come before the configuration is read, and the recipes "to deploy with no archive" and
+"to keep every table".
 
 **Nothing secret is in the repository:**
 

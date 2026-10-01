@@ -246,8 +246,42 @@ describe("a variable that is not a string", () => {
     ["YOKOHAMA_WEB_CHAT_KEEP", 500, "the number 500"],
     ["ACCESS_AUD", null, "null"],
     ["YOKOHAMA_WEB_IDENTITY", true, "the boolean true"],
+    // Cycle F (R-FP2): the deploy declaration is held to a string like every
+    // variable `Env` declares — the one thing the shell does with it.
+    ["YOKOHAMA_TURNSTILE", true, "the boolean true"],
   ])("refuses %s given %j", (name, value, described) => {
     expect(refused(env({ [name]: value }))).toBe(`${name} must be a string, in quotes — got ${described}`);
+  });
+});
+
+// Cycle F (R-FP2; spec §2.6): `YOKOHAMA_TURNSTILE` is a deploy DECLARATION
+// in the configuration's `vars`, read by the deploy guard (check 12) and the
+// post-deploy smoke, never by the Worker. `Env` declares it and `ROWS` holds
+// it to a string (above), and that is all: `on`, `off` and absent leave the
+// shell's configuration and the module's eight keys exactly as they were.
+// Mutants: a field of `ShellConfig` read from it; a ninth key in the module's
+// configuration.
+describe("YOKOHAMA_TURNSTILE (cycle F, R-FP2): a deploy declaration the shell never reads", () => {
+  const doors: Record<string, unknown>[] = [
+    {},
+    { YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_WEB_TABLE_TTL_DAYS: "90", YOKOHAMA_WEB_LOBBY_CHAT: "off" },
+  ];
+  it.each(doors)("leaves shellConfig and moduleConfig unchanged under %j", (vars) => {
+    const without = accepted(env(vars, true));
+    const module = moduleConfig(env(vars, true), "Red@T.test");
+    expect(Object.keys(JSON.parse(module) as object)).toHaveLength(8);
+    for (const declared of ["on", "off", undefined, " ON ", "anything"]) {
+      const e = env({ ...vars, YOKOHAMA_TURNSTILE: declared }, true);
+      expect(accepted(e), String(declared)).toEqual(without);
+      expect(moduleConfig(e, "Red@T.test"), String(declared)).toBe(module);
+    }
+  });
+  // `Env` declares it, as the string `ROWS` holds it to: a compile-time pin
+  // (`npm run typecheck`) that the key is `Env`'s and optional.
+  it("is declared in Env as an optional string", () => {
+    const declared: Env["YOKOHAMA_TURNSTILE"] = "on";
+    const absent: Env["YOKOHAMA_TURNSTILE"] = undefined;
+    expect([declared, absent]).toEqual(["on", undefined]);
   });
 });
 
