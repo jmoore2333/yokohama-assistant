@@ -81,7 +81,7 @@ pub fn content_type(path: &Path) -> &'static str {
 /// How long a browser may keep what this map served, or `None` for no
 /// freshness header at all.
 ///
-/// **Only `assets/`, and that is the whole rule.** Vite writes a content hash
+/// **`assets/` is the rule that matters most.** Vite writes a content hash
 /// into every file name it emits there, so a changed byte is a changed name
 /// and a year with `immutable` is the truth about it. Everything else must
 /// stay uncached and for different reasons: `index.html` is the document that
@@ -110,12 +110,29 @@ pub fn content_type(path: &Path) -> &'static str {
 /// install in that window, each failing its digest. The worker's `cache:
 /// "reload"` goes past the browser's cache, not the edge's; `no-store` keeps
 /// either from holding a copy.
+///
+/// **Cycle F adds the web presence's three files the art's hour** (R-F12;
+/// spec §2.7): [`PRESENCE_FILES`], written by `web/scripts/presence.mjs` at
+/// build under stable names, so `immutable` would be a lie and `no-store`
+/// would make every crawl a fresh read. `worker/static/_headers` says the same
+/// of the same three paths for the other host, and
+/// `worker/scripts/assemble-assets.test.mjs` reads the two files against each
+/// other.
 fn cache_control(uri_path: &str) -> Option<&'static str> {
     if uri_path == "/sw.js" || uri_path == "/shell.bin" {
         return Some("no-store");
     }
+    if PRESENCE_FILES.contains(&uri_path) {
+        return Some("public, max-age=3600");
+    }
     uri_path.starts_with("/assets/").then_some("public, max-age=31536000, immutable")
 }
+
+/// The web presence's files (cycle F, R-F12): `robots.txt`, `llms.txt` and the
+/// sitemap, each at the root, each given the art's hour by [`cache_control`].
+/// Exact paths — never a prefix, which would catch a name that only resembles
+/// one.
+const PRESENCE_FILES: [&str; 3] = ["/robots.txt", "/llms.txt", "/sitemap.xml"];
 
 /// The page a miss with an extension is answered with, relative to the root
 /// (M6.5c2 cycle F, R-F5; spec §2.5): `web/public/404.html`, which the build
@@ -253,9 +270,11 @@ mod tests {
         assert_eq!(content_type(Path::new("manifest.webmanifest")), "application/manifest+json");
     }
 
-    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8) and by M6.5c2 cycle E
-    /// (R-6.5c2.41): Vite's hashed output is immutable, the service worker and
-    /// the shell it installs are `no-store`, and NOTHING else this map serves
+    /// M6.5b's fix wave, widened by M6.5b2 (R-6.5b2.8), by M6.5c2 cycle E
+    /// (R-6.5c2.41) and by cycle F's web presence (R-F12; spec §2.7): Vite's
+    /// hashed output is immutable, the service worker and the shell it installs
+    /// are `no-store`, the three presence files (`/robots.txt`, `/llms.txt`,
+    /// `/sitemap.xml`) carry the art's hour, and NOTHING else this map serves
     /// carries a freshness header.
     ///
     /// The `assets/` half is what M6.5b needed — `OnThisDevice` mounts on
@@ -285,8 +304,21 @@ mod tests {
         // PREVIOUS release's copy for two hours after a deploy, and every
         // install in that window fails its digest.
         assert_eq!(cache_control("/shell.bin"), Some("no-store"));
+        // **The web presence** (cycle F, R-F12): the art's hour (`art.rs`), no
+        // `immutable` — the names are stable and the bytes change with the
+        // build values — and no `no-store`, which would make every crawl a
+        // fresh read. The same three paths `worker/static/_headers` names, and
+        // `assemble-assets.test.mjs` reads the two files against each other.
+        for path in ["/robots.txt", "/llms.txt", "/sitemap.xml"] {
+            assert_eq!(cache_control(path), Some("public, max-age=3600"), "{path} carries the art's hour");
+        }
         for path in ["/", "/index.html", "/manifest.webmanifest", "/art/manifest.json", "/help/screen.webp"] {
             assert_eq!(cache_control(path), None, "{path} carries no freshness header");
+        }
+        // EXACT paths: a name that only resembles one, or the same file under
+        // a directory, is no presence file.
+        for path in ["/robots.txt.bak", "/llms-full.txt", "/sitemap.xml.gz", "/help/robots.txt", "/robots.txt/"] {
+            assert_eq!(cache_control(path), None, "{path} is not a presence file");
         }
 
         let root =
@@ -298,6 +330,9 @@ mod tests {
         std::fs::write(root.join("index.html"), b"<!doctype html>").unwrap();
         std::fs::write(root.join("sw.js"), b"// the worker").unwrap();
         std::fs::write(root.join("shell.bin"), b"<!doctype html>").unwrap();
+        std::fs::write(root.join("robots.txt"), b"User-agent: *\n").unwrap();
+        std::fs::write(root.join("llms.txt"), b"# Yokohama\n").unwrap();
+        std::fs::write(root.join("sitemap.xml"), b"<urlset/>").unwrap();
 
         let cached = |uri: &str| -> Option<String> {
             serve_path(&root, uri)
@@ -313,6 +348,19 @@ mod tests {
         );
         assert_eq!(cached("/sw.js").as_deref(), Some("no-store"), "and it reaches the response");
         assert_eq!(cached("/shell.bin").as_deref(), Some("no-store"), "and so does the shell's");
+        for path in ["/robots.txt", "/llms.txt", "/sitemap.xml"] {
+            assert_eq!(cached(path).as_deref(), Some("public, max-age=3600"), "{path}: the hour reaches the response");
+        }
+        // And the types the files go out as: the two text files are plain text,
+        // which is what a crawler or a model reads them as.
+        for path in ["/robots.txt", "/llms.txt"] {
+            let response = serve_path(&root, path);
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap()),
+                Some("text/plain; charset=utf-8"),
+                "{path} is plain text"
+            );
+        }
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");
         assert_eq!(cached("/lobby"), None, "the same document through the SPA fallback");
 

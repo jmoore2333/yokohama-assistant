@@ -1,9 +1,9 @@
-// The build's FIVE values, checked where the BUILD reads them (M6.5c2,
-// R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F, R-F2 and R-F6).
+// The build's SIX values, checked where the BUILD reads them (M6.5c2,
+// R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F, R-F2, R-F6 and R-F12).
 //
 // `vite.config.ts` calls these with `process.env`, and a throw here fails
 // `vite build` — the Worker's release build and the Docker image's
-// `build:client` alike — naming the variable and the reason. The five:
+// `build:client` alike — naming the variable and the reason. The door's three:
 // `YOKOHAMA_PROJECT_URL` (the door's and the lobby's link to the repository:
 // unset or empty is no link; otherwise an absolute `https://` or `http://` URL
 // with a host, no whitespace or control character, at most 200 characters),
@@ -11,11 +11,14 @@
 // `YOKOHAMA_SITE_NOTICE` (the one-line footer on every screen, at most 200);
 // the last two through `checkText`. Unset or empty is none, for all three.
 //
-// **Cycle F adds two.** `YOKOHAMA_RELEASE_FEED` (the URL the door and the lobby
+// **Cycle F adds three.** `YOKOHAMA_RELEASE_FEED` (the URL the door and the lobby
 // read for the latest release; THREE states, `checkReleaseFeed`: unset or empty
 // derives it from a GitHub project link, a URL is that feed, the literal `off`
-// is none) and `YOKOHAMA_TURNSTILE_SITEKEY` (the public key a Turnstile
-// widget is drawn with; unset or empty is no key, `checkSiteKey`). One row in
+// is none), `YOKOHAMA_TURNSTILE_SITEKEY` (the public key a Turnstile
+// widget is drawn with; unset or empty is no key, `checkSiteKey`) and
+// `YOKOHAMA_SITE_URL` (the deployment's canonical origin, which the sitemap,
+// the page's canonical link and `og:url` are written from; unset or empty is
+// no address and none of the three, `checkSiteUrl`). One row in
 // `BUILD_VALUES` and one checker each: a later value joins in the same shape.
 //
 // **Build time, never run time**: the release is precached under a digest of
@@ -125,13 +128,46 @@ export function checkSiteKey(raw) {
   return raw;
 }
 
-/** The five build values and the longest each may be. */
+export const SITE_URL_VAR = "YOKOHAMA_SITE_URL";
+export const SITE_URL_MAX = 200;
+
+/**
+ * The deployment's canonical address (cycle F, R-F12; spec §2.7): an absolute
+ * `https://` ORIGIN and nothing more — the shared URL rules (`checkUrl`, which
+ * names the variable in every refusal), then no path beyond one trailing `/`,
+ * no query, no fragment and no credentials. The value comes back as the
+ * parsed origin (a trailing `/` gone, the scheme and host in lower case), so
+ * every consumer writes `${siteUrl}/sitemap.xml` and none can produce a double
+ * slash. A credential is refused WITHOUT echoing the value: a build log is no
+ * place for a password a deployer pasted by mistake.
+ *
+ * @param {string | undefined} raw
+ * @returns {string | null}
+ */
+export function checkSiteUrl(raw) {
+  if (raw === undefined || raw === "") return null;
+  checkUrl(SITE_URL_VAR, raw, SITE_URL_MAX, true);
+  const parts = /^https:\/\/([^/?#]*)\/?$/i.exec(raw);
+  if (parts === null) {
+    throw new Error(
+      `${SITE_URL_VAR} must be an origin, with no path, query or fragment beyond a trailing /: ${JSON.stringify(raw)}`,
+    );
+  }
+  const url = new URL(raw);
+  if (url.username !== "" || url.password !== "") {
+    throw new Error(`${SITE_URL_VAR} holds credentials, which an origin does not carry`);
+  }
+  return url.origin;
+}
+
+/** The six build values and the longest each may be. */
 export const BUILD_VALUES = {
   YOKOHAMA_PROJECT_URL: PROJECT_URL_MAX,
   YOKOHAMA_SITE_BLURB: 400,
   YOKOHAMA_SITE_NOTICE: 200,
   YOKOHAMA_RELEASE_FEED: RELEASE_FEED_MAX,
   YOKOHAMA_TURNSTILE_SITEKEY: SITE_KEY_MAX,
+  YOKOHAMA_SITE_URL: SITE_URL_MAX,
 };
 
 /**

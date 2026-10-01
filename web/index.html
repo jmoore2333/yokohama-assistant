@@ -27,6 +27,15 @@
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#0d1013" />
+    <!-- **The page's metadata is written at build** (cycle F, R-F12; spec
+         §2.7): the description, Open Graph, the Twitter card and one JSON-LD
+         block, plus the canonical link and `og:url` where the build was given
+         `YOKOHAMA_SITE_URL`. `vite.config.ts`'s `transformIndexHtml` replaces
+         the marker below with `scripts/presence.mjs`'s `metadataTags`, from
+         the same checked values the `define` block reads, and stops the build
+         if the marker is not here exactly once. Nothing is written by hand
+         beside it, so no tag can appear twice. -->
+    <!-- yokohama:presence-metadata -->
     <!-- **The typefaces are in-house since M6.5b2** (R-6.5b2.18). Two
          `preconnect`s and a render-blocking stylesheet from
          `fonts.googleapis.com` stood here; both families are OFL and are now

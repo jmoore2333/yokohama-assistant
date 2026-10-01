@@ -191,9 +191,9 @@ COPY --from=server /out/wasm ./src/local/wasm
 # `build:client`, not `build`: the module is already here, and running
 # `build:wasm` in this stage is exactly what has no toolchain to run it.
 #
-# The build's FIVE values (M6.5c2, spec §2.3, R-6.5c2.40; cycle F, R-F2): the
+# The build's SIX values (M6.5c2, spec §2.3, R-6.5c2.40; cycle F, R-F2, R-F12): the
 # project link, the blurb under the title, the footer's one-line notice, the
-# release feed and the Turnstile site key. BUILD values, because the release is
+# release feed, the Turnstile site key and the site's own address. BUILD values, because the release is
 # precached under a digest of its own bytes and a server rewriting `index.html`
 # at start-up would fail the service worker's install check. An ARG is in
 # `RUN`'s environment; an ARG given no `--build-arg` is unset, and
@@ -203,12 +203,17 @@ COPY --from=server /out/wasm ./src/local/wasm
 # unset is not one of "none": unset (or empty) derives the feed from a GitHub
 # `YOKOHAMA_PROJECT_URL`, a URL is that feed, and the literal `off` is no feed
 # and no check. The site key is public and draws a Turnstile widget only where
-# one is set; blank draws the plain link.
+# one is set; blank draws the plain link. **The site's address is the canonical
+# origin** (an `https://` origin, no path): with it the build writes a sitemap,
+# the page's canonical link and `og:url`, and `robots.txt` names the sitemap;
+# without it none of the three, and the rest of the web presence (`robots.txt`,
+# `llms.txt`, the page's description and cards) is written all the same.
 ARG YOKOHAMA_PROJECT_URL
 ARG YOKOHAMA_SITE_BLURB
 ARG YOKOHAMA_SITE_NOTICE
 ARG YOKOHAMA_RELEASE_FEED
 ARG YOKOHAMA_TURNSTILE_SITEKEY
+ARG YOKOHAMA_SITE_URL
 RUN npm run build:client
 
 # ---------------------------------------------------------------------------

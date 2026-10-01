@@ -216,9 +216,26 @@ describe("the committed static headers", () => {
     expect(immutable, "assets.rs's immutable rule for /assets/").toBeDefined();
     expect(headers.get("/assets/*")?.["cache-control"]).toBe(immutable);
 
+    // **The web presence's three files carry the art's hour on both hosts**
+    // (cycle F, R-F12; spec §2.7). The paths are parsed out of the Rust's
+    // `PRESENCE_FILES` and the value out of the arm that returns for them, so
+    // the two hosts cannot drift in either; the premise pins that the parse
+    // found the three, so the equality below is not two empty lists agreeing.
+    const presence = /const PRESENCE_FILES: \[&str; \d+\] = \[([^\]]*)\];/.exec(rust)?.[1];
+    expect(presence, "assets.rs no longer declares PRESENCE_FILES").toBeDefined();
+    const rustPresence = [...presence.matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
+    expect(rustPresence).toEqual(["/llms.txt", "/robots.txt", "/sitemap.xml"]);
+    const hour = /PRESENCE_FILES\.contains\(&uri_path\)\s*\{\s*return Some\("([^"]+)"\)/.exec(body)?.[1];
+    expect(hour, "assets.rs's rule for the presence files").toBe("public, max-age=3600");
+    for (const path of rustPresence) {
+      expect(headers.get(path)?.["cache-control"], path).toBe(hour);
+    }
+
     // And nothing else carries a rule, as the Rust cell's "nothing else"
     // clause says of the axum host — the art's hour is `art.rs`'s.
-    expect([...headers.keys()].sort()).toEqual(["/art/*", "/assets/*", "/shell.bin", "/sw.js"]);
+    expect([...headers.keys()].sort()).toEqual(
+      ["/art/*", "/assets/*", "/llms.txt", "/robots.txt", "/shell.bin", "/sitemap.xml", "/sw.js"],
+    );
     expect(headers.get("/art/*")?.["cache-control"]).toBe("public, max-age=3600");
   });
 });

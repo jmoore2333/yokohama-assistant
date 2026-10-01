@@ -1,7 +1,8 @@
-// The build's FIVE values, as the BUILD checks them: the door's three (the
+// The build's SIX values, as the BUILD checks them: the door's three (the
 // project link first; the blurb and the notice through `checkText`) (M6.5c2,
-// R-6.5c2.6; spec §2.3) and cycle F's two — the release feed (`checkReleaseFeed`,
-// R-FP5) and the Turnstile site key (`checkSiteKey`): each class of bad value
+// R-6.5c2.6; spec §2.3) and cycle F's three — the release feed (`checkReleaseFeed`,
+// R-FP5), the Turnstile site key (`checkSiteKey`) and the site's own address
+// (`checkSiteUrl`, R-F12): each class of bad value
 // refused, and refused NAMING the variable — `vite.config.ts` calls the
 // checkers, so a throw is `vite build`'s failure line, and a deployer reads
 // which variable to fix.
@@ -12,6 +13,7 @@ import {
   checkProjectUrl,
   checkReleaseFeed,
   checkSiteKey,
+  checkSiteUrl,
   checkText,
   defaultFeedFor,
   PROJECT_URL_MAX,
@@ -20,6 +22,8 @@ import {
   RELEASE_FEED_VAR,
   SITE_KEY_MAX,
   SITE_KEY_VAR,
+  SITE_URL_MAX,
+  SITE_URL_VAR,
 } from "./build-values.mjs";
 
 describe("checkProjectUrl", () => {
@@ -85,13 +89,14 @@ describe("checkText", () => {
     );
   });
 
-  it("names the five values with their caps", () => {
+  it("names the six values with their caps", () => {
     expect(BUILD_VALUES).toEqual({
       YOKOHAMA_PROJECT_URL: 200,
       YOKOHAMA_SITE_BLURB: 400,
       YOKOHAMA_SITE_NOTICE: 200,
       YOKOHAMA_RELEASE_FEED: 300,
       YOKOHAMA_TURNSTILE_SITEKEY: 100,
+      YOKOHAMA_SITE_URL: 200,
     });
   });
 });
@@ -203,5 +208,68 @@ describe("checkSiteKey", () => {
   ])("refuses %s, naming the variable", (_what, raw, why) => {
     expect(() => checkSiteKey(raw)).toThrow(why);
     expect(() => checkSiteKey(raw)).toThrow(SITE_KEY_VAR);
+  });
+});
+
+// **The site's address** (cycle F, R-F12; spec §2.7): the deployment's
+// canonical ORIGIN, which the sitemap, `<link rel="canonical">` and `og:url`
+// are built from — so, unlike the project link, a bare origin and nothing
+// else: `https://` only, no path beyond a trailing `/`, no query, no fragment
+// and no credentials. The value comes back as the origin itself (a trailing
+// `/` gone), so every consumer writes `${siteUrl}/sitemap.xml` and cannot
+// produce `//`.
+describe("checkSiteUrl", () => {
+  it("reads unset and empty as no address", () => {
+    expect(checkSiteUrl(undefined)).toBeNull();
+    expect(checkSiteUrl("")).toBeNull();
+  });
+
+  it("passes an https origin through, with or without a port", () => {
+    expect(checkSiteUrl("https://yokohama.example.org")).toBe("https://yokohama.example.org");
+    expect(checkSiteUrl("https://yokohama.example.org:8443")).toBe("https://yokohama.example.org:8443");
+  });
+
+  it("takes a trailing slash off, so no consumer writes a double slash", () => {
+    expect(checkSiteUrl("https://yokohama.example.org/")).toBe("https://yokohama.example.org");
+  });
+
+  it("passes an origin at the cap exactly", () => {
+    const url = `https://${"a".repeat(SITE_URL_MAX - "https://.test".length)}.test`;
+    expect(url).toHaveLength(SITE_URL_MAX);
+    expect(checkSiteUrl(url)).toBe(url);
+  });
+
+  it.each([
+    ["a path", "https://yokohama.example.org/yokohama", /must be an origin/],
+    ["a path under a slash", "https://yokohama.example.org//", /must be an origin/],
+    ["a query", "https://yokohama.example.org/?a=1", /must be an origin/],
+    ["an empty query", "https://yokohama.example.org?", /must be an origin/],
+    ["a fragment", "https://yokohama.example.org/#top", /must be an origin/],
+    ["credentials", "https://user:secret@yokohama.example.org", /holds credentials/],
+    ["plain http", "http://yokohama.example.org", /must begin with https:\/\//],
+    ["no scheme", "yokohama.example.org", /must begin with https:\/\//],
+    ["another scheme", "ftp://yokohama.example.org", /must begin with https:\/\//],
+    ["a space", "https://yokohama.example.org /", /whitespace or a control character/],
+    ["a control character", "https://yokohama.example.org\u0007", /whitespace or a control character/],
+    ["more than the cap", `https://${"a".repeat(SITE_URL_MAX)}.test`, /longer than 200 characters/],
+    ["no host", "https://", /is not a URL|names no host/],
+  ])("refuses %s, naming the variable", (_what, raw, why) => {
+    expect(() => checkSiteUrl(raw)).toThrow(why);
+    expect(() => checkSiteUrl(raw)).toThrow(SITE_URL_VAR);
+    // The refusal is the SITE address's, never the project link's.
+    expect(() => checkSiteUrl(raw)).not.toThrow(PROJECT_URL_VAR);
+  });
+
+  // A build log is no place for a password a deployer pasted into an address:
+  // the credentials refusal names the variable and the reason, never the value.
+  it("does not echo a credential into the refusal", () => {
+    expect(() => checkSiteUrl("https://user:secret@yokohama.example.org")).not.toThrow(/secret/);
+    expect(() => checkSiteUrl("https://user:secret@yokohama.example.org")).not.toThrow(/user/);
+  });
+
+  // The value is the origin, parsed: a mixed-case scheme and host come back in
+  // lower case, so a canonical link is never spelled two ways.
+  it("returns the parsed origin", () => {
+    expect(checkSiteUrl("HTTPS://Yokohama.Example.org/")).toBe("https://yokohama.example.org");
   });
 });

@@ -116,8 +116,8 @@ cached took 230 s, and `docker images` read the image's content as 42.4 MB (151.
 a reading of 2026-09-28 (M6.5c2).
 `deploy/Dockerfile.dockerignore` decides what the build sees.
 
-**The build values** are build arguments: the door's three, and the release feed and the Turnstile site key
-beside them. Each is optional, and each is checked by the build:
+**The build values** are build arguments: the door's three, and the release feed, the Turnstile site key and the
+site's own address beside them. Each is optional, and each is checked by the build:
 
 ```bash
 docker build --platform linux/amd64 -f deploy/Dockerfile \
@@ -134,12 +134,18 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 | `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
 | `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. |
+| `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
   are the derived default and only `off` is none.
 - **The release feed is read in the visitor's browser**, once per page and, after a read, answered or refused, not
   again in that browser for an hour. Your server never sees the request; the feed's host sees it, from the visitor's
   address.
+- **The web presence is built from these values** (`web/scripts/presence.mjs`, the last step of `npm run build:client`):
+  `robots.txt` (everything allowed but `/api/`, `/enter` and `/cdn-cgi/`), `llms.txt` (what the site is, in the
+  `llmstxt.org` shape, with the repository link only where `YOKOHAMA_PROJECT_URL` is set), the page's description, Open
+  Graph and Twitter-card tags and one JSON-LD block. They are static files, served without a request to anything else
+  and left out of the offline release. Nothing in them names an address but the one you gave as `YOKOHAMA_SITE_URL`.
 - The blurb and the notice must hold words and no control character (a line break, a zero-width character or a bidirectional control all count). A value the build
   refuses stops the build with a message naming the variable.
 

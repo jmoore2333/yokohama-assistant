@@ -1,7 +1,7 @@
 // The build's values (M6.5c2, R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F,
 // R-FP2): the door's project link, the blurb under the title and the footer's
-// notice, and — cycle F's — the release feed, the Turnstile site key and this
-// build's own version.
+// notice, and — cycle F's — the release feed, the Turnstile site key, the
+// site's own address and this build's own version.
 //
 // **A build value, and never a request**: the door asks the server nothing
 // (R-6.5b2.7), and a run-time value would mean rewriting `index.html` at
@@ -42,6 +42,12 @@ export function releaseFeed(): string | null {
 /** The Turnstile site key, or `null` where the build set none. */
 export function turnstileSiteKey(): string | null {
   return __YOKOHAMA_TURNSTILE_SITEKEY__;
+}
+
+/** The site's canonical address (an `https://` origin, no trailing slash), or
+ *  `null` where the build set none. */
+export function siteUrl(): string | null {
+  return __YOKOHAMA_SITE_URL__;
 }
 
 /** This build's version, `web/package.json`'s — the release notice's "this

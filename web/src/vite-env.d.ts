@@ -50,6 +50,11 @@ declare const __YOKOHAMA_RELEASE_FEED__: string | null;
  *  `YOKOHAMA_TURNSTILE_SITEKEY`, or `null` — blank draws the plain link. Read
  *  by `buildValues.ts` alone. */
 declare const __YOKOHAMA_TURNSTILE_SITEKEY__: string | null;
+/** The deployment's canonical address (cycle F, R-F12): the checked
+ *  `YOKOHAMA_SITE_URL` — an `https://` origin with no trailing slash — or
+ *  `null` where the build set none. The sitemap, `<link rel="canonical">` and
+ *  `og:url` are written from it at build; read by `buildValues.ts` alone. */
+declare const __YOKOHAMA_SITE_URL__: string | null;
 /** This build's own version: `web/package.json`'s `version`, the number the
  *  release notice compares the feed's tag against. Read by `buildValues.ts`
  *  alone. */
