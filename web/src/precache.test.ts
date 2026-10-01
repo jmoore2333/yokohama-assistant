@@ -266,6 +266,8 @@ describe("the media types", () => {
     // got an arm of their own in M6.5b2's fix wave, and the loop above is what
     // holds the two tables together across the change.
     expect(expectedType("OFL.txt")).toBe("text/plain");
+    // And `.xml` (cycle F's sitemap, R-F12) is an arm of its own, on both sides.
+    expect(expectedType("sitemap.xml")).toBe("application/xml");
   });
 });
 

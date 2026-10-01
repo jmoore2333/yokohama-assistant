@@ -134,8 +134,13 @@ export function sitemapXml({ siteUrl }) {
  * The page's metadata, as head markup, one tag per line: the description, the
  * canonical link (with the site's address only), Open Graph, the Twitter
  * summary card and one JSON-LD block for a free `WebApplication` in the games
- * category under Apache-2.0 — `url` with the site's address, `codeRepository`
+ * category under Apache-2.0 — `url` with the site's address, the repository
  * with the project link, and no claim of affiliation anywhere.
+ *
+ * **The repository is `isBasedOn`, a `SoftwareSourceCode` node, never a
+ * top-level `codeRepository`**: that property belongs to `SoftwareSourceCode`,
+ * not to `WebApplication`, so a validator flags it on the page's own node and
+ * a consumer drops it. The node exists only with the project link.
  *
  * @param {{ siteUrl: string | null, blurb: string | null, projectUrl: string | null }} values
  * @returns {string}
@@ -154,7 +159,7 @@ export function metadataTags({ siteUrl, blurb, projectUrl }) {
     license: LICENSE_URL,
     description,
     ...(page === null ? {} : { url: page }),
-    ...(projectUrl === null ? {} : { codeRepository: projectUrl }),
+    ...(projectUrl === null ? {} : { isBasedOn: { "@type": "SoftwareSourceCode", codeRepository: projectUrl } }),
   };
   return [
     `<meta name="description" content="${escapeMarkup(description)}" />`,

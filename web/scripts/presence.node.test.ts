@@ -23,7 +23,7 @@
 // Mutants these cells are written to kill (the battery cites them): a
 // `robots.txt` that allows `/api/` or loses one `Disallow`; a `Sitemap:` line,
 // a sitemap, a canonical link or an `og:url` written with no site address; a
-// repository link in `llms.txt` or `codeRepository` in the JSON-LD with no
+// repository link in `llms.txt` or `isBasedOn` in the JSON-LD with no
 // project link; a blurb that closes the JSON-LD's script or escapes an
 // attribute; a `String.replace` pattern (`$&`) read out of a blurb; a tag
 // written twice; an `@` in `llms.txt`; `presence.mjs` dropped from
@@ -298,11 +298,21 @@ describe("the page's metadata", () => {
   });
 
   // The catcher for the repository named in structured data where no link was
-  // set: `codeRepository` is the project link or it is absent.
-  it("names the repository in the JSON-LD only when the project link is set", () => {
-    expect(jsonLd(metadataTags(NONE))[0]).not.toHaveProperty("codeRepository");
+  // set. `codeRepository` is a `SoftwareSourceCode` property, not a
+  // `WebApplication` one (a validator flags it and a consumer drops it), so the
+  // link rides under `isBasedOn` as a `SoftwareSourceCode` node — present only
+  // with the project link — and `codeRepository` is never a top-level key.
+  it("names the repository in the JSON-LD only when the project link is set, under isBasedOn", () => {
+    const without = jsonLd(metadataTags(NONE))[0];
+    expect(without).not.toHaveProperty("isBasedOn");
+    expect(without).not.toHaveProperty("codeRepository");
     expect(metadataTags(NONE)).not.toContain("codeRepository");
-    expect(jsonLd(metadataTags({ ...NONE, projectUrl: REPO }))[0]).toHaveProperty("codeRepository", REPO);
+    expect(metadataTags(NONE)).not.toContain("isBasedOn");
+
+    const withLink = jsonLd(metadataTags({ ...NONE, projectUrl: REPO }))[0];
+    expect(withLink).toHaveProperty("isBasedOn", { "@type": "SoftwareSourceCode", codeRepository: REPO });
+    expect(withLink, "codeRepository is never a top-level WebApplication key").not.toHaveProperty("codeRepository");
+    expect(withLink).toHaveProperty("@type", "WebApplication");
   });
 
   // "No claim of affiliation anywhere": the structured data names no author,
@@ -570,7 +580,8 @@ describe.skipIf(!existsSync(glue))("what a real build writes", () => {
     expect(attrOf(html, 'meta name="description"', "content")).toBe('A blurb with a "quote" & an <angle>.');
     const lds = jsonLd(html);
     expect(lds, "the JSON-LD parses").toHaveLength(1);
-    expect(lds[0]).toHaveProperty("codeRepository", REPO);
+    expect(lds[0]).toHaveProperty("isBasedOn", { "@type": "SoftwareSourceCode", codeRepository: REPO });
+    expect(lds[0]).not.toHaveProperty("codeRepository");
     expect(lds[0]).toHaveProperty("url", `${SITE}/`);
     expect(lds[0]).toHaveProperty("description", 'A blurb with a "quote" & an <angle>.');
     // The shell the worker installs is this file, byte for byte.
@@ -586,12 +597,14 @@ describe.skipIf(!existsSync(glue))("what a real build writes", () => {
     expect(count(html, /<link rel="canonical"/), "no canonical link").toBe(0);
     expect(count(html, /<meta property="og:url"/), "no og:url").toBe(0);
     expect(html).not.toContain("codeRepository");
+    expect(html).not.toContain("isBasedOn");
     expect(attrOf(html, 'meta name="description"', "content")).toBe(DEFAULT_DESCRIPTION);
     // The image is root-relative, and the build left it so.
     expect(attrOf(html, 'meta property="og:image"', "content")).toBe(OG_IMAGE_PATH);
     const lds = jsonLd(html);
     expect(lds, "the JSON-LD parses").toHaveLength(1);
     expect(lds[0]).not.toHaveProperty("url");
+    expect(lds[0]).not.toHaveProperty("isBasedOn");
     expect(lds[0]).not.toHaveProperty("codeRepository");
   }, 180_000);
 

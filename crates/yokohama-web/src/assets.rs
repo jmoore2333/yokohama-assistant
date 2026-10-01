@@ -74,6 +74,12 @@ pub fn content_type(path: &Path) -> &'static str {
         // `precache.ts`'s mirror moves with this arm, because the install
         // compares what it computed against what the server answered.
         Some("txt") => "text/plain; charset=utf-8",
+        // Cycle F (R-F12; spec §2.7): the sitemap `presence.mjs` writes. A
+        // crawler's sitemap reader expects XML, and the default would serve it
+        // as an opaque download. It is never precached, so the install never
+        // meets it; `precache.ts`'s mirror carries the arm all the same, so the
+        // two tables stay equal arm for arm.
+        Some("xml") => "application/xml",
         _ => "application/octet-stream",
     }
 }
@@ -261,6 +267,10 @@ mod tests {
         assert_eq!(content_type(Path::new("wasm/yokohama_wasm.wasm")), "application/wasm");
         // M6.5b2's fix wave: the OFL copies that ship under `dist/fonts/`.
         assert_eq!(content_type(Path::new("fonts/inter/OFL.txt")), "text/plain; charset=utf-8");
+        // Cycle F's sitemap (R-F12): an XML document is `application/xml`, which
+        // is what a crawler's sitemap reader expects of it; the default would
+        // hand it out as an opaque download.
+        assert_eq!(content_type(Path::new("sitemap.xml")), "application/xml");
     }
 
     /// The manifest's media type, which the installer checks (spec §2.4). Without
@@ -352,13 +362,19 @@ mod tests {
             assert_eq!(cached(path).as_deref(), Some("public, max-age=3600"), "{path}: the hour reaches the response");
         }
         // And the types the files go out as: the two text files are plain text,
-        // which is what a crawler or a model reads them as.
-        for path in ["/robots.txt", "/llms.txt"] {
+        // which is what a crawler or a model reads them as, and the sitemap is
+        // XML (never the octet-stream default, which a sitemap reader may
+        // refuse).
+        for (path, kind) in [
+            ("/robots.txt", "text/plain; charset=utf-8"),
+            ("/llms.txt", "text/plain; charset=utf-8"),
+            ("/sitemap.xml", "application/xml"),
+        ] {
             let response = serve_path(&root, path);
             assert_eq!(
                 response.headers().get(header::CONTENT_TYPE).map(|v| v.to_str().unwrap()),
-                Some("text/plain; charset=utf-8"),
-                "{path} is plain text"
+                Some(kind),
+                "{path} goes out as {kind}"
             );
         }
         assert_eq!(cached("/index.html"), None, "the document that names the hashes");

@@ -23,7 +23,8 @@ export declare function llmsTxt(values: Pick<PresenceValues, "blurb" | "notice" 
 /** `sitemap.xml`: the one page, `<siteUrl>/`. */
 export declare function sitemapXml(values: { siteUrl: string }): string;
 /** The head markup, one tag per line: the canonical link and `og:url` only
- *  with the site's address, `codeRepository` only with the project link. */
+ *  with the site's address, and the repository (`isBasedOn`, a
+ *  `SoftwareSourceCode` node) only with the project link. */
 export declare function metadataTags(values: Pick<PresenceValues, "siteUrl" | "blurb" | "projectUrl">): string;
 /** The shell with its metadata in place of its one placeholder comment; a
  *  shell with none, or two, is a thrown `Error`. */
