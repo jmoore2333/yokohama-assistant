@@ -32,16 +32,18 @@
   // page (spec §2.5): no HTML handling, so `/index.html` answers 200 rather
   // than a redirect the service worker's install would refuse; `404-page`, so
   // the asset layer answers a miss with `404.html` instead of a blank — read
-  // on 2026-10-01 in every request shape for a miss under an allowed prefix,
-  // with no Worker invocation (`RUNBOOK.md` §20); a miss the Worker does
-  // answer is a 404, never `index.html` (the single-page fallback answered a
-  // missing script with the shell, which a precache would store as the
-  // script) — so the page is a courtesy and the fence against a scanner is
-  // the edge rule; and the Worker first for `/api/*` and `/enter`. `npm run
-  // build:assets` assembles the directory and verifies it against the
-  // release's precache list. The deploy guard checks this block, and the
-  // pool's copy, against spec §2.3, and requires `404.html` in the tree (its
-  // check 11).
+  // on 2026-10-01 in every request shape for a miss under an allowed prefix
+  // (`/assets/…`, `/art/…`), with no Worker invocation (`RUNBOOK.md` §20);
+  // what answers any other miss without the edge rule was not counted, and
+  // the design expects the Worker for a request that is not a navigation
+  // (spec §2.5). A miss the Worker does answer is a 404, never `index.html`
+  // (the single-page fallback answered a missing script with the shell,
+  // which a precache would store as the script) — so the page is a courtesy
+  // and the fence against a scanner is the edge rule; and the Worker first
+  // for `/api/*` and `/enter`. `npm run build:assets` assembles the
+  // directory and verifies it against the release's precache list. The
+  // deploy guard checks this block, and the pool's copy, against spec §2.3,
+  // and requires `404.html` in the tree (its check 11).
   "assets": {
     "directory": "./assets",
     "binding": "ASSETS",

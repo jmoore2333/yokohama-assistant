@@ -9,7 +9,7 @@
 #
 #   1. refuse a working tree with uncommitted changes (the image is built from
 #      the tree, so an edit would ship under the tag's name);
-#   2. `git fetch --tags` and `git checkout <tag>`;
+#   2. `git fetch --tags` and `git checkout --detach refs/tags/<tag>`;
 #   3. `docker build --platform linux/amd64 -f deploy/Dockerfile`, with the
 #      build values read from the file `YOKOHAMA_WEB_BUILD_ENV` names, tagged
 #      `yokohama-web:<tag>`;
@@ -17,15 +17,22 @@
 #      while the old container still serves;
 #   5. only then the swap: `docker stop`, `docker rm`, `docker run` with
 #      `--env-file "$YOKOHAMA_WEB_ENV"` and the named volume;
-#   6. `docker logs --tail 5`, the server's first lines: "listening on …", or
-#      the refusal that names what is wrong.
+#   6. read the start instead of assuming it: poll the new container for up
+#      to 30 s, every 2 s, until `docker inspect` reads it running, not
+#      restarting and never restarted AND `docker logs` holds the server's
+#      `yokohama-web listening on` line. Otherwise print its last log lines
+#      and the rollback line naming the previous image, and exit 1.
 #
 # **The two files** are `NAME=value` lines, a value taken literally to the end
 # of its line: no quotes, no shell expansion. Blank lines and lines beginning
 # `#` are skipped. `YOKOHAMA_WEB_BUILD_ENV` may name only the six build values
 # (`YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`, `YOKOHAMA_SITE_NOTICE`,
 # `YOKOHAMA_RELEASE_FEED`, `YOKOHAMA_TURNSTILE_SITEKEY`, `YOKOHAMA_SITE_URL`);
-# an empty file builds with none. `YOKOHAMA_WEB_ENV` is the container's
+# an empty file builds with none. **It builds KEYLESS images only:** a
+# non-empty `YOKOHAMA_TURNSTILE_SITEKEY` is refused up front, before the fetch,
+# because step 4's smoke starts the image under `cf-access` and a keyed build
+# refuses to start there (a keyed build is the open door's, R-FP4). A keyed
+# image is a manual build for an open-door host. `YOKOHAMA_WEB_ENV` is the container's
 # environment, `YOKOHAMA_WEB_IDENTITY` first among them: the server refuses to
 # start without it.
 #
@@ -101,6 +108,8 @@ main() {
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in
         "" | "#"*) continue ;;
+        YOKOHAMA_TURNSTILE_SITEKEY=?*)
+          die "$BUILD_ENV sets YOKOHAMA_TURNSTILE_SITEKEY, and this script builds keyless images only: its smoke starts the image under cf-access, which refuses to start a keyed build (a keyed build is the open door's). A keyed image is a manual build for an open-door host (deploy/README.md §3); remove the line, or leave its value empty." ;;
         YOKOHAMA_PROJECT_URL=* | YOKOHAMA_SITE_BLURB=* | YOKOHAMA_SITE_NOTICE=* \
           | YOKOHAMA_RELEASE_FEED=* | YOKOHAMA_TURNSTILE_SITEKEY=* | YOKOHAMA_SITE_URL=*)
           build_args+=(--build-arg "$line") ;;
@@ -120,6 +129,7 @@ main() {
     for a in "$@"; do
       case "$a" in
         "<"*">") printf ' %s' "$a" ;;   # a dry run's placeholder, never a real argument
+        "{{"*) printf " '%s'" "$a" ;;   # a Go template: shown in single quotes, as typed
         *) printf ' %q' "$a" ;;
       esac
     done
@@ -141,7 +151,7 @@ main() {
 
   # 2. the tag
   run git fetch --tags
-  run git checkout "$TAG"
+  run git checkout --detach "refs/tags/$TAG"
 
   # 3. build, with the build values from the file
   if [ "$build_args_known" = 1 ]; then
@@ -171,23 +181,63 @@ main() {
   if [ -n "$PUBLISH" ]; then run_args+=(-p "$PUBLISH"); fi
   if [ -n "$NETWORK" ]; then run_args+=(--network "$NETWORK"); fi
   run_args+=(-v "$VOLUME:/data" --env-file "$RUN_ENV" --restart unless-stopped "$IMAGE")
-  run docker run "${run_args[@]}"
 
-  # 6. the server's first lines: "listening on …", or the refusal that names why
-  if [ "$DRY_RUN" = 0 ]; then
-    sleep 3
-  fi
-  run docker logs --tail 5 "$CONTAINER"
-
-  if [ "$DRY_RUN" = 1 ]; then
-    echo "update: DRY RUN complete — nothing was fetched, built, stopped or started"
-  else
-    echo "update: $CONTAINER now runs $IMAGE; /data was not touched"
+  # What an operator does when the new container does not come up. It is a
+  # printed line, never a step: the script does not undo its own swap.
+  rollback_hint() {
     if [ -n "$previous" ]; then
-      echo "update: to roll back, stop and remove $CONTAINER and run it again from $previous with the same arguments (deploy/README.md §9)"
+      echo "update: to roll back, stop and remove $CONTAINER and run it again from $previous with the same arguments (deploy/README.md §9); /data was not touched" >&2
+    else
+      echo "update: there was no earlier container to return to; /data was not touched" >&2
     fi
+  }
+
+  if ! run docker run "${run_args[@]}"; then
+    echo "update: \`docker run\` failed, and $CONTAINER is not running" >&2
+    rollback_hint
+    exit 1
+  fi
+
+  # 6. the start, read and not assumed: `docker run -d` returns before the
+  # server has read its environment, and a run file the smoke never saw (a TTL
+  # with no archive directory, a bad chat value) makes it exit at once — then
+  # `--restart unless-stopped` loops it while a script that did not look says
+  # all is well.
+  start_state='{{.State.Running}} {{.State.Restarting}} {{.RestartCount}}'
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "update: (dry run) a real run polls these two commands every 2 s for up to 30 s"
+    run docker inspect -f "$start_state" "$CONTAINER"
+    run docker logs "$CONTAINER"
+    echo "update: (dry run) it succeeds only when the state reads \`true false 0\` and the log holds \`yokohama-web listening on\`; otherwise it prints the container's last log lines and the rollback line, and exits 1"
+    echo "update: DRY RUN complete — nothing was fetched, built, stopped or started"
+    return 0
+  fi
+  state=""
+  logs=""
+  started=0
+  waited=0
+  while [ "$waited" -lt 30 ]; do
+    state="$(docker inspect -f "$start_state" "$CONTAINER" 2>&1)" || state="unreadable: $state"
+    # Not running, restarting, or already restarted: nothing to wait for.
+    [ "$state" = "true false 0" ] || break
+    logs="$(docker logs "$CONTAINER" 2>&1 || true)"
+    case "$logs" in
+      *"yokohama-web listening on"*) started=1; break ;;
+    esac
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if [ "$started" != 1 ]; then
+    echo "update: $CONTAINER did not come up listening (state \`$state\`, after ${waited} s). Its last log lines:" >&2
+    docker logs --tail 20 "$CONTAINER" >&2 || true
+    echo "update: it is still there for \`docker logs\`; remove it before rolling back" >&2
+    rollback_hint
+    exit 1
+  fi
+  echo "update: $CONTAINER is running $IMAGE and listening; /data was not touched"
+  if [ -n "$previous" ]; then
+    echo "update: to roll back, stop and remove $CONTAINER and run it again from $previous with the same arguments (deploy/README.md §9)"
   fi
 }
 
-main "$@"
-exit $?
+main "$@"; exit $?

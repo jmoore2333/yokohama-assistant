@@ -373,13 +373,20 @@ the door must be Access alone. The open door is also proven in the test pool's s
 (`wrangler.open.test.jsonc`, whose cells are `test/open/`), where the shell runs in workerd with real
 sockets.
 
-**Both doors show the same three build values**, read by `cd web && npm run build` when they are set
-(R-6.5c2.40; `web/scripts/build-values.mjs` checks them and a bad one fails the build naming it):
-`YOKOHAMA_PROJECT_URL` (a link to the repository, on the first screen and the lobby; at most 200
-characters), `YOKOHAMA_SITE_BLURB` (a paragraph under the first screen's title; at most 400) and
-`YOKOHAMA_SITE_NOTICE` (one line at the foot of every screen; at most 200). Unset or empty draws
-nothing. They are baked into the release, not read at run time, because the release is precached under
-a digest of its own bytes.
+**The two doors do not share one client build.** `cd web && npm run build` reads five build values when
+they are set (R-6.5c2.40, cycle F; `web/scripts/build-values.mjs` checks them and a bad one fails the
+build naming it): `YOKOHAMA_PROJECT_URL` (a link to the repository, on the first screen and the lobby; at
+most 200 characters), `YOKOHAMA_SITE_BLURB` (a paragraph under the first screen's title; at most 400),
+`YOKOHAMA_SITE_NOTICE` (one line at the foot of every screen; at most 200), `YOKOHAMA_SITE_URL` (the
+host's own address, an `https://` origin, for the sitemap, the canonical link and `og:url`; at most 200)
+and `YOKOHAMA_RELEASE_FEED` (where the door and the lobby look for the latest release: unset derives it
+from a GitHub project link, a URL is that feed, `off` is none; at most 300). Unset or empty draws nothing,
+the feed's derivation apart. A sixth, `YOKOHAMA_TURNSTILE_SITEKEY` (the public Turnstile site key; at most
+100), belongs only with the open door: a keyed client is the open door's, so the worker door's production
+build is made WITHOUT it and the deploy guard's check 12 refuses a keyed build beside `worker`, while the
+open window's build carries it beside `YOKOHAMA_TURNSTILE` `on` (RUNBOOK §3). Since `YOKOHAMA_SITE_URL`
+names the host, each host serves its own client build. All of them are baked into the release, not read at
+run time, because the release is precached under a digest of its own bytes.
 
 ---
 
@@ -1593,7 +1600,10 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
   <file>`, runs after a deploy instead: under the file's `YOKOHAMA_TURNSTILE` `on`, a cookie-less
   `GET /api/health` must answer 403 with `cf-mitigated: challenge`, the edge rule's answer (RUNBOOK
   §3), and the release's own `/sw.js` — and `/sitemap.xml`, where the local stamp says the build
-  wrote one — must answer 200 with no `cf-mitigated` header; under `off` it makes no request.
+  wrote one — must answer 200 with no `cf-mitigated` header; under `off` it makes no request. **Run
+  it over WARP, or from any client Bot Fight Mode trusts:** off WARP, Bot Fight Mode answers a bare
+  client's `/sitemap.xml` with its own 403 before the rule is consulted, and the smoke cannot tell the
+  two apart (RUNBOOK §3 and §20, the window's W-1).
 
 The order matters twice. `web/`'s build comes first, because its browser walk leaves a debug module
 in `web/dist`. And after a release build, `npm run build:module:debug` comes before `npm test` in
@@ -1602,7 +1612,7 @@ in `web/dist`. And after a release build, `npm run build:module:debug` comes bef
 ### 9.3 The deploy guard
 
 `npm run deploy` is `node scripts/deploy-guard.mjs && wrangler deploy`, so nothing ships unless all
-nine checks hold, and every failure is named, not only the first:
+twelve checks hold, and every failure is named, not only the first:
 
 1. **`gen/` holds the RELEASE module**, and no `gen/.unoptimized` marker: a debug or unoptimized
    module never ships.
@@ -1619,10 +1629,10 @@ nine checks hold, and every failure is named, not only the first:
    M6.5c2 this check asked both switches `false`, with no door to read.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production.
-5. **The `assets` block is exactly spec §2.3's in all three configurations**: production's and the
-   pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads only its own two
-   files, so without this production's block could drift with every pool cell green, and an
-   asset-layer fallback answers a missing file without ever invoking the Worker.
+5. **The `assets` block is exactly spec §2.3's in all five files**: production's, the open window's and
+   the gate's, and the pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads
+   only its own two files, so without this production's block could drift with every pool cell green,
+   and an asset-layer fallback answers a missing file without ever invoking the Worker.
 6. **The `durable_objects`, `migrations` and `r2_buckets` blocks of each pool file equal
    production's**, so the pool never tests a class, a binding, a migration or a bucket that
    production does not ship.
@@ -1637,10 +1647,23 @@ nine checks hold, and every failure is named, not only the first:
 9. **The assets tree was assembled from the current `web/dist` and `worker/static`**: its `sw.js`
    against `web/dist/sw.js`, byte for byte. Check 2 alone passes a stale tree, which verifies
    against its own `sw.js`.
+10. **No `cache` block turns Workers Cache on, at any depth** (cycle F). A block whose `enabled` is
+    not `false` is refused wherever it sits, found by walking the parsed configuration: with it on,
+    requests served from the Worker's cache, static assets included, are billed like requests that
+    invoke the Worker, and the door stops being free.
+11. **The assets tree holds `404.html`**, the page `not_found_handling: "404-page"` answers a miss
+    with; without it a miss is a blank again. It is read off the tree the deploy uploads, never
+    `web/dist`.
+12. **The Turnstile declaration agrees with the build it ships** (cycle F): the configuration's
+    `vars.YOKOHAMA_TURNSTILE` (`on`, `off`, or absent, which is `off`) against the tree's
+    `build-values.json`, whose `turnstile_sitekey` says whether the bundle carries a site key — `on`
+    exactly when it does. And the identity rule: `on`, and a keyed build, stand only beside
+    `YOKOHAMA_WEB_IDENTITY` `open`, because the client reads a site key as the open door and, behind
+    Access, would never upload a nameless visitor's games (RUNBOOK §3).
 
-Checks 3 to 7 need no build, and `npm run test:scripts` runs them over the committed files, which is
-how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, so they run only on the
-workstation that deploys.
+Checks 3 to 7 and 10 need no build, and `npm run test:scripts` runs them over the committed files,
+which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, and 11 and 12 read
+the assembled tree and its stamp, so they run only on the workstation that deploys.
 
 ### 9.4 Configuration and secrets
 

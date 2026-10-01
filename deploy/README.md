@@ -141,7 +141,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 | `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
-| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door, naming both. **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door; a build for `cf-access` carries none. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door, naming both. **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
 | `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
@@ -352,24 +352,30 @@ YOKOHAMA_WEB_ENV=~/yokohama/run.env \
 **What it does, in order**, stopping at the first failure:
 1. Refuses a working tree with uncommitted changes to tracked files, because the image is built from the tree and
    an edit would ship under the tag's name.
-2. `git fetch --tags`, then `git checkout <tag>`.
+2. `git fetch --tags`, then `git checkout --detach refs/tags/<tag>`, so a branch of the same name is never built.
 3. `docker build --platform linux/amd64 -f deploy/Dockerfile`, with the build values from `YOKOHAMA_WEB_BUILD_ENV`
    as `--build-arg`s (§3), tagged `yokohama-web:<tag>`.
 4. `deploy/smoke-image.sh` on that image (§5), **while the old container is still serving**.
 5. Only then the swap: `docker stop`, `docker rm`, and `docker run` with `--env-file "$YOKOHAMA_WEB_ENV"`, the
    named volume at `/data`, and §4's other arguments.
-6. `docker logs --tail 5`, so the server's own first lines are on screen: "listening on …", or the refusal that
-   names what is wrong.
+6. Reads the start rather than assuming it. `docker run -d` returns before the server has read its environment,
+   so the script polls the new container for up to 30 seconds, every 2: until `docker inspect` reads it running,
+   not restarting and never restarted, and its log holds the server's "listening on" line. Otherwise it prints the
+   container's last log lines, the rollback line naming the previous image, and **exits 1**.
 
 So **a build or a smoke that fails leaves the old container exactly as it was**, and the volume is never touched:
 the script removes only the stopped container, never a file or a directory. Every earlier image stays on the
-machine for a rollback.
+machine for a rollback. A container that does not come up is reported by that read, and the old one is already
+gone by then: the run file is the usual cause (a table TTL with no archive directory, a bad chat value), which the
+smoke cannot see, since it starts the image with its own environment.
 
 **The two files** are `NAME=value` lines, each value taken literally to the end of its line, with no quotes and no
 shell expansion; blank lines and lines starting `#` are skipped.
 - **`YOKOHAMA_WEB_BUILD_ENV`** may hold the six build values of §3 and nothing else: a name that is not one of them
-  is refused, naming it. An empty file builds with none. Leave `YOKOHAMA_TURNSTILE_SITEKEY` out behind Access: the
-  smoke starts the image under `cf-access` and fails on a keyed build.
+  is refused, naming it. An empty file builds with none. **It builds keyless images only:** a non-empty
+  `YOKOHAMA_TURNSTILE_SITEKEY` is refused up front, before the fetch, because the smoke starts every image under
+  `cf-access` and the server refuses to start a keyed build there (§2). A keyed image is a manual build for an
+  open-door host (§3).
 - **`YOKOHAMA_WEB_ENV`** is the container's environment, `YOKOHAMA_WEB_IDENTITY` first: the server refuses to start
   without it, and §4's table is the rest.
 
@@ -391,7 +397,7 @@ read of Docker or git. Read it once before the first real run, and again after c
   Reload to use it", and the click is the only switch. It is safe: a game against the bot resumes from the browser's
   storage, and a table game rejoins by its link.
 - **The swap itself is short.** On `docker stop`'s SIGTERM the server stops taking connections and lets in-flight
-  requests finish, and every applied move is already on `/data` (§4), so none is lost; a server-sent-events stream
+  requests finish, and a move the server has answered is already on `/data` (§4); a server-sent-events stream
   reconnects by itself. The owner's NAS, swapped by its own script through Portainer, read 1.6 seconds from the old
   container's stop to the new one's "listening" line (`RUNBOOK.md` §3.20).
 - **A game not yet over keeps its bot or is refused.** The server opens a game exactly when the new release can
