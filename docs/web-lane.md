@@ -2,8 +2,8 @@
 
 **What this is.** The web lane's operating detail, moved out of `CLAUDE.md` at the lane's last cycle (M6.5c2
 cycle E, "the finish"; R-6.5c2.15, R-6.5c2.32), so that sessions working on the engine and the computer player
-stop paying for it. `CLAUDE.md` keeps a summary and the two facts that cross into the AI lane, and
-`guidingpath.md` stays the authority.
+stop paying for it. `CLAUDE.md` keeps a pointer and the three facts that cross into the AI lane
+(its browser-lane bullet), and `guidingpath.md` stays the authority.
 
 It is current-state. A count is updated IN PLACE at a close, naming its reading, and how anything came to be is
 told in the named close (§11). **Cells hold three of its tables to the code**, and fail the build when any
@@ -260,6 +260,11 @@ Cycle F added:
     challenges a clearance-less browser's precache fetches, which fails a release's install (W-3, §15). Bot Fight Mode
     stayed on through F.
 
+Moved here from `CLAUDE.md` at the 2026-10-04 instruction split:
+
+43. **Headless is not headed.** Headless Chromium never asks for `favicon.ico`, so four headless reviews reported "zero
+    console errors" over a 404 on every screen (M6.4 close §4.5).
+
 ## 6. What a save file says
 
 Every record the web lane writes is the engine's own `GameRecord` — the JSON the CLI's `save` writes, which the
@@ -414,7 +419,7 @@ is anyone's to spend, with the rate-limit rule and the edge rule as the deployer
   - `guidingpath.md`'s decision log (append-only) and its archives;
   - the two RUNBOOKs' deployment records.
 - **Current-state pointers, rewritten at a close:**
-  - `CLAUDE.md` and the board (`docs/handover.md`);
+  - `CLAUDE.md` (a standing rule, fence or trap when a close yields one) and the board (`docs/handover.md`);
   - the READMEs — the root one, `deploy/README.md` and `worker/README.md`;
   - this file;
   - the RUNBOOKs' operating sections.
