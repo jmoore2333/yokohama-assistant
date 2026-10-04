@@ -11,7 +11,7 @@ session close: rewrite the stale lines, do not append history (the decision log 
 ## Gates at HEAD
 
 The latest readings: cycle F's close §2 ([`plans/2026-10-01-web-frontend-m6.5c2f-close.md`](plans/2026-10-01-web-frontend-m6.5c2f-close.md)) —
-every per-edit suite at `18829e9a`, and the fifteen release gates as one sequence, 534 s on the Mac (the M5 MacBook Air;
+every per-edit suite at `18829e9a`, and the fifteen release gates as one sequence, 534 s on the Mac (Darwin 27.0.0 arm64 — the M5 MacBook Air;
 the target is ≤420 s and its restatement, OD-6, is yours); the CLI suite since then in guidingpath's 2026-10-01 hotfix row.
 Re-count at your own HEAD.
 
