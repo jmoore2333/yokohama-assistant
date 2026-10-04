@@ -6,37 +6,14 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-01, the web lane WRAPPED: the stack #31 → #44 merged to master bottom-up with merge commits (`b1052bed`), `v0.6.0` tagged there, the wrap's row in `guidingpath.md` (`4ad19c40`); F's record stays [the close](plans/2026-10-01-web-frontend-m6.5c2f-close.md). Both hosts run F's release behind Access; W-3 was closed on your real browser the same day (the row). `test.yml` and `docker.yml` stay disabled by your word. The hotfix [`plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md`](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md) (the V5 ship's one CLI line) landed the same day (`guidingpath.md`'s row). **NEXT: the computer player (Track 1).**
+**Updated:** 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
 
-**History, by record.** This board keeps no running history; each session's account is its record of record:
-- 2026-10-01 — cycle F "the clean finish" closed ([close](plans/2026-10-01-web-frontend-m6.5c2f-close.md), the last row of `web-lane.md` §11; the plan [`2026-09-30-web-frontend-m6.5c2f-plan.md`](plans/2026-09-30-web-frontend-m6.5c2f-plan.md)); the public window vetted the no-Access door and reverted it.
-- 2026-09-30 — cycle E "the finish" closed ([close](plans/2026-09-30-web-frontend-m6.5c2e-close.md), `web-lane.md` §11; the plan [`2026-09-29-web-frontend-m6.5c2e-plan.md`](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
-- 2026-09-29 — cycle D "the code" closed and live ([close](plans/2026-09-29-web-frontend-m6.5c2d-close.md)); cycle E planned (spec §10.11 in [the spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md), [the plan](plans/2026-09-29-web-frontend-m6.5c2e-plan.md)).
-- 2026-09-28 — cycle C "the hosts and the close" closed and live ([close](plans/2026-09-28-web-frontend-m6.5c2c-close.md)); cycle D planned ([plan](plans/2026-09-28-web-frontend-m6.5c2d-plan.md)); cycle B "the screens" closed ([C's handover](plans/2026-09-28-web-frontend-m6.5c2c-handover.md) §1 restates what it shipped).
-- 2026-09-27 — cycle A "the layer" closed ([B's handover](plans/2026-09-27-web-frontend-m6.5c2b-handover.md) restates what it shipped).
-- 2026-09-26 — M6.5c "the objects" closed ([close](plans/2026-09-26-web-frontend-m6.5c-close.md)); M6.5c2 specified ([spec](plans/2026-09-26-web-frontend-m6.5c2-spec.md)).
-- 2026-09-23 — M6.5c specified and planned ([spec](plans/2026-09-22-web-frontend-m6.5c-objects-spec.md), [plan](plans/2026-09-23-web-frontend-m6.5c-plan.md)).
-- 2026-09-22 — M6.5b2 closed ([close](plans/2026-09-22-web-frontend-m6.5b2-close.md)), and the PR #37 fix wave was live as `0.5.0-m6.5b2.1` ([record](plans/2026-09-22-web-frontend-m6.5b2-pr37-fixes.md) §5).
-- 2026-09-21 — M6.5b closed ([close](plans/2026-09-21-web-frontend-m6.5b-close.md)).
-- 2026-09-20 — M6.5a closed and live ([close](plans/2026-09-20-web-frontend-m6.5a-close.md)); M6.5b specified ([spec](plans/2026-09-20-web-frontend-m6.5b-single-player-spec.md)).
-- 2026-09-19 — M6.4 closed ([close](plans/2026-09-19-web-frontend-m6.4-close.md)); M6.5 re-chartered ([umbrella](plans/2026-09-19-web-frontend-m6.5-hosting-spec.md)).
-- 2026-09-16 — M6.2 and M6.3 closed ([M6.2](plans/2026-09-16-web-frontend-m6.2-close.md), [M6.3](plans/2026-09-16-web-frontend-m6.3-close.md)).
-- 2026-09-15 — M6.1 closed ([close](plans/2026-09-15-web-frontend-m6.1-close.md)).
-- 2026-09-14 — the M6 room plan ([plan](plans/2026-09-14-web-frontend-m6-room-plan.md)).
-- 2026-09-11 — the web lane merged (`abe4eec`), and the AI lane's [re-entry handover](plans/2026-09-11-ai-lane-reentry-handover.md); the V4 diagnostic games scribed (Track 1).
+## Gates at HEAD
 
-## Where things stand
-
-- **The bot:** V4, the sighted evaluator `v4-step9-draft1`, shipped 2026-08-30 as the production
-  contestant and released as v0.5.0. The bar ("provably plays to win, two-player") is NOT claimed.
-- **The two owner decisions** that close V4 — the D3 depth re-ask and the W6 knob-screening
-  GO/WAIT — still HOLD. **The games are now PLAYED AND SCRIBED (three of them, 370 bot events
-  reconstructed, zero refusals)**; what is outstanding is YOUR annotation of them in the ledger
-  artifact, then the findings document, then the two rulings together (Track 1).
-- **The web client** is live on two hosts behind one Cloudflare Access application at F's release `0.6.0`: the Worker at `yokohama.moore.nyc` and the NAS at `yokohama-nas.moore.nyc`. Single player runs in the browser with no server. The lane is finished at cycle F; its public window vetted the no-Access door on 2026-10-01 and reverted it, Access back. Its record is [`web-lane.md`](web-lane.md) §11; the merge of its stack of pull requests waits on your review and your word (Track 3).
-- **Licensing:** Apache-2.0 on every crate and on `web/package.json` (checked 2026-09-11);
-  `LICENSE` + `NOTICE` at the root; `ASSETS.md` carves out the game's own material.
-- **Gates at HEAD:** all per-edit suites green (the counts are in `CLAUDE.md`, and the web lane's in [`web-lane.md`](web-lane.md) §2); the fifteen gates last ran at F's close (2026-10-01): 534 s inside the one recorded sequence's 2,009 s on the Mac, beside E's 590 s (its sequence 2,881 s) and D's 446 s.
+The latest readings: cycle F's close §2 ([`plans/2026-10-01-web-frontend-m6.5c2f-close.md`](plans/2026-10-01-web-frontend-m6.5c2f-close.md)) —
+every per-edit suite at `18829e9a`, and the fifteen release gates as one sequence, 534 s on the Mac (the M5 MacBook Air;
+the target is ≤420 s and its restatement, OD-6, is yours); the CLI suite since then in guidingpath's 2026-10-01 hotfix row.
+Re-count at your own HEAD.
 
 ## Track 1 — V4 close-out: the owner annotates the ledger, then the findings doc, then D3 + W6
 
@@ -109,7 +86,7 @@ this line is the append:** the V5 ship adds its identity to that list and never 
 that moves either refuses V4 games as DRIFT (the re-entry handover §5, item 12;
 [`web-lane.md`](web-lane.md) §15; [the spec](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md)).
 
-**You decide:** D3 · W6 · OD-6 (restate the ≤420s roster target — the M5 read 492.17s) · OD-8's
+**You decide:** D3 · W6 · OD-6 (restate the ≤420 s roster target — the latest sequence read 534 s at cycle F's close) · OD-8's
 format (game count, rubric — its inherited "brake behind" line contradicts canon ruling 15).
 
 ## Track 2 — Repo reorganization, licensing, the public split (needs a brainstorm session)
@@ -124,16 +101,13 @@ the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/
 rulebook PDFs stay (the owner's edition is `tts-assets/pdf/…`; `analysis-1/`'s is the outlier);
 what a public README claims. Session shape: brainstorm → spec → plan, in its own branch.
 
-## Track 3 — The web client: M6.5c2 cycle F "the clean finish", the lane's last cycle
+## Track 3 — The web client: complete
 
 **State:** WRAPPED 2026-10-01 — merged to master (`b1052bed`, fourteen merge commits), tagged `v0.6.0`, the record the decision log's row of that day; [`web-lane.md`](web-lane.md) is current-state as F left it, with the day's corrections recorded in the row rather than edited. Both hosts run F's release behind Access; the edge rule stays disabled, Bot Fight Mode on; the open-door recipe (`web-lane.md` §10) is the public-split day's.
 
-**What wants YOU, shortest first.**
-1. Done 2026-10-01: the merge and the tag (the decision log's row).
-2. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
-3. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
-
-After the merge the project refocuses on the computer player (Track 1).
+**Optional, if you want them:**
+1. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
+2. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
@@ -149,16 +123,14 @@ After the merge the project refocuses on the computer player (Track 1).
 8. D10's NAS sidecar sync — no row says it was done.
 9. The web lane's V5 notes (a sighted Keep; per-good requirement weights) — bot-behaviour changes
    owing their own pre-registration when a cycle takes them up.
-10. **M6.2 ruling #13** — the creator's Abandon on the lobby's Your-games rows: DONE, approved at M6.3; nothing outstanding.
-11. **The refinish rule** — RULED (R-6.5c2.11) and LIVE since cycle C (2026-09-28): a same-game conflict stamps, every other conflict is final.
-12. **The `test/` prefix's lifecycle** — RULED (R-6.5c2.12) and SET at cycle C's close (2026-09-28): the R2 rule `expire-test-after-30-days` on `test/`.
-13. **The merge stack's review and `v0.6.0`** (R-OWN-F2) — the stack #31 → #43 → #44 (F's PR) reviewed outside F's session, then the merge and the tag on your word (Track 3).
 
 ## Entry artifacts by lane
 
-- **The wrap's brainstorm** — [the wrap brainstorm's handover](plans/2026-10-01-web-frontend-wrap-brainstorm-handover.md) (R-OWN-F2): the stack's shape and order, the merge recipe, the tag, the workflows to re-enable, the release line, the residuals and the AI lane's re-entry.
-- AI lane: `docs/plans/2026-09-11-ai-lane-reentry-handover.md`, then the V4 close
-  `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3.
+- AI lane: the re-entry handover `docs/plans/2026-09-11-ai-lane-reentry-handover.md`; the ratified scoping amendment
+  `docs/plans/2026-08-11-phase3.5c-scoping-amendment.md` (the forward authority for the rest of 3.5c) and the value-architecture
+  checkpoint `docs/plans/2026-08-20-phase3.5c-value-architecture-checkpoint.md` (ratified 2026-08-20, the V4 forward authority);
+  the V4 close `docs/plans/2026-08-30-phase3.5c-v4-close.md` §3. Phase 3 as a whole is governed by the accepted map
+  `docs/plans/2026-07-25-phase3-map.md`, whose §1 settled inputs are owner direction.
 - Web lane: [`web-lane.md`](web-lane.md) (the lane's operating record; §11 its records of record), then cycle F's plan [`plans/2026-09-30-web-frontend-m6.5c2f-plan.md`](plans/2026-09-30-web-frontend-m6.5c2f-plan.md) and F's close [`plans/2026-10-01-web-frontend-m6.5c2f-close.md`](plans/2026-10-01-web-frontend-m6.5c2f-close.md), beside E's [close](plans/2026-09-30-web-frontend-m6.5c2e-close.md) (the last two rows of `web-lane.md` §11); operations `deploy/RUNBOOK.md` (§0–§3 and §5 the NAS) and `worker/RUNBOOK.md` (the Worker; `deploy/RUNBOOK.md` §6 points there).
 - Bridge (BGA capture → import): `docs/bridge-setup.md`; ledger
   `docs/plans/2026-08-08-phase3.5b-execution-ledger.md`.

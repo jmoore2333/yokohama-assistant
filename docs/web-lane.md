@@ -259,6 +259,8 @@ Cycle F added:
     proof is a burst over WARP read with the firewall events, and the smoke's live mode runs over WARP (§10). It also
     challenges a clearance-less browser's precache fetches, which fails a release's install (W-3, §15). Bot Fight Mode
     stayed on through F.
+43. **Headless is not headed.** Headless Chromium never asks for `favicon.ico`, so four headless reviews reported "zero
+    console errors" over a 404 on every screen (M6.4 close §4.5).
 
 ## 6. What a save file says
 
