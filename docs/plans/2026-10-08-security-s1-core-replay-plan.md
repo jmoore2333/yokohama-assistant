@@ -1,10 +1,11 @@
 # Security S1, the core PR — the predicate replay check: implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan
-> task-by-task. Every code task subagent-driven, the implementer's tier in each task's title — **Fable** for
-> Tasks 1–3, the owner's tier for this PR, implementer and reviewer alike ("let's note fable for implementer and
-> review", 2026-10-08) — every task reviewer Fable, Fable for the whole-branch review; the plan review, the gates
-> and the PR are the ORCHESTRATOR's (Task 4). Steps use checkbox
+> task-by-task. Every code task subagent-driven, the implementer's tier in each task's title — **Opus** for
+> Tasks 1–3 — every task reviewer **Fable**, and a **Mythos** orchestrator that conducts the plan review at the
+> top and the whole-branch review at the end ITSELF, on exports (the owner's final shape, 2026-10-08: "opus
+> implementers, and fable reviewers, dispatched by a mythos orchestrator that also conducts the overall plan review
+> at the top and end"); the gates and the PR are the orchestrator's too (Task 4). Steps use checkbox
 > (`- [ ]`) syntax. **Read the spec first** (`docs/plans/2026-10-08-security-remediation-spec.md`: §1 R-SEC1 and
 > R-SEC2, §3.1 the core PR, §6 the fences), then this plan's §"Names shared across tasks" — an implementer sees only
 > its own task, and that section is how it learns what its neighbours produce. Every `file:line` here was read at
@@ -74,8 +75,9 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 
 ## Execution shape
 
-- Tasks 1–3: implementer **Fable**, reviewer **Fable** (the owner, 2026-10-08). Task 4: the orchestrator. The
-  whole-branch review: Fable, on a `git archive` export, never in the implementer's tree.
+- Tasks 1–3: implementer **Opus**, reviewer **Fable** (the owner's final shape, 2026-10-08). Task 4: the
+  orchestrator, **Mythos**, who conducts the "before" plan review and the "after" whole-branch review itself, on a
+  `git archive` export, never in the implementer's tree.
 - Every dispatched agent: full report to a file, a three-line reply; no `rm -rf`, `rm -r` or bulk `rm -f`; no
   Monitor, no event waits; long commands in the foreground or polled.
 - The plan review (Task 4, step 1) EXECUTES Tasks 1–2's cells in an export before any implementation: a cell that
@@ -112,7 +114,7 @@ the battery, the gates and the PR.
 
 ---
 
-### Task 1: `is_listed_move` — exact single-candidate membership — Fable (spec §3.1; Review Focus 1–3)
+### Task 1: `is_listed_move` — exact single-candidate membership — Opus (spec §3.1; Review Focus 1–3)
 
 **Files:**
 - Modify: `crates/yokohama-core/src/game/move_legality.rs` (after line 268, the end of `is_move_legal`; the cells in
@@ -278,7 +280,7 @@ git commit -m "core: is_listed_move — exact single-candidate membership in the
 
 ---
 
-### Task 2: `MoveCheck`, `replay_strict_with`, and the record-level proof — Fable (spec §3.1; Review Focus 4–5)
+### Task 2: `MoveCheck`, `replay_strict_with`, and the record-level proof — Opus (spec §3.1; Review Focus 4–5)
 
 **Files:**
 - Modify: `crates/yokohama-core/src/game/record.rs` (after line 520, the end of `replay_strict`)
@@ -658,7 +660,7 @@ git commit -m "core: replay_strict_with and MoveCheck — the strict replay unde
 
 ---
 
-### Task 3: The standing sentence in `CLAUDE.md` — Fable (spec §3.1)
+### Task 3: The standing sentence in `CLAUDE.md` — Opus (spec §3.1)
 
 **Files:**
 - Modify: `CLAUDE.md`, the Architecture section's `game/` bullet — the sentence that ends
@@ -691,11 +693,12 @@ git commit -m "docs: CLAUDE.md names the predicate replay check and its proof (R
 
 ### Task 4: The reviews, the battery, the gates and the PR — ORCHESTRATOR (R-SEC1; spec §3.1, §5)
 
-- [ ] **Step 1: The "before" review.** Dispatch a Fable plan reviewer on a `git archive` export of `master` with this
-  plan: it must EXECUTE Tasks 1–2's cells against a scratch implementation of the two functions in the export (the
-  plan's own code blocks), read each mutant M1–M6 red, and report any cell that cannot go red on its mutant, any
-  name here that the tree does not spell, and any sentence of §3.1 or this plan that the code contradicts. Its
-  findings go in the spec's §9 and are fixed in this plan BEFORE Task 1 is dispatched.
+- [ ] **Step 1: The "before" review — the orchestrator's own.** On a `git archive` export of `master`, EXECUTE
+  Tasks 1–2's cells against a scratch implementation of the two functions in the export (the plan's own code
+  blocks), read each mutant M1–M6 red, and record any cell that cannot go red on its mutant, any name here that the
+  tree does not spell, and any sentence of §3.1 or this plan that the code contradicts. The findings go in the
+  spec's §9 and are fixed in this plan BEFORE Task 1 is dispatched; the scratch implementation is discarded with the
+  export, never carried into the branch.
 
 - [ ] **Step 2: The branch.** `git checkout -b security-s1-core-replay master`; Tasks 1–3 subagent-driven, each
   with a Fable reviewer who reruns the task's mutants on an export.
@@ -709,9 +712,9 @@ git commit -m "docs: CLAUDE.md names the predicate replay check and its proof (R
   `cargo test -p yokohama-worker`, the `wasm32` check, both wasm builds, and `cd worker && npm run build:module:debug && npm test`.
   Record every count against the board's "Gates at HEAD" readings; a count that differs is a finding.
 
-- [ ] **Step 4: The "after" review.** Fable, whole-branch, on a `git archive` export of the branch head: the
-  equivalence argument re-derived from the code (not from this plan), the six mutants re-run, the fences of spec §6
-  checked (`git diff master -- crates/yokohama-oracle` empty; `apply_move`, `get_legal_moves`, `replay_strict`,
+- [ ] **Step 4: The "after" review — the orchestrator's own.** Whole-branch, on a `git archive` export of the
+  branch head: the equivalence argument re-derived from the code (not from this plan), the six mutants re-run, the
+  fences of spec §6 checked (`git diff master -- crates/yokohama-oracle` empty; `apply_move`, `get_legal_moves`, `replay_strict`,
   `fold_one_event` unedited by `git diff master -U0` over those functions; `SEMANTICS_REV` 7). One fix wave as new
   commits; a scoped re-review of the fix.
 

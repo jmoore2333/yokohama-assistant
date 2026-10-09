@@ -121,11 +121,11 @@ read it there, never commit it.
 
 **Next session, in a FRESH context (the review session's is spent), in order:** (0) the branch
 `security-remediation-spec` holds these documents, committed and not pushed — push it and open its PR;
-(1) the plan review of the core PR's plan — Fable, EXECUTING its cells and its six mutants in an export (the
-"before" review of R-SEC1); its fix round lands as new commits on that branch, which merges on the owner's
-word with that review as its review; (2) the core PR on `security-s1-core-replay` from the merged master,
-Fable as implementer and reviewer of every task (the owner, 2026-10-08), then the whole-branch review, the
-battery and the fifteen-gate roster; (3) S1's plan, written against the merged tree from spec §2.1; S2's
+(1) the plan review of the core PR's plan — the Mythos orchestrator's own, EXECUTING its cells and its six
+mutants in an export (the "before" review of R-SEC1); its fix round lands as new commits on that branch, which
+merges on the owner's word with that review as its review; (2) the core PR on `security-s1-core-replay` from
+the merged master — Opus implementers, Fable task reviewers, the orchestrator's own whole-branch review at the
+end (the owner's final shape, 2026-10-08), then the battery and the fifteen-gate roster; (3) S1's plan, written against the merged tree from spec §2.1; S2's
 brainstorm comes after S1 lands, from the ledger. **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
 the dev door is off outside live tiers, `chmod 600 .dev.vars` with its unused `TURNSTILE_SECRET` line
