@@ -2107,7 +2107,11 @@ task is the ruling as given.
 
 **Files:**
 - Modify: `crates/yokohama-web/src/games.rs` (`Games` :264–300 a field; `with_parts` :459–481; `with_limits`
-  :421–435; two builder/reader methods beside `with_archive` :496)
+  :421–435; two builder/reader methods beside `with_archive` :496), `crates/yokohama-web/src/api.rs` (two test-side
+  `Games::with_parts` builders opt in)
+- Modify: `web/e2e/the_forms.spec.ts` (:38 the widest-form cell, split) and `web/e2e/it_explains.spec.ts` (:119,
+  :188 — Task 1's withheld `why` met the Playwright tier here, since the tier runs in this task; the shipped
+  behaviour is what the specs now assert)
 - Modify: `crates/yokohama-web/src/tables.rs` (`create` :787–800; a constant beside `UNLOCKED_CAP` :752)
 - Modify: `crates/yokohama-web/src/lib.rs` (`AppState::new` :414–435 split into `new` + `production`;
   `with_store_chat_and_archive` :483–490 and `with_store_and_chat` :472–481 opt in; a builder beside `with_ttls`
@@ -2147,7 +2151,9 @@ task is the ruling as given.
     /// 201; a seed beside a BOT is honoured, a bot being no person (Review
     /// Focus 5); and under `Diagnostic` — the fixtures' named opt-in, which
     /// `games()` sets — every shape is honoured, which is what every other
-    /// cell in this module relies on.
+    /// cell in this module relies on. The refusal's place in `create`'s order
+    /// — after `config_of`'s last, before the id's first — is pinned by two
+    /// two-defect probes.
     #[test]
     fn a_creators_seed_is_honoured_at_a_solo_table_only() {
         use crate::games::SeedPolicy;
@@ -2162,7 +2168,24 @@ task is the ruling as given.
         open.seats[1] = SeatSpec { user: None, bot: false, open: true };
         let err = production.create(&open, &creator).expect_err("refused");
         assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "{err:?}");
-        // The same two shapes with NO seed: drawn, 201.
+        // **The ORDER, by two-defect probes at the ADJACENT links** (the M6.2
+        // lesson: a single-defect probe pins nothing about order). The seed is
+        // judged after `config_of`'s last refusal, the password, and before the
+        // id's first, an unusable id: wrong at the seed AND the link after, the
+        // seed's sentence is the one handed back; wrong at the seed AND the link
+        // before, `config_of`'s is.
+        let mut after = open.clone();
+        after.id = Some("bad id".into());
+        let err = production.create(&after, &creator).expect_err("refused");
+        assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "the seed precedes the id: {err:?}");
+        let mut before = open.clone();
+        before.password = Some("   ".into());
+        let err = production.create(&before, &creator).expect_err("refused");
+        assert!(
+            matches!(&err, GameError::BadRequest(m) if m == "a password is at least one character"),
+            "config_of's last refusal precedes the seed: {err:?}"
+        );
+        // The other-person shape with NO seed: drawn, 201 (the open-seat shape unseeded is route cell (b)'s).
         let mut unseeded = two_people("other2", 7);
         unseeded.seed = None;
         assert!(production.create(&unseeded, &creator).is_ok(), "a drawn seed opens the table");
@@ -2244,19 +2267,45 @@ task is the ruling as given.
     }
 ```
 
+(c2) In `crates/yokohama-wasm/src/lib.rs`'s `mod tests`, beside the watcher-list cell — the browser host's twin of (c),
+pinning `init()`'s own rule (a Diagnostic mutant on `init()` survived the crate's 9 cells and `test:wasm`'s 353 until
+this cell; Task 4's report, C4):
+
+```rust
+    /// **This host builds the production seed rule** (security S1a, finding
+    /// B3; R-SEC8(b)) — the Worker switch's cell, on the browser host: under
+    /// [`init`] a seeded create that seats another person is the layer's 400 in
+    /// `SEED_NOT_SOLO`'s words and stores no table; under [`init_diagnostic`],
+    /// the harness's opt-in by name, the same body is a 201.
+    #[test]
+    fn init_refuses_a_seed_beside_another_person_and_init_diagnostic_honours_it() {
+        let _s = serial();
+        let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"seeded"}"#;
+        init();
+        let (status, refused) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 400, "{refused}");
+        assert!(refused.contains(yokohama_web::tables::SEED_NOT_SOLO), "{refused}");
+        assert_eq!(read_inner("table", "seeded").unwrap(), None, "a refused create stored a table");
+        init_diagnostic();
+        let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 201, "{created}");
+    }
+```
+
 (d) In `worker/scripts/deploy-guard.test.mjs`, the twin of the test-clock cell (:262–265):
 
 ```js
   it("refuses a deployed configuration that names YOKOHAMA_DIAGNOSTIC_SEEDS", () => {
     const seeded = PRODUCTION.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
-    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toContainEqual(
+    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
-    );
+    ]);
   });
 ```
 
-(`deployGuard(worker({ … }))` is what the clock cell at :262 calls to judge a configuration's text; `toContainEqual`
-rather than its `toEqual([…])`, since the fixture's other failures ride beside this one.)
+(`deployGuard(worker({ … }))` is what the clock cell at :262 calls to judge a configuration's text, and `toEqual([…])`
+its exact twin — the seeded fixture yields exactly one failure, measured; `toContainEqual` would let a spurious
+second failure pass.)
 
 (e) In `web/src/NewGame.test.tsx`'s `describe("the seed", …)` (:327):
 
@@ -2397,6 +2446,154 @@ constructor directly." Split `new` (:414–435):
             .with_ttls(ttls))
     }
 
+    /// Backed by memory, in `open` mode — the mode every test drives with a
+    /// header. Tests, and any run that must leave no trace.
+    pub fn in_memory() -> Self {
+        Self::in_memory_with(identity::IdentityMode::Open)
+    }
+
+    pub fn in_memory_with(identity: identity::IdentityMode) -> Self {
+        Self::with_store(Arc::new(MemStore::default()), identity)
+    }
+
+    /// In memory, with a heartbeat a cell can outlive — see [`AppState::heartbeat`].
+    pub fn in_memory_with_heartbeat(heartbeat: std::time::Duration) -> Self {
+        Self { heartbeat, ..Self::in_memory() }
+    }
+
+    /// In memory, with the chat configured rather than defaulted — how a cell
+    /// asks for the lobby off, or for a keep small enough to watch a trim.
+    pub fn in_memory_with_chat(chat: chat::ChatConfig) -> Self {
+        Self::with_store_and_chat(
+            Arc::new(MemStore::default()),
+            identity::IdentityMode::Open,
+            chat,
+        )
+    }
+
+    pub fn with_store(store: Arc<dyn Store>, identity: identity::IdentityMode) -> Self {
+        Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
+    }
+
+    /// Every constructor above is this one with a store, an identity or a chat
+    /// chosen for it, and this one is [`Self::with_store_chat_and_archive`] with
+    /// no archive — since M6.5a THAT is the one constructor that builds anything.
+    ///
+    /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
+    /// appender enforces them and `/api/health` reports them off the same
+    /// object, so a host passes them in once and nothing on this state can drift
+    /// from what the layer enforces.
+    pub fn with_store_and_chat(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+    ) -> Self {
+        Self::with_store_chat_and_archive(store, identity, chat, Arc::new(archive::NoArchive))
+    }
+
+    /// The one constructor that builds anything — the store, the identity door,
+    /// the chat facts and the archive all given (M6.5a). Every constructor above
+    /// but [`Self::new`] and [`Self::production`] is this one with something
+    /// chosen for it; `in_memory*` keep no archive.
+    ///
+    /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
+    /// no person's game — honours a seed at any table; the production path is
+    /// [`Self::production`], which builds the one constructor directly.
+    pub fn with_store_chat_and_archive(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+    ) -> Self {
+        Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
+            .with_seed_policy(games::SeedPolicy::Diagnostic)
+    }
+
+    /// [`Self::with_store_chat_and_archive`] with the log chosen: the one seam a
+    /// cell needs to read what the constructor says while it seeds (M6.5c2
+    /// cycle E). The NAS's binary passes [`log::StderrLog`] through the
+    /// constructor above and nothing else.
+    pub(crate) fn with_store_chat_archive_and_log(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+        log: Arc<dyn log::Log>,
+    ) -> Self {
+        let rules = Arc::new(Rules::standard());
+        let signals = Arc::new(signal::Signals::default());
+        let games = Games::with_parts(
+            rules,
+            store,
+            chat,
+            signals.clone(),
+            Arc::new(table::now_unix),
+            archive,
+            games::RunHost::Server,
+        )
+        .with_log(log);
+        // **The house frame's counters start where the house chat document is**
+        // (M6.5c2 cycle D; the close `2026-09-29-web-frontend-m6.5c2d-close.md`
+        // §4 and §5, ruling 46): a lobby's chat panel reads when the frame's `chat` passes the `last` of the page it holds, so a
+        // process that counted from 0 over a document at N told no lobby of a
+        // message until it had taken N + 1. A document that cannot be read
+        // seeds nothing: every house route refuses it out loud, and no message
+        // can be appended to it, so there is no count to be wrong about — until
+        // an operator repairs the file under a running process, which a
+        // restart then seeds.
+        //
+        // **Said out loud** (cycle E; the close's §5, ruling 49): a failed
+        // seed leaves this process's house counters OFFSET from the document
+        // for the process's life (`seed_house` runs once and `bump_house_chat`
+        // adds one per post), so a lobby misses house messages until the
+        // process has taken N + 1 posts; a restart re-seeds. That is now a
+        // line in the log rather than a silence.
+        match games.house_counts() {
+            Ok(counts) => signals.seed_house(counts),
+            Err(e) => games
+                .log
+                .line(log::HOUSE_SEED_UNREAD, serde_json::json!({ "error": e.to_string() })),
+        }
+        Self {
+            games,
+            identity,
+            heartbeat: HEARTBEAT,
+            signals,
+            // On, which is [`Multiplayer::from_env_value`]'s own answer to an
+            // unset variable: every constructor above this one builds the
+            // deployment that existed before M6.5b2, and only `new` and
+            // [`Self::with_multiplayer`] can say otherwise.
+            multiplayer: Multiplayer(true),
+            dist: assets::dist_dir(),
+            // No TTL, which is what an unset variable reads: only `new`,
+            // given `main`'s reading, and [`Self::with_ttls`] say otherwise.
+            ttls: sweep::Ttls::none(),
+        }
+    }
+
+    /// This state serving the client from `dist` (M6.5b2) — [`Self::with_clock`]'s
+    /// shape again, for the cells that need a real shell behind the fallback.
+    pub fn with_dist(self, dist: impl Into<std::path::PathBuf>) -> Self {
+        Self { dist: dist.into(), ..self }
+    }
+
+    /// This state with the multiplayer switch thrown (M6.5b2, R-6.5b2.4).
+    ///
+    /// A builder step over the field, [`Self::with_clock`]'s shape, for the two
+    /// callers that need it: `main`, which read the variable, and the cells that
+    /// assert what a single-player deployment serves.
+    pub fn with_multiplayer(self, multiplayer: Multiplayer) -> Self {
+        Self { multiplayer, ..self }
+    }
+
+    /// This state with its two table TTLs (M6.5c2 cycle F, R-F9) — the
+    /// builder a cell takes for what `/api/health` reports and what the sweep
+    /// runs under. It asks no archive question: [`Self::new`] is where a TTL
+    /// without an archive refuses to start.
+    pub fn with_ttls(self, ttls: sweep::Ttls) -> Self {
+        Self { ttls, ..self }
+    }
+
     /// This state under `policy` ([`games::SeedPolicy`]) — for a cell that
     /// asks the production rule of an in-memory state.
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
@@ -2405,8 +2602,9 @@ constructor directly." Split `new` (:414–435):
     }
 ```
 
-**Seven TEST-side `Games::with_parts(..)` builders create seeded multi-person tables and read RED under
-`SoloOnly` (18 cells, measured) — each gains `.with_seed_policy(crate::games::SeedPolicy::Diagnostic)` after its
+**Seven TEST-side `Games::with_parts(..)` builders exist, five of which create seeded multi-person tables and
+read RED under `SoloOnly` (18 cells, measured; `api.rs`'s `off` builder and `tables.rs`'s clock builder are
+inert and opt in for uniformity) — each gains `.with_seed_policy(crate::games::SeedPolicy::Diagnostic)` after its
 closing paren:** `api.rs`'s `games_with(..)` (:2662) and the `off` builder (:3287); `games.rs`'s
 `every_bump_site_answers_under_no_signal` (:1279), the two builders at :1768 and :1808, and `watched_games`
 (:3182); `tables.rs`'s builder (:2302). (`lib.rs:528` is the production constructor, which
@@ -2437,6 +2635,8 @@ eight `receipt::tests` cells read the layer's 400 on their seeded open-seat `CRE
         door_config_with_seeds(archive, "worker", true)
     }
 
+    /// `init`'s configuration at `door` (M6.5c2, spec §2.1): the object
+    /// `worker/src/config.ts`'s `moduleConfig` builds, the door first.
     pub(crate) fn door_config(archive: &str, door: &str) -> String {
         door_config_with_seeds(archive, door, true)
     }
@@ -2523,9 +2723,12 @@ with an open seat (R-SEC8(b)); on in the pool and nowhere else — the deploy gu
 
 and its header list (:37) a line "4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration
 (R-SEC8(b))". `docs/web-lane.md` §12 gains the row, in the table's own columns:
-`| YOKOHAMA_DIAGNOSTIC_SEEDS | the Worker's vars | off | on: a creator's seed is honoured at a table that seats
+`| `YOKOHAMA_DIAGNOSTIC_SEEDS` | test-only | `off` | `on`: a creator's seed is honoured at a table that seats
 somebody else — the corpus walk's shape; the pool's two test files set it and the deploy guard refuses it in a
-deployable file (R-SEC8(b)) | the Worker | worker/src/config.ts, crates/yokohama-worker/src/config.rs |`.
+deployable file (R-SEC8(b)) | the pool's two files | `worker/src/config.ts`, `crates/yokohama-worker/src/config.rs` |`
+(code spans, as every row — the parser skips a bare name; the kind and host are `YOKOHAMA_WEB_TEST_CLOCK`'s, its
+twin). The guard's success line names rule 4b beside "no test clock"; `worker/src/config.unit.test.ts`'s
+`describe.each` over the on/off variables gains the switch as a third row.
 
 Run: `cargo test -p yokohama-worker 2>&1 | grep -E 'test result|FAILED'` — green with the new cell (**77**);
 `cargo test -p yokohama-wasm` — **9**; `cd web && npm run build:wasm && npm run test:wasm` — **353** (the replay
@@ -2547,6 +2750,15 @@ test:scripts` green, **533** (the guard's new cell; `lane-variables` with the ne
 seed spread reads `...(seedAllowed && seed ? { seed } : {})`; the `<details className="fold" …>` block (:388–420)
 is wrapped in `{seedAllowed && ( … )}`. Run `cd web && npm run typecheck && npx vitest run src/NewGame.test.tsx
 2>&1 | tail -5` — green, the new cell included.
+
+- [ ] **Step 5b: The Playwright tier.** The client changed, so `cd web && npm run e2e` runs here (the full tier,
+**79** — the split adds one cell at each width; cycle F's 77 before it, measured 8.0 min): `web/e2e/the_forms.spec.ts:38`'s widest-form cell (four seats, a person, open seats) asserts the Advanced
+fold is ABSENT, and its "refuses a bad seed in its fold" half is its own cell on a solo shape (four seats all
+"You"); `web/e2e/it_explains.spec.ts:119` asserts the withheld rendering at its seeded bot table (the move, the
+reason sentence, no chart) and `:188` exercises the collapsed-features control on the SUGGEST panel, where the same
+chart still draws (the old cell's chart-geometry checks move there with it; Task 1's B1 met the tier here; measured
+73/4 before, the four being these). The two-defect probes of cell (a) take `config_of`'s LAST refusal, the blank
+password, as the link before the seed's (adjacent), and the unusable id as the link after.
 
 - [ ] **Step 6: Lint, suites, commit.** `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `cargo test -p yokohama-web`, `-p yokohama-worker`, `-p yokohama-wasm` green; the web lane's wasm check and
@@ -2960,7 +3172,11 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   a dated line) and/or the Worker (`worker/RUNBOOK.md`'s, `npm run deploy` through the guard — the guard now
   refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` in a deployable file, which is the first thing the deploy proves), then the
   §5.3 probes of spec correction 7 from the owner's workstation, every scratch table removed, the readings in the
-  runbooks and this plan's §"Review record". Skipped if the window has closed: then owed at the stack's deploy.
+  runbooks and this plan's §"Review record". **The live corpus replay** (`worker/scripts/live-replay.mjs`) sends the
+  walk's rows verbatim, two of which are seeded open-seat creates scripted 201: under the production rule a deployed
+  Worker answers them 400 (Task 4's report, C3), so the live replay needs a rule for those two rows (an expected
+  `400` with `SEED_NOT_SOLO`'s sentence under a flag, or a walk variant) before the live tier runs — an S1b item if
+  the window closes first. Skipped if the window has closed: then owed at the stack's deploy.
 
 - [ ] **Step 9: The hand-off into S1b's planning session.** The board's Track 4 rewritten for S1b: the stack's
   head (the branch, the PR number), what S1b's plan transcribes from this one (§"The S1 figures" and the owner's
