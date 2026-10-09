@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
+**Updated:** 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
 
 ## Gates at HEAD
 
@@ -108,6 +108,29 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 **Optional, if you want them:**
 1. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 2. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
+
+## Track 4 — Security remediation: the core PR first, then S1, S2, S3 (S4 is the public set, Track 2)
+
+**State (2026-10-08):** the web lane's security review is done and validated live (the guidingpath row of
+this day). The entry documents: the spec `plans/2026-10-08-security-remediation-spec.md` (§1 the ten rulings,
+§2 the findings by cycle, §3 the cycles and their order, §5 the acceptance); the ledger `security-ledger.md`
+(one row per finding, every row `open`); the first plan `plans/2026-10-08-security-s1-core-replay-plan.md`
+(the core PR — an additive, proven-equivalent replay check; `SEMANTICS_REV` unmoved). **The detailed report
+is gitignored** at `docs/temp/security-review-2026-10-08/report.md` with the six reviewer reports beside it;
+read it there, never commit it.
+
+**Next session, in a FRESH context (the review session's is spent), in order:** (0) the branch
+`security-remediation-spec` holds these documents, committed and not pushed — push it and open its PR;
+(1) the plan review of the core PR's plan — Fable, EXECUTING its cells and its six mutants in an export (the
+"before" review of R-SEC1); its fix round lands as new commits on that branch, which merges on the owner's
+word with that review as its review; (2) the core PR on `security-s1-core-replay` from the merged master,
+Fable as implementer and reviewer of every task (the owner, 2026-10-08), then the whole-branch review, the
+battery and the fifteen-gate roster; (3) S1's plan, written against the merged tree from spec §2.1; S2's
+brainstorm comes after S1 lands, from the ledger. **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
+the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
+the dev door is off outside live tiers, `chmod 600 .dev.vars` with its unused `TURNSTILE_SECRET` line
+removed, and the stopped `cloudflare-d` container removed with its token rotated — the orchestrator's,
+recorded in the runbook when made.
 
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
