@@ -346,6 +346,7 @@ export function SuggestView({
           recorded.
         </p>
       )}
+      <p className="meta provenance">Nothing was applied, recorded or saved.</p>
     </div>
   );
 }

@@ -126,6 +126,7 @@ describe("suggest shows what it would play and what it beat", () => {
       expect(screen.getAllByText(step).length).toBeGreaterThan(0);
     }
     expect(screen.queryByText(/Stream/)).toBeNull();
+    expect(screen.getByText(/Nothing was applied, recorded or saved/)).toBeInTheDocument();
   });
 
   it("does not offer to show all candidates until there are more than it shows", async () => {
