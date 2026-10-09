@@ -10,7 +10,7 @@
       "recorded_version": 2,
       "seat": 0
     },
-    "reason": "the bot's account is withheld while its starting order is hidden from you — it is served once that card is public or the game is over",
+    "reason": "the bot's account is withheld while its starting order is hidden from you — it is served once that card is public, or to a seat holder once the game is over",
     "text": "End additional-action phase"
   }
 }

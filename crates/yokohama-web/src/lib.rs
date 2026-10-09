@@ -3390,52 +3390,53 @@ mod tests {
         (state, name, watcher)
     }
 
-    /// A table of one person (seat 0) and the bot (seat 1), its record played
-    /// out to a WINNER in process — both seats pumped as bots under
-    /// `ENDED_SEED`, the record then labelled as the table is (a person at 0,
-    /// the bot at 1, its stream seed `ENDED_SEED`) and installed — so `why`
-    /// reconstructs seat 1's every move under the key the pump used
+    /// A table of the bot (seat 0, the start seat) and one person (seat 1),
+    /// its record played out to a WINNER in process — both seats pumped as
+    /// bots under `ENDED_SEED`, the record then labelled as the table is (the
+    /// bot at 0, its stream seed `ENDED_SEED`, a person at 1) and installed —
+    /// so `why` reconstructs seat 0's every move under the key the pump used
     /// (`BotSeats::decision_seed` reads the table's one seed and the event
-    /// count, never the seat). `a_finished_two_person_game`'s shape, the bot
-    /// kept; the bot's keep at this seed is card 1, `Keep(0)`, which is what
-    /// the pumped session chose too (games.rs's `CORPUS_SEED` note).
+    /// count, never the seat).
+    ///
+    /// **The game is the one the table dealt**: its config, its seed and both
+    /// keeps — the person's card 1, and the bot's OWN keep, which at this seed
+    /// and seat is card 2 (measured: the stored choices read `[Keep(1),
+    /// Keep(0)]`) — are read back from the record the last keep stored, never
+    /// assumed. **And its bot's starting order is still in its hand at game
+    /// over** (measured: engine id 5), which the cell asserts as its premise:
+    /// the finished game pins the game-over rule itself, a SEAT HOLDER reading
+    /// the account the engine's view would still mask and a watcher not
+    /// (review I-1, M-1).
     async fn a_finished_vs_bot_game(name: &'static str) -> Arc<AppState> {
         use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
         use yokohama_cli::session::Session;
-        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
 
         let store = Arc::new(MemStore::default());
         let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
         let (status, table) = post_as(
             &state,
-            "red@wire.test",
+            "blue@wire.test",
             "/api/games",
             serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": ENDED_SEED.to_string(),
-                "seats": [{ "user": "red@wire.test" }, { "bot": true }], "name": name, "id": name,
+                "seats": [{ "bot": true }, { "user": "blue@wire.test" }], "name": name, "id": name,
             }),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{table}");
         let (status, kept) = post_as(
             &state,
-            "red@wire.test",
+            "blue@wire.test",
             &format!("/api/games/{name}/keep"),
-            serde_json::json!({ "seat": 0, "card": 1 }),
+            serde_json::json!({ "seat": 1, "card": 1 }),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{kept}");
 
-        let mut config = GameConfig::for_player_count(2);
-        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
-        config.start_player = PlayerId::new(0);
-        let mut session = Session::new_sim(
-            config,
-            ENDED_SEED,
-            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
-            Rules::standard(),
-        )
-        .expect("a game");
+        let (dealt, _) = store.read(Doc::Record, name).expect("a store").expect("a dealt game's record");
+        let dealt: yokohama_core::GameRecord = serde_json::from_str(&dealt).expect("the stored record parses");
+        let mut session = Session::new_sim(dealt.config.clone(), dealt.seed, dealt.choices.clone(), Rules::standard())
+            .expect("the dealt game");
         let both = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED);
         session.set_run_seats(both.seat_provenance());
         let mut repl = yokohama_cli::repl::Repl::new(session);
@@ -3447,7 +3448,7 @@ mod tests {
         }
         assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
         repl.session
-            .set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED).seat_provenance());
+            .set_run_seats(BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), None], ENDED_SEED).seat_provenance());
         let finished = repl.session.to_record_json().expect("a record");
         let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
         store.write_if_version(Doc::Record, name, &finished, Some(version)).expect("the finished record");
@@ -4417,13 +4418,20 @@ mod tests {
         assert!(public(&watched) > 0, "and there are some");
     }
 
-    /// **`why` reads the same to a watcher as to a seated caller.**
+    /// **`why` reads the same to a watcher as to a seated caller while the
+    /// game is playing.**
     ///
-    /// The route already masks the roads not taken for EVERY caller
-    /// (`HandVisibility::Masked`), so admitting a spectator to it adds no
-    /// visibility — and the claim is exactly that: equal JSON, not merely two
-    /// 200s. A vs-bot table, because `why` accounts for a BOT move and a table
-    /// of two people has none.
+    /// The route serves at the REQUESTER's visibility (`explain::visibility_of`,
+    /// finding B1): at this position — the person's first turn played and the
+    /// bot's reply made — the bot's starting order is hidden from the seat
+    /// holder and the watcher alike, so both read the WITHHELD half, which the
+    /// cell asserts; admitting a spectator adds no visibility, and the claim is
+    /// exactly that: equal JSON, not merely two 200s. At a FINISHED game the two
+    /// part by design — a seat holder reads the whole account, as the record
+    /// route serves them the record, and a watcher reads the engine's view
+    /// (`why_is_withheld_while_the_bots_starting_order_is_hidden_and_served_once_it_is_public`).
+    /// A vs-bot table, because `why` accounts for a BOT move and a table of two
+    /// people has none.
     #[tokio::test]
     async fn why_reads_the_same_to_a_watcher_as_to_a_seated_caller() {
         let state = Arc::new(AppState::in_memory());
@@ -4433,6 +4441,10 @@ mod tests {
         let (status, seated) = get_as(&state, "red@wire.test", "/api/games/whywatch/why").await;
         assert_eq!(status, StatusCode::OK, "{seated}");
         assert!(seated["refusal"].is_null(), "the premise: a bot move to account for: {seated}");
+        assert!(
+            seated["withheld"].is_object() && seated["ok"].is_null(),
+            "the half compared is the WITHHELD one at this position: {seated}",
+        );
         let (status, watched) = get_as(&state, "grey@wire.test", "/api/games/whywatch/why").await;
         assert_eq!(status, StatusCode::OK, "{watched}");
         assert_eq!(watched, seated, "the account is the same one");
@@ -4736,10 +4748,13 @@ mod tests {
     /// **`why` is served at the REQUESTER's visibility** (finding B1): while
     /// the bot's starting order is hidden from the caller the account is
     /// WITHHELD — the move played and the claim, and nothing the search found
-    /// — for the opponent and for a spectator alike (Review Focus 2, 3); once
-    /// the game is over the full account is served, the bot's FIRST move
-    /// included (Review Focus 1: visibility is a fact about NOW), with no key
-    /// in the claim and the forced fact on the account. The reconstruction is
+    /// — for the opponent and for a spectator alike (Review Focus 2, 3). At a
+    /// FINISHED game whose bot still holds its starting order, the record
+    /// route's own condition decides (review I-1): a SEAT HOLDER, whom that
+    /// route serves the whole record, reads the full account — the bot's FIRST
+    /// move included (Review Focus 1: visibility is a fact about NOW), with no
+    /// key in the claim and the forced fact on the account — and a WATCHER,
+    /// whom it refuses, reads the withheld half. The reconstruction is
     /// `account_parts`' — this crate re-derives no part of the honesty gate.
     #[tokio::test]
     async fn why_is_withheld_while_the_bots_starting_order_is_hidden_and_served_once_it_is_public() {
@@ -4780,15 +4795,32 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{seen}");
         assert!(seen["withheld"].is_object() && seen["ok"].is_null(), "{seen}");
 
-        // Public: a finished game — the whole account, and no key.
+        // A FINISHED game whose bot (seat 0) still holds its starting order —
+        // the premise, read off the engine's own view for the person's seat.
         let over = a_finished_vs_bot_game("explains").await;
-        let (status, body) = get_as(&over, "red@wire.test", "/api/games/explains/why").await;
+        {
+            let handle = over.games.handle("explains").expect("a finished game");
+            let repl = over.games.lock_game(&handle, "explains").expect("the lock");
+            assert!(repl.session.is_over(), "premise: the installed game is finished");
+            let view = yokohama_core::game::observe(repl.session.state(), yokohama_core::PlayerId::new(1))
+                .expect("seat 1's view");
+            assert!(
+                view.players[0].hand.contains(&yokohama_core::HandCard::HiddenStartingOrder),
+                "premise: the bot's starting order is still a masked slot in its hand at game over",
+            );
+        }
+
+        // The SEAT HOLDER: the record route serves them the whole record, so
+        // `why` serves the whole account — and no key.
+        let (status, _) = get_as(&over, "blue@wire.test", "/api/games/explains/record").await;
+        assert_eq!(status, StatusCode::OK, "the seat holder downloads the record");
+        let (status, body) = get_as(&over, "blue@wire.test", "/api/games/explains/why").await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body["withheld"].is_null() && body["refusal"].is_null(), "a bot moved and the game is over: {body}");
+        assert!(body["withheld"].is_null() && body["refusal"].is_null(), "a seat holder at game over: {body}");
         let ok = &body["ok"];
         let p = &ok["provenance"];
         assert!(!p["contestant"].as_str().unwrap_or_default().is_empty(), "names the contestant");
-        assert_eq!(p["seat"], 1);
+        assert_eq!(p["seat"], 0);
         assert!(p.get("decision_seed").is_none(), "the pump's key is off the wire (finding B1): {p}");
         assert!(p.get("forced").is_none() && ok["forced"].is_boolean(), "the forced fact rides the account: {ok}");
         assert!(p["evaluator_version"].as_u64().is_some());
@@ -4802,11 +4834,25 @@ mod tests {
         assert!(counters.iter().all(|c| c["group"] != "ungrouped"), "{counters:?}");
         assert!(!ok["continuation"].as_array().expect("a line").is_empty(), "the continuation is served");
 
-        // The bot's FIRST move, decided while its card was hidden: served now.
+        // A WATCHER at the same finished game: the record route refuses them,
+        // and `why` serves them the withheld half — the parity (review I-1).
+        let (status, refused) = get_as(&over, "watcher@wire.test", "/api/games/explains/record").await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        let (status, seen) = get_as(&over, "watcher@wire.test", "/api/games/explains/why").await;
+        assert_eq!(status, StatusCode::OK, "{seen}");
+        assert!(seen["ok"].is_null() && seen["refusal"].is_null() && seen["withheld"].is_object(), "{seen}");
+        assert_eq!(seen["withheld"]["reason"], explain::WITHHELD_REASON);
+        let text = seen.to_string();
+        for key in ["explanation", "ranking", "counters", "continuation", "forced"] {
+            assert!(!text.contains(&format!("\"{key}\"")), "{key} reached a watcher at game over: {text}");
+        }
+
+        // The bot's FIRST move, decided while its card was hidden — the card
+        // still in its hand now — served to the seat holder.
         let mut first = None;
         for n in 0..40usize {
-            let (_, b) = get_as(&over, "red@wire.test", &format!("/api/games/explains/why?event={n}")).await;
-            assert!(b["withheld"].is_null(), "event {n} withheld at a finished game: {b}");
+            let (_, b) = get_as(&over, "blue@wire.test", &format!("/api/games/explains/why?event={n}")).await;
+            assert!(b["withheld"].is_null(), "event {n} withheld from a seat holder at a finished game: {b}");
             if b["ok"].is_object() {
                 first = Some((n, b));
                 break;

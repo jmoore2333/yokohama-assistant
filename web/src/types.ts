@@ -911,7 +911,8 @@ export interface WhyOk {
 
 /** The withheld half (finding B1): the move played, the claim, and the one
  *  sentence — nothing the search found, which is a function of the mover's
- *  hidden starting order until that card is public or the game is over. */
+ *  hidden starting order until that card is public, or the game is over and
+ *  the reader holds a seat. */
 export interface WhyWithheld {
   provenance: Provenance;
   text: string;

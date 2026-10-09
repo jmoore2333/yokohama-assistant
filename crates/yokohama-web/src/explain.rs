@@ -187,8 +187,7 @@ pub struct Ranked {
 ///   already on your own screen; there is nothing to hide.
 /// - `why` accounts for a move ANOTHER seat made. `build_dashboard` serves that
 ///   seat's hand as `cards: Vec::new()`, so one route hid it by construction
-///   while a sibling route listed its contents — measured at 222 rows on the
-///   committed fixture.
+///   while a sibling route listed its contents.
 ///
 /// **The move that was PLAYED is never redacted**, in either mode: it happened,
 /// so it is public, and the card it names has left the hand. Only the roads not
@@ -253,8 +252,11 @@ fn word_line(line: &[Move], state: &GameState, rules: &Rules) -> Vec<String> {
 /// `why`'s continuation, worded with its fulfil lines masked as [`rank_all`]
 /// masks the ranking's rows (finding B1's third channel): the FIRST step is the
 /// move PLAYED — public, never masked, a fulfil included — and a later
-/// `FulfillOrder` step names a card still in the mover's hand, so it reads as
-/// [`MASKED_FULFILL`].
+/// `FulfillOrder` step may name a card still in the mover's hand, so it reads
+/// as [`MASKED_FULFILL`]. A later fulfil may also name a card the mover took
+/// from the PUBLIC port earlier in the same line ("Port: take O19", then the
+/// fulfil of O19): it is masked too — over-masking, which is safe, and the
+/// mask does not try to tell the two apart.
 fn word_line_masked(line: &[Move], state: &GameState, rules: &Rules) -> Vec<String> {
     line.iter()
         .enumerate()
@@ -274,8 +276,9 @@ fn word_line_masked(line: &[Move], state: &GameState, rules: &Rules) -> Vec<Stri
 /// function of the mover's HAND: while the mover's starting order is hidden
 /// from the requester, every one of them narrows the unseen cards to it (the
 /// review read the card off four feature values from one payload). So the
-/// account is WITHHELD until the card is public or the game is over, and the
-/// `withheld` half carries the move and the claim alone.
+/// account is WITHHELD until the card is public — or, to a seat holder, until
+/// the game is over — and the `withheld` half carries the move and the claim
+/// alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Visibility {
     Public,
@@ -283,16 +286,19 @@ pub enum Visibility {
 }
 
 /// [`Visibility`] of `mover`'s account to a requester who holds `held` (empty
-/// for a spectator) at `now` — **the engine's own view, never a rule restated
-/// here**: `Withheld` exactly while `observe(now, seat)` for the requester
-/// shows a `HiddenStartingOrder` slot in the mover's hand and the game is not
-/// over. A holder of the mover's seat reads their own hand; a spectator reads
-/// as any seat that is not the mover's, since every non-mover seat sees the
-/// same masked hand (`observe.rs`); at game over everything is on the table —
-/// the record route serves the whole record, seed included, from there. A
-/// view the engine refuses is a view that shows nothing: withheld.
+/// for a spectator) at `now` — **the engine's own view, plus the record
+/// route's own game-over condition — nothing else restated here**: `Withheld`
+/// exactly while `observe(now, seat)` for the requester shows a
+/// `HiddenStartingOrder` slot in the mover's hand, unless the game is over and
+/// the requester holds a seat. A holder of the mover's seat reads their own
+/// hand; a spectator reads as any seat that is not the mover's, since every
+/// non-mover seat sees the same masked hand (`observe.rs`); a SEAT HOLDER at
+/// game over reads everything — the record route serves them the whole
+/// record, seed included, from there, and refuses a spectator, so a watcher
+/// reads the engine's view at game over too. A view the engine refuses is a
+/// view that shows nothing: withheld.
 pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Visibility {
-    if yokohama_core::is_game_over(now) {
+    if yokohama_core::is_game_over(now) && !held.is_empty() {
         return Visibility::Public;
     }
     if held.contains(&mover) {
@@ -318,7 +324,7 @@ pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Vis
 
 /// The one sentence the withheld half carries.
 pub const WITHHELD_REASON: &str = "the bot's account is withheld while its starting order is hidden from you — \
-                                   it is served once that card is public or the game is over";
+                                   it is served once that card is public, or to a seat holder once the game is over";
 
 /// The fifteen search counters, named exactly as every other instrument names
 /// them.
@@ -965,8 +971,8 @@ mod tests {
     /// `build_hand`.
     ///
     /// **Constructed rather than taken from the corpus, and that is a finding
-    /// in itself**: the committed `why` fixture's 222 candidates are all
-    /// `Place ...`, because the walk captures a Placement decision. The row
+    /// in itself**: the committed `why` fixture's 66 candidates are all
+    /// `Place ...`, because its account is a Placement decision. The row
     /// count is real; it is not evidence of this leak, and a fence anchored to
     /// it would have passed while proving nothing. `rank_all` is a pure wording
     /// function, so the candidates here are built directly rather than reached
@@ -1053,10 +1059,13 @@ mod tests {
 
     /// **Visibility is the engine's own view** (finding B1): withheld while
     /// the requester's view masks the mover's starting order, public to the
-    /// mover's own seat, public once the card is out of the hand, and public
-    /// at game over whatever the hand holds.
+    /// mover's own seat, public once the card is out of the hand — and at game
+    /// over the record route's own condition (review I-1): public to a SEAT
+    /// HOLDER whatever the hand holds, while a watcher still reads the
+    /// engine's view, withheld for a seat whose starting order never left its
+    /// hand.
     #[test]
-    fn visibility_is_withheld_exactly_while_the_requesters_view_masks_the_movers_card() {
+    fn visibility_follows_the_requesters_view_of_the_movers_card_and_the_record_routes_game_over_rule() {
         let (repl, _) = vs_bot(1);
         let now = repl.session.state();
         let mover = PlayerId::new(0);
@@ -1080,11 +1089,39 @@ mod tests {
         fulfilled.players[0].order_cards_in_hand.retain(|c| *c != card);
         fulfilled.players[0].completed_orders.push(card);
         assert_eq!(visibility_of(&fulfilled, mover, &[PlayerId::new(1)]), Visibility::Public, "a public card");
-        // Game over: public, whatever the hand still holds.
+        // Game over: the record route's own condition. The holder of EITHER
+        // seat reads everything, whatever the hand still holds; a watcher
+        // reads the engine's view, which still masks a starting order that
+        // never left the hand — read here, seat by seat, not assumed.
         let (over, _) = vs_bot(usize::MAX);
         assert!(over.session.is_over(), "premise: the both-bot pump finishes the game");
+        let end = over.session.state();
+        let masked: Vec<bool> = [0u8, 1]
+            .iter()
+            .map(|&seat| {
+                yokohama_core::game::observe(end, PlayerId::new(1 - seat))
+                    .expect("the other seat's view")
+                    .players
+                    .iter()
+                    .find(|p| p.id == PlayerId::new(seat))
+                    .is_some_and(|p| p.hand.contains(&yokohama_core::HandCard::HiddenStartingOrder))
+            })
+            .collect();
+        assert!(
+            masked.contains(&true),
+            "premise: at game over some seat still holds its starting order, or the holder rows prove nothing",
+        );
         for seat in [0u8, 1] {
-            assert_eq!(visibility_of(over.session.state(), PlayerId::new(seat), &[]), Visibility::Public, "seat {seat} at game over");
+            let mover = PlayerId::new(seat);
+            for holder in [0u8, 1] {
+                assert_eq!(
+                    visibility_of(end, mover, &[PlayerId::new(holder)]),
+                    Visibility::Public,
+                    "seat {seat}'s account to the holder of seat {holder} at game over",
+                );
+            }
+            let watcher = if masked[usize::from(seat)] { Visibility::Withheld } else { Visibility::Public };
+            assert_eq!(visibility_of(end, mover, &[]), watcher, "seat {seat}'s account to a watcher at game over");
         }
     }
 
@@ -1101,6 +1138,9 @@ mod tests {
         let a = account_of(&repl, &bots, None);
         let mut b = account_of(&repl, &bots, None);
         b.explain.explanation.total += 1000;
+        for t in &mut b.explain.explanation.terms {
+            t.viewer_value += 1;
+        }
         b.explain.ranking.clear();
         b.explain.continuation.clear();
         b.explain.stats = None;
@@ -1132,7 +1172,8 @@ mod tests {
     /// `FulfillOrder` step past the first words as [`MASKED_FULFILL`]; the
     /// first step — the move PLAYED — is never masked, even when it is a
     /// fulfil. Found by scanning a finished game for a line that fulfils
-    /// later than it starts, which the anti-vacuity asserts.
+    /// later than it starts and for a move that is itself a fulfil — the
+    /// anti-vacuity asserts both, so a reseed cannot skip either half.
     #[test]
     fn the_served_continuation_masks_a_later_fulfil_and_never_the_played_move() {
         let (over, bots) = vs_bot(usize::MAX);
@@ -1166,11 +1207,10 @@ mod tests {
             assert!(matches!(a.explain.continuation[i], Move::FulfillOrder { .. }), "step {i} masked but not a fulfil");
             assert_ne!(ok.continuation[i], raw[i], "the raw wording names the card");
         }
-        if let Some(a) = played_fulfil {
-            let ok = Why::account(&a, &rules, Visibility::Public).ok.expect("public");
-            assert_eq!(ok.text, ok.continuation[0], "a played fulfil is worded in full at step 1");
-            assert_ne!(ok.continuation[0], MASKED_FULFILL);
-        }
+        let played = played_fulfil.expect("some bot move of the finished game is itself a fulfil");
+        let ok = Why::account(&played, &rules, Visibility::Public).ok.expect("public");
+        assert_eq!(ok.text, ok.continuation[0], "a played fulfil is worded in full at step 1");
+        assert_ne!(ok.continuation[0], MASKED_FULFILL);
     }
 
     /// The sample set is complete, distinct, and each sample really is the

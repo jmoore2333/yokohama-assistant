@@ -1575,10 +1575,11 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
 pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain::Why, ApiError> {
     // Seated, with the seats the caller holds in hand: `why` is served at the
     // REQUESTER's visibility (finding B1) — withheld while the mover's starting
-    // order is hidden from them, which the engine's own view decides
-    // (`explain::visibility_of`); what this fence adds is the seat one — an
-    // account of a search at a table the caller has no place at is not theirs
-    // to read.
+    // order is hidden from them, which the engine's own view decides, save
+    // that a seat holder reads everything once the game is over, as the record
+    // route serves them the record (`explain::visibility_of`); what this fence
+    // adds is the seat one — an account of a search at a table the caller has
+    // no place at is not theirs to read.
     let (table, _viewer) = admitted(games, id, user)?;
     let held = table.seats_of(user);
     let handle = games.handle(id)?;

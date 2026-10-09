@@ -2270,16 +2270,28 @@ fn constructed() -> Vec<(String, Value)> {
         "no bot move in the second half of the pumped game was a real choice with three or more \
          candidates — the fixture would be degenerate, so this refuses rather than committing it",
     );
-    // Served at the requester's visibility (security S1a, finding B1): seat 1
-    // reads the account of a finished game, so it is PUBLIC — asserted, since
-    // a withheld `why.json` would leave the full account with no payload
-    // behind it. `why_withheld.json` below is the other half.
+    // Served at the requester's visibility (security S1a, finding B1): the
+    // holder of seat 0 — a SEAT HOLDER who is NOT the mover, the account's
+    // mover being seat 1 — reads the account of a finished game, so it is
+    // PUBLIC by the record route's own game-over condition rather than by the
+    // own-seat branch (review M-1). Asserted, since a withheld `why.json` would
+    // leave the full account with no payload behind it; and the mover's
+    // starting order is still in its hand at game over, asserted too, so the
+    // engine's view alone would have withheld it and the PUBLIC is the
+    // game-over rule's. `why_withheld.json` below is the other half.
+    assert_eq!(account.reconstruction.seat, PlayerId::new(1), "premise: the account's mover is seat 1");
+    let holders_view = yokohama_core::game::observe(finished.session.state(), PlayerId::new(0))
+        .expect("seat 0's view");
+    assert!(
+        holders_view.players[1].hand.contains(&yokohama_core::HandCard::HiddenStartingOrder),
+        "premise: seat 1's starting order is still a masked slot in its hand at game over",
+    );
     let visibility = yokohama_web::explain::visibility_of(
         finished.session.state(),
         account.reconstruction.seat,
-        &[PlayerId::new(1)],
+        &[PlayerId::new(0)],
     );
-    assert_eq!(visibility, yokohama_web::explain::Visibility::Public, "a finished game serves everything");
+    assert_eq!(visibility, yokohama_web::explain::Visibility::Public, "a finished game serves a seat holder everything");
     let why = serde_json::to_value(yokohama_web::explain::Why::account(&account, &rules, visibility))
         .expect("a serializable account");
 
