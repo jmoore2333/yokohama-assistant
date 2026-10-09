@@ -32,9 +32,10 @@ rules, MoveCheck)` is `replay_strict`'s preamble, loop and digest check with the
 module cells (every listed move passes; every constructed candidate, the non-canonical witnesses included, reads as
 the list reads it; every REAL member of the phase-blind Movement family is refused under a queued choice and outside
 the Movement phase; a move the list held is judged one state later as that state's list judges it) and one
-integration binary (24 recorded games fold to the same digest; the five tampered records `game_record.rs` builds,
-non-canonical witness tampers, a family member planted at an AreaAction event, an invariant break and a move after
-the game's end refuse at the same index with the same sentence).
+integration binary (24 recorded games fold to the same digest; the eight tampered records `game_record.rs` builds,
+non-canonical witness tampers, a family member planted at an AreaAction event and a move after the game's end refuse
+at the same index with the same sentence; an engine-version drift and legal reveal events on the success path are
+accepted to the same digest).
 
 **Tech Stack:** Rust 1.97.1 (`rust-toolchain.toml`), `crates/yokohama-core` only; the crate's own test helpers
 (`move_legality.rs`'s `drive`/`candidates`/`legal`, `tests/common/mod.rs`'s `run_recorded_game`); `cargo test`,
@@ -450,9 +451,10 @@ git commit -m "core: is_listed_move — exact single-candidate membership in the
 ```rust
 //! The 2026-10-08 ruling R-SEC2's record-level proof: `replay_strict_with(..,
 //! MoveCheck::Predicate)` accepts EXACTLY the records `replay_strict` accepts,
-//! folds them to the same states, and refuses the same tampered records at the
-//! same index with the same sentence — so the strict replay can stop
-//! materializing a legal list per event with `SEMANTICS_REV` unmoved.
+//! folds them to the same states, refuses the same tampered records at the
+//! same index with the same sentence, and accepts what it accepts — an
+//! engine-version drift, legal reveal events — so the strict replay can stop
+//! materializing the retreat family per event with `SEMANTICS_REV` unmoved.
 //! Companion to `move_legality.rs`'s `is_listed_move_is_exactly_membership_in_the_legal_list`
 //! (the move-level half). Per-edit, never `#[ignore]`d: a proof you can defer
 //! is a proof that rots.
@@ -463,7 +465,7 @@ use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     apply_move_unchecked, finalize_setup, get_legal_moves, is_game_over, is_move_legal, new_game,
     replay_strict, replay_strict_with, state_at, state_digest, AreaId, GameConfig, GameRecord, GameState,
-    Move, MoveCheck, PathMode, PlayerId, PresidentLocation, RecordedEvent, ReplayError, Rules,
+    Move, MoveCheck, OrderCardId, PathMode, PlayerId, PresidentLocation, RecordedEvent, ReplayError, Rules,
     StartingOrderChoice, SEMANTICS_REV,
 };
 
@@ -619,12 +621,15 @@ fn an_empty_record_folds_to_the_same_initial_state_under_both_checks() {
     assert_eq!(predicate, strict);
 }
 
-/// Every tampered record `game_record.rs` refuses, both replays refuse at the
-/// same index with the same sentence — the preamble and digest check
-/// `replay_strict_with` repeats are pinned to `replay_strict`'s words here —
-/// and so are the four shapes only this binary builds: a non-canonical
-/// witness (f), a family member out of its phase (i), an invariant break (g)
-/// and a move after the game's end (h).
+/// Every tampered record `game_record.rs` refuses — an out-of-phase move (a),
+/// a wrong digest (b), a rules-hash mismatch (c), no provenance (d), another
+/// rev (e), a broken state though every event applied (g), a dropped last
+/// event under the full run's digest (k), an illegal move inserted mid-record
+/// (m) — both replays refuse at the same index with the same sentence (the
+/// preamble and digest check `replay_strict_with` repeats are pinned to
+/// `replay_strict`'s words here), and so do the three shapes only this binary
+/// builds: a non-canonical witness (f), a family member out of its phase (i),
+/// a move after the game's end (h).
 #[test]
 fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     let rules = Rules::standard();
@@ -810,11 +815,131 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     assert_eq!(predicate, strict, "a move after the end: the two replays disagree");
     refusals += 1;
 
+    // (k) the last event dropped under the full run's digest
+    //     (game_record.rs:275-301): every event applies and the state is
+    //     valid, so only the digest check refuses — at the past-the-end index,
+    //     with the digest sentence.
+    let mut r = stamped.clone();
+    r.events.pop();
+    let (strict, predicate) = both(&r, &rules);
+    assert!(
+        matches!(&strict, Err((i, m)) if *i == r.events.len() && m.starts_with("terminal-state digest mismatch")),
+        "premise: a dropped last event is refused by the digest check: {strict:?}",
+    );
+    assert_eq!(predicate, strict, "a dropped last event: the two replays disagree");
+    refusals += 1;
+
+    // (m) an illegal move INSERTED mid-record (game_record.rs:66-80): refused
+    //     at its own index, every event before it folded.
+    let mut r = stamped.clone();
+    let mid = r.events.len() / 2;
+    r.events.insert(mid, RecordedEvent::Move(Move::FulfillOrder { order_id: OrderCardId(255) }));
+    let (strict, predicate) = both(&r, &rules);
+    assert_eq!(strict, Err((mid, NOT_LISTED.to_string())), "premise: an inserted illegal move is refused at its index");
+    assert_eq!(predicate, strict, "an inserted illegal move: the two replays disagree");
+    refusals += 1;
+
     println!(
         "tampers: walked {walked}, witness {witness_tampers}, repeated-hop {repeated_hop_tampers}, \
          out-of-phase members {out_of_phase_tampers}; the finished game held {extra} events"
     );
-    assert_eq!(refusals, 8, "every refusal shape above ran");
+    assert_eq!(refusals, 10, "every refusal shape above ran");
+}
+
+/// The one provenance key strict replay deliberately does NOT gate (the
+/// 2026-07-27 decoupling, game_record.rs:105-115): a record from another
+/// release at the same `SEMANTICS_REV` is ACCEPTED. An archive upload or a
+/// restored save from an older release is exactly such a record, so the
+/// predicate replay must accept it too, to the same digest — a version gate
+/// added to `replay_strict_with`'s preamble (mutant M7) is what this refuses.
+#[test]
+fn an_engine_version_drift_is_accepted_under_both_checks() {
+    let rules = Rules::standard();
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.stamp_terminal_digest(&final_state);
+    record.engine_version = "0.0.0-other-release".into();
+    let (strict, predicate) = both(&record, &rules);
+    assert_eq!(strict, Ok(state_digest(&final_state)), "premise: replay_strict accepts the drift");
+    assert_eq!(predicate, strict, "the predicate replay must accept the drift too");
+}
+
+/// LEGAL reveal events on the SUCCESS path — `RevealOrders` (the bottom deck
+/// card and a removed-pile card: the conservation-by-exchange path),
+/// `RevealTechs`, and `RevealStartingOrder` of a hidden player — interleaved
+/// with random legal play to the game's end: both replays fold the record to
+/// the live game's own terminal digest. Under `Predicate` every non-move event
+/// is `fold_one_event` itself by construction; this cell holds that
+/// construction (mutant M9: a `Predicate` arm that skips the deck reveals
+/// folds on to a different state, and this cell goes red).
+#[test]
+fn legal_reveal_events_fold_identically_on_the_success_path() {
+    let rules = Rules::standard();
+    let hidden = PlayerId::new(1);
+    let (mut orders, mut exchanges, mut techs, mut starting) = (0usize, 0usize, 0usize, 0usize);
+    for seed in 0..3u64 {
+        let pending = new_game(GameConfig::for_player_count(2), &rules, seed).expect("new_game");
+        let record_config = pending.state.config.clone();
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown];
+        let mut record = GameRecord::new(seed, record_config, choices.clone(), &rules);
+        let mut state = finalize_setup(pending, &choices).expect("finalize_setup");
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5EED);
+        let mut step = 0usize;
+        while !is_game_over(&state) && step < 20_000 {
+            if step % 29 == 7 {
+                let mut s = state.clone();
+                let ev = match rng.gen_range(0..3u8) {
+                    0 if state.order_deck.len() >= 2 => {
+                        let mut cards = vec![state.order_deck[0]];
+                        if let Some(&c) = state.orders_removed.first() {
+                            cards.push(c);
+                        }
+                        let exchange = cards.len() == 2;
+                        s.arrange_orders_on_top(&cards).ok().map(|_| {
+                            orders += 1;
+                            if exchange {
+                                exchanges += 1;
+                            }
+                            RecordedEvent::RevealOrders(cards)
+                        })
+                    }
+                    1 if state.tech_deck.len() >= 2 => {
+                        let cards = vec![state.tech_deck[0], state.tech_deck[1]];
+                        s.arrange_techs_on_top(&cards).ok().map(|_| {
+                            techs += 1;
+                            RecordedEvent::RevealTechs(cards)
+                        })
+                    }
+                    2 if state.player(hidden).starting_order_hidden
+                        && state.player(hidden).order_cards_in_hand.len() < 3 =>
+                    {
+                        let card = *state.orders_removed.last().expect("Unknown parks both dealt cards");
+                        s.reveal_starting_order(hidden, card).ok().map(|_| {
+                            starting += 1;
+                            RecordedEvent::RevealStartingOrder { player: hidden, card }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(ev) = ev {
+                    state = s;
+                    record.push_event(ev);
+                }
+            }
+            let moves = get_legal_moves(&state, &rules);
+            assert!(!moves.is_empty(), "seed {seed}: a live state offers a move");
+            let mv = moves[rng.gen_range(0..moves.len())].clone();
+            state = apply_move_unchecked(&state, &mv, &rules).expect("a listed move applies");
+            record.push_move(mv);
+            step += 1;
+        }
+        assert!(is_game_over(&state), "seed {seed}: the game ran to its end");
+        record.stamp_terminal_digest(&state);
+        let (strict, predicate) = both(&record, &rules);
+        assert_eq!(strict, Ok(state_digest(&state)), "seed {seed}: replay_strict reproduces the live game");
+        assert_eq!(predicate, strict, "seed {seed}: the predicate replay diverged on a record with reveals");
+    }
+    println!("reveals on the success path: orders {orders} (exchanges {exchanges}), techs {techs}, starting {starting}");
+    assert!(orders > 0 && exchanges > 0 && techs > 0 && starting > 0, "every reveal kind ran at least once");
 }
 
 /// Recorded, never asserted: the wall-clock of both replays over the longest
@@ -863,10 +988,12 @@ pub enum MoveCheck {
     /// The single-candidate exact check
     /// [`crate::game::move_legality::is_listed_move`], then the raw transition
     /// `apply_move_unchecked`: the same accepted set and the same states
-    /// without a list materialized per event
+    /// without the retreat family's product materialized per event
     /// (`tests/replay_check_equivalence.rs` is the proof). A replay's cost then
-    /// stops following the legal families' sizes — the retreat family reaches
-    /// 442,368 moves in legal play — which is what an UNTRUSTED record (an
+    /// stops following that family's size — 442,368 moves in legal play —
+    /// while the two families `is_move_legal` delegates (area actions and
+    /// choice resolutions, max 154 and 114 measured) and the Movement family's
+    /// own small list stay materialized; that is what an UNTRUSTED record (an
     /// archive upload, a restored save) must get.
     Predicate,
 }
@@ -905,7 +1032,9 @@ fn fold_one_event_with(
 /// preamble below REPEATS its sentences rather than factoring them out, so the
 /// existing function's text is untouched; the cells in
 /// `tests/replay_check_equivalence.rs` hold the two functions' refusals equal,
-/// index and sentence, on every tampered record `game_record.rs` builds.
+/// index and sentence, on every tampered record `game_record.rs` builds and
+/// on the binary's own shapes, and their acceptances equal on an
+/// engine-version drift and on legal reveal events.
 pub fn replay_strict_with(record: &GameRecord, rules: &Rules, check: MoveCheck) -> Result<GameState, ReplayError> {
     let expected = rules.content_hash();
     if record.rules_hash != expected {
@@ -952,9 +1081,10 @@ point.
 - [ ] **Step 4: Run the binary and the record tests**
 
 Run: `cargo test -p yokohama-core --test replay_check_equivalence --test game_record -- --nocapture 2>&1 | tail -25`
-Expected: every cell PASS; the walls line and the tampers line printed (the review read strict 6.2–8.5 ms against
-predicate 4.1–6.4 ms over 40 events — a short record, so the two read close — and `tampers: walked 12, witness 5,
-repeated-hop 3, out-of-phase members 4; the finished game held 2515 events`); the readings go in the task report.
+Expected: every cell PASS (7); the walls, tampers and reveals lines printed (the review read strict 6.2–8.5 ms
+against predicate 4.1–6.4 ms over 40 events — a short record, so the two read close — and `tampers: walked 12,
+witness 5, repeated-hop 3, out-of-phase members 4; the finished game held 2515 events`; the reveals line's four
+counts must all be nonzero, which the cell asserts); the readings go in the task report.
 
 - [ ] **Step 5: Try the mutants before the reviewer does** (each reverted after its reading):
   - M4 — `replay_strict_with` without the `check_invariants` call: case (g) must go RED — the review read
@@ -965,7 +1095,14 @@ repeated-hop 3, out-of-phase members 4; the finished game held 2515 events`); th
     to have been taken at power 5"))`, against `apply_move`'s `move is not in the legal-move list for this state`.
   - M6 — one character changed in the rules-hash sentence: case (c) must go RED (`(strict mode reject)` against
     `(strict mode rejects)` in the review).
-  Record the three readings in the task report.
+  - M7 — an `engine_version` gate added to `replay_strict_with`'s preamble (`if record.engine_version !=
+    env!("CARGO_PKG_VERSION") { return Err(ReplayError { event_index: 0, message: "engine_version mismatch".into() }); }`):
+    `an_engine_version_drift_is_accepted_under_both_checks` must go RED — the predicate refusing what `replay_strict`
+    accepts (R-15).
+  - M9 — a `Predicate` arm that skips the deck reveals, placed before the delegation (`(MoveCheck::Predicate,
+    RecordedEvent::RevealOrders(_) | RecordedEvent::RevealTechs(_)) => Ok(state.clone()),`):
+    `legal_reveal_events_fold_identically_on_the_success_path` must go RED (R-16).
+  Record the five readings in the task report.
 
 - [ ] **Step 6: Lint and commit**
 
@@ -1150,3 +1287,23 @@ phase" holds by code, not by sampling: only the two placement arms enter Movemen
 with an empty queue, and placement queues nothing. **R-13:** the function doc's "The proof:" sentence named the two
 sweep cells only, and its last sentence still read "the legal families' sizes" where R-4 settled on the retreat
 family — both corrected in the block above; the code follows as a new commit.
+
+### 2026-10-08 — Task 2's implementer concerns before its review (R-14, R-15, R-16)
+
+The implementer (Opus) transcribed the blocks byte for byte (5 cells green, M4–M6 red as quoted, the core suite
+1,585 passed / 29 ignored = cycle F's 1,577 + Task 1's 3 + these 5, clippy clean) and then probed: legal reveal
+events on the success path over 6 finished 2P games (30,714 events; 314 order reveals, 353 tech, 6 starting);
+finished games at 2/3/4P (predicate 1.4–1.9× faster than strict on RANDOM play — the large gains are the adversarial
+records'); 240 cross-state plants and 1,420 malformed-id plants over every phase and the queued state, no panics,
+every reading equal to `replay_strict`'s and to the list's own membership. Three concerns, all taken at the source:
+**R-14** the `Predicate` doc repeated R-4's over-claim ("without a list materialized per event", "stops following the
+legal families' sizes") — reworded to the retreat family, with the delegated families and the Movement family's own
+list named as still materialized; **R-15** the binary omitted three shapes `game_record.rs` builds (an illegal move
+inserted mid-record, a dropped last event under the full run's digest, an engine-version drift strict replay
+ACCEPTS) while two docs claimed every one — and a version gate added to `replay_strict_with` (M7) survived 5/5: the
+accept side of "accepts EXACTLY the records `replay_strict` accepts" was unpinned on the one provenance key strict
+replay deliberately does not gate (the 2026-07-27 decoupling), the key an archive upload from an older release
+carries — cases (k), (m) and the cell `an_engine_version_drift_is_accepted_under_both_checks` with M7; **R-16** no
+record carried a reveal on the success path, and a `Predicate` arm skipping the deck reveals (M9) survived 5/5 —
+the cell `legal_reveal_events_fold_identically_on_the_success_path` (the probe's P1 at three seeds) with M9. The doc
+sentences name the shapes they cover.
