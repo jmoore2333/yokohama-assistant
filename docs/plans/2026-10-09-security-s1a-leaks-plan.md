@@ -2762,8 +2762,10 @@ purpose column gains "— withheld while the bot's starting order is hidden from
 (`THIRD_COLUMN`)" (nineteen), `cargo test -p yokohama-web`'s total, its lib and `wire_fixtures` counts, the Worker
 crate's, vitest's — each as read, with the commit it was re-counted at; and `tests/wire_fixtures.rs`'s
 `constructed()` doc ("**Six of them** … the four `why` payloads": seven since cycle E's `house_frame`, eight with
-`why_withheld`, five `why` payloads) reworded to the count it builds. `cargo test -p yokohama-web --test
-wire_fixtures` and `--test lane_document` green.
+`why_withheld`, five `why` payloads) reworded to the count it builds; and `crates/yokohama-web/src/explain.rs`'s
+`only_the_played_fulfill_…` doc drops its "66" figure ("the committed `why` fixture's candidates are all `Place …`")
+as `HandVisibility`'s doc dropped its own — a count in a comment drifts (Task 1's re-review). `cargo test -p
+yokohama-web --test wire_fixtures`, `--lib explain::tests` and `--test lane_document` green.
 
 - [ ] **Step 3: The spec's §9.3.** Append to `docs/plans/2026-10-08-security-remediation-spec.md` a
 `### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and six corrections` carrying this plan's
