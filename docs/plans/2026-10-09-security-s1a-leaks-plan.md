@@ -3424,12 +3424,12 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   the core PR's close documents, which the ledger, the board and the spec's §9 build on). S1b and S1c stack on
   it; nothing merges to master before S3 (spec §9.2).
 
-- [ ] **Step 3: The dispatches.** Tasks 1–5 Opus, Task 6 Sonnet, each with an Opus reviewer who reruns the
+- [x] **Step 3: The dispatches.** Tasks 1–5 Opus, Task 6 Sonnet, each with an Opus reviewer who reruns the
   task's mutants on an export; the probe-and-name-concerns paragraph in every implementer brief; the SDD ledger
   under `docs/temp/security-review-2026-10-08/s1a-sdd/`. A `DONE_WITH_CONCERNS` correctness item is ruled on and
   fixed as a new commit before the review (the A1 art-cycle lesson); a fix round quotes its hunks.
 
-- [ ] **Step 4: The per-edit suites at the code head**, in this order, every row rc 0, each count against the
+- [x] **Step 4: The per-edit suites at the code head**, in this order, every row rc 0, each count against the
   board's "Gates at HEAD": `cargo test -p yokohama-core` (unmoved: 1,587 / 29 ignored) · `cargo test -p
   yokohama-cli` (855 + 2) · oracle · difftest · `eval_probe` · `solver` · bridge and its four node suites ·
   `cargo clippy --workspace --all-targets -- -D warnings` · **the web lane's rows** (`docs/web-lane.md` §2 — the
@@ -3440,7 +3440,7 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   (§2's rule; the Playwright tier the core PR did not owe). The fifteen-gate roster is NOT owed: core and the
   workspace version are unmoved (spec §5.2). Record every count; a count that differs is a finding.
 
-- [ ] **Step 5: The "after" review — the orchestrator's own**, whole-branch, on a `git archive` export of the
+- [x] **Step 5: The "after" review — the orchestrator's own**, whole-branch, on a `git archive` export of the
   branch head: the fences of §"Global Constraints" (`git diff e9824ec9 -- crates/yokohama-core crates/yokohama-oracle
   crates/yokohama-difftest crates/yokohama-bridge crates/gen-data` empty; the CLI's diff confined to
   `suggest.rs` and its manifest; `SEMANTICS_REV` 7); the corpus moved in exactly two commits, each diff read
@@ -3454,7 +3454,7 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   `init` without the switch) and that the guard refuses the switch. One fix wave as new commits; a scoped
   re-review of the fix.
 
-- [ ] **Step 6: The close's documents.** The ledger's eight rows (`docs/security-ledger.md`) rewritten `fixed <commit>` with
+- [x] **Step 6: The close's documents.** The ledger's eight rows (`docs/security-ledger.md`) rewritten `fixed <commit>` with
   the catcher named — A1 (the inversion pin and the CLI's digest cells), B1 (the withheld route cell and the
   independence pin), B2 (the un-draw cell), B3 (the three policy cells and the guard's), B7 (the seat cells and
   the leakage pin), D5 (the filter cell and, if reachable, the lockdown reply cell), D10 (the document rows, read),
@@ -3464,7 +3464,7 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   creator's seed at any table (`SeedPolicy::Diagnostic`, a named opt-in); the production path never does, and a
   new constructor says which it is by name"; and this plan's §"Review record" with the readings.
 
-- [ ] **Step 7: The PR, pushed, its merge left undone** (the owner, 2026-10-09). `git push -u origin
+- [x] **Step 7: The PR, pushed, its merge left undone** (the owner, 2026-10-09). `git push -u origin
   security-s1`, then `gh pr create --base master --head security-s1` with a description naming the rulings
   (R-SEC3, R-SEC7, R-SEC8(a)(b); the owner's three of 2026-10-09), the eight rows and their catchers, the two
   corpus regenerations and what each moved, the suites' readings (the web lane's rows and the e2e tier included),
@@ -3682,4 +3682,22 @@ corrected forward; Minor 4 (the suggest cell's comment attributing a draw to a f
 `Ranked` doc's "So" following the wrong sentence and naming no file; the `Diagnostic` opt-in dated to cycle E; the
 §2 header's "code head" stale by one client cell) — fixed in the round that follows, re-review clean.
 
-(The "after" review follows here, as the core PR's plan kept them.)
+### The "after" review (Task 7 Step 5) — 2026-10-09, the orchestrator (Mythos), on an export of `1b8fc50c` (the code head `8b7c24dd` differs from it by comments and documents alone — verified: no non-comment line in any `.rs` diff)
+
+**Method.** A `git archive` export in the session's scratchpad with the two BGA captures copied in; the per-edit suites run there; the nine mutants applied to the REAL code by exact text (`s1a-before/after_mutants.py`, each file restored sha-checked) with the covering binaries; the arguments re-derived from the code by reading, not from this plan.
+
+- **Fences.** `git diff e9824ec9 1b8fc50c -- crates/yokohama-core crates/yokohama-oracle crates/yokohama-difftest crates/yokohama-bridge crates/gen-data` EMPTY; the CLI's diff confined to `crates/yokohama-cli/src/suggest.rs` + `Cargo.toml`; `SEMANTICS_REV` 7 (`semantics.rs:180`).
+- **The corpus's commits** (`git log e9824ec9..1b8fc50c -- web/src/wire web/src/wire-script`): FOUR touch the directory — `60030076` (regeneration 1: `suggest.json`, `why.json`, `why_foreign.json`, `why_refused.json`, `why_withheld.json` new, `contract.ts`/`contract.test.ts`), `0c353fe4` (`contract.test.ts` only — a test, no payload), `344a4e73` (`why_withheld.json`, ONE line: the reason's rewording under the ruled game-over rule), `cfe37393` (regeneration 2: `archive-walk.json` 8 lines, `table_foreign.json` 1 line — `bound_at_create` on the creator's seat, the joiner's address gone). So: two regenerations as the plan requires, plus a one-line payload rewording and a test-file edit — the plan's "exactly two commits" sentence gets a forward note in the Review record (Task 1's re-review named it).
+- **`visibility_of` is the engine's `observe`** (`explain.rs:305–327`): game over AND a held seat → Public; the mover's own seat → Public; otherwise `observe(now, as_seat)` for the requester's seat (a watcher reads as the first non-mover seat, the same masked hand) and `HandCard::HiddenStartingOrder` in the mover's hand decides — nothing about the hidden set restated; an `observe` error is Withheld (fail-safe).
+- **The withheld payload is a function of the move and the claim alone** (`explain.rs:497–503`): `provenance = Provenance::of(&a.reconstruction)`, `text = describe_move(&a.mv, &a.state, rules)`, `reason = WITHHELD_REASON`; the independence pin `a_withheld_account_is_the_same_bytes_whatever_the_search_found` moves every feature value (I-2) and the bytes hold.
+- **`SeedPolicy::SoloOnly` is what every production constructor builds**: `Games::with_parts` sets `seed_policy: SeedPolicy::SoloOnly` (`games.rs:515`); every `Diagnostic` construction is a test constructor (`games.rs:461` the fixtures' `games()`, `:1295/:1785/:1826/:3201`, `tables.rs:2312`, `api.rs:2768/:3394`, `lib.rs:519` `in_memory*` — asserted Diagnostic at `lib.rs:2118`), the Worker's `init` under its switch (`crates/yokohama-worker/src/lib.rs:201`: `diagnostic_seeds` false → SoloOnly) or the wasm's `init_diagnostic()` (`crates/yokohama-wasm/src/lib.rs:135`; `init()` → SoloOnly at `:126`); `AppState::production` → `with_store_chat_archive_and_log` → asserted SoloOnly at `lib.rs:2101`; the NAS binary pinned end to end by `start_refusal`'s cell.
+- **The guard refuses the switch**: `worker/scripts/deploy-guard.mjs:39, :597` (rule 4b: `YOKOHAMA_DIAGNOSTIC_SEEDS` in a deployable file is a named failure); pinned at `deploy-guard.test.mjs:268` and `:617` (both the production and the open configurations).
+- **Mutants M1–M9** (after-mutants.log): every one RED at the cell the plan names and green everywhere else — M1 3 lib + 7 corpus; M2 1; M3 1; M4 2; M5 2 + 1 corpus; M6 2 + the Worker's cell; M7 the route cell + the NAS binary's cell; M8 1; M9 1.
+
+**The readings (Step 4).**
+- non-web crates (export of `1b8fc50c`, fenced): core 1,587 / 29 ign; CLI 857 / 2; oracle 191; difftest 52 / 5; bridge 81 + 4 node suites; eval_probe 214; solver 132; clippy clean.
+- web lane Rust rows (export of `1b8fc50c`): web 460 (426+5+6+2+4+17, wire_fixtures without the flag); identity:: 8; wasm32 check ok; both wasm builds ok; wasm 10; Worker 77.
+- web lane node rows + e2e (the checkout at the code head `8b7c24dd`): vitest 1,505 in 71 files; test:wasm 353; e2e 79 (78 green in the full 6.9-min run, the banner-width spec red on a 15 s deal-pick timeout under load — a timing race in the shared start helper, the page already dealt — and green alone on re-run in 2.4 s); Worker build + typecheck clean, test:scripts 537 in 25, the pool 224 in 11.
+- mutants M1–M9: all red at their cells (see the after-review section).
+
+**No fix wave was needed:** the after review found nothing beyond the task reviews' findings, all closed in their rounds; the corpus's commit count is recorded forward above; the residuals stand as recorded in Task 1's, Task 4's and Task 5's reviews. **The PR:** `security-s1` pushed; PR #49 against master, its merge left for S1's wrap after S1c. The live tier (Step 8) was NOT run in this session: the live corpus replay's two seeded rows need their rule first (an S1b item), so the test deploy and the §5.3 probes are owed at the stack's deploy.

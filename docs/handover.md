@@ -10,10 +10,11 @@ session close: rewrite the stale lines, do not append history (the decision log 
 
 ## Gates at HEAD
 
-The latest readings: the core PR plan's §"Review record", its 2026-10-09 entry
-([`plans/2026-10-08-security-s1-core-replay-plan.md`](plans/2026-10-08-security-s1-core-replay-plan.md)) — every per-edit suite at
-`de8ad8ed` (core 1,587 passed / 29 ignored; the CLI 855 / 2; the web lane's rows unchanged from cycle F's close §2), and the fifteen
-release gates as one sequence, **451 s** on the Mac (Darwin 27.0.0 arm64 — the M5 MacBook Air; cycle F read 534 s; the target is
+The latest readings: security S1a's close (guidingpath's 2026-10-09 S1a row; the plan
+[`plans/2026-10-09-security-s1a-leaks-plan.md`](plans/2026-10-09-security-s1a-leaks-plan.md) §"Review record") — every per-edit suite at
+`8b7c24dd` on `security-s1` (core 1,587 passed / 29 ignored; the CLI 857 / 2 — 855 + A1's two digest cells; the web lane's rows whole: web 460,
+wasm 10, Worker 77, vitest 1,505, test:wasm 353, test:scripts 537, the pool 224, e2e 79 (78 green in the full run; the banner-width spec red on a deal-pick timeout under load, green alone on re-run); the fifteen-gate roster NOT owed — core and the
+version unmoved), and before it the core PR's: the fifteen release gates as one sequence, **451 s** on the Mac (Darwin 27.0.0 arm64 — the M5 MacBook Air; cycle F read 534 s; the target is
 ≤420 s and its restatement, OD-6, is yours). Re-count at your own HEAD.
 
 ## Track 1 — V4 close-out: the owner annotates the ledger, then the findings doc, then D3 + W6
@@ -110,63 +111,14 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 1. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 2. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
-## Track 4 — Security remediation: the core PR landed; S1a's plan is written on `security-s1`; S1b, S1c, S2 and S3 stack on it (S4 is the public set, Track 2)
+## Track 4 — Security remediation: S1a landed on the stack (`security-s1`, PR #49, merge left undone); S1b "the cost bounds" is next, planned against the stack's head
 
-**State (2026-10-09):** the core PR is MERGED — **PR #48, master `9ab8c430`** (guidingpath's 2026-10-09 row; the plan
-`plans/2026-10-08-security-s1-core-replay-plan.md`, its §"Review record" the record of record, R-1–R-18): `is_listed_move`,
-`MoveCheck` and `replay_strict_with(.., Predicate)` with the 7-cell proof binary `crates/yokohama-core/tests/replay_check_equivalence.rs`;
-`SEMANTICS_REV` 7, the oracle and the checked boundary untouched; the readings in "Gates at HEAD" above. **The measurement S1 sizes
-from:** the review's 4P worst-case record (23,606 events, 1 MiB) replays in **54 ms** under the predicate check against **28.5 s** under
-`replay_strict`, the same digest. The entry documents: the spec `plans/2026-10-08-security-remediation-spec.md` (§1 the ten rulings,
-§2.1 S1's rows, §3, §5 the acceptance, §9 the corrections — §9.2 your branching ruling); the ledger `security-ledger.md` (A2 `open`
-with its core half landed; every other row `open`); the gitignored report and the four worst-case bodies under
-`docs/temp/security-review-2026-10-08/` (`report.md`, `reviewer-reports/`, `worst-case/`, `core-pr-sdd/` — the core PR's briefs,
-reports and probe sources); read them there, never commit them.
-
-**Your ruling at the merge (2026-10-09):** the core set had unique treatment — its own PR, reviewed before and after — because it
-modified the protected core files. The remainder does not touch them, so **S1 proper, then S2, then S3 run STACKED on ONE new branch
-cut from this master and merge back to master from there, not per cycle**; the per-cycle whole-branch reviews stand, and each cycle's
-plan is written against the stack's head.
-
-**S1 is THREE cycles (the M6.5c2 lesson), each planned against the stack's head:** S1a "the leaks" (A1, B1, B2,
-B3, B7, D5, D10, D11), S1b "the cost bounds" (A2, A3, B12, D6, D25, D27, D29's `archive_post` sentence; it carries
-the core PR's two notes — the CLAUDE.md parenthetical to drop, the "`replay_strict` itself is unedited" snapshot),
-S1c "the plumbing" (B8, B9, D1, D7, D12, D26, D28, D29's `is_token` sentence). **S1a's plan is
-[`plans/2026-10-09-security-s1a-leaks-plan.md`](plans/2026-10-09-security-s1a-leaks-plan.md)** on the branch
-`security-s1`, cut from master `e9824ec9` (the code of `9ab8c430` plus the core PR's close documents) — seven
-tasks in the core PR's shape, its §"Spec corrections" the seven forward corrections Task 6 records as the spec's
-§9.3. **Your rulings on it (2026-10-09):** reviewers are Opus for every task (the core PR's Fable reviews were the
-protected core files' exception; Sonnet/Opus and Opus/Opus are this sequence's tiers); B1 is served WITHHELD while
-the bot's starting order is hidden from the requester — you asked whether that is the opening round only: it is
-not, the kept card stays in the bot's hand, masked from every other seat, until the bot fulfils it, mid-game in
-every recorded game, and the review named it from the first bot move's feature values alone; B3 is the named
-`SeedPolicy::Diagnostic` opt-in for the fixtures and the Worker's pool, the production rule `SoloOnly`; the corpus
-regenerates once per wire-changing cycle, each diff read (a forward correction to spec §6). **The A2/B12 figures
-are measured** (the plan's §"The S1 figures"; raw logs `docs/temp/security-review-2026-10-08/s1a-measure/`):
-people's and the bot's games are 250–600 events under 60 KB pretty-printed, random play 15k–19k events and
-1.5–1.9 MB; the recommended knobs (a 4,096-event cap, 512 KiB body cap, 256 records / 128 MiB per caller, a
-2-permit semaphore with a 2 s bounded wait) are yours to confirm at S1b's plan (R-SEC8(f)).
+**State (2026-10-09, the S1a close):** **S1a "the leaks" is COMPLETE on `security-s1` at `8b7c24dd`, PR #49 against master, its merge LEFT UNDONE** (your note of 2026-10-09: S1b and S1c stack on the same branch and PR; the merge is S1's wrap after S1c). The record of record is the plan `plans/2026-10-09-security-s1a-leaks-plan.md`, its §"Review record" (the before review's 24 findings, Tasks 1–6's reviews, the after review); guidingpath's 2026-10-09 S1a row; the ledger `security-ledger.md` with A1, B1, B2, B3, B7, D5, D10, D11 `fixed` and their catchers named; the gitignored SDD ledger, briefs, reports and review reports under `docs/temp/security-review-2026-10-08/s1a-sdd/` (read them there, never commit them). The readings are the row's; the web lane's rows and the e2e tier ran whole at the head. **Three things to know before S1b:** (1) the live corpus replay (`worker/scripts/live-replay.mjs`) sends the walk's two seeded open-seat creates, which a production host now answers 400 (`SEED_NOT_SOLO`) — it needs a rule for those rows before any live tier runs (an S1b item); (2) the suggest fixture's chosen row moved to 0 in Task 1's regeneration and silently disarmed the client's runner-ups fence until Task 6 found and restored it — read every regeneration's diff for a fence moving, not only for a leak (the M6.1 lesson); (3) the record route's lock scope is pinned by nothing (a parked-read store double would) — a candidate for S1b's wave. The live tier (Task 7 Step 8: a test deploy to the NAS and/or the Worker through the guard, the §5.3 probes) is The live tier (Step 8) was NOT run in this session: the live corpus replay's two seeded rows need their rule first (an S1b item), so the test deploy and the §5.3 probes are owed at the stack's deploy..
 
 **Next session, in a FRESH context, in order:**
-1. `git checkout security-s1`; read the plan whole, its §"Names shared across tasks" first.
-2. **Task 7 Step 1, the "before" review:** execute Tasks 1–5's cells and the TS cells against scratch
-   implementations of the plan's own blocks in a `git archive` export of `e9824ec9`, every mutant M1–M9 red at
-   its cell; three cells are written expecting to teach something (Task 2's drive words, Task 5(b)'s
-   reachability, Task 4(e)'s seat control); corrections at the SOURCE in the plan, as a new commit on the branch,
-   recorded in the plan's §"Review record".
-3. Dispatch Task 1 (Opus implementer, Opus reviewer on an export), the SDD ledger under
-   `docs/temp/security-review-2026-10-08/s1a-sdd/` (full reports to files, three-line replies, the
-   probe-and-name-concerns paragraph, no `rm -r`, no Monitor); then Tasks 2–6.
-4. The "after" whole-branch review, the per-edit suites with the web lane's rows and `npm run e2e` (the client
-   moved; no fifteen-gate roster — core and the version are unmoved), the close's documents (the ledger's eight
-   rows, guidingpath's row and current state, this board), **then the PR: `security-s1` pushed and a PR opened
-   against master, its merge LEFT UNDONE for S1's wrap after S1c** (your note of 2026-10-09; S1b and S1c stack on
-   the same branch and PR). A test deploy and the §5.3 probes are allowed while your maintenance window
-   (2026-10-09/10) holds — the plan's Task 7 Step 8 — else they are owed at the stack's deploy.
-5. The hand-off into S1b's planning session (Task 7 Step 9): this board's Track 4 rewritten for S1b (the stack's
-   head and PR; the figures and your knob choice; the core PR's two notes; the rows S1b and S1c own), memory
-   updated; then S1b's plan against the stack's head, S1c, the merge at S1's wrap on your word; S2's brainstorm
-   from the ledger after; S3.
+1. `git checkout security-s1`; read the board, then the spec's §2.1 rows A2, A3, B12, D6, D25, D27, D29 and its §9.3 (S1a's corrections and the S1 figures).
+2. **Brainstorm nothing — write S1b's plan** (`plans/2026-10-09-security-s1b-cost-bounds-plan.md` or dated the day it is written) against the stack's head, in S1a's shape (seven tasks; a before review that executes the plan's own cells; Opus reviewers; the SDD ledger under `docs/temp/security-review-2026-10-08/s1b-sdd/`): the A2 event cap, the NAS semaphore and the wiring of `replay_strict_with(.., Predicate)` at every untrusted-record entry; A3; the B12 body cap and per-caller quota; D6, D25, D27; D29's archive sentence. **Your knob choice first (R-SEC8(f))**: the recommended 4,096-event cap / 512 KiB body / 256 records and 128 MiB per caller / 2 permits with a 2 s wait, or the alternative (24,000 events, the 2 MiB adapter body) — the plan transcribes §"The S1 figures" either way. It carries the core PR's two notes (the CLAUDE.md parenthetical "S1 wires the web layer to it" to drop; the "`replay_strict` itself is unedited" snapshot) and S1a's live-replay item.
+3. Then S1c "the plumbing" (B8, B9, D1, D7, D12, D26, D28, D29's `is_token` sentence) on the same branch; the merge at S1's wrap on your word; S2's brainstorm from the ledger after; S3.
 
 **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
