@@ -2129,13 +2129,18 @@ task is the ruling as given.
   header list, :593 the rule beside the test clock's) and `worker/scripts/deploy-guard.test.mjs` (:262 the cell's
   twin); `crates/yokohama-worker/src/receipt.rs` (`r2_at`) and the positional-array cell (lib.rs:896)
 - Modify: `docs/web-lane.md` §12 (one row, so `worker/scripts/lane-variables.test.mjs` stays green — the
-  table is held to the code's `YOKOHAMA_*` names both ways)
-- Modify: `web/src/NewGame.tsx` (:185–240, :388–420), `web/src/NewGame.test.tsx` (the "the seed" block, :326+)
+  table is held to the code's `YOKOHAMA_*` names both ways); `worker/RUNBOOK.md` §3 (the variables table: the
+  switch's row, the test clock's twin) and `worker/README.md` §9.3 (the guard's checks: 4b) and §9.4 (the "In
+  brief" list) — the Worker's operator documents (Task 4's review, M-6)
+- Modify: `crates/yokohama-web/tests/start_refusal.rs` (the NAS-path cell, Step 1 (b2))
+- Modify: `web/src/NewGame.tsx` (:185–240, :388–420), `web/src/NewGame.test.tsx` (the "the seed" block, :326+; the
+  gate's cell)
 - Test: `tables.rs`'s `mod tests`, `lib.rs`'s route cells, the Worker crate's cells, `deploy-guard.test.mjs`,
   `lane-variables.test.mjs`, `NewGame.test.tsx`
 
 **Interfaces:**
-- Produces: `games::SeedPolicy`, `Games::with_seed_policy`, `Games::seed_policy`, `tables::SEED_NOT_SOLO`,
+- Produces: `games::SeedPolicy` (no `Default` derive — nothing reads one, and a flipped attribute passed every
+  suite; Task 4's review, M-3), `Games::with_seed_policy`, `Games::seed_policy`, `tables::SEED_NOT_SOLO`,
   `AppState::with_seed_policy`, `AppState::production(..)`, the Worker's `YOKOHAMA_DIAGNOSTIC_SEEDS`, the browser
   host's `init_diagnostic()`.
 
@@ -2206,11 +2211,14 @@ task is the ruling as given.
 (:1922):
 
 ```rust
-    /// **The production constructor's policy is `SoloOnly`** — pinned through
-    /// the path `AppState::new` takes minus its two environment reads
-    /// (`AppState::production`), so a test constructor's `Diagnostic` can
-    /// never be inherited by it: a seeded create beside an open seat is a 400
-    /// through the router, and the same without a seed a 201.
+    /// **The production constructor's policy is `SoloOnly`** —
+    /// `AppState::production`, the path `AppState::new` takes past its two
+    /// environment reads, built here in process: a seeded create beside an
+    /// open seat is a 400 through the router and the same without a seed a
+    /// 201, so `production` never inherits a test constructor's `Diagnostic`.
+    /// `new`'s own call to it — `main`'s path, which nothing in process runs —
+    /// is pinned on the binary by `start_refusal.rs`'s
+    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`.
     #[tokio::test]
     async fn the_production_state_honours_a_seed_at_a_solo_table_only() {
         let state = Arc::new(
@@ -2245,22 +2253,41 @@ task is the ruling as given.
     }
 ```
 
+(b2) In `crates/yokohama-web/tests/start_refusal.rs`, in its harness (which spawns `CARGO_BIN_EXE_yokohama-web`
+with a controlled child environment) — **the NAS's own path**, `main` → `AppState::new` → `production`, which no
+in-process cell runs (Task 4's review, I-1: `new`'s pre-task body through the Diagnostic wrapper passed every
+suite); the harness binds port 0, so the cell picks a free port first:
+
+```rust
+/// A port nobody held a moment ago: the OS's pick for a listener bound to
+/// port 0, released at once. Another process taking it in between fails the
+/// start loudly — the bind's error and an exit — never silently.
+#[cfg(feature = "open-door")]
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).expect("a free port").port()
+}
+```
+
 (c) In `crates/yokohama-worker/src/lib.rs`'s `mod tests`, beside the cell that uses `CREATE` (:1084):
 
 ```rust
     /// **The Worker honours a seed beside an open seat only under
     /// `YOKOHAMA_DIAGNOSTIC_SEEDS`** (R-SEC8(b); the pool's test files set it,
     /// no deployable file may — the deploy guard's rule): without the switch
-    /// the corpus's own create body is a 400 in the layer's sentence; with it,
-    /// a 201.
+    /// — `false`, or the key OMITTED, the fail-safe for a shell that sends
+    /// none — the corpus's own create body is a 400 in the layer's sentence;
+    /// with it, a 201.
     #[test]
     fn a_seeded_create_beside_an_open_seat_needs_the_diagnostic_switch() {
         let _s = serial();
-        init_inner(&door_config_with_seeds("off", "worker", false)).unwrap();
-        let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
-        assert_eq!(r.status, 400, "{}", r.body);
-        assert!(r.body.contains(yokohama_web::tables::SEED_NOT_SOLO), "{}", r.body);
-        assert!(stored(Doc::Table).is_empty(), "a refused create wrote a table");
+        let omitted = r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}"#;
+        for (what, configuration) in [("false", door_config_with_seeds("off", "worker", false)), ("omitted", omitted.to_string())] {
+            init_inner(&configuration).unwrap();
+            let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
+            assert_eq!(r.status, 400, "the key {what}: {}", r.body);
+            assert!(r.body.contains(yokohama_web::tables::SEED_NOT_SOLO), "the key {what}: {}", r.body);
+            assert!(stored(Doc::Table).is_empty(), "the key {what}: a refused create wrote a table");
+        }
         init_inner(&config("off")).unwrap();
         let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
         assert_eq!(r.status, 201, "{}", r.body);
@@ -2303,6 +2330,14 @@ this cell; Task 4's report, C4):
   });
 ```
 
+and, the twin of the open-door clock cell at :614 (rule 4b reaches the open and gate files too; Task 4's review, M-4):
+
+```js
+  it("passes a release module, a verified tree and a production configuration", () => {
+    expect(deployGuard(worker())).toEqual([]);
+  });
+```
+
 (`deployGuard(worker({ … }))` is what the clock cell at :262 calls to judge a configuration's text, and `toEqual([…])`
 its exact twin — the seeded fixture yields exactly one failure, measured; `toContainEqual` would let a spurious
 second failure pass.)
@@ -2325,6 +2360,26 @@ second failure pass.)
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
     expect(posted(stub).seed).toBeUndefined();
     expect(posted(stub).seats).toEqual([{ user: ME }, { open: true }]);
+  });
+```
+
+and beside it, the gate's own cell (Task 4's review, M-1: without `seedAllowed &&` on `seedError`, a refused seed typed
+at a solo table keeps the button held after a seat opens, for a reason the fold no longer shows):
+
+```tsx
+  it("lets a refused seed go once a seat opens, so the button is never held for a reason nobody can see", async () => {
+    const { stub, user } = show();
+    await user.click(screen.getByText("Advanced", { selector: "summary" }));
+    await user.type(screen.getByLabelText("Seed"), "1e3");
+    // The premise: held, with its reason on screen.
+    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    expect(screen.getByText(/^Not a whole number:/)).toBeInTheDocument();
+    await user.selectOptions(seat("Blue"), "open");
+    const open = screen.getByRole("button", { name: "Open table" });
+    expect(open.hasAttribute("disabled"), "held for a reason nobody can see").toBe(false);
+    await user.click(open);
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).seed).toBeUndefined();
   });
 ```
 
@@ -2353,11 +2408,16 @@ npx vitest run src/NewGame.test.tsx -t "hides the seed" 2>&1 | tail -5` — RED 
 /// [`Games::with_limits`] and so [`Games::new`] — "nothing but a cell builds
 /// one this way" — build `Diagnostic`; `AppState`'s in-memory and `with_store`
 /// constructors are `Diagnostic` and `AppState::production` (the NAS binary's
-/// path) is `SoloOnly`, pinned; the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`,
-/// `on` in its pool's test files only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// path) is `SoloOnly` — pinned in process by the route cell
+/// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
+/// binary, through `main` and `AppState::new`, by `start_refusal.rs`'s
+/// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`;
+/// the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` in its pool's test files
+/// only; and the browser host's `init()` is `SoloOnly`, its `init_diagnostic()`
+/// the harness's opt-in by name. No `Default`: every policy is named where it
+/// is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedPolicy {
-    #[default]
     SoloOnly,
     Diagnostic,
 }
@@ -2430,8 +2490,11 @@ constructor directly." Split `new` (:414–435):
     /// [`Self::new`] past its two environment reads — the production state
     /// over the store and the archive it was handed: the one constructor
     /// directly (never a test constructor, whose `SeedPolicy` is
-    /// `Diagnostic`), `SoloOnly` by construction, pinned by
-    /// `the_production_state_honours_a_seed_at_a_solo_table_only`.
+    /// `Diagnostic`), `SoloOnly` by construction. Pinned in process by
+    /// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
+    /// binary — `main` → [`Self::new`] → here, the path no in-process cell
+    /// runs — by `start_refusal.rs`'s
+    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`.
     pub fn production(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -2475,8 +2538,9 @@ constructor directly." Split `new` (:414–435):
         Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
     }
 
-    /// Every constructor above is this one with a store, an identity or a chat
-    /// chosen for it, and this one is [`Self::with_store_chat_and_archive`] with
+    /// Every constructor above but [`Self::new`] and [`Self::production`] is
+    /// this one with a store, an identity or a chat chosen for it, and this one
+    /// is [`Self::with_store_chat_and_archive`] with
     /// no archive — since M6.5a THAT is the one constructor that builds anything.
     ///
     /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
@@ -2498,7 +2562,8 @@ constructor directly." Split `new` (:414–435):
     ///
     /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
     /// no person's game — honours a seed at any table; the production path is
-    /// [`Self::production`], which builds the one constructor directly.
+    /// [`Self::production`], which calls `with_store_chat_archive_and_log`
+    /// directly.
     pub fn with_store_chat_and_archive(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -2509,10 +2574,12 @@ constructor directly." Split `new` (:414–435):
             .with_seed_policy(games::SeedPolicy::Diagnostic)
     }
 
-    /// [`Self::with_store_chat_and_archive`] with the log chosen: the one seam a
-    /// cell needs to read what the constructor says while it seeds (M6.5c2
-    /// cycle E). The NAS's binary passes [`log::StderrLog`] through the
-    /// constructor above and nothing else.
+    /// [`Self::with_store_chat_and_archive`] with the log chosen and without
+    /// that constructor's `Diagnostic` opt-in — so under the production seed
+    /// rule, `SoloOnly`, which [`Games::with_parts`] builds (R-SEC8(b)): the one
+    /// seam a cell needs to read what the constructor says while it seeds
+    /// (M6.5c2 cycle E). The NAS's binary reaches it through
+    /// [`Self::production`], passing [`log::StderrLog`].
     pub(crate) fn with_store_chat_archive_and_log(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -2594,8 +2661,9 @@ constructor directly." Split `new` (:414–435):
         Self { ttls, ..self }
     }
 
-    /// This state under `policy` ([`games::SeedPolicy`]) — for a cell that
-    /// asks the production rule of an in-memory state.
+    /// This state under `policy` ([`games::SeedPolicy`]) — the builder step
+    /// [`Self::with_store_chat_and_archive`] takes to opt every test
+    /// constructor into `Diagnostic`, its one caller.
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
         self.games = self.games.with_seed_policy(policy);
         self
@@ -2609,6 +2677,16 @@ closing paren:** `api.rs`'s `games_with(..)` (:2662) and the `off` builder (:328
 `every_bump_site_answers_under_no_signal` (:1279), the two builders at :1768 and :1808, and `watched_games`
 (:3182); `tables.rs`'s builder (:2302). (`lib.rs:528` is the production constructor, which
 `with_store_chat_and_archive` opts in above.)
+
+The constructor split makes sentences elsewhere false — one doc pass (Task 4's review, M-5):
+`with_store_chat_archive_and_log`'s doc ("the NAS's binary passes … through the constructor above and nothing
+else": the NAS reaches it through `production`, and the two constructors differ by the seed policy too);
+`signal.rs`'s `seed_house` and `tables.rs`'s citation of `with_store_chat_and_archive` as the NAS's seeding
+constructor; `sweep.rs`'s "`AppState::new` asks it once the archive is resolved and before the store is built"
+(`production` asks it, after `new` has built the `FsStore` value); `AppState::with_seed_policy`'s doc (its one
+caller is `with_store_chat_and_archive`); `SeedPolicy`'s "who sets what" names the third host. And every sentence
+saying the production rule is "pinned" names the cell that pins it: `the_production_state_…` for `production`,
+the `start_refusal.rs` cell for `new`.
 
 Run: `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — green, **421**. `cargo test
 -p yokohama-web` — `wire_fixtures` and the gate green: the corpus's `Api::with_chat` goes through
@@ -2758,7 +2836,11 @@ fold is ABSENT, and its "refuses a bad seed in its fold" half is its own cell on
 reason sentence, no chart) and `:188` exercises the collapsed-features control on the SUGGEST panel, where the same
 chart still draws (the old cell's chart-geometry checks move there with it; Task 1's B1 met the tier here; measured
 73/4 before, the four being these). The two-defect probes of cell (a) take `config_of`'s LAST refusal, the blank
-password, as the link before the seed's (adjacent), and the unusable id as the link after.
+password, as the link before the seed's (adjacent), and the unusable id as the link after. The solo cell ticks the
+password box too, so the form's "everything open" width is measured with the fold AND the password field open
+(Task 4's review, M-7). What the old why cell pinned and nothing now does end to end — the served `why` chart's
+geometry in a real browser (jsdom pins it; the same `ExplanationView` draws on the suggest panel) — is a RESIDUAL:
+reaching a served `why` end to end needs a finished game, recorded for the close.
 
 - [ ] **Step 6: Lint, suites, commit.** `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `cargo test -p yokohama-web`, `-p yokohama-worker`, `-p yokohama-wasm` green; the web lane's wasm check and
