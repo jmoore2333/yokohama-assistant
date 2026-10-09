@@ -529,10 +529,12 @@ pub enum MoveCheck {
     /// The single-candidate exact check
     /// [`crate::game::move_legality::is_listed_move`], then the raw transition
     /// `apply_move_unchecked`: the same accepted set and the same states
-    /// without a list materialized per event
+    /// without the retreat family's product materialized per event
     /// (`tests/replay_check_equivalence.rs` is the proof). A replay's cost then
-    /// stops following the legal families' sizes — the retreat family reaches
-    /// 442,368 moves in legal play — which is what an UNTRUSTED record (an
+    /// stops following that family's size — 442,368 moves in legal play —
+    /// while the two families `is_move_legal` delegates (area actions and
+    /// choice resolutions, max 154 and 114 measured) and the Movement family's
+    /// own small list stay materialized; that is what an UNTRUSTED record (an
     /// archive upload, a restored save) must get.
     Predicate,
 }
@@ -571,7 +573,9 @@ fn fold_one_event_with(
 /// preamble below REPEATS its sentences rather than factoring them out, so the
 /// existing function's text is untouched; the cells in
 /// `tests/replay_check_equivalence.rs` hold the two functions' refusals equal,
-/// index and sentence, on every tampered record `game_record.rs` builds.
+/// index and sentence, on every tampered record `game_record.rs` builds and
+/// on the binary's own shapes, and their acceptances equal on an
+/// engine-version drift and on legal reveal events.
 pub fn replay_strict_with(record: &GameRecord, rules: &Rules, check: MoveCheck) -> Result<GameState, ReplayError> {
     let expected = rules.content_hash();
     if record.rules_hash != expected {

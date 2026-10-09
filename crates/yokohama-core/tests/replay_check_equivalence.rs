@@ -1,8 +1,9 @@
 //! The 2026-10-08 ruling R-SEC2's record-level proof: `replay_strict_with(..,
 //! MoveCheck::Predicate)` accepts EXACTLY the records `replay_strict` accepts,
-//! folds them to the same states, and refuses the same tampered records at the
-//! same index with the same sentence — so the strict replay can stop
-//! materializing a legal list per event with `SEMANTICS_REV` unmoved.
+//! folds them to the same states, refuses the same tampered records at the
+//! same index with the same sentence, and accepts what it accepts — an
+//! engine-version drift, legal reveal events — so the strict replay can stop
+//! materializing the retreat family per event with `SEMANTICS_REV` unmoved.
 //! Companion to `move_legality.rs`'s `is_listed_move_is_exactly_membership_in_the_legal_list`
 //! (the move-level half). Per-edit, never `#[ignore]`d: a proof you can defer
 //! is a proof that rots.
@@ -13,7 +14,7 @@ use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
     apply_move_unchecked, finalize_setup, get_legal_moves, is_game_over, is_move_legal, new_game,
     replay_strict, replay_strict_with, state_at, state_digest, AreaId, GameConfig, GameRecord, GameState,
-    Move, MoveCheck, PathMode, PlayerId, PresidentLocation, RecordedEvent, ReplayError, Rules,
+    Move, MoveCheck, OrderCardId, PathMode, PlayerId, PresidentLocation, RecordedEvent, ReplayError, Rules,
     StartingOrderChoice, SEMANTICS_REV,
 };
 
@@ -169,12 +170,15 @@ fn an_empty_record_folds_to_the_same_initial_state_under_both_checks() {
     assert_eq!(predicate, strict);
 }
 
-/// Every tampered record `game_record.rs` refuses, both replays refuse at the
-/// same index with the same sentence — the preamble and digest check
-/// `replay_strict_with` repeats are pinned to `replay_strict`'s words here —
-/// and so are the four shapes only this binary builds: a non-canonical
-/// witness (f), a family member out of its phase (i), an invariant break (g)
-/// and a move after the game's end (h).
+/// Every tampered record `game_record.rs` refuses — an out-of-phase move (a),
+/// a wrong digest (b), a rules-hash mismatch (c), no provenance (d), another
+/// rev (e), a broken state though every event applied (g), a dropped last
+/// event under the full run's digest (k), an illegal move inserted mid-record
+/// (m) — both replays refuse at the same index with the same sentence (the
+/// preamble and digest check `replay_strict_with` repeats are pinned to
+/// `replay_strict`'s words here), and so do the three shapes only this binary
+/// builds: a non-canonical witness (f), a family member out of its phase (i),
+/// a move after the game's end (h).
 #[test]
 fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     let rules = Rules::standard();
@@ -360,11 +364,131 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     assert_eq!(predicate, strict, "a move after the end: the two replays disagree");
     refusals += 1;
 
+    // (k) the last event dropped under the full run's digest
+    //     (game_record.rs:275-301): every event applies and the state is
+    //     valid, so only the digest check refuses — at the past-the-end index,
+    //     with the digest sentence.
+    let mut r = stamped.clone();
+    r.events.pop();
+    let (strict, predicate) = both(&r, &rules);
+    assert!(
+        matches!(&strict, Err((i, m)) if *i == r.events.len() && m.starts_with("terminal-state digest mismatch")),
+        "premise: a dropped last event is refused by the digest check: {strict:?}",
+    );
+    assert_eq!(predicate, strict, "a dropped last event: the two replays disagree");
+    refusals += 1;
+
+    // (m) an illegal move INSERTED mid-record (game_record.rs:66-80): refused
+    //     at its own index, every event before it folded.
+    let mut r = stamped.clone();
+    let mid = r.events.len() / 2;
+    r.events.insert(mid, RecordedEvent::Move(Move::FulfillOrder { order_id: OrderCardId(255) }));
+    let (strict, predicate) = both(&r, &rules);
+    assert_eq!(strict, Err((mid, NOT_LISTED.to_string())), "premise: an inserted illegal move is refused at its index");
+    assert_eq!(predicate, strict, "an inserted illegal move: the two replays disagree");
+    refusals += 1;
+
     println!(
         "tampers: walked {walked}, witness {witness_tampers}, repeated-hop {repeated_hop_tampers}, \
          out-of-phase members {out_of_phase_tampers}; the finished game held {extra} events"
     );
-    assert_eq!(refusals, 8, "every refusal shape above ran");
+    assert_eq!(refusals, 10, "every refusal shape above ran");
+}
+
+/// The one provenance key strict replay deliberately does NOT gate (the
+/// 2026-07-27 decoupling, game_record.rs:105-115): a record from another
+/// release at the same `SEMANTICS_REV` is ACCEPTED. An archive upload or a
+/// restored save from an older release is exactly such a record, so the
+/// predicate replay must accept it too, to the same digest — a version gate
+/// added to `replay_strict_with`'s preamble (mutant M7) is what this refuses.
+#[test]
+fn an_engine_version_drift_is_accepted_under_both_checks() {
+    let rules = Rules::standard();
+    let (final_state, mut record) = common::run_recorded_game(7, 2, &rules);
+    record.stamp_terminal_digest(&final_state);
+    record.engine_version = "0.0.0-other-release".into();
+    let (strict, predicate) = both(&record, &rules);
+    assert_eq!(strict, Ok(state_digest(&final_state)), "premise: replay_strict accepts the drift");
+    assert_eq!(predicate, strict, "the predicate replay must accept the drift too");
+}
+
+/// LEGAL reveal events on the SUCCESS path — `RevealOrders` (the bottom deck
+/// card and a removed-pile card: the conservation-by-exchange path),
+/// `RevealTechs`, and `RevealStartingOrder` of a hidden player — interleaved
+/// with random legal play to the game's end: both replays fold the record to
+/// the live game's own terminal digest. Under `Predicate` every non-move event
+/// is `fold_one_event` itself by construction; this cell holds that
+/// construction (mutant M9: a `Predicate` arm that skips the deck reveals
+/// folds on to a different state, and this cell goes red).
+#[test]
+fn legal_reveal_events_fold_identically_on_the_success_path() {
+    let rules = Rules::standard();
+    let hidden = PlayerId::new(1);
+    let (mut orders, mut exchanges, mut techs, mut starting) = (0usize, 0usize, 0usize, 0usize);
+    for seed in 0..3u64 {
+        let pending = new_game(GameConfig::for_player_count(2), &rules, seed).expect("new_game");
+        let record_config = pending.state.config.clone();
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown];
+        let mut record = GameRecord::new(seed, record_config, choices.clone(), &rules);
+        let mut state = finalize_setup(pending, &choices).expect("finalize_setup");
+        let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0x5EED);
+        let mut step = 0usize;
+        while !is_game_over(&state) && step < 20_000 {
+            if step % 29 == 7 {
+                let mut s = state.clone();
+                let ev = match rng.gen_range(0..3u8) {
+                    0 if state.order_deck.len() >= 2 => {
+                        let mut cards = vec![state.order_deck[0]];
+                        if let Some(&c) = state.orders_removed.first() {
+                            cards.push(c);
+                        }
+                        let exchange = cards.len() == 2;
+                        s.arrange_orders_on_top(&cards).ok().map(|_| {
+                            orders += 1;
+                            if exchange {
+                                exchanges += 1;
+                            }
+                            RecordedEvent::RevealOrders(cards)
+                        })
+                    }
+                    1 if state.tech_deck.len() >= 2 => {
+                        let cards = vec![state.tech_deck[0], state.tech_deck[1]];
+                        s.arrange_techs_on_top(&cards).ok().map(|_| {
+                            techs += 1;
+                            RecordedEvent::RevealTechs(cards)
+                        })
+                    }
+                    2 if state.player(hidden).starting_order_hidden
+                        && state.player(hidden).order_cards_in_hand.len() < 3 =>
+                    {
+                        let card = *state.orders_removed.last().expect("Unknown parks both dealt cards");
+                        s.reveal_starting_order(hidden, card).ok().map(|_| {
+                            starting += 1;
+                            RecordedEvent::RevealStartingOrder { player: hidden, card }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(ev) = ev {
+                    state = s;
+                    record.push_event(ev);
+                }
+            }
+            let moves = get_legal_moves(&state, &rules);
+            assert!(!moves.is_empty(), "seed {seed}: a live state offers a move");
+            let mv = moves[rng.gen_range(0..moves.len())].clone();
+            state = apply_move_unchecked(&state, &mv, &rules).expect("a listed move applies");
+            record.push_move(mv);
+            step += 1;
+        }
+        assert!(is_game_over(&state), "seed {seed}: the game ran to its end");
+        record.stamp_terminal_digest(&state);
+        let (strict, predicate) = both(&record, &rules);
+        assert_eq!(strict, Ok(state_digest(&state)), "seed {seed}: replay_strict reproduces the live game");
+        assert_eq!(predicate, strict, "seed {seed}: the predicate replay diverged on a record with reveals");
+    }
+    println!("reveals on the success path: orders {orders} (exchanges {exchanges}), techs {techs}, starting {starting}");
+    assert!(orders > 0 && exchanges > 0 && techs > 0 && starting > 0, "every reveal kind ran at least once");
 }
 
 /// Recorded, never asserted: the wall-clock of both replays over the longest
