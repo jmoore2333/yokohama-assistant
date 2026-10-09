@@ -109,8 +109,13 @@ are S1b's to act on, when A2's wiring lands.
    the one fault a cell can reach through the API is a bot whose own deal is unrecorded (a record with an
    `Unknown` choice at the bot's seat), which Task 5's cell installs; the filter is unit-pinned beside it.
 6. **§2.1 D11, the fix.** "The record route's 'over' read under the lock" is met and joined by a comparison:
-   the stored record's event count against the handle's, so a finished game whose last save failed answers a
-   409 naming the failed save rather than the running record with its seed.
+   the stored record's event count against the handle's AND its terminal digest against the digest of the
+   handle's LIVE state — what a successful final save stamps; the record's own `terminal_digest` field does not
+   track the live state, `None` for a game dealt in process and the loaded value for a rebuilt one (Task 5's
+   fix round, F1) — (the count alone is defeated by undos under failing store writes and a different line replayed to the same
+   length — measured in Task 5, six undos and the same 356 events, the running record served with its seed), so a
+   finished game whose last save failed answers a 409 naming the failed save rather than the running record with
+   its seed.
 7. **§5.3, the live acceptance, and §9.2's stacked branch.** Each S1 cycle ends with a pushed PR whose merge
    waits for S1's wrap (the owner, 2026-10-09: "the plan will need to end with a PR, it can leave the merge
    undone"); a test deploy of the branch's build to either host and the review's probes are allowed in the
@@ -239,7 +244,7 @@ Seven inputs the spec implies and this plan pins, each to the task that owns the
 | `AppState::with_seed_policy(self, SeedPolicy) -> Self` | `crates/yokohama-web/src/lib.rs`, `pub` | the builder step the corpus walk and the gate's harness call (Task 4) |
 | `YOKOHAMA_DIAGNOSTIC_SEEDS` · `InitConfig.diagnostic_seeds: Option<bool>` | `worker/src/config.ts`, `crates/yokohama-worker/src/config.rs` | the Worker's seed switch: `on` only in `wrangler.test.jsonc` and `wrangler.open.test.jsonc`; the deploy guard refuses it in a deployable file (Task 4) |
 | `api::lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>` | `api.rs`, `pub(crate)` | the `input` reply's messages when THIS step engaged a lockdown: the lines up to and including the lockdown line, or the reason alone (Task 5) |
-| `api::RECORD_UNSAVED: &str` | `api.rs`, `pub(crate)` | the 409 a finished game whose stored record is shorter than the handle's answers (Task 5) |
+| `api::RECORD_UNSAVED: &str` | `api.rs`, `pub(crate)` | the 409 a finished game whose stored record is not the handle's finished game answers — shorter, or of the same length without the digest of the handle's live state (Task 5) |
 | `observe(state, seat) -> Result<PlayerView, ViewError>` · `HandCard::HiddenStartingOrder` · `PlayerView.players[i].hand` | `crates/yokohama-core/src/game/observe.rs:26`; `types/view.rs:28` — at the crate root as `yokohama_core::game::observe`, `yokohama_core::HandCard` | the engine's own masking rule Task 1's visibility reads: for a non-viewer seat the unfulfilled starting order is `HiddenStartingOrder` (`observe.rs:160-176`) |
 | `state_at(record, k, rules)` · `GameState.order_deck` / `tech_deck` | `yokohama_core` | Task 2 compares the deck lengths of the state before the trailing event with the current state's |
 | `wire_fixtures::constructed()` · `BOT_SEED` · `SETUP_SEED` | `crates/yokohama-web/tests/wire_fixtures.rs:2170`, `:99`, `:60` | where the `why` fixtures are built in process (Task 1 adds `why_withheld` and rebuilds `why` from a finished game) |
@@ -2954,7 +2959,8 @@ git commit -m "web: a creator's seed is honoured at a solo table only — SeedPo
 - Consumes: `Repl::step`'s text (the three lockdown sites append `lockdown_dump()` — `seed: <seed>\nturn:
   <n>\n<log tail>` — under a `LOCKDOWN — <reason>` line, `repl.rs:2825`, `:2903`, `:2940`, `:3424–3431`);
   `games.store().read(Doc::Record, id)`; the helpers `a_finished_two_person_game`, `get_as`, `post_as`.
-- Produces: `api::lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>`; `api::RECORD_UNSAVED`.
+- Produces: `api::lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>`; `api::RECORD_UNSAVED`; `record`
+  holding the stored record to the handle by count AND terminal digest.
 
 - [ ] **Step 1: The failing cells.**
 
@@ -3074,8 +3080,14 @@ refuses an `Unknown` choice on a sim-shaped record, that refusal IS the report's
     /// dropped the lock, and served whatever the store held — which, after a
     /// failed final persist, is the record from before the end, its seed in
     /// it. The route now reads the store under the handle's lock and holds the
-    /// stored record to the handle's event count: a shorter one is a 409 in
-    /// `RECORD_UNSAVED`'s words.
+    /// stored record to the handle by its event count AND its terminal digest:
+    /// a shorter one is a 409 in `RECORD_UNSAVED`'s words, and so is one of the
+    /// same length that is not the finished game, which carries no digest, or
+    /// another. Measured reachable: a seat's own-turn undos while the store
+    /// failed writes, then another line to the same count, left the store a
+    /// running record of the handle's length. The one-short arm keeps the
+    /// finished game's digest, so the COUNT refuses it; the same-length arm
+    /// carries none, so the DIGEST does.
     #[tokio::test]
     async fn the_record_route_refuses_a_finished_game_whose_stored_record_is_behind_the_handle() {
         let (state, id, _) = a_finished_two_person_game("unsaved").await;
@@ -3087,11 +3099,26 @@ refuses an `Unknown` choice on a sim-shaped record, that refusal IS the report's
         let (json, version) = store.read(Doc::Record, id).expect("a store").expect("the record");
         let mut record: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
         record.events.pop();
-        store
+        let version = store
             .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&record).unwrap(), Some(version))
             .expect("the stale record");
         let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], api::RECORD_UNSAVED);
+        assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+        // The same length on another line, with no terminal digest: the
+        // finished record with its last two events swapped.
+        let finished: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
+        let mut other = finished.clone();
+        let n = other.events.len();
+        other.events.swap(n - 1, n - 2);
+        other.terminal_digest = None;
+        assert_ne!(other.events, finished.events, "premise: the stored line differs from the handle's");
+        store
+            .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
+            .expect("the same-length record");
+        let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line: {body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
     }
@@ -3140,8 +3167,9 @@ and in `input`, replace `let messages: Vec<String> = body.lines()…collect();` 
 Beside `record` (:2103):
 
 ```rust
-/// The 409 a finished game whose STORED record is shorter than the handle's
-/// answers (finding D11): its last save failed, so the store holds the game
+/// The 409 a finished game whose STORED record is not the finished game
+/// answers (finding D11) — shorter than the handle's, or without the finished
+/// state's terminal digest: its last save failed, so the store holds the game
 /// from before the end — a running game's record, seed and all.
 pub(crate) const RECORD_UNSAVED: &str =
     "the record is available once the game is over and its last move is saved — that save failed";
@@ -3153,7 +3181,8 @@ and `record`'s body from `let handle = …` (:2119) on:
     let handle = games.handle(id)?;
     // Under the lock, both facts: the handle's "over" and the stored bytes,
     // held to each other (finding D11) — a failed final persist leaves the
-    // store one move behind a resident handle that says over.
+    // store behind a resident handle that says over: one move short, or, with
+    // an undo and a replay before it, the same length on another line.
     let repl = games.lock_game(&handle, id)?;
     if !repl.session.is_over() {
         return Err(ApiError {
@@ -3170,23 +3199,37 @@ and `record`'s body from `let handle = …` (:2119) on:
     #[derive(Deserialize)]
     struct Events {
         events: Vec<serde_json::Value>,
+        terminal_digest: Option<String>,
     }
     let stored: Events = serde_json::from_str(&json)
         .map_err(|e| ApiError::server_error(format!("the stored record does not parse: {e}")))?;
-    if stored.events.len() < repl.session.record().events.len() {
+    // **The digest of the handle's STATE, never the handle record's own
+    // `terminal_digest` field.** `Session::to_record_json` stamps the live
+    // state's digest on a clone at every write, so a stored record names the
+    // state it was written from; the in-memory field is what the session was
+    // loaded with — `None` for a game dealt in this process, the loaded
+    // record's for a rebuilt one — and no apply or undo refreshes it.
+    let finished = yokohama_core::state_digest(repl.session.state());
+    if stored.events.len() < repl.session.record().events.len()
+        || stored.terminal_digest.as_deref() != Some(finished.as_str())
+    {
         return Err(ApiError { status: StatusCode::CONFLICT, message: RECORD_UNSAVED.to_string(), table_status: None, foreign_bot: None });
     }
     Ok(json)
 ```
 
 (`record`'s doc gains: "Since security S1a the store is read UNDER the handle's lock and its record held to
-the handle's event count — a shorter one is [`RECORD_UNSAVED`].")
+the handle by its event count AND its terminal digest — a shorter one, or one of the same length that is not the
+finished game (undone and replayed to the same count behind a failed final save: no digest, or another), is
+[`RECORD_UNSAVED`].")
 
 - [ ] **Step 4: Run, mutants, lint, commit.** `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test
-result|FAILED'` green (**424**). Mutants: **M8** — `input` passing `lines` through unfiltered: cell (a) untouched (a
-unit on the filter), cell (b) RED on `seed:` alone — which is why (b) exists (measured: 423 green beside it);
-**M9** — `record` without the count comparison: cell (c) RED alone (200 where 409). `cargo clippy -p yokohama-web
---all-targets -- -D warnings` clean.
+result|FAILED'` green (the lib as the tree reads it — 426 at Task 5's head, the scratch's 424 having predated
+Tasks 3 and 4's cells). Mutants: **M8** — `input` passing `lines` through unfiltered: cell (a) untouched (a unit on
+the filter), cell (b) RED alone, first at "ends on the lockdown line" (the `seed:` assertion catches it too) —
+which is why (b) exists; **M9** — `record` without the comparison (both halves): cell (c) RED alone (200 where
+409) at both arms; the digest half alone deleted: the one-short arm still reds through the count, the same-length
+arm through the digest. `cargo clippy -p yokohama-web --all-targets -- -D warnings` clean.
 
 ```bash
 git add crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs
@@ -3250,8 +3293,13 @@ crate's, vitest's — each as read, with the commit it was re-counted at; and `t
 as `HandVisibility`'s doc dropped its own — a count in a comment drifts (Task 1's re-review); and `explain.rs:763–764`'s
 "`Session::new_sim` is the only constructor `games.rs` calls" is reworded to what is true at head — `games.rs`
 rebuilds through `Session::from_record` alone, the dealing is `tables.rs`'s (`new_sim`), and a record also
-arrives by the browser's restore, not only the store directory (Task 2's review). `cargo test -p yokohama-web
---test wire_fixtures`, `--lib explain::tests` and `--test lane_document` green.
+arrives by the browser's restore, not only the store directory (Task 2's review); `lib.rs`'s three "one
+constructor" sentences (`production` "the one constructor directly"; "since M6.5a THAT is the one constructor
+that builds anything"; "The one constructor that builds anything") reworded to the builder as it stands —
+`with_store_chat_archive_and_log` since cycle E, which `production` reaches directly (Task 4's re-review); and
+`docs/web-lane.md` §2's `start_refusal` bullet (3 cells, the seed cell unnamed) re-counted at 4 with the binary cell
+described. `cargo test -p yokohama-web --test wire_fixtures`, `--lib explain::tests` and `--test lane_document`
+green.
 
 - [ ] **Step 3: The spec's §9.3.** Append to `docs/plans/2026-10-08-security-remediation-spec.md` a
 `### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and six corrections` carrying this plan's
@@ -3474,4 +3522,38 @@ refusal names the reconstructed move — pre-existing, narrow reach) PARKED for 
 reviewer's own wave (W1–W9) and the brief's M1–M3 read as the plan says. Fix round 1 and its scoped re-review are
 recorded below.
 
-(Each later task's review and the "after" review follow here, as the core PR's plan kept them.)
+### Task 2 — the review (Opus), 2026-10-09
+
+Task commit `7b29b5e3`; the pre-review fix `89640b86` (the implementer's probes: the plan's "a reveal draws nothing"
+was false — a standalone starting-order reveal extracts its card and is refused, fail-safe; the tech-deck half had
+NO catcher though spec B2's catcher names a lab take — the lab cell added; the comparison's place had none — the
+other person's undo after the draw, R-P6's sentence). Review: spec ✅, Approved, Minor 4 — the reach sentence true
+of what the layer deals, not what it reads (a restored backup); an `Option<usize>` premise passing on a missing key;
+the one-person-and-a-bot shape pinned only on a non-drawing unit (W8 survived — a cell added); the refusal list —
+all fixed in `3a5d935a`, re-review clean. Deferred: the bot cell could assert the undo removed exactly one event; the
+reach comment's dropped clause on bound reveals.
+
+### Task 3 — the review (Opus), 2026-10-09
+
+Task commit `cfe37393`; the pre-review fix `9e01a0be` (the implementer's probes: the plan's `{ .. }` at
+`house.rs:141` disarmed the house scrub's E0027 guard — the named pattern restored, which the background security
+hook also flagged; the route cell's "the leakage pin holds the corpus" false — the golden does; red's re-named seat
+read `false` and a name-arm mutant passed — `true`). Review: spec ✅, Approved, Minor 4 — the schema-1 convention
+cell silent on the new field (W3 survived); the leakage pin's trust paragraph; the lane's rows not all run after the
+corpus moved (now a plan constraint); "pristine" false of two pre-existing noises — fixed in `06889911`, re-review
+clean. The regeneration moved exactly the two predicted files.
+
+### Task 4 — the review (Opus), 2026-10-09
+
+Task commit `808c9383`; the pre-review fix `2a02934b` (the Playwright tier met the shipped behaviours — the form's
+fold withheld, the why withheld at the bot's opening move — two specs rewritten, 79; the browser host's `init()`
+pinned; the guard twin stricter; the §12 row's kind; the order's two-defect probes; the switch's cells). Review:
+spec ✅, Needs fixes — Important 1 (plan-mandated): the NAS path `main` → `new` → `production` was pinned by nothing
+(W13: `new`'s pre-task body through the Diagnostic wrapper passed 456 + clippy) — a cell in `start_refusal.rs`'s
+harness runs the real binary now; Minor 7 (the form's gate, the Worker's absent key, `Default` read by nothing —
+dropped, rule 4b at the open door, the split's false sentences, the Worker's operator documents, the solo spec's
+password) — fixed in `d7210605`, re-review clean. Residuals: the served `why` chart in a real browser is pinned in
+jsdom only (a finished game is needed end to end); the live corpus replay's two seeded open-seat creates read 400
+under the production rule (Step 8).
+
+(Task 5's review and the "after" review follow here, as the core PR's plan kept them.)
