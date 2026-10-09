@@ -1561,20 +1561,25 @@ dependency line added under `yokohama-cli`, no version moved.)
 
 ```rust
     /// Drive `user`'s turn at `id` through a move that DRAWS from a hidden
-    /// deck: Option B puts two assistants on the Port (its id read off the
-    /// `/areas` panel's `tile.area_type`), the President follows them, and
-    /// the area action is the first `Port: take …` row — a take refills the
-    /// port from the order deck inside the move (`cards.rs`), and a take at
-    /// power 3 leaves the turn running (the 5-Power, building and additional
-    /// prompts follow). Every other prompt takes its `Skip` row or its first;
-    /// a Movement prompt whose only row is the retreat picker — the Port holds
-    /// the other President — is answered `r`, the grammar's direct retreat.
-    /// Answers the deck heights BEFORE the drawing move and the reply, or
-    /// `None` when the turn passed or the bound ran out with nothing drawn.
+    /// deck, at the area `area_type` names, by the first row that starts
+    /// `take`: `("PortA", "Port: take")` draws from the order deck and
+    /// `("LaboratoryA", "Laboratory: acquire")` from the tech deck. Option B
+    /// puts two assistants on that area (its id read off the `/areas` panel's
+    /// `tile.area_type`), the President follows them, and the area action is
+    /// the `take` row — a port take refills the port from the order deck and
+    /// a lab acquire the lab from the tech deck, inside the move
+    /// (`cards.rs`), and either at power 3 leaves the turn running (the
+    /// 5-Power, building and additional prompts follow). Every other prompt
+    /// takes its `Skip` row or its first; a Movement prompt whose only row is
+    /// the retreat picker — the area holds the other President — is answered
+    /// `r`, the grammar's direct retreat. Answers the deck heights BEFORE the
+    /// drawing move and the reply, or `None` when the turn passed or the
+    /// bound ran out with nothing drawn.
     async fn play_until_a_draw(
         state: &Arc<AppState>,
         id: &str,
         user: &str,
+        (area_type, take): (&str, &str),
     ) -> Option<((usize, usize), serde_json::Value)> {
         let heights = |game: &serde_json::Value, labs: &serde_json::Value| {
             (
@@ -1583,16 +1588,16 @@ dependency line added under `yokohama-cli`, no version moved.)
             )
         };
         let (_, areas) = get_as(state, user, &format!("/api/games/{id}/areas")).await;
-        let port = areas["rows"]
+        let area = areas["rows"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|row| row.as_array())
             .flatten()
-            .find(|t| t["tile"]["area_type"] == "PortA")
+            .find(|t| t["tile"]["area_type"] == area_type)
             .and_then(|t| t["tile"]["area"].as_u64())
             .map(|n| format!("A{n:02}"))
-            .expect("a 2P board has a Port A");
+            .unwrap_or_else(|| panic!("a 2P board has a {area_type}"));
         let (_, start) = get_as(state, user, &format!("/api/games/{id}")).await;
         let mine = start["to_move"].as_u64().expect("a seat to move");
         for _ in 0..60 {
@@ -1606,10 +1611,10 @@ dependency line added under `yokohama-cli`, no version moved.)
             let words = |r: &serde_json::Value| r["words"].as_str().unwrap_or_default().to_string();
             let number = |r: &serde_json::Value| r["number"].as_u64().map(|n| n.to_string());
             let line = if rows.iter().any(|r| words(r).starts_with("Option B")) {
-                format!("b {port}")
+                format!("b {area}")
             } else if let Some(r) = rows.iter().find(|r| {
                 let w = words(r);
-                w.starts_with("Port: take") || (w.starts_with("Place President") && w.contains(&port))
+                w.starts_with(take) || (w.starts_with("Place President") && w.contains(&area))
             }) {
                 number(r).expect("a numbered row")
             } else if !rows.is_empty() && rows.iter().all(|r| words(r).starts_with("Retreat President")) {
@@ -1643,14 +1648,17 @@ dependency line added under `yokohama-cli`, no version moved.)
     /// the board from the order or tech deck inside the move, so the mover
     /// read the deck's top — and an undo would put the card back where the
     /// other person never saw it. The sentence is `api::UNDO_DREW`; the
-    /// record is unmoved by the refusal. Beside it, the two things the rule
+    /// record is unmoved by the refusal. The OTHER person's undo at the same
+    /// moment hears the turn test's sentence instead, which pins the deck
+    /// comparison AFTER the turn test. Beside it, the two things the rule
     /// must NOT touch (Review Focus 4): a non-drawing move at the same shared
-    /// table still undoes, and a person alone at the table — the only other
-    /// person is a bot — undoes a drawing move exactly as before.
+    /// table still undoes, and a person alone at the table — one person
+    /// holding both seats — undoes a drawing move exactly as before. The
+    /// lab's draw, from the tech deck, is the next cell's.
     #[tokio::test]
     async fn an_undo_that_un_draws_a_deck_card_is_refused_at_a_shared_table_and_allowed_alone() {
-        // The shared table: red and blue, two people. Red's FIRST move is a
-        // placement — nothing drawn — and undoes.
+        // The shared table: red and blue, two people. Red's FIRST move ends
+        // the additional-action phase — nothing drawn — and undoes.
         let state = Arc::new(AppState::in_memory());
         start_as(&state, "undraw", 20260831, &["red@wire.test", "blue@wire.test"]).await;
         let (_, fresh) = get_as(&state, "red@wire.test", "/api/games/undraw").await;
@@ -1658,7 +1666,7 @@ dependency line added under `yokohama-cli`, no version moved.)
         let line = first_option(&fresh);
         let (status, after) = post_as(&state, "red@wire.test", "/api/games/undraw/input", serde_json::json!({ "line": line })).await;
         assert_eq!(status, StatusCode::OK, "{after}");
-        assert_eq!(after["deck_remaining"], fresh["deck_remaining"], "premise: a placement draws nothing");
+        assert_eq!(after["deck_remaining"], fresh["deck_remaining"], "premise: ending the additional-action phase draws nothing");
         let (status, undone) = post_as(&state, "red@wire.test", "/api/games/undraw/input", serde_json::json!({ "line": "undo" })).await;
         assert_eq!(status, StatusCode::OK, "a non-drawing move still undoes at a shared table: {undone}");
         assert_eq!(undone["events"].as_u64().unwrap(), n0);
@@ -1669,14 +1677,21 @@ dependency line added under `yokohama-cli`, no version moved.)
         for _ in 0..12 {
             let (_, now) = get_as(&state, "red@wire.test", "/api/games/undraw").await;
             let mover = if now["to_move"].as_u64() == Some(0) { "red@wire.test" } else { "blue@wire.test" };
-            if let Some(found) = play_until_a_draw(&state, "undraw", mover).await {
+            if let Some(found) = play_until_a_draw(&state, "undraw", mover, ("PortA", "Port: take")).await {
                 drawn = Some((mover, found));
                 break;
             }
         }
-        let (mover, (before, reply)) = drawn.expect("some turn in twelve held a port take or a lab acquire");
+        let (mover, (before, reply)) = drawn.expect("some turn in twelve held a port take");
         let events = reply["events"].as_u64().expect("an event count");
         assert!(reply["your_turn"] == serde_json::json!(true), "premise: the draw did not end the turn: {reply}");
+        // The comparison's PLACE, by a two-defect probe: the OTHER person's
+        // undo meets a unit that drew AND a caller who is not the one to move,
+        // and hears the turn test's sentence — the comparison runs after it.
+        let other = if mover == "red@wire.test" { "blue@wire.test" } else { "red@wire.test" };
+        let (status, body) = post_as(&state, other, "/api/games/undraw/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "undo is not offered once your turn has passed");
         let (status, body) = post_as(&state, mover, "/api/games/undraw/input", serde_json::json!({ "line": "undo" })).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert_eq!(body["error"], api::UNDO_DREW);
@@ -1694,7 +1709,7 @@ dependency line added under `yokohama-cli`, no version moved.)
         start(&router, "solo", 2, &[]).await;
         let mut drawn = None;
         for _ in 0..12 {
-            if let Some(found) = play_until_a_draw(&solo, "solo", WHO).await {
+            if let Some(found) = play_until_a_draw(&solo, "solo", WHO, ("PortA", "Port: take")).await {
                 drawn = Some(found);
                 break;
             }
@@ -1704,6 +1719,42 @@ dependency line added under `yokohama-cli`, no version moved.)
         let (status, undone) = post_as(&solo, WHO, "/api/games/solo/input", serde_json::json!({ "line": "undo" })).await;
         assert_eq!(status, StatusCode::OK, "one person at the table keeps today's undo: {undone}");
         assert!(undone["events"].as_u64().unwrap() < events);
+    }
+
+    /// **The other deck: an undo of a LAB acquire is refused the same way**
+    /// (R-SEC8(a); finding B2's named catcher — "take at a lab, read the
+    /// refill, undo → 403 with the sentence"). An acquire refills the lab from
+    /// the TECH deck inside the move, so this cell holds the comparison's
+    /// tech-deck half; the cell above draws from the order deck only. The
+    /// premise that the acquire left the order deck alone is what makes the
+    /// tech-deck half the one thing that can answer for the refusal.
+    #[tokio::test]
+    async fn an_undo_of_a_lab_acquire_is_refused_at_a_shared_table() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "labdraw", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let mut drawn = None;
+        for _ in 0..12 {
+            let (_, now) = get_as(&state, "red@wire.test", "/api/games/labdraw").await;
+            let mover = if now["to_move"].as_u64() == Some(0) { "red@wire.test" } else { "blue@wire.test" };
+            if let Some(found) = play_until_a_draw(&state, "labdraw", mover, ("LaboratoryA", "Laboratory: acquire")).await {
+                drawn = Some((mover, found));
+                break;
+            }
+        }
+        let (mover, (before, reply)) = drawn.expect("some turn in twelve held a lab acquire");
+        let events = reply["events"].as_u64().expect("an event count");
+        assert!(reply["your_turn"] == serde_json::json!(true), "premise: the acquire did not end the turn: {reply}");
+        let tech = |labs: &serde_json::Value| labs["deck_remaining"].as_u64().map(|d| d as usize);
+        let (_, labs) = get_as(&state, mover, "/api/games/labdraw/labs").await;
+        assert_eq!(tech(&labs), Some(before.1 - 1), "premise: the acquire drew one card from the tech deck");
+        assert_eq!(reply["deck_remaining"].as_u64().map(|d| d as usize), Some(before.0), "premise: and none from the order deck");
+        let (status, body) = post_as(&state, mover, "/api/games/labdraw/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], api::UNDO_DREW);
+        let (_, still) = get_as(&state, mover, "/api/games/labdraw").await;
+        assert_eq!(still["events"].as_u64(), Some(events), "a refused undo moved the record");
+        let (_, labs) = get_as(&state, mover, "/api/games/labdraw/labs").await;
+        assert_eq!(tech(&labs), Some(before.1 - 1), "the tech deck is still one short");
     }
 ```
 
@@ -1772,7 +1823,11 @@ and in `undo_allowed`, replace the tail (:762–767) with:
     // the decks of the state before the trailing event against the decks now
     // — shorter now means the event drew, and the mover has seen the card.
     // The unit `Session::undo` pops is that event with its bound reveals; a
-    // sim record carries no reveals, and a reveal draws nothing either way.
+    // sim record carries no reveals; in a live record the two bound reveals
+    // exchange cards and keep both lengths, while a standalone starting-order
+    // reveal can take its card out of the order deck (`extract_order_from_deck`
+    // searches it first) and so reads here as a draw — refused, the safe side,
+    // and unreachable at any table this API creates, which deals only sim games.
     // AFTER the turn test, so a passed turn keeps its own sentence (R-P6).
     if before.order_deck.len() > now.order_deck.len() || before.tech_deck.len() > now.tech_deck.len() {
         return Err(UndoRefusal::Refused(UNDO_DREW.to_string()));
@@ -1790,7 +1845,10 @@ undo, bot run and all: the rule is about a card another PERSON never saw."
 Run: `cargo test -p yokohama-web --lib undo 2>&1 | grep -E 'test |test result'`
 Expected: every undo cell PASS (10), the new one included. Try the mutant before the reviewer does: **M4** — the
 deck comparison deleted: the new cell RED at the shared table (`200` against `403`), every other cell of the lib
-green (measured: 417 green beside it). Record the reading.
+green (measured: 416 green beside it). Two more mutants, from Task 2's report, each with a catcher the cell now
+carries: **M-tech** — the tech-deck comparison alone deleted: the lab arm RED (the spec's own named catcher, a take
+at a lab); **M-order** — the comparison moved ABOVE the turn test: the other person's undo after the draw reads
+`UNDO_DREW` where R-P6's sentence is owed, RED. Record the three readings.
 
 - [ ] **Step 5: Lint and commit.**
 
