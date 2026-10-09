@@ -1359,3 +1359,74 @@ file beyond the one sentence the Global Constraints allowed — ruled worth it, 
 module's `pub` surface and omits its newest member is false by omission). Deferred past this PR, for S1's plan: the
 parenthetical "S1 wires the web layer to it" in `CLAUDE.md` becomes history the day S1 lands; and "`replay_strict`
 itself is unedited" is a snapshot of this PR's additivity that any future edit of `replay_strict` must revise.
+
+### 2026-10-09 — the "after" review (Task 4, step 4), the suites, the fifteen gates and the measurement at the reviewed head
+
+**The whole-branch review**, the orchestrator's own, on `git archive` exports of `61626323` (the head after Task 3)
+and `de8ad8ed` (the head after the one fix wave). **The fences:** `git diff 775ba35f de8ad8ed` touches `CLAUDE.md`
+(two bullets, one clause each), `move_legality.rs` (+227/−0), `record.rs` (+95/−0), the new binary and this plan;
+`crates/yokohama-oracle` untouched (0 diff lines); `apply_move.rs`, `legal_moves.rs` and `semantics.rs` untouched;
+zero deletions in core; `record.rs` is the original with the block inserted after line 520, so `replay_strict` and
+`fold_one_event` are unedited; every block of this plan sits in the code exactly once and the binary IS the plan's
+block, byte for byte; `SEMANTICS_REV` 7; the wire corpus moved by zero bytes (`wire_fixtures` green without
+`UPDATE_WIRE_FIXTURES`). **The equivalence argument, re-derived from the code:** `apply_move` is membership, else
+`NotLegal`, then `apply_move_unchecked`; the `Predicate` arm is `is_listed_move`, else `NotLegal`, then
+`apply_move_unchecked`, both errors through `to_string()`; every non-move event and every `Listed` event is
+`fold_one_event` itself; so the record-level equivalence reduces to `is_listed_move == membership` at every reached
+state, where each non-movement arm of `is_move_legal` mirrors its generator (mercenary targets, orders, achievements,
+University, Spinning Mill, placement A and B, `PlacePresident`, the retreat product, the 5-Power pair, the building
+arms), area actions and choice resolutions delegate to the generator, and the Movement family is the list's own
+subsequence (`movement_routes_family_matches_generator_across_driven_games`, `action_source_equivalence`). **The nine
+mutants** (M1, M2, M3, M3q, M4, M5, M6, M7, M9) on both exports: every one red at its named cell and nowhere else,
+the baselines 23 + 7 green, the restores `cmp`-identical, clippy clean. **The fix wave** (`de8ad8ed`) is exactly its
+six changes; the reveal cell runs both shapes (orders 144, exchanges 72). No residual finding; no second wave.
+
+**Step 3, the per-edit suites at `de8ad8ed`** (2026-10-09 03:29–03:40Z; the Mac, Darwin 27.0.0 arm64), every row
+rc 0, each count set against cycle F's close §2 and the 2026-10-01 hotfix row:
+
+| suite | reading |
+|---|---|
+| `cargo test -p yokohama-core` | 1,587 passed / 29 ignored (F's 1,577 + Task 1's 3 + Task 2's 7; the lib 1,345 / 1 ignored, exactly one) |
+| `cargo test -p yokohama-cli` | 855 / 2 ignored (the hotfix row's reading) |
+| oracle · difftest · `eval_probe` · `solver` · bridge | 191 · 52 / 5 ignored · 214 · 132 · 81, plus the bridge's four node suites |
+| `cargo clippy --workspace --all-targets -- -D warnings` | clean |
+| `cargo test -p yokohama-web` | 445 (413 lib + 5 + 6 + 2 whole-game + 3 + 16 `wire_fixtures`) |
+| `-p yokohama-wasm` · `-p yokohama-worker` · the public build's `identity::` | 9 · 76 · 8 |
+| the `wasm32` check · both wasm builds | clean |
+| web: `build:wasm`, typecheck, `npm test`, `test:wasm` | 1,499 (71 files) · 353 (15 files) |
+| worker: `build:module:debug`, typecheck, `test:scripts`, the pool | 533 (25 files) · 224 (11 files) |
+
+Not run: `npm run e2e` (the client did not change — `docs/web-lane.md` §2's rule) and the live tiers (none in
+this PR's scope). The "warning" word counts in the CLI's and the web crate's logs (5 and 3) are test output naming
+warnings, as at every close; clippy's own count is 0.
+
+**Step 5, the fifteen release gates** as ONE uninterrupted sequence at `de8ad8ed` (`caffeinate -i`; the release
+binaries pre-built; 03:41–03:49Z; machine-tagged the Mac, Darwin 27.0.0 arm64): 15/15 green, **451 s** against
+cycle F's 534 s — fuzz 43 s · census 1 s · observation honesty 3 s · action-source equivalence 26 s · worst-case 1 s
+· arena 20 s · policy diversity 6 s · evaluator 251 s · architecture 46 s · the lib's recovery falsifier 10 s
+(exactly one test ran) · piped dogfood 12 s · differential 25 s · routes3 2 s · scoring 1 s · routes3 worst-case 4 s.
+The ≤420 s target is still crossed; OD-6's restatement stays the owner's.
+
+**Step 6, the measurement at the reviewed head** (release, on the export of `de8ad8ed`, the bodies from
+`docs/temp/security-review-2026-10-08/worst-case/`; the same digest each way):
+
+| body | events | `replay_strict` | predicate |
+|---|---:|---:|---:|
+| `spread_4p_11` (the review's worst case) | 23,606 | 28.49 s | 54.4 ms |
+| `spread_3p_13` | 23,608 | 10.32 s | 39.5 ms |
+| `spread_2p_14` | 23,597 | 11.74 s | 22.9 ms |
+| `null_4p` | 23,617 | 104.9 ms | 41.1 ms |
+
+The figure S1's event-count cap and semaphore are sized from: about 55 ms per 1 MiB record under `Predicate`.
+
+**The rulings made in the execution** (the SDD ledger's `Ruling:` lines, in order): the work in the main checkout
+rather than a worktree; the preamble duplication in `replay_strict_with` stands (R-SEC2, pinned by the tamper
+cells); R-10 and R-11 (the cells' doc claims corrected to presence, not order; the phase cell's queue-gate claim
+dropped); R-12 (the queue gate's own hand-built cell, since a queue never coexists with the Movement phase in
+engine-produced states); R-13 (the function doc's proof and cost sentences); R-14, R-15, R-16 (the `Predicate` doc's
+over-claim; the accept side and the omitted `game_record.rs` shapes pinned, M7 and M9; the success-path reveals);
+R-17 (the CLAUDE.md sentence's "MUST get", S1 wiring it); the per-edit suites run once at the reviewed head; R-18
+(the one fix wave of the deferred minors, and the `move_legality.rs` bullet naming `is_listed_move`). Deferred to
+S1's plan: the "S1 wires the web layer to it" parenthetical becomes history when S1 lands; "`replay_strict` itself is
+unedited" is a snapshot any future edit of `replay_strict` must revise.
+
