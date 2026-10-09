@@ -17,6 +17,12 @@
 //! - no stamp at all, behind `cf-access` — the process starts and says
 //!   nothing about a stamp (a control: a `dist` built before the stamp runs).
 //!
+//! And since security S1a (finding B3; R-SEC8(b); the review's I-1), the seed
+//! rule on the same path: a creator's seed beside an open seat, posted to the
+//! running binary, is the 400 in `SEED_NOT_SOLO`'s words with no table stored,
+//! and the same body unseeded a 201 — `main` → `AppState::new` → `production`,
+//! the NAS's own constructor path, which no in-process cell runs.
+//!
 //! **Every wait is bounded.** Both pipes are read on their own threads into
 //! channels; a start is polled every 50 ms for its listening line or its exit,
 //! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
@@ -29,9 +35,12 @@
 //! `dist`, a store directory under the scratch root, and port 0 — the OS picks
 //! a port nobody holds at the moment of the bind, so the cells run in parallel
 //! with each other and on a busy machine without a collision (the listening
-//! line names the configured port, so it reads `:0`). `Command::env` sets the
-//! CHILD's environment, never this process's, so nothing here mutates the test
-//! runner's environment (`identity::from_env_value`'s rule).
+//! line names the configured port, so it reads `:0`). The one cell that sends
+//! the server a request binds a port it found free a moment before
+//! ([`free_port`]), since a child bound to 0 cannot say where it listens.
+//! `Command::env` sets the CHILD's environment, never this process's, so
+//! nothing here mutates the test runner's environment
+//! (`identity::from_env_value`'s rule).
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -160,6 +169,13 @@ struct Server {
 
 impl Server {
     fn spawn(door: &str, scratch: &Scratch) -> Self {
+        Self::spawn_on(door, scratch, 0)
+    }
+
+    /// [`Server::spawn`] bound to `port`: 0 lets the OS pick, and the
+    /// listening line then reads `:0`, which is all a cell that never reaches
+    /// the server needs.
+    fn spawn_on(door: &str, scratch: &Scratch, port: u16) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_yokohama-web"));
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("YOKOHAMA_") {
@@ -170,7 +186,7 @@ impl Server {
             .env(IDENTITY_VAR, door)
             .env("YOKOHAMA_WEB_DIST", scratch.dist())
             .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
-            .env("YOKOHAMA_WEB_PORT", "0")
+            .env("YOKOHAMA_WEB_PORT", port.to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -241,6 +257,45 @@ impl Drop for Server {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// A port nobody held a moment ago: the OS's pick for a listener bound to
+/// port 0, released at once. Another process taking it in between fails the
+/// start loudly — the bind's error and an exit — never silently.
+#[cfg(feature = "open-door")]
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).expect("a free port").port()
+}
+
+/// One `POST` to the server at `port` as `user` at the open door (the claimed
+/// header), over a plain socket — no client crate — with `Connection: close`,
+/// so the response is everything until the server closes; each read and write
+/// bounded by [`BOUND`]. The status, and the body parsed as JSON (`Null` when
+/// it is not).
+#[cfg(feature = "open-door")]
+fn post(port: u16, user: &str, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+    use std::io::Write;
+    use yokohama_web::identity::CLAIMED_HEADER;
+    let body = body.to_string();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{CLAIMED_HEADER}: {user}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("the request writes");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("the response reads");
+    let (head, rest) = response.split_once("\r\n\r\n").expect("a head and a body");
+    assert!(
+        !head.to_ascii_lowercase().contains("transfer-encoding: chunked"),
+        "a chunked body, which this reader does not decode: {head}"
+    );
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("a status line");
+    (status, serde_json::from_str(rest).unwrap_or(serde_json::Value::Null))
 }
 
 /// No stamp sentence of any of the rule's three shapes: each names the stamp
@@ -340,4 +395,54 @@ fn a_dist_with_no_stamp_behind_cf_access_starts_and_says_nothing_of_a_stamp() {
     let (status, _, stderr) = server.finish();
     assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
     assert_no_stamp_sentence(&stderr, &shown, "no stamp behind cf-access");
+}
+
+/// **The NAS's own path builds the production seed rule** (security S1a,
+/// finding B3; R-SEC8(b); the review's I-1). The binary `main` runs —
+/// `AppState::new`, which hands its file store to `AppState::production` —
+/// refuses a creator's seed beside an open seat with `SEED_NOT_SOLO`'s
+/// sentence and stores no table, and opens the same body unseeded with a 201.
+///
+/// **A cell on the wrong host is not coverage** (the M6.4 lesson):
+/// `the_production_state_honours_a_seed_at_a_solo_table_only` pins
+/// `production` in process, but nothing in process runs `main` → `new` →
+/// `production`. `new` rebuilt through a test constructor — its pre-task body,
+/// `with_store_chat_and_archive`, now the `Diagnostic` wrapper — left every
+/// other suite green (the review's W13); here it reads 201 where 400. The
+/// open door, so a claimed plain name is the creator; a port picked free,
+/// because this cell must reach the server; the store read back by the
+/// layer's own `FsStore` over the directory the child was given.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded() {
+    use yokohama_web::store::{Doc, FsStore, Store};
+    use yokohama_web::tables::SEED_NOT_SOLO;
+
+    let scratch = Scratch::new("seed-open");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the seed rule at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let store = FsStore::new(scratch.root.join("games"));
+    let body = |seed: bool| {
+        let mut b = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": "red" }, { "open": true }], "id": "seeded", "name": "seeded",
+        });
+        if seed {
+            b["seed"] = serde_json::json!("20260831");
+        }
+        b
+    };
+    let (status, refused) = post(port, "red", "/api/games", &body(true));
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(refused["error"], SEED_NOT_SOLO, "the layer's sentence: {refused}");
+    assert!(store.read(Doc::Table, "seeded").expect("the store reads").is_none(), "a refused create stored a table");
+    let (status, opened) = post(port, "red", "/api/games", &body(false));
+    assert_eq!(status, 201, "{opened}");
+    // The anti-vacuity partner: the store read above is the one the server writes.
+    assert!(store.read(Doc::Table, "seeded").expect("the store reads").is_some(), "the 201's table is in the store");
+    assert!(server.running(), "still serving after both requests");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }

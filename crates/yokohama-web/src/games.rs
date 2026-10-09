@@ -271,11 +271,16 @@ impl RunHost {
 /// [`Games::with_limits`] and so [`Games::new`] — "nothing but a cell builds
 /// one this way" — build `Diagnostic`; `AppState`'s in-memory and `with_store`
 /// constructors are `Diagnostic` and `AppState::production` (the NAS binary's
-/// path) is `SoloOnly`, pinned; the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`,
-/// `on` in its pool's test files only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// path) is `SoloOnly` — pinned in process by the route cell
+/// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
+/// binary, through `main` and `AppState::new`, by `start_refusal.rs`'s
+/// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`;
+/// the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` in its pool's test files
+/// only; and the browser host's `init()` is `SoloOnly`, its `init_diagnostic()`
+/// the harness's opt-in by name. No `Default`: every policy is named where it
+/// is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedPolicy {
-    #[default]
     SoloOnly,
     Diagnostic,
 }

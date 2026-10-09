@@ -75,14 +75,18 @@ for (const width of [1280, 390] as const) {
     await newGameForm(page);
     await atWidth(page, width);
     // Security S1a (B3; R-SEC8(b)): the fold is drawn only at a SOLO table — here four seats, every one "You".
+    // Everything else open too — the password and the fold — so the width is measured at the
+    // widest a solo form gets (the review's M-7).
     await page.getByRole("group", { name: "Players" }).getByRole("radio", { name: "4", exact: true }).check();
     for (const color of ["Blue", "Yellow", "Green"]) {
       await page.getByRole("combobox", { name: `${color} seat`, exact: true }).selectOption("me");
     }
+    await page.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
     await page.getByText("Advanced", { exact: true }).click();
     const seed = page.getByLabel("Seed", { exact: true });
     const submit = page.getByRole("button", { name: "Deal" });
     // Anti-vacuity: the controls this claim is about are really drawn.
+    await expect(page.getByLabel("Table password", { exact: true })).toBeVisible();
     await expect(seed).toBeVisible();
     await expect(submit).toBeEnabled();
 

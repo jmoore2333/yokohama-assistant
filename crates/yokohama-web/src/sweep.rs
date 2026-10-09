@@ -175,9 +175,10 @@ pub fn ending(status: TableStatus, last_active: u64, now: u64, ttls: &Ttls) -> O
 }
 
 /// **A table TTL with no archive directory refuses to start** (R-F9): the
-/// sentence `main` exits 1 on, naming both variables. `AppState::new` asks it
-/// once the archive is resolved and before the store is built. The waiting
-/// TTL alone is inert and needs nothing.
+/// sentence `main` exits 1 on, naming both variables. `AppState::production`
+/// asks it — the path `AppState::new` takes — once the archive is resolved:
+/// after `new` has built the `FsStore` value, which touches no file, and
+/// before the store is read. The waiting TTL alone is inert and needs nothing.
 pub fn check_archive(ttls: &Ttls, archive_on: bool) -> Result<(), String> {
     if ttls.table.is_some() && !archive_on {
         return Err(format!(

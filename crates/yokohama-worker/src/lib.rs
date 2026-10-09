@@ -1119,16 +1119,20 @@ mod tests {
     /// **The Worker honours a seed beside an open seat only under
     /// `YOKOHAMA_DIAGNOSTIC_SEEDS`** (R-SEC8(b); the pool's test files set it,
     /// no deployable file may — the deploy guard's rule): without the switch
-    /// the corpus's own create body is a 400 in the layer's sentence; with it,
-    /// a 201.
+    /// — `false`, or the key OMITTED, the fail-safe for a shell that sends
+    /// none — the corpus's own create body is a 400 in the layer's sentence;
+    /// with it, a 201.
     #[test]
     fn a_seeded_create_beside_an_open_seat_needs_the_diagnostic_switch() {
         let _s = serial();
-        init_inner(&door_config_with_seeds("off", "worker", false)).unwrap();
-        let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
-        assert_eq!(r.status, 400, "{}", r.body);
-        assert!(r.body.contains(yokohama_web::tables::SEED_NOT_SOLO), "{}", r.body);
-        assert!(stored(Doc::Table).is_empty(), "a refused create wrote a table");
+        let omitted = r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}"#;
+        for (what, configuration) in [("false", door_config_with_seeds("off", "worker", false)), ("omitted", omitted.to_string())] {
+            init_inner(&configuration).unwrap();
+            let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
+            assert_eq!(r.status, 400, "the key {what}: {}", r.body);
+            assert!(r.body.contains(yokohama_web::tables::SEED_NOT_SOLO), "the key {what}: {}", r.body);
+            assert!(stored(Doc::Table).is_empty(), "the key {what}: a refused create wrote a table");
+        }
         init_inner(&config("off")).unwrap();
         let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
         assert_eq!(r.status, 201, "{}", r.body);

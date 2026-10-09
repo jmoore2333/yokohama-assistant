@@ -432,6 +432,25 @@ describe("the seed", () => {
     expect(posted(stub).seed).toBeUndefined();
     expect(posted(stub).seats).toEqual([{ user: ME }, { open: true }]);
   });
+
+  // **A refused seed stops holding the button once the fold is withdrawn**
+  // (security S1a, B3; the review's M-1): a button held for a reason the
+  // player cannot see is the one the fold's own comment forbids, and the
+  // moment a seat opens is exactly when the reason leaves the screen.
+  it("lets a refused seed go once a seat opens, so the button is never held for a reason nobody can see", async () => {
+    const { stub, user } = show();
+    await user.click(screen.getByText("Advanced", { selector: "summary" }));
+    await user.type(screen.getByLabelText("Seed"), "1e3");
+    // The premise: held, with its reason on screen.
+    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    expect(screen.getByText(/^Not a whole number:/)).toBeInTheDocument();
+    await user.selectOptions(seat("Blue"), "open");
+    const open = screen.getByRole("button", { name: "Open table" });
+    expect(open.hasAttribute("disabled"), "held for a reason nobody can see").toBe(false);
+    await user.click(open);
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).seed).toBeUndefined();
+  });
 });
 
 describe("sending the form", () => {

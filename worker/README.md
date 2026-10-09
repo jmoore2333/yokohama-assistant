@@ -1628,7 +1628,10 @@ twelve checks hold, and every failure is named, not only the first:
    `preview_urls` leaves the Worker's version URLs as they were. *(Corrected 2026-09-28: until
    M6.5c2 this check asked both switches `false`, with no door to read.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
-   comment can carry a frozen clock into production.
+   comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
+   R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as
+   text whichever file the deploy ships, so a creator's seed is honoured at a table that seats
+   somebody else in the pool's two files and nowhere else.
 5. **The `assets` block is exactly spec §2.3's in all five files**: production's, the open window's and
    the gate's, and the pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads
    only its own two files, so without this production's block could drift with every pool cell green,
@@ -1684,7 +1687,9 @@ chat variables keep the NAS's defaults;
 `YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `off`, a deploy declaration
 the Worker only holds to a string, which the deploy guard holds to the client build's site key and
 to the open door, and which `wrangler.open.jsonc` alone sets `on` (RUNBOOK §3); and
-`YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files. A bad value answers the API's
+`YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files, as does `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+`on` there so the corpus walk's seeded tables with an open seat are honoured, and refused by the
+deploy guard in any deployed file (check 4b). A bad value answers the API's
 requests 500, naming the variable, and leaves the static release alone; RUNBOOK §3 lists the few
 answers that come before the configuration is read, and the recipes "to deploy with no archive" and
 "to keep every table".

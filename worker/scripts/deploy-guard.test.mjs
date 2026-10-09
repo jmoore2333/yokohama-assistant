@@ -590,7 +590,8 @@ describe("the deploy guard", () => {
   // Review Focus 4: the open window's file never names the dev door on, the
   // operator list, or the client id, and never the worker door's Access pair
   // as a substitute for a door. Mutants: the door rules read from production
-  // alone; check 7 read from production alone.
+  // alone; check 7 read from production alone; rule 4b read from production
+  // alone (security S1a's review, W9).
   it("refuses the dev door on, the operator list and the client id in the open file", () => {
     const at = (text) => deployGuard(worker({ "wrangler.open.jsonc": text }), undefined, "wrangler.open.jsonc");
     const on = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "on"');
@@ -613,6 +614,8 @@ describe("the deploy guard", () => {
     );
     const clocked = OPEN.replace('"main"', '"vars": { "YOKOHAMA_WEB_TEST_CLOCK": "tick:1" },\n  "main"');
     expect(at(clocked)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/));
+    const seeded = OPEN.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
+    expect(at(seeded)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/));
   });
   // The open file is held to production's blocks whichever file is named:
   // a deploy of either must ship the objects, migration and bucket the other

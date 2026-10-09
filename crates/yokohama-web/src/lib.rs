@@ -429,8 +429,11 @@ impl AppState {
     /// [`Self::new`] past its two environment reads — the production state
     /// over the store and the archive it was handed: the one constructor
     /// directly (never a test constructor, whose `SeedPolicy` is
-    /// `Diagnostic`), `SoloOnly` by construction, pinned by
-    /// `the_production_state_honours_a_seed_at_a_solo_table_only`.
+    /// `Diagnostic`), `SoloOnly` by construction. Pinned in process by
+    /// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
+    /// binary — `main` → [`Self::new`] → here, the path no in-process cell
+    /// runs — by `start_refusal.rs`'s
+    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`.
     pub fn production(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -474,8 +477,9 @@ impl AppState {
         Self::with_store_and_chat(store, identity, chat::ChatConfig::default())
     }
 
-    /// Every constructor above is this one with a store, an identity or a chat
-    /// chosen for it, and this one is [`Self::with_store_chat_and_archive`] with
+    /// Every constructor above but [`Self::new`] and [`Self::production`] is
+    /// this one with a store, an identity or a chat chosen for it, and this one
+    /// is [`Self::with_store_chat_and_archive`] with
     /// no archive — since M6.5a THAT is the one constructor that builds anything.
     ///
     /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
@@ -497,7 +501,8 @@ impl AppState {
     ///
     /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
     /// no person's game — honours a seed at any table; the production path is
-    /// [`Self::production`], which builds the one constructor directly.
+    /// [`Self::production`], which calls `with_store_chat_archive_and_log`
+    /// directly.
     pub fn with_store_chat_and_archive(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -508,10 +513,12 @@ impl AppState {
             .with_seed_policy(games::SeedPolicy::Diagnostic)
     }
 
-    /// [`Self::with_store_chat_and_archive`] with the log chosen: the one seam a
-    /// cell needs to read what the constructor says while it seeds (M6.5c2
-    /// cycle E). The NAS's binary passes [`log::StderrLog`] through the
-    /// constructor above and nothing else.
+    /// [`Self::with_store_chat_and_archive`] with the log chosen and without
+    /// that constructor's `Diagnostic` opt-in — so under the production seed
+    /// rule, `SoloOnly`, which [`Games::with_parts`] builds (R-SEC8(b)): the one
+    /// seam a cell needs to read what the constructor says while it seeds
+    /// (M6.5c2 cycle E). The NAS's binary reaches it through
+    /// [`Self::production`], passing [`log::StderrLog`].
     pub(crate) fn with_store_chat_archive_and_log(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -593,8 +600,9 @@ impl AppState {
         Self { ttls, ..self }
     }
 
-    /// This state under `policy` ([`games::SeedPolicy`]) — for a cell that
-    /// asks the production rule of an in-memory state.
+    /// This state under `policy` ([`games::SeedPolicy`]) — the builder step
+    /// [`Self::with_store_chat_and_archive`] takes to opt every test
+    /// constructor into `Diagnostic`, its one caller.
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
         self.games = self.games.with_seed_policy(policy);
         self
@@ -1999,11 +2007,14 @@ mod tests {
         assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
     }
 
-    /// **The production constructor's policy is `SoloOnly`** — pinned through
-    /// the path `AppState::new` takes minus its two environment reads
-    /// (`AppState::production`), so a test constructor's `Diagnostic` can
-    /// never be inherited by it: a seeded create beside an open seat is a 400
-    /// through the router, and the same without a seed a 201.
+    /// **The production constructor's policy is `SoloOnly`** —
+    /// `AppState::production`, the path `AppState::new` takes past its two
+    /// environment reads, built here in process: a seeded create beside an
+    /// open seat is a 400 through the router and the same without a seed a
+    /// 201, so `production` never inherits a test constructor's `Diagnostic`.
+    /// `new`'s own call to it — `main`'s path, which nothing in process runs —
+    /// is pinned on the binary by `start_refusal.rs`'s
+    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`.
     #[tokio::test]
     async fn the_production_state_honours_a_seed_at_a_solo_table_only() {
         let state = Arc::new(

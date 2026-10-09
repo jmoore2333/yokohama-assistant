@@ -1191,7 +1191,8 @@ impl Games {
     /// [`Games::house_page`] reads them — what the NAS SEEDS its house frame's
     /// counters from when it starts (M6.5c2 cycle D; the close
     /// `2026-09-29-web-frontend-m6.5c2d-close.md` §4 and §5, ruling 46;
-    /// `AppState::with_store_chat_and_archive`).
+    /// `AppState::with_store_chat_archive_and_log`, which the NAS reaches
+    /// through `AppState::production`).
     ///
     /// An absent document is an empty one, `0` and `0`, as every read of it
     /// is. A document that cannot be read or will not parse is the refusal
