@@ -1387,8 +1387,14 @@ mod tests {
     /// dropped the lock, and served whatever the store held — which, after a
     /// failed final persist, is the record from before the end, its seed in
     /// it. The route now reads the store under the handle's lock and holds the
-    /// stored record to the handle's event count: a shorter one is a 409 in
-    /// `RECORD_UNSAVED`'s words.
+    /// stored record to the handle by its event count AND its terminal digest:
+    /// a shorter one is a 409 in `RECORD_UNSAVED`'s words, and so is one of the
+    /// same length that is not the finished game, which carries no digest, or
+    /// another. Measured reachable: a seat's own-turn undos while the store
+    /// failed writes, then another line to the same count, left the store a
+    /// running record of the handle's length. The one-short arm keeps the
+    /// finished game's digest, so the COUNT refuses it; the same-length arm
+    /// carries none, so the DIGEST does.
     #[tokio::test]
     async fn the_record_route_refuses_a_finished_game_whose_stored_record_is_behind_the_handle() {
         let (state, id, _) = a_finished_two_person_game("unsaved").await;
@@ -1400,11 +1406,26 @@ mod tests {
         let (json, version) = store.read(Doc::Record, id).expect("a store").expect("the record");
         let mut record: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
         record.events.pop();
-        store
+        let version = store
             .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&record).unwrap(), Some(version))
             .expect("the stale record");
         let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], api::RECORD_UNSAVED);
+        assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+        // The same length on another line, with no terminal digest: the
+        // finished record with its last two events swapped.
+        let finished: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
+        let mut other = finished.clone();
+        let n = other.events.len();
+        other.events.swap(n - 1, n - 2);
+        other.terminal_digest = None;
+        assert_ne!(other.events, finished.events, "premise: the stored line differs from the handle's");
+        store
+            .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
+            .expect("the same-length record");
+        let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line: {body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
     }

@@ -2160,8 +2160,9 @@ pub fn surface<T>(
 }
 
 
-/// The 409 a finished game whose STORED record is shorter than the handle's
-/// answers (finding D11): its last save failed, so the store holds the game
+/// The 409 a finished game whose STORED record is not the finished game
+/// answers (finding D11) — shorter than the handle's, or without the finished
+/// state's terminal digest: its last save failed, so the store holds the game
 /// from before the end — a running game's record, seed and all.
 pub(crate) const RECORD_UNSAVED: &str =
     "the record is available once the game is over and its last move is saved — that save failed";
@@ -2175,7 +2176,11 @@ pub(crate) const RECORD_UNSAVED: &str =
 /// it: this is projection, not computation (the M3 lockdown rule).
 ///
 /// Since security S1a the store is read UNDER the handle's lock and its record
-/// held to the handle's event count — a shorter one is [`RECORD_UNSAVED`].
+/// held to the handle by its event count AND its terminal digest — a stored
+/// record of the same length that is not the finished game (undone and
+/// replayed to the same count, a failed final save behind it) carries no
+/// digest, or another. A shorter one, or one without the finished state's
+/// digest, is [`RECORD_UNSAVED`].
 pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     if viewer == client::Viewer::Spectator {
@@ -2188,7 +2193,8 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     let handle = games.handle(id)?;
     // Under the lock, both facts: the handle's "over" and the stored bytes,
     // held to each other (finding D11) — a failed final persist leaves the
-    // store one move behind a resident handle that says over.
+    // store behind a resident handle that says over: one move short, or, with
+    // an undo and a replay before it, the same length on another line.
     let repl = games.lock_game(&handle, id)?;
     if !repl.session.is_over() {
         return Err(ApiError {
@@ -2205,10 +2211,20 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     #[derive(Deserialize)]
     struct Events {
         events: Vec<serde_json::Value>,
+        terminal_digest: Option<String>,
     }
     let stored: Events = serde_json::from_str(&json)
         .map_err(|e| ApiError::server_error(format!("the stored record does not parse: {e}")))?;
-    if stored.events.len() < repl.session.record().events.len() {
+    // **The digest of the handle's STATE, never the handle record's own
+    // `terminal_digest` field.** `Session::to_record_json` stamps the live
+    // state's digest on a clone at every write, so a stored record names the
+    // state it was written from; the in-memory field is what the session was
+    // loaded with — `None` for a game dealt in this process, the loaded
+    // record's for a rebuilt one — and no apply or undo refreshes it.
+    let finished = yokohama_core::state_digest(repl.session.state());
+    if stored.events.len() < repl.session.record().events.len()
+        || stored.terminal_digest.as_deref() != Some(finished.as_str())
+    {
         return Err(ApiError { status: StatusCode::CONFLICT, message: RECORD_UNSAVED.to_string(), table_status: None, foreign_bot: None });
     }
     Ok(json)
