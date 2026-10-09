@@ -3009,7 +3009,10 @@ git commit -m "web: a creator's seed is honoured at a solo table only — SeedPo
     /// through the router, the record then replaced by the crafted one and a
     /// fresh state built over the store, so the next request rebuilds from it;
     /// the person plays their turn and the reply that carries the lockdown
-    /// carries NO `seed:` line and ends on the lockdown line. **Measured
+    /// carries NO `seed:` line and ends on the lockdown line, and the setup
+    /// seed appears nowhere in that WHOLE reply — every key, `prompt.reason`
+    /// included. The bot's own stream seed is another number (`777000111`), so
+    /// that search reads the setup seed alone. **Measured
     /// reachable** (the plan's before review): the rebuild accepts the crafted
     /// record, and the bot's first turn reports "bot seat 1 could not decide
     /// honestly: the seat's view could not be taken: seat 1's own
@@ -3035,7 +3038,9 @@ git commit -m "web: a creator's seed is honoured at a solo table only — SeedPo
         );
         let mut session = yokohama_cli::session::Session::from_record(record, Rules::standard())
             .expect("a record with an Unknown choice resumes (the live-tracking shape)");
-        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 20260831).seat_provenance());
+        // The bot's stream seed is NOT the setup seed, so the whole-reply search
+        // below finds the setup seed or nothing.
+        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 777000111).seat_provenance());
         let crafted = session.to_record_json().expect("a record");
         let (_, version) = store.read(Doc::Record, "faulted").expect("a store").expect("the record");
         store.write_if_version(Doc::Record, "faulted", &crafted, Some(version)).expect("the crafted record");
@@ -3053,18 +3058,19 @@ git commit -m "web: a creator's seed is honoured at a solo table only — SeedPo
             assert_eq!(status, StatusCode::OK, "{line}: {reply}");
             let messages: Vec<String> = reply["messages"].as_array().expect("messages").iter().map(|m| m.as_str().unwrap_or_default().to_string()).collect();
             if messages.iter().any(|m| m.starts_with("LOCKDOWN")) {
-                lockdown = Some(messages);
+                lockdown = Some((messages, reply));
                 break;
             }
             if reply["prompt"]["kind"] == "locked" {
-                lockdown = Some(messages);
+                lockdown = Some((messages, reply));
                 break;
             }
         }
-        let messages = lockdown.expect("the bot's first turn engages a lockdown within the person's 40 inputs");
+        let (messages, reply) = lockdown.expect("the bot's first turn engages a lockdown within the person's 40 inputs");
         assert!(messages.last().is_some_and(|m| m.starts_with("LOCKDOWN — ")), "ends on the lockdown line: {messages:?}");
         assert!(!messages.iter().any(|m| m.starts_with("seed:") || m.starts_with("turn:")), "the dump reached the wire: {messages:?}");
         assert!(!serde_json::to_string(&messages).unwrap().contains("20260831"), "{messages:?}");
+        assert!(!reply.to_string().contains("20260831"), "the setup seed reached the locking reply: {reply}");
     }
 ```
 
@@ -3086,8 +3092,10 @@ refuses an `Unknown` choice on a sim-shaped record, that refusal IS the report's
     /// another. Measured reachable: a seat's own-turn undos while the store
     /// failed writes, then another line to the same count, left the store a
     /// running record of the handle's length. The one-short arm keeps the
-    /// finished game's digest, so the COUNT refuses it; the same-length arm
-    /// carries none, so the DIGEST does.
+    /// finished game's digest, so the COUNT refuses it. Of the two same-length
+    /// arms, one carries ANOTHER real digest — the running state's, the shape
+    /// every stamped server write leaves — so the digest's VALUE refuses it,
+    /// and one carries none, so its PRESENCE does.
     #[tokio::test]
     async fn the_record_route_refuses_a_finished_game_whose_stored_record_is_behind_the_handle() {
         let (state, id, _) = a_finished_two_person_game("unsaved").await;
@@ -3106,19 +3114,33 @@ refuses an `Unknown` choice on a sim-shaped record, that refusal IS the report's
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
-        // The same length on another line, with no terminal digest: the
-        // finished record with its last two events swapped.
+        // The same length on another line, stamped with ANOTHER real digest:
+        // the finished record with its last two events swapped, carrying the
+        // digest of the finished line one event short — the running state a
+        // stamped write names, and the digest the measured C1 record carried.
         let finished: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
         let mut other = finished.clone();
         let n = other.events.len();
         other.events.swap(n - 1, n - 2);
-        other.terminal_digest = None;
         assert_ne!(other.events, finished.events, "premise: the stored line differs from the handle's");
+        let running = yokohama_core::state_at(&finished, n - 1, &Rules::standard()).expect("the line one event short");
+        other.terminal_digest = Some(yokohama_core::state_digest(&running));
+        assert!(finished.terminal_digest.is_some(), "premise: the finished record carries its digest");
+        assert_ne!(other.terminal_digest, finished.terminal_digest, "premise: another digest, not the finished one");
+        let version = store
+            .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
+            .expect("the same-length record, another digest");
+        let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line, another digest: {body}");
+        assert_eq!(body["error"], api::RECORD_UNSAVED);
+        assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+        // The same record with NO digest.
+        other.terminal_digest = None;
         store
             .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
-            .expect("the same-length record");
+            .expect("the same-length record, no digest");
         let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
-        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line: {body}");
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line, no digest: {body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
     }
@@ -3197,11 +3219,11 @@ and `record`'s body from `let handle = …` (:2119) on:
         .map_err(ApiError::server_error)?
         .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
     #[derive(Deserialize)]
-    struct Events {
-        events: Vec<serde_json::Value>,
+    struct StoredRecord {
+        events: Vec<serde::de::IgnoredAny>,
         terminal_digest: Option<String>,
     }
-    let stored: Events = serde_json::from_str(&json)
+    let stored: StoredRecord = serde_json::from_str(&json)
         .map_err(|e| ApiError::server_error(format!("the stored record does not parse: {e}")))?;
     // **The digest of the handle's STATE, never the handle record's own
     // `terminal_digest` field.** `Session::to_record_json` stamps the live
@@ -3218,10 +3240,20 @@ and `record`'s body from `let handle = …` (:2119) on:
     Ok(json)
 ```
 
-(`record`'s doc gains: "Since security S1a the store is read UNDER the handle's lock and its record held to
-the handle by its event count AND its terminal digest — a shorter one, or one of the same length that is not the
-finished game (undone and replayed to the same count behind a failed final save: no digest, or another), is
-[`RECORD_UNSAVED`].")
+(`record`'s doc gains, after "this is projection, not computation (the M3 lockdown rule).", the paragraph:
+
+```rust
+/// Since security S1a the store is read UNDER the handle's lock and its record
+/// held to the handle by its event count AND its terminal digest — a stored
+/// record of the same length that is not the finished game (undone and
+/// replayed to the same count, a failed final save behind it) carries no
+/// digest, or another. A shorter one, or one without the finished state's
+/// digest, is [`RECORD_UNSAVED`]. The digest is computed under the lock, so the
+/// lock keeps the answer consistent — which true sentence the caller hears —
+/// and not the seed: read after the guard dropped, a store that moved in
+/// between would carry another digest and be refused, or still hold the
+/// finished game.
+```
 
 - [ ] **Step 4: Run, mutants, lint, commit.** `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test
 result|FAILED'` green (the lib as the tree reads it — 426 at Task 5's head, the scratch's 424 having predated
@@ -3229,7 +3261,9 @@ Tasks 3 and 4's cells). Mutants: **M8** — `input` passing `lines` through unfi
 the filter), cell (b) RED alone, first at "ends on the lockdown line" (the `seed:` assertion catches it too) —
 which is why (b) exists; **M9** — `record` without the comparison (both halves): cell (c) RED alone (200 where
 409) at both arms; the digest half alone deleted: the one-short arm still reds through the count, the same-length
-arm through the digest. `cargo clippy -p yokohama-web --all-targets -- -D warnings` clean.
+arm through the digest; **`Mnone`** — the digest half reading presence alone (`is_none()`): the same-length arm RED
+(its record carries a real, DIFFERENT digest — the running record's at the handle's length minus one; a no-digest
+record is the third arm, a shape no server writer produces; Task 5's review, I1). `cargo clippy -p yokohama-web --all-targets -- -D warnings` clean.
 
 ```bash
 git add crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs
