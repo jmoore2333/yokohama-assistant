@@ -129,6 +129,40 @@ describe("suggest shows what it would play and what it beat", () => {
     expect(screen.getByText(/Nothing was applied, recorded or saved/)).toBeInTheDocument();
   });
 
+  it("the runner-ups are the non-chosen rows, not the tail: a payload whose chosen row is not row 0", () => {
+    // **The committed payload cannot be relied on to say this.** Where the
+    // keyed draw lands is the fixture's, and it moves with the stream's key:
+    // when A1 re-keyed the stream it landed on the top row, and
+    // `filter(!chosen)` and `slice(1)` became the same list on the corpus's
+    // payloads. So this payload is the committed one with the `chosen` flags of
+    // its first two rows exchanged — a copy, in the server's own shape — and
+    // the two readings disagree on it by construction: the tail starts at the
+    // candidate that was played, the non-chosen rows at the one that was not.
+    // Asserted on the list alone: the headline and the line still name the
+    // committed move, which this cell does not read.
+    const s = wire.suggest.ok!;
+    const swapped = {
+      ...wire.suggest,
+      ok: {
+        ...s,
+        ranking: s.ranking.map((r, i) => (i === 0 ? { ...r, chosen: false } : i === 1 ? { ...r, chosen: true } : r)),
+      },
+    };
+    const [first, second] = swapped.ok.ranking;
+    // The premise, so a fixture that stopped carrying two distinct rows cannot
+    // turn this into a cell about nothing.
+    expect(first!.chosen).toBe(false);
+    expect(second!.chosen).toBe(true);
+    expect(first!.text).not.toBe(second!.text);
+    expect(swapped.ok.ranking.filter((r) => !r.chosen)[0]!.text).toBe(first!.text);
+    expect(swapped.ok.ranking.slice(1)[0]!.text).toBe(second!.text);
+
+    const { container } = render(<SuggestView data={swapped} labels={labels} />);
+    const list = container.querySelector<HTMLElement>("ol.runner-ups")!;
+    expect(within(list).getByText(first!.text)).toBeInTheDocument();
+    expect(within(list).queryByText(second!.text)).toBeNull();
+  });
+
   it("does not offer to show all candidates until there are more than it shows", async () => {
     const user = userEvent.setup();
     render(<SuggestView data={wire.suggest} labels={labels} />);

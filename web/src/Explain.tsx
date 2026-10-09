@@ -228,9 +228,13 @@ function RunnerUps({ ranking }: { ranking: Ranked[] }) {
   if (ranking.length <= 1) return null;
   // **NOT `slice(1)`.** The ranking is sorted best-first, but the chosen move is
   // one of the MAXIMISERS and ties are broken by a keyed draw — so row 0 is not
-  // reliably the move that was played. Measured on the committed fixture: two
-  // candidates tie at 78 and the chosen one is row 1, so dropping row 0 listed
-  // the played move as something it beat and hid a real runner-up. The server
+  // reliably the move that was played, and dropping row 0 lists the played move
+  // as something it beat and hides a real runner-up whenever the draw lands past
+  // it. Where it lands is the fixture's and moves with the stream's key: A1
+  // re-keyed the stream and the committed fixture's draw landed on the top row,
+  // so the fixture no longer separates the two readings. The cell that does is
+  // `Explain.test.tsx`'s "the runner-ups are the non-chosen rows, not the
+  // tail", which swaps two `chosen` flags of the committed payload. The server
   // marks the row, because inferring identity from a display string is a
   // display string doing a type's job.
   const rest = ranking.filter((r) => !r.chosen);

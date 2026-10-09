@@ -5127,8 +5127,12 @@ mod tests {
         // **Exactly one row is the chosen move, and it is not necessarily row
         // 0.** Ties at the top are broken by a keyed draw — `tied_at_top`
         // exists to say so — so a client that took row 0 as the answer would
-        // list the played move among the ones it beat. Measured on the
-        // committed fixture: two candidates tie and the chosen one is row 1.
+        // list the played move among the ones it beat. Where the draw lands is
+        // the fixture's and moves with the stream's key (A1 re-keyed it onto the
+        // top row), so this cell asserts that exactly one row is chosen, not
+        // which; the client's fence for the row is the cell that swaps two
+        // `chosen` flags of the committed payload (`Explain.test.tsx`, "the
+        // runner-ups are the non-chosen rows, not the tail").
         let chosen: Vec<&serde_json::Value> =
             ranking.iter().filter(|r| r["chosen"] == serde_json::Value::Bool(true)).collect();
         assert_eq!(chosen.len(), 1, "exactly one candidate is the one that was played");

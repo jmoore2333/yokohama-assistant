@@ -159,11 +159,16 @@ impl Terminal {
 /// **`chosen` is not a convenience, and it is not `index == 0`.** The ranking is
 /// sorted best-first, but the agent's pick is *one of the maximisers* — ties are
 /// broken by a keyed draw, never by "whichever the generator listed first",
-/// which is exactly what `Suggestion::tied_at_top` exists to report. Measured on
-/// the committed fixture: two candidates tie at 78 and the chosen one is row
-/// **1**. A client that dropped row 0 to get the runner-ups would therefore list
-/// the move the bot actually played as something it beat, and hide a real
-/// runner-up. So the server marks it, rather than leaving the browser to infer
+/// which is exactly what `Suggestion::tied_at_top` exists to report. A client
+/// that dropped row 0 to get the runner-ups would therefore list the move the
+/// bot actually played as something it beat, and hide a real runner-up,
+/// whenever the draw lands past row 0. Where it lands is the fixture's and
+/// moves with the stream's key: A1 re-keyed the stream and the committed
+/// fixture's draw landed on the top row, so the fixture no longer separates
+/// "the non-chosen rows" from "the tail". The fence that does is the client
+/// cell that swaps two `chosen` flags of the committed payload
+/// (`Explain.test.tsx`, "the runner-ups are the non-chosen rows, not the
+/// tail"). So the server marks it, rather than leaving the browser to infer
 /// identity from a display string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ranked {
