@@ -760,12 +760,13 @@ pub fn refusal_kinds() -> Vec<&'static str> {
 ///   is held by nobody, and that 403 sits ahead of this rung in `suggest`'s
 ///   ladder. The variant stays because this crate carries `repl::suggest_cmd`'s
 ///   four refusals verbatim rather than a subset of them.
-/// - `LiveMode` cannot be reached through this API at all — `Session::new_sim`
-///   is the only constructor `games.rs` calls, and `TrackingMode::Live` is
-///   derived from a record's setup observations, so only a live-tracked CLI save
-///   dropped into the store directory could produce one. It is kept because
-///   that IS a way in, and because the module doc it enforces is the standing
-///   3.2 scope rather than a property of this crate.
+/// - `LiveMode` cannot be reached by a game this API deals: the dealing is
+///   `tables.rs`'s (`Session::new_sim`), and `games.rs` rebuilds a game
+///   through `Session::from_record` alone. `TrackingMode::Live` is derived from
+///   a record's setup observations, so only a live-tracked CLI save could
+///   produce one, arriving through the store directory or the browser's
+///   restore. It is kept because those ARE ways in, and because the module doc
+///   it enforces is the standing 3.2 scope rather than a property of this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestRefusal {
     LiveMode,
@@ -971,10 +972,10 @@ mod tests {
     /// `build_hand`.
     ///
     /// **Constructed rather than taken from the corpus, and that is a finding
-    /// in itself**: the committed `why` fixture's 66 candidates are all
-    /// `Place ...`, because its account is a Placement decision. The row
-    /// count is real; it is not evidence of this leak, and a fence anchored to
-    /// it would have passed while proving nothing. `rank_all` is a pure wording
+    /// in itself**: the committed `why` fixture's candidates are all
+    /// `Place ...`, because its account is a Placement decision. Its rows are
+    /// real; they are not evidence of this leak, and a fence anchored to
+    /// them would have passed while proving nothing. `rank_all` is a pure wording
     /// function, so the candidates here are built directly rather than reached
     /// through a game that happens to offer them.
     #[test]

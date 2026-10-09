@@ -427,9 +427,10 @@ impl AppState {
     }
 
     /// [`Self::new`] past its two environment reads — the production state
-    /// over the store and the archive it was handed: the one constructor
-    /// directly (never a test constructor, whose `SeedPolicy` is
-    /// `Diagnostic`), `SoloOnly` by construction. Pinned in process by
+    /// over the store and the archive it was handed: built through
+    /// `with_store_chat_archive_and_log` directly (never through a test
+    /// constructor, whose `SeedPolicy` is `Diagnostic`), `SoloOnly` by
+    /// construction. Pinned in process by
     /// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
     /// binary — `main` → [`Self::new`] → here, the path no in-process cell
     /// runs — by `start_refusal.rs`'s
@@ -480,7 +481,9 @@ impl AppState {
     /// Every constructor above but [`Self::new`] and [`Self::production`] is
     /// this one with a store, an identity or a chat chosen for it, and this one
     /// is [`Self::with_store_chat_and_archive`] with
-    /// no archive — since M6.5a THAT is the one constructor that builds anything.
+    /// no archive — and that one calls `with_store_chat_archive_and_log`, the
+    /// one constructor that builds anything since cycle E, with the stderr log
+    /// and opts the result into the `Diagnostic` seed rule.
     ///
     /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
     /// appender enforces them and `/api/health` reports them off the same
@@ -494,10 +497,13 @@ impl AppState {
         Self::with_store_chat_and_archive(store, identity, chat, Arc::new(archive::NoArchive))
     }
 
-    /// The one constructor that builds anything — the store, the identity door,
-    /// the chat facts and the archive all given (M6.5a). Every constructor above
-    /// but [`Self::new`] and [`Self::production`] is this one with something
-    /// chosen for it; `in_memory*` keep no archive.
+    /// The test constructors' door — the store, the identity door, the chat
+    /// facts and the archive all given (M6.5a). Every constructor above but
+    /// [`Self::new`] and [`Self::production`] is this one with something chosen
+    /// for it; `in_memory*` keep no archive. It builds nothing itself: since
+    /// cycle E it hands the four to `with_store_chat_archive_and_log`, the one
+    /// constructor that builds anything, with the stderr log, and opts the
+    /// result into the `Diagnostic` seed rule.
     ///
     /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
     /// no person's game — honours a seed at any table; the production path is

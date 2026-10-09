@@ -162,3 +162,115 @@ new branch cut from `9ab8c430` and merge back to master from there, not per cycl
 (§5.2), and R-SEC9's "each plan written against the merged tree when its turn comes" reads "against the stack's head". The
 post-merge documents of this close were committed directly on master by the owner's word.
 
+### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and ten corrections
+
+**The cycle split.** S1 (§2.1) spans three subsystems, so the plan splits it by finding family into three cycles, each planned against the stack's head (`security-s1`, cut from master `e9824ec9`, the code of `9ab8c430`). **S1a — the leaks** (the plan this section records) takes A1, B1, B2, B3, B7, D5, D10 and D11, and moves the CLI's `suggest::stream_seed`; the layer's `explain.rs`, `api.rs` (`why`, `undo_allowed`, `input`, `record`), `tables.rs`, `table.rs` and `games.rs`; the client's explain and new-game surfaces; the Worker's seed switch; and the corpus, once. **S1b — the cost bounds** takes A2, A3, B12, D6, D25, D27 and D29 (`archive_post`'s doc), and moves `backup.rs`, `api.rs` (archive, `/at`), `lib.rs` (the executor hand-off and the semaphore), `archive.rs` (the quota), `client.rs` (the frame's option list) and the client's frame types, regenerates the corpus once (A3's frames) and drops the `CLAUDE.md` parenthetical "S1 wires the web layer to it" (the core PR's note). **S1c — the plumbing** takes B8, B9, D1, D7, D12, D26, D28 and D29 (`is_token`'s doc), and moves `games.rs` (the lock map), `lib.rs` (`Cache-Control`, the stream's end), `store.rs` and `tables.rs` (the hosted id rule), `grammar.rs`, `archive.rs` (`caller_segment`) and the error echoes.
+
+**The corpus** regenerates once per cycle that changes the wire's shape, read each time (the owner's note of 2026-10-09, recorded as correction 1 below). Within S1a it regenerates twice, each regeneration its own task's and read on its own: Task 1's (A1's `suggest.json`, B1's `why.json` and the new `why_withheld.json`) and Task 3's (B7's `invited`, which flips to `null` on the walk's nameless joiner in every table-bearing fixture); Tasks 2, 4 and 5 add no fixture and change no committed byte.
+
+What this specification said that the plan's review corrects, recorded forward (the plan's §"Spec corrections", verbatim):
+
+1. **§6, the corpus.** "The wire corpus regenerates once, in S1" reads "once per cycle of S1 that changes the
+   wire's shape, read each time" (the owner, 2026-10-09).
+2. **§6 and §3.2, the CLI fence, against §2.1 A3.** "The CLI is touched only at `suggest::stream_seed`" and
+   A3's file list (`screen_model.rs`, `session.rs`) contradict each other. The fence's substance is "nowhere the
+   bot decides" (§6's own last clause): S1a touches the CLI at `suggest::stream_seed` and its manifest alone;
+   S1b's plan decides A3's CLI edits under that reading, preferring the layer where a layer-side change is
+   equal.
+3. **§2.1 B1, the served shape** (the owner confirmed it 2026-10-09, after asking whether the hidden card
+   matters past the opening round: it does — the bot's kept starting order stays in its hand, masked from every
+   other seat by `observe`, until the bot FULFILS it, mid-game in every recorded game, and the review named the
+   card from the FIRST bot move's feature values alone). "Compute the served explanation at the requester's
+   visibility" is met by WITHHOLDING the account while the mover's starting order is hidden from the requester
+   (and, for a WATCHER, at game over too, since the record route refuses a spectator — the review of Task 1,
+   I-1), not by a masked recompute: the explanation is read at the search's hand-off state, which the layer does not hold, a
+   recompute at the decision state would be a second evaluation derivation (forbidden), and every served value —
+   the terms, `total`, the ranking's values, `root_candidates`, `forced` — is a function of the hidden card.
+   The continuation is withheld too, and the reason is on record: a plan computed with the card known is
+   re-searchable per candidate card, so a served plan with masked fulfil lines still narrows (the review's own
+   caveat on `rank_all`'s doc, generalized). The fulfil-line masking the spec asks for applies to the served
+   (public) continuation, for consistency with the ranking.
+4. **§2.1 B3 and R-SEC8(b), the fixtures** (the owner chose the named `Diagnostic` policy, 2026-10-09: "a good
+   idea especially for future development and through these other phases"). The corpus walk (`wire_fixtures.rs`'s `new_game_body`: a seeded
+   create with an OPEN seat), 79 lib cells (`two_people(id, seed)`), the Worker crate's `CREATE` constant and
+   the Worker pool's replay of the walk all open seeded multi-person tables, and the corpus's determinism
+   REQUIRES it. The rule is kept as ruled and the fixtures opt into a named `SeedPolicy::Diagnostic` — on the
+   NAS binary never, on the Worker through `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` only in the pool's two test files
+   and refused by the deploy guard in any deployable file. The alternative the review offered — honour the seed
+   and carry `seeded: true` on `TableView` with a sentence on the join screen — is recorded as the fallback the
+   owner may prefer; it needs no switch and leaves the creator's advantage disclosed rather than closed.
+5. **§2.1 D5, the catcher.** The lockdown's dump is produced only at the moment of a fault inside `Repl::step`;
+   the one fault a cell can reach through the API is a bot whose own deal is unrecorded (a record with an
+   `Unknown` choice at the bot's seat), which Task 5's cell installs; the filter is unit-pinned beside it.
+6. **§2.1 D11, the fix.** "The record route's 'over' read under the lock" is met and joined by a comparison:
+   the stored record's event count against the handle's AND its terminal digest against the digest of the
+   handle's LIVE state — what a successful final save stamps; the record's own `terminal_digest` field does not
+   track the live state, `None` for a game dealt in process and the loaded value for a rebuilt one (Task 5's
+   fix round, F1) — (the count alone is defeated by undos under failing store writes and a different line replayed to the same
+   length — measured in Task 5, six undos and the same 356 events, the running record served with its seed), so a
+   finished game whose last save failed answers a 409 naming the failed save rather than the running record with
+   its seed.
+7. **§5.3, the live acceptance, and §9.2's stacked branch.** Each S1 cycle ends with a pushed PR whose merge
+   waits for S1's wrap (the owner, 2026-10-09: "the plan will need to end with a PR, it can leave the merge
+   undone"); a test deploy of the branch's build to either host and the review's probes are allowed in the
+   maintenance window the owner opened for 2026-10-09/10 ("pushing the PR and running any checks or deploys are
+   fine for testing"). So S1a's probes — a scratch table's `suggest` carries no invertible field; `why` reads
+   `withheld` at a scratch vs-bot table and the full account at a finished one; a seeded create beside an open
+   seat is a 400 on both hosts — run at S1a's close from a test deploy when the window still holds, else at the
+   stack's deploy after S3. Every probe that creates state removes it.
+8. **§6 and §3.2, the CLI fence, and the guide pair** (the before review, 2026-10-09). The captured `suggest`
+   screen in `docs/cli-guide.md`/`.html` is held BYTE-EXACT to the fixture's own render by the CLI's regeneration
+   pin (`suggest::tests::the_guide_suggest_capture_is_what_the_fixture_renders`), and A1's digest moves the key
+   line and, at that fixture, the answer (a tie's keyed draw). "The CLI is touched only at `suggest::stream_seed`"
+   reads "…and the guide pair's captured `suggest` screen, re-captured from one run of the fixture, never
+   edited" — CLAUDE.md's guide rule for a user-visible CLI change.
+9. **§2.1 B7, the catcher and the stored document** (the before review). The corpus cannot carry the B7 case —
+   the walk's joiner joins WITH a name — so the fence is the layer's cells (the unit cell's three shapes, the
+   nameless-joiner route cell), not a corpus pin; a text rule on `invited` cannot tell a seat the creator typed
+   from one that was joined. The STORED document of a creator-bound seat gains `"bound_at_create": true` (a
+   joined seat's bytes are unchanged), and a table stored before the deploy stops echoing the creator's typed
+   addresses for still-nameless seats, once — the compatibility default, chosen.
+10. **§2.1 B3 and R-SEC8(b), the third host** (the before review). The browser host (`crates/yokohama-wasm`)
+    builds its `Games` through `Games::with_parts` too and reads `SoloOnly` like the NAS and the Worker; its
+    harness — the crate's seeded cell and the browser half's walk replay — opts in by name through a second
+    export, `init_diagnostic()`, the Worker switch's shape. Correction 4's list of opt-ins reads: on the NAS
+    binary never; on the Worker through `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` in the pool's two test files; on the
+    browser host through `init_diagnostic()`, which the client never calls.
+
+**The S1 figures** (measured 2026-10-09 for S1b's plan — A2's event-count cap and semaphore, B12's body cap and quota), as the plan carries them, verbatim:
+
+**Method.** A scratch example in a `git archive` export of `e9824ec9` (never committed), release profile, the
+Mac (Darwin 27.0.0 arm64): uniform-random legal play to the game's end at 2/3/4P, 200 seeds each, every game
+finishing (no guard hit at 60,000 moves); the record stamped and serialized compact and pretty — **pretty is what
+a browser sends**, `Session::to_record_json` is `to_string_pretty`. The bot's own games through
+`examples/arena cell s1sizes 2 v4-step9-draft1 v4-step9-draft1 3 --emit … --master 20261009` (six games).
+
+| shape | events: median / p90 / p99 / max | bytes at the max game: compact / pretty | bytes per event (mean): compact / pretty |
+|---|---|---|---|
+| 2P random, 200 seeds | 5,099 / 7,624 / 12,853 / 15,342 (seed 104) | 655,008 / 1,496,479 | 42.9 / 98.3 |
+| 3P random, 200 seeds | 6,736 / 10,071 / 14,080 / 18,625 (seed 160) | 812,811 / 1,882,221 | 43.4 / 99.9 |
+| 4P random, 200 seeds | 8,849 / 11,774 / 15,621 / 16,867 (seed 4) | 736,517 / 1,695,364 | 43.8 / 101.0 |
+| 2P bot vs bot (V4 × V4), 6 games | 287 – 416 | 19,127 / 41,984 at the longest | ~46 / ~101 |
+| the owner's human-vs-bot games (3) | 243 – 252 | — / 25,818 – 26,075 on disk | — / ~104 |
+| the browser fixture (`tests/fixtures/browser-played-2p.json`) | 595 | — / 54,103 | — / 91 |
+| the review's worst-case body (`spread_4p_11`) | 23,606 | 1,046,122 (compact, passing turns) / — | 44 / — |
+
+**Reading.** Two kinds of finished game exist: the ones people and the bot play (250–600 events, under 60 KB
+pretty-printed) and random play (5,000–19,000 events, 0.5–1.9 MB), which no browser game produces. The present
+1 MiB body cap already refuses a random 3P game pretty-printed (1.88 MB), and nobody has noticed, because no
+browser game is one. Under the predicate replay the worst admitted record costs 54 ms whatever the cap, so the
+event cap is a PLAUSIBILITY bound — what a finished game is — and a storage bound, not a CPU bound.
+
+**What S1b's plan transcribes, unless the owner rules the other way:**
+
+| knob | value | why |
+|---|---|---|
+| A2 event cap | **4,096 events** | seven times the longest game people or the bot have played (595), refused by COUNT before any replay; the worst-case body (23,606) and every random-play record fall outside |
+| B12 body cap (`ARCHIVE_BODY_LIMIT`) | **512 KiB** | eight times the longest pretty-printed game measured (54 KB); above ~5,000 pretty-printed events, so the count cap speaks first on every real record |
+| B12 per-caller quota | **256 records and 128 MiB** per caller segment | 256 finished games is years of play; 128 MiB is the count times the body cap, so neither bound is dead |
+| A2 semaphore (the NAS) | **2 permits**, acquire bounded at **2 s** then `503` with `Retry-After: 1` | the NAS has 4 cores (the review's V9 read); two blocking replays leave two cores to the runtime; at ≤ 55 ms per admitted replay two permits clear ~36 worst-case uploads a second, far above the edge's 20 per 10 s per client; the bounded wait keeps queued bodies from piling up behind a burst |
+
+The alternative sizing, recorded: an event cap of 24,000 with the body cap raised to the adapter's 2 MiB admits
+every finished game of any play style measured, at the same ≤ 55 ms — a wider notion of "a finished game" and a
+body cap moving UP, against the review's "lowered toward measured game sizes"; the choice is the owner's
+(R-SEC8(f)), to be taken at S1b's plan.

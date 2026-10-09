@@ -2157,13 +2157,15 @@ fn partial_of(record_text: &str, events: usize) -> String {
 
 /// The payloads the router cannot produce, built in process.
 ///
-/// **Six of them, not the two this doc used to claim** (M6.5b): `watching` and
-/// `locked` were the original pair, and M3's four explanation payloads joined
-/// them without the sentence moving. All six are real states of the served
-/// type and all six are unreachable over HTTP from a deterministic bot-free
-/// game: `Watching` needs a BOT to be the acting seat (and a bot's seed is
-/// entropy), `Locked` needs a driver or engine fault, and the four `why`
-/// payloads need a bot move to account for.
+/// **Eight of them, not the two this doc used to claim** (M6.5b, then cycle E
+/// and security S1a): `watching` and `locked` were the original pair, and M3's
+/// four explanation payloads joined them without the sentence moving — five
+/// since S1a's `why_withheld`. Seven are real states of the served type and
+/// unreachable over HTTP from a deterministic bot-free game: `Watching` needs
+/// a BOT to be the acting seat (and a bot's seed is entropy), `Locked` needs a
+/// driver or engine fault, and the five `why` payloads need a bot move to
+/// account for. The eighth, cycle E's `house_frame`, is reachable and is built
+/// here because the walk never reads a stream.
 ///
 /// They are therefore third-column files in spec §5's table — constructed, not
 /// routed — which the browser host's replay asserts by name.
