@@ -502,8 +502,8 @@ impl AppState {
     /// [`Self::new`] and [`Self::production`] is this one with something chosen
     /// for it; `in_memory*` keep no archive. It builds nothing itself: since
     /// cycle E it hands the four to `with_store_chat_archive_and_log`, the one
-    /// constructor that builds anything, with the stderr log, and opts the
-    /// result into the `Diagnostic` seed rule.
+    /// constructor that builds anything, with the stderr log; since security
+    /// S1a it also opts the result into the `Diagnostic` seed rule.
     ///
     /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
     /// no person's game — honours a seed at any table; the production path is
@@ -5127,11 +5127,11 @@ mod tests {
         // **Exactly one row is the chosen move, and it is not necessarily row
         // 0.** Ties at the top are broken by a keyed draw — `tied_at_top`
         // exists to say so — so a client that took row 0 as the answer would
-        // list the played move among the ones it beat. Where the draw lands is
-        // the fixture's and moves with the stream's key (A1 re-keyed it onto the
-        // top row), so this cell asserts that exactly one row is chosen, not
-        // which; the client's fence for the row is the cell that swaps two
-        // `chosen` flags of the committed payload (`Explain.test.tsx`, "the
+        // list the played move among the ones it beat. Where the draw lands moves
+        // with the stream's key (on the committed `suggest.json`, A1's re-keying
+        // moved it to the top row), so this cell asserts that exactly one row is
+        // chosen, not which; the client's fence for the row is the cell that swaps
+        // two `chosen` flags of the committed payload (`Explain.test.tsx`, "the
         // runner-ups are the non-chosen rows, not the tail").
         let chosen: Vec<&serde_json::Value> =
             ranking.iter().filter(|r| r["chosen"] == serde_json::Value::Bool(true)).collect();

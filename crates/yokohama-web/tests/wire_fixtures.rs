@@ -2155,17 +2155,19 @@ fn partial_of(record_text: &str, events: usize) -> String {
     serde_json::to_string(&rec).expect("a record")
 }
 
-/// The payloads the router cannot produce, built in process.
+/// The payloads the walk does not route, built in process.
 ///
 /// **Eight of them, not the two this doc used to claim** (M6.5b, then cycle E
-/// and security S1a): `watching` and `locked` were the original pair, and M3's
-/// four explanation payloads joined them without the sentence moving — five
-/// since S1a's `why_withheld`. Seven are real states of the served type and
-/// unreachable over HTTP from a deterministic bot-free game: `Watching` needs
-/// a BOT to be the acting seat (and a bot's seed is entropy), `Locked` needs a
-/// driver or engine fault, and the five `why` payloads need a bot move to
-/// account for. The eighth, cycle E's `house_frame`, is reachable and is built
-/// here because the walk never reads a stream.
+/// and security S1a), each for its own reason:
+///
+/// - `watching`: a BOT must be the acting seat, and a bot's seed is entropy.
+/// - `locked`: a driver or engine fault.
+/// - `why` and `why_withheld`: a bot move to account for.
+/// - `why_refused`: the bot-free walk's own `why` answer, which the walk never
+///   asks for.
+/// - `why_refusals`: every refusal kind, from the enum.
+/// - `explanation_terminal`: a finished position's explanation.
+/// - `house_frame`: a stream frame, and the walk reads no stream.
 ///
 /// They are therefore third-column files in spec §5's table — constructed, not
 /// routed — which the browser host's replay asserts by name.

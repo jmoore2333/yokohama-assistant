@@ -162,14 +162,15 @@ impl Terminal {
 /// which is exactly what `Suggestion::tied_at_top` exists to report. A client
 /// that dropped row 0 to get the runner-ups would therefore list the move the
 /// bot actually played as something it beat, and hide a real runner-up,
-/// whenever the draw lands past row 0. Where it lands is the fixture's and
-/// moves with the stream's key: A1 re-keyed the stream and the committed
-/// fixture's draw landed on the top row, so the fixture no longer separates
-/// "the non-chosen rows" from "the tail". The fence that does is the client
-/// cell that swaps two `chosen` flags of the committed payload
-/// (`Explain.test.tsx`, "the runner-ups are the non-chosen rows, not the
-/// tail"). So the server marks it, rather than leaving the browser to infer
-/// identity from a display string.
+/// whenever the draw lands past row 0. So the server marks it, rather than
+/// leaving the browser to infer identity from a display string.
+///
+/// Where `suggest`'s draw lands moves with its stream's key: A1 re-keyed that
+/// stream, and the committed `suggest.json`'s draw landed on the top row, so
+/// that fixture no longer separates "the non-chosen rows" from "the tail". The
+/// fence that does is the client cell that swaps two `chosen` flags of the
+/// committed payload (`Explain.test.tsx`, "the runner-ups are the non-chosen
+/// rows, not the tail").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Ranked {
     pub text: String,
