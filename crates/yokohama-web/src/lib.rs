@@ -1905,6 +1905,38 @@ mod tests {
         assert_eq!(me["user"], serde_json::Value::Null, "and /api/me names nobody");
     }
 
+    /// **A nameless joiner's address is served to nobody** (finding B7): the
+    /// creator's `…/table`, their lobby row (`?scope=mine`) and their deal all
+    /// read `invited: null` for the joined seat, while the creator's own seat
+    /// — typed at create — still names itself to them. The leakage pin in
+    /// `tests/wire_fixtures.rs` holds the corpus to the same fact.
+    #[tokio::test]
+    async fn a_nameless_joiners_address_is_served_to_nobody() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, created) = post_as(
+            &state,
+            "alice@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seats": [{ "user": "alice@wire.test" }, { "open": true }], "id": "nameless", "name": "nameless",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let (status, joined) = post_as(&state, "carol.secret@wire.test", "/api/games/nameless/join", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        for uri in ["/api/games/nameless/table", "/api/games?scope=mine", "/api/games/nameless/deal"] {
+            let (status, body) = get_as(&state, "alice@wire.test", uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri}: {body}");
+            let text = body.to_string();
+            assert!(!text.contains("carol.secret"), "{uri} serves the joiner's address to the creator: {text}");
+        }
+        let (_, table) = get_as(&state, "alice@wire.test", "/api/games/nameless/table").await;
+        assert_eq!(table["seats"][0]["invited"], "alice@wire.test", "the creator's own typed seat still names itself");
+        assert_eq!(table["seats"][1]["invited"], serde_json::Value::Null);
+    }
+
     /// A key this API does not know is a REFUSAL, not a default.
     ///
     /// The defect, measured before the fence: `NewGame`'s `start_seat`, `seed`,

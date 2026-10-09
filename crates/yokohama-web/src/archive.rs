@@ -423,8 +423,8 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "a@x.test".into(), name: None },
-                SeatDoc::Human { user: "b@x.test".into(), name: None },
+                SeatDoc::Human { user: "a@x.test".into(), name: None, bound_at_create: false },
+                SeatDoc::Human { user: "b@x.test".into(), name: None, bound_at_create: false },
             ],
             keeps: vec![Some(1), Some(2)],
             seed: 7,

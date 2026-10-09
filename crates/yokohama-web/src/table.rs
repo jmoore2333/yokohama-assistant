@@ -54,6 +54,16 @@ pub enum SeatDoc {
         /// something here.
         #[serde(default)]
         name: Option<String>,
+        /// Whether the CREATOR bound this seat at create — typing an address
+        /// for it — rather than a joiner taking an open seat (security S1a,
+        /// finding B7). Only such a seat may show its address back to the
+        /// creator as `invited` ([`SeatView`]): a joiner's key is the joiner's
+        /// own, and the creator has no claim on it. Serde-default `false` and
+        /// skipped when false, so a document written before the field reads
+        /// every seat as joined and a joined seat's bytes are what they were;
+        /// `TABLE_SCHEMA` stays 3.
+        #[serde(default, skip_serializing_if = "is_false")]
+        bound_at_create: bool,
     },
     /// The shipped production contestant, as the CLI seats it
     /// (`bot::PROVISIONAL_DEFAULT_BOT`). WHICH contestant is not stored here:
@@ -423,7 +433,7 @@ impl TableDoc {
     /// or whose seats are all unnamed. Never the address.
     fn creator_name(&self) -> Option<String> {
         self.seats.iter().find_map(|s| match s {
-            SeatDoc::Human { user, name: Some(name) } if *user == self.created_by => Some(name.clone()),
+            SeatDoc::Human { user, name: Some(name), .. } if *user == self.created_by => Some(name.clone()),
             _ => None,
         })
     }
@@ -476,7 +486,8 @@ impl TableDoc {
 ///
 /// - `name` is what the seat's holder gave, or `null`.
 /// - `you` is whether the READER holds this seat.
-/// - `invited` is the address the creator typed at create, served to the
+/// - `invited` is the address the creator typed at create — a seat the
+///   creator BOUND (`bound_at_create`), never a joiner's — served to the
 ///   creator alone and only while the seat has no name — the one way the
 ///   person who invited somebody can still tell their seats apart before that
 ///   person has said what to call them. Every other reader of an unnamed seat
@@ -499,10 +510,10 @@ impl SeatView {
     /// created the table.
     pub fn of(seat: &SeatDoc, reader: &User, mine: bool) -> Self {
         match seat {
-            SeatDoc::Human { user, name } => SeatView::Human {
+            SeatDoc::Human { user, name, bound_at_create } => SeatView::Human {
                 name: name.clone(),
                 you: user == reader.as_str(),
-                invited: (mine && name.is_none()).then(|| user.clone()),
+                invited: (mine && name.is_none() && *bound_at_create).then(|| user.clone()),
             },
             SeatDoc::Bot => SeatView::Bot,
             SeatDoc::Open => SeatView::Open,
@@ -645,9 +656,9 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "a@t.test".into(), name: None },
-                SeatDoc::Human { user: "b@t.test".into(), name: None },
-                SeatDoc::Human { user: "a@t.test".into(), name: None },
+                SeatDoc::Human { user: "a@t.test".into(), name: None, bound_at_create: false },
+                SeatDoc::Human { user: "b@t.test".into(), name: None, bound_at_create: false },
+                SeatDoc::Human { user: "a@t.test".into(), name: None, bound_at_create: false },
             ],
             keeps: vec![None, None, None],
             seed: 7,
@@ -721,7 +732,7 @@ mod tests {
             players: 2,
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
-            seats: vec![SeatDoc::Human { user: "a@t.test".into(), name: None }, SeatDoc::Bot],
+            seats: vec![SeatDoc::Human { user: "a@t.test".into(), name: None, bound_at_create: false }, SeatDoc::Bot],
             keeps: vec![Some(1), None],
             seed: 7,
             status: TableStatus::Playing,
@@ -814,7 +825,7 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()) },
+                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()), bound_at_create: false },
                 SeatDoc::Open,
                 SeatDoc::Open,
             ],
@@ -850,7 +861,7 @@ mod tests {
         assert!(!d.is_full());
         let mut full = d.clone();
         full.seats[1] = SeatDoc::Bot;
-        full.seats[2] = SeatDoc::Human { user: "b@t.test".into(), name: None };
+        full.seats[2] = SeatDoc::Human { user: "b@t.test".into(), name: None, bound_at_create: false };
         assert!(full.is_full());
         assert!(full.open_seats().is_empty());
     }
@@ -1008,7 +1019,7 @@ mod tests {
         assert_eq!(bot_of(&older), Value::Null, "a mirror written before the field names no version");
 
         let mut humans = dealt;
-        humans.seats[1] = SeatDoc::Human { user: "b@t.test".into(), name: None };
+        humans.seats[1] = SeatDoc::Human { user: "b@t.test".into(), name: None, bound_at_create: false };
         assert_eq!(bot_of(&humans), Value::Null, "no bot seat, whatever the mirror says");
     }
 
@@ -1054,8 +1065,8 @@ mod tests {
         let mut d = open_doc();
         d.created_by = "red@wire.test".into();
         d.seats = vec![
-            SeatDoc::Human { user: "red@wire.test".into(), name: None },
-            SeatDoc::Human { user: "blue@wire.test".into(), name: None },
+            SeatDoc::Human { user: "red@wire.test".into(), name: None, bound_at_create: true },
+            SeatDoc::Human { user: "blue@wire.test".into(), name: None, bound_at_create: true },
             SeatDoc::Open,
         ];
         let red = User::parse("red@wire.test").expect("an email");
@@ -1101,11 +1112,53 @@ mod tests {
         assert_eq!(stranger["seats"][0], json!({ "kind": "human", "name": null, "you": false, "invited": null }));
         assert_eq!(hits(&stranger), Vec::<String>::new(), "no address reaches a stranger: {stranger}");
 
-        d.seats[0] = SeatDoc::Human { user: "red@wire.test".into(), name: Some("Red".into()) };
+        d.seats[0] = SeatDoc::Human { user: "red@wire.test".into(), name: Some("Red".into()), bound_at_create: false };
         for u in [&red, &blue, &grey] {
             assert_eq!(view(&d, u)["creator"], "Red", "the creator's seat name, to every reader");
         }
         assert_eq!(view(&d, &red)["seats"][0]["invited"], Value::Null, "a named seat is its name, even to the creator");
+    }
+
+    /// **`invited` is the address the creator TYPED, and only that** (finding
+    /// B7): a joiner's seat is stored under the joiner's own key the same way,
+    /// and until this cycle a joiner who gave no name was shown to the creator
+    /// by address — in `…/table`, the lobby row, the deal and every keep
+    /// reply. Three seats, one reader (the creator): the seat they typed for
+    /// somebody else shows its address; the seat they typed for THEMSELVES
+    /// shows their own (Review Focus 6); the joined seat shows `null`.
+    #[test]
+    fn invited_names_a_creator_bound_seat_and_never_a_joiner() {
+        let creator = User::parse("alice@t.test").unwrap();
+        let mut doc = open_doc();
+        doc.created_by = "alice@t.test".into();
+        doc.seats = vec![
+            SeatDoc::Human { user: "alice@t.test".into(), name: None, bound_at_create: true },
+            SeatDoc::Human { user: "carol.secret@t.test".into(), name: None, bound_at_create: false },
+            SeatDoc::Human { user: "typed@t.test".into(), name: None, bound_at_create: true },
+        ];
+        let view = doc.view(&creator, false);
+        let invited: Vec<Option<String>> = view
+            .seats
+            .iter()
+            .map(|s| match s {
+                SeatView::Human { invited, .. } => invited.clone(),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            invited,
+            vec![Some("alice@t.test".into()), None, Some("typed@t.test".into())],
+            "the creator's own typed seat and the seat they typed for another; never the joiner's",
+        );
+        // The document's bytes: a joined seat serializes as it always did —
+        // the field is skipped when false — and a creator-bound seat names it.
+        let json = serde_json::to_string(&doc.seats[1]).unwrap();
+        assert!(!json.contains("bound_at_create"), "a joined seat's bytes are unchanged: {json}");
+        let json = serde_json::to_string(&doc.seats[0]).unwrap();
+        assert!(json.contains("\"bound_at_create\":true"), "{json}");
+        // And a document written before the field reads every seat as joined.
+        let old: SeatDoc = serde_json::from_str(r#"{"kind":"human","user":"x@t.test"}"#).unwrap();
+        assert!(matches!(old, SeatDoc::Human { bound_at_create: false, .. }));
     }
 
     /// The view carries the BOOLEAN and never the list: who else is watching is

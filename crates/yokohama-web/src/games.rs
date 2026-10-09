@@ -3616,6 +3616,7 @@ pub(crate) mod test_support {
         table.seats[1] = crate::table::SeatDoc::Human {
             user: BGA_SEAT_HOLDER.to_string(),
             name: Some("Ada Bell".to_string()),
+            bound_at_create: false,
         };
         table.keeps[1] = Some(kept + 1);
         table.turn.as_mut().expect("a mirror").bot = None;

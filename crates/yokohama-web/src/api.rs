@@ -2904,7 +2904,7 @@ mod tests {
 
         // Row 2: the record's bot at a table's human seat.
         let mut table: crate::table::TableDoc = serde_json::from_str(PLAYED_TABLE).unwrap();
-        table.seats[1] = crate::table::SeatDoc::Human { user: "ada@t.test".to_string(), name: None };
+        table.seats[1] = crate::table::SeatDoc::Human { user: "ada@t.test".to_string(), name: None, bound_at_create: false };
         table.keeps[1] = Some(1);
         let games = holding(PLAYED_RECORD, &serde_json::to_string(&table).unwrap());
         let runs = crate::bots::label(&crate::bots::production());

@@ -826,7 +826,7 @@ mod tests {
             start_seat: 0,
             seats: emails
                 .iter()
-                .map(|e| SeatDoc::Human { user: (*e).to_string(), name: None })
+                .map(|e| SeatDoc::Human { user: (*e).to_string(), name: None, bound_at_create: true })
                 .collect(),
             keeps: vec![Some(1); usize::from(players)],
             seed: 7,

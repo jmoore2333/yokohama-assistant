@@ -258,7 +258,7 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
             // a CALLER is held to the mode's rule.
             (Some(raw), false, false) => {
                 let user = User::parse(raw).map_err(|e| format!("seat {i}: {e}"))?;
-                seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None });
+                seats.push(SeatDoc::Human { user: user.as_str().to_string(), name: None, bound_at_create: true });
             }
             (None, true, false) => seats.push(SeatDoc::Bot),
             (None, false, true) => seats.push(SeatDoc::Open),
@@ -304,7 +304,7 @@ fn config_of(req: &NewGame, creator: &User) -> Result<(GameConfig, Vec<SeatDoc>)
     // would be this server making a claim about somebody who has not spoken.
     if let Some(name) = &display_name {
         for seat in &mut seats {
-            if let SeatDoc::Human { user, name: slot } = seat {
+            if let SeatDoc::Human { user, name: slot, .. } = seat {
                 if user == creator.as_str() {
                     *slot = Some(name.clone());
                 }
@@ -1600,7 +1600,7 @@ impl Games {
                 Some(_) => {}
             }
         }
-        doc.seats[n] = SeatDoc::Human { user: user.as_str().to_string(), name };
+        doc.seats[n] = SeatDoc::Human { user: user.as_str().to_string(), name, bound_at_create: false };
         if doc.is_full() {
             doc.status = TableStatus::Dealing;
         }
@@ -2464,9 +2464,9 @@ mod tests {
         // where it lives.
         let seats = |first_is_bot: bool| {
             if first_is_bot {
-                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string(), name: None }]
+                vec![SeatDoc::Bot, SeatDoc::Human { user: "red@t.test".to_string(), name: None, bound_at_create: false }]
             } else {
-                vec![SeatDoc::Human { user: "red@t.test".to_string(), name: None }, SeatDoc::Bot]
+                vec![SeatDoc::Human { user: "red@t.test".to_string(), name: None, bound_at_create: false }, SeatDoc::Bot]
             }
         };
         assert_eq!(first_human_seat(&seats(true)), PlayerId::new(1), "the bot is skipped");
@@ -3234,8 +3234,8 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()) },
-                SeatDoc::Human { user: "blue@t.test".into(), name: None },
+                SeatDoc::Human { user: "red@t.test".into(), name: Some("Red".into()), bound_at_create: false },
+                SeatDoc::Human { user: "blue@t.test".into(), name: None, bound_at_create: false },
             ],
             keeps: vec![None, None],
             seed: CORPUS_SEED,
@@ -3271,13 +3271,13 @@ mod tests {
         };
         let long_name = || {
             let mut d = valid();
-            d.seats[0] = SeatDoc::Human { user: "red@t.test".into(), name: Some("n".repeat(65)) };
+            d.seats[0] = SeatDoc::Human { user: "red@t.test".into(), name: Some("n".repeat(65)), bound_at_create: false };
             d
         };
         let control_name = || {
             let mut d = valid();
             d.seats[1] =
-                SeatDoc::Human { user: "blue@t.test".into(), name: Some("bl\u{7}ue".into()) };
+                SeatDoc::Human { user: "blue@t.test".into(), name: Some("bl\u{7}ue".into()), bound_at_create: false };
             d
         };
         let winner_off_the_table = || {
