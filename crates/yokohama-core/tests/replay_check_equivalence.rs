@@ -338,17 +338,24 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     // (g) a broken state though every event applied (the shape of
     //     game_record.rs:156-172): a RevealStartingOrder into a hand already
     //     holding 3 orders APPLIES as an event and leaves a state
-    //     `check_invariants` refuses — the invariant check pinned under both.
+    //     `check_invariants` refuses — the invariant check pinned under both,
+    //     by its own sentence, so that an event-level refusal of the reveal
+    //     could never stand in for it.
     let (state, mut r, hidden) = (0..64u64)
         .find_map(|seed| record_with_full_order_hand(seed, &rules))
         .expect("some seed must fill P1's order hand, else this case proves nothing");
     let card = *state
         .orders_removed
         .last()
-        .or_else(|| state.order_deck.last())
-        .expect("removed pile holds P1's two Unknown-parked cards at minimum");
+        .expect("the Unknown choice parks P1's two dealt cards in the removed pile");
     r.push_event(RecordedEvent::RevealStartingOrder { player: hidden, card });
-    refuse(&r, "a broken state though every event applied", &mut refusals);
+    let (strict, predicate) = both(&r, &rules);
+    assert!(
+        matches!(&strict, Err((i, m)) if *i == r.events.len() - 1 && m.starts_with("invariant violated")),
+        "premise: the reveal applies and the invariant check refuses the state: {strict:?}",
+    );
+    assert_eq!(predicate, strict, "a broken state though every event applied: the two replays disagree");
+    refusals += 1;
 
     // (h) a move appended after the game's END. The phase machine parks a
     //     finished game at `TurnEnd` (`apply_move.rs`'s `advance_phase`), where
@@ -412,9 +419,10 @@ fn an_engine_version_drift_is_accepted_under_both_checks() {
     assert_eq!(predicate, strict, "the predicate replay must accept the drift too");
 }
 
-/// LEGAL reveal events on the SUCCESS path — `RevealOrders` (the bottom deck
-/// card and a removed-pile card: the conservation-by-exchange path),
-/// `RevealTechs`, and `RevealStartingOrder` of a hidden player — interleaved
+/// LEGAL reveal events on the SUCCESS path — `RevealOrders` of the bottom
+/// deck card, alternately alone (deck-only) and with a removed-pile card (the
+/// conservation-by-exchange path), `RevealTechs`, and `RevealStartingOrder`
+/// of a hidden player — interleaved
 /// with random legal play to the game's end: both replays fold the record to
 /// the live game's own terminal digest. Under `Predicate` every non-move event
 /// is `fold_one_event` itself by construction; this cell holds that
@@ -439,8 +447,10 @@ fn legal_reveal_events_fold_identically_on_the_success_path() {
                 let ev = match rng.gen_range(0..3u8) {
                     0 if state.order_deck.len() >= 2 => {
                         let mut cards = vec![state.order_deck[0]];
-                        if let Some(&c) = state.orders_removed.first() {
-                            cards.push(c);
+                        if orders % 2 == 1 {
+                            if let Some(&c) = state.orders_removed.first() {
+                                cards.push(c);
+                            }
                         }
                         let exchange = cards.len() == 2;
                         s.arrange_orders_on_top(&cards).ok().map(|_| {
@@ -488,11 +498,16 @@ fn legal_reveal_events_fold_identically_on_the_success_path() {
         assert_eq!(predicate, strict, "seed {seed}: the predicate replay diverged on a record with reveals");
     }
     println!("reveals on the success path: orders {orders} (exchanges {exchanges}), techs {techs}, starting {starting}");
-    assert!(orders > 0 && exchanges > 0 && techs > 0 && starting > 0, "every reveal kind ran at least once");
+    assert!(
+        exchanges > 0 && exchanges < orders && techs > 0 && starting > 0,
+        "every reveal kind ran at least once, the deck-only and the exchange shape alike",
+    );
 }
 
-/// Recorded, never asserted: the wall-clock of both replays over the longest
-/// recorded game, printed under `--nocapture` for the task report.
+/// Recorded, never asserted: the wall-clock of both replays over the 4P
+/// 40-event `common` record (the longest it builds), printed under
+/// `--nocapture` for the task report; the figure that matters is the plan's
+/// release measurement of the review's worst-case bodies.
 #[test]
 fn the_two_replays_walls_are_recorded() {
     let rules = Rules::standard();
@@ -504,7 +519,8 @@ fn the_two_replays_walls_are_recorded() {
     let t = std::time::Instant::now();
     let predicate = replay_strict_with(&record, &rules, MoveCheck::Predicate).map(|s| state_digest(&s));
     let predicate_wall = t.elapsed();
-    assert_eq!(predicate.ok(), strict.ok());
+    assert!(strict.is_ok(), "premise: the record replays strictly");
+    assert_eq!(predicate.ok(), strict.ok(), "the predicate replay diverged");
     println!(
         "replay walls over {} events: strict {:?}, predicate {:?}",
         record.events.len(),

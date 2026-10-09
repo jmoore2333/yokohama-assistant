@@ -545,6 +545,8 @@ pub enum MoveCheck {
 /// differs for a `Move` alone: `is_listed_move`, then the raw transition
 /// `apply_move_unchecked`, refusing a non-member with the `MoveError::NotLegal`
 /// that `apply_move` returns — so the two checks word a refusal identically.
+/// The match is exhaustive on `check`: a third `MoveCheck` variant is a
+/// compile error here, never a silent `Listed`.
 fn fold_one_event_with(
     state: &GameState,
     ev: &RecordedEvent,
@@ -558,7 +560,7 @@ fn fold_one_event_with(
             }
             crate::game::apply_move::apply_move_unchecked(state, mv, rules).map_err(|e| e.to_string())
         }
-        _ => fold_one_event(state, ev, rules),
+        (MoveCheck::Listed, _) | (MoveCheck::Predicate, _) => fold_one_event(state, ev, rules),
     }
 }
 

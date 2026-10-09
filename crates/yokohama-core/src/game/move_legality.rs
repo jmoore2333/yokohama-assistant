@@ -1022,7 +1022,7 @@ mod tests {
         );
         assert!(
             queued_family_refusals > 0,
-            "no family member was judged under a queued choice — the queue gate is untested",
+            "no family member was judged under a queued choice — Review Focus 3's queued case is untested by this cell",
         );
         assert!(
             out_of_phase_family_refusals > 0,
