@@ -13,9 +13,12 @@
 > before its own review and reports `DONE_WITH_CONCERNS` when a sentence here proves false.
 
 **Goal:** The engine's strict replay gains an ADDITIVE, PROVEN-EQUIVALENT way to check each recorded move without
-materializing a legal list per event, so that the web layer (in S1 proper) can replay an untrusted record at a cost
-that no longer follows the legal families' sizes — with `SEMANTICS_REV` at 7, the oracle untouched, and
-`apply_move`, `get_legal_moves`, `replay_strict` and `fold_one_event` unedited.
+materializing the Movement phase's legal list per event, so that the web layer (in S1 proper) can replay an untrusted
+record at a cost that no longer follows the retreat family's size — measured by this plan's review (§"Review record"):
+the review's 4P worst-case record of 23,606 events replays in 54 ms under the predicate check against 29.0 s under
+`replay_strict`, to the same digest — with `SEMANTICS_REV` at 7, the oracle untouched, and `apply_move`,
+`get_legal_moves`, `replay_strict` and `fold_one_event` unedited. The two families `is_move_legal` DELEGATES (area
+actions, choice resolutions) still materialize their own measured-small lists; the retreat product is what is never paid.
 
 **Architecture:** Two additions to `crates/yokohama-core` and one proof. `move_legality::is_listed_move` answers
 "is this move IN `get_legal_moves`" for one candidate: for the Movement family's two variants it is the conjunction
@@ -25,10 +28,13 @@ legal WITNESS path for a label the list prints one lex-least witness for, the fa
 for every other variant `is_move_legal` is exact by the module's contract. `record::replay_strict_with(record,
 rules, MoveCheck)` is `replay_strict`'s preamble, loop and digest check with the move check chosen by the caller:
 `Listed` folds through `apply_move` exactly as today, `Predicate` through `is_listed_move` then
-`apply_move_unchecked`. The proof is two module cells (every listed move passes; every constructed candidate, the
-non-canonical witnesses included, reads as the list reads it; the phase gate is taken first) and one integration
-binary (24 recorded games fold to the same digest; five tampered records and a battery of witness tampers refuse at
-the same index with the same sentence).
+`apply_move_unchecked`. Every non-move event folds through `fold_one_event` itself under either check. The proof is two
+module cells (every listed move passes; every constructed candidate, the non-canonical witnesses included, reads as
+the list reads it; every REAL member of the phase-blind Movement family is refused under a queued choice and outside
+the Movement phase; a move the list held is judged one state later as that state's list judges it) and one
+integration binary (24 recorded games fold to the same digest; the five tampered records `game_record.rs` builds,
+non-canonical witness tampers, a family member planted at an AreaAction event, an invariant break and a move after
+the game's end refuse at the same index with the same sentence).
 
 **Tech Stack:** Rust 1.97.1 (`rust-toolchain.toml`), `crates/yokohama-core` only; the crate's own test helpers
 (`move_legality.rs`'s `drive`/`candidates`/`legal`, `tests/common/mod.rs`'s `run_recorded_game`); `cargo test`,
@@ -56,10 +62,11 @@ the same index with the same sentence).
 
 ## Review Focus
 
-Five inputs the spec implies and this plan pins, each to the task that owns the code:
+Seven inputs the spec implies and this plan pins, each to the task that owns the code:
 
 1. **A bare teleport encoding (`path: []`) for a destination a zero-cost walk also reaches.** The list prints only
-   the walk (the generator's suppression, `legal_moves.rs:289-300`); `is_listed_move` must refuse the teleport
+   the walk (the generator's `zero_cost_destinations` suppression in the on-board arm, `legal_moves.rs:295-383`);
+   `is_listed_move` must refuse the teleport
    encoding though `PathMode::RulesLegal` accepts it. Task 1's membership cell meets it through `candidates()`'s
    "bare teleport encoding for a walked destination" mutant.
 2. **A President in hand.** The family's list is `PlacePresident` over areas there, not `MovePresident`; Task 1's
@@ -67,11 +74,20 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
    later.
 3. **A `MovePresident` while a choice is queued.** `get_legal_moves` short-circuits to the choice's resolutions;
    `is_move_legal` mirrors that, and the family's list does not — the conjunction's order is what refuses it. Task
-   1's phase cell meets it wherever a listed move's successor state queues a choice.
+   1's MEMBERSHIP cell meets it directly: at every decision point with a queued choice it judges every REAL member
+   of the phase-blind family and counts the refusals (`queued_family_refusals`, 28 in the review's sweep). A Movement
+   move's successor never queues a choice, so the phase cell cannot meet it (the review's correction, R-3 below).
 4. **A record with no events.** Both replays must agree on the initial state's digest. Task 2's cell
    `an_empty_record_folds_to_the_same_initial_state_under_both_checks`.
 5. **A record every event of which applies but whose state breaks an invariant.** The invariant check must run under
    `Predicate` exactly as under `Listed`. Task 2's tamper cell, case (g).
+6. **A Movement-family member planted where the phase is AreaAction.** The list there cannot hold it; only the phase
+   gate taken FIRST refuses it, and a family-alone predicate applies it raw. Task 2's case (i), which reads the
+   member off `get_legal_moves` on a copy of the state with its phase set to Movement (the family consults nothing
+   about the phase by contract).
+7. **A move appended after the game's end.** The phase machine parks a finished game at `TurnEnd`, where the list
+   is empty and no predicate arm answers — neither check has a game-over gate, and neither needs one. Task 2's case
+   (h), on a record played to its end (2,515 events at 2P seed 0).
 
 ## Execution shape
 
@@ -95,11 +111,12 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 | `movement_routes_family(state, rules) -> Vec<Move>` | `crates/yokohama-core/src/game/route_enum.rs:689`, `pub(crate)` | the Movement family's exact list, phase-blind by contract (used by Task 1) |
 | `drive(seeds: u64, steps: usize, visit: impl FnMut(&GameState, &Rules, &[Move]))`, `candidates(state, legal_moves) -> Vec<Move>`, `legal(state, rules, mv) -> bool` | `move_legality.rs` `mod tests`, lines 709, 743, 673 | the existing random-walk driver, the mutant generator and the `RulesLegal` shorthand Task 1's cells reuse |
 | `common::run_recorded_game(seed: u64, players: u8, rules: &Rules) -> (GameState, GameRecord)` | `crates/yokohama-core/tests/common/mod.rs:282` | a 40-move random game and its record (`RECORDED_GAME_MOVES`, `:269`), unstamped — Task 2's cells call `stamp_terminal_digest` |
+| `state_at(record, k, rules) -> Result<GameState, ReplayError>`, `is_move_legal`, `PathMode::Canonical`, `TurnPhase` | `record.rs:561`; `move_legality.rs:140` and `:96`; `types/` — all at the crate root | Task 2's binary rebuilds the initial state, judges a walked move's witness variants, and flips a copy's phase to read the family (cases (f), (i)) |
 
 ## File structure
 
 - Modify `crates/yokohama-core/src/game/move_legality.rs`: `is_listed_move` after `is_move_legal` (which ends at
-  line 268); two cells in `mod tests`.
+  line 268); two cells and their helper `witness_variants` in `mod tests`.
 - Modify `crates/yokohama-core/src/game/record.rs`: `MoveCheck`, `fold_one_event_with`, `replay_strict_with` after
   `replay_strict` (which ends at line 520).
 - Create `crates/yokohama-core/tests/replay_check_equivalence.rs`: the record-level proof (uses `mod common;`).
@@ -129,21 +146,30 @@ the battery, the gates and the PR.
   `use crate::game::apply_move_unchecked;` inside `mod tests` if it is not already imported there).
 - Produces: `pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool`.
 
-- [ ] **Step 1: Write the two failing cells** at the end of `mod tests` in `move_legality.rs`:
+- [ ] **Step 1: Write the two failing cells and their helper** at the end of `mod tests` in `move_legality.rs`
+  (`witness_variants` sits between them):
 
 ```rust
     /// `is_listed_move` is EXACTLY membership in the legal list (the 2026-10-08
     /// ruling R-SEC2's move-level half): at every decision point of random
     /// games at 2/3/4P, every listed move passes, and every constructed
-    /// candidate reads as the list reads it. The count of candidates
-    /// `RulesLegal` ACCEPTS but the list LACKS is the anti-vacuity: those are
-    /// the non-canonical witnesses where `is_move_legal` and membership
-    /// disagree, and where this function must side with the list.
+    /// candidate reads as the list reads it. Three counters are the
+    /// anti-vacuity, each naming the mechanism it proves was exercised:
+    /// `conjunct_cases` — candidates `PathMode::Canonical` ACCEPTS and the
+    /// list LACKS (non-lex-least witnesses; `witness_variants` builds them
+    /// from every walked move), where only the family conjunct can side with
+    /// the list; `queued_family_refusals` — REAL members of the phase-blind
+    /// Movement family judged while a choice heads the queue, where only the
+    /// conjunction's ORDER (`is_move_legal`'s queue gate first) refuses them
+    /// (Review Focus 3); `out_of_phase_family_refusals` — the same outside the
+    /// Movement phase.
     #[test]
     fn is_listed_move_is_exactly_membership_in_the_legal_list() {
         let mut listed = 0usize;
         let mut candidates_seen = 0usize;
-        let mut wider_cases = 0usize;
+        let mut conjunct_cases = 0usize;
+        let mut queued_family_refusals = 0usize;
+        let mut out_of_phase_family_refusals = 0usize;
         drive(3, 400, |state, rules, legal_moves| {
             for mv in legal_moves {
                 assert!(
@@ -153,7 +179,9 @@ the battery, the gates and the PR.
                 );
                 listed += 1;
             }
-            for mv in candidates(state, legal_moves) {
+            let mut pool = candidates(state, legal_moves);
+            pool.extend(witness_variants(state, legal_moves));
+            for mv in pool {
                 candidates_seen += 1;
                 let in_list = legal_moves.contains(&mv);
                 assert_eq!(
@@ -162,17 +190,85 @@ the battery, the gates and the PR.
                     "disagrees with the list at {:?}: {mv:?}",
                     state.turn_phase,
                 );
-                if legal(state, rules, &mv) && !in_list {
-                    wider_cases += 1;
+                if !in_list && canonical(state, rules, &mv) {
+                    conjunct_cases += 1;
+                }
+            }
+            // The phase-blind family's REAL members, judged where the list
+            // cannot hold them: under a queued choice, or in any phase but
+            // Movement. The family is computed here exactly as the conjunct
+            // computes it, so under the family-alone mutant every member
+            // reads as listed.
+            let queued = !state.pending_choices.is_empty();
+            if queued || state.turn_phase != TurnPhase::Movement {
+                for mv in crate::game::route_enum::movement_routes_family(state, rules) {
+                    assert!(!legal_moves.contains(&mv), "premise: no movement move is listed here: {mv:?}");
+                    assert!(
+                        !is_listed_move(state, &mv, rules),
+                        "a family member must be refused at {:?} (queued: {queued}): {mv:?}",
+                        state.turn_phase,
+                    );
+                    if queued {
+                        queued_family_refusals += 1;
+                    } else {
+                        out_of_phase_family_refusals += 1;
+                    }
                 }
             }
         });
+        println!(
+            "is_listed_move sweep: listed {listed}, candidates {candidates_seen}, conjunct cases {conjunct_cases}, \
+             queued family refusals {queued_family_refusals}, out-of-phase family refusals {out_of_phase_family_refusals}"
+        );
         assert!(listed > 1_000, "vacuous sweep: only {listed} listed moves");
         assert!(candidates_seen > 1_000, "vacuous sweep: only {candidates_seen} candidates");
         assert!(
-            wider_cases > 0,
-            "no candidate separated is_move_legal from membership — the exactness claim is untested",
+            conjunct_cases > 0,
+            "no Canonical-accepted non-member was judged — the family conjunct is untested",
         );
+        assert!(
+            queued_family_refusals > 0,
+            "no family member was judged under a queued choice — the queue gate's precedence is untested",
+        );
+        assert!(
+            out_of_phase_family_refusals > 0,
+            "no family member was judged outside Movement — the phase gate's precedence is untested",
+        );
+    }
+
+    /// Non-canonical WITNESSES for labels the list prints: for every walked
+    /// `MovePresident`, the same route with a detour prepended through a
+    /// neighbour adjacent to both the start and the first hop, and the direct
+    /// hop where a longer walk's destination is adjacent to the start. Which
+    /// variants are rules-legal, which share a listed move's label and which
+    /// the generator happens to print is the LIST's business: every one is
+    /// judged against it.
+    fn witness_variants(state: &GameState, legal_moves: &[Move]) -> Vec<Move> {
+        let PresidentLocation::OnBoard(current) = state.player(state.current_player).president_location
+        else {
+            return vec![];
+        };
+        let mut out = Vec::new();
+        for mv in legal_moves {
+            let Move::MovePresident { path, destination } = mv else { continue };
+            let Some(&first) = path.first() else { continue };
+            for &via in state.board_layout.adjacent_areas(current) {
+                if via == first
+                    || path.contains(&via)
+                    || !state.board_layout.adjacent_areas(via).contains(&first)
+                {
+                    continue;
+                }
+                let mut detour = Vec::with_capacity(path.len() + 1);
+                detour.push(via);
+                detour.extend_from_slice(path);
+                out.push(Move::MovePresident { path: detour, destination: *destination });
+            }
+            if path.len() >= 2 && state.board_layout.adjacent_areas(current).contains(destination) {
+                out.push(Move::MovePresident { path: vec![*destination], destination: *destination });
+            }
+        }
+        out
     }
 
     /// The phase dimension: a move the list held one state ago is judged at
@@ -203,6 +299,7 @@ the battery, the gates and the PR.
                 }
             }
         });
+        println!("phase sweep: checked {checked}, movement moves refused one state later {movement_refused_later}");
         assert!(checked > 1_000, "vacuous sweep: only {checked} checks");
         assert!(
             movement_refused_later > 0,
@@ -220,7 +317,10 @@ Expected: a compile error naming `is_listed_move` as not found.
 
 ```rust
 /// Whether `mv` is IN `get_legal_moves(state, rules)` — a single-candidate
-/// answer that never materializes the list, and, unlike [`is_move_legal`],
+/// answer that never pays the Movement phase's retreat product (the family
+/// that reaches 442,368 moves in legal play; the two families `is_move_legal`
+/// DELEGATES, area actions and choice resolutions, still materialize their
+/// own measured-small lists — max 154 and 114) and, unlike [`is_move_legal`],
 /// EXACT on the one family where acceptance is wider than membership.
 ///
 /// `is_move_legal` accepts any legal WITNESS path for a `MovePresident` label
@@ -256,16 +356,23 @@ pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool {
 - [ ] **Step 4: Run the two cells and the module's existing cells**
 
 Run: `cargo test -p yokohama-core --lib move_legality:: 2>&1 | tail -15`
-Expected: every cell PASS, the two new ones included; the counters' asserts hold (if `wider_cases` reads 0 at
-`drive(3, 400, …)`, raise the seeds to `drive(5, 400, …)` — `accepted_candidates_apply_and_add_no_new_labels`
-reads non-canonical witnesses at 3/400, so 0 means the predicate, not the sweep, is wrong: STOP and report).
+Expected: every cell PASS, the two new ones included, and under `-- --nocapture` their counter lines. The review's
+readings at `drive(3, 400, …)` / `drive(2, 300, …)`: listed 412,372 · candidates 1,262,450 · conjunct cases 165 ·
+queued family refusals 28 · out-of-phase family refusals 5,891 · phase sweep checked 207,129 with 1,682 movement
+moves refused one state later (debug wall ~7 s for the module). A counter that reads 0 means the predicate, not the
+sweep, is wrong (`accepted_candidates_apply_and_add_no_new_labels` reads non-canonical witnesses from the same
+sweep): STOP and report.
 
 - [ ] **Step 5: Try the mutants before the reviewer does** (each reverted after its reading):
   - M1 — drop the family conjunct (the `MovePresident | PlacePresident` arm returns `is_move_legal(.., Canonical)`
-    alone): `is_listed_move_is_exactly_membership_in_the_legal_list` must go RED on a non-canonical witness.
-  - M2 — the arm with `PathMode::RulesLegal` and no family conjunct: RED, same cell.
-  - M3 — the arm with the family membership alone (no `is_move_legal`): `is_listed_move_reads_the_phase_the_list_reads`
-    must go RED.
+    alone): `is_listed_move_is_exactly_membership_in_the_legal_list` must go RED on a non-canonical witness — the
+    review read `disagrees with the list at Movement: MovePresident { path: [AreaId(6), AreaId(2)], destination:
+    AreaId(2) }`, left `true`. (Task 2's case (f) goes RED on this mutant too.)
+  - M2 — the arm with `PathMode::RulesLegal` and no family conjunct: RED, same cell, same witness.
+  - M3 — the arm with the family membership alone (no `is_move_legal`): the membership cell must go RED on a family
+    member (`a family member must be refused at AdditionalActionSecond (queued: false): PlacePresident { destination:
+    AreaId(8) }`) and `is_listed_move_reads_the_phase_the_list_reads` on `disagrees one state later at AreaAction:
+    MovePresident { path: [AreaId(5)], destination: AreaId(5) }`. (Task 2's case (i) goes RED on it too.)
   Record the three readings (the failing assertion's text) in the task report.
 
 - [ ] **Step 6: Lint and commit**
@@ -312,17 +419,22 @@ mod common;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use yokohama_core::{
-    apply_move_unchecked, finalize_setup, get_legal_moves, is_game_over, new_game, replay_strict,
-    replay_strict_with, state_digest, GameConfig, GameRecord, GameState, Move, MoveCheck, PlayerId, RecordedEvent,
-    ReplayError, Rules, StartingOrderChoice, SEMANTICS_REV,
+    apply_move_unchecked, finalize_setup, get_legal_moves, is_game_over, is_move_legal, new_game,
+    replay_strict, replay_strict_with, state_at, state_digest, AreaId, GameConfig, GameRecord, GameState,
+    Move, MoveCheck, PathMode, PlayerId, PresidentLocation, RecordedEvent, ReplayError, Rules,
+    StartingOrderChoice, SEMANTICS_REV,
 };
 
 type Shape = Result<String, (usize, String)>;
 
+/// `apply_move`'s own word for a non-member (`types/errors.rs`) — the one
+/// sentence both checks refuse a tampered move with.
+const NOT_LISTED: &str = "move is not in the legal-move list for this state";
+
 /// A 2P record whose hidden-starting-order player (P1) holds a FULL order hand
 /// (3, the limit `check_invariants` enforces), built from legal moves only —
-/// `game_record.rs:21-50`'s helper, repeated here because an integration
-/// binary sees only `common`. `None` for a seed that never fills the hand.
+/// `game_record.rs`'s helper, repeated here because an integration binary
+/// sees only `common`. `None` for a seed that never fills the hand.
 fn record_with_full_order_hand(seed: u64, rules: &Rules) -> Option<(GameState, GameRecord, PlayerId)> {
     let hidden = PlayerId::new(1);
     let config = GameConfig::for_player_count(2);
@@ -350,6 +462,68 @@ fn record_with_full_order_hand(seed: u64, rules: &Rules) -> Option<(GameState, G
         record.push_move(mv);
     }
     None
+}
+
+/// A record of uniform-random legal play to `max_moves` applied moves or the
+/// game's end, its terminal digest stamped: the long prefixes case (f) needs
+/// (`common::run_recorded_game` stops at 40 moves, where a mover has too few
+/// assistants on board for a detour to be steppable) and the finished game
+/// case (h) needs.
+fn recorded_game(seed: u64, players: u8, max_moves: usize, rules: &Rules) -> (GameState, GameRecord) {
+    let config = GameConfig::for_player_count(players);
+    let pending = new_game(config, rules, seed).expect("new_game");
+    let record_config = pending.state.config.clone();
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let choices: Vec<StartingOrderChoice> =
+        (0..players).map(|_| StartingOrderChoice::Keep(rng.gen_range(0..2u8))).collect();
+    let mut record = GameRecord::new(seed, record_config, choices.clone(), rules);
+    let mut state = finalize_setup(pending, &choices).expect("finalize_setup");
+    for _ in 0..max_moves {
+        if is_game_over(&state) {
+            break;
+        }
+        let moves = get_legal_moves(&state, rules);
+        assert!(!moves.is_empty(), "a live state offers a move");
+        let mv = moves[rng.gen_range(0..moves.len())].clone();
+        state = apply_move_unchecked(&state, &mv, rules).expect("a listed move applies");
+        record.push_move(mv);
+    }
+    record.stamp_terminal_digest(&state);
+    (state, record)
+}
+
+/// Non-canonical WITNESSES for a walked `MovePresident` at `state`: the same
+/// route with a detour prepended through a neighbour adjacent to both the
+/// start and the first hop, the direct hop where a longer walk's destination
+/// is adjacent to the start, and the walk reversed. A variant is a TAMPER exactly when
+/// `PathMode::Canonical` accepts it and the list lacks it — the witness-wider
+/// case R-SEC2 names, where only the family conjunct sides with the list.
+fn witness_variants(state: &GameState, path: &[AreaId], destination: AreaId) -> Vec<Move> {
+    let PresidentLocation::OnBoard(current) = state.player(state.current_player).president_location
+    else {
+        return vec![];
+    };
+    let Some(&first) = path.first() else { return vec![] };
+    let mut out = Vec::new();
+    for &via in state.board_layout.adjacent_areas(current) {
+        if via == first || path.contains(&via) || !state.board_layout.adjacent_areas(via).contains(&first) {
+            continue;
+        }
+        let mut detour = Vec::with_capacity(path.len() + 1);
+        detour.push(via);
+        detour.extend_from_slice(path);
+        out.push(Move::MovePresident { path: detour, destination });
+    }
+    if path.len() >= 2 {
+        if state.board_layout.adjacent_areas(current).contains(&destination) {
+            out.push(Move::MovePresident { path: vec![destination], destination });
+        }
+        let mut reversed = path.to_vec();
+        reversed.reverse();
+        let dest = reversed[reversed.len() - 1];
+        out.push(Move::MovePresident { path: reversed, destination: dest });
+    }
+    out
 }
 
 fn shape(r: Result<GameState, ReplayError>) -> Shape {
@@ -404,8 +578,11 @@ fn an_empty_record_folds_to_the_same_initial_state_under_both_checks() {
 }
 
 /// Every tampered record `game_record.rs` refuses, both replays refuse at the
-/// same index with the same sentence — the duplicated preamble and digest
-/// check in `replay_strict_with` are pinned to `replay_strict`'s words here.
+/// same index with the same sentence — the preamble and digest check
+/// `replay_strict_with` repeats are pinned to `replay_strict`'s words here —
+/// and so are the four shapes only this binary builds: a non-canonical
+/// witness (f), a family member out of its phase (i), an invariant break (g)
+/// and a move after the game's end (h).
 #[test]
 fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     let rules = Rules::standard();
@@ -428,12 +605,12 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     r.events[1] = RecordedEvent::Move(Move::Take5PowerToken);
     refuse(&r, "an out-of-phase move", &mut refusals);
 
-    // (b) a wrong terminal digest (game_record.rs:258-273)
+    // (b) a wrong terminal digest (game_record.rs:258-268)
     let mut r = stamped.clone();
     r.terminal_digest = Some("ffffffffffffffff".into());
     refuse(&r, "a wrong terminal digest", &mut refusals);
 
-    // (c) a rules-hash mismatch (game_record.rs:129-154)
+    // (c) a rules-hash mismatch (game_record.rs:129-138)
     let mut r = stamped.clone();
     r.rules_hash = "0000000000000000".into();
     refuse(&r, "a rules-hash mismatch", &mut refusals);
@@ -443,28 +620,124 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     r.semantics_rev = None;
     refuse(&r, "a record with no provenance", &mut refusals);
 
-    // (e) another semantics rev (game_record.rs:223-234)
+    // (e) another semantics rev (game_record.rs:223-231)
     let mut r = stamped.clone();
     r.semantics_rev = Some(SEMANTICS_REV + 1);
     refuse(&r, "a semantics-rev mismatch", &mut refusals);
 
-    // (f) every walked president move replaced by a repeated-hop witness — a
-    //     non-member the list refuses; the two replays must agree on it.
-    let mut tampered = 0usize;
-    for (k, ev) in stamped.events.iter().enumerate() {
-        if let RecordedEvent::Move(Move::MovePresident { path, destination }) = ev {
-            if let Some(&head) = path.first() {
-                let mut r = stamped.clone();
-                let mut repeated = path.clone();
-                repeated.insert(0, head);
-                r.events[k] = RecordedEvent::Move(Move::MovePresident { path: repeated, destination: *destination });
-                let (strict, predicate) = both(&r, &rules);
-                assert_eq!(predicate, strict, "event {k}: the two replays disagree on a repeated-hop witness");
-                tampered += 1;
+    // (f) a walked president move replaced by a NON-CANONICAL WITNESS the list
+    //     refuses and `PathMode::Canonical` accepts — the witness-wider case
+    //     (R-SEC2) where only the family conjunct sides with the list. A
+    //     conjunct-less predicate would APPLY the variant (same label, same
+    //     successor state) and fold on to the very digest the record carries,
+    //     answering Ok where `replay_strict` refuses at k — the divergence
+    //     this case exists to see. Beside it, the repeated-hop witness the
+    //     predicate refuses by itself. Long prefixes, walked ONCE with the
+    //     decision state carried along: a 40-move record holds walks a mover
+    //     cannot yet detour around.
+    let mut walked = 0usize;
+    let mut witness_tampers = 0usize;
+    let mut repeated_hop_tampers = 0usize;
+    let mut out_of_phase_tampers = 0usize;
+    'games: for players in [2u8, 3, 4] {
+        for seed in 0..3u64 {
+            let (_, record) = recorded_game(seed, players, 400, &rules);
+            let mut before = state_at(&record, 0, &rules).expect("the initial state rebuilds");
+            for k in 0..record.events.len() {
+                let RecordedEvent::Move(mv) = &record.events[k] else {
+                    unreachable!("a recorded game holds moves only");
+                };
+                if let Move::MovePresident { path, destination } = mv {
+                    if !path.is_empty() {
+                        walked += 1;
+                        let listed = get_legal_moves(&before, &rules);
+                        let mut tampers = Vec::new();
+                        if repeated_hop_tampers < 3 {
+                            let mut repeated = path.clone();
+                            repeated.insert(0, path[0]);
+                            tampers.push((Move::MovePresident { path: repeated, destination: *destination }, false));
+                        }
+                        for variant in witness_variants(&before, path, *destination) {
+                            if is_move_legal(&before, &variant, &rules, PathMode::Canonical)
+                                && !listed.contains(&variant)
+                            {
+                                tampers.push((variant, true));
+                            }
+                        }
+                        for (tamper, is_witness) in tampers {
+                            let mut r = record.clone();
+                            r.events[k] = RecordedEvent::Move(tamper.clone());
+                            let (strict, predicate) = both(&r, &rules);
+                            assert_eq!(
+                                strict,
+                                Err((k, NOT_LISTED.to_string())),
+                                "premise: {players}P seed {seed} event {k}: replay_strict refuses {tamper:?}",
+                            );
+                            assert_eq!(
+                                predicate, strict,
+                                "{players}P seed {seed} event {k}: the two replays disagree on {tamper:?}",
+                            );
+                            if is_witness {
+                                witness_tampers += 1;
+                            } else {
+                                repeated_hop_tampers += 1;
+                            }
+                        }
+                        // (i) a MEMBER of the phase-blind Movement family planted at
+                        //     the NEXT event, where the phase is AreaAction: the list
+                        //     there cannot hold it, and only `is_move_legal`'s phase
+                        //     gate, taken FIRST, refuses it — a family-alone predicate
+                        //     would apply it raw and fold on to a different state. The
+                        //     member is read off `get_legal_moves` on a copy of that
+                        //     state with its phase set to Movement (the family consults
+                        //     nothing about the phase by contract, so the copy's
+                        //     Movement subsequence IS the family at the real state).
+                        if out_of_phase_tampers < 4 && k + 1 < record.events.len() {
+                            let after = apply_move_unchecked(&before, mv, &rules).expect("a recorded move applies");
+                            let mut as_movement = after.clone();
+                            as_movement.turn_phase = yokohama_core::TurnPhase::Movement;
+                            let member = get_legal_moves(&as_movement, &rules)
+                                .into_iter()
+                                .find(|m| matches!(m, Move::MovePresident { .. } | Move::PlacePresident { .. }));
+                            if let Some(member) = member {
+                                assert_eq!(after.turn_phase, yokohama_core::TurnPhase::AreaAction, "premise: a walk hands off to AreaAction");
+                                let mut r = record.clone();
+                                r.events[k + 1] = RecordedEvent::Move(member.clone());
+                                let (strict, predicate) = both(&r, &rules);
+                                assert_eq!(
+                                    strict,
+                                    Err((k + 1, NOT_LISTED.to_string())),
+                                    "premise: {players}P seed {seed} event {}: replay_strict refuses the out-of-phase member {member:?}",
+                                    k + 1,
+                                );
+                                assert_eq!(
+                                    predicate, strict,
+                                    "{players}P seed {seed} event {}: the two replays disagree on an out-of-phase member {member:?}",
+                                    k + 1,
+                                );
+                                out_of_phase_tampers += 1;
+                            }
+                        }
+                        if witness_tampers >= 8 && out_of_phase_tampers >= 4 {
+                            break 'games;
+                        }
+                    }
+                }
+                before = apply_move_unchecked(&before, mv, &rules).expect("a recorded move applies");
             }
         }
     }
-    assert!(tampered > 0, "seed 7 at 2P held no walked president move — choose a seed that does");
+    assert!(walked > 0, "no recorded game held a walked president move");
+    assert!(repeated_hop_tampers > 0, "no repeated-hop tamper ran");
+    assert!(
+        witness_tampers > 0,
+        "no Canonical-accepted non-member witness was built — the family conjunct is untested at the record level",
+    );
+    assert!(
+        out_of_phase_tampers > 0,
+        "no family member was planted out of its phase — the phase gate's precedence is untested at the record level",
+    );
+    refusals += 1;
 
     // (g) a broken state though every event applied (the shape of
     //     game_record.rs:156-172): a RevealStartingOrder into a hand already
@@ -481,7 +754,25 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     r.push_event(RecordedEvent::RevealStartingOrder { player: hidden, card });
     refuse(&r, "a broken state though every event applied", &mut refusals);
 
-    assert_eq!(refusals, 6, "every refusal shape above ran");
+    // (h) a move appended after the game's END. The phase machine parks a
+    //     finished game at `TurnEnd` (`apply_move.rs`'s `advance_phase`), where
+    //     the list is empty and no predicate arm answers, so both replays
+    //     refuse the appended event at the past-the-end index with `NotLegal`'s
+    //     words — neither check continues a finished game.
+    let (end, mut done) = recorded_game(0, 2, 20_000, &rules);
+    assert!(is_game_over(&end), "premise: the game ran to its end within 20,000 moves");
+    let extra = done.events.len();
+    done.push_move(Move::EndAdditionalPhase);
+    let (strict, predicate) = both(&done, &rules);
+    assert_eq!(strict, Err((extra, NOT_LISTED.to_string())), "premise: a move after the end is refused");
+    assert_eq!(predicate, strict, "a move after the end: the two replays disagree");
+    refusals += 1;
+
+    println!(
+        "tampers: walked {walked}, witness {witness_tampers}, repeated-hop {repeated_hop_tampers}, \
+         out-of-phase members {out_of_phase_tampers}; the finished game held {extra} events"
+    );
+    assert_eq!(refusals, 8, "every refusal shape above ran");
 }
 
 /// Recorded, never asserted: the wall-clock of both replays over the longest
@@ -508,7 +799,9 @@ fn the_two_replays_walls_are_recorded() {
 ```
 
 The crate's dev-dependencies already carry `rand` and `rand_chacha` (`tests/game_record.rs` imports both); case
-(g) and its helper are `game_record.rs:21-50` and `:156-172` repeated, so this binary depends on `common` alone.
+(g) and its helper are `game_record.rs:21-49` and `:156-172` repeated, so this binary depends on `common` alone.
+`recorded_game` plays uniform-random legal moves to a cap or the game's end (a 2P game runs ~2,500 events; the whole
+binary ran in 0.65 s in debug at the review); `witness_variants` is the module helper's record-level twin.
 
 - [ ] **Step 2: Run it to verify it fails to compile**
 
@@ -536,47 +829,26 @@ pub enum MoveCheck {
     Predicate,
 }
 
-/// One recorded event folded under `check`: `Listed` is [`fold_one_event`]
-/// unchanged; `Predicate` takes the same three non-move arms and, for a move,
-/// `is_listed_move` then `apply_move_unchecked`, refusing a non-member with the
-/// `MoveError::NotLegal` that `apply_move` returns — so the two checks word a
-/// refusal identically.
+/// One recorded event folded under `check`. `Listed`, and every NON-MOVE
+/// event under either check, is [`fold_one_event`] itself — the ONE fold (its
+/// own doc: a second hand-kept copy of that match drifts). `Predicate`
+/// differs for a `Move` alone: `is_listed_move`, then the raw transition
+/// `apply_move_unchecked`, refusing a non-member with the `MoveError::NotLegal`
+/// that `apply_move` returns — so the two checks word a refusal identically.
 fn fold_one_event_with(
     state: &GameState,
     ev: &RecordedEvent,
     rules: &Rules,
     check: MoveCheck,
 ) -> Result<GameState, String> {
-    match check {
-        MoveCheck::Listed => fold_one_event(state, ev, rules),
-        MoveCheck::Predicate => {
-            let step: Result<GameState, MoveError> = (|| {
-                Ok(match ev {
-                    RecordedEvent::Move(mv) => {
-                        if !crate::game::move_legality::is_listed_move(state, mv, rules) {
-                            return Err(MoveError::NotLegal);
-                        }
-                        crate::game::apply_move::apply_move_unchecked(state, mv, rules)?
-                    }
-                    RecordedEvent::RevealOrders(cards) => {
-                        let mut s = state.clone();
-                        s.arrange_orders_on_top(cards)?;
-                        s
-                    }
-                    RecordedEvent::RevealTechs(cards) => {
-                        let mut s = state.clone();
-                        s.arrange_techs_on_top(cards)?;
-                        s
-                    }
-                    RecordedEvent::RevealStartingOrder { player, card } => {
-                        let mut s = state.clone();
-                        s.reveal_starting_order(*player, *card)?;
-                        s
-                    }
-                })
-            })();
-            step.map_err(|e| e.to_string())
+    match (check, ev) {
+        (MoveCheck::Predicate, RecordedEvent::Move(mv)) => {
+            if !crate::game::move_legality::is_listed_move(state, mv, rules) {
+                return Err(MoveError::NotLegal.to_string());
+            }
+            crate::game::apply_move::apply_move_unchecked(state, mv, rules).map_err(|e| e.to_string())
         }
+        _ => fold_one_event(state, ev, rules),
     }
 }
 
@@ -638,14 +910,19 @@ point.
 - [ ] **Step 4: Run the binary and the record tests**
 
 Run: `cargo test -p yokohama-core --test replay_check_equivalence --test game_record -- --nocapture 2>&1 | tail -25`
-Expected: every cell PASS; the walls line printed (expect the predicate replay at or below the strict one — a
-40-move record is short, so the two may read close; the reading goes in the task report).
+Expected: every cell PASS; the walls line and the tampers line printed (the review read strict 6.2–8.5 ms against
+predicate 4.1–6.4 ms over 40 events — a short record, so the two read close — and `tampers: walked 12, witness 5,
+repeated-hop 3, out-of-phase members 4; the finished game held 2515 events`); the readings go in the task report.
 
 - [ ] **Step 5: Try the mutants before the reviewer does** (each reverted after its reading):
-  - M4 — `replay_strict_with` without the `check_invariants` call: case (g) must go RED.
-  - M5 — the `Predicate` arm applying with `apply_move_unchecked` and NO `is_listed_move` check: cases (a) and (f)
-    must go RED (a non-member applies raw instead of refusing).
-  - M6 — one character changed in the rules-hash sentence: case (c) must go RED.
+  - M4 — `replay_strict_with` without the `check_invariants` call: case (g) must go RED — the review read
+    `left: Ok("935e76b39e1aafe9") right: Err((1034, "invariant violated: P1 order hand size 4 > 3"))`.
+  - M5 — the `Predicate` arm applying with `apply_move_unchecked` and NO `is_listed_move` check (delete the
+    `if !is_listed_move { return Err(..) }` lines): cases (a) and (f) must go RED (a non-member applies raw instead
+    of refusing) — at (a) the review read the raw arm's own sentence, `Err((1, "5-Power bonus requires the action
+    to have been taken at power 5"))`, against `apply_move`'s `move is not in the legal-move list for this state`.
+  - M6 — one character changed in the rules-hash sentence: case (c) must go RED (`(strict mode reject)` against
+    `(strict mode rejects)` in the review).
   Record the three readings in the task report.
 
 - [ ] **Step 6: Lint and commit**
@@ -693,7 +970,7 @@ git commit -m "docs: CLAUDE.md names the predicate replay check and its proof (R
 
 ### Task 4: The reviews, the battery, the gates and the PR — ORCHESTRATOR (R-SEC1; spec §3.1, §5)
 
-- [ ] **Step 1: The "before" review — the orchestrator's own.** On a `git archive` export of `master`, EXECUTE
+- [x] **Step 1: The "before" review — the orchestrator's own (DONE 2026-10-08; §"Review record").** On a `git archive` export of `master`, EXECUTE
   Tasks 1–2's cells against a scratch implementation of the two functions in the export (the plan's own code
   blocks), read each mutant M1–M6 red, and record any cell that cannot go red on its mutant, any name here that the
   tree does not spell, and any sentence of §3.1 or this plan that the code contradicts. The findings go in the
@@ -722,10 +999,14 @@ git commit -m "docs: CLAUDE.md names the predicate replay check and its proof (R
   binaries pre-built, machine-tagged, the wall recorded beside the previous reading (`CLAUDE.md` Commands, the two-tier
   gate policy).
 
-- [ ] **Step 6: The measurement for S1's plan.** In the web crate's export (`…/scratchpad/r2/export` holds the
-  review's worst-case bodies), replay the review's 23,606-event record both ways through a scratch test that parses
-  the body's `record` and calls `replay_strict` then `replay_strict_with(.., Predicate)`; record both walls in the
-  task report — the figure S1's event-count cap and semaphore are sized from. Not a gate.
+- [ ] **Step 6: The measurement for S1's plan.** The review's four worst-case archive bodies sit, GITIGNORED, in
+  `docs/temp/security-review-2026-10-08/worst-case/` (`spread_4p_11_body.json` is the 23,606-event record; each body
+  is `{ "record": …, "table": … }`). The plan review measured them in release on the Mac (Darwin 27.0.0 arm64, the
+  M5), same digest each way: `replay_strict` 29.04 s → predicate 54.1 ms (4P), 10.46 s → 40.1 ms (3P), 11.77 s →
+  22.5 ms (2P); the null-turn 4P body 107 ms → 41.3 ms. Re-measure at the reviewed head through a scratch test
+  (never committed) that parses a body's `record` and calls `replay_strict` then `replay_strict_with(.., Predicate)`;
+  record the walls in the task report beside the review's — the figure S1's event-count cap and semaphore are sized
+  from. Not a gate.
 
 - [ ] **Step 7: The PR** against `master`, its description naming the ruling (R-SEC1, R-SEC2), the proof binary, the
   six mutants' readings, the gate sequence's wall, and the measurement; the owner's word merges it. Then the
@@ -734,5 +1015,50 @@ git commit -m "docs: CLAUDE.md names the predicate replay check and its proof (R
 
 ## Review record
 
-(The plan review's findings — Task 4, step 1 — dated, with each correction made to this plan; the file is frozen at
-the PR's close.)
+### 2026-10-08 — the "before" review (Task 4, step 1), the orchestrator's own, on a `git archive` export of `master` at `d0816172`
+
+**Method.** A script read this plan's four `rust` blocks out of the file and applied them to the export verbatim (no
+retyping); the two module cells, the binary and `game_record` ran; the six mutants were applied one at a time by a
+second script and restored; `cargo clippy -p yokohama-core --all-targets -- -D warnings` ran; then the corrections
+below were applied and the whole battery, the mutants and clippy re-run; the review's worst-case archive bodies were
+replayed both ways in release. Every name this plan spells resolved in the tree (`drive` 709 / `candidates` 743 /
+`legal` 673, `route_enum.rs:689` `pub(crate)`, `game/mod.rs:136/138/144`, `errors.rs:17/33`, `apply_move.rs:12/222`,
+`record.rs:348/478-520`, `common/mod.rs:269/282`; the `game_record.rs` ranges end a line or two early; the cited
+"ends near line 902" is 900). The plan's code as written compiled, its two module cells and clippy were green, and
+M1, M2, M3, M5, M6 read RED where it said. The exactness argument was re-derived arm by arm from the code, not from
+this plan: mercenary targets, orders, achievements, University, Spinning Mill, placement A and B, `PlacePresident`,
+the retreat product, the 5-Power pair and the building arms each mirror their generator exactly; area actions and
+choice resolutions are delegated to the generator; the Movement family is the list's subsequence by
+`movement_routes_family_matches_generator_across_driven_games` and `action_source_equivalence`.
+
+**Findings and corrections** (each applied to this plan above):
+
+| id | severity | finding | correction |
+|---|---|---|---|
+| R-1 | HIGH (vacuity) | Case (f) never ran: the 2P seed-7 record holds no walked president move and the cell's own guard panicked (`seed 7 at 2P held no walked president move`); every reading past it, M4's included, was masked. | (f) walks long recorded prefixes (400 moves, 2/3/4P × 3 seeds) ONCE with the decision state carried along, and stops at 8 witness tampers. |
+| R-2 | HIGH (proof strength) | The repeated-hop witness is refused by `is_move_legal` itself (a repeated area fails `is_president_path_legal`'s step 3), so the record-level battery never exercised the family conjunct: M1 could not be read at the record level. | `witness_variants` (a detour through a neighbour adjacent to the start and the first hop, the direct hop, the reversed walk) builds candidates `PathMode::Canonical` ACCEPTS and the list lacks; under M1 the predicate replay answers `Ok(<the record's own digest>)` where `replay_strict` refuses at k (read at 2P seed 1, event 117). |
+| R-3 | HIGH (a false mechanism sentence) | Review Focus 3 said the phase cell meets the queued-choice case "wherever a listed move's successor state queues a choice" — a Movement move's successor never queues a choice, so no movement move was ever judged under a queue; and spec §3.1's "(3) … `Predicate` without the phase gate fails (2)" had no record-level catcher (M3 was caught only by the module cells). | The membership cell judges every REAL member of the phase-blind family at every queued decision point (28 refusals read) and every non-Movement point (5,891), counters asserted; the binary's case (i) plants a family member at an AreaAction event (under M3 the predicate errs at 65 where `replay_strict` refuses at 64). |
+| R-4 | MEDIUM (doc truth) | `is_listed_move`'s doc said it "never materializes the list"; `is_move_legal` DELEGATES `ExecuteAreaAction` to `get_legal_moves` at the AreaAction phase and the queue arm to `generate_choice_resolutions` (max 154 / 114 measured), so those two small lists are still materialized. | The doc and the Goal say what is true: the Movement phase's retreat product is what is never paid; the measurement (R-8) is the evidence. |
+| R-5 | MEDIUM (duplication) | `fold_one_event_with`'s `Predicate` arm repeated the three `Reveal*` arms of `fold_one_event` — the drift that function's own doc names (the a6faa87 lesson). | `Predicate` differs for a `Move` alone; every other event, and `Listed`, is `fold_one_event` itself. |
+| R-6 | LOW (a weak counter) | `wider_cases` counted `RulesLegal`-accepted non-members, a weaker fact than the conjunct needs. | `conjunct_cases` counts `Canonical`-accepted non-members (165 read). |
+| R-7 | LOW (a cite) | Review Focus 1's `legal_moves.rs:289-300` is the Option-B comment. | The `zero_cost_destinations` suppression in the on-board arm, `:295-383`. |
+| R-8 | LOW (Step 6's path) | `…/scratchpad/r2/export` is a session scratchpad, and the bodies sit in `r2/`, not `r2/export`. | The four bodies were copied to the gitignored `docs/temp/security-review-2026-10-08/worst-case/` and measured now (Step 6 carries the figures). |
+| R-9 | noted | Neither the generator nor the predicate has a game-over gate; the phase machine parks a finished game at `TurnEnd`, where both answer nothing. | Case (h) pins it on a record played to its end. |
+
+**Readings at the end of the review** (the strengthened cells; debug unless stated; the Mac, Darwin 27.0.0 arm64):
+
+| what | reading |
+|---|---|
+| module cells | 22 passed (the module's 20 + 2), ~7 s; counters as Task 1 Step 4 states |
+| the binary | 5 passed in 0.65 s; `tampers: walked 12, witness 5, repeated-hop 3, out-of-phase members 4; the finished game held 2515 events`; walls over 40 events strict 7.1 ms / predicate 4.5 ms |
+| M1 | RED: membership cell (`[AreaId(6), AreaId(2)] → AreaId(2)` at Movement) AND case (f) (`left: Ok("5044ab7ceefc27fb") right: Err((117, …))`) |
+| M2 | RED: membership cell, same witness |
+| M3 | RED: membership cell (a `PlacePresident` at AdditionalActionSecond), phase cell (`[AreaId(5)] → AreaId(5)` at AreaAction) AND case (i) (`Err((65, …))` against `Err((64, …))`) |
+| M4 | RED: case (g) (`Ok("935e76b39e1aafe9")` against `Err((1034, "invariant violated: P1 order hand size 4 > 3"))`) |
+| M5 | RED: case (a) (the raw arm's `5-Power bonus requires the action to have been taken at power 5` against `apply_move`'s sentence) |
+| M6 | RED: case (c) (`reject)` against `rejects)`) |
+| clippy | clean, plan code and strengthened code alike |
+| the worst case, release | `spread_4p_11` 23,606 events: strict 29.04 s / predicate 54.1 ms; `spread_3p_13`: 10.46 s / 40.1 ms; `spread_2p_14`: 11.77 s / 22.5 ms; `null_4p`: 107 ms / 41.3 ms — the same digest each way |
+
+The scratch implementation stayed in the export and is discarded with it; nothing of it reaches the branch but
+through Tasks 1–3's own TDD. The export's path and the run logs: the review session's scratchpad `review/`.

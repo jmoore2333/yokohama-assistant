@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
+**Updated:** 2026-10-08 (second session) — the core PR plan's "before" review done and PR #47 open (Track 4). 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
 
 ## Gates at HEAD
 
@@ -119,14 +119,18 @@ this day). The entry documents: the spec `plans/2026-10-08-security-remediation-
 is gitignored** at `docs/temp/security-review-2026-10-08/report.md` with the six reviewer reports beside it;
 read it there, never commit it.
 
-**Next session, in a FRESH context (the review session's is spent), in order:** (0) the branch
-`security-remediation-spec` holds these documents, committed and not pushed — push it and open its PR;
-(1) the plan review of the core PR's plan — the Mythos orchestrator's own, EXECUTING its cells and its six
-mutants in an export (the "before" review of R-SEC1); its fix round lands as new commits on that branch, which
-merges on the owner's word with that review as its review; (2) the core PR on `security-s1-core-replay` from
-the merged master — Opus implementers, Fable task reviewers, the orchestrator's own whole-branch review at the
-end (the owner's final shape, 2026-10-08), then the battery and the fifteen-gate roster; (3) S1's plan, written against the merged tree from spec §2.1; S2's
-brainstorm comes after S1 lands, from the ledger. **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
+**Done 2026-10-08 (the second session):** the branch `security-remediation-spec` is pushed and open as
+**PR #47**; the core PR plan's "before" review ran in an export — every cell executed against the plan's own code,
+the six mutants read, the review's worst-case bodies replayed both ways in release (4P: `replay_strict` 29.0 s,
+the predicate check 54 ms, same digest) — and its fix round is on the branch (the plan's §"Review record", R-1–R-9,
+three HIGH; the spec's §9.1). The four worst-case bodies are kept gitignored in
+`docs/temp/security-review-2026-10-08/worst-case/`.
+
+**Next, in order:** (1) **your word merges PR #47** (that review is its review; a merge commit, as PR #45/#46);
+(2) the core PR on `security-s1-core-replay` from the merged master — Opus implementers, Fable task reviewers, the
+orchestrator's own whole-branch review at the end (the owner's final shape, 2026-10-08), then the battery and the
+fifteen-gate roster, as the plan's Task 4 steps 2–7 say; (3) S1's plan, written against the merged tree from spec
+§2.1, sizing A2's cap and semaphore from the measured 54 ms; S2's brainstorm comes after S1 lands, from the ledger. **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
 the dev door is off outside live tiers, `chmod 600 .dev.vars` with its unused `TURNSTILE_SECRET` line
 removed, and the stopped `cloudflare-d` container removed with its token rotated — the orchestrator's,
