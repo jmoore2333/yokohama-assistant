@@ -1393,8 +1393,10 @@ mod tests {
     /// another. Measured reachable: a seat's own-turn undos while the store
     /// failed writes, then another line to the same count, left the store a
     /// running record of the handle's length. The one-short arm keeps the
-    /// finished game's digest, so the COUNT refuses it; the same-length arm
-    /// carries none, so the DIGEST does.
+    /// finished game's digest, so the COUNT refuses it. Of the two same-length
+    /// arms, one carries ANOTHER real digest — the running state's, the shape
+    /// every stamped server write leaves — so the digest's VALUE refuses it,
+    /// and one carries none, so its PRESENCE does.
     #[tokio::test]
     async fn the_record_route_refuses_a_finished_game_whose_stored_record_is_behind_the_handle() {
         let (state, id, _) = a_finished_two_person_game("unsaved").await;
@@ -1413,19 +1415,33 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
-        // The same length on another line, with no terminal digest: the
-        // finished record with its last two events swapped.
+        // The same length on another line, stamped with ANOTHER real digest:
+        // the finished record with its last two events swapped, carrying the
+        // digest of the finished line one event short — the running state a
+        // stamped write names, and the digest the measured C1 record carried.
         let finished: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
         let mut other = finished.clone();
         let n = other.events.len();
         other.events.swap(n - 1, n - 2);
-        other.terminal_digest = None;
         assert_ne!(other.events, finished.events, "premise: the stored line differs from the handle's");
+        let running = yokohama_core::state_at(&finished, n - 1, &Rules::standard()).expect("the line one event short");
+        other.terminal_digest = Some(yokohama_core::state_digest(&running));
+        assert!(finished.terminal_digest.is_some(), "premise: the finished record carries its digest");
+        assert_ne!(other.terminal_digest, finished.terminal_digest, "premise: another digest, not the finished one");
+        let version = store
+            .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
+            .expect("the same-length record, another digest");
+        let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line, another digest: {body}");
+        assert_eq!(body["error"], api::RECORD_UNSAVED);
+        assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+        // The same record with NO digest.
+        other.terminal_digest = None;
         store
             .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&other).unwrap(), Some(version))
-            .expect("the same-length record");
+            .expect("the same-length record, no digest");
         let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
-        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line: {body}");
+        assert_eq!(status, StatusCode::CONFLICT, "the same length on another line, no digest: {body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
     }
@@ -4069,7 +4085,10 @@ mod tests {
     /// through the router, the record then replaced by the crafted one and a
     /// fresh state built over the store, so the next request rebuilds from it;
     /// the person plays their turn and the reply that carries the lockdown
-    /// carries NO `seed:` line and ends on the lockdown line. **Measured
+    /// carries NO `seed:` line and ends on the lockdown line, and the setup
+    /// seed appears nowhere in that WHOLE reply — every key, `prompt.reason`
+    /// included. The bot's own stream seed is another number (`777000111`), so
+    /// that search reads the setup seed alone. **Measured
     /// reachable** (the plan's before review): the rebuild accepts the crafted
     /// record, and the bot's first turn reports "bot seat 1 could not decide
     /// honestly: the seat's view could not be taken: seat 1's own
@@ -4095,7 +4114,9 @@ mod tests {
         );
         let mut session = yokohama_cli::session::Session::from_record(record, Rules::standard())
             .expect("a record with an Unknown choice resumes (the live-tracking shape)");
-        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 20260831).seat_provenance());
+        // The bot's stream seed is NOT the setup seed, so the whole-reply search
+        // below finds the setup seed or nothing.
+        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 777000111).seat_provenance());
         let crafted = session.to_record_json().expect("a record");
         let (_, version) = store.read(Doc::Record, "faulted").expect("a store").expect("the record");
         store.write_if_version(Doc::Record, "faulted", &crafted, Some(version)).expect("the crafted record");
@@ -4113,18 +4134,19 @@ mod tests {
             assert_eq!(status, StatusCode::OK, "{line}: {reply}");
             let messages: Vec<String> = reply["messages"].as_array().expect("messages").iter().map(|m| m.as_str().unwrap_or_default().to_string()).collect();
             if messages.iter().any(|m| m.starts_with("LOCKDOWN")) {
-                lockdown = Some(messages);
+                lockdown = Some((messages, reply));
                 break;
             }
             if reply["prompt"]["kind"] == "locked" {
-                lockdown = Some(messages);
+                lockdown = Some((messages, reply));
                 break;
             }
         }
-        let messages = lockdown.expect("the bot's first turn engages a lockdown within the person's 40 inputs");
+        let (messages, reply) = lockdown.expect("the bot's first turn engages a lockdown within the person's 40 inputs");
         assert!(messages.last().is_some_and(|m| m.starts_with("LOCKDOWN — ")), "ends on the lockdown line: {messages:?}");
         assert!(!messages.iter().any(|m| m.starts_with("seed:") || m.starts_with("turn:")), "the dump reached the wire: {messages:?}");
         assert!(!serde_json::to_string(&messages).unwrap().contains("20260831"), "{messages:?}");
+        assert!(!reply.to_string().contains("20260831"), "the setup seed reached the locking reply: {reply}");
     }
 
     /// **A finished shared game cannot be rewound by ANYBODY, the seat that is

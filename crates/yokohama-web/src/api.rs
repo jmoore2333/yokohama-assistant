@@ -2180,7 +2180,11 @@ pub(crate) const RECORD_UNSAVED: &str =
 /// record of the same length that is not the finished game (undone and
 /// replayed to the same count, a failed final save behind it) carries no
 /// digest, or another. A shorter one, or one without the finished state's
-/// digest, is [`RECORD_UNSAVED`].
+/// digest, is [`RECORD_UNSAVED`]. The digest is computed under the lock, so the
+/// lock keeps the answer consistent — which true sentence the caller hears —
+/// and not the seed: read after the guard dropped, a store that moved in
+/// between would carry another digest and be refused, or still hold the
+/// finished game.
 pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     if viewer == client::Viewer::Spectator {
@@ -2209,11 +2213,11 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         .map_err(ApiError::server_error)?
         .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
     #[derive(Deserialize)]
-    struct Events {
-        events: Vec<serde_json::Value>,
+    struct StoredRecord {
+        events: Vec<serde::de::IgnoredAny>,
         terminal_digest: Option<String>,
     }
-    let stored: Events = serde_json::from_str(&json)
+    let stored: StoredRecord = serde_json::from_str(&json)
         .map_err(|e| ApiError::server_error(format!("the stored record does not parse: {e}")))?;
     // **The digest of the handle's STATE, never the handle record's own
     // `terminal_digest` field.** `Session::to_record_json` stamps the live
