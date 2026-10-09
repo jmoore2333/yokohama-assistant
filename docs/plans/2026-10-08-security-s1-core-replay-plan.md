@@ -73,16 +73,17 @@ Seven inputs the spec implies and this plan pins, each to the task that owns the
    membership cell meets it in every game's opening decisions, and its phase cell checks hand placements one state
    later.
 3. **A `MovePresident` while a choice is queued.** `get_legal_moves` short-circuits to the choice's resolutions;
-   `is_move_legal` mirrors that, and the family's list does not — the conjunction's order is what refuses it. Task
-   1's MEMBERSHIP cell meets it directly: at every decision point with a queued choice it judges every REAL member
+   `is_move_legal` mirrors that, and the family's list does not — the `is_move_legal` conjunct is what refuses it
+   (its place in the conjunction is cost: the family is never computed for a move the gates refuse). Task 1's
+   MEMBERSHIP cell meets it directly: at every decision point with a queued choice it judges every REAL member
    of the phase-blind family and counts the refusals (`queued_family_refusals`, 28 in the review's sweep). A Movement
    move's successor never queues a choice, so the phase cell cannot meet it (the review's correction, R-3 below).
 4. **A record with no events.** Both replays must agree on the initial state's digest. Task 2's cell
    `an_empty_record_folds_to_the_same_initial_state_under_both_checks`.
 5. **A record every event of which applies but whose state breaks an invariant.** The invariant check must run under
    `Predicate` exactly as under `Listed`. Task 2's tamper cell, case (g).
-6. **A Movement-family member planted where the phase is AreaAction.** The list there cannot hold it; only the phase
-   gate taken FIRST refuses it, and a family-alone predicate applies it raw. Task 2's case (i), which reads the
+6. **A Movement-family member planted where the phase is AreaAction.** The list there cannot hold it; only
+   `is_move_legal`'s phase gate refuses it, and a family-alone predicate applies it raw. Task 2's case (i), which reads the
    member off `get_legal_moves` on a copy of the state with its phase set to Movement (the family consults nothing
    about the phase by contract).
 7. **A move appended after the game's end.** The phase machine parks a finished game at `TurnEnd`, where the list
@@ -146,8 +147,11 @@ the battery, the gates and the PR.
   `use crate::game::apply_move_unchecked;` inside `mod tests` if it is not already imported there).
 - Produces: `pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool`.
 
-- [ ] **Step 1: Write the two failing cells and their helper** at the end of `mod tests` in `move_legality.rs`
-  (`witness_variants` sits between them):
+- [ ] **Step 1: Write the two failing cells and their helper** in `move_legality.rs`'s `mod tests`, directly after
+  `accepted_candidates_apply_and_add_no_new_labels` (the one anchor; the module's end is NOT the spot), under a banner
+  line in the module's own style so they do not read as part of its `(a) + (b)` section —
+  `    // -- is_listed_move: exact membership (R-SEC2) -----------------------------` — with `witness_variants`
+  between them:
 
 ```rust
     /// `is_listed_move` is EXACTLY membership in the legal list (the 2026-10-08
@@ -160,9 +164,12 @@ the battery, the gates and the PR.
     /// from every walked move), where only the family conjunct can side with
     /// the list; `queued_family_refusals` — REAL members of the phase-blind
     /// Movement family judged while a choice heads the queue, where only the
-    /// conjunction's ORDER (`is_move_legal`'s queue gate first) refuses them
-    /// (Review Focus 3); `out_of_phase_family_refusals` — the same outside the
-    /// Movement phase.
+    /// `is_move_legal` conjunct — its queue short-circuit — refuses them,
+    /// since the family lists them (Review Focus 3); `out_of_phase_family_refusals`
+    /// — the same outside the Movement phase, refused by its phase gate alone.
+    /// The cells pin that both gates are PRESENT in the conjunction (the
+    /// family-alone mutant turns both red); taking them first is the cost
+    /// order, not what these counters prove.
     #[test]
     fn is_listed_move_is_exactly_membership_in_the_legal_list() {
         let mut listed = 0usize;
@@ -228,11 +235,11 @@ the battery, the gates and the PR.
         );
         assert!(
             queued_family_refusals > 0,
-            "no family member was judged under a queued choice — the queue gate's precedence is untested",
+            "no family member was judged under a queued choice — the queue gate is untested",
         );
         assert!(
             out_of_phase_family_refusals > 0,
-            "no family member was judged outside Movement — the phase gate's precedence is untested",
+            "no family member was judged outside Movement — the phase gate is untested",
         );
     }
 
@@ -274,8 +281,10 @@ the battery, the gates and the PR.
     /// The phase dimension: a move the list held one state ago is judged at
     /// the NEXT state exactly as the next state's list judges it. The Movement
     /// family's list is phase-blind by contract (`route_enum.rs`), so this is
-    /// what proves the conjunction takes `is_move_legal`'s phase and queue
-    /// gates first; the counter proves a movement move was judged outside its
+    /// what proves the conjunction keeps `is_move_legal`'s PHASE gate (the
+    /// queue gate's half is the membership cell's `queued_family_refusals` —
+    /// a movement move's successor never queues a choice, so this cell cannot
+    /// meet it); the counter proves a movement move was judged outside its
     /// phase at least once.
     #[test]
     fn is_listed_move_reads_the_phase_the_list_reads() {
@@ -327,7 +336,7 @@ Expected: a compile error naming `is_listed_move` as not found.
 /// the generator emits (the module doc's "witnesses, not list membership"),
 /// while the list prints one lex-least witness per label. So for the Movement
 /// family — `MovePresident` and `PlacePresident` — the only exact check is the
-/// family's own list, [`crate::game::route_enum::movement_routes_family`]:
+/// family's own list, `crate::game::route_enum::movement_routes_family`:
 /// byte for byte the list's Movement subsequence (`action_source_equivalence`
 /// pins it), small (max observed 694 adversarial / 66 organic), compute-per-
 /// call. That family consults nothing about `turn_phase` or the choice queue by
@@ -686,8 +695,8 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
                         // (i) a MEMBER of the phase-blind Movement family planted at
                         //     the NEXT event, where the phase is AreaAction: the list
                         //     there cannot hold it, and only `is_move_legal`'s phase
-                        //     gate, taken FIRST, refuses it — a family-alone predicate
-                        //     would apply it raw and fold on to a different state. The
+                        //     gate refuses it — a family-alone predicate would apply
+                        //     it raw and fold on to a different state. The
                         //     member is read off `get_legal_moves` on a copy of that
                         //     state with its phase set to Movement (the family consults
                         //     nothing about the phase by contract, so the copy's
@@ -735,7 +744,7 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     );
     assert!(
         out_of_phase_tampers > 0,
-        "no family member was planted out of its phase — the phase gate's precedence is untested at the record level",
+        "no family member was planted out of its phase — the phase gate is untested at the record level",
     );
     refusals += 1;
 
@@ -1062,3 +1071,24 @@ choice resolutions are delegated to the generator; the Movement family is the li
 
 The scratch implementation stayed in the export and is discarded with it; nothing of it reaches the branch but
 through Tasks 1–3's own TDD. The export's path and the run logs: the review session's scratchpad `review/`.
+
+### 2026-10-08 — Task 1's review (Fable), the implementer's concerns, and the fix round
+
+The implementer (Opus) reported DONE_WITH_CONCERNS at `585ca676`, the blocks byte-identical to this plan's, with two
+doc-only concerns the Fable task reviewer confirmed as plan-mandated Important findings, both wording: **R-10** the
+cells' doc attributed their refusals to the conjunction's ORDER — a swapped conjunction (the family first, then
+`is_move_legal`) keeps both cells green with every counter identical, so what the cells pin is that both gates are
+PRESENT (the family-alone mutant M3 turns both red), and the order is cost only (the function doc's "taken FIRST"
+is a cost sentence and stays); **R-11** the phase cell's doc claimed the queue gate, which that cell never meets
+(0 of its 207,129 checks judge a movement move under a queued choice — R-3's own finding, left in the cell's doc).
+Minors: the function doc's intra-doc link to the `pub(crate)` family raised one `rustdoc::private_intra_doc_links`
+warning (`cargo doc` is no gate; the link is now plain backticks); the brief's two anchors for the cells conflicted
+(Step 1 said the module's end, the Files section the `(a) + (b)` cell) — the Files anchor stands, under a banner
+line; the function doc cites Task 2's binary before it exists (resolves when Task 2 keeps the name, which it does).
+The corrections are applied above to the Task 1 and Task 2 blocks (comments and assertion strings only — no code,
+no cell, no counter moves), to Review Focus 3 and 6, and to Step 1; the code follows in the fix round's commit,
+blocks byte-identical. On record from the implementer's own probe: 148,250,705 candidates over full-length games
+(`drive(4, 8000, ..)`) and 22 hand-built fixtures, malformed ids included, 0 disagreements with list membership and
+0 panics; 317 conjunct cases under the cells' own `drive(3, 400, ..)` sweep against the counters' 165; the direct
+hop `[2]→2` on the diamond fixture is unlisted because `[1,3,2]` is the lex-least witness of the same label, and
+`is_listed_move` refuses it exactly as `apply_move` does.
