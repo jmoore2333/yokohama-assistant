@@ -2266,6 +2266,87 @@ suite); the harness binds port 0, so the cell picks a free port first:
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).expect("a free port").port()
 }
+
+/// One `POST` to the server at `port` as `user` at the open door (the claimed
+/// header), over a plain socket — no client crate — with `Connection: close`,
+/// so the response is everything until the server closes; each read and write
+/// bounded by [`BOUND`]. The status, and the body parsed as JSON (`Null` when
+/// it is not).
+#[cfg(feature = "open-door")]
+fn post(port: u16, user: &str, path: &str, body: &serde_json::Value) -> (u16, serde_json::Value) {
+    use std::io::Write;
+    use yokohama_web::identity::CLAIMED_HEADER;
+    let body = body.to_string();
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{CLAIMED_HEADER}: {user}\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .expect("the request writes");
+    let mut response = String::new();
+    stream.read_to_string(&mut response).expect("the response reads");
+    let (head, rest) = response.split_once("\r\n\r\n").expect("a head and a body");
+    assert!(
+        !head.to_ascii_lowercase().contains("transfer-encoding: chunked"),
+        "a chunked body, which this reader does not decode: {head}"
+    );
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("a status line");
+    (status, serde_json::from_str(rest).unwrap_or(serde_json::Value::Null))
+}
+
+/// **The NAS's own path builds the production seed rule** (security S1a,
+/// finding B3; R-SEC8(b); the review's I-1). The binary `main` runs —
+/// `AppState::new`, which hands its file store to `AppState::production` —
+/// refuses a creator's seed beside an open seat with `SEED_NOT_SOLO`'s
+/// sentence and stores no table, and opens the same body unseeded with a 201.
+///
+/// **A cell on the wrong host is not coverage** (the M6.4 lesson):
+/// `the_production_state_honours_a_seed_at_a_solo_table_only` pins
+/// `production` in process, but nothing in process runs `main` → `new` →
+/// `production`. `new` rebuilt through a test constructor — its pre-task body,
+/// `with_store_chat_and_archive`, now the `Diagnostic` wrapper — left every
+/// other suite green (the review's W13); here it reads 201 where 400. The
+/// open door, so a claimed plain name is the creator; a port picked free,
+/// because this cell must reach the server; the store read back by the
+/// layer's own `FsStore` over the directory the child was given.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded() {
+    use yokohama_web::store::{Doc, FsStore, Store};
+    use yokohama_web::tables::SEED_NOT_SOLO;
+
+    let scratch = Scratch::new("seed-open");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the seed rule at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let store = FsStore::new(scratch.root.join("games"));
+    let body = |seed: bool| {
+        let mut b = serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": "red" }, { "open": true }], "id": "seeded", "name": "seeded",
+        });
+        if seed {
+            b["seed"] = serde_json::json!("20260831");
+        }
+        b
+    };
+    let (status, refused) = post(port, "red", "/api/games", &body(true));
+    assert_eq!(status, 400, "{refused}");
+    assert_eq!(refused["error"], SEED_NOT_SOLO, "the layer's sentence: {refused}");
+    assert!(store.read(Doc::Table, "seeded").expect("the store reads").is_none(), "a refused create stored a table");
+    let (status, opened) = post(port, "red", "/api/games", &body(false));
+    assert_eq!(status, 201, "{opened}");
+    // The anti-vacuity partner: the store read above is the one the server writes.
+    assert!(store.read(Doc::Table, "seeded").expect("the store reads").is_some(), "the 201's table is in the store");
+    assert!(server.running(), "still serving after both requests");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+}
 ```
 
 (c) In `crates/yokohama-worker/src/lib.rs`'s `mod tests`, beside the cell that uses `CREATE` (:1084):
@@ -2330,12 +2411,12 @@ this cell; Task 4's report, C4):
   });
 ```
 
-and, the twin of the open-door clock cell at :614 (rule 4b reaches the open and gate files too; Task 4's review, M-4):
+and the open-door clock cell at :614 gains the seeded twin of its clock line (rule 4b reaches the open and gate
+files too; Task 4's review, M-4):
 
 ```js
-  it("passes a release module, a verified tree and a production configuration", () => {
-    expect(deployGuard(worker())).toEqual([]);
-  });
+    const seeded = OPEN.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
+    expect(at(seeded)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/));
 ```
 
 (`deployGuard(worker({ … }))` is what the clock cell at :262 calls to judge a configuration's text, and `toEqual([…])`
