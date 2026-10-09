@@ -147,7 +147,8 @@ pub struct TurnMirror {
     pub bot: Option<crate::bots::BotDescriptor>,
 }
 
-/// `serde`'s `skip_serializing_if` for [`TurnMirror::has_events`].
+/// `serde`'s `skip_serializing_if` for [`TurnMirror::has_events`] and
+/// [`SeatDoc::Human::bound_at_create`].
 fn is_false(b: &bool) -> bool {
     !*b
 }
@@ -1112,7 +1113,7 @@ mod tests {
         assert_eq!(stranger["seats"][0], json!({ "kind": "human", "name": null, "you": false, "invited": null }));
         assert_eq!(hits(&stranger), Vec::<String>::new(), "no address reaches a stranger: {stranger}");
 
-        d.seats[0] = SeatDoc::Human { user: "red@wire.test".into(), name: Some("Red".into()), bound_at_create: false };
+        d.seats[0] = SeatDoc::Human { user: "red@wire.test".into(), name: Some("Red".into()), bound_at_create: true };
         for u in [&red, &blue, &grey] {
             assert_eq!(view(&d, u)["creator"], "Red", "the creator's seat name, to every reader");
         }

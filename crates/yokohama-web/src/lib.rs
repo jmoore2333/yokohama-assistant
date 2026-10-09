@@ -1908,8 +1908,11 @@ mod tests {
     /// **A nameless joiner's address is served to nobody** (finding B7): the
     /// creator's `…/table`, their lobby row (`?scope=mine`) and their deal all
     /// read `invited: null` for the joined seat, while the creator's own seat
-    /// — typed at create — still names itself to them. The leakage pin in
-    /// `tests/wire_fixtures.rs` holds the corpus to the same fact.
+    /// — typed at create — still names itself to them. No corpus payload
+    /// carries this case — the walk's joiner gives a name — and the leakage
+    /// pin in `tests/wire_fixtures.rs` cannot tell a typed seat from a joined
+    /// one; the corpus golden catches a view that ignores the field, through
+    /// `table_foreign.json`'s seat 0.
     #[tokio::test]
     async fn a_nameless_joiners_address_is_served_to_nobody() {
         let state = Arc::new(AppState::in_memory());
