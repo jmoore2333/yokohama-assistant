@@ -6,14 +6,15 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-08 (second session) — the core PR plan's "before" review done and PR #47 open (Track 4). 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: the computer player (Track 1).**
+**Updated:** 2026-10-09 — the security remediation's core PR MERGED (PR #48, `9ab8c430`; guidingpath's 2026-10-09 row); the remainder of S1, then S2 and S3, stack on ONE new branch (your ruling). 2026-10-08 (second session) — the core PR plan's "before" review done and PR #47 open (Track 4). 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: S1's remainder (Track 4), in a FRESH session; the computer player (Track 1) resumes after the security cycles.**
 
 ## Gates at HEAD
 
-The latest readings: cycle F's close §2 ([`plans/2026-10-01-web-frontend-m6.5c2f-close.md`](plans/2026-10-01-web-frontend-m6.5c2f-close.md)) —
-every per-edit suite at `18829e9a`, and the fifteen release gates as one sequence, 534 s on the Mac (Darwin 27.0.0 arm64 — the M5 MacBook Air;
-the target is ≤420 s and its restatement, OD-6, is yours); the CLI suite since then in guidingpath's 2026-10-01 hotfix row.
-Re-count at your own HEAD.
+The latest readings: the core PR plan's §"Review record", its 2026-10-09 entry
+([`plans/2026-10-08-security-s1-core-replay-plan.md`](plans/2026-10-08-security-s1-core-replay-plan.md)) — every per-edit suite at
+`de8ad8ed` (core 1,587 passed / 29 ignored; the CLI 855 / 2; the web lane's rows unchanged from cycle F's close §2), and the fifteen
+release gates as one sequence, **451 s** on the Mac (Darwin 27.0.0 arm64 — the M5 MacBook Air; cycle F read 534 s; the target is
+≤420 s and its restatement, OD-6, is yours). Re-count at your own HEAD.
 
 ## Track 1 — V4 close-out: the owner annotates the ledger, then the findings doc, then D3 + W6
 
@@ -109,28 +110,38 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 1. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 2. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
-## Track 4 — Security remediation: the core PR first, then S1, S2, S3 (S4 is the public set, Track 2)
+## Track 4 — Security remediation: the core PR landed; S1's remainder, S2 and S3 stack on one new branch (S4 is the public set, Track 2)
 
-**State (2026-10-08):** the web lane's security review is done and validated live (the guidingpath row of
-this day). The entry documents: the spec `plans/2026-10-08-security-remediation-spec.md` (§1 the ten rulings,
-§2 the findings by cycle, §3 the cycles and their order, §5 the acceptance); the ledger `security-ledger.md`
-(one row per finding, every row `open`); the first plan `plans/2026-10-08-security-s1-core-replay-plan.md`
-(the core PR — an additive, proven-equivalent replay check; `SEMANTICS_REV` unmoved). **The detailed report
-is gitignored** at `docs/temp/security-review-2026-10-08/report.md` with the six reviewer reports beside it;
-read it there, never commit it.
+**State (2026-10-09):** the core PR is MERGED — **PR #48, master `9ab8c430`** (guidingpath's 2026-10-09 row; the plan
+`plans/2026-10-08-security-s1-core-replay-plan.md`, its §"Review record" the record of record, R-1–R-18): `is_listed_move`,
+`MoveCheck` and `replay_strict_with(.., Predicate)` with the 7-cell proof binary `crates/yokohama-core/tests/replay_check_equivalence.rs`;
+`SEMANTICS_REV` 7, the oracle and the checked boundary untouched; the readings in "Gates at HEAD" above. **The measurement S1 sizes
+from:** the review's 4P worst-case record (23,606 events, 1 MiB) replays in **54 ms** under the predicate check against **28.5 s** under
+`replay_strict`, the same digest. The entry documents: the spec `plans/2026-10-08-security-remediation-spec.md` (§1 the ten rulings,
+§2.1 S1's rows, §3, §5 the acceptance, §9 the corrections — §9.2 your branching ruling); the ledger `security-ledger.md` (A2 `open`
+with its core half landed; every other row `open`); the gitignored report and the four worst-case bodies under
+`docs/temp/security-review-2026-10-08/` (`report.md`, `reviewer-reports/`, `worst-case/`, `core-pr-sdd/` — the core PR's briefs,
+reports and probe sources); read them there, never commit them.
 
-**Done 2026-10-08 (the second session):** the branch `security-remediation-spec` is pushed and open as
-**PR #47**; the core PR plan's "before" review ran in an export — every cell executed against the plan's own code,
-the six mutants read, the review's worst-case bodies replayed both ways in release (4P: `replay_strict` 29.0 s,
-the predicate check 54 ms, same digest) — and its fix round is on the branch (the plan's §"Review record", R-1–R-9,
-three HIGH; the spec's §9.1). The four worst-case bodies are kept gitignored in
-`docs/temp/security-review-2026-10-08/worst-case/`.
+**Your ruling at the merge (2026-10-09):** the core set had unique treatment — its own PR, reviewed before and after — because it
+modified the protected core files. The remainder does not touch them, so **S1 proper, then S2, then S3 run STACKED on ONE new branch
+cut from this master and merge back to master from there, not per cycle**; the per-cycle whole-branch reviews stand, and each cycle's
+plan is written against the stack's head.
 
-**Next, in order:** (1) **your word merges PR #47** (that review is its review; a merge commit, as PR #45/#46);
-(2) the core PR on `security-s1-core-replay` from the merged master — Opus implementers, Fable task reviewers, the
-orchestrator's own whole-branch review at the end (the owner's final shape, 2026-10-08), then the battery and the
-fifteen-gate roster, as the plan's Task 4 steps 2–7 say; (3) S1's plan, written against the merged tree from spec
-§2.1, sizing A2's cap and semaphore from the measured 54 ms; S2's brainstorm comes after S1 lands, from the ledger. **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
+**Next session, in a FRESH context, in order:**
+1. Cut the branch from master at `9ab8c430` (the spec's name for the cycle: `security-s1`); S2 and S3 stack on it later.
+2. **Write S1's plan** against it from spec §2.1 — A1 (the corpus regenerates ONCE), A2 (the event-count cap and the semaphore sized
+   from the 54 ms figure; `check_pair_with` in `crates/yokohama-web/src/backup.rs` moves to `replay_strict_with(.., Predicate)`), A3,
+   B1, B2, B3, B7, B8, B9, B12 and the S1 Lows (D1, D5, D6, D7, D10, D11, D12, D25–D29) — in the core PR's shape: the plan's cells
+   executed in an export before any dispatch, Opus implementers who PROBE the brief's code before reporting, Fable task reviewers
+   re-reading the mutants on their own exports, the orchestrator's own whole-branch review at the end, the web lane's rows run since
+   the layer moves. Two notes the core PR hands S1: the `CLAUDE.md` parenthetical "S1 wires the web layer to it" becomes history the
+   day S1 lands (drop it in S1's close), and "`replay_strict` itself is unedited" is a snapshot any future edit of `replay_strict`
+   must revise. **A multi-subsystem plan is split into cycles planned against the stack's head** (the M6.5c2 lesson) — S1's rows
+   span the layer, the CLI's `suggest` derivation and the client; expect more than one cycle.
+3. S2's brainstorm after S1 lands on the stack, from the ledger; S3 after S2; the merge to master after S3, on your word.
+
+**Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
 the dev door is off outside live tiers, `chmod 600 .dev.vars` with its unused `TURNSTILE_SECRET` line
 removed, and the stopped `cloudflare-d` container removed with its token rotated — the orchestrator's,

@@ -112,3 +112,4 @@ Workspace crates: `crates/yokohama-core` (library), `crates/yokohama-cli` (game 
   - An acceptance reply that asks for changes after a DONE IS a fix-round dispatch: say "as a new commit" in it, and sequence it (M6.5c close §4).
   - A read that never settles is a state, not a delay: a wait for a fact needs a bound (M6.5c, I-86).
   - "The same code" is a premise a stored replay must CHECK, not assume: stamp what gives a line its meaning — the engine's order included (M6.5c, I-85, I-91).
+  - A plan's code block is the single source: correct it THERE first and transcribe byte for byte, and have the implementer PROBE the brief's code before reporting — every task of the security core PR came back with a real gap that way, and the plan and the code never diverged (the core PR's Review record, R-10–R-18).

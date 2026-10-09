@@ -2,14 +2,14 @@
 
 **What this is.** One row per finding of the 2026-10-08 security review of the web lane, with its status at every close — the handover between the remediation cycles (`docs/plans/2026-10-08-security-remediation-spec.md`, §4). Titles here are neutral; the mechanism a fix needs is in the specification's §2, and the exploit detail and the live readings stay in the gitignored report (`docs/temp/security-review-2026-10-08/report.md`), never committed. **Rewrite a row at a close, never append history**: `open` → `fixed <commit>` with the catcher named, or `accepted <the owner's reason>`, or `deferred <cycle>`. A row closes only with a catcher a reviewer mutation-proved, or the owner's accepted-risk sentence.
 
-**Updated:** 2026-10-08 — opened at the review's close; every row `open`.
+**Updated:** 2026-10-09 — the core PR landed (PR #48, `9ab8c430`): A2's core half, the predicate replay `replay_strict_with(.., MoveCheck::Predicate)`, exists and is proven; the wiring is S1's, so every row is still `open`. 2026-10-08 — opened at the review's close; every row `open`.
 
 Tiers as the review set them: **A** High, **B** Medium, **C** the public door, **D** Low. Cycle: `core` (the core PR), `S1`, `S2`, `S3`, `S4` (the public set, outside this specification).
 
 | id | title | tier | subsystem | cycle | status | catcher | live reading |
 |---|---|---|---|---|---|---|---|
 | A1 | a derived value on the suggest wire inverts to the setup seed | A | layer wire, CLI suggest, client | S1 | open | — | confirmed on both hosts 2026-10-08 |
-| A2 | one archive upload of legal moves costs unbounded replay | A (NAS) | layer, core PR | core + S1 | open | — | NAS: confirmed locally; Worker: contained by the object's CPU limit 2026-10-08 |
+| A2 | one archive upload of legal moves costs unbounded replay | A (NAS) | layer, core PR | core + S1 | open (core landed `9ab8c430`, PR #48: `replay_strict_with(.., Predicate)` proven equivalent; the cap, the semaphore and the wiring are S1's) | the core half: `crates/yokohama-core/tests/replay_check_equivalence.rs` (7 cells; nine mutants red on independent exports) | NAS: confirmed locally; Worker: contained by the object's CPU limit 2026-10-08; the 4P worst-case record 28.5 s → 54 ms under the predicate check (release, 2026-10-09) |
 | A3 | a hot-seat table in the worst-case state answers frames of tens of megabytes | A (NAS) | layer, CLI screen model | S1 | open | — | NAS: confirmed locally |
 | B1 | the `why` surface serves the bot's view to its opponent and to spectators | B | layer | S1 | open | — | — |
 | B2 | an own-turn undo un-draws a hidden deck card at a shared table | B | layer | S1 | open | — | — |

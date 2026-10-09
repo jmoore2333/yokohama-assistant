@@ -150,3 +150,15 @@ The plan's cells were executed against a scratch implementation of its own code 
 - **§3.1, "every listed move checked one state later".** Kept, and joined by the real family members judged where the list cannot hold them — the queue gate's precedence has its own counter now.
 - **The worst-case bodies** the review built are kept, gitignored, in `docs/temp/security-review-2026-10-08/worst-case/` (four archive-POST bodies, `{ "record": …, "table": … }`); the plan's Task 4 Step 6 re-measures from there at the reviewed head.
 - **Process.** The branch `security-remediation-spec` is pushed and open as PR #47; this review is that PR's review, and the branch merges on the owner's word.
+
+### 9.2 — 2026-10-09, the core PR's close and the owner's branching ruling for the remainder
+
+The core PR merged as PR #48 (master `9ab8c430`); its plan's §"Review record" (R-1–R-18) and guidingpath's 2026-10-09 row are
+the record. The core half of A2 exists and is proven (`replay_strict_with(.., MoveCheck::Predicate)`, 54 ms against 28.5 s on the
+review's 4P worst case); the wiring, the cap and the semaphore are S1's, so the ledger's A2 stays `open`. **The owner's ruling at
+the merge, recorded forward against "Where it starts" and §3:** the core set had unique treatment — its own PR, reviewed before and
+after — because it modified the protected core files; the remainder does not, so **S1 proper, then S2, then S3 run STACKED on ONE
+new branch cut from `9ab8c430` and merge back to master from there, not per cycle**. The per-cycle whole-branch reviews stand
+(§5.2), and R-SEC9's "each plan written against the merged tree when its turn comes" reads "against the stack's head". The
+post-merge documents of this close were committed directly on master by the owner's word.
+
