@@ -849,7 +849,10 @@ mod tests {
         let doc: TableDoc = serde_json::from_str(json).expect("a schema-1 document parses");
         assert!(doc.lock.is_none());
         assert!(doc.unlocked.is_empty(), "M6.3's list defaults empty on a document written before it");
-        assert!(doc.seats.iter().all(|s| matches!(s, SeatDoc::Human { name: None, .. })));
+        assert!(
+            doc.seats.iter().all(|s| matches!(s, SeatDoc::Human { name: None, bound_at_create: false, .. })),
+            "a seat written before the fields reads no name, and as joined: `bound_at_create` false (S1a, B7)",
+        );
         assert_eq!(doc.turn.as_ref().expect("a mirror").winner, None);
         assert_eq!(doc.turn.as_ref().expect("a mirror").bot, None, "a mirror written before the field reads none");
         assert!(!doc.is_full() || doc.open_seats().is_empty());

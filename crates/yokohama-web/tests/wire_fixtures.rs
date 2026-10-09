@@ -3199,7 +3199,13 @@ async fn no_integer_looking_field_of_the_explain_payloads_inverts_to_a_seed() {
 /// `table::tests::the_view_names_no_address_but_the_readers_own`, which reads
 /// `mine` and `invited` for three readers of one table, and
 /// [`the_stored_table_document_carries_every_seats_address`]'s
-/// `(own, invited) == (0, 0)` over the invited seat's own view.
+/// `(own, invited) == (0, 0)` over the invited seat's own view. And it trusts
+/// that an `invited` in a creator's view is a seat the creator TYPED, which
+/// payload text cannot tell (finding B7): a joiner's address served as
+/// `invited` passes this pin — its catchers are
+/// `table::tests::invited_names_a_creator_bound_seat_and_never_a_joiner`,
+/// `tests::a_nameless_joiners_address_is_served_to_nobody` and the golden
+/// through `table_foreign.json`'s seat 0.
 ///
 /// **Anti-vacuity, two halves.** Here: the walker finds a reader's own address
 /// in the corpus (`/api/me` alone guarantees one), so it is looking at strings
