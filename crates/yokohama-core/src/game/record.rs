@@ -519,6 +519,97 @@ pub fn replay_strict(record: &GameRecord, rules: &Rules) -> Result<GameState, Re
     Ok(state)
 }
 
+/// How [`replay_strict_with`] checks each recorded MOVE against the legal
+/// list (the 2026-10-08 ruling R-SEC2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveCheck {
+    /// Membership in the materialized `get_legal_moves` list — `apply_move`,
+    /// exactly the path [`replay_strict`] takes.
+    Listed,
+    /// The single-candidate exact check
+    /// [`crate::game::move_legality::is_listed_move`], then the raw transition
+    /// `apply_move_unchecked`: the same accepted set and the same states
+    /// without a list materialized per event
+    /// (`tests/replay_check_equivalence.rs` is the proof). A replay's cost then
+    /// stops following the legal families' sizes — the retreat family reaches
+    /// 442,368 moves in legal play — which is what an UNTRUSTED record (an
+    /// archive upload, a restored save) must get.
+    Predicate,
+}
+
+/// One recorded event folded under `check`. `Listed`, and every NON-MOVE
+/// event under either check, is [`fold_one_event`] itself — the ONE fold (its
+/// own doc: a second hand-kept copy of that match drifts). `Predicate`
+/// differs for a `Move` alone: `is_listed_move`, then the raw transition
+/// `apply_move_unchecked`, refusing a non-member with the `MoveError::NotLegal`
+/// that `apply_move` returns — so the two checks word a refusal identically.
+fn fold_one_event_with(
+    state: &GameState,
+    ev: &RecordedEvent,
+    rules: &Rules,
+    check: MoveCheck,
+) -> Result<GameState, String> {
+    match (check, ev) {
+        (MoveCheck::Predicate, RecordedEvent::Move(mv)) => {
+            if !crate::game::move_legality::is_listed_move(state, mv, rules) {
+                return Err(MoveError::NotLegal.to_string());
+            }
+            crate::game::apply_move::apply_move_unchecked(state, mv, rules).map_err(|e| e.to_string())
+        }
+        _ => fold_one_event(state, ev, rules),
+    }
+}
+
+/// [`replay_strict`] with the move check chosen by the caller: the same
+/// preamble (the rules hash; the semantics rev, fail-closed on unknown
+/// provenance), the same per-event invariant check, the same terminal-digest
+/// check, the same `ReplayError` indices and sentences. `Listed` is
+/// `replay_strict` move for move; `Predicate` is the replay an UNTRUSTED
+/// record should get.
+///
+/// ADDITIVE by design (R-SEC2): `replay_strict` is not edited, and the
+/// preamble below REPEATS its sentences rather than factoring them out, so the
+/// existing function's text is untouched; the cells in
+/// `tests/replay_check_equivalence.rs` hold the two functions' refusals equal,
+/// index and sentence, on every tampered record `game_record.rs` builds.
+pub fn replay_strict_with(record: &GameRecord, rules: &Rules, check: MoveCheck) -> Result<GameState, ReplayError> {
+    let expected = rules.content_hash();
+    if record.rules_hash != expected {
+        return Err(ReplayError { event_index: 0, message: format!(
+            "rules_hash mismatch: record \"{}\" vs running \"{expected}\" (strict mode rejects)", record.rules_hash) });
+    }
+    match record.semantics_rev {
+        None => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "missing semantics provenance: record carries no semantics_rev (pre-Phase-2.9 record; running SEMANTICS_REV={SEMANTICS_REV}; strict mode rejects)") });
+        }
+        Some(rev) if rev != SEMANTICS_REV => {
+            return Err(ReplayError { event_index: 0, message: format!(
+                "semantics_rev mismatch: record {rev} vs running {SEMANTICS_REV} (strict mode rejects)") });
+        }
+        Some(_) => {}
+    }
+    let mut state = rebuild_initial_state(record, rules)?;
+    for (i, ev) in record.events.iter().enumerate() {
+        state = fold_one_event_with(&state, ev, rules, check)
+            .map_err(|message| ReplayError { event_index: i, message })?;
+        crate::game::invariants::check_invariants(&state, rules)
+            .map_err(|m| ReplayError { event_index: i, message: format!("invariant violated: {m}") })?;
+    }
+    if let Some(expected_digest) = &record.terminal_digest {
+        let actual_digest = state_digest(&state);
+        if &actual_digest != expected_digest {
+            return Err(ReplayError {
+                event_index: record.events.len(),
+                message: format!(
+                    "terminal-state digest mismatch: record {expected_digest} vs replayed {actual_digest} (strict mode rejects)"
+                ),
+            });
+        }
+    }
+    Ok(state)
+}
+
 /// The state after the FIRST `k` EVENTS of `record` — the replay-to-position
 /// primitive (Phase 3.5c W5, design §3).
 ///
