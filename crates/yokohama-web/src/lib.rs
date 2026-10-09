@@ -3305,8 +3305,9 @@ mod tests {
     /// comparison AFTER the turn test. Beside it, the two things the rule
     /// must NOT touch (Review Focus 4): a non-drawing move at the same shared
     /// table still undoes, and a person alone at the table — one person
-    /// holding both seats — undoes a drawing move exactly as before. The
-    /// lab's draw, from the tech deck, is the next cell's.
+    /// holding both seats — undoes a drawing move exactly as before. The next
+    /// two cells hold the lab's draw, from the tech deck, and the third table
+    /// shape, one person beside a bot, on a drawing move.
     #[tokio::test]
     async fn an_undo_that_un_draws_a_deck_card_is_refused_at_a_shared_table_and_allowed_alone() {
         // The shared table: red and blue, two people. Red's FIRST move ends
@@ -3349,11 +3350,7 @@ mod tests {
         assert_eq!(body["error"], api::UNDO_DREW);
         let (_, still) = get_as(&state, mover, "/api/games/undraw").await;
         assert_eq!(still["events"].as_u64(), Some(events), "a refused undo moved the record");
-        assert!(
-            still["deck_remaining"].as_u64().map(|d| d as usize) < Some(before.0)
-                || get_as(&state, mover, "/api/games/undraw/labs").await.1["deck_remaining"].as_u64().map(|d| d as usize) < Some(before.1),
-            "premise: a deck is still shorter than before the draw",
-        );
+        assert_eq!(still["deck_remaining"].as_u64(), Some(before.0 as u64 - 1), "premise: the port take drew exactly one card");
 
         // Alone: one person holding both seats draws, and undoes.
         let solo = Arc::new(AppState::in_memory());
@@ -3407,6 +3404,30 @@ mod tests {
         assert_eq!(still["events"].as_u64(), Some(events), "a refused undo moved the record");
         let (_, labs) = get_as(&state, mover, "/api/games/labdraw/labs").await;
         assert_eq!(tech(&labs), Some(before.1 - 1), "the tech deck is still one short");
+    }
+
+    /// **One person beside a bot keeps today's undo of a DRAWING move** — the
+    /// third table shape, which `api::undo_allowed`'s doc keeps by name ("one
+    /// person and a bot — keeps today's undo, bot run and all"): the rule is
+    /// about a card another PERSON never saw, and a bot is not one.
+    /// `undo_at_a_table_with_one_person_unwinds_the_bot_run_as_before` holds
+    /// this shape only on a unit that drew nothing, so a rule that refused a
+    /// vs-bot player's own port take would pass it; this cell would not. The
+    /// drive draws on red's first turn, before the bot has moved, so the
+    /// trailing unit is red's take.
+    #[tokio::test]
+    async fn an_undo_of_a_port_take_is_allowed_at_a_table_of_one_person_and_a_bot() {
+        let state = Arc::new(AppState::in_memory());
+        start_vs_bot(&state, "undraw-bot", 20260831, "red@wire.test").await;
+        let (before, reply) = play_until_a_draw(&state, "undraw-bot", "red@wire.test", ("PortA", "Port: take"))
+            .await
+            .expect("red's first turn holds a port take");
+        let events = reply["events"].as_u64().expect("an event count");
+        assert!(reply["your_turn"] == serde_json::json!(true), "premise: the draw did not end the turn: {reply}");
+        assert_eq!(reply["deck_remaining"].as_u64(), Some(before.0 as u64 - 1), "premise: the port take drew exactly one card");
+        let (status, undone) = post_as(&state, "red@wire.test", "/api/games/undraw-bot/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::OK, "one person beside a bot keeps today's undo of a drawing move: {undone}");
+        assert!(undone["events"].as_u64().unwrap() < events, "the take is gone: {undone}");
     }
 
     /// **`privacy` is refused at every table** (M6.1 §5.4) — asked from the

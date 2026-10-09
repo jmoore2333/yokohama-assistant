@@ -774,11 +774,12 @@ pub(crate) fn undo_allowed(
     // the decks of the state before the trailing event against the decks now
     // — shorter now means the event drew, and the mover has seen the card.
     // The unit `Session::undo` pops is that event with its bound reveals; a
-    // sim record carries no reveals; in a live record the two bound reveals
-    // exchange cards and keep both lengths, while a standalone starting-order
-    // reveal can take its card out of the order deck (`extract_order_from_deck`
-    // searches it first) and so reads here as a draw — refused, the safe side,
-    // and unreachable at any table this API creates, which deals only sim games.
+    // record this layer deals carries no reveals (the grammar refuses
+    // `reveal`, and the CLI captures bound reveals only in live mode); one
+    // that arrives from elsewhere — a backup restored in the browser, or a
+    // file placed in a store — can end on a standalone starting-order reveal,
+    // which can take its card out of the order deck (`extract_order_from_deck`
+    // searches it first) and so reads here as a draw: refused, the safe side.
     // AFTER the turn test, so a passed turn keeps its own sentence (R-P6).
     if before.order_deck.len() > now.order_deck.len() || before.tech_deck.len() > now.tech_deck.len() {
         return Err(UndoRefusal::Refused(UNDO_DREW.to_string()));
@@ -800,8 +801,9 @@ pub(crate) const UNDO_DREW: &str =
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum UndoRefusal {
     /// The RULE refused this caller: the foreign-bot rule, R-5.2's finished or
-    /// faulted game, "nothing to undo", or R-P6 itself. A 403, in the rule's
-    /// own words, exactly as every one of them has always answered.
+    /// faulted game, "nothing to undo", R-P6 itself, or the un-draw rule
+    /// (R-SEC8(a), [`UNDO_DREW`]). A 403, in the rule's own words — the four
+    /// older ones exactly as they have always answered.
     Refused(String),
     /// The record would not replay far enough to name who made its last move:
     /// a 500 carrying the replay's sentence (`ReplayError`'s `Display`, which
