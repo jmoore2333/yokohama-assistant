@@ -1129,7 +1129,7 @@ git commit -m "core: replay_strict_with and MoveCheck — the strict replay unde
 - [ ] **Step 1: Add the sentence** immediately after "(moves already drawn from the list)." in that bullet:
 
 ```
-**`is_listed_move` (`game/move_legality.rs`) is the single-candidate EXACT membership check, and `replay_strict_with(.., MoveCheck::Predicate)` (`game/record.rs`) the strict replay built on it — the replay an UNTRUSTED record gets (an archive upload, a restored save), proven to accept exactly what `replay_strict` accepts by `tests/replay_check_equivalence.rs` (R-SEC2, 2026-10-08); `replay_strict` itself is unedited, and a direct `is_move_legal` replay is never the answer, since that predicate is wider on a president move's witness path.**
+**`is_listed_move` (`game/move_legality.rs`) is the single-candidate EXACT membership check, and `replay_strict_with(.., MoveCheck::Predicate)` (`game/record.rs`) the strict replay built on it — the replay an UNTRUSTED record MUST get (an archive upload, a restored save — S1 wires the web layer to it), proven to accept exactly what `replay_strict` accepts by `tests/replay_check_equivalence.rs` (R-SEC2, 2026-10-08); `replay_strict` itself is unedited, and a direct `is_move_legal` replay is never the answer, since that predicate is wider on a president move's witness path.**
 ```
 
 - [ ] **Step 2: Check the file still reads as one bullet** (no new line break inside the bullet; the sentence
@@ -1307,3 +1307,12 @@ carries — cases (k), (m) and the cell `an_engine_version_drift_is_accepted_und
 record carried a reveal on the success path, and a `Predicate` arm skipping the deck reveals (M9) survived 5/5 —
 the cell `legal_reveal_events_fold_identically_on_the_success_path` (the probe's P1 at three seeds) with M9. The doc
 sentences name the shapes they cover.
+
+### 2026-10-08 — Task 3's implementer concern (R-17)
+
+The implementer (Opus) placed the sentence verbatim at `2650d988` and probed every clause: one is false of this
+tree — "the replay an UNTRUSTED record gets" — because the web layer's archive upload (`api.rs` `archive_post`) and
+restore verdict (`backup.rs` `verdict_of`) still reach `replay_strict` through `check_pair_with`, and spec §2.1 row
+A2 assigns that wiring to S1 proper; no caller outside core uses `replay_strict_with` at this head. **R-17:** the
+sentence reads "MUST get (an archive upload, a restored save — S1 wires the web layer to it)", the `Predicate` doc's
+own modality, corrected in the block above; the code follows as a new commit.
