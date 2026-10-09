@@ -278,7 +278,7 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
 /// the generator emits (the module doc's "witnesses, not list membership"),
 /// while the list prints one lex-least witness per label. So for the Movement
 /// family — `MovePresident` and `PlacePresident` — the only exact check is the
-/// family's own list, [`crate::game::route_enum::movement_routes_family`]:
+/// family's own list, `crate::game::route_enum::movement_routes_family`:
 /// byte for byte the list's Movement subsequence (`action_source_equivalence`
 /// pins it), small (max observed 694 adversarial / 66 organic), compute-per-
 /// call. That family consults nothing about `turn_phase` or the choice queue by
@@ -935,6 +935,8 @@ mod tests {
         );
     }
 
+    // -- is_listed_move: exact membership (R-SEC2) -----------------------------
+
     /// `is_listed_move` is EXACTLY membership in the legal list (the 2026-10-08
     /// ruling R-SEC2's move-level half): at every decision point of random
     /// games at 2/3/4P, every listed move passes, and every constructed
@@ -945,9 +947,12 @@ mod tests {
     /// from every walked move), where only the family conjunct can side with
     /// the list; `queued_family_refusals` — REAL members of the phase-blind
     /// Movement family judged while a choice heads the queue, where only the
-    /// conjunction's ORDER (`is_move_legal`'s queue gate first) refuses them
-    /// (Review Focus 3); `out_of_phase_family_refusals` — the same outside the
-    /// Movement phase.
+    /// `is_move_legal` conjunct — its queue short-circuit — refuses them,
+    /// since the family lists them (Review Focus 3); `out_of_phase_family_refusals`
+    /// — the same outside the Movement phase, refused by its phase gate alone.
+    /// The cells pin that both gates are PRESENT in the conjunction (the
+    /// family-alone mutant turns both red); taking them first is the cost
+    /// order, not what these counters prove.
     #[test]
     fn is_listed_move_is_exactly_membership_in_the_legal_list() {
         let mut listed = 0usize;
@@ -1013,11 +1018,11 @@ mod tests {
         );
         assert!(
             queued_family_refusals > 0,
-            "no family member was judged under a queued choice — the queue gate's precedence is untested",
+            "no family member was judged under a queued choice — the queue gate is untested",
         );
         assert!(
             out_of_phase_family_refusals > 0,
-            "no family member was judged outside Movement — the phase gate's precedence is untested",
+            "no family member was judged outside Movement — the phase gate is untested",
         );
     }
 
@@ -1059,8 +1064,10 @@ mod tests {
     /// The phase dimension: a move the list held one state ago is judged at
     /// the NEXT state exactly as the next state's list judges it. The Movement
     /// family's list is phase-blind by contract (`route_enum.rs`), so this is
-    /// what proves the conjunction takes `is_move_legal`'s phase and queue
-    /// gates first; the counter proves a movement move was judged outside its
+    /// what proves the conjunction keeps `is_move_legal`'s PHASE gate (the
+    /// queue gate's half is the membership cell's `queued_family_refusals` —
+    /// a movement move's successor never queues a choice, so this cell cannot
+    /// meet it); the counter proves a movement move was judged outside its
     /// phase at least once.
     #[test]
     fn is_listed_move_reads_the_phase_the_list_reads() {
