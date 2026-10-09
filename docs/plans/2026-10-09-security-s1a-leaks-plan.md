@@ -244,7 +244,7 @@ Seven inputs the spec implies and this plan pins, each to the task that owns the
 | `AppState::with_seed_policy(self, SeedPolicy) -> Self` | `crates/yokohama-web/src/lib.rs`, `pub` | the builder step the corpus walk and the gate's harness call (Task 4) |
 | `YOKOHAMA_DIAGNOSTIC_SEEDS` · `InitConfig.diagnostic_seeds: Option<bool>` | `worker/src/config.ts`, `crates/yokohama-worker/src/config.rs` | the Worker's seed switch: `on` only in `wrangler.test.jsonc` and `wrangler.open.test.jsonc`; the deploy guard refuses it in a deployable file (Task 4) |
 | `api::lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>` | `api.rs`, `pub(crate)` | the `input` reply's messages when THIS step engaged a lockdown: the lines up to and including the lockdown line, or the reason alone (Task 5) |
-| `api::RECORD_UNSAVED: &str` | `api.rs`, `pub(crate)` | the 409 a finished game whose stored record is not the handle's finished game answers — shorter, or of the same length without the digest of the handle's live state (Task 5) |
+| `api::RECORD_UNSAVED: &str` | `api.rs`, `pub(crate)` | the 409 a finished game whose stored record is not the handle's finished game answers — shorter than the handle's, or without the digest of the handle's live state (Task 5) |
 | `observe(state, seat) -> Result<PlayerView, ViewError>` · `HandCard::HiddenStartingOrder` · `PlayerView.players[i].hand` | `crates/yokohama-core/src/game/observe.rs:26`; `types/view.rs:28` — at the crate root as `yokohama_core::game::observe`, `yokohama_core::HandCard` | the engine's own masking rule Task 1's visibility reads: for a non-viewer seat the unfulfilled starting order is `HiddenStartingOrder` (`observe.rs:160-176`) |
 | `state_at(record, k, rules)` · `GameState.order_deck` / `tech_deck` | `yokohama_core` | Task 2 compares the deck lengths of the state before the trailing event with the current state's |
 | `wire_fixtures::constructed()` · `BOT_SEED` · `SETUP_SEED` | `crates/yokohama-web/tests/wire_fixtures.rs:2170`, `:99`, `:60` | where the `why` fixtures are built in process (Task 1 adds `why_withheld` and rebuilds `why` from a finished game) |
@@ -3335,17 +3335,73 @@ that builds anything"; "The one constructor that builds anything") reworded to t
 described. `cargo test -p yokohama-web --test wire_fixtures`, `--lib explain::tests` and `--test lane_document`
 green.
 
+- [ ] **Step 2c: The fence Task 1's regeneration moved, and two more stale sentences (Task 6's report, F1–F3).**
+  Task 1's regeneration put `suggest.json`'s chosen row at index 0 (the tie broke the other way once A1 re-keyed the
+  stream), so on every committed payload `ranking.filter((r) => !r.chosen)` and `ranking.slice(1)` agree and the
+  client cell that separated "the non-chosen rows" from "the tail" could no longer catch a `slice(1)` regression —
+  the M6.1 lesson in a new coat: a "chosen flag swapped rows" line in a regeneration's diff IS a fence moving. The
+  fence is restored by a cell that does not depend on where a regeneration puts the chosen row — the committed
+  payload with the `chosen` flags of rows 0 and 1 swapped (a copy), asserting the runner-ups list row 0 and not
+  row 1 — in `web/src/Explain.test.tsx`:
+
+```tsx
+  it("the runner-ups are the non-chosen rows, not the tail: a payload whose chosen row is not row 0", () => {
+    // **The committed payload cannot be relied on to say this.** Where the
+    // keyed draw lands is the fixture's, and it moves with the stream's key:
+    // when A1 re-keyed the stream it landed on the top row, and
+    // `filter(!chosen)` and `slice(1)` became the same list on the corpus's
+    // payloads. So this payload is the committed one with the `chosen` flags of
+    // its first two rows exchanged — a copy, in the server's own shape — and
+    // the two readings disagree on it by construction: the tail starts at the
+    // candidate that was played, the non-chosen rows at the one that was not.
+    // Asserted on the list alone: the headline and the line still name the
+    // committed move, which this cell does not read.
+    const s = wire.suggest.ok!;
+    const swapped = {
+      ...wire.suggest,
+      ok: {
+        ...s,
+        ranking: s.ranking.map((r, i) => (i === 0 ? { ...r, chosen: false } : i === 1 ? { ...r, chosen: true } : r)),
+      },
+    };
+    const [first, second] = swapped.ok.ranking;
+    // The premise, so a fixture that stopped carrying two distinct rows cannot
+    // turn this into a cell about nothing.
+    expect(first!.chosen).toBe(false);
+    expect(second!.chosen).toBe(true);
+    expect(first!.text).not.toBe(second!.text);
+    expect(swapped.ok.ranking.filter((r) => !r.chosen)[0]!.text).toBe(first!.text);
+    expect(swapped.ok.ranking.slice(1)[0]!.text).toBe(second!.text);
+
+    const { container } = render(<SuggestView data={swapped} labels={labels} />);
+    const list = container.querySelector<HTMLElement>("ol.runner-ups")!;
+    expect(within(list).getByText(first!.text)).toBeInTheDocument();
+    expect(within(list).queryByText(second!.text)).toBeNull();
+  });
+```
+
+  (Measured: `RunnerUps` as `ranking.slice(1)` turns this cell RED alone.) The three sentences "two candidates tie at
+  78 and the chosen one is row 1" — `explain.rs`'s `Ranked` doc, the suggest route cell's comment in `lib.rs`,
+  `web/src/Explain.tsx`'s `RunnerUps` comment — are reworded to the fence as it stands, naming the cell and nothing
+  numeric a regeneration can move. `record`'s rustdoc link to the `pub(crate)` `RECORD_UNSAVED` becomes a code span
+  (`cargo doc -p yokohama-web --no-deps` reads zero warnings). Three lane-document sentences S1a left incomplete are
+  completed: §4's undo bullet gains the draw rule's pointer ("and no undo of a shared game crosses a draw — the
+  `admitted` bullet above"); §13's `GET /api/games/{id}/record` row reads "409 while it runs or when its last save
+  failed (`api::RECORD_UNSAVED`), 403 for a watcher"; §2's `wire_fixtures` bullet names the fifth pin,
+  `no_integer_looking_field_of_the_explain_payloads_inverts_to_a_seed`.
+
 - [ ] **Step 3: The spec's §9.3.** Append to `docs/plans/2026-10-08-security-remediation-spec.md` a
-`### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and six corrections` carrying this plan's
-§"The cycle split" table in one paragraph, its §"Spec corrections" items 1–7 verbatim, and §"The S1 figures"'
-two tables with their one-paragraph reading — the file's own instruction ("the plan review's findings and this
+`### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and ten corrections` carrying this plan's
+§"The cycle split" table in one paragraph, its §"Spec corrections" items 1–10 verbatim, and §"The S1 figures"
+WHOLE — its Method paragraph, the two tables, their reading and the alternative sizing (the owner's open choice,
+R-SEC8(f), which S1b's plan needs) — the file's own instruction ("the plan review's findings and this
 specification's corrections, dated, go here").
 
 - [ ] **Step 4: Commit.**
 
 ```bash
 git add docs/web-lane.md docs/plans/2026-10-08-security-remediation-spec.md crates/yokohama-web/tests/wire_fixtures.rs
-git commit -m "docs: the lane document's admitted, explanation and route rows for S1a (D10), and the spec's §9.3 — the cycle split, the corpus rule and six corrections"
+git commit -m "docs: the lane document's admitted, explanation and route rows for S1a (D10), and the spec's §9.3 — the cycle split, the corpus rule and ten corrections"
 ```
 
 ---
@@ -3590,4 +3646,22 @@ password) — fixed in `d7210605`, re-review clean. Residuals: the served `why` 
 jsdom only (a finished game is needed end to end); the live corpus replay's two seeded open-seat creates read 400
 under the production rule (Step 8).
 
-(Task 5's review and the "after" review follow here, as the core PR's plan kept them.)
+### Task 5 — the review (Opus), 2026-10-09
+
+Task commit `8a3536c9`; the pre-review fix `8ade3be6` (the implementer's probes: the plan's D11 fix — the stored
+record's event COUNT held to the handle's — was defeated by undos under failing store writes and a different line
+replayed to the same length, measured (six undos, the same 356 events, the running record served with its seed);
+ruled: the record is held by its terminal digest too, against the digest of the handle's LIVE state — the
+record's own `terminal_digest` field does not track the live state, `None` for a game dealt in process; the
+implementer's reading, F1). Review: spec ✅, Needs fixes — Important 1 (plan-mandated): cell (c)'s same-length arm
+installed a record with NO digest, a shape no server writer produces, so it pinned the digest's presence, not its
+value (`Mnone`, presence alone, passed every binary and served the measured C1 record) — the arm stamped with
+another real digest, the no-digest shape a third arm; Minor 4 (the lock scope unpinned — a doc line, the
+parked-read pin deferred; cell (b) narrower than its name — a distinct bot seed and a whole-reply assertion, the
+implementer's `Mwarn` shows only it catches a seed in the warnings; two wordings — the plan carries the code's
+paragraph; the local `struct Events` shadowing `api::Events` — `StoredRecord` with `IgnoredAny`) — fixed in
+`3e4da4f8`, re-review clean. The disk filled mid-round (the scratchpad's review exports' build caches, 29 GB,
+removed by the orchestrator; the record kept). Residual: `record`'s lock scope pinned by nothing (W4 survives) — a
+`Park`/`ParkedRead` store double for the final wave or S1b.
+
+(Task 6's review and the "after" review follow here, as the core PR's plan kept them.)
