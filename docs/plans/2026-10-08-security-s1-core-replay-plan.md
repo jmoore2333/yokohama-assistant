@@ -76,8 +76,10 @@ Seven inputs the spec implies and this plan pins, each to the task that owns the
    `is_move_legal` mirrors that, and the family's list does not — the `is_move_legal` conjunct is what refuses it
    (its place in the conjunction is cost: the family is never computed for a move the gates refuse). Task 1's
    MEMBERSHIP cell meets it directly: at every decision point with a queued choice it judges every REAL member
-   of the phase-blind family and counts the refusals (`queued_family_refusals`, 28 in the review's sweep). A Movement
-   move's successor never queues a choice, so the phase cell cannot meet it (the review's correction, R-3 below).
+   of the phase-blind family and counts the refusals (`queued_family_refusals`, 28 in the review's sweep) — every one
+   of which is out of phase as well, since in engine-produced states a queued choice never coexists with the Movement
+   phase; so the queue gate's OWN pin is the hand-built cell `a_queued_choice_refuses_a_listed_family_member_at_movement`
+   (R-12). A Movement move's successor never queues a choice, so the phase cell cannot meet it (R-3).
 4. **A record with no events.** Both replays must agree on the initial state's digest. Task 2's cell
    `an_empty_record_folds_to_the_same_initial_state_under_both_checks`.
 5. **A record every event of which applies but whose state breaks an invariant.** The invariant check must run under
@@ -147,11 +149,11 @@ the battery, the gates and the PR.
   `use crate::game::apply_move_unchecked;` inside `mod tests` if it is not already imported there).
 - Produces: `pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool`.
 
-- [ ] **Step 1: Write the two failing cells and their helper** in `move_legality.rs`'s `mod tests`, directly after
+- [ ] **Step 1: Write the three failing cells and their helper** in `move_legality.rs`'s `mod tests`, directly after
   `accepted_candidates_apply_and_add_no_new_labels` (the one anchor; the module's end is NOT the spot), under a banner
   line in the module's own style so they do not read as part of its `(a) + (b)` section —
   `    // -- is_listed_move: exact membership (R-SEC2) -----------------------------` — with `witness_variants`
-  between them:
+  between the first two:
 
 ```rust
     /// `is_listed_move` is EXACTLY membership in the legal list (the 2026-10-08
@@ -167,9 +169,12 @@ the battery, the gates and the PR.
     /// `is_move_legal` conjunct — its queue short-circuit — refuses them,
     /// since the family lists them (Review Focus 3); `out_of_phase_family_refusals`
     /// — the same outside the Movement phase, refused by its phase gate alone.
-    /// The cells pin that both gates are PRESENT in the conjunction (the
-    /// family-alone mutant turns both red); taking them first is the cost
-    /// order, not what these counters prove.
+    /// The phase gate's presence is what this cell and the phase cell pin (the
+    /// family-alone mutant turns both red); the queue gate's own pin is
+    /// `a_queued_choice_refuses_a_listed_family_member_at_movement`, because
+    /// in engine-produced states a queued choice never coexists with the
+    /// Movement phase, so every queued member here is out of phase as well.
+    /// Taking the gates first is the cost order, not what these counters prove.
     #[test]
     fn is_listed_move_is_exactly_membership_in_the_legal_list() {
         let mut listed = 0usize;
@@ -282,10 +287,10 @@ the battery, the gates and the PR.
     /// the NEXT state exactly as the next state's list judges it. The Movement
     /// family's list is phase-blind by contract (`route_enum.rs`), so this is
     /// what proves the conjunction keeps `is_move_legal`'s PHASE gate (the
-    /// queue gate's half is the membership cell's `queued_family_refusals` —
-    /// a movement move's successor never queues a choice, so this cell cannot
-    /// meet it); the counter proves a movement move was judged outside its
-    /// phase at least once.
+    /// queue gate's pin is `a_queued_choice_refuses_a_listed_family_member_at_movement`
+    /// — a movement move's successor never queues a choice, so this cell
+    /// cannot meet it); the counter proves a movement move was judged outside
+    /// its phase at least once.
     #[test]
     fn is_listed_move_reads_the_phase_the_list_reads() {
         let mut checked = 0usize;
@@ -314,6 +319,29 @@ the battery, the gates and the PR.
             movement_refused_later > 0,
             "no movement move was ever judged outside its phase — the gate is untested",
         );
+    }
+
+    /// The queue gate's own pin for the conjunction. In engine-produced states
+    /// a queued choice never coexists with the Movement phase (every queued
+    /// member the membership cell judges is out of phase as well, so the phase
+    /// gate refuses it too), so only a hand-built state can show that the
+    /// conjunction relies on `is_move_legal`'s queue short-circuit: the diamond
+    /// at Movement with an `AnyGood` choice queued, where the family lists the
+    /// walk and the list holds only the choice's resolutions. A predicate that
+    /// kept the phase gate and dropped the queue gate would accept it.
+    #[test]
+    fn a_queued_choice_refuses_a_listed_family_member_at_movement() {
+        let mut s = diamond(2, &[]);
+        s.pending_choices.push(PendingChoice::AnyGood);
+        let rules = Rules::empty_for_tests();
+        let walk = Move::MovePresident { path: vec![AreaId(1)], destination: AreaId(1) };
+        assert_eq!(s.turn_phase, TurnPhase::Movement, "premise: the Movement phase");
+        assert!(
+            crate::game::route_enum::movement_routes_family(&s, &rules).contains(&walk),
+            "premise: the family lists it",
+        );
+        assert!(!get_legal_moves(&s, &rules).contains(&walk), "premise: the list does not");
+        assert!(!is_listed_move(&s, &walk, &rules), "the queue gate must refuse it: {walk:?}");
     }
 ```
 
@@ -365,7 +393,7 @@ pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool {
 - [ ] **Step 4: Run the two cells and the module's existing cells**
 
 Run: `cargo test -p yokohama-core --lib move_legality:: 2>&1 | tail -15`
-Expected: every cell PASS, the two new ones included, and under `-- --nocapture` their counter lines. The review's
+Expected: every cell PASS (23: the module's 20 and the three new ones), and under `-- --nocapture` the two sweep cells' counter lines. The review's
 readings at `drive(3, 400, …)` / `drive(2, 300, …)`: listed 412,372 · candidates 1,262,450 · conjunct cases 165 ·
 queued family refusals 28 · out-of-phase family refusals 5,891 · phase sweep checked 207,129 with 1,682 movement
 moves refused one state later (debug wall ~7 s for the module). A counter that reads 0 means the predicate, not the
@@ -382,7 +410,11 @@ sweep): STOP and report.
     member (`a family member must be refused at AdditionalActionSecond (queued: false): PlacePresident { destination:
     AreaId(8) }`) and `is_listed_move_reads_the_phase_the_list_reads` on `disagrees one state later at AreaAction:
     MovePresident { path: [AreaId(5)], destination: AreaId(5) }`. (Task 2's case (i) goes RED on it too.)
-  Record the three readings (the failing assertion's text) in the task report.
+  - M3q — the queue gate alone dropped: the arm judges `is_move_legal` on a clone of `state` with `pending_choices`
+    cleared (every other check kept): `a_queued_choice_refuses_a_listed_family_member_at_movement` must go RED
+    (`the queue gate must refuse it: MovePresident { path: [AreaId(1)], destination: AreaId(1) }`) while BOTH sweep
+    cells stay green with unchanged counters — which is why that cell exists (R-12).
+  Record the four readings (the failing assertion's text) in the task report.
 
 - [ ] **Step 6: Lint and commit**
 
@@ -1092,3 +1124,19 @@ blocks byte-identical. On record from the implementer's own probe: 148,250,705 c
 0 panics; 317 conjunct cases under the cells' own `drive(3, 400, ..)` sweep against the counters' 165; the direct
 hop `[2]→2` on the diamond fixture is unlisted because `[1,3,2]` is the lex-least witness of the same label, and
 `is_listed_move` refuses it exactly as `apply_move` does.
+
+### 2026-10-08 — Task 1's fix round 1 (`c11664d4`) and the queue gate's own pin (R-12)
+
+The implementer applied R-10 and R-11 byte for byte and then tried the fix's own sentences. **R-12:** "the cells
+pin that both gates are PRESENT" held for the phase gate only — every one of the 28 queued members the membership
+cell judges sits outside the Movement phase (queued points by phase in that sweep: AdditionalActionFirst 1,
+AdditionalActionSecond 3, FivePowerBonus 10, Recovery 1; 106 points and 215 members at full length, none at
+Movement), so the phase gate refuses each of them too, and a faithful single-gate mutant that drops only the queue
+gate (the arm judging `is_move_legal` on a clone with the queue cleared) keeps both sweep cells green; dropping only
+the phase gate turns both red. In engine-produced states a queued choice never coexists with the Movement phase, so
+the queue gate's pin for the conjunction must be a hand-built state. Taken: the third cell
+`a_queued_choice_refuses_a_listed_family_member_at_movement` (the module's `diamond` at Movement with an `AnyGood`
+choice queued; the family lists the walk `[1]→1`, the list holds only the resolutions), mutant M3q, and the two
+sentences now name which cell pins which gate. Also on record: the lead's `grep -c private_intra_doc_links` check
+cannot discriminate (rustdoc names a lint only on its first warning); the counts that do are "links to private item"
+warnings 91 → 90 and total rustdoc warnings 235 → 234 (234 is the count before Task 1).
