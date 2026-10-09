@@ -19,6 +19,10 @@ serde_json.workspace = true
 # CLI's tests -- no new crate enters the tree.
 rand.workspace = true
 rand_chacha.workspace = true
+# The 2026-10-09 derivation of `suggest::stream_seed` (security S1a, finding A1,
+# R-SEC3): a one-way digest in place of a SplitMix64 fold. The same crate and
+# version `yokohama-web` already builds, on wasm32 too (its table password).
+sha2 = "0.10"
 # Phase-3.5a T9, spec §0.9: THE one new dependency, and it is the CLI crate's
 # alone -- core/oracle/difftest/gen-data keep the dependency lists they had.
 # MIT; this workspace is Apache-2.0 (see `LICENSE`), and MIT is compatible with

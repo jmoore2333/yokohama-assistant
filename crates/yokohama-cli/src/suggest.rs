@@ -333,32 +333,38 @@ impl Suggestion {
 /// before and after a move key differently, and `undo` walks it back to the
 /// value that produced the earlier answer.
 ///
-/// Deriving an agent stream from the world seed is the arena's own shape
-/// (`game::arena::agent_stream_seed` mixes `WorldSeed` with seat and slot), not
-/// a shortcut taken here: what the SEED HYGIENE rule forbids is deriving a
-/// sampler seed from state the agent may not see, and in sim mode the seed is
-/// the operator's own — the wizard printed it and the summary shows it.
+/// **A ONE-WAY digest since 2026-10-09** (security S1a, finding A1; R-SEC3):
+/// SHA-256 over the components above, as big-endian `u64`s with the salt first
+/// and the choice count ahead of the choices, the digest's first eight bytes
+/// read big-endian. Determinism and keying are kept — `stream_seed` is pure
+/// and every component moves it, pinned below — and INVERTIBILITY is gone: the
+/// earlier SplitMix64 fold was a chain of bijections, so a served key read with
+/// the other components known NAMED `record.seed`, the first member of the
+/// engine's hidden set (`game/observe.rs`), from one `GET …/suggest`. The web
+/// layer no longer serves the key at all; this derivation closes the channel
+/// at the source so that no future surface repeats it. Deriving the stream
+/// from the world seed stays the arena's own shape (`agent_stream_seed`): what
+/// the SEED HYGIENE rule forbids is a sampler seed derived from state the agent
+/// may not see, and in sim mode the seed is the operator's own.
 pub fn stream_seed(record: &GameRecord, seat: PlayerId) -> u64 {
-    let mut components: Vec<u64> = Vec::with_capacity(record.choices.len() + 5);
-    components.push(record.seed);
-    components.push(u64::from(record.config.player_count));
-    components.push(u64::from(record.config.start_player.0));
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut component = |x: u64| h.update(x.to_be_bytes());
+    component(SUGGEST_SALT);
+    component(record.seed);
+    component(u64::from(record.config.player_count));
+    component(u64::from(record.config.start_player.0));
+    component(record.choices.len() as u64);
     for choice in &record.choices {
         // `Keep(k)` maps to `1 + k` so it can never collide with `Unknown`'s 0.
-        components.push(match choice {
+        component(match choice {
             StartingOrderChoice::Keep(k) => 1 + u64::from(*k),
             StartingOrderChoice::Unknown => 0,
         });
     }
-    components.push(u64::from(seat.0));
-    components.push(record.events.len() as u64);
-
-    let mut acc = SUGGEST_SALT;
-    for component in components {
-        let mut step = acc ^ component;
-        acc = crate::bot::splitmix64(&mut step);
-    }
-    acc
+    component(u64::from(seat.0));
+    component(record.events.len() as u64);
+    u64::from_be_bytes(h.finalize()[..8].try_into().expect("a SHA-256 digest holds eight bytes"))
 }
 
 /// Ask the shipped production bot what it would play for `seat`, from `seat`'s
@@ -1183,6 +1189,102 @@ mod tests {
             stream_seed(&advanced, seat),
             "the event index keys it — otherwise every press of a whole game shares one draw",
         );
+    }
+
+    /// The 2026-10-09 derivation (R-SEC3, finding A1): the stream key is a
+    /// ONE-WAY digest, pinned by VALUE at one record so the derivation cannot
+    /// drift silently — recomputed here by hand, with no `stream_seed` in the
+    /// loop, so the two cannot agree by accident. The components are the ones
+    /// the old fold mixed, with the choice count prefixed so the byte string
+    /// is injective over records of different player counts.
+    #[test]
+    fn the_stream_key_is_the_leading_eight_bytes_of_a_sha256_over_the_components() {
+        use sha2::{Digest, Sha256};
+        let rules = Rules::standard();
+        let mut record = GameRecord::new(
+            7,
+            GameConfig::for_player_count(2),
+            vec![StartingOrderChoice::Keep(1), StartingOrderChoice::Unknown],
+            &rules,
+        );
+        record.events.push(RecordedEvent::Move(Move::EndAdditionalPhase));
+        let seat = PlayerId::new(1);
+        let mut h = Sha256::new();
+        for component in [
+            SUGGEST_SALT,
+            7,
+            u64::from(record.config.player_count),
+            u64::from(record.config.start_player.0),
+            record.choices.len() as u64,
+            2, // Keep(1) -> 1 + 1
+            0, // Unknown -> 0
+            u64::from(seat.0),
+            record.events.len() as u64,
+        ] {
+            h.update(component.to_be_bytes());
+        }
+        let expected = u64::from_be_bytes(h.finalize()[..8].try_into().expect("eight bytes"));
+        assert_eq!(stream_seed(&record, seat), expected);
+    }
+
+    /// The derivation this one REPLACES — a SplitMix64 fold, every step a
+    /// bijection — inverted from the NEW key with every other component known
+    /// does not name the seed: the invertibility is what A1 exploited and what
+    /// is gone. The inverse is written from SplitMix64's published inverse
+    /// constants and proven against the forward fold FIRST (anti-vacuity), so
+    /// the `assert_ne` is about the derivation and not about a broken inverse.
+    #[test]
+    fn the_old_fold_inverted_from_the_new_key_does_not_name_the_seed() {
+        const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+        fn unmix(mut z: u64) -> u64 {
+            z = (z ^ (z >> 31) ^ (z >> 62)).wrapping_mul(0x3196_42B2_D24D_8EC3);
+            z = (z ^ (z >> 27) ^ (z >> 54)).wrapping_mul(0x96DE_1B17_3F11_9089);
+            z ^ (z >> 30) ^ (z >> 60)
+        }
+        // One old step: `step = acc ^ component; acc' = splitmix64(&mut step)`,
+        // and `splitmix64` adds the gamma before mixing — so one step back is
+        // `acc = (unmix(acc') - gamma) ^ component`, the seed's step last.
+        fn unfold(key: u64, rest: &[u64]) -> u64 {
+            let mut acc = key;
+            for component in rest.iter().rev() {
+                acc = unmix(acc).wrapping_sub(GAMMA) ^ component;
+            }
+            unmix(acc).wrapping_sub(GAMMA) ^ SUGGEST_SALT
+        }
+        fn old_fold(seed: u64, rest: &[u64]) -> u64 {
+            let mut acc = SUGGEST_SALT;
+            for component in std::iter::once(seed).chain(rest.iter().copied()) {
+                let mut step = acc ^ component;
+                acc = crate::bot::splitmix64(&mut step);
+            }
+            acc
+        }
+        let rules = Rules::standard();
+        let seat = PlayerId::new(0);
+        for seed in [7u64, 20_260_831, 0x9E37_79B9_7F4A_7C15, u64::MAX] {
+            let record = GameRecord::new(
+                seed,
+                GameConfig::for_player_count(2),
+                vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(1)],
+                &rules,
+            );
+            // The old fold's components after the seed: players, start seat,
+            // Keep(0) -> 1, Keep(1) -> 2, the seat, the event count.
+            let rest = [
+                u64::from(record.config.player_count),
+                u64::from(record.config.start_player.0),
+                1,
+                2,
+                u64::from(seat.0),
+                0,
+            ];
+            assert_eq!(unfold(old_fold(seed, &rest), &rest), seed, "premise: the inverse inverts the old fold");
+            assert_ne!(
+                unfold(stream_seed(&record, seat), &rest),
+                seed,
+                "the new key inverted to the seed at {seed}: the derivation is a bijection chain again",
+            );
+        }
     }
 
     /// The sandbox property, at the level below the REPL: computing a

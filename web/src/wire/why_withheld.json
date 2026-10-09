@@ -1,0 +1,16 @@
+{
+  "ok": null,
+  "refusal": null,
+  "withheld": {
+    "provenance": {
+      "contestant": "v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=6957643967275421640}",
+      "current_version": 2,
+      "evaluator_version": 3,
+      "index": 6,
+      "recorded_version": 2,
+      "seat": 0
+    },
+    "reason": "the bot's account is withheld while its starting order is hidden from you — it is served once that card is public or the game is over",
+    "text": "End additional-action phase"
+  }
+}

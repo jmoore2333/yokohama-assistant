@@ -346,15 +346,29 @@ export function SuggestView({
           recorded.
         </p>
       )}
-      <p className="meta provenance">
-        Stream <code>{s.stream_seed}</code> — the key this press was made under. Nothing was
-        applied, recorded or saved.
-      </p>
     </div>
   );
 }
 
 export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | null }) {
+  if (data.withheld) {
+    const w = data.withheld;
+    const p = w.provenance;
+    return (
+      <div className="explain">
+        <section>
+          <h3>Seat {p.seat} played</h3>
+          <p className="headline">{w.text}</p>
+          <p className="meta withheld">{w.reason}</p>
+        </section>
+        <p className="meta provenance">
+          Reconstructed by replay under this build: <code>{p.contestant}</code>, evaluator impl{" "}
+          {p.evaluator_version}. Event {p.index}. A reconstruction that did not equal the recorded move
+          would have refused instead of showing you this.
+        </p>
+      </div>
+    );
+  }
   if (!data.ok) {
     return data.refusal ? <Refused refusal={data.refusal} /> : null;
   }
@@ -366,7 +380,7 @@ export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | 
       <section>
         <h3>Seat {p.seat} played</h3>
         <p className="headline">{w.text}</p>
-        {p.forced && (
+        {w.forced && (
           <p className="meta">
             The engine offered exactly one move here, so this is an account of a move nothing
             else was competing with.
@@ -396,8 +410,7 @@ export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | 
       {w.counters && <Counters counters={w.counters} />}
       <p className="meta provenance">
         Reconstructed by replay under this build: <code>{p.contestant}</code>, evaluator impl{" "}
-        {p.evaluator_version}, from decision seed{" "}
-        <code>{p.decision_seed}</code> — the key the bot's own pump derived. Event {p.index}.
+        {p.evaluator_version}. Event {p.index}.
         A reconstruction that did not equal the recorded move would have refused instead of
         showing you this.
       </p>

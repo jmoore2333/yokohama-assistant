@@ -1573,15 +1573,16 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
 pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain::Why, ApiError> {
-    // Seated, and no viewer of its own: `why` already answers at the VIEWER's
-    // visibility by masking the roads not taken for every caller
-    // (`explain::HandVisibility::Masked`), so an unplayed `FulfillOrder` words
-    // as "from hand" and names no card, at every seat. What this fence adds is
-    // the seat one — an account of a search at a table the caller has no place
-    // at is not theirs to read.
-    let _admitted = admitted(games, id, user)?;
+    // Seated, with the seats the caller holds in hand: `why` is served at the
+    // REQUESTER's visibility (finding B1) — withheld while the mover's starting
+    // order is hidden from them, which the engine's own view decides
+    // (`explain::visibility_of`); what this fence adds is the seat one — an
+    // account of a search at a table the caller has no place at is not theirs
+    // to read.
+    let (table, _viewer) = admitted(games, id, user)?;
+    let held = table.seats_of(user);
     let handle = games.handle(id)?;
-    let (mode, record, bots) = {
+    let (mode, record, bots, now) = {
         let repl = games.lock_game(&handle, id)?;
         // **The lockdown gate fences COMPUTATION, not projection**, and this is
         // the rule the three route families follow. M2 already settled that a
@@ -1596,7 +1597,14 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
         if let Some(reason) = repl.session.record().lockdown.clone() {
             return Ok(explain::Why::locked(reason));
         }
-        (repl.session.mode, repl.session.record().clone(), repl.bots().clone())
+        (
+            repl.session.mode,
+            repl.session.record().clone(),
+            repl.bots().clone(),
+            // History-free and cheap to clone (the engine's own rule); the
+            // visibility is a fact about NOW, read off this copy outside the lock.
+            repl.session.state().clone(),
+        )
     };
     // **A move a foreign bot made is the layer's to word** (M6.5c2,
     // R-6.5c2.10): `account_parts` would call that seat a diagnostic that
@@ -1607,7 +1615,10 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
     }
     Ok(
         match yokohama_cli::why::account_parts(mode, &record, games.rules(), &bots, q.event) {
-            Ok(account) => explain::Why::granted(&account, games.rules()),
+            Ok(account) => {
+                let visibility = explain::visibility_of(&now, account.reconstruction.seat, &held);
+                explain::Why::account(&account, games.rules(), visibility)
+            }
             Err(refusal) => explain::Why::refused(&refusal),
         },
     )
@@ -2802,6 +2813,7 @@ mod tests {
         let foreign = holding_foreign("v2-padded", None);
         let refused = serde_json::json!({
             "ok": null,
+            "withheld": null,
             "refusal": {
                 "kind": "foreign_bot",
                 "message": "This move was made by V2, which this server doesn't run: v2-padded is a named research \
@@ -2915,6 +2927,7 @@ mod tests {
         // never "a human's move"; a human's own move (event 0) is still the CLI's.
         let foreign = serde_json::json!({
             "ok": null,
+            "withheld": null,
             "refusal": {
                 "kind": "foreign_bot",
                 "message": "This move was made by V2, which this server doesn't run: v2-padded is a named research \

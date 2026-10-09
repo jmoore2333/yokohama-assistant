@@ -2232,17 +2232,27 @@ fn constructed() -> Vec<(String, Value)> {
     // "a corpus of one payload per kind is a corpus in which every main prompt
     // is the one-row 'end the additional-action phase'"; it applies here too.
     //
-    // So: BOTH seats are bots and the pump runs once. That is bounded and
+    // So: BOTH seats are bots and the pump runs until the game is over (since
+    // security S1a: `why` is served at the requester's visibility, and a
+    // finished game's account is public). That is bounded and
     // deterministic without a policy to write — `pump_bots` stops itself at
     // `PUMP_MOVE_CAP` moves across consecutive bot seats — and it leaves a
     // record full of real bot decisions. The scan then takes the first one from
     // the MIDDLE of the game that is genuinely a choice.
     let mut played = build(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)]);
     played.pump_bots();
+    let mut finished = played;
+    for _ in 0..200 {
+        if finished.session.is_over() {
+            break;
+        }
+        finished.pump_bots();
+    }
+    assert!(finished.session.is_over(), "the both-bot pump must reach a finished game");
     let bots =
         BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], BOT_SEED);
-    let record = played.session.record().clone();
-    let mode = played.session.mode;
+    let record = finished.session.record().clone();
+    let mode = finished.session.mode;
 
     // From the middle rather than the start: an opening explanation is mostly
     // zero terms at `progress_ppm: 0`, and the chart this payload exists to
@@ -2260,8 +2270,37 @@ fn constructed() -> Vec<(String, Value)> {
         "no bot move in the second half of the pumped game was a real choice with three or more \
          candidates — the fixture would be degenerate, so this refuses rather than committing it",
     );
-    let why = serde_json::to_value(yokohama_web::explain::Why::granted(&account, &rules))
+    // Served at the requester's visibility (security S1a, finding B1): seat 1
+    // reads the account of a finished game, so it is PUBLIC — asserted, since
+    // a withheld `why.json` would leave the full account with no payload
+    // behind it. `why_withheld.json` below is the other half.
+    let visibility = yokohama_web::explain::visibility_of(
+        finished.session.state(),
+        account.reconstruction.seat,
+        &[PlayerId::new(1)],
+    );
+    assert_eq!(visibility, yokohama_web::explain::Visibility::Public, "a finished game serves everything");
+    let why = serde_json::to_value(yokohama_web::explain::Why::account(&account, &rules, visibility))
         .expect("a serializable account");
+
+    // The WITHHELD half: one bot turn at a vs-bot table, the person at seat 1
+    // asking about the bot's last move while the bot's starting order is
+    // still a masked slot in its hand — asserted, as the premise.
+    let mut one_turn = build(vec![Some(PROVISIONAL_DEFAULT_BOT), None]);
+    one_turn.pump_bots();
+    let one_bot = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), None], BOT_SEED);
+    let early = yokohama_cli::why::account_parts(
+        one_turn.session.mode, one_turn.session.record(), &rules, &one_bot, None,
+    )
+    .unwrap_or_else(|r| panic!("the bot's first turn holds a move to account for: {r}"));
+    let visibility = yokohama_web::explain::visibility_of(
+        one_turn.session.state(),
+        early.reconstruction.seat,
+        &[PlayerId::new(1)],
+    );
+    assert_eq!(visibility, yokohama_web::explain::Visibility::Withheld, "after one bot turn the card is hidden");
+    let why_withheld = serde_json::to_value(yokohama_web::explain::Why::account(&early, &rules, visibility))
+        .expect("a serializable withheld account");
 
     // **A TERMINAL explanation, which is a different picture and not an empty
     // one — and which nothing checked until a review proved it.**
@@ -2277,17 +2316,9 @@ fn constructed() -> Vec<(String, Value)> {
     // It is not a hypothetical branch: `DecisionExplanation.explanation` is the
     // explanation of the LEAF the search reached, so a continuation that ends
     // the game reaches a terminal leaf and a real `suggest` near the end of a
-    // real game emits one. This plays the pumped game OUT — both seats are
-    // bots, so repeated pumps finish it — and explains the finished position
-    // through the engine's own entry point.
-    let mut finished = played;
-    for _ in 0..200 {
-        if finished.session.is_over() {
-            break;
-        }
-        finished.pump_bots();
-    }
-    assert!(finished.session.is_over(), "the both-bot pump must reach a finished game");
+    // real game emits one. The pumped game was played OUT above — both seats
+    // are bots, so repeated pumps finish it — and this explains the finished
+    // position through the engine's own entry point.
     let state = finished.session.state();
     let view = yokohama_core::game::observe(state, state.players[0].id).expect("a seat's view");
     assert!(
@@ -2325,6 +2356,7 @@ fn constructed() -> Vec<(String, Value)> {
         ("watching".to_string(), watching),
         ("locked".to_string(), locked),
         ("why".to_string(), why),
+        ("why_withheld".to_string(), why_withheld),
         ("why_refused".to_string(), why_refused),
         ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
@@ -2909,6 +2941,7 @@ fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
 const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
     ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
     ("why", Some("ok.provenance.contestant"), "a contestant's identity spells `name@v<version>{params}`: a bot, not a person"),
+    ("why_withheld", Some("withheld.provenance.contestant"), "the same contestant identity, on the withheld half"),
 ];
 
 /// **No payload spells the setup seed. There is no longer an exception.**
@@ -3024,6 +3057,106 @@ async fn no_committed_payload_carries_the_setup_seed() {
         !wire_dir().join("record.json").exists(),
         "a record fixture would put the seed in the corpus",
     );
+}
+
+/// **No integer-looking field of the three explain payloads inverts to a
+/// seed** (the 2026-10-08 finding A1; R-SEC3). `suggest`'s old `stream_seed`
+/// was a SplitMix64 fold — every step a bijection — so the served key, read
+/// with the other components known, NAMED the setup seed; `why`'s
+/// `decision_seed` was one SplitMix64 step over `bot_seed ^ event_count` and
+/// named the bot's stream seed. Both are off the wire and the CLI's key is a
+/// digest. This pin runs BOTH inversions over every integer-looking value of
+/// `suggest.json`, `why.json` and `why_withheld.json` — a decimal string, a
+/// `0x` hex string or a JSON integer — against the walk's seed and the
+/// fixtures' bot seed, at every seat and every event count a capture could
+/// have been taken at, and finds nothing. The value-search pin above stays
+/// beside it: that one sees a VALUE, this one sees a DERIVATION.
+///
+/// Anti-vacuity, proven first: the old fold recomputed here from the old
+/// constants inverts to `SETUP_SEED`, and one SplitMix64 step over
+/// `BOT_SEED ^ 5` inverts to `BOT_SEED` — so a pin that found nothing was
+/// looking with a working inverse. A SplitMix64 of its own, because the CLI's
+/// is `pub(crate)`.
+#[tokio::test]
+async fn no_integer_looking_field_of_the_explain_payloads_inverts_to_a_seed() {
+    const GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+    const OLD_SALT: u64 = 0x5966_2026_0727_0001;
+    fn mix(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(GAMMA);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    fn unmix(mut z: u64) -> u64 {
+        z = (z ^ (z >> 31) ^ (z >> 62)).wrapping_mul(0x3196_42B2_D24D_8EC3);
+        z = (z ^ (z >> 27) ^ (z >> 54)).wrapping_mul(0x96DE_1B17_3F11_9089);
+        z ^ (z >> 30) ^ (z >> 60)
+    }
+    fn old_fold(components: &[u64]) -> u64 {
+        let mut acc = OLD_SALT;
+        for c in components {
+            let mut step = acc ^ c;
+            acc = mix(&mut step);
+        }
+        acc
+    }
+    fn unfold(key: u64, rest: &[u64]) -> u64 {
+        let mut acc = key;
+        for c in rest.iter().rev() {
+            acc = unmix(acc).wrapping_sub(GAMMA) ^ c;
+        }
+        unmix(acc).wrapping_sub(GAMMA) ^ OLD_SALT
+    }
+    fn values_of(v: &Value, out: &mut Vec<u64>) {
+        match v {
+            Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    out.push(u);
+                } else if let Some(i) = n.as_i64() {
+                    out.push(i as u64);
+                }
+            }
+            Value::String(s) => {
+                if let Some(h) = s.strip_prefix("0x") {
+                    if let Ok(u) = u64::from_str_radix(h, 16) {
+                        out.push(u);
+                    }
+                } else if let Ok(u) = s.parse::<u64>() {
+                    out.push(u);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| values_of(x, out)),
+            Value::Object(o) => o.values().for_each(|x| values_of(x, out)),
+            Value::Bool(_) | Value::Null => {}
+        }
+    }
+    // The walk's record identity after the seed: 2P, start seat 0, `Keep(0)`
+    // at both seats (card 1 kept everywhere), then the seat and the count.
+    let rest = |seat: u64, count: u64| [2u64, 0, 1, 1, seat, count];
+    assert_eq!(unfold(old_fold(&[SETUP_SEED, 2, 0, 1, 1, 0, 7]), &rest(0, 7)), SETUP_SEED, "premise: the fold inverts");
+    let mut s = BOT_SEED ^ 5;
+    assert_eq!(unmix(mix(&mut s)).wrapping_sub(GAMMA) ^ 5, BOT_SEED, "premise: one step inverts");
+
+    let Corpus { payloads, .. } = corpus().await;
+    let mut seen = 0usize;
+    for name in ["suggest", "why", "why_withheld"] {
+        let (_, value) = payloads.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("{name} is in the corpus"));
+        let mut values = Vec::new();
+        values_of(value, &mut values);
+        for v in values {
+            seen += 1;
+            for seat in 0..2u64 {
+                for count in 0..=4096u64 {
+                    assert_ne!(unfold(v, &rest(seat, count)), SETUP_SEED, "{name}: {v} inverts to the setup seed at seat {seat}, count {count}");
+                }
+            }
+            for count in 0..=4096u64 {
+                assert_ne!(unmix(v).wrapping_sub(GAMMA) ^ count, BOT_SEED, "{name}: {v} inverts to the bot seed at event {count}");
+            }
+        }
+    }
+    assert!(seen > 100, "vacuous: only {seen} integer-looking values were read");
 }
 
 /// **No payload carries an address that is not its reader's own** (M6.5c2

@@ -280,12 +280,12 @@ The first two lines are your own move's summary; the four `Seat 1` lines are the
 
 ```
 ─ Suggest ──────────────────────────────
-Seat 0 (Red) · v4-step9-draft1 · beam 4, K=1, M=8, evaluator impl 3 · stream 0x7199df924be0e320
+Seat 0 (Red) · v4-step9-draft1 · beam 4, K=1, M=8, evaluator impl 3 · stream 0xf360553bebf4ba9e
 Suggested move:
-  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation (A02)
+  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Customs (A05)
 
 The line it searched, 6 move(s) to the hand-over (the move above is step 1):
-  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
+  1. Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Customs (A05)
   2. Place President from hand in Laboratory A (A01)
   3. Laboratory: acquire Postal System, slot fee: 2 yen
   4. Skip the 5-Power token
@@ -310,8 +310,8 @@ Score at that point: 76   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end t
   achievement_progress_sum         1          1        0           0
   mercenaries_total                0          0        3           0
   hand_size                        1          1       -1           0
-▶ production_access                2          0        1           2
-  track_access                     0          0        1           0
+  production_access                0          0        1           0
+▶ track_access                     2          0        1           2
   assistant_areas_distinct         2          0        0           0
   president_local_access           2          0        0           0
   bank_access                      0          0        1           0
@@ -332,7 +332,7 @@ Score at that point: 76   ·   stage 0/1000000 ppm (0 = opening, 1000000 = end t
   8 of 34 rows carry a nonzero product — they are this move's whole story.
 
 Runner-ups (margin against the suggestion, so 0 means tied) — 186 candidate(s) ranked:
-           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Customs (A05)
+           0  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Tea Plantation …
           -1  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Fishing Ground …
           -1  Place 1 assistant in each of: Port A (A00), Laboratory A (A01), Silk Mill (A04)
   2 candidates tie at the top; which one you see is this position's own

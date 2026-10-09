@@ -824,7 +824,7 @@ describe("the explanation foots", () => {
     // reintroduce that.
     expect(wire.suggest.ok!.ranking.length).toBeGreaterThan(2);
     expect(wire.why.ok!.ranking.length).toBeGreaterThan(2);
-    expect(wire.why.ok!.provenance.forced).toBe(false);
+    expect(wire.why.ok!.forced).toBe(false);
     expect(wire.suggest.ok!.continuation.length).toBeGreaterThan(1);
     expect(wire.why.ok!.explanation.nonzero).toBeGreaterThan(1);
   });

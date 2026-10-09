@@ -3390,6 +3390,70 @@ mod tests {
         (state, name, watcher)
     }
 
+    /// A table of one person (seat 0) and the bot (seat 1), its record played
+    /// out to a WINNER in process — both seats pumped as bots under
+    /// `ENDED_SEED`, the record then labelled as the table is (a person at 0,
+    /// the bot at 1, its stream seed `ENDED_SEED`) and installed — so `why`
+    /// reconstructs seat 1's every move under the key the pump used
+    /// (`BotSeats::decision_seed` reads the table's one seed and the event
+    /// count, never the seat). `a_finished_two_person_game`'s shape, the bot
+    /// kept; the bot's keep at this seed is card 1, `Keep(0)`, which is what
+    /// the pumped session chose too (games.rs's `CORPUS_SEED` note).
+    async fn a_finished_vs_bot_game(name: &'static str) -> Arc<AppState> {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let store = Arc::new(MemStore::default());
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
+        let (status, table) = post_as(
+            &state,
+            "red@wire.test",
+            "/api/games",
+            serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": ENDED_SEED.to_string(),
+                "seats": [{ "user": "red@wire.test" }, { "bot": true }], "name": name, "id": name,
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        let (status, kept) = post_as(
+            &state,
+            "red@wire.test",
+            &format!("/api/games/{name}/keep"),
+            serde_json::json!({ "seat": 0, "card": 1 }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{kept}");
+
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let both = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED);
+        session.set_run_seats(both.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session
+            .set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED).seat_provenance());
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
+        store.write_if_version(Doc::Record, name, &finished, Some(version)).expect("the finished record");
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
     /// **A finished or faulted game answers EVERY caller with what is true of
     /// the GAME, not with whose turn it is** (review I1).
     ///
@@ -4574,7 +4638,10 @@ mod tests {
             ranking.windows(2).all(|w| w[0]["value"].as_i64() >= w[1]["value"].as_i64()),
             "the ranking is best first"
         );
-        assert!(ok["stream_seed"].is_string(), "a u64 is a STRING on this wire");
+        assert!(
+            ok.get("stream_seed").is_none(),
+            "the stream key is off the wire (finding A1): it inverted to the setup seed: {ok}"
+        );
 
         // **Exactly one row is the chosen move, and it is not necessarily row
         // 0.** Ties at the top are broken by a keyed draw — `tied_at_top`
@@ -4666,40 +4733,87 @@ mod tests {
         assert!(bad["error"].as_str().unwrap_or_default().contains("evnt"));
     }
 
-    /// **`why` accounts for a move a bot actually played, and says under what.**
-    ///
-    /// The provenance is not decoration: an account with no claim attached is
-    /// arithmetic about nothing. The reconstruction is `account_parts`' — this
-    /// crate re-derives no part of the honesty gate, so a move that did not
-    /// reproduce would have refused before reaching here.
+    /// **`why` is served at the REQUESTER's visibility** (finding B1): while
+    /// the bot's starting order is hidden from the caller the account is
+    /// WITHHELD — the move played and the claim, and nothing the search found
+    /// — for the opponent and for a spectator alike (Review Focus 2, 3); once
+    /// the game is over the full account is served, the bot's FIRST move
+    /// included (Review Focus 1: visibility is a fact about NOW), with no key
+    /// in the claim and the forced fact on the account. The reconstruction is
+    /// `account_parts`' — this crate re-derives no part of the honesty gate.
     #[tokio::test]
-    async fn why_accounts_for_a_bot_move_under_a_named_claim() {
-        let router = live_router();
+    async fn why_is_withheld_while_the_bots_starting_order_is_hidden_and_served_once_it_is_public() {
+        let state = Arc::new(AppState::in_memory());
+        let router = app(Arc::clone(&state));
         // Seat 0 is the bot AND the start seat, so `create`'s `pump_bots` plays
-        // a whole bot turn before anything else happens.
-        a_game(&router, "explains", &[0]).await;
-        let (status, body) = call(&router, "GET", "/api/games/explains/why", None).await;
+        // a whole bot turn before anything else happens; the caller holds seat 1.
+        a_game(&router, "withheld", &[0]).await;
+        {
+            // The premise, read off the engine's own view for seat 1.
+            let handle = state.games.handle("withheld").expect("a playing game");
+            let repl = state.games.lock_game(&handle, "withheld").expect("the lock");
+            let view = yokohama_core::game::observe(repl.session.state(), yokohama_core::PlayerId::new(1))
+                .expect("seat 1's view");
+            assert!(
+                view.players[0].hand.contains(&yokohama_core::HandCard::HiddenStartingOrder),
+                "premise: after one bot turn its starting order is a masked slot in its hand",
+            );
+        }
+        let (status, body) = call(&router, "GET", "/api/games/withheld/why", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body["refusal"].is_null(), "a bot moved: {body}");
-        let ok = &body["ok"];
+        assert!(body["ok"].is_null() && body["refusal"].is_null(), "{body}");
+        let w = &body["withheld"];
+        assert_eq!(w["provenance"]["seat"], 0);
+        assert!(!w["provenance"]["contestant"].as_str().unwrap_or_default().is_empty(), "names the contestant");
+        assert!(!w["text"].as_str().unwrap_or_default().is_empty(), "the move PLAYED is public");
+        assert_eq!(w["reason"], explain::WITHHELD_REASON);
+        let text = body.to_string();
+        for key in [
+            "decision_seed", "explanation", "ranking", "counters", "continuation", "forced",
+            "search_hit_ply_cap", "stream_seed",
+        ] {
+            assert!(!text.contains(&format!("\"{key}\"")), "{key} reached the wire while withheld: {text}");
+        }
+        // A spectator reads what the opponent reads: the table has no lock, so
+        // a stranger is admitted at `playing` as a watcher.
+        let (status, seen) = get_as(&state, "watcher@wire.test", "/api/games/withheld/why").await;
+        assert_eq!(status, StatusCode::OK, "{seen}");
+        assert!(seen["withheld"].is_object() && seen["ok"].is_null(), "{seen}");
 
+        // Public: a finished game — the whole account, and no key.
+        let over = a_finished_vs_bot_game("explains").await;
+        let (status, body) = get_as(&over, "red@wire.test", "/api/games/explains/why").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["withheld"].is_null() && body["refusal"].is_null(), "a bot moved and the game is over: {body}");
+        let ok = &body["ok"];
         let p = &ok["provenance"];
         assert!(!p["contestant"].as_str().unwrap_or_default().is_empty(), "names the contestant");
-        assert_eq!(p["seat"], 0);
-        assert!(
-            p["decision_seed"].as_str().unwrap_or_default().starts_with("0x"),
-            "the pump's own key, as a string: {p}"
-        );
+        assert_eq!(p["seat"], 1);
+        assert!(p.get("decision_seed").is_none(), "the pump's key is off the wire (finding B1): {p}");
+        assert!(p.get("forced").is_none() && ok["forced"].is_boolean(), "the forced fact rides the account: {ok}");
         assert!(p["evaluator_version"].as_u64().is_some());
-
         let terms = ok["explanation"]["terms"].as_array().expect("terms");
+        assert_eq!(terms.len(), 34, "every feature is reported, including the zero ones");
         let sum: i64 = terms.iter().map(|t| t["product"].as_i64().expect("i64")).sum();
         let terminal = ok["explanation"]["terminal"]["value"].as_i64().unwrap_or(0);
         assert_eq!(sum + terminal, ok["explanation"]["total"].as_i64().expect("a total"));
-
         let counters = ok["counters"].as_array().expect("a searching contestant reports counters");
         assert_eq!(counters.len(), 15, "the whole counter surface, not a chosen two of it");
         assert!(counters.iter().all(|c| c["group"] != "ungrouped"), "{counters:?}");
+        assert!(!ok["continuation"].as_array().expect("a line").is_empty(), "the continuation is served");
+
+        // The bot's FIRST move, decided while its card was hidden: served now.
+        let mut first = None;
+        for n in 0..40usize {
+            let (_, b) = get_as(&over, "red@wire.test", &format!("/api/games/explains/why?event={n}")).await;
+            assert!(b["withheld"].is_null(), "event {n} withheld at a finished game: {b}");
+            if b["ok"].is_object() {
+                first = Some((n, b));
+                break;
+            }
+        }
+        let (n, b) = first.expect("a bot move within the first 40 events");
+        assert_eq!(b["ok"]["provenance"]["index"], n);
     }
 
     /// **A locked session refuses a SEARCH and still serves a PROJECTION.**

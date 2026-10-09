@@ -102,6 +102,7 @@ import type {
   TracksPanel,
   WhyOk,
   WhyResponse,
+  WhyWithheld,
 } from "../types";
 
 import areas from "./areas.json";
@@ -192,6 +193,7 @@ import indexTechs from "./index_techs.json";
 import result from "./result.json";
 import suggest from "./suggest.json";
 import why from "./why.json";
+import whyWithheld from "./why_withheld.json";
 import whyRefusals from "./why_refusals.json";
 import whyRefused from "./why_refused.json";
 import watching from "./watching.json";
@@ -445,6 +447,7 @@ const _seedCases: readonly { raw: string; ok: boolean }[] = seedCases;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
 const _whyRefused: Widen<WhyResponse> = whyRefused;
+const _whyWithheld: Widen<WhyResponse> = whyWithheld;
 const _whyRefusals: Widen<RefusalRow[]> = whyRefusals;
 const _indexOrders: Widen<IndexModel> = indexOrders;
 const _indexTechs: Widen<IndexModel> = indexTechs;
@@ -470,6 +473,8 @@ const _terminalStanding: Widen<Terminal> = explanationTerminal.terminal;
 const _suggestOk: Widen<SuggestOk> = suggest.ok;
 const _whyOk: Widen<WhyOk> = why.ok;
 const _whyProvenance: Widen<Provenance> = why.ok.provenance;
+const _whyWithheldHalf: Widen<WhyWithheld> = whyWithheld.withheld;
+const _whyWithheldProvenance: Widen<Provenance> = whyWithheld.withheld.provenance;
 // The ARRAYS rather than an element: `noUncheckedIndexedAccess` types `a[0]` as
 // `T | undefined`, and an assertion that tolerates `undefined` checks nothing
 // about the element. Checking the array checks every element's shape.
@@ -564,8 +569,8 @@ void [
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
-  _suggest, _why, _whyRefused, _whyRefusals,
-  _suggestOk, _whyOk, _whyProvenance, _whyRanked, _suggestTerm, _refusedRow,
+  _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
+  _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
   _terminal, _terminalStanding,
   _chat, _chatAfter, _chatPost, _chatPostWatcher, _houseChat, _houseChatPost,
@@ -687,19 +692,20 @@ const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
 const SUGGEST_RESPONSE = ["ok", "refusal"] as const;
 const SUGGEST_OK = [
-  "seat", "text", "explanation", "continuation", "ranking", "stream_seed",
+  "seat", "text", "explanation", "continuation", "ranking",
   "search_hit_ply_cap", "tied_at_top",
 ] as const;
-const WHY_RESPONSE = ["ok", "refusal"] as const;
+const WHY_RESPONSE = ["ok", "withheld", "refusal"] as const;
 const WHY_OK = [
   "provenance", "text", "explanation", "continuation", "counters",
-  "search_hit_ply_cap", "ranking",
+  "search_hit_ply_cap", "ranking", "forced",
 ] as const;
+const WHY_WITHHELD = ["provenance", "text", "reason"] as const;
 const EXPLANATION = ["terms", "terminal", "total", "progress_ppm", "nonzero"] as const;
 const TERM = ["feature", "viewer_value", "opponent_value", "weight", "product"] as const;
 const PROVENANCE = [
   "contestant", "evaluator_version", "index", "seat",
-  "decision_seed", "forced", "recorded_version", "current_version",
+  "recorded_version", "current_version",
 ] as const;
 const RANKED = ["text", "value", "margin", "chosen"] as const;
 const REFUSAL_ROW = ["kind", "message"] as const;
@@ -758,6 +764,7 @@ const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
 const _so: KeysOf<SuggestOk, typeof SUGGEST_OK> = SUGGEST_OK;
 const _wr: KeysOf<WhyResponse, typeof WHY_RESPONSE> = WHY_RESPONSE;
 const _wo: KeysOf<WhyOk, typeof WHY_OK> = WHY_OK;
+const _ww: KeysOf<WhyWithheld, typeof WHY_WITHHELD> = WHY_WITHHELD;
 const _ex: KeysOf<Explanation, typeof EXPLANATION> = EXPLANATION;
 const _tm: KeysOf<Term, typeof TERM> = TERM;
 const _pr: KeysOf<Provenance, typeof PROVENANCE> = PROVENANCE;
@@ -786,7 +793,7 @@ const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk,
       _tv, _sh, _dv, _gl, _d4,
-      _sr, _so, _wr, _wo, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
+      _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
       _cg, _cm, _as, _aw, _tb, _sb, _pb, _fe, _fb];
 
@@ -822,6 +829,7 @@ export const KEYS = {
   suggestOk: SUGGEST_OK,
   whyResponse: WHY_RESPONSE,
   whyOk: WHY_OK,
+  whyWithheld: WHY_WITHHELD,
   explanation: EXPLANATION,
   term: TERM,
   provenance: PROVENANCE,
@@ -952,6 +960,7 @@ export const wire = {
   seedCases: seedCases as readonly { raw: string; ok: boolean }[],
   suggest: as<SuggestResponse>(suggest),
   why: as<WhyResponse>(why),
+  whyWithheld: as<WhyResponse>(whyWithheld),
   whyRefused: as<WhyResponse>(whyRefused),
   whyRefusals: as<RefusalRow[]>(whyRefusals),
   indexOrders: as<IndexModel>(indexOrders),

@@ -3,5 +3,6 @@
   "refusal": {
     "kind": "foreign_bot",
     "message": "This move was made by V2, which this server doesn't run: v2-padded is a named research identity for arena weight comparisons, not available as a CLI bot"
-  }
+  },
+  "withheld": null
 }

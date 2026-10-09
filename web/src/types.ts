@@ -766,9 +766,10 @@ export interface ArtManifest {
 // ---- the explanation surface (M3) ----------------------------------------
 //
 // `GET /api/games/{id}/suggest` and `GET /api/games/{id}/why`. Both answer 200
-// with exactly one of `ok` / `refusal` non-null: a refusal is the ANSWER (the
-// last move was a human's; the game is over), not a client error, and the
-// browser renders the sentence.
+// with exactly one of `ok` / `refusal` non-null (`why`: one of `ok` /
+// `withheld` / `refusal`, security S1a): a refusal is the ANSWER (the last
+// move was a human's; the game is over), not a client error, and the browser
+// renders the sentence.
 //
 // Every number here is `i64` on the server and arrives as a JSON number. That
 // is safe and the seed is not, because a contribution is bounded by the weight
@@ -857,10 +858,6 @@ export interface Provenance {
   /** The log's printed 0-based event index. */
   index: number;
   seat: PlayerId;
-  /** The key the bot's own pump decided under, hex, as a string. */
-  decision_seed: string;
-  /** The engine offered exactly one move here. */
-  forced: boolean;
   recorded_version: number | null;
   current_version: number;
 }
@@ -886,8 +883,6 @@ export interface SuggestOk {
    *  runner-ups is one of the things a terminal genuinely cannot do, so the
    *  presentation decision is the client's rather than the server's. */
   ranking: Ranked[];
-  /** A `u64` as a STRING, like every other seed on this wire. */
-  stream_seed: string;
   /** The ply guard stopped SOME continuation in this search — not necessarily
    *  the one in `continuation`. The counter carries no identity. */
   search_hit_ply_cap: boolean;
@@ -909,10 +904,24 @@ export interface WhyOk {
   counters: Counter[] | null;
   search_hit_ply_cap: boolean;
   ranking: Ranked[];
+  /** The engine offered exactly one move here — on the ACCOUNT, not the
+   *  claim: a fact about the mover's hand, withheld with the rest. */
+  forced: boolean;
 }
 
+/** The withheld half (finding B1): the move played, the claim, and the one
+ *  sentence — nothing the search found, which is a function of the mover's
+ *  hidden starting order until that card is public or the game is over. */
+export interface WhyWithheld {
+  provenance: Provenance;
+  text: string;
+  reason: string;
+}
+
+/** Exactly one of the three is non-null; `withheld` and `refusal` are ANSWERS. */
 export interface WhyResponse {
   ok: WhyOk | null;
+  withheld: WhyWithheld | null;
   refusal: RefusalRow | null;
 }
 

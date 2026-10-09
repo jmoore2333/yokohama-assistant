@@ -250,6 +250,76 @@ fn word_line(line: &[Move], state: &GameState, rules: &Rules) -> Vec<String> {
     line.iter().map(|m| yokohama_cli::describe::describe_move(m, state, rules)).collect()
 }
 
+/// `why`'s continuation, worded with its fulfil lines masked as [`rank_all`]
+/// masks the ranking's rows (finding B1's third channel): the FIRST step is the
+/// move PLAYED — public, never masked, a fulfil included — and a later
+/// `FulfillOrder` step names a card still in the mover's hand, so it reads as
+/// [`MASKED_FULFILL`].
+fn word_line_masked(line: &[Move], state: &GameState, rules: &Rules) -> Vec<String> {
+    line.iter()
+        .enumerate()
+        .map(|(i, m)| {
+            if i > 0 && matches!(m, Move::FulfillOrder { .. }) {
+                MASKED_FULFILL.to_string()
+            } else {
+                yokohama_cli::describe::describe_move(m, state, rules)
+            }
+        })
+        .collect()
+}
+
+/// Whether the mover's account may be served to the requester (the 2026-10-08
+/// finding B1). The account — the feature table and its total, the
+/// continuation, the ranking's values, the counters, the forced fact — is a
+/// function of the mover's HAND: while the mover's starting order is hidden
+/// from the requester, every one of them narrows the unseen cards to it (the
+/// review read the card off four feature values from one payload). So the
+/// account is WITHHELD until the card is public or the game is over, and the
+/// `withheld` half carries the move and the claim alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Public,
+    Withheld,
+}
+
+/// [`Visibility`] of `mover`'s account to a requester who holds `held` (empty
+/// for a spectator) at `now` — **the engine's own view, never a rule restated
+/// here**: `Withheld` exactly while `observe(now, seat)` for the requester
+/// shows a `HiddenStartingOrder` slot in the mover's hand and the game is not
+/// over. A holder of the mover's seat reads their own hand; a spectator reads
+/// as any seat that is not the mover's, since every non-mover seat sees the
+/// same masked hand (`observe.rs`); at game over everything is on the table —
+/// the record route serves the whole record, seed included, from there. A
+/// view the engine refuses is a view that shows nothing: withheld.
+pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Visibility {
+    if yokohama_core::is_game_over(now) {
+        return Visibility::Public;
+    }
+    if held.contains(&mover) {
+        return Visibility::Public;
+    }
+    let as_seat = held
+        .first()
+        .copied()
+        .or_else(|| now.players.iter().map(|p| p.id).find(|id| *id != mover));
+    let Some(as_seat) = as_seat else { return Visibility::Withheld };
+    match yokohama_core::game::observe(now, as_seat) {
+        Ok(view) => {
+            let masked = view
+                .players
+                .iter()
+                .find(|p| p.id == mover)
+                .is_some_and(|p| p.hand.contains(&yokohama_core::HandCard::HiddenStartingOrder));
+            if masked { Visibility::Withheld } else { Visibility::Public }
+        }
+        Err(_) => Visibility::Withheld,
+    }
+}
+
+/// The one sentence the withheld half carries.
+pub const WITHHELD_REASON: &str = "the bot's account is withheld while its starting order is hidden from you — \
+                                   it is served once that card is public or the game is over";
+
 /// The fifteen search counters, named exactly as every other instrument names
 /// them.
 ///
@@ -291,6 +361,13 @@ fn counters(stats: &yokohama_core::game::lookahead::SearchStats) -> Vec<Counter>
 
 /// `GET /api/games/{id}/suggest` — what the production contestant would play on
 /// the viewing seat's own view.
+///
+/// **No stream key** (security S1a, finding A1): the key this press was made
+/// under was served as a string and was a bijective fold of the setup seed —
+/// the first member of the hidden set — so any seat holder inverted it from
+/// one request. The CLI's derivation is one-way since the same cycle and the
+/// web wire carries nothing of it; the press is still byte-identical on
+/// repeat, which is the property a reader could use the key for.
 #[derive(Debug, Clone, Serialize)]
 pub struct Suggest {
     pub seat: PlayerId,
@@ -305,10 +382,6 @@ pub struct Suggest {
     /// the terminal shows it that way.
     pub continuation: Vec<String>,
     pub ranking: Vec<Ranked>,
-    /// The stream this press was keyed by, as a STRING — a `u64` past 2^53 is
-    /// not safe as a JSON number in a browser, the same rule the setup seed
-    /// already follows.
-    pub stream_seed: String,
     /// The ply guard stopped SOME continuation in this search — **not
     /// necessarily the one in `continuation`**. The counter carries no identity
     /// and the trace does not record why a line ended, so this says the weaker
@@ -328,7 +401,6 @@ impl Suggest {
             // `suggest` runs on YOUR seat's view and ranks YOUR moves, so the
             // candidates enumerate a hand already on your own screen.
             ranking: rank_all(&s.ranking, &s.mv, state, rules, HandVisibility::Own),
-            stream_seed: s.stream_seed.to_string(),
             search_hit_ply_cap: s.search_hit_ply_cap,
             tied_at_top: s.tied_at_top(),
         }
@@ -336,7 +408,9 @@ impl Suggest {
 }
 
 /// What the reconstruction claims, so the arithmetic beside it has a claim
-/// attached.
+/// attached — and NOTHING the search found: no key (the pump's
+/// `decision_seed` inverted to the bot's stream seed, finding B1) and no
+/// forced fact, which is the account's (`WhyOk::forced`).
 #[derive(Debug, Clone, Serialize)]
 pub struct Provenance {
     /// The contestant, as `Contestant::echo()` composes it — `name@vN` or
@@ -358,27 +432,34 @@ pub struct Provenance {
     /// The log's printed 0-based event index.
     pub index: usize,
     pub seat: PlayerId,
-    /// The key the bot's own pump decided under, as a STRING.
-    pub decision_seed: String,
-    /// The engine's legal list held exactly one move at the decision state, so
-    /// the valuation below is an account of a move nothing else was competing
-    /// with.
-    pub forced: bool,
     pub recorded_version: Option<u32>,
     pub current_version: u32,
 }
 
 /// `GET /api/games/{id}/why` — a bot move, reconstructed by replay.
 ///
-/// **Exactly one of `ok` and `refusal` is non-null**, and a refusal is a 200:
-/// `why` declining because the last move was a human's is the ANSWER, not a
-/// client error. The twelve typed refusals are data the browser renders, and
-/// M2.5's finding was that a branch nobody has ever seen is exactly where a
-/// defect lives.
+/// **Exactly one of `ok`, `withheld` and `refusal` is non-null**, and neither
+/// of the last two is a 4xx: `why` declining because the last move was a
+/// human's is the ANSWER, and so is `why` withholding the account while the
+/// mover's starting order is hidden from the requester (finding B1;
+/// [`Visibility`]). The twelve typed refusals are data the browser renders,
+/// and M2.5's finding was that a branch nobody has ever seen is exactly where
+/// a defect lives.
 #[derive(Debug, Clone, Serialize)]
 pub struct Why {
     pub ok: Option<WhyOk>,
+    pub withheld: Option<WhyWithheld>,
     pub refusal: Option<RefusalDto>,
+}
+
+/// The withheld half: the move played, the claim, and the sentence. Nothing
+/// the search found — pinned as bytes by
+/// `a_withheld_account_is_the_same_bytes_whatever_the_search_found`.
+#[derive(Debug, Clone, Serialize)]
+pub struct WhyWithheld {
+    pub provenance: Provenance,
+    pub text: String,
+    pub reason: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -392,29 +473,49 @@ pub struct WhyOk {
     pub counters: Option<Vec<Counter>>,
     pub search_hit_ply_cap: bool,
     pub ranking: Vec<Ranked>,
+    /// The engine's legal list held exactly one move at the decision state,
+    /// so the valuation above is an account of a move nothing else was
+    /// competing with. On the ACCOUNT since security S1a: a fact about the
+    /// mover's hand (a fulfil in the list is a card in the hand), withheld with
+    /// the rest.
+    pub forced: bool,
 }
 
 impl Why {
-    pub fn granted(a: &WhyAccount, rules: &Rules) -> Self {
-        let e: &DecisionExplanation = &a.explain;
-        Self {
-            ok: Some(WhyOk {
-                provenance: Provenance::of(&a.reconstruction),
-                text: yokohama_cli::describe::describe_move(&a.mv, &a.state, rules),
-                explanation: Explanation::of(&e.explanation),
-                continuation: word_line(&e.continuation, &a.state, rules),
-                counters: e.stats.as_ref().map(counters),
-                search_hit_ply_cap: e.hit_ply_cap,
-                // `why` accounts for a move ANOTHER seat made, and the same
-                // server serves that seat's hand as `cards: Vec::new()`.
-                ranking: rank_all(&e.ranking, &a.mv, &a.state, rules, HandVisibility::Masked),
-            }),
-            refusal: None,
+    /// The account at `visibility` ([`visibility_of`] is the route's reading).
+    pub fn account(a: &WhyAccount, rules: &Rules, visibility: Visibility) -> Self {
+        let provenance = Provenance::of(&a.reconstruction);
+        let text = yokohama_cli::describe::describe_move(&a.mv, &a.state, rules);
+        match visibility {
+            Visibility::Withheld => Self {
+                ok: None,
+                withheld: Some(WhyWithheld { provenance, text, reason: WITHHELD_REASON }),
+                refusal: None,
+            },
+            Visibility::Public => {
+                let e: &DecisionExplanation = &a.explain;
+                Self {
+                    ok: Some(WhyOk {
+                        provenance,
+                        text,
+                        explanation: Explanation::of(&e.explanation),
+                        continuation: word_line_masked(&e.continuation, &a.state, rules),
+                        counters: e.stats.as_ref().map(counters),
+                        search_hit_ply_cap: e.hit_ply_cap,
+                        // `why` accounts for a move ANOTHER seat made, and the same
+                        // server serves that seat's hand as `cards: Vec::new()`.
+                        ranking: rank_all(&e.ranking, &a.mv, &a.state, rules, HandVisibility::Masked),
+                        forced: a.reconstruction.forced,
+                    }),
+                    withheld: None,
+                    refusal: None,
+                }
+            }
         }
     }
 
     pub fn refused(r: &Refusal) -> Self {
-        Self { ok: None, refusal: Some(RefusalDto::of(r)) }
+        Self { ok: None, withheld: None, refusal: Some(RefusalDto::of(r)) }
     }
 
     /// A locked session. Not one of `why`'s twelve — the lockdown is the
@@ -423,6 +524,7 @@ impl Why {
     pub fn locked(reason: String) -> Self {
         Self {
             ok: None,
+            withheld: None,
             refusal: Some(RefusalDto {
                 kind: "locked",
                 message: format!(
@@ -446,6 +548,7 @@ impl Why {
     pub fn foreign(played: &str, why: &str) -> Self {
         Self {
             ok: None,
+            withheld: None,
             refusal: Some(RefusalDto {
                 kind: FOREIGN_BOT_KIND,
                 message: format!("This move was made by {played}, which this server doesn't run: {why}"),
@@ -505,8 +608,6 @@ impl Provenance {
             evaluator_version: yokohama_core::game::eval::EVAL_IMPL_VERSION,
             index: r.index,
             seat: r.seat,
-            decision_seed: format!("{:#018x}", r.decision_seed),
-            forced: r.forced,
             recorded_version: r.recorded_version,
             current_version: r.current_version,
         }
@@ -903,6 +1004,173 @@ mod tests {
             "`suggest` ranks YOUR moves from YOUR view — your own hand is already on your screen",
         );
         assert_ne!(own[1].text, masked[1].text, "the two modes must actually differ");
+    }
+
+    /// A vs-bot game built in process under a fixed bot seed (the corpus's
+    /// shape, `wire_fixtures.rs`'s `constructed()`): seat 0 the production
+    /// bot, seat 1 a person; `pumped` is how many times the bot pump runs —
+    /// ONCE stops at the person's first turn with the bot's starting order
+    /// surely unfulfilled, `usize::MAX` plays the game out with both seats
+    /// pumped as bots.
+    fn vs_bot(pumped: usize) -> (yokohama_cli::repl::Repl, yokohama_cli::bot::BotSeats) {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, StartingOrderChoice};
+        const SEED: u64 = 20_260_831;
+        const BOT_SEED: u64 = 0x4649_5854_5552_4553;
+        let seats = if pumped == usize::MAX {
+            vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)]
+        } else {
+            vec![Some(PROVISIONAL_DEFAULT_BOT), None]
+        };
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        let mut session = Session::new_sim(config, SEED, choices, Rules::standard()).expect("a game");
+        let bots = BotSeats::new(seats, BOT_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..pumped.min(400) {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        (repl, bots)
+    }
+
+    /// `why`'s account of `event` (the last bot move when `None`) over the
+    /// pumped game, as the route builds it.
+    fn account_of(
+        repl: &yokohama_cli::repl::Repl,
+        bots: &yokohama_cli::bot::BotSeats,
+        event: Option<usize>,
+    ) -> WhyAccount {
+        yokohama_cli::why::account_parts(repl.session.mode, repl.session.record(), repl.session.rules(), bots, event)
+            .unwrap_or_else(|r| panic!("a bot move to account for: {r}"))
+    }
+
+    /// **Visibility is the engine's own view** (finding B1): withheld while
+    /// the requester's view masks the mover's starting order, public to the
+    /// mover's own seat, public once the card is out of the hand, and public
+    /// at game over whatever the hand holds.
+    #[test]
+    fn visibility_is_withheld_exactly_while_the_requesters_view_masks_the_movers_card() {
+        let (repl, _) = vs_bot(1);
+        let now = repl.session.state();
+        let mover = PlayerId::new(0);
+        let view = yokohama_core::game::observe(now, PlayerId::new(1)).expect("seat 1's view");
+        assert!(
+            view.players[0].hand.contains(&yokohama_core::HandCard::HiddenStartingOrder),
+            "premise: after one bot turn the bot's starting order is a masked slot in its hand",
+        );
+        assert_eq!(visibility_of(now, mover, &[PlayerId::new(1)]), Visibility::Withheld, "the opponent");
+        assert_eq!(visibility_of(now, mover, &[]), Visibility::Withheld, "a spectator");
+        assert_eq!(visibility_of(now, mover, &[PlayerId::new(0)]), Visibility::Public, "the mover's own seat");
+        assert_eq!(
+            visibility_of(now, mover, &[PlayerId::new(1), PlayerId::new(0)]),
+            Visibility::Public,
+            "a holder of both seats holds the mover's",
+        );
+        // The card out of the hand — fulfilled, in the engine's representation
+        // `completed_orders` — and the same view no longer masks it.
+        let mut fulfilled = now.clone();
+        let card = fulfilled.players[0].starting_order.expect("a Keep-shaped seat records its card");
+        fulfilled.players[0].order_cards_in_hand.retain(|c| *c != card);
+        fulfilled.players[0].completed_orders.push(card);
+        assert_eq!(visibility_of(&fulfilled, mover, &[PlayerId::new(1)]), Visibility::Public, "a public card");
+        // Game over: public, whatever the hand still holds.
+        let (over, _) = vs_bot(usize::MAX);
+        assert!(over.session.is_over(), "premise: the both-bot pump finishes the game");
+        for seat in [0u8, 1] {
+            assert_eq!(visibility_of(over.session.state(), PlayerId::new(seat), &[]), Visibility::Public, "seat {seat} at game over");
+        }
+    }
+
+    /// **A withheld account is the same bytes whatever the search found**
+    /// (the independence pin, finding B1): two accounts of the same move that
+    /// differ in every card-dependent field — the feature table, the total,
+    /// the ranking, the continuation, the counters, the decision seed, the
+    /// forced fact — serialize to one `withheld` payload. What survives is
+    /// the move, the claim and the sentence.
+    #[test]
+    fn a_withheld_account_is_the_same_bytes_whatever_the_search_found() {
+        let (repl, bots) = vs_bot(1);
+        let rules = Rules::standard();
+        let a = account_of(&repl, &bots, None);
+        let mut b = account_of(&repl, &bots, None);
+        b.explain.explanation.total += 1000;
+        b.explain.ranking.clear();
+        b.explain.continuation.clear();
+        b.explain.stats = None;
+        b.explain.hit_ply_cap = !b.explain.hit_ply_cap;
+        b.reconstruction.decision_seed ^= 0xDEAD_BEEF;
+        b.reconstruction.forced = !b.reconstruction.forced;
+        let one = serde_json::to_string(&Why::account(&a, &rules, Visibility::Withheld)).expect("json");
+        let two = serde_json::to_string(&Why::account(&b, &rules, Visibility::Withheld)).expect("json");
+        assert_eq!(one, two, "the withheld payload depends on something the search found");
+        // And the public shape of the same two accounts DOES differ — the
+        // anti-vacuity: the fields above are fields the full account carries.
+        let one = serde_json::to_string(&Why::account(&a, &rules, Visibility::Public)).expect("json");
+        let two = serde_json::to_string(&Why::account(&b, &rules, Visibility::Public)).expect("json");
+        assert_ne!(one, two, "premise: the public account carries what the mutation moved");
+        let withheld: serde_json::Value = serde_json::from_str(
+            &serde_json::to_string(&Why::account(&a, &rules, Visibility::Withheld)).expect("json"),
+        )
+        .expect("a value");
+        assert!(withheld["ok"].is_null() && withheld["refusal"].is_null());
+        assert_eq!(withheld["withheld"]["reason"], WITHHELD_REASON);
+        assert_eq!(withheld["withheld"]["provenance"]["seat"], 0);
+        for key in ["decision_seed", "forced"] {
+            assert!(withheld["withheld"]["provenance"].get(key).is_none(), "{key} rides the claim: {withheld}");
+        }
+    }
+
+    /// **The served continuation masks its fulfil lines as the ranking masks
+    /// its rows** (finding B1's third channel, on the public shape): a
+    /// `FulfillOrder` step past the first words as [`MASKED_FULFILL`]; the
+    /// first step — the move PLAYED — is never masked, even when it is a
+    /// fulfil. Found by scanning a finished game for a line that fulfils
+    /// later than it starts, which the anti-vacuity asserts.
+    #[test]
+    fn the_served_continuation_masks_a_later_fulfil_and_never_the_played_move() {
+        let (over, bots) = vs_bot(usize::MAX);
+        let rules = Rules::standard();
+        let record = over.session.record();
+        let mut later_fulfil = None;
+        let mut played_fulfil = None;
+        for n in 0..record.events.len() {
+            let Ok(a) = yokohama_cli::why::account_parts(over.session.mode, record, &rules, &bots, Some(n)) else { continue };
+            let line = &a.explain.continuation;
+            if later_fulfil.is_none() && line.iter().skip(1).any(|m| matches!(m, Move::FulfillOrder { .. })) {
+                later_fulfil = Some(a);
+                continue;
+            }
+            if played_fulfil.is_none() && matches!(a.mv, Move::FulfillOrder { .. }) {
+                played_fulfil = Some(a);
+            }
+            if later_fulfil.is_some() && played_fulfil.is_some() {
+                break;
+            }
+        }
+        let a = later_fulfil.expect("some bot line in a finished game fulfils later than it starts");
+        let out = Why::account(&a, &rules, Visibility::Public);
+        let ok = out.ok.expect("public");
+        let raw: Vec<String> = a.explain.continuation.iter().map(|m| yokohama_cli::describe::describe_move(m, &a.state, &rules)).collect();
+        assert_eq!(ok.continuation.len(), raw.len());
+        assert_eq!(ok.continuation[0], raw[0], "step 1 is the move played, never masked");
+        let masked: Vec<usize> = (1..raw.len()).filter(|&i| ok.continuation[i] == MASKED_FULFILL).collect();
+        assert!(!masked.is_empty(), "no later fulfil was masked: {:?}", ok.continuation);
+        for i in masked {
+            assert!(matches!(a.explain.continuation[i], Move::FulfillOrder { .. }), "step {i} masked but not a fulfil");
+            assert_ne!(ok.continuation[i], raw[i], "the raw wording names the card");
+        }
+        if let Some(a) = played_fulfil {
+            let ok = Why::account(&a, &rules, Visibility::Public).ok.expect("public");
+            assert_eq!(ok.text, ok.continuation[0], "a played fulfil is worded in full at step 1");
+            assert_ne!(ok.continuation[0], MASKED_FULFILL);
+        }
     }
 
     /// The sample set is complete, distinct, and each sample really is the

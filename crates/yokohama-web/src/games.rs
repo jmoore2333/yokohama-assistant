@@ -1668,6 +1668,7 @@ mod tests {
         assert_eq!(is_bot, [false, true], "the panel's badge sits on the seat `bots` labels");
         let foreign_why = serde_json::json!({
             "ok": null,
+            "withheld": null,
             "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run: {why}") },
         });
         // Event 4 is a move seat 1 made (`a_finished_foreign_game_opens_scores_
