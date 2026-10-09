@@ -29,8 +29,8 @@ seven times the longest game anyone has played here), replays through the core P
 (`replay_strict_with(.., MoveCheck::Predicate)`, so an admitted replay costs tens of milliseconds whatever the
 record's families), and the archive route answers a retry of a filed record before any replay and refuses a body
 over 512 KiB. (2) `check_pair_with` also refuses what the engine would — an impossible configuration, a table
-whose seats disagree with the record's bots, a locked-down record, a key the record does not have — and the route
-refuses a pair that is not the browser's own local game. (3) The directory archive counts a caller's records and
+whose seats disagree with the record's bots, a locked-down record, a key the record does not have, a bot this
+server does not run. (3) The directory archive counts a caller's records and
 bytes under `browser/<caller>/` before every put (256 records, 128 MiB) and refuses with a 507 the outbox shows
 and retries. (4) The NAS adapter runs every dispatch on the blocking pool and the five replay routes behind a
 two-permit gate with a two-second bounded wait, then 503 `Retry-After: 1`. (5) The CLI's `Session` keeps a
@@ -71,15 +71,17 @@ spec's §9 by Task 8.
 - **D-1 — the predicate wiring's catcher is a cost bound, and it is the only one it can have.** The core PR proved
   `replay_strict_with(.., Predicate)` accepts exactly what `replay_strict` accepts, so no functional cell can tell
   a `Predicate` fold from a `Listed` one. The catcher is a DEBUG-profile ceiling over the committed cap-sized
-  spread fixture (Task 1): under the predicate the 4,096-event replay folds in seconds; under the materialized
-  list its 2,463 passing turns at the 442,368-move family run to minutes. The bound is MEASURED in the before
-  review and set at five times the predicate's reading.
+  spread fixture (Task 1): under the predicate the 4,096-event replay folds in under a second; under the materialized
+  list the 235 of its positions that are seat 0's Movement decisions at the 442,368-move family run to
+  minutes (198 s in debug, measured). The bound is MEASURED in the before review and set at five times the
+  predicate's reading (0.55 s → 3 s).
 - **D-2 — the cap-sized spread fixture is cut from the review's own worst-case body**, the first 4,096 events of
   `docs/temp/security-review-2026-10-08/worst-case/spread_4p_11_body.json` re-stamped with their terminal digest
   and paired with a four-seat hot-seat table of the browser's own player — committed under
   `crates/yokohama-web/tests/fixtures/` (outside the corpus, as the browser-played pair is, since it carries a
-  seed) with a provenance file naming the cut. The generator the review used (`spreader` in its
-  `sec_probe_cost.rs`) is quoted in the provenance file; it is not a test.
+  seed) with a provenance file naming the cut. The generator the review used (its `sec_probe_cost.rs`'s p3c probe)
+  is DESCRIBED in the provenance file from the review's report — the source was the reviewer's scratch and is
+  not retained; it is not a test.
 - **D-3 — A3's CLI edit is `session.rs` alone, and it is where the fix belongs** (spec correction 2 of §9.3 left the
   choice to this plan, "preferring the layer where a layer-side change is equal"): the record has ONE owner, the
   `Session`, and only it can keep checkpoints consistent across `apply`, `undo` and a rebuild; a layer-side ladder
@@ -131,10 +133,13 @@ spec's §9 by Task 8.
    seeded create beside an open seat is a 400 on both hosts" is now the replay's own row.
 6. **§2.1 D25's scope.** `check_pair_with` gains the record mirror (`deny_unknown_fields` over the engine record's
    eleven keys), the locked-down refusal, `validate_config` and `bots::seat_disagreement`; `archive_post` gains
-   the attribution rule (a browser's pair is its own local game: `created_by` and every human seat
-   `local@browser`) and the foreign-bot refusal; `tables::check_shape` gains the name rule on `name`. Recorded
-   residual: a record naming an unparseable controller beside a HUMAN seat is accepted, as the rebuild accepts it
-   (D-7).
+   the foreign-bot refusal; `tables::check_shape` gains the name rule on `name`. Two residuals recorded: a record
+   naming an unparseable controller beside a HUMAN seat is accepted, as the rebuild accepts it (D-7); and a
+   table document's `created_by` or seat address naming another person is accepted — the archive attributes a
+   file by the UPLOADER's folder (`browser/<caller>/`), and the names inside a document are data. (The plan's
+   draft refused such a pair as forged attribution; the pre-flight read that rule refusing the committed corpus's
+   own eight archive rows and the live replay's, which post `red@wire.test`'s hosted tables by design, so it was
+   dropped — F7.)
 7. **§2.1 A2, "every untrusted-record entry".** `check_pair_with` is the ONE entry (its two callers, the archive
    route and a restore); the resident rebuild, `/at` and `undo` fold the server's OWN records through the same
    predicate fold (Task 5) — not untrusted, the same cost.
@@ -203,8 +208,10 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
    the handle's lock across the read, so a parked read is answered by the finished record or by `RECORD_UNSAVED`,
    never by a running record. Task 5's parked-read double.
 5. **A Movement decision whose retreat family is the lone recover-nothing move** (no assistant on the board).
-   Listed as it is, `options_omitted` 0 — a singleton is not folded. Task 6's agreement cell asserts it at the
-   opening of every random game it walks.
+   Listed as it is, `options_omitted` 0 — a singleton is not folded. Task 6's agreement cell CONSTRUCTS it — the
+   opening, its first phase ended and nothing placed — because placement precedes movement within a turn, so the
+   opening's Movement decisions have the just-placed assistants on the board and a random walk all but never meets
+   a lone retreat (the pre-flight's F25: the draft said "the opening's every Movement decision", and the walk met none).
 
 ## Execution shape
 
@@ -226,17 +233,18 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 |---|---|---|
 | `backup::EVENT_CAP: usize = 4_096` · `backup::event_cap_sentence(events: usize) -> String` | `crates/yokohama-web/src/backup.rs`, `pub` | the most events a record may carry to be archived or restored, and the sentence the count refuses with (Task 1) |
 | `check_pair_with` replays through `yokohama_core::replay_strict_with(&rec, rules, MoveCheck::Predicate)` | `backup.rs:249` (and the no-rev arm, `:230`) | the predicate replay at the one untrusted-record entry (Task 1) |
-| `archive::Archive::holds(&self, prefix: &str, why: Why, id: &str, record_json: &str) -> bool` | `crates/yokohama-web/src/archive.rs`, a trait method with a default `false`; `DirArchive` reads its marker | whether the record at that path holds exactly these bytes — asked by `archive_post` BEFORE any replay (Task 1) |
+| `backup::check_pair_filed(record, table, rules, filed: &dyn Fn(&TableDoc, &GameRecord) -> Option<bool>) -> Result<PairFacts, String>` · `PairFacts.held: bool` · `check_pair_with` = `check_pair_filed(.., &|_, _| None)` | `backup.rs`, `pub(crate)` | the one validator with the archive route's hook, asked once every cheap check has passed and BEFORE the replay: `Some(over)` is a record the archive already holds, accepted with `held: true` and no replay (Task 1) |
+| `archive::Archive::holds(&self, prefix: &str, why: Why, id: &str, record_json: &str) -> bool` | `crates/yokohama-web/src/archive.rs`, a trait method with a default `false`; `DirArchive` reads its marker | whether the record at that path holds exactly these bytes — what `archive_post`'s `filed` hook asks, for both leaves, before the replay and after every cheap check (Task 1) |
 | `api::ARCHIVE_BODY_LIMIT = 512 << 10` · the 413 sentence `"the record is larger than 512 KiB"` | `crates/yokohama-web/src/api.rs:2246`, `:2256` | the body cap (Task 1) |
-| `backup::LOCKED_DOWN: &str` · `backup::RecordMirror` (private, `deny_unknown_fields` over the engine record's eleven keys) · `backup::NOT_A_LOCAL_PAIR: &str` | `backup.rs`, `api.rs` | D25's refusals: a locked-down record, an unknown key, a pair that is not the browser's own local game (Task 2) |
+| `backup::LOCKED_DOWN: &str` · `backup::RecordMirror` (private, `deny_unknown_fields` over the engine record's eleven keys) | `backup.rs` | D25's refusals: a locked-down record, an unknown key (Task 2) |
 | `archive::QUOTA_RECORDS: usize = 256` · `archive::QUOTA_BYTES: u64 = 128 << 20` · `archive::Quota { records, bytes }` · `Quota::PRODUCTION` · `DirArchive::with_quota(self, Quota) -> Self` · `PutError::Quota { records: usize, bytes: u64 }` · `api::archive_full_sentence(records, bytes) -> String` | `archive.rs`, `api.rs`, `pub` | the per-caller quota, counted under `browser/<caller>/` before a put; the route's 507 (Task 3) |
 | `api::is_replay_route(method: &str, path: &str) -> bool` · `api::REPLAY_ROUTES: [(&str, &str); 5]` | `api.rs`, `pub` | the five routes the NAS gates: `POST /api/archive`, `GET /api/games/{id}/at`, `…/at/{k}`, `…/suggest`, `…/why` (Task 4) |
 | `REPLAY_PERMITS: usize = 2` · `REPLAY_WAIT: Duration = 2 s` · `AppState { replay_gate: Arc<tokio::sync::Semaphore>, replay_wait: Duration, .. }` · `AppState::with_replay_gate(self, permits: usize, wait: Duration) -> Self` · `BUSY: &str` | `crates/yokohama-web/src/lib.rs`, `pub` (server feature) | the gate, its builder for cells, the 503's sentence; every dispatch on `spawn_blocking` (Task 4) |
 | `session::CHECKPOINT_EVERY: usize = 64` · `Session::fold_event(state: &GameState, ev: &RecordedEvent, rules: &Rules) -> Result<GameState, String>` · `Session::state_before(&mut self, k: usize) -> Result<GameState, String>` · the field `ladder: Vec<(usize, GameState)>` | `crates/yokohama-cli/src/session.rs`, `pub` | the predicate fold, the ladder, the replay-to-position every layer replay now takes (Task 5) |
 | `client::HistoricalFrame::at(repl: &mut Repl, k, viewer) -> Result<Self, String>` · `HistoricalFrame::run(repl: &mut Repl, from, to, viewer) -> Result<Vec<Self>, String>` | `crates/yokohama-web/src/client.rs:695`, `:707` | the two replay projections, through `state_before` (Task 5); `api::run` and `api::at_k` take `let mut repl` |
-| `client::OPTIONS_CAP: usize = 2_048` · `client::folded_legal(state, rules) -> (Vec<Move>, usize)` · `client::folded_legal_capped(state, rules, cap) -> (Vec<Move>, usize)` · `ClientState.options_omitted: usize` · `HistoricalFrame.options_omitted: usize` | `client.rs`, `pub(crate)` the functions, `pub` the fields | the folded, capped option list every frame is built from, and the count it leaves out (Task 6) |
+| `client::OPTIONS_CAP: usize = 4_096` · `client::folded_legal(state, rules) -> (Vec<Move>, usize)` · `client::folded_legal_capped(state, rules, cap) -> (Vec<Move>, usize)` · `ClientState.options_omitted: usize` · `HistoricalFrame.options_omitted: usize` | `client.rs`, `pub(crate)` the functions, `pub` the fields | the folded, capped option list every frame is built from, and the count it leaves out (Task 6) |
 | `SEED_NOT_SOLO` (JS) · `productionSeedRule(walk) -> Set<string>` · `skippedUnderProductionSeedRule(row, skipped) -> boolean` · `isProductionSeedCreate(row, skipped) -> boolean` · `result.skipped` | `worker/scripts/replay/exemptions.mjs`, `worker/scripts/live-replay.mjs` | the live replay's production-door rule (Task 7) |
-| the fixture pair `crates/yokohama-web/tests/fixtures/spread-4p-4096.json` + `.table.json` + `.provenance.json` | committed by the orchestrator at the pre-flight (Task 9 Step 1), read by Tasks 1, 5 and 6 | the cap-sized spread record (4,096 events, seed 11, 4P, the retreat family 442,368 at seat 0's Movement from event 1,633) and its four-seat hot-seat table, id `local-spread4096` |
+| the fixture pair `crates/yokohama-web/tests/fixtures/spread-4p-4096.json` + `.table.json` + `.provenance.json` | committed by the orchestrator at the pre-flight (Task 9 Step 1), read by Tasks 1, 5 and 6 | the cap-sized spread record (4,096 events, seed 11, 4P, the retreat family 442,368 at seat 0's Movement from event 419 on — 235 such positions, the last at 4,083; the record ends in seat 3's second additional-action phase) and its four-seat hot-seat table, id `local-spread4096` |
 | `tables::SEED_NOT_SOLO` | `crates/yokohama-web/src/tables.rs:756` | the sentence the JS constant is held to |
 | `yokohama_core::{families, iter_family, family_len, retreat_len, MoveFamily, is_listed_move, apply_move_unchecked, replay_from, state_at, replay_strict_with, MoveCheck, validate_config, MoveError}` | the crate root re-exports (`pub use game::*`) | what the layer and the CLI reach for; none is edited |
 | the route-cell helpers `live_router` (:2273), `call` (:2277), `a_game` (:2366), `request_as` (:2376), `post_as` (:2397), `get_as` (:2406), `start_as` (:2431), `play_turn` (:2509), `ENDED_SEED` (:3722), `a_finished_two_person_game` (:3736), `a_finished_vs_bot_game` (:3808), `WHO` (:1043) | `crates/yokohama-web/src/lib.rs` `mod tests` | what Tasks 3–6's route cells reuse |
@@ -307,19 +315,21 @@ corpus regeneration precedes it. Task 8 writes the documents the code changed. T
     /// The cap-sized spread record the pre-flight cut from the review's
     /// worst-case body: 4,096 events of a four-seat hot seat, seed 11, every
     /// seat spread across the board and never recovering, then passing turns
-    /// — seat 0's Movement decision offers 442,368 retreats from event 1,633 on.
+    /// — seat 0's Movement decision offers 442,368 retreats from event 419 on,
+    /// at 235 of the record's positions (the last at 4,083).
     const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
     const SPREAD_TABLE: &str = include_str!("../tests/fixtures/spread-4p-4096.table.json");
 
     /// The DEBUG-profile ceiling the predicate replay of [`SPREAD_RECORD`] is
     /// held under, in seconds — five times the pre-flight's reading on the Mac
-    /// (the plan's §"Review record" carries it). **It is the predicate
-    /// wiring's only catcher** (R-SEC2; the plan's D-1): the two strict
-    /// replays accept the same records by the core PR's proof, so no
-    /// functional cell can tell them apart — but the record's 2,463 passing
-    /// turns each materialize the 442,368-move family under `Listed`, which
-    /// runs to minutes in debug, and fold in milliseconds under `Predicate`.
-    const SPREAD_REPLAY_BOUND_SECS: u64 = 30;
+    /// (0.55 s alone, 0.35 s inside the parallel lib run; the plan's §"Review
+    /// record"), rounded up. **It is the predicate wiring's only catcher**
+    /// (R-SEC2; the plan's D-1): the two strict replays accept the same records
+    /// by the core PR's proof, so no functional cell can tell them apart — but
+    /// 235 of the record's positions, seat 0's Movement decisions, each
+    /// materialize the 442,368-move family under `Listed`, which took 198 s in
+    /// debug (measured), and fold in under a second under `Predicate`.
+    const SPREAD_REPLAY_BOUND_SECS: u64 = 3;
 
     /// **A record over the cap is refused by its COUNT, before anything is
     /// replayed** (finding A2; R-SEC8(f)). The probe carries TWO defects — one
@@ -422,33 +432,65 @@ corpus regeneration precedes it. Task 8 writes the documents the code changed. T
 (c) In `api.rs`'s `mod tests`, after the order cell (:3238):
 
 ```rust
+    /// An archive that claims to hold EVERYTHING — the instrument that reads
+    /// where the retry's answer sits: a record that could not replay is
+    /// answered `identical` through it only if the question was asked before
+    /// the replay.
+    struct HoldsEverything;
+
+    impl crate::archive::Archive for HoldsEverything {
+        fn put(
+            &self,
+            _prefix: &str,
+            _why: crate::archive::Why,
+            _id: &str,
+            _record_json: &str,
+            _table_json: &str,
+        ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+            unreachable!("a held record is answered before the put")
+        }
+        fn kind(&self) -> &'static str {
+            "dir"
+        }
+        fn holds(&self, _prefix: &str, _why: crate::archive::Why, _id: &str, _record_json: &str) -> bool {
+            true
+        }
+    }
+
     /// **A retry of a filed record is answered before any replay** (finding
-    /// A2): the archive is asked whether either leaf already holds these very
-    /// bytes under this caller, and a `true` is the 200 `identical` — the same
-    /// reply the put's once-rule gives — with nothing parsed past the table's
-    /// id and nothing replayed. The probe is a table that would FAIL the
-    /// checks: a retry sent beside a document that does not agree with the
-    /// record reads 200 `identical` after the first send landed, where the
-    /// same pair on a fresh archive reads the agreement's 400 — so the early
-    /// answer is proven by what it skips.
+    /// A2): once every cheap check has passed, the archive is asked whether
+    /// either leaf already holds these very bytes under this caller, and a
+    /// `true` is the 200 `identical` the put's once-rule gives — with no replay
+    /// paid. The proof: a record that does NOT replay reads 200 `identical`
+    /// through an archive that claims it, where the same pair on a real, empty
+    /// archive reads the replay's 400 — so the answer came before the replay.
+    /// And the cheap checks still speak first: the claiming archive beside a
+    /// table that disagrees reads the agreement's 400, which is what keeps the
+    /// committed corpus's `archive_400_table` row a 400 on every host, the
+    /// Worker's included.
     #[test]
     fn a_retry_of_a_filed_record_is_answered_identical_before_any_replay() {
+        let claims = games_with(std::sync::Arc::new(HoldsEverything));
         let dir = scratch("archive_retry");
-        let on = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
-        let disagreeing = keyed(PLAYED_TABLE, "players", 3.into());
-        let (status, v) = post_archive(&on, PLAYED_RECORD, &disagreeing);
-        assert_eq!(status, 400, "the control, on an archive holding nothing: {v}");
-        assert!(v["error"].as_str().unwrap_or("").starts_with("the table document does not agree"), "{v}");
-        let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
-        assert_eq!((status, v["identical"].as_bool()), (201, Some(false)), "{v}");
-        let (status, v) = post_archive(&on, PLAYED_RECORD, &disagreeing);
-        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "the retry, before the checks: {v}");
+        let real = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
+        let broken = replay_broken(PLAYED_RECORD);
+        let (status, v) = post_archive(&real, &broken, PLAYED_TABLE);
+        assert_eq!(status, 400, "the control, on a real archive holding nothing: {v}");
+        assert!(v["error"].as_str().unwrap_or("").starts_with("the record does not replay"), "{v}");
+        let (status, v) = post_archive(&claims, &broken, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
         assert_eq!(v["leaf"], "over");
         assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
-        // A different record under the same id still meets the checks and the
-        // once-rule: the early answer is for these bytes alone.
-        let (status, v) = post_archive(&on, &without(PLAYED_RECORD, "terminal_digest"), PLAYED_TABLE);
-        assert_eq!(status, 400, "{v}");
+        let disagreeing = keyed(PLAYED_TABLE, "start_seat", 1.into());
+        let (status, v) = post_archive(&claims, &broken, &disagreeing);
+        assert_eq!(status, 400, "the table's checks come first: {v}");
+        assert!(v["error"].as_str().unwrap_or("").starts_with("the table document does not agree"), "{v}");
+        // A real archive's retry of landed bytes is the same 200, through
+        // the same hook (`DirArchive::holds` reads the marker).
+        let (status, _) = post_archive(&real, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!(status, 201);
+        let (status, v) = post_archive(&real, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "{v}");
         std::fs::remove_dir_all(&dir).ok();
     }
 ```
@@ -470,7 +512,8 @@ reads nine. Replace the `probes` array's first two rows after the archive-off ro
 ```
 
 with, above the array, the over-cap record built from the spread fixture (the fixture's `include_str!`s are
-`backup.rs`'s; add the same two constants to `api.rs`'s `mod tests`):
+`backup.rs`'s; add `SPREAD_RECORD` alone to `api.rs`'s `mod tests` — `SPREAD_TABLE` is read by nothing there, and
+the lint gate refuses a dead constant):
 
 ```rust
         let over_cap = {
@@ -482,15 +525,19 @@ with, above the array, the over-cap record built from the spread fixture (the fi
 ```
 
 the array's type `[(&Games, String, String, &str); 9]`, and `assert_eq!(sentences.len(), 9, "nine checks, nine
-different sentences")`. The 413 row at :3152–3156 reads `ARCHIVE_BODY_LIMIT` as before (the constant moved), so
-only its sentence changes.
+different sentences")`; the comments "The nine checks, in order" and "The ninth, on its own" read "The checks, in
+order" and "The last, on its own" (counts that move twice). The 413 row at :3152–3156 is re-sized at the LITERAL
+and pins the constant — `assert_eq!(ARCHIVE_BODY_LIMIT, 512 << 10, "the cap R-SEC8(f) set (security S1b)");` above
+it, the probe `vec![b'x'; (512 << 10) + 1]`, the at-the-cap slice `&over[..512 << 10]` — because a probe sized
+from the constant lets M4 move it unseen (the pre-flight read M4 green that way); its sentence changes too.
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- event_cap spread_record
 holds_is_true retry_of_a_filed refusal_order 2>&1 | grep -E '^error|test result|panicked' | head` — `EVENT_CAP`,
 `event_cap_sentence` and `holds` are not found (one compile error blocks the lib); stub them (`EVENT_CAP`
 `usize::MAX`, the builder any sentence, `holds` returning `false` on the trait) to READ: (a) RED on the sentence
 (the replay's where the count's is wanted); (b) RED on the bound — **measured in the pre-flight: the `Listed`
-replay of the fixture in debug took N s** (the review record); (c) RED (`Accepted`); the retry cell RED (400 where
+replay of the fixture in debug took 198 s** (the review record; the predicate's 0.55 s alone, 0.35 s in the
+parallel lib run); (c) RED (`Accepted`); the retry cell RED (400 where
 200); the order cell RED on the 413 sentence.
 
 - [ ] **Step 3: The code.** In `backup.rs`, above `check_pair` (:157):
@@ -551,6 +598,66 @@ and the last check (:249):
         format!("the record does not replay: at event {}, {}", e.event_index, e.message)
     })?;
 ```
+
+`PairFacts` (:138) gains the hook's flag, after `semantics_rev`:
+
+```rust
+    /// `true` where the caller's `filed` hook said the archive already holds
+    /// these very bytes under the leaf `over` names, so the replay was never
+    /// paid (security S1b, finding A2) — the archive route's 200 `identical`.
+    /// Always `false` on a restore, which holds nothing.
+    pub held: bool,
+```
+
+`check_pair_with` (:254) becomes a wrapper and the body moves to `check_pair_filed`, with the archive route's hook
+(security S1b, finding A2 — the spec's "answer identical by comparing stored bytes BEFORE REPLAYING", placed after
+the cheap checks so a table that fails them reads its own refusal on every host; the pre-flight's F15):
+
+```rust
+pub(crate) fn check_pair_with(
+    record: &str,
+    table: &str,
+    rules: &yokohama_core::Rules,
+) -> Result<PairFacts, String> {
+    check_pair_filed(record, table, rules, &|_, _| None)
+}
+
+/// [`check_pair_with`] with the archive route's one addition (security S1b,
+/// finding A2): `filed(&doc, &rec)` is asked ONCE EVERY CHEAP CHECK HAS PASSED
+/// and before the replay — `Some(over)` says the archive already holds these
+/// very bytes under the leaf `over` names, and the pair is accepted with
+/// `held: true` and no replay paid; `None` replays as always. A restore passes
+/// a hook answering `None`. Asked after the table's checks and not before
+/// them, so a table that fails its checks reads its own refusal whether or not
+/// the record is filed — which is what keeps every host answering a row
+/// alike: the NAS's archive can read its files and the Worker's cannot.
+pub(crate) fn check_pair_filed(
+    record: &str,
+    table: &str,
+    rules: &yokohama_core::Rules,
+    filed: &dyn Fn(&crate::table::TableDoc, &yokohama_core::GameRecord) -> Option<bool>,
+) -> Result<PairFacts, String> {
+```
+
+and the hook is asked LAST before the replay, after the `is_safe_id` refusal (after Task 2's two checks, once they
+land):
+
+```rust
+    // **A record the archive already holds is not replayed** (security S1b,
+    // finding A2): asked here, LAST before the replay, so a retry of a filed
+    // record costs the cheap checks and a read.
+    if let Some(over) = filed(&doc, &rec) {
+        return Ok(PairFacts {
+            players: doc.players,
+            events: rec.events.len(),
+            over,
+            semantics_rev: yokohama_core::SEMANTICS_REV,
+            held: true,
+        });
+    }
+```
+
+with the `Ok` literal at the end gaining `held: false,`.
 
 `check_pair`'s doc (:157–189) names the checks "in `archive_post`'s own order"; after this task its list
 reads: "the record parsing, its event count within [`EVENT_CAP`], a `semantics_rev` present and equal to this
@@ -638,11 +745,14 @@ fn check_archive_size(body: &[u8]) -> Result<(), ApiError> {
 /// third count in an earlier document (whole-branch review, false sentence
 /// 4); the order is the one
 /// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`
-/// probes pairwise. **Before all of them, a retry of a record already filed
-/// is answered** (security S1b, finding A2): the table's id read cheaply, the
-/// two leaves asked through [`Archive::holds`](crate::archive::Archive::holds)
+/// probes pairwise. **Between the last cheap check and the replay, a retry of
+/// a record already filed is answered** (security S1b, finding A2): the two
+/// leaves are asked through [`Archive::holds`](crate::archive::Archive::holds)
 /// whether they hold these very bytes under this caller — a `true` is the 200
-/// `identical` the put's once-rule would give, with no replay paid. Then **the
+/// `identical` the put's once-rule would give, with no replay paid — and a
+/// table that fails its checks reads its own refusal first, as on every host,
+/// so the NAS, whose archive reads its files, and the Worker, whose cannot,
+/// answer every row alike (the corpus's `archive_400_table` among them). Then **the
 /// leaf IS the `Why`** — `Over` iff the replayed state is over, else
 /// `Abandoned` — and one put under
 /// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
@@ -654,34 +764,45 @@ fn check_archive_size(body: &[u8]) -> Result<(), ApiError> {
 /// browser's own host, is the answer by construction.
 ```
 
-and `archive_post`'s body gains, between the `is_on` refusal and `check_pair_with`:
+and `archive_post` passes the archive's `holds` through the validator's hook, in place of its
+`check_pair_with` call (the earlier `let prefix` below moves up here):
 
 ```rust
-    // **A retry of a filed record, answered before any replay** (security S1b,
-    // finding A2; the doc above). The id is read off the table document
-    // cheaply; a document that does not parse, or an id that is not a safe
-    // name, falls through to the checks, which refuse it in their own words.
-    if let Ok(doc) = serde_json::from_str::<crate::table::TableDoc>(&req.table) {
-        if crate::store::is_safe_id(&doc.id) {
-            let prefix = format!("browser/{}/", caller_segment(user));
-            for why in [Why::Over, Why::Abandoned] {
-                if games.archive.holds(&prefix, why, &doc.id, &req.record) {
-                    let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id)
-                        .map_err(|e| ApiError::server_error(format!("the archive could not be read: {e}")))?;
-                    return Ok(ArchiveReply { leaf: why.dir(), path, identical: true });
-                }
-            }
-        }
+    // **A retry of a filed record is answered before any replay** (security S1b,
+    // finding A2; the doc above): once every cheap check has passed, the archive
+    // is asked whether either leaf already holds these very bytes under this
+    // caller — through the validator's `filed` hook, so the question sits
+    // exactly before the replay and after nothing else.
+    let prefix = format!("browser/{}/", caller_segment(user));
+    let filed = |doc: &crate::table::TableDoc, _rec: &yokohama_core::GameRecord| {
+        [Why::Over, Why::Abandoned]
+            .into_iter()
+            .find(|why| games.archive.holds(&prefix, *why, &doc.id, &req.record))
+            .map(|why| why == Why::Over)
+    };
+    let facts = crate::backup::check_pair_filed(&req.record, &req.table, games.rules(), &filed)
+        .map_err(ApiError::bad_request)?;
+```
+
+and answers a held record once the path is known, before the put:
+
+```rust
+    if facts.held {
+        return Ok(ArchiveReply { leaf: why.dir(), path, identical: true });
     }
 ```
 
+The call-site comment "**The eight checks above are `backup::check_pair`'s since M6.5b2**" drops its count —
+"The checks above are…" — the count is stated once, in the doc.
+
 - [ ] **Step 4: Run, mutants, lint, commit.** `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED'`
-green (426 + the five cells; the order cell edited in place). Mutants: **M1** — the count check deleted: (a) RED
+green (431: 426 + the five cells; the order cell edited in place; `lib.rs`'s
+`the_archive_route_checks_and_files_a_browser_game` keeps its agreement row, a 400 under the hook's placement). Mutants: **M1** — the count check deleted: (a) RED
 (the replay's sentence), the restore cell RED (`Accepted`), the order cell RED on the cap's rows; **M2** —
-`MoveCheck::Predicate` → `MoveCheck::Listed` at :249: (b) RED at the bound (the pre-flight's `Listed` reading,
-minutes — run it ONCE and record it; the reviewer reads the mutant on an export with a `timeout`); **M3** — the
-early answer deleted: the retry cell RED (400 where 200); **M4** — `ARCHIVE_BODY_LIMIT` back to `1 << 20`: the
-order cell RED at the 413 row (400 at 512 KiB + 1). `cargo clippy -p yokohama-web --all-targets -- -D warnings`
+`MoveCheck::Predicate` → `MoveCheck::Listed` at :249: (b) RED at the bound (the pre-flight's `Listed` reading: 198 s
+in debug, the whole lib 198.5 s against 86 s — run it ONCE and record it; the reviewer reads the mutant on an export
+with a `timeout`); **M3** — the hook never asked (`filed` ignored): the retry cell RED (the replay's 400 where
+200); **M4** — `ARCHIVE_BODY_LIMIT` back to `1 << 20`: the order cell RED at its pin. `cargo clippy -p yokohama-web --all-targets -- -D warnings`
 clean; the lane's rows whole (Global Constraints) — the corpus does not move in this task (the archive walk's
 records are 54 KB and 595 events; `archive_post.json`'s reply is unchanged).
 
@@ -692,25 +813,23 @@ git commit -m "web: an untrusted record is bounded by its event count and replay
 
 ---
 
-### Task 2: D25 — the archive refuses what the engine would, and a pair that is not the browser's own — Opus (D25; spec correction 6)
+### Task 2: D25 — the archive refuses what the engine would — Opus (D25; spec correction 6)
 
 **Files:**
 - Modify: `crates/yokohama-web/src/backup.rs` (`check_pair_with` — Task 1's shape: the record mirror at the parse,
   the locked-down refusal after the digest, `validate_config` and `seat_disagreement` after the id; two
   constants and the mirror above it; cells in `mod tests`)
-- Modify: `crates/yokohama-web/src/api.rs` (`archive_post` — the attribution rule beside Task 1's early answer,
-  the foreign-bot refusal after the checks; the order cell's three new rows; cells beside it)
+- Modify: `crates/yokohama-web/src/api.rs` (`archive_post` — the foreign-bot refusal after the checks; the order
+  cell's three new rows; a cell beside Task 1's)
 - Modify: `crates/yokohama-web/src/tables.rs` (`check_shape` :421–427 — the name rule on `doc.name`; a cell in
   `mod tests`)
 - Test: the three files' `mod tests`
 
 **Interfaces:**
-- Consumes: Task 1's `check_pair_with` (the count first, the predicate last), `archive_post`'s early answer;
+- Consumes: Task 1's `check_pair_filed` (the count first, the hook and the predicate last);
   `yokohama_core::validate_config`; `crate::bots::{seat_disagreement, foreign, distinguishing_labels,
-  production}`; `tables::check_name`; `backup::LOCAL_USER`; the api-test helpers.
-- Produces: `backup::LOCKED_DOWN: &str`; `backup::NOT_A_LOCAL_PAIR: &str` (the route's sentence, kept beside the
-  validator's constants so one module words every archive refusal); `backup::RecordMirror` (private); the
-  twelve-check order.
+  production}`; `tables::check_name`; the api-test helpers.
+- Produces: `backup::LOCKED_DOWN: &str`; `backup::RecordMirror` (private); the twelve-check order.
 
 - [ ] **Step 1: The failing cells.**
 
@@ -809,31 +928,10 @@ helpers — the implementer's call, named in the report.)
 playing document — find it by content (`TableDoc {` with `status: TableStatus::Playing` under `mod tests`); if
 the module has none, build the document inline as `archive.rs`'s `locked_doc` does, with `lock: None`.)
 
-(c) In `api.rs`'s `mod tests`, after Task 1's retry cell:
+(c) In `api.rs`'s `mod tests`, after Task 1's retry cell (the pre-flight dropped a second cell here, the
+attribution rule's — F7):
 
 ```rust
-    /// **A browser archives its own local games only** (finding D25): a pair
-    /// whose table names a creator or a human seat other than the browser's
-    /// own player (`backup::LOCAL_USER`) is refused with one sentence, BEFORE
-    /// the record is read — a forged attribution never costs a replay. The
-    /// committed pair is the control.
-    #[test]
-    fn a_pair_that_names_another_person_is_refused_before_the_record_is_read() {
-        let dir = scratch("archive_attribution");
-        let on = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
-        let foreign_creator = keyed(PLAYED_TABLE, "created_by", "victim@corp.test".into());
-        let (status, v) = post_archive(&on, "not json at all", &foreign_creator);
-        assert_eq!((status, v["error"].as_str()), (400, Some(crate::backup::NOT_A_LOCAL_PAIR)), "{v}");
-        let foreign_seat = PLAYED_TABLE.replace("\"user\": \"local@browser\"", "\"user\": \"victim@corp.test\"");
-        assert_ne!(foreign_seat, PLAYED_TABLE, "the mutation must actually change the fixture");
-        let (status, v) = post_archive(&on, PLAYED_RECORD, &foreign_seat);
-        assert_eq!((status, v["error"].as_str()), (400, Some(crate::backup::NOT_A_LOCAL_PAIR)), "{v}");
-        let (status, _) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
-        assert_eq!(status, 201, "the control");
-        assert!(std::fs::read_dir(dir.join("browser")).is_ok(), "the control landed");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     /// **A bot this server does not run is refused at the archive** (finding
     /// D25): a browser's game is played by the module's production bot, so a
     /// record naming another controller is forged, or a game this build could
@@ -881,14 +979,15 @@ and after "the table agrees < the table's id is a safe name", in place of the id
 
 with `locked` and `impossible` built above the array (`keyed(PLAYED_RECORD, "lockdown", "a fault".into())`; the
 two config flags set as cell (a) sets them), the "the table parses < the table's shape" row's record now
-`no_replay` as before, the array `[…; 12]`, and `assert_eq!(sentences.len(), 12, "twelve checks, twelve
+`no_replay` as before, the `no_digest` binding dropped (read by no row once the digest row is the lockdown pair —
+the lint gate), the array `[…; 12]`, and `assert_eq!(sentences.len(), 12, "twelve checks, twelve
 different sentences")`. The lone thirteenth, the replay, stays as it is.
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- key_the_engine locked_down
 impossible_configuration seats_disagree bounds_the_tables names_another_person bot_this_server refusal_order
-2>&1 | grep -E '^error|test result|panicked' | head` — `LOCKED_DOWN` and `NOT_A_LOCAL_PAIR` not found; stubbed as
+2>&1 | grep -E '^error|test result|panicked' | head` — `LOCKED_DOWN` not found; stubbed as
 any sentences: every cell RED on its status or sentence (the planted key accepted; the locked record accepted;
-the impossible config read "does not replay"; the seats accepted; the name accepted; the foreign creator 201).
+the impossible config read "does not replay"; the seats accepted; the name accepted; the foreign bot 201).
 
 - [ ] **Step 3: The code.** In `backup.rs`, above `check_pair`:
 
@@ -897,14 +996,6 @@ the impossible config read "does not replay"; the seats accepted; the name accep
 /// `GameRecord.lockdown` is `Some` once the interactive driver found a desync
 /// or an invariant fault, and such a record is not a played game.
 pub const LOCKED_DOWN: &str = "the record is locked down — a game the driver declared faulty is not archived";
-
-/// The archive route's refusal of a pair that is not the browser's own local
-/// game (security S1b, finding D25): a browser plays its local games as
-/// [`LOCAL_USER`] in every human seat, so a table naming anybody else as its
-/// creator or in a seat is forged attribution, filed under the uploader's
-/// folder with somebody else's name inside.
-pub const NOT_A_LOCAL_PAIR: &str =
-    "a browser archives its own local games only — this table names a player other than the browser's own";
 
 /// The engine record's keys, and nothing else (security S1b, finding D25).
 /// `GameRecord` carries no `deny_unknown_fields` — it is the engine's type,
@@ -982,27 +1073,7 @@ table document parsing, passing [`tables::check_shape`] and AGREEING with the re
 ([`crate::bots::seat_disagreement`]), and LAST `replay_strict_with(.., Predicate)` clean." `archive_post`'s doc
 (Task 1's) counts "the TWELVE checks" and lists them in the same words.
 
-In `api.rs`, `archive_post`: inside Task 1's `if let Ok(doc) = … { if is_safe_id(&doc.id) { … } }` block, before
-the leaves are asked:
-
-```rust
-            // **A browser's pair is its own local game** (finding D25): the
-            // creator and every human seat are the browser's one player, or the
-            // table is forged attribution — refused before anything of the
-            // record is read.
-            let local = |user: &str| user == crate::backup::LOCAL_USER;
-            let seats_local = doc.seats.iter().all(|s| match s {
-                crate::table::SeatDoc::Human { user, .. } => local(user),
-                crate::table::SeatDoc::Bot | crate::table::SeatDoc::Open => true,
-            });
-            if !local(&doc.created_by) || !seats_local {
-                return Err(ApiError::bad_request(crate::backup::NOT_A_LOCAL_PAIR));
-            }
-```
-
-(the attribution rule runs whenever the table parses and its id is safe; a table that fails either falls to the
-checks' own sentences — so the rule is the first the route makes of a readable table, cheap and before any replay)
-and, after `check_pair_with` succeeds and the document is re-parsed for the strip:
+In `api.rs`, `archive_post`, after `check_pair_filed` succeeds (a held record passes this too, cheaply — it landed through it once):
 
 ```rust
     // **A bot this server does not run is refused** (finding D25): the record
@@ -1039,13 +1110,13 @@ read `check_shape` too — the lane's rows run whole, the Worker pool included).
 deleted: the planted-key cell RED; **M6** — the lockdown refusal deleted: its cell RED (accepted), the order cell
 RED at its two rows; **M7** — `validate_config` deleted: the config cell RED ("does not replay"), the order cell
 RED; **M8** — `seat_disagreement` deleted: the seats cell RED, the order cell RED; **M9** — the attribution
-rule deleted: its cell RED (201 for the foreign creator); **M10** — the foreign-bot refusal deleted: its cell RED
+— withdrawn with the attribution rule (F7); **M10** — the foreign-bot refusal deleted: its cell RED
 (201); **M11** — `check_shape`'s name rule deleted: the tables cell RED. `cargo clippy -p yokohama-web
 --all-targets -- -D warnings` clean.
 
 ```bash
 git add crates/yokohama-web/src/backup.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs
-git commit -m "web: the archive refuses what the engine would — an unknown key, a lockdown, an impossible configuration, seats that disagree with the record's bots, a table name past the rule — and a pair that is not the browser's own local game (D25; S1b Task 2)"
+git commit -m "web: the archive refuses what the engine would — an unknown key, a lockdown, an impossible configuration, seats that disagree with the record's bots, a table name past the rule — and a bot this server does not run (D25; S1b Task 2)"
 ```
 
 ---
@@ -1058,8 +1129,6 @@ git commit -m "web: the archive refuses what the engine would — an unknown key
   check in `put` :361–399; cells in `mod tests`)
 - Modify: `crates/yokohama-web/src/api.rs` (`archive_post`'s put arms :2340–2356 — the `Quota` arm; a sentence
   builder beside `ARCHIVE_BODY_LIMIT`; a cell beside Task 1's)
-- Modify: `crates/yokohama-web/src/games.rs` (:1062 — the game-over put's `match` gains the `Quota` arm,
-  unreachable for the server's own prefix and worded as its `Failed` arm is)
 - Modify: `web/src/outbox.ts` (`reasonFor` :179–185 — the 507), `web/src/outbox.test.ts` (a cell beside the
   409's at :238–246)
 - Test: `archive.rs`'s and `api.rs`'s `mod tests`; `web/src/outbox.test.ts`
@@ -1150,14 +1219,14 @@ git commit -m "web: the archive refuses what the engine would — an unknown key
   it("reads a 507 as a wait that carries the server's sentence, not as a refusal", async () => {
     const full = "your archive here is full — 256 records or 128 MiB; nothing was written, and the game is kept on this device";
     hosts({ archive: "dir", onArchive: () => ({ status: 507, body: { error: full } }) });
-    await finishedGame(GAME);
+    await noteGameOver(GAME);
     expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "offline", sentence: full })]);
     expect(reasonWords("offline", full)).toBe(full);
   });
 ```
 
-(the cell is the 409 cell's shape with its names — `hosts`, `pending`, `GAME`, the game-finishing helper the
-409 cell calls, `reasonWords` imported from `./outbox` — the implementer reads the 409 cell and mirrors it.)
+(the cell is the 409 cell's shape with its names — `hosts`, `pending`, `GAME`, `noteGameOver` (the helper the 409
+cell calls), `reasonWords` imported from `./outbox` — the implementer reads the 409 cell and mirrors it.)
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- callers_share full_share
 2>&1 | grep -E '^error|test result|panicked' | head` — `Quota`, `with_quota`, `PutError::Quota`,
@@ -1289,9 +1358,9 @@ and `archive_post`'s match gains, before the `Failed` arm:
         }),
 ```
 
-In `games.rs` (:1062), the game-over put's `match` gains `Err(PutError::Quota { .. })` beside its `Failed`
-arm, worded as that arm is (the server's own prefix is never counted, so the arm is unreachable and says so in
-a comment). In `web/src/outbox.ts`, `reasonFor` (:179–185):
+`games.rs`'s game-over put (:1062) needs no arm: its match ends in a catch-all `Err(e)` that logs
+`e.to_string()`, which the `Display` arm above words (unreachable for the server's own prefix, never counted —
+the pre-flight's F5). In `web/src/outbox.ts`, `reasonFor` (:179–185):
 
 ```ts
 function reasonFor(e: unknown): { reason: PendingReason; sentence?: string } {
@@ -1318,7 +1387,7 @@ route's arm answering 500: the route cell RED; **M33** — the outbox's 507 line
 sentence). `cargo clippy --workspace --all-targets -- -D warnings` clean.
 
 ```bash
-git add crates/yokohama-web/src/archive.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/games.rs web/src/outbox.ts web/src/outbox.test.ts
+git add crates/yokohama-web/src/archive.rs crates/yokohama-web/src/api.rs web/src/outbox.ts web/src/outbox.test.ts
 git commit -m "web: a browser caller's share of the archive is 256 records and 128 MiB, counted before every put after the marker read; a full share is a 507 the outbox keeps, shows and retries (B12; S1b Task 3)"
 ```
 
@@ -1426,10 +1495,12 @@ content):
     /// **Two slow replays do not stall the server** (finding D6; the review's
     /// measured stall: two uploads froze a two-worker server for 35 s). On a
     /// runtime of TWO workers, two archive posts whose put sleeps a second are
-    /// in flight, and a health read in the middle answers in well under that
-    /// second — because every dispatch runs on the blocking pool, never on the
-    /// workers the two posts would otherwise hold. The mutant that dispatches
-    /// inline reads the health at about a second.
+    /// in flight, and a pause of 150 ms followed by a health read completes in
+    /// well under that second — because every dispatch runs on the blocking
+    /// pool, never on the workers the two posts would otherwise hold. The clock
+    /// runs from before the pause, since with the dispatch inline it is the
+    /// pause's wake that waits for a worker: the mutant that dispatches inline
+    /// reads about a second.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_slow_replays_leave_the_server_answering() {
         let state = slow_state(1_000, 2, 2_000);
@@ -1441,12 +1512,15 @@ content):
             let s = Arc::clone(&state);
             tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
         };
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        // The clock runs from BEFORE the pause: with the dispatch inline, both
+        // workers sit in the two puts and the pause's own wake waits for one
+        // of them — the stall shows there as much as in the read.
         let started = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let (status, _) = get_as(&state, WHO, "/api/health").await;
         let took = started.elapsed();
         assert_eq!(status, StatusCode::OK);
-        assert!(took < std::time::Duration::from_millis(400), "the health read waited {took:?} behind two replays");
+        assert!(took < std::time::Duration::from_millis(400), "the pause and the health read waited {took:?} behind two replays");
         let (sa, va) = a.await.expect("the first post");
         let (sb, vb) = b.await.expect("the second post");
         assert!(matches!(sa.as_u16(), 200 | 201), "{va}");
@@ -1502,7 +1576,7 @@ asserts 200 — the fact under test is the status, not the move.)
 gates_wait 2>&1 | grep -E '^error|test result|panicked' | head` — `is_replay_route`, `REPLAY_ROUTES`,
 `with_replay_gate` and `BUSY` not found; stubbed (the function `false`, the builder `self`, the constant any
 sentence): (a) RED on the first gated route; the stall cell RED — **measured in the pre-flight: the health read
-behind two inline replays took N ms** (the review record); the gate cell RED (201 after the holder, no 503).
+behind two inline replays took about a second — 1.05 s measured under the old adapter's body swapped in whole** (the review record); the gate cell RED (201 after the holder, no 503).
 
 - [ ] **Step 3: The code.** In `api.rs`, after `routes` (:199–242):
 
@@ -1735,11 +1809,13 @@ the closure; `IdentityMode::name` is a `&'static str`; `SIGNAL_KIND` a constant.
 this head's struct does not (`api.rs:54`), the implementer reads the struct and reports.)
 
 - [ ] **Step 4: Run, mutants, lint, commit.** `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test
-result|FAILED'` green; the two timed cells are run THREE times to read their margins (each reading in the
-report). Mutants: **M12** — `spawn_blocking` removed (the dispatch inline on the worker, the old adapter): the
-stall cell RED (the health read about a second); **M13** — the gate removed (`_permit` always `None`): the gate
-cell RED (201 after the holder, no 503); **M14** — `is_replay_route` returning `true` for every route: the gate
-cell RED at the move (503); **M15** — the `Retry-After` line dropped: the gate cell RED at the header. `cargo
+result|FAILED'` green; the two timed cells are run THREE times to read their margins (each reading in the report; the
+pre-flight's: the health read behind two slow replays 0.40 / 0.55 / 0.71 ms against the 400 ms bound, the 503
+within 53.9 / 53.8 / 55.1 ms of a 50 ms wait against 600 ms). Mutants: **M12** — `spawn_blocking` removed (the
+dispatch inline on the worker, the old adapter): the stall cell RED (the health read about a second — 1.05 s measured under the old adapter's body swapped in whole); **M13** — the gate
+removed (`_permit` always `None`): the gate cell RED (201 after the holder, no 503); **M14** — `is_replay_route`
+returning `true` for every route: the gate cell RED at the move (503), the route cell at its "never gated"
+rows, and the stall cell, whose health read then waits for a permit; **M15** — the `Retry-After` line dropped: the gate cell RED at the header. `cargo
 clippy -p yokohama-web --all-targets -- -D warnings` clean; the lane's rows whole; the NAS binary's cells
 (`tests/start_refusal.rs`) green — the adapter is the path they run.
 
@@ -1762,6 +1838,9 @@ git commit -m "web: every dispatch runs on the blocking pool, and the five repla
   `state_before`, the fold; their callers in `mod tests`)
 - Modify: `crates/yokohama-web/src/api.rs` (`run` :2044–2069 — D27 and `let mut repl`; `at_k` :2110–2138 —
   `let mut repl`; the 500 sentences)
+- Modify: `crates/yokohama-web/src/tables.rs` (:699 — the deal preview's `HistoricalFrame::at` caller: `let mut
+  repl = Repl::new(session)`, `&mut repl`, its `map_err` reading the `String` — `format!("the setup position did
+  not build: {e}")`; :2156 — a cell's `&mut handle.lock().unwrap()`; the pre-flight's F14)
 - Test: `session.rs`'s `mod tests`; `lib.rs`'s `mod tests` (D27's two route cells; the parked-read double)
 
 **Interfaces:**
@@ -1805,10 +1884,13 @@ the cell owes nothing to the CLI's own constructors:
     /// leaves is the multiples of sixty-four** (security S1b, finding A3): a
     /// 300-event record rebuilt through `from_record` — whose fold keeps the
     /// ladder as it goes — read at every seventh position against the engine's
-    /// own positioning primitive; then the ladder's indices read back. Mutants:
-    /// a fold from the wrong entry, an entry kept at the wrong index, a
-    /// `fold_event` that skips the predicate (a different state is impossible —
-    /// the proof — so the mutant for THAT arm is cell (c)).
+    /// own positioning primitive, and the number of events each read FOLDED
+    /// under sixty-four — the ladder's pin, since a fold from setup reaches
+    /// the same state by the proof and shows only in the count; then the
+    /// ladder's indices read back. Mutants: the ladder ignored (the count), an
+    /// entry kept at the wrong index, a `fold_event` that skips the predicate
+    /// (a different state is impossible — the proof — so the mutant for THAT
+    /// arm is cell (c)).
     #[test]
     fn state_before_agrees_with_state_at_at_every_prefix_and_keeps_the_ladder() {
         let (record, rules) = random_record(3, 2026_1009, 300);
@@ -1818,9 +1900,10 @@ the cell owes nothing to the CLI's own constructors:
         let kept: Vec<usize> = (0..=len / CHECKPOINT_EVERY).map(|i| i * CHECKPOINT_EVERY).filter(|i| *i > 0 && *i <= len).collect();
         assert_eq!(session.ladder_indices(), kept, "from_record keeps a state at every sixty-fourth event");
         for k in (0..=len).step_by(7).chain([len]) {
-            let ours = session.state_before(k).expect("a position");
+            let (ours, folded) = session.state_before_counted(k).expect("a position");
             let theirs = state_at(&record, k, &rules).expect("the engine's position");
             assert_eq!(ours, theirs, "position {k}");
+            assert!(folded < CHECKPOINT_EVERY, "position {k} folded {folded} events — the ladder was not used");
         }
         assert_eq!(session.ladder_indices(), kept, "reading positions adds no entry the fold already kept");
         assert!(session.state_before(len + 1).is_err(), "past the end is a refusal, never a clamp");
@@ -1859,16 +1942,28 @@ the cell owes nothing to the CLI's own constructors:
     }
 
     /// **`fold_event` refuses a non-member in `apply_move`'s own words**
-    /// (R-SEC2): a placement at a Movement state, through the predicate fold
-    /// and through the engine's checked `replay_from`, is the same sentence —
-    /// so a refusal a run or a rebuild reports reads as it always did.
+    /// (R-SEC2): a placement at a position that does not list it, through the
+    /// predicate fold and through the engine's checked `replay_from`, is the
+    /// same sentence — so a refusal a run or a rebuild reports reads as it
+    /// always did. The placement is taken from the first position that offers
+    /// one (the opening is the first additional-action phase and offers none)
+    /// and the position from the first after it that does not list it.
     #[test]
     fn fold_event_refuses_a_non_member_as_the_checked_fold_does() {
         let (record, rules) = random_record(2, 4, 40);
-        let state = state_at(&record, 0, &rules).expect("the opening");
-        let placement = get_legal_moves(&state, &rules).into_iter().find(|m| matches!(m, Move::PlaceThreeAreas { .. })).expect("the opening offers a placement");
-        let later = state_at(&record, 3, &rules).expect("three events in");
-        assert!(!get_legal_moves(&later, &rules).contains(&placement), "the premise: not legal three events in");
+        let (k, placement) = (0..=record.events.len())
+            .find_map(|k| {
+                let state = state_at(&record, k, &rules).expect("a position");
+                get_legal_moves(&state, &rules)
+                    .into_iter()
+                    .find(|m| matches!(m, Move::PlaceThreeAreas { .. }))
+                    .map(|m| (k, m))
+            })
+            .expect("the record reaches a Placement decision");
+        let later = (k + 1..=record.events.len())
+            .map(|j| state_at(&record, j, &rules).expect("a position"))
+            .find(|s| !get_legal_moves(s, &rules).contains(&placement))
+            .expect("a later position where the placement is not listed");
         let ev = RecordedEvent::Move(placement);
         let ours = Session::fold_event(&later, &ev, &rules).expect_err("refused");
         let theirs = replay_from(&later, std::slice::from_ref(&ev), &rules).expect_err("refused by the checked fold");
@@ -1878,7 +1973,8 @@ the cell owes nothing to the CLI's own constructors:
 ```
 
 (`ladder_indices` is a `#[cfg(test)] pub(crate) fn ladder_indices(&self) -> Vec<usize>` on `Session`,
-Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `GameConfig`,
+Step 3. Cell (c) takes its placement from the first position that offers one — the opening is the first
+additional-action phase and offers none (the pre-flight's F18). The three cells import what they use — `new_game`, `finalize_setup`, `GameConfig`,
 `StartingOrderChoice`, `get_legal_moves`, `apply_move_unchecked`, `is_game_over`, `state_at`, `replay`,
 `replay_from`, `Move`, `MoveError`, `RecordedEvent` — through the file's `use yokohama_core::*`.)
 
@@ -1914,6 +2010,48 @@ Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `
 (find by content) — the store double and the pin (S1a's residual, Review Focus 4):
 
 ```rust
+    /// A finished ONE-person hot seat over `store` — `a_finished_two_person_game`'s
+    /// shape (both seats pumped as bots in process, the record installed and
+    /// re-stamped as two people), both seats [`WHO`]'s, so an undo at game over
+    /// is the CLI's own: a one-person table is outside R-P6's shared-table
+    /// refusal. Built this way because driving a hot seat to a winner over the
+    /// route with `play_turn` never ends — its last-row policy passes every turn.
+    async fn a_finished_one_person_game_over(store: Arc<dyn Store>, name: &'static str) -> Arc<AppState> {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let state = Arc::new(AppState::with_store(Arc::clone(&store), identity::IdentityMode::Open));
+        start_as(&state, name, ENDED_SEED, &[WHO, WHO]).await;
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], ENDED_SEED).seat_provenance());
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
+        store.write_if_version(Doc::Record, name, &finished, Some(version)).expect("the finished record");
+        // A fresh state over the same store, so the game is rebuilt from the
+        // record just written rather than served from the resident handle.
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
     /// A store that delegates everything to a `MemStore` and PARKS a record
     /// read while the flag is up — the instrument that reads a lock's scope:
     /// a request parked inside its read holds whatever lock it took to get
@@ -1950,13 +2088,30 @@ Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `
             }
             self.inner.read(doc, id)
         }
-        // Every other method delegates to `inner` unchanged — the implementer
-        // writes one line per method of `store::Store` at this head.
+        fn list(&self, doc: Doc) -> Result<Vec<store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<store::Version>,
+        ) -> Result<store::Version, store::WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+        fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+            self.inner.last_written(id)
+        }
     }
 
     /// **The record route reads the store UNDER the handle's lock** (S1a's
     /// residual, the parked-read double; Review Focus 4). A finished
-    /// one-person game's record is read with the store's record read PARKED;
+    /// one-person game (built in process — `a_finished_one_person_game_over`)
+    /// has its record read with the store's record read PARKED;
     /// the same person's `undo` is posted meanwhile — at a one-person table the
     /// CLI's undo applies at game over — and the read is released. Under the
     /// lock the undo WAITED: the record served is the finished one, its event
@@ -1968,18 +2123,11 @@ Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_record_route_holds_the_lock_across_its_store_read() {
         let store = ParkedRead::new();
-        let state = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Open));
         let id = "parked";
-        a_game(&app(Arc::clone(&state)), id, &[]).await;
-        // Played to the end by the one person at both seats.
-        loop {
-            let (_, now) = get_as(&state, WHO, &format!("/api/games/{id}")).await;
-            if now["over"] == serde_json::json!(true) {
-                break;
-            }
-            play_turn(&state, id, WHO).await;
-        }
-        let (_, finished) = get_as(&state, WHO, &format!("/api/games/{id}")).await;
+        let state = a_finished_one_person_game_over(Arc::clone(&store) as Arc<dyn Store>, id).await;
+        let (status, finished) = get_as(&state, WHO, &format!("/api/games/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "{finished}");
+        assert_eq!(finished["over"], serde_json::json!(true), "the premise: the game is over");
         let total = finished["events"].as_u64().expect("events");
         store.park();
         let reader = {
@@ -1996,7 +2144,7 @@ Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `
         store.release();
         let (status, record) = reader.await.expect("the read");
         assert_eq!(status, StatusCode::OK, "{record}");
-        let served: yokohama_core::GameRecord = serde_json::from_str(record.as_str().expect("the store's bytes")).expect("a record");
+        let served: yokohama_core::GameRecord = serde_json::from_value(record).expect("the record's own JSON");
         assert_eq!(served.events.len() as u64, total, "the finished record, not the undone one");
         assert!(served.terminal_digest.is_some());
         let (status, after) = undo.await.expect("the undo");
@@ -2005,8 +2153,10 @@ Step 3. The three cells import what they use — `new_game`, `finalize_setup`, `
     }
 ```
 
-(`store::Store`'s methods and its `Version`/error types are read off `crates/yokohama-web/src/store.rs` at
-this head; the double delegates each. The record route serves the bytes as a JSON STRING body — `record`'s doc —
+(The double delegates `list`, `write_if_version`, `delete` and `last_written` to its `MemStore` — the block
+carries them; the finished game is BUILT in process by `a_finished_one_person_game_over`, the lib's finished-game
+shape over the parked store, because a hot seat driven "to the end" with `play_turn` never ends — its last-row
+policy passes every turn (the pre-flight's F19, an hour in the loop). The record route serves the bytes as a JSON STRING body — `record`'s doc —
 so `record.as_str()` is the whole file. If `get_as`'s JSON parse of a string body yields `Value::String`, the
 line reads as written; if the helper returns `Null` for a non-object body, read the body through
 `request_as`'s raw bytes instead — the implementer reports which.)
@@ -2059,7 +2209,7 @@ every `Session { … }` literal gains `ladder: Vec::new(),` (`new_sim`, `new_liv
             // materialized per event. The message carries the TRUE index `i`
             // (Task 15 review Finding 1's lesson, kept).
             state = Self::fold_event(&state, ev, &rules).map_err(|e| format!("replay failed at event {i}: {e}"))?;
-            if (i + 1) % CHECKPOINT_EVERY == 0 {
+            if (i + 1).is_multiple_of(CHECKPOINT_EVERY) {
                 ladder.push((i + 1, state.clone()));
             }
         }
@@ -2097,6 +2247,14 @@ and its literal (:380–390) gains `ladder,`. Inside `impl Session`, two associa
     /// [`CHECKPOINT_EVERY`] passed on the way kept (security S1b, finding A3).
     /// `k` past the end is a refusal, never a clamp.
     pub fn state_before(&mut self, k: usize) -> Result<GameState, String> {
+        self.state_before_counted(k).map(|(state, _)| state)
+    }
+
+    /// [`Self::state_before`] with the number of events it folded — fewer
+    /// than [`CHECKPOINT_EVERY`] whenever the ladder is used, which is the
+    /// cell's pin on the ladder (a fold from the wrong entry reaches the same
+    /// state, by the proof, and shows only here).
+    pub(crate) fn state_before_counted(&mut self, k: usize) -> Result<(GameState, usize), String> {
         let Session { rules, record, checkpoint, ladder, .. } = self;
         fold_to(record, rules, checkpoint.as_ref(), ladder, k)
     }
@@ -2111,7 +2269,7 @@ and its literal (:380–390) gains `ladder,`. Inside `impl Session`, two associa
     /// of [`CHECKPOINT_EVERY`] — free, the state is in hand.
     fn keep_checkpoint(&mut self) {
         let len = self.record.events.len();
-        if len % CHECKPOINT_EVERY == 0 && self.ladder.last().map_or(true, |(i, _)| *i < len) {
+        if len.is_multiple_of(CHECKPOINT_EVERY) && self.ladder.last().is_none_or(|(i, _)| *i < len) {
             self.ladder.push((len, self.state.clone()));
         }
     }
@@ -2123,14 +2281,15 @@ the free function, after `impl Session`'s end:
 /// [`Session::state_before`]'s body over the parts, so `undo` can fold the
 /// record it has already popped. `ladder` is read for the nearest kept state
 /// at or before `k` and extended at every multiple of [`CHECKPOINT_EVERY`]
-/// the fold passes — inserted in order, never twice.
+/// the fold passes — inserted in order, never twice. Answers the state and
+/// the number of events folded to reach it.
 fn fold_to(
     record: &GameRecord,
     rules: &Rules,
     base: Option<&GameState>,
     ladder: &mut Vec<(usize, GameState)>,
     k: usize,
-) -> Result<GameState, String> {
+) -> Result<(GameState, usize), String> {
     let available = record.events.len();
     if k > available {
         return Err(format!(
@@ -2144,17 +2303,18 @@ fn fold_to(
             None => state_at(record, 0, rules).map_err(|e| e.message)?,
         }),
     };
+    let from = at;
     while at < k {
         state = Session::fold_event(&state, &record.events[at], rules)
             .map_err(|e| format!("replay failed at event {at}: {e}"))?;
         at += 1;
-        if at % CHECKPOINT_EVERY == 0 {
+        if at.is_multiple_of(CHECKPOINT_EVERY) {
             if let Err(pos) = ladder.binary_search_by_key(&at, |(i, _)| *i) {
                 ladder.insert(pos, (at, state.clone()));
             }
         }
     }
-    Ok(state)
+    Ok((state, k - from))
 }
 ```
 
@@ -2166,14 +2326,16 @@ fn fold_to(
         // The entries past the popped length belong to the suffix that is
         // gone; the ones at or below it are this record's (security S1b).
         self.ladder.retain(|(i, _)| *i <= new_len);
-        let state = {
+        let (state, _) = {
             let Session { rules, checkpoint, ladder, .. } = self;
             fold_to(&record, rules, checkpoint.as_ref(), ladder, new_len)?
         };
 ```
 
-(the `replay`/`replay_from` imports stay — `replay_from` is `fold_event`'s; if `replay` is then unused, the
-compiler says so and the implementer drops the import). `undo`'s doc paragraph (:699–712) ends: "…via core's
+(the `replay`/`replay_from` imports stay — `replay_from` is `fold_event`'s and `replay` the cells' — and
+`fold_to` answers the number of events it folded, which `state_before_counted` (`pub(crate)`) exposes for cell
+(a)'s pin on the ladder: a fold from setup reaches the same state by the proof and shows only in that count —
+the pre-flight's F24; `is_multiple_of` and `is_none_or` are what this toolchain's lint gate asks for — F27). `undo`'s doc paragraph (:699–712) ends: "…via core's
 `replay_from` … (Task 13 …). **Since security S1b both paths are one: `fold_to`, from the nearest kept state of
 the ladder (or the test base), through the predicate fold.**"
 
@@ -2206,7 +2368,8 @@ In `client.rs`, `at` and `run` (:695–728):
     }
 ```
 
-(`use yokohama_cli::session::Session;` joins the file's imports; the test module's callers pass `&mut repl`.)
+(`use yokohama_cli::session::Session;` joins the file's imports; the test module's two callers at :1102 and
+:1113 take `let mut repl` and pass `&mut repl`; `tables.rs`'s two callers as the file list says.)
 In `api.rs`, `run` (:2044–2069):
 
 ```rust
@@ -2251,16 +2414,18 @@ is answered without a replay (security S1b, finding D27)".
 `cargo test -p yokohama-web --lib` green; the lane's rows whole (the corpus does not move: `at_k`, `run` and
 `spectator_at_k` are the same positions by the same states). Mutants: **M16** — `fold_to` ignoring the ladder
 (always from the base): every state still agrees (the proof) and the indices still read as `from_record` kept
-them, so its catcher is Task 6's run cell over the spread fixture — a run that folds 4,032 events from setup
-instead of sixty-three from the ladder misses its bound; cell (a)'s second index assertion catches an entry
-inserted twice; **M17** — `undo` not
+them, and the TIMING cannot carry it either (the pre-flight read Task 6's run at 125 ms against 46 ms under it —
+inside any honest ceiling), so its catcher is cell (a)'s fold COUNT (`state_before_counted`, fewer than
+sixty-four at every position; under the mutant the count is `k`); cell (a)'s second index assertion catches an
+entry inserted twice; **M17** — `undo` not
 dropping the entries past the popped length: cell (b) RED (a stale checkpoint's state after the sixty-fourth
-undo); **M18** — `fold_event` skipping `is_listed_move`: cell (c) RED (accepted); **M19** — D27's `from > total`
+undo); **M18** — `fold_event` skipping `is_listed_move`: cell (c) RED (accepted), and the CLI's own
+`load_of_tampered_record_names_the_true_failing_event_index`, since `from_record` now refuses through it; **M19** — D27's `from > total`
 dropped: the 404 cell RED (500); **M20** — the lock dropped before the record route's store read: the
 parked-read cell RED. `cargo clippy --workspace --all-targets -- -D warnings` clean.
 
 ```bash
-git add crates/yokohama-cli/src/session.rs crates/yokohama-web/src/client.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs
+git add crates/yokohama-cli/src/session.rs crates/yokohama-web/src/client.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/src/tables.rs
 git commit -m "cli+web: the session keeps a state every sixty-four events and folds through the predicate, so a position, a run, an undo and a rebuild never replay from setup through a materialized family; an out-of-range run is its 404 and an empty run replays nothing; the record route's lock scope pinned (A3's checkpoint, D27; S1b Task 5)"
 ```
 
@@ -2312,15 +2477,16 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
     /// decision of random play at two, three and four players** (finding A3;
     /// R-SEC8(e)) — the same moves in the same order with the retreat family
     /// at its recover-nothing member, and the omitted count the family's size
-    /// less one. A lone retreat (no assistant on the board — the opening's
-    /// every Movement decision) is listed as it is and omits nothing (Review
-    /// Focus 5): asserted to have been MET, so the walk cannot pass without it.
-    /// Mutants: the last member kept instead of the first; the count off by
-    /// one; a family skipped.
+    /// less one. A lone retreat — no assistant on the board — is listed as it
+    /// is and omits nothing (Review Focus 5): CONSTRUCTED, since placement
+    /// precedes movement within a turn and a random walk all but never
+    /// reaches a Movement decision with nothing on the board; from the
+    /// opening, the first phase ended and nothing placed, the retreat family
+    /// is one. Mutants: the last member kept instead of the first; the count
+    /// off by one; a family skipped.
     #[test]
     fn folded_legal_is_the_generators_list_folded_by_hand_at_every_decision() {
         let rules = Rules::standard();
-        let mut lone_retreats = 0usize;
         let mut folded_some = 0usize;
         for (players, seed) in [(2u8, 11u64), (3, 13), (4, 17)] {
             let config = GameConfig::for_player_count(players);
@@ -2336,11 +2502,6 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
                 let expected = fold_by_hand(legal.clone());
                 let got = folded_legal(&state, &rules);
                 assert_eq!(got, expected, "{players}P seed {seed}: the fold differs from the generator's list folded by hand");
-                let retreats = legal.iter().filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).count();
-                if retreats == 1 {
-                    lone_retreats += 1;
-                    assert_eq!(got.1, 0, "a lone retreat omits nothing");
-                }
                 if got.1 > 0 {
                     folded_some += 1;
                 }
@@ -2351,22 +2512,42 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
                 state = yokohama_core::apply_move_unchecked(&state, &mv, &rules).expect("a listed move applies");
             }
         }
-        assert!(lone_retreats > 0, "anti-vacuity: the walk met the lone retreat (Review Focus 5)");
         assert!(folded_some > 0, "anti-vacuity: the walk met a family it folded");
+
+        // The lone retreat, constructed (Review Focus 5).
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).expect("new_game");
+        let opening = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).expect("finalize_setup");
+        let placing = yokohama_core::apply_move(&opening, &Move::EndAdditionalPhase, &rules).expect("the first phase ends");
+        let nothing = Move::PlaceThreeAreas { placements: Vec::new() };
+        let moving = yokohama_core::apply_move(&placing, &nothing, &rules).expect("an empty placement is always legal");
+        let legal = yokohama_core::get_legal_moves(&moving, &rules);
+        let retreats = legal.iter().filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).count();
+        assert_eq!(retreats, 1, "the premise: nothing on the board, one retreat");
+        assert_eq!(folded_legal(&moving, &rules), (legal, 0), "a lone retreat is listed as it is and omits nothing");
     }
 
-    /// **The cap counts what it cuts** (R-SEC8(e)): the opening's placement
+    /// **The cap counts what it cuts** (R-SEC8(e)): the first Placement's
     /// list under a cap of three lists three and counts the rest, and the
     /// uncapped list is whole. The production cap is never reached by today's
-    /// generator — this is the mechanism, read at a cap a cell can reach.
+    /// generator — this is the mechanism, read at a cap a cell can reach. The
+    /// opening itself is the first additional-action phase and offers ONE
+    /// move, so the cell walks to the first position that offers more.
     #[test]
     fn folded_legal_capped_counts_what_the_cap_cuts() {
         let rules = Rules::standard();
         let config = GameConfig::for_player_count(2);
         let pending = new_game(config, &rules, 20260831).expect("new_game");
-        let state = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).expect("finalize_setup");
-        let whole = yokohama_core::get_legal_moves(&state, &rules).len();
-        assert!(whole > 3, "the premise: the opening offers more than three moves ({whole})");
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).expect("finalize_setup");
+        let mut whole = yokohama_core::get_legal_moves(&state, &rules).len();
+        for _ in 0..8 {
+            if whole > 3 {
+                break;
+            }
+            let only = yokohama_core::get_legal_moves(&state, &rules).swap_remove(0);
+            state = yokohama_core::apply_move(&state, &only, &rules).expect("the one move applies");
+            whole = yokohama_core::get_legal_moves(&state, &rules).len();
+        }
+        assert!(whole > 3, "the premise: a position offering more than three moves ({whole})");
         let (listed, omitted) = folded_legal_capped(&state, &rules, 3);
         assert_eq!((listed.len(), omitted), (3, whole - 3));
         let (all, none) = folded_legal_capped(&state, &rules, OPTIONS_CAP);
@@ -2385,8 +2566,9 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
 
     /// The position of the spread DECISION — seat 0 to move in Movement, the
     /// 442,368-move family — as the pre-flight recorded it when it cut the
-    /// fixture (`spread_decision_at` in the provenance file): the record's
-    /// END sits in a later seat's Placement, where nothing folds.
+    /// fixture (`spread_decision_at` in the provenance file, 4,083): the
+    /// record's END sits in seat 3's second additional-action phase, where
+    /// nothing folds.
     fn spread_decision_at() -> usize {
         let v: serde_json::Value = serde_json::from_str(SPREAD_PROVENANCE).expect("the provenance file");
         v["spread_decision_at"].as_u64().expect("spread_decision_at") as usize
@@ -2394,7 +2576,7 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
 
     /// The spread fixture's pair written into a fresh store, as a hosted game
     /// the browser's own player holds every seat of — the review's hot-seat
-    /// table, in the state it reached after 1,635 moves and 2,461 passes.
+    /// table, in the spread state it reached at event 419 and holds to 4,096.
     fn a_spread_table() -> Arc<AppState> {
         let store = Arc::new(MemStore::default());
         store.write_if_version(Doc::Record, SPREAD_ID, SPREAD_RECORD, None).expect("the record");
@@ -2404,21 +2586,28 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
 
     /// The DEBUG-profile ceilings the spread table's three reads are held
     /// under, in milliseconds — each five times the pre-flight's reading on
-    /// the Mac (the plan's §"Review record"): the first read pays the rebuild
-    /// (4,096 events through the predicate fold), the run folds sixty-three
-    /// events from the ladder and builds sixty-four frames from the factored
-    /// source, the undo folds from the nearest kept state.
-    const SPREAD_FIRST_READ_MS: u128 = 30_000;
-    const SPREAD_RUN_MS: u128 = 10_000;
-    const SPREAD_UNDO_MS: u128 = 10_000;
+    /// the Mac inside the parallel lib run (the plan's §"Review record": the
+    /// first read 62–65 ms alone and 130 ms in-suite; the run 46–48 ms; the
+    /// undo 14 ms), rounded up: the first read pays the rebuild (4,096 events
+    /// through the predicate fold), the run folds sixty-three events from the
+    /// ladder and builds sixty-four frames from the factored source, the undo
+    /// folds from the nearest kept state. What they catch is a MATERIALIZED
+    /// replay or frame — seconds, 235 positions at a six-figure family — not
+    /// the ladder, whose pin is the session cell's fold count.
+    const SPREAD_FIRST_READ_MS: u128 = 700;
+    const SPREAD_RUN_MS: u128 = 500;
+    const SPREAD_UNDO_MS: u128 = 150;
 
     /// **A frame at the spread state is small, and says what it folded**
     /// (finding A3; R-SEC8(e)): the review read 58,304,650 bytes here — one
     /// worded option per legal move, 442,368 retreats among them. The frame
-    /// now carries the recover-nothing retreat alone and `options_omitted`
-    /// in six figures; its bytes are under 256 KiB; the numbered rows are the
-    /// REPL's grouped entries, a handful. And the first read, which rebuilds
-    /// the game from its record, is under its bound — the predicate fold's.
+    /// now carries `options_omitted` in six figures and its bytes are under
+    /// 256 KiB; the numbered rows are the REPL's grouped entries, a handful.
+    /// The first read, which rebuilds the game from its record, is under its
+    /// bound — the predicate fold's. A hot seat is viewed as the seat to move,
+    /// so the POSITION's frame lists no option rows (seat 3 is to move at the
+    /// record's end) and carries the count alone; undone to the decision, the
+    /// LIVE frame is seat 0's and lists the recover-nothing retreat alone.
     #[tokio::test]
     async fn a_frame_at_the_spread_state_is_small_and_counts_what_it_folded() {
         let state = a_spread_table();
@@ -2431,7 +2620,7 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
         let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
         assert!(frame["options_omitted"].is_u64(), "the field rides every frame: {}", frame["options_omitted"]);
         assert_eq!(frame["prompt"]["kind"], "options");
-        assert!(frame["prompt"]["rows"].as_array().map_or(false, |r| r.len() < 40), "the REPL's grouped rows");
+        assert!(frame["prompt"]["rows"].as_array().is_some_and(|r| r.len() < 40), "the REPL's grouped rows");
         // The spread DECISION itself, at its position in the record.
         let k = spread_decision_at();
         let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at/{k}")).await;
@@ -2439,7 +2628,21 @@ git commit -m "cli+web: the session keeps a state every sixty-four events and fo
         assert!(raw.len() < 256 * 1024, "the position's frame is {} bytes", raw.len());
         let at: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
         assert!(at["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", at["options_omitted"]);
-        let retreats = at["frame"]["decision"]["options"].as_array().expect("options").iter().filter(|o| o["mv"].get("ReturnPresidentToHand").is_some()).count();
+        assert_eq!(at["frame"]["decision"]["viewer_is_deciding"], false, "the viewer is the seat to move now, not seat 0");
+        assert_eq!(at["frame"]["decision"]["options"].as_array().map(Vec::len), Some(0), "no rows for another seat's decision");
+        // Undone to the decision: the live frame is seat 0's, and lists the fold.
+        let total = frame["events"].as_u64().expect("events") as usize;
+        for _ in k..total {
+            let (status, _) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the decision's live frame is {} bytes", raw.len());
+        let live: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((live["events"].as_u64(), live["to_move"].as_u64()), (Some(k as u64), Some(0)));
+        assert!(live["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", live["options_omitted"]);
+        let retreats = live["frame"]["decision"]["options"].as_array().expect("options").iter().filter(|o| o["mv"].get("ReturnPresidentToHand").is_some()).count();
         assert_eq!(retreats, 1, "the recover-nothing member alone");
     }
 
@@ -2531,9 +2734,9 @@ contract's root cells (`contract.test.ts:22–100`) read the two lists.
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- folded_legal
 spread_state spread_table 2>&1 | grep -E '^error|test result|panicked' | head` — `folded_legal`,
 `folded_legal_capped`, `OPTIONS_CAP` not found; stubbed (`get_legal_moves` with `0` omitted): the fold cell RED
-at the first folded family; the cap cell RED; the frame cell RED on the bytes (the pre-flight's reading of the
-unfolded frame, ~58 MB, and the rebuild's time) — the run and undo cells read their pre-flight figures under
-Task 5's ladder alone, recorded. `cd web && npm run typecheck` RED on `KeysOf` once the lists move and the
+at the first folded family; the cap cell RED; the frame cell RED on the bytes (the unfolded frame) — the run and undo cells read their pre-flight figures
+under Task 5's ladder alone: the first read 62–65 ms alone and 130 ms in the parallel lib run, the run 46–48 ms,
+the undo 14 ms (the ceilings are five times the in-suite readings, rounded up: 700 / 500 / 150 ms). `cd web && npm run typecheck` RED on `KeysOf` once the lists move and the
 types do not (the order the implementer takes: types first).
 
 - [ ] **Step 3: The code.** In `client.rs`, above `ClientState` (:132):
@@ -2541,15 +2744,17 @@ types do not (the order the implementer takes: types first).
 ```rust
 /// The most legal moves a frame lists (security S1b, finding A3; R-SEC8(e)) —
 /// the retreat family folded to its recover-nothing member, the rest capped.
-/// From real play: outside the retreat family the largest family the
-/// generator offers is a placement list (189 moves at the opening of the
-/// corpus walk; the pre-flight's sweep read at most N at two, three and four
-/// players), so 2,048 is never reached by a legal list of today's generator.
+/// From measured play: outside the retreat family the largest list the
+/// generator offers is a placement list — 189 moves at the opening of the
+/// corpus walk, and over 200 uniform-random games at each count the
+/// pre-flight's sweep read at most 432 (2P), 1,154 (3P) and 3,303 (4P, deep in
+/// a game no person plays) — so 4,096 is above every legal list the generator
+/// has produced.
 /// The cap is the fence against a family no ceiling is known for (the routes'
 /// label count, L9), not a budget; what it or the fold leaves out is COUNTED
 /// in `options_omitted`, never silent. A hot-seat table in the engine's
 /// worst-case state offered 442,368 retreats — 58 MB a frame — before this.
-pub const OPTIONS_CAP: usize = 2_048;
+pub const OPTIONS_CAP: usize = 4_096;
 
 /// The legal list a frame is built from (security S1b, finding A3): every
 /// family of the factored action source in the generator's order, the retreat
@@ -2647,9 +2852,10 @@ flag, `browser_played_pin`, `play_a_whole_game`'s two arms — its two-identity 
 the public dashboard, not the roots); `cargo test -p yokohama-wasm`, `-p yokohama-worker`; `cd web && npm run
 build:wasm && npm run typecheck && npm test -- --run && npm run test:wasm`; `cd worker && npm run
 build:module:debug && npm run typecheck && npm run test:scripts && npm test`; **`cd web && npm run e2e`** (the
-client's types moved; 79 expected). The three spread cells run THREE times for their margins. Mutants: **M21** —
+client's types moved; 79 expected). The three spread cells run THREE times for their margins (the pre-flight's: above). Mutants: **M21** —
 the fold keeping the LAST retreat member: the fold cell RED; **M22** — `omitted` not counting the family
-(`len.saturating_sub(1)` → `0`): the fold cell RED and the frame cell RED at `options_omitted`; **M23** —
+(`len.saturating_sub(1)` → `0`): the fold cell RED, the frame cell RED at `options_omitted` and the run cell at
+its last frame's; **M23** —
 `from_state` back to `get_legal_moves`: the frame cell for `/at` (the run) RED on bytes and the bound; **M24**
 — `ClientState::of` back to `session.legal()`: the frame cell RED on bytes. `cargo clippy --workspace
 --all-targets -- -D warnings` clean.
@@ -2784,15 +2990,18 @@ sent rows alone. The first cell reads:
   });
 ```
 
-The cells at :446–678 keep their names and intents and move to KEPT rows: "sends the credential…" asserts
-`others.length` equals the sent rows (no longer `> 2000`) and walks `host.rows` filtered to sent rows; "reports
-a field that differs…" edits a kept named row (`health`'s `semantics_rev`, say — `walk.json` row 28 if the
-pre-flight's list confirms it kept; its sentence then names `health semantics_rev`); "stops at a status that
-differs…" uses a kept row with a request body (the house post, `walk.json`'s `house_chat_post` row) and asserts
-no body text printed; the lobby re-read cell is DELETED (the lobby pages are skipped; `filterLobby`'s own cells
-stay); "redacts a value…" edits `wire4`'s table read if the walk has one, else `health`; the rest edit rows the
-rule keeps. The pre-flight's kept-row list (Task 9 Step 1, in the review record) names each row by script,
-index and fixture, and the brief carries it verbatim.
+The cells at :446–678 keep their names and intents and move to KEPT rows (the pre-flight's kept-row list, in the
+review record — 26 rows of 2,213; the brief carries it verbatim): "sends the credential…" asserts `others.length`
+is the base read plus the rows the rule sends (no longer `> 2000`) and walks `host.rows` filtered to them;
+"reports a field that differs…" edits `walk.json` row 28 (`health`, kept): its `semantics_rev` + 1, the
+mismatch `health semantics_rev`, the sentence "walk.json row 28: GET /api/health as red@wire.test — health
+semantics_rev: committed 7 · got 8", and `result.run` read as `result.total - result.skipped`; "stops at a
+status that differs…" uses `walk.json` row 43 (the house post, `POST /api/chat`, kept): the stopped request is
+`POST ${ORIGIN}/api/chat`, its body's `text` is the premise and the report never prints it; the lobby re-read
+cell is DELETED (the lobby pages are skipped; `filterLobby`'s own cells stay); "redacts a value…" edits row 28
+(`health`) with a planted `seed` — `walk.json` has no `wire4` table read — the mismatch `health seed`; `planIndex`
+counts SENT rows alone (`rows.filter(!skipped).findIndex(..)`), and a cell that read `rows[i - 1]` finds its row
+by script and index instead; the rest edit rows the rule keeps (row 28, the archive walk's row 0, the base read).
 
 - [ ] **Step 2: Run them to verify they fail.** `cd worker && npx vitest run scripts/live-replay.test.mjs 2>&1 |
 tail -20` — the four `productionSeedRule` cells fail on the missing exports; the driver's first cell fails on
@@ -3055,5 +3264,53 @@ git commit -m "docs: the lane document's archive, undo, executor and route rows 
 
 ## Review record
 
-(The pre-flight's findings and readings, each task's review, the after review and the readings at the code
-head go here, as S1a's plan carries them — filled by Task 9.)
+### The "before" review (Task 9 Step 1), 2026-10-09 — the orchestrator's own, on an export of `604d7269`
+
+**Method.** A `git archive` export (`scratchpad/export-604d7269`; `web/node_modules`, `worker/node_modules` and `bridge-captures` linked in); this plan's code blocks lifted by a script (`docs/temp/security-review-2026-10-08/s1b-before/blocks.py`, never retyped) and spliced by exact anchors (`edit.py`, `apply_t<N>.py`, each anchor matching once); every named mutant applied by a sha-checked runner (`mutants.py`) over the WHOLE web lib (or the CLI lib, or the vitest file) so "red at its cell and nowhere else" is a reading, not a claim; the findings and every reading in `s1b-before/findings.md`, the logs under `s1b-before/logs/`. Readings are the export's own, debug profile unless said, on the Mac (Darwin 27.0.0 arm64). Every block this record names as corrected was transcribed BACK into this plan from the scratch's files, so the plan and the code it describes are the same bytes.
+
+**The fixture (Step 1(a)).** Cut by a scratch example from the review's `spread_4p_11_body.json`: the first 4,096 of 23,606 events, the terminal digest re-stamped (`da476c9ac52c8169`) and verified through `replay_strict_with(.., Predicate)`; the record compact, 161,737 bytes; the table re-seated as four `local@browser` humans, `keeps [1,1,1,1]`, id `local-spread4096`, `turn` null; the provenance file names the origin, the generator (described from the review's report — its source was the reviewer's scratch, not retained), the cut, `spread_decision_at` 4,083 and the end state. Measured on the cut, against what this plan quoted from the review: seat 0's family reaches 442,368 at event **419** (not 1,633; every seat's at the same event); seat 0 is to move in Movement at 254 positions, **235** of them at a six-figure family — the cost under `Listed` — not "2,463 passing turns"; the greatest such position is **4,083**, where `get_legal_moves` lists 442,385 moves (442,368 retreats) in 13 ms release; the record ENDS in seat 3's `AdditionalActionSecond` (families `[442368, 256, 256, 256]`, areas occupied `[17, 8, 8, 8]`), not a Placement. `check_pair` on the export (the `Listed` replay at this head) accepts it in 5.8–8.3 s release; the predicate replay 11–16 ms release. Committed on `security-s1` before Task 1's dispatch.
+
+**The findings** (F-numbers as `findings.md` carries them; each corrected in this plan at the source):
+
+- **F15 — the early answer's placement (Task 1; the decisive finding).** Placed before every check, as drafted, it turned the committed archive walk's `archive_400_table` row — the landed record beside a table that fails its checks, status 400 — into a 200 `identical`: `wire_fixtures` read 8 of 17 cells RED, the corpus would have moved in Task 1, and on the Worker, whose receipt archive cannot read its files (`holds` is the trait's default `false`), the same row would stay 400 — two hosts answering a corpus row differently, and Task 7's live replay mismatching it. The spec's A2 row says "before REPLAYING"; the reshaped design meets it exactly: `check_pair_with` is a wrapper over `check_pair_filed(record, table, rules, filed)`, whose hook is asked once every cheap check has passed and before the replay, returning `PairFacts { held: true, .. }` with no replay paid; a restore passes `|_, _| None`; `archive_post` passes `Archive::holds` for both leaves and answers 200 `identical` on `held`. The retry cell's proof is an archive double that claims to hold everything: a record that does not replay reads 200 through it and the replay's 400 on a real empty archive; the same double beside a disagreeing table reads the agreement's 400. `wire_fixtures` back to 17 green, the corpus unmoved; `lib.rs`'s `the_archive_route_checks_and_files_a_browser_game` keeps its committed row (F3, first read as a cell to re-point, withdrawn).
+- **F7 — the attribution rule dropped (Task 2).** "A browser's pair is its own local game" refused the corpus's eight archive rows and the live replay's, which post `red@wire.test`'s hosted tables by design; the review's D25 line asks for `validate_config`, `seat_disagreement` and the record mirror, never this; the archive attributes a file by the uploader's folder and the names inside a document are data. The rule, `NOT_A_LOCAL_PAIR`, its cell and M9 are out; spec correction 6 records the residual.
+- **F16 — `OPTIONS_CAP` (Task 6).** "2,048 is never reached by a legal list of today's generator" was false: over 200 uniform-random games at each count, the largest REALIZED non-retreat legal list is 432 at 2P (seed 7, Placement, turn 601), 1,154 at 3P (seed 145, turn 944) and **3,303 at 4P** (seed 29, turn 1,928) — `family_len`'s upper bound agreed exactly. The cap is **4,096**, the next power of two above every measured list, so it stays the fence the plan intends; the comment carries the figures.
+- **F8, F12** — the spread figures and the generator's provenance, above. **F11** — `SPREAD_REPLAY_BOUND_SECS` is **3**: the predicate replay through `check_pair` in debug took 0.49–0.55 s alone (three runs) and 0.345 s inside the parallel lib run; the `Listed` mutant took **198.08 s** (the whole lib 198.5 s against 86 s).
+- **F1** `SPREAD_TABLE` was a dead constant in `api.rs`'s tests (the lint gate). **F2** the retry cell's control table (`players` 3) failed `check_shape` before `agrees_with`; `start_seat` 1 is the disagreeing table. **F4** M4 was invisible: the order cell sized its 413 probe from the constant it mutates; the cell now pins `ARCHIVE_BODY_LIMIT == 512 << 10` and sizes the probe at the literal. **F6** `no_digest` unused once the lockdown rows replace the digest row. **F9, F10** counts in comments that move. **F5** `games.rs` needs no `Quota` arm (a catch-all `Err(e)`). **F13** the TS cell's helper is `noteGameOver`. **F14** `HistoricalFrame::at` has two callers in `tables.rs` the plan did not name (one production, one cell).
+
+**Readings, Tasks 1–4** (the lib count after each task; every mutant over the whole lib, red at the named cells ALONE unless said): Task 1 — lib **431** (426 + 5); M1 the count, restore and order cells; M2 the bounded cell; M3 (the hook deleted) the retry cell; M4 (after F4) the order cell. Task 2 — lib **437**; M5, M6, M7, M8, M10, M11 as the plan names them (M6/M7/M8 red the order cell too, as said); `mcts-v1` is foreign at this head. Task 3 — lib **439**; vitest `outbox.test.ts` 59; M29–M33 as named. Task 4 — lib **442**; the stall cell's health read behind two slow replays 0.40 / 0.55 / 0.71 ms (bound 400 ms), the gate's 503 within 53.9 / 53.8 / 55.1 ms of a 50 ms wait (bound 600 ms), three runs each; M12 (inline dispatch) the stall cell RED, the pause and the health read 1.05 s under the old adapter's body swapped in whole (the cell's clock moved before the pause — F21; 154 ms on the correct code, three runs); M13 and M15 the gate cell; M14 the gate cell at the move, the route cell's "never gated" rows and the stall cell (its health read waits for a permit).
+
+**Readings, Tasks 5–7, and the gates on the scratch** (the whole lib after each task; mutants over the whole lib): Task 5 — the CLI suite **860** (832 lib = 829 + 3, 2 ignored), the web lib **444**; cell (c)'s placement taken from the first position that offers one (F18); the parked-read cell's game BUILT in process, never driven (F19: `play_turn`'s passing policy never ends a game — the chain sat in it an hour), its body read as the record's own JSON (F20); M16's catcher is cell (a)'s fold COUNT (F24; the run under M16 read 125 ms against 46, inside any honest ceiling), RED under the mutant, 831 green beside; M17 cell (b) alone; M18 cell (c) and the CLI's tampered-load cell; M19 the D27 cell alone; M20 the parked-read cell alone. Task 6 — the web lib **449**; the three spread cells three times each: the first read 60–67 ms alone / 127 ms in-suite, the run 47–48 / 102, the undo 14–19 / 31 — the ceilings 700 / 500 / 150 ms (five times the in-suite readings, rounded up; they catch a MATERIALIZED replay or frame, seconds, not the ladder); the cap cell walks to the first Placement (F22), the fold cell constructs the lone retreat (F25), the frame cell reads the decision LIVE after undoing to it, the position's frame carrying the count and no rows (F23); `OPTIONS_CAP` 4,096 (F16); the corpus regenerated ONCE: 27 payloads gain `options_omitted`, `retreat.json` (34 lines), `retreat_answered.json` (34) and `options_priced.json` (22) renumber under the fold, nothing else moves, `wire_fixtures` 17 green; M21 the fold cell and the run cell's ceiling (`.last()` walks the family); M22 the fold, frame and run cells; M23 the frame and run cells (bytes); M24 the frame cell. Task 7 — the rule keeps **26 of 2,213** rows (`wire`, `wire2` skipped); `test:scripts` **540** + 1 skipped after the 409 cell's premise (F26); M25 the rule's first cell, the driver's first and the honouring-host cell; M26 the driver's ten cells (the fake host has no answer for a skipped row); M27 the honouring-host cell alone; M28 the driver's first cell alone. The gates: `cargo clippy --workspace --all-targets -- -D warnings` CLEAN after F27 (`is_multiple_of`, `is_none_or`) and F28 (`is_some_and`); the five fenced crates and the Worker and wasm crates byte-identical to the checkout; the CLI's diff confined to `session.rs`; wasm **10**, Worker **77**, vitest **1,506**, `test:wasm` **353**, the pool **224**, both typechecks clean, `build:wasm` 1,241,394 B. Every code block of this plan was verified verbatim against the scratch after the corrections, bar the three that cannot be (Task 1's doc paragraph at its own stage, the tables cell's named builder that the fallback paragraph covers, and the `… as it is …` placeholder).
+
+**The live replay's kept-row list (Task 7's brief carries it verbatim):**
+
+```
+skipped tables: wire, wire2; rows 2213 (walk 2201, host 4, archive 8)
+walk-host.json row 0: GET /api/art as no one -> 200 art_manifest
+walk.json row 0: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
+walk.json row 1: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
+walk.json row 28: GET /api/health as red@wire.test -> 200 health
+walk.json row 29: GET /api/me as red@wire.test -> 200 me
+walk.json row 30: GET /api/me as no one -> 200 me_signed_out
+walk.json row 31: GET /api/labels as red@wire.test -> 200 labels
+walk.json row 43: POST /api/chat as red@wire.test -> 201 house_chat_post
+walk.json row 44: GET /api/chat as blue@wire.test -> 200 house_chat
+walk.json row 48: DELETE /api/chat/1 as red@wire.test -> 204 house_chat_delete
+walk.json row 2179: POST /api/games as red@wire.test -> 201 (unnamed)
+walk.json row 2180: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2181: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2182: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2183: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2184: GET /api/games/wire4 as red@wire.test -> 200 options_4p
+walk.json row 2185: GET /api/games/wire4/areas as red@wire.test -> 200 areas_4p
+walk.json row 2200: GET /api/games/no-such-game as red@wire.test -> 404 error
+archive-walk.json row 0: POST /api/archive as red@wire.test -> 201 archive_post
+archive-walk.json row 1: POST /api/archive as red@wire.test -> 200 archive_post_identical
+archive-walk.json row 2: POST /api/archive as red@wire.test -> 409 archive_409
+archive-walk.json row 3: POST /api/archive as red@wire.test -> 201 archive_post_abandoned
+archive-walk.json row 4: POST /api/archive as red@wire.test -> 400 archive_400_rev
+archive-walk.json row 5: POST /api/archive as red@wire.test -> 400 archive_400_digest
+archive-walk.json row 6: POST /api/archive as red@wire.test -> 400 archive_400_replay
+archive-walk.json row 7: POST /api/archive as red@wire.test -> 400 archive_400_table
+kept 26, skipped 2187, total 2213
+```
