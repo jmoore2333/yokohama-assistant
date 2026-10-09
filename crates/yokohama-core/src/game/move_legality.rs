@@ -267,6 +267,43 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
     }
 }
 
+/// Whether `mv` is IN `get_legal_moves(state, rules)` — a single-candidate
+/// answer that never pays the Movement phase's retreat product (the family
+/// that reaches 442,368 moves in legal play; the two families `is_move_legal`
+/// DELEGATES, area actions and choice resolutions, still materialize their
+/// own measured-small lists — max 154 and 114) and, unlike [`is_move_legal`],
+/// EXACT on the one family where acceptance is wider than membership.
+///
+/// `is_move_legal` accepts any legal WITNESS path for a `MovePresident` label
+/// the generator emits (the module doc's "witnesses, not list membership"),
+/// while the list prints one lex-least witness per label. So for the Movement
+/// family — `MovePresident` and `PlacePresident` — the only exact check is the
+/// family's own list, `crate::game::route_enum::movement_routes_family`:
+/// byte for byte the list's Movement subsequence (`action_source_equivalence`
+/// pins it), small (max observed 694 adversarial / 66 organic), compute-per-
+/// call. That family consults nothing about `turn_phase` or the choice queue by
+/// contract, so `is_move_legal`'s phase and queue gates are taken FIRST. For
+/// every other variant acceptance and membership coincide (the module doc), so
+/// `is_move_legal` IS the answer.
+///
+/// The proof: `is_listed_move_is_exactly_membership_in_the_legal_list`,
+/// `is_listed_move_reads_the_phase_the_list_reads` and
+/// `a_queued_choice_refuses_a_listed_family_member_at_movement` below, and
+/// `tests/replay_check_equivalence.rs` for the replay built on this (the
+/// 2026-10-08 ruling R-SEC2). What this function is FOR: a replay of an
+/// untrusted record whose cost must not follow the retreat family's size.
+pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool {
+    match mv {
+        Move::MovePresident { .. } | Move::PlacePresident { .. } => {
+            is_move_legal(state, mv, rules, PathMode::Canonical)
+                && crate::game::route_enum::movement_routes_family(state, rules)
+                    .iter()
+                    .any(|listed| listed == mv)
+        }
+        _ => is_move_legal(state, mv, rules, PathMode::Canonical),
+    }
+}
+
 /// Option A: one assistant into each of 1..=N DISTINCT areas, or none at all
 /// (`legal_moves.rs:115-196`).
 fn distinct_area_placement_legal(state: &GameState, placements: &[AreaId], rules: &Rules) -> bool {
@@ -897,6 +934,196 @@ mod tests {
             non_canonical_witnesses > 0,
             "no non-canonical witness was ever accepted — the RulesLegal contract is untested",
         );
+    }
+
+    // -- is_listed_move: exact membership (R-SEC2) -----------------------------
+
+    /// `is_listed_move` is EXACTLY membership in the legal list (the 2026-10-08
+    /// ruling R-SEC2's move-level half): at every decision point of random
+    /// games at 2/3/4P, every listed move passes, and every constructed
+    /// candidate reads as the list reads it. Three counters are the
+    /// anti-vacuity, each naming the mechanism it proves was exercised:
+    /// `conjunct_cases` — candidates `PathMode::Canonical` ACCEPTS and the
+    /// list LACKS (non-lex-least witnesses; `witness_variants` builds them
+    /// from every walked move), where only the family conjunct can side with
+    /// the list; `queued_family_refusals` — REAL members of the phase-blind
+    /// Movement family judged while a choice heads the queue, where only the
+    /// `is_move_legal` conjunct — its queue short-circuit — refuses them,
+    /// since the family lists them (Review Focus 3); `out_of_phase_family_refusals`
+    /// — the same outside the Movement phase, refused by its phase gate alone.
+    /// The phase gate's presence is what this cell and the phase cell pin (the
+    /// family-alone mutant turns both red); the queue gate's own pin is
+    /// `a_queued_choice_refuses_a_listed_family_member_at_movement`, because
+    /// in engine-produced states a queued choice never coexists with the
+    /// Movement phase, so every queued member here is out of phase as well.
+    /// Taking the gates first is the cost order, not what these counters prove.
+    #[test]
+    fn is_listed_move_is_exactly_membership_in_the_legal_list() {
+        let mut listed = 0usize;
+        let mut candidates_seen = 0usize;
+        let mut conjunct_cases = 0usize;
+        let mut queued_family_refusals = 0usize;
+        let mut out_of_phase_family_refusals = 0usize;
+        drive(3, 400, |state, rules, legal_moves| {
+            for mv in legal_moves {
+                assert!(
+                    is_listed_move(state, mv, rules),
+                    "a listed move must pass at {:?}: {mv:?}",
+                    state.turn_phase,
+                );
+                listed += 1;
+            }
+            let mut pool = candidates(state, legal_moves);
+            pool.extend(witness_variants(state, legal_moves));
+            for mv in pool {
+                candidates_seen += 1;
+                let in_list = legal_moves.contains(&mv);
+                assert_eq!(
+                    is_listed_move(state, &mv, rules),
+                    in_list,
+                    "disagrees with the list at {:?}: {mv:?}",
+                    state.turn_phase,
+                );
+                if !in_list && canonical(state, rules, &mv) {
+                    conjunct_cases += 1;
+                }
+            }
+            // The phase-blind family's REAL members, judged where the list
+            // cannot hold them: under a queued choice, or in any phase but
+            // Movement. The family is computed here exactly as the conjunct
+            // computes it, so under the family-alone mutant every member
+            // reads as listed.
+            let queued = !state.pending_choices.is_empty();
+            if queued || state.turn_phase != TurnPhase::Movement {
+                for mv in crate::game::route_enum::movement_routes_family(state, rules) {
+                    assert!(!legal_moves.contains(&mv), "premise: no movement move is listed here: {mv:?}");
+                    assert!(
+                        !is_listed_move(state, &mv, rules),
+                        "a family member must be refused at {:?} (queued: {queued}): {mv:?}",
+                        state.turn_phase,
+                    );
+                    if queued {
+                        queued_family_refusals += 1;
+                    } else {
+                        out_of_phase_family_refusals += 1;
+                    }
+                }
+            }
+        });
+        println!(
+            "is_listed_move sweep: listed {listed}, candidates {candidates_seen}, conjunct cases {conjunct_cases}, \
+             queued family refusals {queued_family_refusals}, out-of-phase family refusals {out_of_phase_family_refusals}"
+        );
+        assert!(listed > 1_000, "vacuous sweep: only {listed} listed moves");
+        assert!(candidates_seen > 1_000, "vacuous sweep: only {candidates_seen} candidates");
+        assert!(
+            conjunct_cases > 0,
+            "no Canonical-accepted non-member was judged — the family conjunct is untested",
+        );
+        assert!(
+            queued_family_refusals > 0,
+            "no family member was judged under a queued choice — Review Focus 3's queued case is untested by this cell",
+        );
+        assert!(
+            out_of_phase_family_refusals > 0,
+            "no family member was judged outside Movement — the phase gate is untested",
+        );
+    }
+
+    /// Non-canonical WITNESSES for labels the list prints: for every walked
+    /// `MovePresident`, the same route with a detour prepended through a
+    /// neighbour adjacent to both the start and the first hop, and the direct
+    /// hop where a longer walk's destination is adjacent to the start. Which
+    /// variants are rules-legal, which share a listed move's label and which
+    /// the generator happens to print is the LIST's business: every one is
+    /// judged against it.
+    fn witness_variants(state: &GameState, legal_moves: &[Move]) -> Vec<Move> {
+        let PresidentLocation::OnBoard(current) = state.player(state.current_player).president_location
+        else {
+            return vec![];
+        };
+        let mut out = Vec::new();
+        for mv in legal_moves {
+            let Move::MovePresident { path, destination } = mv else { continue };
+            let Some(&first) = path.first() else { continue };
+            for &via in state.board_layout.adjacent_areas(current) {
+                if via == first
+                    || path.contains(&via)
+                    || !state.board_layout.adjacent_areas(via).contains(&first)
+                {
+                    continue;
+                }
+                let mut detour = Vec::with_capacity(path.len() + 1);
+                detour.push(via);
+                detour.extend_from_slice(path);
+                out.push(Move::MovePresident { path: detour, destination: *destination });
+            }
+            if path.len() >= 2 && state.board_layout.adjacent_areas(current).contains(destination) {
+                out.push(Move::MovePresident { path: vec![*destination], destination: *destination });
+            }
+        }
+        out
+    }
+
+    /// The phase dimension: a move the list held one state ago is judged at
+    /// the NEXT state exactly as the next state's list judges it. The Movement
+    /// family's list is phase-blind by contract (`route_enum.rs`), so this is
+    /// what proves the conjunction keeps `is_move_legal`'s PHASE gate (the
+    /// queue gate's pin is `a_queued_choice_refuses_a_listed_family_member_at_movement`
+    /// — a movement move's successor never queues a choice, so this cell
+    /// cannot meet it); the counter proves a movement move was judged outside
+    /// its phase at least once.
+    #[test]
+    fn is_listed_move_reads_the_phase_the_list_reads() {
+        let mut checked = 0usize;
+        let mut movement_refused_later = 0usize;
+        drive(2, 300, |state, rules, legal_moves| {
+            let Some(first) = legal_moves.first() else { return };
+            let next = apply_move_unchecked(state, first, rules).expect("a listed move applies");
+            let next_list = get_legal_moves(&next, rules);
+            for mv in legal_moves {
+                let in_next = next_list.contains(mv);
+                assert_eq!(
+                    is_listed_move(&next, mv, rules),
+                    in_next,
+                    "disagrees one state later at {:?}: {mv:?}",
+                    next.turn_phase,
+                );
+                checked += 1;
+                if !in_next && matches!(mv, Move::MovePresident { .. } | Move::PlacePresident { .. }) {
+                    movement_refused_later += 1;
+                }
+            }
+        });
+        println!("phase sweep: checked {checked}, movement moves refused one state later {movement_refused_later}");
+        assert!(checked > 1_000, "vacuous sweep: only {checked} checks");
+        assert!(
+            movement_refused_later > 0,
+            "no movement move was ever judged outside its phase — the gate is untested",
+        );
+    }
+
+    /// The queue gate's own pin for the conjunction. In engine-produced states
+    /// a queued choice never coexists with the Movement phase (every queued
+    /// member the membership cell judges is out of phase as well, so the phase
+    /// gate refuses it too), so only a hand-built state can show that the
+    /// conjunction relies on `is_move_legal`'s queue short-circuit: the diamond
+    /// at Movement with an `AnyGood` choice queued, where the family lists the
+    /// walk and the list holds only the choice's resolutions. A predicate that
+    /// kept the phase gate and dropped the queue gate would accept it.
+    #[test]
+    fn a_queued_choice_refuses_a_listed_family_member_at_movement() {
+        let mut s = diamond(2, &[]);
+        s.pending_choices.push(PendingChoice::AnyGood);
+        let rules = Rules::empty_for_tests();
+        let walk = Move::MovePresident { path: vec![AreaId(1)], destination: AreaId(1) };
+        assert_eq!(s.turn_phase, TurnPhase::Movement, "premise: the Movement phase");
+        assert!(
+            crate::game::route_enum::movement_routes_family(&s, &rules).contains(&walk),
+            "premise: the family lists it",
+        );
+        assert!(!get_legal_moves(&s, &rules).contains(&walk), "premise: the list does not");
+        assert!(!is_listed_move(&s, &walk, &rules), "the queue gate must refuse it: {walk:?}");
     }
 
     // -- (c) zero false rejects -----------------------------------------------
