@@ -372,11 +372,12 @@ Expected: a compile error naming `is_listed_move` as not found.
 /// every other variant acceptance and membership coincide (the module doc), so
 /// `is_move_legal` IS the answer.
 ///
-/// The proof: `is_listed_move_is_exactly_membership_in_the_legal_list` and
-/// `is_listed_move_reads_the_phase_the_list_reads` below, and
+/// The proof: `is_listed_move_is_exactly_membership_in_the_legal_list`,
+/// `is_listed_move_reads_the_phase_the_list_reads` and
+/// `a_queued_choice_refuses_a_listed_family_member_at_movement` below, and
 /// `tests/replay_check_equivalence.rs` for the replay built on this (the
 /// 2026-10-08 ruling R-SEC2). What this function is FOR: a replay of an
-/// untrusted record whose cost must not follow the legal families' sizes.
+/// untrusted record whose cost must not follow the retreat family's size.
 pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool {
     match mv {
         Move::MovePresident { .. } | Move::PlacePresident { .. } => {
@@ -1140,3 +1141,12 @@ choice queued; the family lists the walk `[1]→1`, the list holds only the reso
 sentences now name which cell pins which gate. Also on record: the lead's `grep -c private_intra_doc_links` check
 cannot discriminate (rustdoc names a lint only on its first warning); the counts that do are "links to private item"
 warnings 91 → 90 and total rustdoc warnings 235 → 234 (234 is the count before Task 1).
+
+### 2026-10-08 — Task 1's fix round 2 (`a6432c7e`) and the function doc's proof sentence (R-13)
+
+The third cell, M3q and the two sentences landed byte for byte; M3q turns the new cell red alone, the two sweep
+cells green with unchanged counters, and the implementer showed "a queued choice never coexists with the Movement
+phase" holds by code, not by sampling: only the two placement arms enter Movement, a placement move is listed only
+with an empty queue, and placement queues nothing. **R-13:** the function doc's "The proof:" sentence named the two
+sweep cells only, and its last sentence still read "the legal families' sizes" where R-4 settled on the retreat
+family — both corrected in the block above; the code follows as a new commit.
