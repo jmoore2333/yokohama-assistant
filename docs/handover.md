@@ -6,7 +6,7 @@ here names the document that carries it, and it never outranks `guidingpath.md` 
 `CLAUDE.md` (the operating facts), or a dated document in `docs/plans/`. Keep it current at every
 session close: rewrite the stale lines, do not append history (the decision log is for history).
 
-**Updated:** 2026-10-09 — the security remediation's core PR MERGED (PR #48, `9ab8c430`; guidingpath's 2026-10-09 row); the remainder of S1, then S2 and S3, stack on ONE new branch (your ruling). 2026-10-08 (second session) — the core PR plan's "before" review done and PR #47 open (Track 4). 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: S1's remainder (Track 4), in a FRESH session; the computer player (Track 1) resumes after the security cycles.**
+**Updated:** 2026-10-09 (second session) — S1a's plan written on the branch `security-s1` and reviewed by you with three rulings (Track 4); the A2/B12 figures measured. 2026-10-09 — the security remediation's core PR MERGED (PR #48, `9ab8c430`; guidingpath's 2026-10-09 row); the remainder of S1, then S2 and S3, stack on ONE new branch (your ruling). 2026-10-08 (second session) — the core PR plan's "before" review done and PR #47 open (Track 4). 2026-10-08 — the security review of the web lane and its remediation specification (Track 4; guidingpath's 2026-10-08 row). 2026-10-04 — the instruction files split by role (guidingpath's 2026-10-04 row): a session starts here, and CLAUDE.md holds standing rules only. The web lane is complete (`v0.6.0`, 2026-10-01) and the V5 ship's one CLI line has landed (the hotfix row). **NEXT: S1a's "before" review and Task 1's dispatch (Track 4), in a FRESH session on `security-s1`; the computer player (Track 1) resumes after the security cycles.**
 
 ## Gates at HEAD
 
@@ -110,7 +110,7 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 1. **The handset's optional ten minutes** (R-6.5c2.33): your own phone against either host, to confirm what the simulators read — the wake after the Home screen, the storage, anything that blocks ([`web-lane.md`](web-lane.md) §3's phones row; the readings `worker/RUNBOOK.md` §19's phones bullet). The same bullet records three owner's-eye layout readings, not fixed: the game header's share of the iPhone's portrait height, the iPad's tiles, the chat input under Android's keyboard.
 2. **The blurb's words**, if you want them changed: the placeholder text E shipped is quoted in [`web-lane.md`](web-lane.md) §14.
 
-## Track 4 — Security remediation: the core PR landed; S1's remainder, S2 and S3 stack on one new branch (S4 is the public set, Track 2)
+## Track 4 — Security remediation: the core PR landed; S1a's plan is written on `security-s1`; S1b, S1c, S2 and S3 stack on it (S4 is the public set, Track 2)
 
 **State (2026-10-09):** the core PR is MERGED — **PR #48, master `9ab8c430`** (guidingpath's 2026-10-09 row; the plan
 `plans/2026-10-08-security-s1-core-replay-plan.md`, its §"Review record" the record of record, R-1–R-18): `is_listed_move`,
@@ -128,18 +128,40 @@ modified the protected core files. The remainder does not touch them, so **S1 pr
 cut from this master and merge back to master from there, not per cycle**; the per-cycle whole-branch reviews stand, and each cycle's
 plan is written against the stack's head.
 
+**S1 is THREE cycles (the M6.5c2 lesson), each planned against the stack's head:** S1a "the leaks" (A1, B1, B2,
+B3, B7, D5, D10, D11), S1b "the cost bounds" (A2, A3, B12, D6, D25, D27, D29's `archive_post` sentence; it carries
+the core PR's two notes — the CLAUDE.md parenthetical to drop, the "`replay_strict` itself is unedited" snapshot),
+S1c "the plumbing" (B8, B9, D1, D7, D12, D26, D28, D29's `is_token` sentence). **S1a's plan is
+[`plans/2026-10-09-security-s1a-leaks-plan.md`](plans/2026-10-09-security-s1a-leaks-plan.md)** on the branch
+`security-s1`, cut from master `e9824ec9` (the code of `9ab8c430` plus the core PR's close documents) — seven
+tasks in the core PR's shape, its §"Spec corrections" the seven forward corrections Task 6 records as the spec's
+§9.3. **Your rulings on it (2026-10-09):** reviewers are Opus for every task (the core PR's Fable reviews were the
+protected core files' exception; Sonnet/Opus and Opus/Opus are this sequence's tiers); B1 is served WITHHELD while
+the bot's starting order is hidden from the requester — you asked whether that is the opening round only: it is
+not, the kept card stays in the bot's hand, masked from every other seat, until the bot fulfils it, mid-game in
+every recorded game, and the review named it from the first bot move's feature values alone; B3 is the named
+`SeedPolicy::Diagnostic` opt-in for the fixtures and the Worker's pool, the production rule `SoloOnly`; the corpus
+regenerates once per wire-changing cycle, each diff read (a forward correction to spec §6). **The A2/B12 figures
+are measured** (the plan's §"The S1 figures"; raw logs `docs/temp/security-review-2026-10-08/s1a-measure/`):
+people's and the bot's games are 250–600 events under 60 KB pretty-printed, random play 15k–19k events and
+1.5–1.9 MB; the recommended knobs (a 4,096-event cap, 512 KiB body cap, 256 records / 128 MiB per caller, a
+2-permit semaphore with a 2 s bounded wait) are yours to confirm at S1b's plan (R-SEC8(f)).
+
 **Next session, in a FRESH context, in order:**
-1. Cut the branch from master at `9ab8c430` (the spec's name for the cycle: `security-s1`); S2 and S3 stack on it later.
-2. **Write S1's plan** against it from spec §2.1 — A1 (the corpus regenerates ONCE), A2 (the event-count cap and the semaphore sized
-   from the 54 ms figure; `check_pair_with` in `crates/yokohama-web/src/backup.rs` moves to `replay_strict_with(.., Predicate)`), A3,
-   B1, B2, B3, B7, B8, B9, B12 and the S1 Lows (D1, D5, D6, D7, D10, D11, D12, D25–D29) — in the core PR's shape: the plan's cells
-   executed in an export before any dispatch, Opus implementers who PROBE the brief's code before reporting, Fable task reviewers
-   re-reading the mutants on their own exports, the orchestrator's own whole-branch review at the end, the web lane's rows run since
-   the layer moves. Two notes the core PR hands S1: the `CLAUDE.md` parenthetical "S1 wires the web layer to it" becomes history the
-   day S1 lands (drop it in S1's close), and "`replay_strict` itself is unedited" is a snapshot any future edit of `replay_strict`
-   must revise. **A multi-subsystem plan is split into cycles planned against the stack's head** (the M6.5c2 lesson) — S1's rows
-   span the layer, the CLI's `suggest` derivation and the client; expect more than one cycle.
-3. S2's brainstorm after S1 lands on the stack, from the ledger; S3 after S2; the merge to master after S3, on your word.
+1. `git checkout security-s1`; read the plan whole, its §"Names shared across tasks" first.
+2. **Task 7 Step 1, the "before" review:** execute Tasks 1–5's cells and the TS cells against scratch
+   implementations of the plan's own blocks in a `git archive` export of `e9824ec9`, every mutant M1–M9 red at
+   its cell; three cells are written expecting to teach something (Task 2's drive words, Task 5(b)'s
+   reachability, Task 4(e)'s seat control); corrections at the SOURCE in the plan, as a new commit on the branch,
+   recorded in the plan's §"Review record".
+3. Dispatch Task 1 (Opus implementer, Opus reviewer on an export), the SDD ledger under
+   `docs/temp/security-review-2026-10-08/s1a-sdd/` (full reports to files, three-line replies, the
+   probe-and-name-concerns paragraph, no `rm -r`, no Monitor); then Tasks 2–6.
+4. The "after" whole-branch review, the per-edit suites with the web lane's rows and `npm run e2e` (the client
+   moved; no fifteen-gate roster — core and the version are unmoved), the close: the ledger's eight rows,
+   guidingpath's row and current state, this board.
+5. S1b's plan against the stack's head (transcribing the figures, with your knob choice), then S1c; S2's
+   brainstorm from the ledger after S1 lands; S3; the merge to master after S3, on your word.
 
 **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so
