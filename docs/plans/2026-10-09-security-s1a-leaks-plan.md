@@ -118,6 +118,24 @@ are S1b's to act on, when A2's wiring lands.
    `withheld` at a scratch vs-bot table and the full account at a finished one; a seeded create beside an open
    seat is a 400 on both hosts — run at S1a's close from a test deploy when the window still holds, else at the
    stack's deploy after S3. Every probe that creates state removes it.
+8. **§6 and §3.2, the CLI fence, and the guide pair** (the before review, 2026-10-09). The captured `suggest`
+   screen in `docs/cli-guide.md`/`.html` is held BYTE-EXACT to the fixture's own render by the CLI's regeneration
+   pin (`suggest::tests::the_guide_suggest_capture_is_what_the_fixture_renders`), and A1's digest moves the key
+   line and, at that fixture, the answer (a tie's keyed draw). "The CLI is touched only at `suggest::stream_seed`"
+   reads "…and the guide pair's captured `suggest` screen, re-captured from one run of the fixture, never
+   edited" — CLAUDE.md's guide rule for a user-visible CLI change.
+9. **§2.1 B7, the catcher and the stored document** (the before review). The corpus cannot carry the B7 case —
+   the walk's joiner joins WITH a name — so the fence is the layer's cells (the unit cell's three shapes, the
+   nameless-joiner route cell), not a corpus pin; a text rule on `invited` cannot tell a seat the creator typed
+   from one that was joined. The STORED document of a creator-bound seat gains `"bound_at_create": true` (a
+   joined seat's bytes are unchanged), and a table stored before the deploy stops echoing the creator's typed
+   addresses for still-nameless seats, once — the compatibility default, chosen.
+10. **§2.1 B3 and R-SEC8(b), the third host** (the before review). The browser host (`crates/yokohama-wasm`)
+    builds its `Games` through `Games::with_parts` too and reads `SoloOnly` like the NAS and the Worker; its
+    harness — the crate's seeded cell and the browser half's walk replay — opts in by name through a second
+    export, `init_diagnostic()`, the Worker switch's shape. Correction 4's list of opt-ins reads: on the NAS
+    binary never; on the Worker through `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` in the pool's two test files; on the
+    browser host through `init_diagnostic()`, which the client never calls.
 
 ## Global Constraints
 
@@ -127,13 +145,19 @@ are S1b's to act on, when A2's wiring lands.
   crates/yokohama-difftest crates/yokohama-bridge crates/gen-data` empty at every commit).
 - The CLI is touched in ONE module, `crates/yokohama-cli/src/suggest.rs` (`stream_seed`, its doc, its cells),
   and its manifest (`sha2`); `decide`, `bot.rs`, `why.rs`, the arena and every bot figure are untouched (spec
-  §6). `cargo test -p yokohama-cli` stays at 855 passed / 2 ignored plus this plan's cells.
+  §6). **The guide pair moves with it** (`docs/cli-guide.md` + `.html`): the captured `suggest` screen is held
+  BYTE-EXACT to the fixture's own render by `suggest::tests::the_guide_suggest_capture_is_what_the_fixture_renders`,
+  so it is RE-CAPTURED from one run of that fixture (Task 1 Step 4b), never edited — CLAUDE.md's guide rule for a
+  user-visible CLI change. `cargo test -p yokohama-cli` reads 857 passed / 2 ignored across its binaries
+  (855 + the two digest cells).
 - No bot behaviour moves: `suggest`'s ANSWER at a given position changes with its key (a different belief
   sample), which is A1's intended effect and not a bot change — the production contestant, its knobs and
   `decide`'s stream are untouched.
 - The wire corpus (`web/src/wire/`) changes in exactly TWO commits, Task 1's and Task 3's; each regeneration
   is run ONCE for its task, its diff READ and the reading recorded in the task report, naming every file that
-  moved and why (the M6.1 lesson: a regenerated corpus freezes a leak as faithfully as a fix).
+  moved and why (the M6.1 lesson: a regenerated corpus freezes a leak as faithfully as a fix). What each moves
+  was MEASURED in the before review and is written into Step 10(c) and Task 3's Step 5; a file beyond those
+  lists is a finding.
 - Stored documents stay readable both ways: `SeatDoc::Human`'s new field is `#[serde(default,
   skip_serializing_if = "is_false")]`, so a document written before it reads `false` and a joined seat's bytes
   are what they were; `TABLE_SCHEMA` stays 3.
@@ -205,11 +229,11 @@ Seven inputs the spec implies and this plan pins, each to the task that owns the
 | `games::SeedPolicy { SoloOnly, Diagnostic }` · `Games::with_seed_policy(self, SeedPolicy) -> Self` · `Games::seed_policy(&self) -> SeedPolicy` · `tables::SEED_NOT_SOLO: &str` | `crates/yokohama-web/src/games.rs`, `tables.rs`, `pub` | the production rule and the fixtures' opt-in; the create's refusal sentence (Task 4) |
 | `AppState::with_seed_policy(self, SeedPolicy) -> Self` | `crates/yokohama-web/src/lib.rs`, `pub` | the builder step the corpus walk and the gate's harness call (Task 4) |
 | `YOKOHAMA_DIAGNOSTIC_SEEDS` · `InitConfig.diagnostic_seeds: Option<bool>` | `worker/src/config.ts`, `crates/yokohama-worker/src/config.rs` | the Worker's seed switch: `on` only in `wrangler.test.jsonc` and `wrangler.open.test.jsonc`; the deploy guard refuses it in a deployable file (Task 4) |
-| `api::lockdown_messages(reason: &str) -> Vec<String>` | `api.rs`, `pub(crate)` | the `input` reply's messages when THIS step engaged a lockdown: the reason alone (Task 5) |
+| `api::lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>` | `api.rs`, `pub(crate)` | the `input` reply's messages when THIS step engaged a lockdown: the lines up to and including the lockdown line, or the reason alone (Task 5) |
 | `api::RECORD_UNSAVED: &str` | `api.rs`, `pub(crate)` | the 409 a finished game whose stored record is shorter than the handle's answers (Task 5) |
 | `observe(state, seat) -> Result<PlayerView, ViewError>` · `HandCard::HiddenStartingOrder` · `PlayerView.players[i].hand` | `crates/yokohama-core/src/game/observe.rs:26`; `types/view.rs:28` — at the crate root as `yokohama_core::game::observe`, `yokohama_core::HandCard` | the engine's own masking rule Task 1's visibility reads: for a non-viewer seat the unfulfilled starting order is `HiddenStartingOrder` (`observe.rs:160-176`) |
 | `state_at(record, k, rules)` · `GameState.order_deck` / `tech_deck` | `yokohama_core` | Task 2 compares the deck lengths of the state before the trailing event with the current state's |
-| `wire_fixtures::constructed()` · `BOT_SEED` · `SETUP_SEED` · `capture` | `crates/yokohama-web/tests/wire_fixtures.rs:2170`, `:99`, `:94` | where the `why` fixtures are built in process (Task 1 adds `why_withheld` and rebuilds `why` from a finished game) |
+| `wire_fixtures::constructed()` · `BOT_SEED` · `SETUP_SEED` | `crates/yokohama-web/tests/wire_fixtures.rs:2170`, `:99`, `:60` | where the `why` fixtures are built in process (Task 1 adds `why_withheld` and rebuilds `why` from a finished game) |
 | the route-cell helpers `live_router`, `call`, `a_game(router, name, bots)`, `start_as(state, name, seed, seats)`, `play_turn(state, id, user)`, `get_as`, `post_as`, `a_finished_two_person_game(name)`, `ENDED_SEED` | `crates/yokohama-web/src/lib.rs` `mod tests`, lines 2093, 2097, 2186, 2251, 2329, 3324, 3338 | what Tasks 1, 2, 3 and 5's route cells reuse |
 
 ## File structure
@@ -268,9 +292,18 @@ independent. Task 6 writes the documents the code changed. Task 7 is the orchest
 - Modify: `crates/yokohama-web/src/api.rs:1575–1614` (`why`)
 - Modify: `crates/yokohama-web/src/lib.rs` `mod tests` (:4551–4605 `suggest_carries_…`, :4675–4702
   `why_accounts_…`; one new cell and one new helper after `a_finished_two_person_game`, :3400)
-- Modify: `crates/yokohama-web/tests/wire_fixtures.rs` (:2170–2340 `constructed()`; a new pin after :3010)
-- Modify: `web/src/types.ts`, `web/src/wire/contract.ts`, `web/src/Explain.tsx`, `web/src/Explain.test.tsx`
-- Regenerate: `web/src/wire/suggest.json`, `why.json`, `web/src/wire/why_withheld.json` (new) — and nothing else
+- Modify: `crates/yokohama-web/tests/wire_fixtures.rs` (:2170–2340 `constructed()`; a new pin after :3027)
+- Modify: `web/src/types.ts`, `web/src/wire/contract.ts`, `web/src/wire/contract.test.ts` (:827), `web/src/Explain.tsx`,
+  `web/src/Explain.test.tsx`
+- Modify: three cells that compare a WHOLE `why` payload (Step 9(c)): `api.rs`'s
+  `a_finished_foreign_game_opens_scores_downloads_and_masks_the_conversion` and
+  `why_reconstructs_a_runnable_non_production_bot_and_refuses_a_foreign_one_with_its_reason`, `games.rs`'s
+  `a_same_name_re_point_is_told_apart_in_every_refusal_and_keeps_its_label_on_every_screen`
+- Re-capture: `docs/cli-guide.md` + `docs/cli-guide.html` (the captured `suggest` screen, Step 4b)
+- Modify: `worker/test/corpus.test.ts` (`THIRD_COLUMN`, :99) and `web/src/local/corpus.node.test.ts` (`NOT_SERVED`,
+  :155) — the two lists of the constructed fixtures, which gain `"why_withheld"` (Step 12)
+- Regenerate: `web/src/wire/suggest.json`, `why.json`, `why_withheld.json` (new), `why_refused.json`,
+  `why_foreign.json` — and nothing else
 - Test: the CLI's `suggest::tests`, the layer's `explain::tests` and `lib.rs` route cells, `wire_fixtures`,
   `web/` vitest and typecheck
 
@@ -383,10 +416,13 @@ independent. Task 6 writes the documents the code changed. Task 7 is the orchest
 
 - [ ] **Step 2: Run them to verify they fail.**
 
-Run: `cargo test -p yokohama-cli --lib suggest::tests::the_stream_key 2>&1 | tail -20`
+Run: `cargo test -p yokohama-cli --lib suggest::tests 2>&1 | grep -E 'the_stream_key|the_old_fold|test result'`
+(the filter `suggest::tests::the_stream_key` would run the digest cell alone — the inversion cell is
+`the_old_fold_…`).
 Expected: a compile error naming `sha2` as an unresolved crate (the manifest has no such dependency yet); after
-Step 3's manifest line alone, the digest cell FAILS on `assert_eq!` (the fold's value against the digest) and the
-inversion cell FAILS on `assert_ne!` at the first seed (the old fold inverts, as the finding said).
+Step 3's manifest line alone, the digest cell FAILS on `assert_eq!` (the fold's value against the digest — measured
+11672016970538341813 against 3441804343776740209) and the inversion cell FAILS on `assert_ne!` at seed 7 ("the
+derivation is a bijection chain again": the old fold inverts, as the finding said).
 
 - [ ] **Step 3: The manifest and the function.** In `crates/yokohama-cli/Cargo.toml`, after
   `rand_chacha.workspace = true`:
@@ -446,12 +482,23 @@ bytes are the contract, not the closure.)
 Run: `cargo test -p yokohama-cli --lib suggest:: 2>&1 | tail -15`
 Expected: every cell PASS — the purity/keying cell unchanged (a digest keeps both), the two new ones green.
 Run: `cargo test -p yokohama-cli 2>&1 | grep -E 'test result|FAILED|panicked' | head`
-Expected: 855 + 2 passed, 2 ignored, nothing red. **The guide's captured `suggest` screen** (`docs/cli-guide.md`
-:283, "stream 0x7199df924be0e320") is held by `guide_sync`'s
-`the_captured_suggest_screen_matches_the_renderers_own_strings` (:337–380) to the knob line up to and including
-" · stream " and to the renderer's own strings, NOT to the key's value — so the capture stays and the suite stays
-green; the value it shows is now a value this build no longer produces for that fixture, and Step 10 says so in
-the guide pair. If `guide_sync` reads RED here, the needle moved: STOP and report, do not re-capture.
+Expected: ONE cell red — `suggest::tests::the_guide_suggest_capture_is_what_the_fixture_renders` (the lib reads
+828 passed / 1 failed), the T11 regeneration pin that holds the guide's captured `suggest` screen
+(`docs/cli-guide.md` :283) BYTE-EXACT to `guide_capture(&guide_capture_fixture())`. The digest moves the key line
+AND, at this fixture, the answer: the two top candidates tie, and the keyed draw under `0xf360553bebf4ba9e` picks
+"Port A (A00), Laboratory A (A01), Customs (A05)" where `0x7199df924be0e320` picked "… Tea Plantation (A02)";
+the `production_access`/`track_access` rows swap with it (measured in the before review — the whole-answer
+change A1 intends, exactly as Step 10(c) says of `suggest.json`). `guide_sync`'s own string pin
+(`the_captured_suggest_screen_matches_the_renderers_own_strings`) stays green either way.
+
+- [ ] **Step 4b: Re-capture the guide's suggest screen, in BOTH formats, from ONE run.** Take the fixture's
+  render — the pin's panic prints it as `right:`, or print `guide_capture(&guide_capture_fixture())` — and
+  replace the whole fenced block in `docs/cli-guide.md` (the block opening `─ Suggest ───…`) with it, never by
+  editing a line; then `python3 docs/tools/mkguide.py` regenerates `docs/cli-guide.html` from the `.md` (the
+  twin is generated, not hand-kept). No prose around the block names the suggested move, so nothing else in the
+  guide moves. Run: `cargo test -p yokohama-cli 2>&1 | grep -E 'test result|FAILED'` — every binary green:
+  **857 passed / 2 ignored** across them (829 lib + 9 + 18 + 1). Read `git diff docs/cli-guide.md`: the key
+  line, the suggested move (three lines), the two swapped feature rows and the runner-up row — nothing else.
 
 - [ ] **Step 5: The layer's failing cells.** In `crates/yokohama-web/src/explain.rs`'s `mod tests` (:809),
   after `only_the_played_fulfill_is_worded_when_the_hand_is_another_seats`, add the three cells and their
@@ -853,10 +900,14 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
 - [ ] **Step 8: Run the explain cells and the layer's lib.**
 
 Run: `cargo test -p yokohama-web --lib explain::tests 2>&1 | tail -12`
-Expected: the module's cells PASS, the three new ones included; under `-- --nocapture` nothing is printed by
-them. Then `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — the two route cells
-at `lib.rs:4551` and `:4675` are RED (`stream_seed` asserted a string; `decision_seed` asserted `0x`) until Step 9
-rewrites them; every other lib cell green. Try the mutants before the reviewer does (each reverted after its
+Expected: the module's cells PASS (9), the three new ones included; under `-- --nocapture` nothing is printed by
+them. Then `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — FIVE cells RED
+until Step 9: the two route cells at `lib.rs:4551` and `:4675` (`stream_seed` asserted a string; `decision_seed`
+asserted `0x`) and the three cells that compare a WHOLE `why` payload against a `json!` literal — `api.rs`'s
+`a_finished_foreign_game_opens_scores_downloads_and_masks_the_conversion` and
+`why_reconstructs_a_runnable_non_production_bot_and_refuses_a_foreign_one_with_its_reason`, `games.rs`'s
+`a_same_name_re_point_is_told_apart_in_every_refusal_and_keeps_its_label_on_every_screen` — whose literals lack
+the third half (`"withheld": null`); every other lib cell green (411 passed / 5 failed, measured). Try the mutants before the reviewer does (each reverted after its
 reading): **M1** — `visibility_of` returning `Visibility::Public` unconditionally: the visibility cell RED on
 "the opponent" and the withheld route cell of Step 9 RED (`ok` non-null); **M2** — `word_line_masked` calling
 `describe_move` for every step: the continuation cell RED ("no later fulfil was masked"); **M3** — `Why::account`'s
@@ -1027,9 +1078,14 @@ and add the helper after `a_finished_two_person_game` (its closing brace near :3
     }
 ```
 
+(c) The three whole-payload cells named in Step 8: in each `serde_json::json!({ "ok": null, "refusal": { "kind":
+"foreign_bot", … } })` literal (two in `api.rs`, one in `games.rs`), add `"withheld": null,` after `"ok": null,`.
+A whole-value comparison is the right pin — it is what caught the shape change — so the literals are completed,
+not loosened.
+
 Run: `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'`
-Expected: every lib cell PASS — 413 at the base, two cells rewritten in place, one route cell and Step 5's three
-added: **417**.
+Expected: every lib cell PASS — 413 at the base, `suggest_carries_…` rewritten in place, `why_accounts_…`
+REPLACED by `why_is_withheld_…`, Step 5's three added: **416**.
 `tests/wire_fixtures` is RED here by construction (the wire moved) until Step 10.
 
 - [ ] **Step 10: The corpus — the why fixtures, the new one, the inversion pin, the regeneration.** In
@@ -1190,10 +1246,13 @@ then `cargo test -p yokohama-web --test wire_fixtures 2>&1 | grep -E 'test resul
 **17** (16 + the pin). Then `git status --short web/src/wire/ && git diff --stat -- web/src/wire/`, and READ
 `git diff -- web/src/wire/suggest.json web/src/wire/why.json`: `suggest.json` loses its `stream_seed` line and
 its ranking/explanation MAY move (a different key is a different belief sample — the whole-answer change is A1's
-intended effect, recorded, never "noise"); `why.json` loses `decision_seed`, moves `forced` onto `ok`, and is a
-DIFFERENT account (from the finished game); `why_withheld.json` is new. **Any other file that moved is a finding:
-name it in the task report with its first differing line** (B7's `invited` flips land in Task 3's own
-regeneration — see Step 12's note — so here a table-bearing fixture must NOT have moved).
+intended effect, recorded, never "noise"; measured: the suggested move itself changed, 145 lines); `why.json`
+loses `decision_seed`, moves `forced` onto `ok`, and is a DIFFERENT account (from the finished game; measured:
+index 105 → 152, 1,410 lines); `why_withheld.json` is new; **`why_refused.json` and `why_foreign.json` move by
+exactly one line each — `"withheld": null`** — because every `Why`-shaped payload carries the third half
+(`why_refusals.json`, a list of `RefusalDto`, does not move). **Any other file that moved is a finding: name it
+in the task report with its first differing line** (B7's changes land in Task 3's own regeneration — so here a
+table-bearing fixture must NOT have moved).
 
 - [ ] **Step 11: The client.**
 
@@ -1248,12 +1307,17 @@ const WHY_WITHHELD = ["provenance", "text", "reason"] as const;
 ```
 
 and `PROVENANCE` without `"decision_seed", "forced"`; after `const _wo …` (:760) add
-`const _ww: KeysOf<WhyWithheld, typeof WHY_WITHHELD> = WHY_WITHHELD;`; in the `fields` object (:823–824) add
+`const _ww: KeysOf<WhyWithheld, typeof WHY_WITHHELD> = WHY_WITHHELD;` **and add `_ww` to the `KeysOf` export list
+at :797 beside `_wo`** (an unexported const is TS6133 under the typecheck); in the `fields` object (:823–824) add
 `whyWithheld: WHY_WITHHELD,`; in the `wire` object (:954) add `whyWithheld: as<WhyResponse>(whyWithheld),`.
-`contract.test.ts`'s root checks read `fields`, so the new list is checked with the rest — confirm by running it.
+`contract.test.ts`'s root checks read `fields`, so the new list is checked with the rest — confirm by running it;
+**its cell "the fixtures are not degenerate…" (:827) reads `wire.why.ok!.provenance.forced` — it becomes
+`wire.why.ok!.forced`** (the fact moved onto the account).
 
-(c) `web/src/Explain.tsx`: delete the Stream paragraph (:349–352). In `WhyView` (:356–406): after the refusal
-branch add
+(c) `web/src/Explain.tsx`: delete the Stream paragraph (:349–352). In `WhyView` (:356–406): BEFORE its refusal
+branch (`if (!data.ok) { return data.refusal ? … : null; }` — the same three lines open `SuggestView`, so anchor
+on the function; placed after it, a withheld payload — `ok` null — returns `null` before the branch is reached,
+measured) add
 
 ```tsx
   if (data.withheld) {
@@ -1282,7 +1346,9 @@ replace `{p.forced && (` with `{w.forced && (`, and in the last paragraph delete
 
 (d) `web/src/Explain.test.tsx`: replace :128–129 with `expect(screen.queryByText(/Stream/)).toBeNull();`;
 rename the why test (:145) to `"names the contestant and the event it reconstructed, and no key"`, replace
-:149 with `expect(screen.queryByText(/decision seed/)).toBeNull();`, and add after it:
+:149 with `expect(screen.queryByText(/decision seed/)).toBeNull();`; the refusal-rendering cell at :208
+hand-builds a `WhyResponse` — `data={{ ok: null, refusal }}` becomes `data={{ ok: null, withheld: null, refusal }}`
+(TS2741 otherwise); and add after the renamed test:
 
 ```tsx
   it("shows a withheld account as the move, the reason and the claim — and no chart", () => {
@@ -1297,9 +1363,11 @@ rename the why test (:145) to `"names the contestant and the event it reconstruc
   });
 ```
 
-Run, from `web/`: `npm run typecheck && npm test -- --run 2>&1 | tail -8`
+Run, from `web/`: `npm run build:wasm && npm run typecheck && npm test -- --run 2>&1 | tail -8` (the typecheck's
+fourth project needs the wasm module — the lane's own order, §2; `YOKOHAMA_WASM_OPTIONAL=1` reads the three TS
+projects alone).
 Expected: the typecheck clean (the contract's `KeysOf` lines are what fail on a field list that drifted from
-`types.ts`); vitest green, the Explain file 1 cell more (the counts go in the report beside cycle F's 1,499).
+`types.ts`); vitest green, **1,500** in 71 files (cycle F's 1,499 + the withheld cell).
 
 - [ ] **Step 12: Lint, the suites, commit.**
 
@@ -1309,14 +1377,20 @@ Run: `cargo clippy --workspace --all-targets -- -D warnings` — clean. `cargo t
 and its `why` reads are constructed, so nothing there moves but through the layer it links; the `wasm32` check
 and both wasm builds (`docs/web-lane.md` §2's rows) — clean, since the CLI and the layer moved.
 
-**On the corpus:** this is the cycle's FIRST of two regenerations (the other is Task 3's, for B7's `invited`
-flip); a table-bearing fixture that moved HERE is a finding, as Step 10(c) says.
+**On the corpus:** this is the cycle's FIRST of two regenerations (the other is Task 3's); a table-bearing
+fixture that moved HERE is a finding, as Step 10(c) says. **Both hosts' walk replays enumerate the constructed
+fixtures by name** — the Worker pool's `worker/test/corpus.test.ts` (`THIRD_COLUMN`) and the browser half's
+`web/src/local/corpus.node.test.ts` (`NOT_SERVED`) — and refuse a file the lists do not name ("the files the
+scripts do not name: expected […(18)] to deeply equal […(17)]", measured): each gains `"why_withheld"` beside
+`"why_refused"`. With that, `cd worker && npm run build:module:debug && npm test` (224) and `cd web && npm run
+build:wasm && npm run test:wasm` (353) read green.
 
 ```bash
 git add crates/yokohama-cli/Cargo.toml Cargo.lock crates/yokohama-cli/src/suggest.rs \
-  crates/yokohama-web/src/explain.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs \
-  crates/yokohama-web/tests/wire_fixtures.rs web/src/wire web/src/types.ts web/src/wire/contract.ts \
-  web/src/Explain.tsx web/src/Explain.test.tsx
+  docs/cli-guide.md docs/cli-guide.html \
+  crates/yokohama-web/src/explain.rs crates/yokohama-web/src/api.rs crates/yokohama-web/src/games.rs \
+  crates/yokohama-web/src/lib.rs crates/yokohama-web/tests/wire_fixtures.rs web/src/wire web/src/types.ts \
+  web/src/Explain.tsx web/src/Explain.test.tsx worker/test/corpus.test.ts web/src/local/corpus.node.test.ts
 git commit -m "web: the explain surface at the requester's visibility — the stream key one-way at the source and off the wire, why withheld while the bot's starting order is hidden, the corpus regenerated once (A1, B1; R-SEC3)"
 ```
 
@@ -1333,8 +1407,10 @@ dependency line added under `yokohama-cli`, no version moved.)
 
 **Interfaces:**
 - Consumes: `yokohama_core::state_at`, `GameState.order_deck` / `tech_deck` (`Vec`s, their `len()` the deck's
-  height — the public fact the ports and labs panels already serve as `deck_remaining`); the helpers `start_as`,
-  `get_as`, `post_as`, `first_option`, `start`, `call` of `lib.rs`'s tests.
+  height — the public fact the game payload and the labs panel already serve as `deck_remaining`); the `/areas`
+  panel (`rows[][].tile.area_type`, `tile.area` — how the drive finds the Port); the grammar's direct forms `b A<nn>`
+  (Option B) and `r` (retreat, no recovery), `grammar.rs:177–186`; the helpers `start_as`, `get_as`, `post_as`,
+  `first_option`, `start`, `call` of `lib.rs`'s tests.
 - Produces: `pub(crate) const UNDO_DREW: &str` (api.rs); `undo_allowed` refusing with it; `trailing_mover`
   replaced by `trailing_state(record, rules) -> Result<GameState, UndoRefusal>`.
 
@@ -1343,10 +1419,15 @@ dependency line added under `yokohama-cli`, no version moved.)
   on), add:
 
 ```rust
-    /// Drive `user`'s turn at `id` towards a move that DRAWS from a hidden
-    /// deck — a port take refills from the order deck, a lab acquire from the
-    /// tech deck, both inside the move (`cards.rs`) — preferring a row whose
-    /// words say so and taking the last row otherwise, as `play_turn` does.
+    /// Drive `user`'s turn at `id` through a move that DRAWS from a hidden
+    /// deck: Option B puts two assistants on the Port (its id read off the
+    /// `/areas` panel's `tile.area_type`), the President follows them, and
+    /// the area action is the first `Port: take …` row — a take refills the
+    /// port from the order deck inside the move (`cards.rs`), and a take at
+    /// power 3 leaves the turn running (the 5-Power, building and additional
+    /// prompts follow). Every other prompt takes its `Skip` row or its first;
+    /// a Movement prompt whose only row is the retreat picker — the Port holds
+    /// the other President — is answered `r`, the grammar's direct retreat.
     /// Answers the deck heights BEFORE the drawing move and the reply, or
     /// `None` when the turn passed or the bound ran out with nothing drawn.
     async fn play_until_a_draw(
@@ -1360,6 +1441,17 @@ dependency line added under `yokohama-cli`, no version moved.)
                 labs["deck_remaining"].as_u64().expect("the tech deck's height") as usize,
             )
         };
+        let (_, areas) = get_as(state, user, &format!("/api/games/{id}/areas")).await;
+        let port = areas["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.as_array())
+            .flatten()
+            .find(|t| t["tile"]["area_type"] == "PortA")
+            .and_then(|t| t["tile"]["area"].as_u64())
+            .map(|n| format!("A{n:02}"))
+            .expect("a 2P board has a Port A");
         let (_, start) = get_as(state, user, &format!("/api/games/{id}")).await;
         let mine = start["to_move"].as_u64().expect("a seat to move");
         for _ in 0..60 {
@@ -1370,13 +1462,23 @@ dependency line added under `yokohama-cli`, no version moved.)
             let (_, labs) = get_as(state, user, &format!("/api/games/{id}/labs")).await;
             let before = heights(&now, &labs);
             let rows = now["prompt"]["rows"].as_array().cloned().unwrap_or_default();
-            let drawing = rows.iter().find(|r| {
-                let words = r["words"].as_str().unwrap_or_default();
-                words.starts_with("Port: take") || words.starts_with("Laboratory: acquire")
-            });
-            let line = match drawing.or(rows.last()).and_then(|r| r["number"].as_u64()) {
-                Some(n) => n.to_string(),
-                None => "confirm".to_string(),
+            let words = |r: &serde_json::Value| r["words"].as_str().unwrap_or_default().to_string();
+            let number = |r: &serde_json::Value| r["number"].as_u64().map(|n| n.to_string());
+            let line = if rows.iter().any(|r| words(r).starts_with("Option B")) {
+                format!("b {port}")
+            } else if let Some(r) = rows.iter().find(|r| {
+                let w = words(r);
+                w.starts_with("Port: take") || (w.starts_with("Place President") && w.contains(&port))
+            }) {
+                number(r).expect("a numbered row")
+            } else if !rows.is_empty() && rows.iter().all(|r| words(r).starts_with("Retreat President")) {
+                "r".to_string()
+            } else {
+                rows.iter()
+                    .find(|r| words(r).starts_with("Skip"))
+                    .or(rows.first())
+                    .and_then(number)
+                    .unwrap_or_else(|| "confirm".to_string())
             };
             let (status, reply) = post_as(
                 state,
@@ -1472,11 +1574,12 @@ solo table is driven through them with `WHO` after `start` opened it through the
 
 Run: `cargo test -p yokohama-web --lib an_undo_that_un_draws 2>&1 | tail -12`
 Expected: a compile error naming `api::UNDO_DREW`; with a placeholder constant it FAILS at the shared
-table's `assert_eq!(status, StatusCode::FORBIDDEN …)` reading 200 — the un-draw the review measured. If the
-drive never finds a drawing move (the `expect("some turn in twelve …")` panics), widen the search by reading the
-rows' words in the panic and adjusting the two prefixes — `describe.rs:622` words a port take as `Port: take …`
-and the corpus's `why.json` continuation words a lab acquire as `Laboratory: acquire …`; a prefix that does
-not match is a finding for the task report, not a reason to assert less.
+table's `assert_eq!(status, StatusCode::FORBIDDEN …)` reading 200 — the un-draw the review measured. **The drive
+was measured in the before review** (the plan's first draft never drew: the layer's Placement prompt is two PICKER
+rows and "Place no assistants", and a last-row walk places nothing, so no area action ever came): at seed
+20260831 red's first turn goes `b A02` → "Place President from hand in Port A (A02)" → "Port: take O34", the
+order deck 10 → 9 with the turn still open; the solo table draws the same way. A drive that does not draw is a
+finding for the task report, never a reason to assert less.
 
 - [ ] **Step 3: The rule.** In `api.rs`, add after `NOT_SEATED`'s neighbourhood (any `pub(crate) const` of the
   file; the `UndoRefusal` enum at :772 is the anchor — put the constant directly above it):
@@ -1493,7 +1596,9 @@ pub(crate) const UNDO_DREW: &str =
 ```
 
 Replace `trailing_mover` (:797–813) with the state it reads the mover off, and read both facts from it in
-`undo_allowed`:
+`undo_allowed`; **`api::tests::undo_on_a_record_that_will_not_replay_is_a_500_not_a_403` (:3391) calls
+`trailing_mover(&record, &rules).expect_err(..)` — its call becomes `trailing_state(..)`** (the same `Replay`
+sentence; `GameState: Debug`):
 
 ```rust
 /// The state BEFORE `record`'s last event, replayed under `rules` — whose
@@ -1542,9 +1647,9 @@ undo, bot run and all: the rule is about a card another PERSON never saw."
 - [ ] **Step 4: Run the cell and the undo cells.**
 
 Run: `cargo test -p yokohama-web --lib undo 2>&1 | grep -E 'test |test result'`
-Expected: every undo cell PASS, the new one included. Try the mutant before the reviewer does: **M4** — the
-deck comparison deleted: the new cell RED at the shared table (`200` against `403`), every other undo cell
-green. Record the reading.
+Expected: every undo cell PASS (10), the new one included. Try the mutant before the reviewer does: **M4** — the
+deck comparison deleted: the new cell RED at the shared table (`200` against `403`), every other cell of the lib
+green (measured: 417 green beside it). Record the reading.
 
 - [ ] **Step 5: Lint and commit.**
 
@@ -1565,16 +1670,17 @@ git commit -m "web: an undo whose unit drew from a hidden deck is refused at a s
 - Modify: `crates/yokohama-web/src/tables.rs` (`config_of` :255; `join` :1603; 14 sites), `api.rs` (4 sites),
   `backup.rs` (1), `archive.rs` (2), `client.rs` (1), `bots.rs` (1), `games.rs` (1),
   `crates/yokohama-worker/src/house.rs:141` (a pattern)
-- Modify: `crates/yokohama-web/tests/wire_fixtures.rs` (the leakage pin's `invited` arm, :2885–2898)
-- Regenerate: the table-bearing fixtures (B7's flip) — the cycle's SECOND regeneration, read
+- Regenerate: `web/src/wire/table_foreign.json` (one line) and `web/src/wire-script/archive-walk.json` (the walk's
+  stored table document, in every archive body) — the cycle's SECOND regeneration, read (Step 5 says why those
+  two and no other)
 - Test: `table.rs`'s `mod tests`; `lib.rs` route cells; `wire_fixtures`
 
 **Interfaces:**
 - Consumes: `is_false` (`table.rs:138`, the `skip_serializing_if` helper `TurnMirror` uses).
 - Produces: `SeatDoc::Human { user, name, bound_at_create }`.
 
-- [ ] **Step 1: The failing cells.** In `table.rs`'s `mod tests` (:632), after the cell whose name begins
-  `the_creator_sees_the_address_they_typed` (the `invited` cell near :1047–1083; find by
+- [ ] **Step 1: The failing cells.** In `table.rs`'s `mod tests` (:632), after
+  `the_view_names_no_address_but_the_readers_own` (:1052–1109, the `invited` cell; find by
   `"the address the creator typed"`), add:
 
 ```rust
@@ -1661,9 +1767,13 @@ only while the seat has no name …". In `tables.rs`'s `config_of` (:255) the ty
 `SeatDoc::Human { user: user.as_str().to_string(), name, bound_at_create: false }`. Every other site: a
 PATTERN gains `..` (`SeatDoc::Human { user, name }` → `SeatDoc::Human { user, name, .. }`; `house.rs:141`'s
 `SeatDoc::Human { user: _, name: _ }` → `SeatDoc::Human { .. }`); a CONSTRUCTION in a cell gains
-`bound_at_create: false` unless the cell is about the creator's typed seat (then `true`, and the cell's
-assertion on `invited` still holds). `cargo check -p yokohama-web --all-targets && cargo check -p yokohama-worker --all-targets`
-is the list of sites: fix until clean, and name the count in the task report (the plan counted 40).
+`bound_at_create: false` unless the cell is about the creator's typed seat — then `true`: the two seats of
+`the_view_names_no_address_but_the_readers_own` (red's own and blue's, both typed by red; its `invited` assertion
+holds) and the creator's seats `client.rs:829` builds (a test helper, `#[cfg(test)]` at :803). Measured: 41
+occurrences, **27 edits** (the four named above, 20 single-line constructions, one multi-line in `games.rs:3615`,
+the two patterns `table.rs:426` and `tables.rs:307`), 14 already carrying `..`.
+`cargo check -p yokohama-web --all-targets && cargo check -p yokohama-worker --all-targets` is the list of sites:
+fix until clean, and name the count in the task report.
 
 - [ ] **Step 4: The route cell and the pin.** In `lib.rs`'s `mod tests`, beside the seats cells (near
   `a_plain_name_seated_at_an_edge_door_is_a_key_nobody_holds`, :1874):
@@ -1702,38 +1812,39 @@ is the list of sites: fix until clean, and name the count in the task report (th
     }
 ```
 
-In `tests/wire_fixtures.rs`, the leakage pin's `invited` arm (:2885–2898) admits an `invited` value wherever
-`mine` is true; tighten it — after `let invited = …;` and before `if invited {`:
-
-```rust
-        // Finding B7: an `invited` value is a seat the creator TYPED, never
-        // the walk's joiner, who joined with no name (`OTHER`).
-        if invited && text.contains(OTHER) {
-            read.offenders.push(format!("{here}: a joiner's address served as `invited`: {text:?}"));
-            continue;
-        }
-```
-
-(`here`, `text`, `read` are the loop's own bindings at :2880–2898; read them before editing.)
+**The leakage pin in `tests/wire_fixtures.rs` is NOT tightened** (the first draft added an arm reading an
+`invited` equal to `OTHER` as a joiner's): payload text cannot tell a seat the creator TYPED from one that was
+JOINED — the stored-table pin's own `addressed` table binds `OTHER` at create and legitimately serves
+`invited: "blue@wire.test"`, and the arm made it an offender (measured). The walk's joiner joins WITH a name
+(`"name": "Blue"`, :923), so no walk payload has ever carried the B7 case; the catchers are the unit cell above
+(three shapes) and this route cell (a nameless joiner), with the corpus golden holding Step 5's one moved line.
 
 - [ ] **Step 5: Regenerate the corpus — the cycle's SECOND regeneration — and read it.**
 
 Run: `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures 2>&1 | tail -3`, then
 `cargo test -p yokohama-web --test wire_fixtures 2>&1 | grep -E 'test result|FAILED'` — green, 17. Then
-`git diff --stat -- web/src/wire/` and READ `git diff -- web/src/wire/ | grep '^[-+].*invited'`: every changed
-line is an `"invited": "blue@wire.test"` becoming `"invited": null` on seat 1 of the walk's table, in the
-creator's payloads (`table*.json`, `deal*.json`, `games*.json`, `join*.json`, `watching`/`spectator` frames
-that carry a table); **any other changed line is a finding** for the task report. The Worker's pool replays the
-walk and compares the same payloads: `cd worker && npm run build:module:debug && npm test` green.
+`git status --short web/src/wire web/src/wire-script` and READ the diff. **Exactly two files move, measured in the
+before review:** (1) `web/src/wire/table_foreign.json`, ONE line — seat 0's `"invited": "local@browser"` becomes
+`null`, because `foreign_pair` loads a hand-written table DOCUMENT without the field (`load_document`), which the
+compatibility rule reads as a joined seat (a table stored before this cycle stops echoing the creator's typed
+addresses for still-nameless seats, once — the default this plan chose); (2) `web/src/wire-script/archive-walk.json`
+— the archive walk's bodies carry the walk's STORED table document as a string, and the creator's seat (red,
+typed at create) gains `"bound_at_create": true` in each; blue's seat, joined, carries no field. The five
+fixtures with a non-null `invited` (`deal_bot_table`, `games`, `table_bot`, `table_foreign`, `table_two_open`)
+all carry a CREATOR's own typed seat, which `config_of` binds `true` — the first four do not move. **Any other
+changed line is a finding** for the task report. The Worker's pool replays the walk and compares the same
+payloads: `cd worker && npm run build:module:debug && npm test` green.
 
 - [ ] **Step 6: Run the suites, lint, commit.**
 
 Run: `cargo test -p yokohama-web` and `cargo test -p yokohama-worker` green; `cargo clippy --workspace
 --all-targets -- -D warnings` clean. Mutant **M5** — `SeatView::of` ignoring `bound_at_create`: the unit cell RED
-(`Some("carol.secret@t.test")` where `None`), the route cell RED, the corpus pin RED on `invited`.
+(`Some("carol.secret@t.test")` where `None`), the route cell RED, and the corpus GOLDEN
+`the_committed_wire_fixtures_are_what_the_server_emits` RED (`table_foreign.json`'s `null` against the address the
+mutant serves) — three catchers, measured; nothing else.
 
 ```bash
-git add crates/yokohama-web/src crates/yokohama-worker/src/house.rs crates/yokohama-web/tests/wire_fixtures.rs web/src/wire
+git add crates/yokohama-web/src crates/yokohama-worker/src/house.rs web/src/wire/table_foreign.json web/src/wire-script/archive-walk.json
 git commit -m "web: invited names a seat the creator bound, never a joiner — bound_at_create on the seat document, the corpus regenerated (B7)"
 ```
 
@@ -1754,11 +1865,16 @@ task is the ruling as given.
   :573; cells)
 - Modify: `crates/yokohama-worker/src/config.rs` (`InitConfig` :33–50, `Config` :53–58, `parse` :143–167),
   `crates/yokohama-worker/src/lib.rs` (:191–200; the test helper `door_config` :660–666; one cell)
+- Modify: `crates/yokohama-wasm/src/lib.rs` (`init` :122 — the THIRD host; a new export `init_diagnostic`; the
+  seeded cell `a_table_whose_watcher_list_holds_a_plain_name_reads`), `web/src/local/corpus.node.test.ts` (the
+  `WasmHost` interface :56, `wasm.init()` at :243 and :335), `worker/src/marker.unit.test.ts` (:111),
+  `worker/src/config.unit.test.ts` (four cells)
 - Modify: `worker/src/config.ts` (`ROWS` :46–62, `onOff`'s name union :193, `ShellConfig` and `shellConfig`
   :256–275, `moduleConfig` :290–305), the `Env` declaration wrangler generates (find by
   `grep -rln YOKOHAMA_DEV_DOOR worker --include='*.d.ts'`), `worker/wrangler.test.jsonc` and
-  `worker/wrangler.open.test.jsonc` (`vars`), `worker/scripts/deploy-guard.mjs` (:37 the header list, :593 the
-  rule beside the test clock's) and `worker/scripts/deploy-guard.test.mjs` (:262 the cell's twin)
+  `worker/wrangler.open.test.jsonc` (`vars`), `worker/src/env.ts` (:57), `worker/scripts/deploy-guard.mjs` (:37 the
+  header list, :593 the rule beside the test clock's) and `worker/scripts/deploy-guard.test.mjs` (:262 the cell's
+  twin); `crates/yokohama-worker/src/receipt.rs` (`r2_at`) and the positional-array cell (lib.rs:896)
 - Modify: `docs/web-lane.md` §12 (one row, so `worker/scripts/lane-variables.test.mjs` stays green — the
   table is held to the code's `YOKOHAMA_*` names both ways)
 - Modify: `web/src/NewGame.tsx` (:185–240, :388–420), `web/src/NewGame.test.tsx` (the "the seed" block, :326+)
@@ -1767,7 +1883,8 @@ task is the ruling as given.
 
 **Interfaces:**
 - Produces: `games::SeedPolicy`, `Games::with_seed_policy`, `Games::seed_policy`, `tables::SEED_NOT_SOLO`,
-  `AppState::with_seed_policy`, `AppState::production(..)`, the Worker's `YOKOHAMA_DIAGNOSTIC_SEEDS`.
+  `AppState::with_seed_policy`, `AppState::production(..)`, the Worker's `YOKOHAMA_DIAGNOSTIC_SEEDS`, the browser
+  host's `init_diagnostic()`.
 
 - [ ] **Step 1: The failing cells.**
 
@@ -1784,6 +1901,7 @@ task is the ruling as given.
     /// cell in this module relies on.
     #[test]
     fn a_creators_seed_is_honoured_at_a_solo_table_only() {
+        use crate::games::SeedPolicy;
         let production = Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
             .with_seed_policy(SeedPolicy::SoloOnly);
         let creator = who("red@t.test");
@@ -1863,6 +1981,7 @@ task is the ruling as given.
     /// no deployable file may — the deploy guard's rule): without the switch
     /// the corpus's own create body is a 400 in the layer's sentence; with it,
     /// a 201.
+    #[test]
     fn a_seeded_create_beside_an_open_seat_needs_the_diagnostic_switch() {
         let _s = serial();
         init_inner(&door_config_with_seeds("off", "worker", false)).unwrap();
@@ -1881,13 +2000,14 @@ task is the ruling as given.
 ```js
   it("refuses a deployed configuration that names YOKOHAMA_DIAGNOSTIC_SEEDS", () => {
     const seeded = PRODUCTION.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
-    expect(failuresOf(seeded)).toContainEqual(
+    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toContainEqual(
       expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
     );
   });
 ```
 
-(`failuresOf` is whatever the clock cell at :262 calls to judge a configuration's text — read it and use the same.)
+(`deployGuard(worker({ … }))` is what the clock cell at :262 calls to judge a configuration's text; `toContainEqual`
+rather than its `toEqual([…])`, since the fixture's other failures ride beside this one.)
 
 (e) In `web/src/NewGame.test.tsx`'s `describe("the seed", …)` (:327):
 
@@ -1901,14 +2021,17 @@ task is the ruling as given.
     await user.selectOptions(seat("Blue"), "open");
     expect(screen.queryByLabelText("Seed")).toBeNull();
     expect(screen.queryByText("Advanced", { selector: "summary" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Deal" }));
+    // With a seat open the submit reads "Open table", not "Deal" (the cell at
+    // :177 pins both arms).
+    await user.click(screen.getByRole("button", { name: "Open table" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
     expect(posted(stub).seed).toBeUndefined();
-    expect(posted(stub).seats[1]).toEqual({ open: true });
+    expect(posted(stub).seats).toEqual([{ user: ME }, { open: true }]);
   });
 ```
 
-(`seat(colour)` is the file's own helper for a seat row's kind select, as at :115, :126 and :180.)
+(`seat(colour)` is the file's helper for a seat row's kind select, defined at :54 and driven at :115, :126 and
+:180; `posted(stub).seats` is `unknown` to `tsc`, so the list is compared whole, as every cell of the file does.)
 
 - [ ] **Step 2: Run them to verify they fail.**
 
@@ -2033,12 +2156,17 @@ constructor directly." Split `new` (:414–435):
     }
 ```
 
-Run: `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — green (every cell that
-opens a seeded two-person table does so under a `Diagnostic` constructor; a cell that reads RED here is one that
-builds `Games::with_parts` directly for a seeded multi-person create — name it in the report and opt it in
-explicitly). `cargo test -p yokohama-web` — `wire_fixtures` and the gate green: the corpus's `Api::with_chat`
-goes through `in_memory_with_chat` and `with_archive` through `with_store_chat_and_archive`, both `Diagnostic`;
-`play_a_whole_game`'s two creates are a bot table and an unseeded two-person table.
+**Seven TEST-side `Games::with_parts(..)` builders create seeded multi-person tables and read RED under
+`SoloOnly` (18 cells, measured) — each gains `.with_seed_policy(crate::games::SeedPolicy::Diagnostic)` after its
+closing paren:** `api.rs`'s `games_with(..)` (:2662) and the `off` builder (:3287); `games.rs`'s
+`every_bump_site_answers_under_no_signal` (:1279), the two builders at :1768 and :1808, and `watched_games`
+(:3182); `tables.rs`'s builder (:2302). (`lib.rs:528` is the production constructor, which
+`with_store_chat_and_archive` opts in above.)
+
+Run: `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — green, **421**. `cargo test
+-p yokohama-web` — `wire_fixtures` and the gate green: the corpus's `Api::with_chat` goes through
+`in_memory_with_chat` and `with_archive` through `with_store_chat_and_archive`, both `Diagnostic`;
+`play_a_whole_game`'s two creates are a bot table and an unseeded two-person table (measured green).
 
 - [ ] **Step 4: The Worker.** `crates/yokohama-worker/src/config.rs`: `InitConfig` gains
 `diagnostic_seeds: Option<bool>,` (doc: "`YOKOHAMA_DIAGNOSTIC_SEEDS` as the shell read it — `true` in the pool's
@@ -2047,7 +2175,13 @@ test configurations alone; absent or `false` is the production rule, `SeedPolicy
 open_table_ttl_days and diagnostic_seeds" and `Ok(Config { door, chat, archive, ttls, diagnostic_seeds:
 c.diagnostic_seeds.unwrap_or(false) })`. In `lib.rs:191–200` the `Games::with_parts(..).with_log(log.clone())`
 chain gains `.with_seed_policy(if config.diagnostic_seeds { SeedPolicy::Diagnostic } else { SeedPolicy::SoloOnly })`
-(the name of the parsed config at that site is whatever `init` binds — read it). The test helpers (:656–666):
+(`init_inner` binds it by destructuring — `let config::Config { door, chat, archive, ttls, diagnostic_seeds } =
+config::parse(config)?;`, :174). **Two cells pin the old shapes and move with the code:**
+`tests::init_refuses_its_configuration_as_a_positional_array` (:896) asserts the key sentence verbatim — it reads
+"nine keys — …, table_ttl_days, open_table_ttl_days and diagnostic_seeds"; and `receipt.rs`'s own builder `r2_at`
+(the `json!({"identity": door, "archive": "r2", …})` behind `r2(caller)`) gains `"diagnostic_seeds": true`, or
+eight `receipt::tests` cells read the layer's 400 on their seeded open-seat `CREATE` (measured). The test helpers
+(:656–666):
 
 ```rust
     pub(crate) fn config(archive: &str) -> String {
@@ -2068,11 +2202,66 @@ chain gains `.with_seed_policy(if config.diagnostic_seeds { SeedPolicy::Diagnost
     }
 ```
 
+**The browser host** (`crates/yokohama-wasm/src/lib.rs`): `init()` builds `Games::with_parts(..)` too and so reads
+`SoloOnly` — one rule on three hosts (the client's form withholds the field for an open or another person's seat,
+so nothing a person reaches changes); its harness opts in by name through a second export, the Worker switch's
+shape, which the crate's one seeded cell and the browser half's walk replay call:
+
+```rust
+/// Build a FRESH `Games` over a fresh `MemStore`, whose log is the console
+/// (M6.5c2), replacing any earlier one — under the production seed rule,
+/// `SeedPolicy::SoloOnly` (R-SEC8(b)), as every host builds it: the client's
+/// form withholds the seed for an open or another person's seat anyway, so
+/// nothing a person reaches changes here.
+#[wasm_bindgen]
+pub fn init() {
+    init_with(yokohama_web::games::SeedPolicy::SoloOnly);
+}
+
+/// [`init`] under `SeedPolicy::Diagnostic` — the HARNESS's opt-in by name
+/// (security S1a, finding B3): the corpus walk opens a seeded table with an
+/// open seat, which `corpus.node.test.ts`'s replay and this crate's own seeded
+/// cells reproduce through this export; the browser client never calls it.
+#[wasm_bindgen]
+pub fn init_diagnostic() {
+    init_with(yokohama_web::games::SeedPolicy::Diagnostic);
+}
+
+fn init_with(policy: yokohama_web::games::SeedPolicy) {
+    let games = Games::with_parts(
+        Arc::new(yokohama_core::Rules::standard()),
+        Arc::new(MemStore::default()),
+        yokohama_web::chat::ChatConfig::default(),
+        Arc::new(yokohama_web::signal::NoSignal),
+        Arc::new(now),
+        Arc::new(yokohama_web::archive::NoArchive),
+        yokohama_web::games::RunHost::Browser,
+    )
+    .with_log(Arc::new(ConsoleLog))
+    .with_seed_policy(policy);
+    *GAMES.lock().expect("the host's games") = Some(games);
+}
+```
+
+(the body is `init`'s today, moved; `a_table_whose_watcher_list_holds_a_plain_name_reads` — a seeded two-person
+create, 400 under `SoloOnly`, measured — calls `init_diagnostic()` at both of its `init()` sites; in
+`web/src/local/corpus.node.test.ts` the `WasmHost` interface gains `init_diagnostic(): void;` and the two
+`wasm.init();` become `wasm.init_diagnostic();`, or the replay's first create reads 400 where the script says 201).
+
+**The Worker's TS cells that pin the configuration's shape move with it:** `worker/src/marker.unit.test.ts:111`
+hand-builds a `ShellConfig` — it gains `diagnosticSeeds: false` (TS2741 otherwise); in
+`worker/src/config.unit.test.ts` the two "leaves shellConfig and moduleConfig unchanged under …" cells assert
+`Object.keys(JSON.parse(module))` has length 8 — now 9 — and "carries the archive switch as exactly off or r2, and
+the rest raw" and "is off with no caller, no chat variable and no TTL set" compare the JSON string, which gains
+`,"diagnostic_seeds":false` before its closing brace (four cells, measured).
+
 `worker/src/config.ts`: `ROWS` gains `YOKOHAMA_DIAGNOSTIC_SEEDS: true,`; `onOff`'s name union gains
 `"YOKOHAMA_DIAGNOSTIC_SEEDS"`; `ShellConfig` gains `diagnosticSeeds: boolean` and `shellConfig` sets
 `diagnosticSeeds: onOff("YOKOHAMA_DIAGNOSTIC_SEEDS", text(env, "YOKOHAMA_DIAGNOSTIC_SEEDS"))`; `moduleConfig`'s
-object gains `diagnostic_seeds: c.diagnosticSeeds,` (its doc's key list too). The `Env` declaration gains the
-variable (regenerate it the way the repository does, or add the line beside `YOKOHAMA_DEV_DOOR`). The two pool
+object gains `diagnostic_seeds: c.diagnosticSeeds,` (its doc's key list too). The `Env` declaration is the hand-kept
+`worker/src/env.ts` (no generated `.d.ts` names these variables): `YOKOHAMA_DIAGNOSTIC_SEEDS?: string;` beside
+`YOKOHAMA_DEV_DOOR` (:57), with a doc line — `ROWS` is a mapped type over `Env`'s string keys, so the row and the
+declaration must move together. The two pool
 files gain `"YOKOHAMA_DIAGNOSTIC_SEEDS": "on",` in `vars` with the comment "the corpus walk opens a seeded table
 with an open seat (R-SEC8(b)); on in the pool and nowhere else — the deploy guard refuses it". The guard
 (:593–595) gains its twin:
@@ -2089,9 +2278,12 @@ and its header list (:37) a line "4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowher
 somebody else — the corpus walk's shape; the pool's two test files set it and the deploy guard refuses it in a
 deployable file (R-SEC8(b)) | the Worker | worker/src/config.ts, crates/yokohama-worker/src/config.rs |`.
 
-Run: `cargo test -p yokohama-worker 2>&1 | grep -E 'test result|FAILED'` — green with the new cell; `cd worker &&
-npm run build:module:debug && npm test 2>&1 | tail -6` — the pool green (the walk's create honoured under the
-switch), `test:scripts` green (the guard's new cell; `lane-variables` with the new row).
+Run: `cargo test -p yokohama-worker 2>&1 | grep -E 'test result|FAILED'` — green with the new cell (**77**);
+`cargo test -p yokohama-wasm` — **9**; `cd web && npm run build:wasm && npm run test:wasm` — **353** (the replay
+under `init_diagnostic`); `cd worker && npm run build:module:debug && npm run typecheck && npm test 2>&1 | tail -6`
+— the typecheck clean, the pool green, **224** (the walk's create honoured under the switch); `npm run
+test:scripts` green, **533** (the guard's new cell; `lane-variables` with the new row — it lists files with
+`git ls-files`, so it runs in a checkout, never in a bare export).
 
 - [ ] **Step 5: The form.** In `web/src/NewGame.tsx`: after `const colors = …` (:188) add
 
@@ -2110,19 +2302,20 @@ is wrapped in `{seedAllowed && ( … )}`. Run `cd web && npm run typecheck && np
 - [ ] **Step 6: Lint, suites, commit.** `cargo clippy --workspace --all-targets -- -D warnings` clean;
 `cargo test -p yokohama-web`, `-p yokohama-worker`, `-p yokohama-wasm` green; the web lane's wasm check and
 builds. Mutants: **M6** — `create`'s rule deleted: the tables cell RED (`Ok` where `Err`), the production route
-cell RED (201 where 400), the Worker cell RED; **M7** — `production` built through `with_store_chat_and_archive`
-(the Diagnostic wrapper): the production route cell RED on the policy read and on the 201 where 400.
+cell RED (201 where 400), the Worker cell RED (measured: 419 + 76 green beside them); **M7** — `production` built
+through `with_store_chat_and_archive` (the Diagnostic wrapper): the production route cell RED alone (420 green).
 
 ```bash
 git add crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/lib.rs \
-  crates/yokohama-worker/src/config.rs crates/yokohama-worker/src/lib.rs \
-  worker/src/config.ts worker/wrangler.test.jsonc worker/wrangler.open.test.jsonc \
+  crates/yokohama-worker/src/config.rs crates/yokohama-worker/src/lib.rs crates/yokohama-worker/src/receipt.rs \
+  worker/src/config.ts worker/src/env.ts worker/wrangler.test.jsonc worker/wrangler.open.test.jsonc \
   worker/scripts/deploy-guard.mjs worker/scripts/deploy-guard.test.mjs docs/web-lane.md \
+  worker/src/marker.unit.test.ts worker/src/config.unit.test.ts \
+  crates/yokohama-wasm/src/lib.rs web/src/local/corpus.node.test.ts \
   web/src/NewGame.tsx web/src/NewGame.test.tsx
 git commit -m "web: a creator's seed is honoured at a solo table only — SeedPolicy, the fixtures' diagnostic opt-in, the Worker's switch and the guard's rule, the form withholds the field (B3; R-SEC8(b))"
 ```
 
-(Add the regenerated `Env` declaration to the `git add` list if the repository tracks it.)
 
 ---
 
@@ -2186,11 +2379,12 @@ git commit -m "web: a creator's seed is honoured at a solo table only — SeedPo
     /// through the router, the record then replaced by the crafted one and a
     /// fresh state built over the store, so the next request rebuilds from it;
     /// the person plays their turn and the reply that carries the lockdown
-    /// carries NO `seed:` line and ends on the lockdown line. **If the rebuild
-    /// refuses the crafted record** (a table/record agreement this layer
-    /// checks on the way in), the fault is unreachable through the API after
-    /// all: say so in the report, keep cell (a) as the catcher, and delete
-    /// this one — do not weaken it into a cell that reads a locked session.
+    /// carries NO `seed:` line and ends on the lockdown line. **Measured
+    /// reachable** (the plan's before review): the rebuild accepts the crafted
+    /// record, and the bot's first turn reports "bot seat 1 could not decide
+    /// honestly: the seat's view could not be taken: seat 1's own
+    /// starting-order deal was never recorded; it cannot view itself" with the
+    /// dump under it — this cell is the catcher on the wire, (a) the unit.
     #[tokio::test]
     async fn the_reply_that_carries_a_lockdown_carries_no_seed() {
         use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
@@ -2280,9 +2474,14 @@ refuses an `Unknown` choice on a sim-shaped record, that refusal IS the report's
 ```
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib lockdown 2>&1 | grep -E
-'^error' | head -2` — `lockdown_messages` not found; `… --lib the_record_route_refuses 2>&1 | tail -4` — RED:
-200 where 409 (the stale record served); `… --lib the_reply_that_carries 2>&1 | tail -4` — RED: a `seed:`
-message in the reply, or the rebuild refusal this cell's doc names (then the report says which).
+'^error' | head -3` — `lockdown_messages` and `api::RECORD_UNSAVED` not found: one compile error blocks all three
+cells, so to READ the two route cells first stub the names (`lockdown_messages` returning its `lines`,
+`RECORD_UNSAVED` any sentence, `record` unchanged) and run `… --lib -- the_record_route_refuses
+the_reply_that_carries`: (c) RED, 200 where 409 (the stale record served, its seed in the body); (b) RED on the
+dump — measured: the reply read `["Phase: Additional actions (after) -> Additional actions (before)", "Turn 1 Red
+-> Turn 2 Blue", "LOCKDOWN — bot seat 1 could not decide honestly: the seat's view could not be taken: seat 1's
+own starting-order deal was never recorded; it cannot view itself", "seed: 20260831", "turn: 2", "─ Log (4 of 4
+event(s)) …", …]` — the D5 leak, through the API.
 
 - [ ] **Step 3: The code.** In `api.rs`, beside `input` (above it):
 
@@ -2360,9 +2559,10 @@ and `record`'s body from `let handle = …` (:2119) on:
 the handle's event count — a shorter one is [`RECORD_UNSAVED`].")
 
 - [ ] **Step 4: Run, mutants, lint, commit.** `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test
-result|FAILED'` green. Mutants: **M8** — `input` passing `lines` through unfiltered: cell (a) untouched (a unit
-on the filter), cell (b) RED on `seed:` — which is why (b) exists; **M9** — `record` without the count
-comparison: cell (c) RED (200 where 409). `cargo clippy -p yokohama-web --all-targets -- -D warnings` clean.
+result|FAILED'` green (**424**). Mutants: **M8** — `input` passing `lines` through unfiltered: cell (a) untouched (a
+unit on the filter), cell (b) RED on `seed:` alone — which is why (b) exists (measured: 423 green beside it);
+**M9** — `record` without the count comparison: cell (c) RED alone (200 where 409). `cargo clippy -p yokohama-web
+--all-targets -- -D warnings` clean.
 
 ```bash
 git add crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs
@@ -2391,7 +2591,8 @@ and `join`/`unlock` answer `409` with `status: dealing` — a table filling its 
 is." Add to the bullet one more sentence: "**Two rules of security S1a:** an undo whose unit drew from a hidden
 deck is refused at a table of more than one person (`api::UNDO_DREW`; R-SEC8(a)), and a creator's seed is
 honoured at a SOLO table only — every human seat theirs, none open (`tables::SEED_NOT_SOLO`; R-SEC8(b)); the
-fixtures opt into `SeedPolicy::Diagnostic` by name, the Worker through `YOKOHAMA_DIAGNOSTIC_SEEDS` (§12)."
+fixtures opt into `SeedPolicy::Diagnostic` by name, the Worker's pool through `YOKOHAMA_DIAGNOSTIC_SEEDS` (§12), the
+browser host's harness through its `init_diagnostic()` export; the NAS binary never."
 
 In the explanation bullet at :161, replace "**`why` masks the roads not taken** under `HandVisibility::Masked`
 (an unplayed `FulfillOrder` words as "Fulfill an order from hand"); the move PLAYED is never masked, and
@@ -2431,7 +2632,8 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
 
 ### Task 7: The reviews, the suites, the close — ORCHESTRATOR (spec §5, §9.2)
 
-- [ ] **Step 1: The "before" review — the orchestrator's own.** On a `git archive` export of master at
+- [x] **Step 1: The "before" review — the orchestrator's own** (done 2026-10-09; the record is §"Review record"
+  below and `docs/temp/security-review-2026-10-08/s1a-before/`). On a `git archive` export of master at
   `e9824ec9`, EXECUTE Tasks 1–5's cells against scratch implementations of this plan's own code blocks (a script
   that reads the blocks out of this file and applies them, never retyped), read every named mutant M1–M9 red at
   the cell it names and nowhere else, run the TS cells of Tasks 1 and 4 the same way (`vitest`, the typecheck,
@@ -2442,7 +2644,7 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   spec's §9.3 and are fixed in this plan BEFORE Task 1 is dispatched; the scratch implementation is discarded with
   the export, never carried into the branch.
 
-- [ ] **Step 2: The branch.** `git checkout -b security-s1 e9824ec9` (master's head: the code of `9ab8c430` plus
+- [x] **Step 2: The branch.** `git checkout -b security-s1 e9824ec9` (master's head: the code of `9ab8c430` plus
   the core PR's close documents, which the ledger, the board and the spec's §9 build on). S1b and S1c stack on
   it; nothing merges to master before S3 (spec §9.2).
 
@@ -2546,5 +2748,73 @@ body cap moving UP, against the review's "lowered toward measured game sizes"; t
 
 ## Review record
 
-(The "before" review's findings and the readings, dated, go here — Task 7's Step 1 — then each task's review and
-the "after" review, as the core PR's plan kept them.)
+### The "before" review (Task 7 Step 1) — 2026-10-09, the orchestrator (Mythos), on an export of `e9824ec9`
+
+**Method.** A `git archive` of master `e9824ec9` in the session's scratchpad (`node_modules` and the BGA captures
+linked in); every code block lifted out of this file by `docs/temp/security-review-2026-10-08/s1a-before/blocks.py`
+(by the line its fence opens on, never retyped) and applied by `apply.py`/`apply_more.py` — exact-text anchors,
+each required to match ONCE, so a name the tree does not spell failed loudly; Tasks 1–5 applied in the plan's
+order, each cell run for its fail-first reading, every named mutant M1–M9 applied and reverted by the same script
+(`mutants.sh`); the TS cells, the typecheck, the guard's node cells, the lane's wasm and pool rows all run. The
+findings (24, `s1a-before/findings.md`, with the raw logs beside it) were fixed in this plan at the source the same
+day — above, every correction says "measured". The scratch is discarded with the export; nothing of it is carried
+into the branch.
+
+**The three cells written to teach.** Task 2's drive: as written it never drew (the layer's Placement prompt is
+two picker rows and "Place no assistants"; the last-row walk places nothing) — the helper was rewritten to steer
+Option B into the Port by area id, the President after it, the first `Port: take` row, measured at seed
+20260831 (the order deck 10 → 9, the turn still open). Task 5(b)'s reachability: REACHABLE — the crafted record
+rebuilds, and the bot's first turn reports "the seat's view could not be taken: seat 1's own starting-order deal
+was never recorded" with the dump under it; the cell stays as the catcher on the wire. Task 4(e)'s seat control:
+the control drove as written; what the cell had wrong was the submit's name — "Open table" once a seat is open —
+and an `unknown` index that `tsc` refuses.
+
+**What the plan had wrong, by task** (each corrected above). Task 1: the Step 2 filter missed the inversion cell
+(F1); "the capture stays" was false — the CLI's regeneration pin holds the guide's suggest screen byte-exact and
+the digest moves the key AND the answer, so the guide pair is re-captured (F2); three cells compare a whole `why`
+payload and gain `withheld: null` (F3); the regeneration also moves `why_refused.json` and `why_foreign.json` by
+one line (F4); the lib count is 416, not 417 (F5); the withheld branch was unreachable where placed (F6) and its
+anchor matched twice (F7); three typecheck errors — a hand-built `WhyResponse`, `contract.test.ts`'s
+`provenance.forced`, `_ww` unexported (F8); both walk replays enumerate the constructed files and lacked
+`why_withheld` (F22). Task 2: the drive (F9); `undo_on_a_record_that_will_not_replay…` calls `trailing_mover`
+(F10). Task 3: the walk's joiner is named, so the regeneration moves `table_foreign.json` (one line, a pre-field
+document read as joined) and the archive walk's stored table document (the creator's seat gains the field), not
+the walk's `invited` lines (F11, F20); the leakage pin's tightening misfired on a creator-typed address and is
+dropped (F12); `client.rs:829` is a test helper whose creator seats read `true` (F13); the anchor
+`the_creator_sees_the_address_they_typed` does not exist (the cell is `the_view_names_no_address_but_the_readers_own`);
+27 of 41 sites are edits. Task 4: `SeedPolicy` out of scope in the tables cell (F15); the Worker cell lacked
+`#[test]` (F14); `failuresOf` is not a name (`deployGuard(worker({…}))` is); seven test-side `with_parts` builders
+must opt in (F18); `receipt.rs`'s `r2_at` is a third configuration builder (F16); the positional-array cell pins
+the key sentence (F19); the form's submit reads "Open table" with a seat open and `posted(stub).seats[1]` is an
+`unknown` index (F17); the `Env` declaration is the hand-kept `worker/src/env.ts`; the THIRD host — the browser
+host reads `SoloOnly` through `with_parts` and needed its harness opt-in `init_diagnostic()` (F21); a hand-built
+`ShellConfig` and four `moduleConfig` pins (F23, F24). Task 5: one compile error blocks all three cells' first
+readings (the plan's three separate commands); 5(b) reachable. Seven of the plan's line anchors had drifted by a
+few lines (`SETUP_SEED` :60, the suggest-cell closing braces); "find by content" covered them.
+
+**Readings at the scratch's head, every task applied** (the Mac, debug): `cargo test -p yokohama-cli` 857 / 2
+ignored (829 lib); `cargo test -p yokohama-web` — lib **424** (413 + 3 + 1 + 2 + 2 + 3), `browser_played_pin` 5,
+`lane_document` 6, `play_a_whole_game` 2, `start_refusal` 3, `wire_fixtures` 17; `cargo test -p yokohama-worker`
+77; `cargo test -p yokohama-wasm` 9; `cargo clippy --workspace --all-targets -- -D warnings` clean; the five fenced
+crates byte-identical; `web/`: typecheck clean (with the module), vitest 1,500 in 71 files, `test:wasm` 353;
+`worker/`: typecheck clean, `test:scripts` 533, the pool 224; the guard's cells and `lane-variables` (in a
+checkout) green. The corpus: Task 1 moves `suggest.json` (145 lines, the answer), `why.json` (1,410, a different
+account), `why_withheld.json` (new), `why_refused.json` and `why_foreign.json` (one line each); Task 3 moves
+`table_foreign.json` (one line) and `wire-script/archive-walk.json` (the stored document's creator seat). The
+guide pair: the key line, the suggested move, two swapped feature rows, one runner-up row.
+
+**The mutants, each applied alone at the scratch's head** (the cells it reddens, and nothing else):
+
+| mutant | reddens | green beside it |
+|---|---|---|
+| M1 `visibility_of` → Public | the visibility cell; the withheld route cell; the fixtures binary at `constructed()`'s own premise | 414 lib |
+| M2 `word_line_masked` → `describe_move` throughout | the continuation cell | 415 |
+| M3 `total` carried in the withheld text | the independence cell | 415 |
+| M4 the deck comparison deleted | the un-draw cell (200 vs 403) | 417 |
+| M5 `SeatView::of` ignoring `bound_at_create` | the unit cell; the route cell; the corpus golden (`table_foreign`) | 417 |
+| M6 `create`'s rule deleted | the tables cell; the production route cell; the Worker's switch cell | 419 + 76 |
+| M7 `production` through the Diagnostic wrapper | the production route cell | 420 |
+| M8 `input` unfiltered | the lockdown reply cell (the unit untouched) | 423 |
+| M9 `record` without the count comparison | the stale-record cell | 423 |
+
+(Each task's review and the "after" review follow here, as the core PR's plan kept them.)
