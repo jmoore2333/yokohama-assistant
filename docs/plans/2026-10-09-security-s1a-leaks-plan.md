@@ -58,7 +58,7 @@ each cycle planned against the stack's head (`security-s1`, cut from master `e98
 
 | cycle | rows | what moves |
 |---|---|---|
-| **S1a — the leaks (this plan)** | A1, B1, B2, B3, B7, D5, D10, D11 | the CLI's `suggest::stream_seed`; the layer's `explain.rs`, `api.rs` (`why`, `undo_allowed`, `input`, `record`), `tables.rs`, `table.rs`, `games.rs`; the client's explain and new-game surfaces; the Worker's seed switch; the corpus, once |
+| **S1a — the leaks (this plan)** | A1, B1, B2, B3, B7, D5, D10, D11 | the CLI's `suggest::stream_seed`; the layer's `explain.rs`, `api.rs` (`why`, `undo_allowed`, `input`, `record`), `tables.rs`, `table.rs`, `games.rs`; the client's explain and new-game surfaces; the Worker's seed switch; the corpus, twice (Task 1's and Task 3's regenerations — the paragraph below) |
 | **S1b — the cost bounds** | A2, A3, B12, D6, D25, D27, D29 (`archive_post`'s doc) | `backup.rs`, `api.rs` (archive, `/at`), `lib.rs` (the executor hand-off and the semaphore), `archive.rs` (the quota), `client.rs` (the frame's option list), the client's frame types; the corpus, once (A3's frames); the `CLAUDE.md` parenthetical "S1 wires the web layer to it" dropped (the core PR's note) |
 | **S1c — the plumbing** | B8, B9, D1, D7, D12, D26, D28, D29 (`is_token`'s doc) | `games.rs` (the lock map), `lib.rs` (`Cache-Control`, the stream's end), `store.rs`/`tables.rs` (the hosted id rule), `grammar.rs`, `archive.rs` (`caller_segment`), the error echoes |
 
@@ -3444,6 +3444,9 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   branch head: the fences of §"Global Constraints" (`git diff e9824ec9 -- crates/yokohama-core crates/yokohama-oracle
   crates/yokohama-difftest crates/yokohama-bridge crates/gen-data` empty; the CLI's diff confined to
   `suggest.rs` and its manifest; `SEMANTICS_REV` 7); the corpus moved in exactly two commits, each diff read
+  (**forward note, the after review:** the DIRECTORY moved in four — the two regenerations `60030076` and
+  `cfe37393`, Task 1's one-line reason rewording `344a4e73` under the ruled game-over rule, and a test-file edit
+  `0c353fe4` that touched no payload — each read) 
   against its task report's account; every mutant M1–M9 re-run; the argument of each row re-derived from the
   code, not from this plan — in particular that `visibility_of` is the engine's `observe` and nothing restated,
   that the withheld payload's bytes are a function of the move and the claim alone, that `SeedPolicy::SoloOnly`
@@ -3664,4 +3667,19 @@ paragraph; the local `struct Events` shadowing `api::Events` — `StoredRecord` 
 removed by the orchestrator; the record kept). Residual: `record`'s lock scope pinned by nothing (W4 survives) — a
 `Park`/`ParkedRead` store double for the final wave or S1b.
 
-(Task 6's review and the "after" review follow here, as the core PR's plan kept them.)
+### Task 6 — the review (Opus), 2026-10-09
+
+Task commit `de4f4932`; the pre-review fix `1b8fc50c` (the implementer's findings: Task 1's regeneration had moved
+`suggest.json`'s chosen row to 0, so `filter(!chosen)` and `slice(1)` agreed on every committed payload and the
+client's runner-ups fence could no longer catch the regression — the M6.1 lesson, missed when Task 1's diff was read;
+ruled: a cell that swaps two chosen flags of the committed payload (`slice(1)` reds it alone, the old cell stays green,
+confirming by execution that it could not catch the regression), the three tie sentences reworded with nothing
+numeric a regeneration can move; a rustdoc private-link warning → a code span; three lane-document sentences
+completed). Review: spec ✅, Needs fixes — Important 2: `constructed()`'s inherited reachability clause false for
+three payloads with its summary contradicting `house_frame` (one reason per payload); the spec's §9.3 saying the
+corpus moved "once" one paragraph above "twice" — plan-mandated, the origin this plan's own cycle-split cell,
+corrected forward; Minor 4 (the suggest cell's comment attributing a draw to a fixture it never reads; the
+`Ranked` doc's "So" following the wrong sentence and naming no file; the `Diagnostic` opt-in dated to cycle E; the
+§2 header's "code head" stale by one client cell) — fixed in the round that follows, re-review clean.
+
+(The "after" review follows here, as the core PR's plan kept them.)
