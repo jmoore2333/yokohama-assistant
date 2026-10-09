@@ -36,6 +36,7 @@
 //    prints the door it reads before its verdict (`doorLine`).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
+// 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
 // 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
 //    `wrangler.jsonc`, the open and gate files AND both pool configurations,
 //    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
@@ -592,6 +593,9 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     doorRules(config, judged.value, failures);
     if (judged.text.includes("YOKOHAMA_WEB_TEST_CLOCK")) {
       failures.push(`${config} names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in the pool's configurations and nowhere else`);
+    }
+    if (judged.text.includes("YOKOHAMA_DIAGNOSTIC_SEEDS")) {
+      failures.push(`${config} names YOKOHAMA_DIAGNOSTIC_SEEDS — diagnostic seeds are set in the pool's configurations and nowhere else`);
     }
     secretsInVars(config, judged.value, failures);
     // The gate file exists to shut the dev door: anything but "off" defeats it.

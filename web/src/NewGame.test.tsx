@@ -415,6 +415,23 @@ describe("the seed", () => {
       expect((screen.getByRole("button", { name: "Deal" }) as HTMLButtonElement).disabled, label).toBe(!quiet);
     }
   });
+
+  it("hides the seed, and sends none, once a seat is another person or open", async () => {
+    const { stub, user } = show();
+    await user.click(screen.getByText("Advanced", { selector: "summary" }));
+    await user.type(screen.getByLabelText("Seed"), "12");
+    // Seat 2 becomes an OPEN seat, through the row's own select — the control
+    // this file's "specific person" cells drive (`seat("Blue")`, :115).
+    await user.selectOptions(seat("Blue"), "open");
+    expect(screen.queryByLabelText("Seed")).toBeNull();
+    expect(screen.queryByText("Advanced", { selector: "summary" })).toBeNull();
+    // With a seat open the submit reads "Open table", not "Deal" (the cell at
+    // :177 pins both arms).
+    await user.click(screen.getByRole("button", { name: "Open table" }));
+    await waitFor(() => expect(creates(stub)).toHaveLength(1));
+    expect(posted(stub).seed).toBeUndefined();
+    expect(posted(stub).seats).toEqual([{ user: ME }, { open: true }]);
+  });
 });
 
 describe("sending the form", () => {

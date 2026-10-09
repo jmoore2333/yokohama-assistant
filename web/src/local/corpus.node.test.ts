@@ -54,6 +54,7 @@ interface Row {
  */
 interface WasmHost {
   init(): void;
+  init_diagnostic(): void;
   set_clock(seconds?: number | null): void;
   dispatch(
     user: string | null | undefined,
@@ -241,7 +242,7 @@ describe("the replay's reading of a reply", () => {
 describe.skipIf(!have)("the browser host serves the corpus", () => {
   it("replays the walk through the module and every named reply is its committed file", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
-    wasm.init();
+    wasm.init_diagnostic();
     // The same reading the corpus was cut under, so the two hosts stamp the
     // same second and the lobby's `(created_at desc, id asc)` falls to the
     // same tie-break the committed pages show.
@@ -333,7 +334,7 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
 
   it("keeps no archive, so the browser sends a finished game to the server's", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
-    wasm.init();
+    wasm.init_diagnostic();
     const reply = wasm.dispatch(
       "local@browser",
       "POST",

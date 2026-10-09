@@ -189,11 +189,15 @@ function TableForm({
    *  Access** (spec §2.1): the door's own name, from `/api/health`. */
   const byName = useIdentityMode() === "open";
   const colors = COLORS.slice(0, players) as PlayerColor[];
+  /** A seed is honoured at a SOLO table only (R-SEC8(b)): every human seat
+   *  mine, none open. The field is withheld — not disabled — the moment a seat
+   *  is somebody else's, and a seed typed before that is not sent. */
+  const seedAllowed = seats.every((r) => r.kind === "me" || r.kind === "bot");
 
   /** Blank is "the server draws one" and is never sent; anything else is
    *  checked by the server's own rule as it is typed (spec §2.2). */
   const seedVerdict = trimSeed(seedText) === "" ? null : checkSeed(seedText);
-  const seedError = seedVerdict !== null && !seedVerdict.ok ? seedVerdict.reason : null;
+  const seedError = seedAllowed && seedVerdict !== null && !seedVerdict.ok ? seedVerdict.reason : null;
 
   /** Why a "specific person" row cannot be sent: `null` when it can, `""` when
    *  it is blank — held without a sentence, because nothing typed is not a
@@ -235,7 +239,7 @@ function TableForm({
       // The seed is a STRING from the keystroke to the wire (`WireSeed`), and
       // blank is omitted: the board is an injective fingerprint of the seed, so
       // the server's own draw is the safe default.
-      ...(seed ? { seed } : {}),
+      ...(seedAllowed && seed ? { seed } : {}),
       ...(name.trim() ? { name: name.trim() } : {}),
       ...keptName(),
       // Only when ticked AND typed: a password field left blank under a ticked
@@ -384,42 +388,44 @@ function TableForm({
                 keyboard's Enter or Space on a summary arrives as that click).
                 `open` alone could not: closing the fold leaves its value true
                 before and after, so React writes nothing back (review I-2). */}
-            <details
-              className="fold"
-              open={advanced || seedError !== null}
-              onToggle={(e) => setAdvanced(e.currentTarget.open)}
-            >
-              {/* **And says why while it is held** (cycle C, the a11y pass;
-                  R-B17): a keyboard's Enter on a summary that will not close
-                  did nothing a screen reader could hear. It points at the
-                  refusal while there is one, and at nothing after. */}
-              <summary
-                aria-describedby={seedError !== null ? "seed-error" : undefined}
-                onClick={(e) => {
-                  if (seedError !== null) e.preventDefault();
-                }}
+            {seedAllowed && (
+              <details
+                className="fold"
+                open={advanced || seedError !== null}
+                onToggle={(e) => setAdvanced(e.currentTarget.open)}
               >
-                Advanced
-              </summary>
-              <div className="form-field">
-                <label htmlFor="seed">Seed</label>
-                <input
-                  id="seed"
-                  value={seedText}
-                  inputMode="numeric"
-                  autoComplete="off"
-                  spellCheck={false}
-                  aria-invalid={seedError !== null ? true : undefined}
+                {/* **And says why while it is held** (cycle C, the a11y pass;
+                    R-B17): a keyboard's Enter on a summary that will not close
+                    did nothing a screen reader could hear. It points at the
+                    refusal while there is one, and at nothing after. */}
+                <summary
                   aria-describedby={seedError !== null ? "seed-error" : undefined}
-                  onChange={(e) => setSeedText(e.target.value)}
-                />
-                {seedError !== null && (
-                  <p className="field-error" id="seed-error">
-                    {seedError}
-                  </p>
-                )}
-              </div>
-            </details>
+                  onClick={(e) => {
+                    if (seedError !== null) e.preventDefault();
+                  }}
+                >
+                  Advanced
+                </summary>
+                <div className="form-field">
+                  <label htmlFor="seed">Seed</label>
+                  <input
+                    id="seed"
+                    value={seedText}
+                    inputMode="numeric"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-invalid={seedError !== null ? true : undefined}
+                    aria-describedby={seedError !== null ? "seed-error" : undefined}
+                    onChange={(e) => setSeedText(e.target.value)}
+                  />
+                  {seedError !== null && (
+                    <p className="field-error" id="seed-error">
+                      {seedError}
+                    </p>
+                  )}
+                </div>
+              </details>
+            )}
 
             <div className="form-foot">
               <button type="button" className="quiet-link" onClick={onCancel}>

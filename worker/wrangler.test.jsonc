@@ -68,6 +68,9 @@
     // HERE and nowhere else; the deploy guard refuses `wrangler.jsonc` if it
     // names it.
     "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000",
+    // The corpus walk opens a seeded table with an open seat (R-SEC8(b)); on
+    // in the pool and nowhere else — the deploy guard refuses it.
+    "YOKOHAMA_DIAGNOSTIC_SEEDS": "on",
     // On in the pool (plan review M2). A wake cell evicts its object, and an
     // eviction discards anything set on the live instance (the plan's pool
     // fact 4), so the cells read the switch from here. A probe still writes

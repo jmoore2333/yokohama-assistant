@@ -117,9 +117,25 @@ const HOST: Host = Host {
 };
 
 /// Build a FRESH `Games` over a fresh `MemStore`, whose log is the console
-/// (M6.5c2), replacing any earlier one.
+/// (M6.5c2), replacing any earlier one — under the production seed rule,
+/// `SeedPolicy::SoloOnly` (R-SEC8(b)), as every host builds it: the client's
+/// form withholds the seed for an open or another person's seat anyway, so
+/// nothing a person reaches changes here.
 #[wasm_bindgen]
 pub fn init() {
+    init_with(yokohama_web::games::SeedPolicy::SoloOnly);
+}
+
+/// [`init`] under `SeedPolicy::Diagnostic` — the HARNESS's opt-in by name
+/// (security S1a, finding B3): the corpus walk opens a seeded table with an
+/// open seat, which `corpus.node.test.ts`'s replay and this crate's own seeded
+/// cells reproduce through this export; the browser client never calls it.
+#[wasm_bindgen]
+pub fn init_diagnostic() {
+    init_with(yokohama_web::games::SeedPolicy::Diagnostic);
+}
+
+fn init_with(policy: yokohama_web::games::SeedPolicy) {
     let games = Games::with_parts(
         Arc::new(yokohama_core::Rules::standard()),
         Arc::new(MemStore::default()),
@@ -129,7 +145,8 @@ pub fn init() {
         Arc::new(yokohama_web::archive::NoArchive),
         yokohama_web::games::RunHost::Browser,
     )
-    .with_log(Arc::new(ConsoleLog));
+    .with_log(Arc::new(ConsoleLog))
+    .with_seed_policy(policy);
     *GAMES.lock().expect("the host's games") = Some(games);
 }
 
@@ -388,7 +405,7 @@ mod tests {
     #[test]
     fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
         let _s = serial();
-        init();
+        init_diagnostic();
         let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"named"}"#;
         let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
         assert_eq!(status, 201, "{created}");
@@ -400,7 +417,7 @@ mod tests {
         let record = read_inner("record", "named").unwrap().expect("the last keep dealt the game");
         for (watcher, want) in [("ben castle", 200), ("..", 500)] {
             doc["unlocked"] = serde_json::json!([watcher]);
-            init();
+            init_diagnostic();
             load_inner("table", "named", &doc.to_string()).unwrap();
             load_inner("record", "named", &record).unwrap();
             let (status, body) = dispatch_inner(Some("red@t.test"), "GET", "/api/games/named/table", "", None, b"");

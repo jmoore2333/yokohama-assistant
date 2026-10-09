@@ -751,6 +751,11 @@ impl std::str::FromStr for Scope {
 /// is a state whose owner should hear about it.
 pub const UNLOCKED_CAP: usize = 256;
 
+/// The sentence a seeded create is refused with at a table that seats
+/// somebody else (R-SEC8(b), finding B3; [`crate::games::SeedPolicy`]).
+pub const SEED_NOT_SOLO: &str =
+    "a seed is honoured only at a table whose every human seat is yours — leave it blank and the server draws one";
+
 pub const LIST_LIMIT_DEFAULT: usize = 20;
 pub const LIST_LIMIT_MAX: usize = 100;
 
@@ -793,6 +798,20 @@ impl Games {
         // `enter`, poisoned or not: the id space's lock guards no data.
         let _serialized = enter(&self.table_lock);
         let (config, seats) = config_of(req, creator).map_err(GameError::BadRequest)?;
+        // **A creator's seed is honoured at a SOLO table only** (R-SEC8(b),
+        // finding B3): every human seat the creator's and none open, else the
+        // creator knows every deal and both decks. The fixtures opt into
+        // `SeedPolicy::Diagnostic` by name; nothing a person reaches does.
+        if req.seed.is_some() && self.seed_policy == crate::games::SeedPolicy::SoloOnly {
+            let somebody_else = seats.iter().any(|s| match s {
+                SeatDoc::Open => true,
+                SeatDoc::Human { user, .. } => user.as_str() != creator.as_str(),
+                SeatDoc::Bot => false,
+            });
+            if somebody_else {
+                return Err(GameError::BadRequest(SEED_NOT_SOLO.to_string()));
+            }
+        }
         let seed = req.seed.map_or_else(draw_seed, |s| s.0);
 
         let id = match &req.id {
@@ -2288,7 +2307,8 @@ mod tests {
             Arc::new(|| 1_700_000_000),
             Arc::new(crate::archive::NoArchive),
             crate::games::RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         let red = who("red@t.test");
         let view = games.create(&req("clock"), &red).expect("a table");
         let (doc, _) = games.read_table(&view.id).expect("a readable store").expect("the table");
@@ -3865,6 +3885,44 @@ mod tests {
         r.id = Some("bad id".into());
         let e = games.create(&r, &red).unwrap_err().to_string();
         assert!(e.contains("at least one character"), "the password precedes the id: {e}");
+    }
+
+    /// **A creator's seed is honoured at a SOLO table only** (R-SEC8(b),
+    /// finding B3): every human seat the creator's and none open. Under the
+    /// production policy a seed beside an open seat or another person is a
+    /// 400 in `SEED_NOT_SOLO`'s words and the same body without a seed is a
+    /// 201; a seed beside a BOT is honoured, a bot being no person (Review
+    /// Focus 5); and under `Diagnostic` — the fixtures' named opt-in, which
+    /// `games()` sets — every shape is honoured, which is what every other
+    /// cell in this module relies on.
+    #[test]
+    fn a_creators_seed_is_honoured_at_a_solo_table_only() {
+        use crate::games::SeedPolicy;
+        let production = Games::new(Arc::new(Rules::standard()), Arc::new(MemStore::default()))
+            .with_seed_policy(SeedPolicy::SoloOnly);
+        let creator = who("red@t.test");
+        // Another person.
+        let err = production.create(&two_people("other", 7), &creator).expect_err("refused");
+        assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "{err:?}");
+        // An open seat.
+        let mut open = req_seeded("open", 7);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        let err = production.create(&open, &creator).expect_err("refused");
+        assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "{err:?}");
+        // The same two shapes with NO seed: drawn, 201.
+        let mut unseeded = two_people("other2", 7);
+        unseeded.seed = None;
+        assert!(production.create(&unseeded, &creator).is_ok(), "a drawn seed opens the table");
+        // A bot is no person; a hot seat is one person.
+        assert!(production.create(&req_seeded("bot", 7), &creator).is_ok(), "the bot's seat is nobody's");
+        let mut hot = req_seeded("hot", 7);
+        hot.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        assert!(production.create(&hot, &creator).is_ok(), "every human seat is the creator's");
+        // The fixtures' opt-in: `games()` is `Diagnostic`, and the refused shape is honoured there.
+        assert_eq!(games().seed_policy(), SeedPolicy::Diagnostic);
+        assert!(games().create(&two_people("diag", 7), &creator).is_ok());
+        // And a table opened under the refusal is NOT there: nothing was written.
+        assert!(production.read_table("other").unwrap().is_none(), "a refused create wrote a table");
     }
 
     /// **The name is a label, the id is its own field, and the display name

@@ -529,7 +529,7 @@ mod tests {
 
     /// [`r2`] at `door` (M6.5c2, spec §2.1): `worker` or `open`.
     fn r2_at(caller: Option<&str>, door: &str) -> String {
-        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
+        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null, "diagnostic_seeds": true})
             .to_string()
     }
 

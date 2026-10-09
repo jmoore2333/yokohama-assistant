@@ -116,6 +116,7 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
       admins: null,
       countWakes: false,
       devDoor: false,
+      diagnosticSeeds: false,
       clock: { kind: "wall" },
     });
     expect(ttlDaysOf(config(90))).toBe(90);

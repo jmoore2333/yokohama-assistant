@@ -392,8 +392,9 @@ pub struct AppState {
     /// The two table TTLs (M6.5c2 cycle F, R-F9): what `main` hands the sweep
     /// ([`sweep::run`]) and what `/api/health` reports through the adapter's
     /// [`api::Host`]. [`sweep::Ttls::none`] on every constructor but
-    /// [`Self::new`], which takes the reading `main` made; a cell sets them
-    /// with [`Self::with_ttls`].
+    /// [`Self::new`], which takes the reading `main` made, and
+    /// [`Self::production`], which `new` hands it to; a cell sets them with
+    /// [`Self::with_ttls`].
     pub ttls: sweep::Ttls,
 }
 
@@ -408,9 +409,10 @@ impl AppState {
     /// **`ttls` is `main`'s reading of the two TTL variables** (M6.5c2 cycle
     /// F, R-F9; [`sweep::Ttls::from_lookup`]), and a table TTL with no archive
     /// is the second `Err` here, naming both variables
-    /// ([`sweep::check_archive`]): asked once the archive is resolved and
-    /// before the store is built, so a server that would throw games away
-    /// never opens one.
+    /// ([`sweep::check_archive`], asked in [`Self::production`]): asked once
+    /// the archive is resolved and before the store is read — `FsStore::new`
+    /// touches no file — so a server that would throw games away never opens
+    /// one.
     pub fn new(
         identity: identity::IdentityMode,
         chat: chat::ChatConfig,
@@ -421,15 +423,26 @@ impl AppState {
             Some(dir) => Arc::new(dir),
             None => Arc::new(archive::NoArchive),
         };
+        Self::production(Arc::new(FsStore::new(store::default_dir())), identity, chat, archive, multiplayer, ttls)
+    }
+
+    /// [`Self::new`] past its two environment reads — the production state
+    /// over the store and the archive it was handed: the one constructor
+    /// directly (never a test constructor, whose `SeedPolicy` is
+    /// `Diagnostic`), `SoloOnly` by construction, pinned by
+    /// `the_production_state_honours_a_seed_at_a_solo_table_only`.
+    pub fn production(
+        store: Arc<dyn Store>,
+        identity: identity::IdentityMode,
+        chat: chat::ChatConfig,
+        archive: Arc<dyn archive::Archive>,
+        multiplayer: Multiplayer,
+        ttls: sweep::Ttls,
+    ) -> Result<Self, String> {
         sweep::check_archive(&ttls, archive::is_on(&archive))?;
-        Ok(Self::with_store_chat_and_archive(
-            Arc::new(FsStore::new(store::default_dir())),
-            identity,
-            chat,
-            archive,
-        )
-        .with_multiplayer(multiplayer)
-        .with_ttls(ttls))
+        Ok(Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
+            .with_multiplayer(multiplayer)
+            .with_ttls(ttls))
     }
 
     /// Backed by memory, in `open` mode — the mode every test drives with a
@@ -479,7 +492,12 @@ impl AppState {
 
     /// The one constructor that builds anything — the store, the identity door,
     /// the chat facts and the archive all given (M6.5a). Every constructor above
-    /// is this one with something chosen for it; `in_memory*` keep no archive.
+    /// but [`Self::new`] and [`Self::production`] is this one with something
+    /// chosen for it; `in_memory*` keep no archive.
+    ///
+    /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
+    /// no person's game — honours a seed at any table; the production path is
+    /// [`Self::production`], which builds the one constructor directly.
     pub fn with_store_chat_and_archive(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -487,6 +505,7 @@ impl AppState {
         archive: Arc<dyn archive::Archive>,
     ) -> Self {
         Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
+            .with_seed_policy(games::SeedPolicy::Diagnostic)
     }
 
     /// [`Self::with_store_chat_and_archive`] with the log chosen: the one seam a
@@ -572,6 +591,13 @@ impl AppState {
     /// without an archive refuses to start.
     pub fn with_ttls(self, ttls: sweep::Ttls) -> Self {
         Self { ttls, ..self }
+    }
+
+    /// This state under `policy` ([`games::SeedPolicy`]) — for a cell that
+    /// asks the production rule of an in-memory state.
+    pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
+        self.games = self.games.with_seed_policy(policy);
+        self
     }
 
     /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
@@ -1971,6 +1997,44 @@ mod tests {
 
         let (status, _) = post_json("/api/games", good).await;
         assert_eq!(status, StatusCode::CREATED, "the correctly-spelled request still works");
+    }
+
+    /// **The production constructor's policy is `SoloOnly`** — pinned through
+    /// the path `AppState::new` takes minus its two environment reads
+    /// (`AppState::production`), so a test constructor's `Diagnostic` can
+    /// never be inherited by it: a seeded create beside an open seat is a 400
+    /// through the router, and the same without a seed a 201.
+    #[tokio::test]
+    async fn the_production_state_honours_a_seed_at_a_solo_table_only() {
+        let state = Arc::new(
+            AppState::production(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(archive::NoArchive),
+                Multiplayer(true),
+                sweep::Ttls::none(),
+            )
+            .expect("a production state over memory"),
+        );
+        assert_eq!(state.games.seed_policy(), games::SeedPolicy::SoloOnly);
+        let body = |seed: bool| {
+            let mut b = serde_json::json!({
+                "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+                "seats": [{ "user": WHO }, { "open": true }], "id": "seeded", "name": "seeded",
+            });
+            if seed {
+                b["seed"] = serde_json::json!("20260831");
+            }
+            b
+        };
+        let (status, refused) = post_as(&state, WHO, "/api/games", body(true)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(refused["error"], tables::SEED_NOT_SOLO);
+        let (status, opened) = post_as(&state, WHO, "/api/games", body(false)).await;
+        assert_eq!(status, StatusCode::CREATED, "{opened}");
+        // And the in-memory constructor every other cell uses is the fixtures' opt-in.
+        assert_eq!(AppState::in_memory().games.seed_policy(), games::SeedPolicy::Diagnostic);
     }
 
     /// **A `deal` this server cannot BUILD is a 500; a request it will not
@@ -7197,10 +7261,10 @@ mod tests {
     /// cycle F, R-F9; Review Focus 3; battery row 15): `AppState::new` asks
     /// [`sweep::check_archive`] once the archive is resolved and answers its
     /// sentence, which `main` prints and exits 1 on — before any store is
-    /// built. Read with `YOKOHAMA_WEB_ARCHIVE_DIR` unset, which this crate's
+    /// read. Read with `YOKOHAMA_WEB_ARCHIVE_DIR` unset, which this crate's
     /// cells never set (the environment is not mutated under a threaded
     /// runner); a run that sets it skips, as the `chmod` cell skips as root.
-    /// Mutant: the check dropped from `new`.
+    /// Mutant: the check dropped from `production`, the path `new` takes.
     #[test]
     fn a_ttl_without_an_archive_directory_refuses_to_start() {
         if std::env::var_os("YOKOHAMA_WEB_ARCHIVE_DIR").is_some() {

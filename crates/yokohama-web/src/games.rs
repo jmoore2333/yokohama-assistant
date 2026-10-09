@@ -260,6 +260,26 @@ impl RunHost {
     }
 }
 
+/// Whether a creator's `seed` is honoured at a table that seats somebody else
+/// (the 2026-10-08 ruling R-SEC8(b), finding B3). **`SoloOnly` is the
+/// production rule**: a seed is honoured only when every human seat is the
+/// creator's and none is open — a creator who knows the seed knows every
+/// deal and both decks (`tables::draw_seed`'s own threat model). `Diagnostic`
+/// is the FIXTURES' opt-in, by name — the engine's `--master` convention: a
+/// diagnostic value is named as one and is never a default a person reaches.
+/// Who sets what: [`Games::with_parts`] (the hosts) builds `SoloOnly`;
+/// [`Games::with_limits`] and so [`Games::new`] — "nothing but a cell builds
+/// one this way" — build `Diagnostic`; `AppState`'s in-memory and `with_store`
+/// constructors are `Diagnostic` and `AppState::production` (the NAS binary's
+/// path) is `SoloOnly`, pinned; the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+/// `on` in its pool's test files only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeedPolicy {
+    #[default]
+    SoloOnly,
+    Diagnostic,
+}
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -388,6 +408,9 @@ pub struct Games {
     /// were `eprintln!`, which reaches the NAS's container log and nothing on
     /// `wasm32-unknown-unknown`.
     pub(crate) log: Arc<dyn Log>,
+    /// The seed rule `create` applies (R-SEC8(b)) — see [`SeedPolicy`] for
+    /// who sets what.
+    pub(crate) seed_policy: SeedPolicy,
 }
 
 /// How many `Repl`s stay resident.
@@ -430,6 +453,7 @@ impl Games {
             // but a cell builds one this way.
             RunHost::Server,
         )
+        .with_seed_policy(SeedPolicy::Diagnostic)
     }
 
     /// A clock that reads 1, 2, 3, … — one tick per reading, no platform call.
@@ -453,9 +477,11 @@ impl Games {
     /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
     /// The two constructors above are this one with the chat facts, the signal
     /// or the clock chosen for them. The [`RunHost`] is the host's too (M6.5c2):
-    /// it is what every record dealt here names as where it was played. The log
-    /// is the one part defaulted — [`NoLog`] — and a host sets it with
-    /// [`Games::with_log`] (M6.5c2).
+    /// it is what every record dealt here names as where it was played. Two
+    /// parts are defaulted: the log — [`NoLog`] — which a host sets with
+    /// [`Games::with_log`] (M6.5c2), and the seed rule — [`SeedPolicy::SoloOnly`],
+    /// the production rule — which only a named opt-in changes, through
+    /// [`Games::with_seed_policy`] (R-SEC8(b)).
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
@@ -481,6 +507,7 @@ impl Games {
             archive,
             run_host,
             log: Arc::new(NoLog),
+            seed_policy: SeedPolicy::SoloOnly,
         }
     }
 
@@ -496,6 +523,16 @@ impl Games {
     pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
         self.archive = archive;
         self
+    }
+
+    /// This `Games` under `policy` — see [`SeedPolicy`] for who sets what.
+    pub fn with_seed_policy(mut self, policy: SeedPolicy) -> Self {
+        self.seed_policy = policy;
+        self
+    }
+
+    pub fn seed_policy(&self) -> SeedPolicy {
+        self.seed_policy
     }
 
     /// This `Games` with a [`Log`] (M6.5c2, spec §2.6) — the builder step each
@@ -1249,7 +1286,8 @@ mod tests {
             Games::ticking_clock(),
             Arc::new(NoArchive),
             RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
 
         // `create` — the bump at the end of its success arm.
@@ -1738,7 +1776,8 @@ mod tests {
                 Games::ticking_clock(),
                 Arc::new(NoArchive),
                 host,
-            );
+            )
+            .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
             let run_id = |games: &Games| -> Option<String> {
                 let (text, _) = games.store().read(Doc::Record, "named").unwrap().unwrap();
                 serde_json::from_str::<GameRecord>(&text).unwrap().run.expect("the seats were stamped").run_id
@@ -1779,6 +1818,7 @@ mod tests {
                 Arc::new(NoArchive),
                 run_host,
             )
+            .with_seed_policy(crate::games::SeedPolicy::Diagnostic)
         };
         let run_id = |text: &str| -> Option<String> {
             serde_json::from_str::<GameRecord>(text).unwrap().run.expect("the seats were stamped").run_id
@@ -3152,7 +3192,8 @@ pub(crate) mod test_support {
             Games::ticking_clock(),
             Arc::new(crate::archive::NoArchive),
             super::RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         (games, signals)
     }
 

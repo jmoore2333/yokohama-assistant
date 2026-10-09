@@ -2675,6 +2675,7 @@ mod tests {
             archive,
             crate::games::RunHost::Server,
         )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic)
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -3299,7 +3300,8 @@ mod tests {
             std::sync::Arc::new(|| 1_789_000_000u64),
             std::sync::Arc::new(crate::archive::NoArchive),
             crate::games::RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         let (status, v) = ask(&off, "red@t.test", "DELETE", "/api/chat/1", "", "");
         assert_eq!((status, v["error"].as_str()), (404, Some("the lobby chat is off")), "{v}");
     }
