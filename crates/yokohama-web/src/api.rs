@@ -1266,6 +1266,19 @@ pub struct Input {
     pub expect: Option<String>,
 }
 
+/// `input`'s messages when THIS step engaged a lockdown (finding D5): the
+/// lines before the lockdown line — the mover's own deltas — and the line,
+/// and nothing under it. `Repl::step` appends `lockdown_dump()` there — the
+/// setup seed, the turn and the log tail — for a terminal's operator, who owns
+/// the game; a seat at a shared table does not. A text with no lockdown line
+/// is replaced by the reason alone.
+pub(crate) fn lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String> {
+    match lines.iter().position(|l| l.starts_with("LOCKDOWN — ")) {
+        Some(i) => lines.into_iter().take(i + 1).collect(),
+        None => vec![format!("LOCKDOWN — {reason}")],
+    }
+}
+
 /// The one mutation.
 ///
 /// Deliberately a single endpoint over `Repl::step`, not a family of typed
@@ -1447,8 +1460,14 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     } else {
         out.text.clone()
     };
-    let messages: Vec<String> =
+    let lines: Vec<String> =
         body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    // **A lockdown's dump stays in the terminal** (finding D5): the reply
+    // carries the lockdown line and nothing under it.
+    let messages = match (repl.session.is_locked() && !locked_before, repl.session.record().lockdown.as_deref()) {
+        (true, Some(reason)) => lockdown_messages(lines, reason),
+        _ => lines,
+    };
     // **The reply is the CALLER's view, not the new mover's.** A move that ends
     // a turn therefore answers its own mover with a `watching` prompt, which is
     // the true thing to say: the game has moved on and this person is not the
@@ -2141,6 +2160,12 @@ pub fn surface<T>(
 }
 
 
+/// The 409 a finished game whose STORED record is shorter than the handle's
+/// answers (finding D11): its last save failed, so the store holds the game
+/// from before the end — a running game's record, seed and all.
+pub(crate) const RECORD_UNSAVED: &str =
+    "the record is available once the game is over and its last move is saved — that save failed";
+
 /// `GET /api/games/{id}/record` (M6.5a, R-6.5a.12; umbrella R-6.5.10): a SEAT
 /// HOLDER's finished game as the EXACT bytes the store holds for `Doc::Record`
 /// — never a re-serialization, so the terminal digest the store stamped is the
@@ -2148,6 +2173,9 @@ pub fn surface<T>(
 /// players'); a running game is a 409, because the record carries the setup
 /// seed — hidden-set member #1 — until the last move. Lockdown does not fence
 /// it: this is projection, not computation (the M3 lockdown rule).
+///
+/// Since security S1a the store is read UNDER the handle's lock and its record
+/// held to the handle's event count — a shorter one is [`RECORD_UNSAVED`].
 pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     if viewer == client::Viewer::Spectator {
@@ -2158,8 +2186,11 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         });
     }
     let handle = games.handle(id)?;
-    let over = games.lock_game(&handle, id)?.session.is_over();
-    if !over {
+    // Under the lock, both facts: the handle's "over" and the stored bytes,
+    // held to each other (finding D11) — a failed final persist leaves the
+    // store one move behind a resident handle that says over.
+    let repl = games.lock_game(&handle, id)?;
+    if !repl.session.is_over() {
         return Err(ApiError {
             status: StatusCode::CONFLICT,
             message: "the record is available once the game is over".to_string(),
@@ -2171,6 +2202,15 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         .read(crate::store::Doc::Record, id)
         .map_err(ApiError::server_error)?
         .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
+    #[derive(Deserialize)]
+    struct Events {
+        events: Vec<serde_json::Value>,
+    }
+    let stored: Events = serde_json::from_str(&json)
+        .map_err(|e| ApiError::server_error(format!("the stored record does not parse: {e}")))?;
+    if stored.events.len() < repl.session.record().events.len() {
+        return Err(ApiError { status: StatusCode::CONFLICT, message: RECORD_UNSAVED.to_string(), table_status: None, foreign_bot: None });
+    }
     Ok(json)
 }
 
@@ -2484,6 +2524,36 @@ pub(crate) fn parse_path_u64(index: usize, raw: &str) -> Result<u64, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A lockdown's dump never reaches the `input` reply** (finding D5):
+    /// `Repl::step` appends `seed: <setup seed>`, the turn and the log tail
+    /// under the `LOCKDOWN — …` line at every lockdown site, and `input`
+    /// forwarded the whole text as `messages`. The filter keeps what came
+    /// BEFORE the lockdown line — the mover's own deltas, public — and the
+    /// line itself, and drops everything under it; a reason that carries
+    /// digits is kept whole (Review Focus 7); a text with no lockdown line —
+    /// a lockdown engaged somewhere the line was not printed — is replaced by
+    /// the reason alone, never passed through.
+    #[test]
+    fn a_lockdowns_dump_is_cut_from_the_reply_and_the_reason_is_kept_whole() {
+        let reason = "bot seat 1 could not decide honestly: the view was refused at turn 3 (code 4)";
+        let lines: Vec<String> = [
+            "Placed 1 assistant in Bank (A07)",
+            &format!("LOCKDOWN — {reason}"),
+            "seed: 20260831",
+            "turn: 3",
+            "  12  Blue: Move President to Bank (A07)",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let kept = lockdown_messages(lines, reason);
+        assert_eq!(kept, vec!["Placed 1 assistant in Bank (A07)".to_string(), format!("LOCKDOWN — {reason}")]);
+        assert!(!kept.join("\n").contains("20260831"));
+        // No lockdown line in the text: the reason alone.
+        let kept = lockdown_messages(vec!["seed: 20260831".into(), "turn: 3".into()], reason);
+        assert_eq!(kept, vec![format!("LOCKDOWN — {reason}")]);
+    }
 
     #[test]
     fn a_missing_content_type_is_axums_sentence() {

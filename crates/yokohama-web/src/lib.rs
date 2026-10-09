@@ -1382,6 +1382,33 @@ mod tests {
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
+    /// **A finished game whose last save failed does not serve its running
+    /// record** (finding D11): `record` read "over" off the resident handle,
+    /// dropped the lock, and served whatever the store held — which, after a
+    /// failed final persist, is the record from before the end, its seed in
+    /// it. The route now reads the store under the handle's lock and holds the
+    /// stored record to the handle's event count: a shorter one is a 409 in
+    /// `RECORD_UNSAVED`'s words.
+    #[tokio::test]
+    async fn the_record_route_refuses_a_finished_game_whose_stored_record_is_behind_the_handle() {
+        let (state, id, _) = a_finished_two_person_game("unsaved").await;
+        // The handle is resident and over.
+        let (_, game) = get_as(&state, "red@wire.test", &format!("/api/games/{id}")).await;
+        assert_eq!(game["over"], serde_json::json!(true));
+        // The store falls behind: the same record one event short.
+        let store = Arc::clone(state.games.store());
+        let (json, version) = store.read(Doc::Record, id).expect("a store").expect("the record");
+        let mut record: yokohama_core::GameRecord = serde_json::from_str(&json).expect("a record");
+        record.events.pop();
+        store
+            .write_if_version(Doc::Record, id, &serde_json::to_string_pretty(&record).unwrap(), Some(version))
+            .expect("the stale record");
+        let (status, body) = get_as(&state, "red@wire.test", &format!("/api/games/{id}/record")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"], api::RECORD_UNSAVED);
+        assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+    }
+
     /// **What every save on this host names, carried byte for byte** (M6.5c2,
     /// spec §2.4, "A pin, on every save path"): the record `finalize` writes
     /// through `AppState`'s constructor says `run_id: "web/server"`, and the
@@ -4012,6 +4039,71 @@ mod tests {
             Some(events),
             "an undo rewound a faulted game, which is the record a lockdown exists to preserve",
         );
+    }
+
+    /// **The one lockdown a request can reach** (finding D5, spec correction 5):
+    /// a record whose bot seat chose `Unknown` — its own deal unrecorded — makes
+    /// the bot's `observe` refuse at its first turn, which the pump reports as
+    /// a lockdown with the dump under it (`repl.rs:2903`). The table is opened
+    /// through the router, the record then replaced by the crafted one and a
+    /// fresh state built over the store, so the next request rebuilds from it;
+    /// the person plays their turn and the reply that carries the lockdown
+    /// carries NO `seed:` line and ends on the lockdown line. **Measured
+    /// reachable** (the plan's before review): the rebuild accepts the crafted
+    /// record, and the bot's first turn reports "bot seat 1 could not decide
+    /// honestly: the seat's view could not be taken: seat 1's own
+    /// starting-order deal was never recorded; it cannot view itself" with the
+    /// dump under it — this cell is the catcher on the wire, (a) the unit.
+    #[tokio::test]
+    async fn the_reply_that_carries_a_lockdown_carries_no_seed() {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_core::{GameConfig, GameRecord, PlayerColor, PlayerId, StartingOrderChoice};
+        let store = Arc::new(MemStore::default());
+        let state = Arc::new(AppState::with_store(store.clone(), identity::IdentityMode::Open));
+        let router = app(Arc::clone(&state));
+        a_game(&router, "faulted", &[1]).await;
+        // The crafted record: the same table, the bot's choice `Unknown`.
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let record = GameRecord::new(
+            20260831,
+            config,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            &Rules::standard(),
+        );
+        let mut session = yokohama_cli::session::Session::from_record(record, Rules::standard())
+            .expect("a record with an Unknown choice resumes (the live-tracking shape)");
+        session.set_run_seats(BotSeats::new(vec![None, Some(PROVISIONAL_DEFAULT_BOT)], 20260831).seat_provenance());
+        let crafted = session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, "faulted").expect("a store").expect("the record");
+        store.write_if_version(Doc::Record, "faulted", &crafted, Some(version)).expect("the crafted record");
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
+        let (status, first) = get_as(&state, WHO, "/api/games/faulted").await;
+        assert_eq!(status, StatusCode::OK, "premise: the crafted record rebuilds: {first}");
+        let mut lockdown = None;
+        for _ in 0..40 {
+            let (_, now) = get_as(&state, WHO, "/api/games/faulted").await;
+            let line = match now["prompt"]["rows"].as_array().and_then(|r| r.last()) {
+                Some(row) => row["number"].as_u64().expect("a numbered row").to_string(),
+                None => "confirm".to_string(),
+            };
+            let (status, reply) = post_as(&state, WHO, "/api/games/faulted/input", serde_json::json!({ "line": line })).await;
+            assert_eq!(status, StatusCode::OK, "{line}: {reply}");
+            let messages: Vec<String> = reply["messages"].as_array().expect("messages").iter().map(|m| m.as_str().unwrap_or_default().to_string()).collect();
+            if messages.iter().any(|m| m.starts_with("LOCKDOWN")) {
+                lockdown = Some(messages);
+                break;
+            }
+            if reply["prompt"]["kind"] == "locked" {
+                lockdown = Some(messages);
+                break;
+            }
+        }
+        let messages = lockdown.expect("the bot's first turn engages a lockdown within the person's 40 inputs");
+        assert!(messages.last().is_some_and(|m| m.starts_with("LOCKDOWN — ")), "ends on the lockdown line: {messages:?}");
+        assert!(!messages.iter().any(|m| m.starts_with("seed:") || m.starts_with("turn:")), "the dump reached the wire: {messages:?}");
+        assert!(!serde_json::to_string(&messages).unwrap().contains("20260831"), "{messages:?}");
     }
 
     /// **A finished shared game cannot be rewound by ANYBODY, the seat that is
