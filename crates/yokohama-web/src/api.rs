@@ -698,7 +698,7 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// person at it) the fence is what guards, exactly as before.
 ///
 /// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
-/// — replay-derived** ([`trailing_mover`]), which is the CLI's own attribution
+/// — replay-derived** ([`trailing_state`]), which is the CLI's own attribution
 /// for exactly this question (`repl.rs`'s undo unwinds by replay, not by a
 /// boundary stack, so it survives a save and reload). A `RecordedEvent` carries
 /// no seat of its own — nor does the `Move` inside one — and a second
@@ -716,6 +716,12 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// it, or a trailing standalone reveal — and never more: admission requires
 /// that event to be the caller's own, so a bot run can never be sitting in
 /// front of it, even at a mixed table where one seat is a bot.
+///
+/// **And at a table of more than one person, a unit that drew from a hidden
+/// deck is not rewound** (R-SEC8(a), 2026-10-08): the trailing state's decks
+/// against the current state's, refused with [`UNDO_DREW`]. A solo table —
+/// one person, or one person and a bot — keeps today's undo, bot run and all:
+/// the rule is about a card another PERSON never saw.
 pub(crate) fn undo_allowed(
     repl: &yokohama_cli::repl::Repl,
     table: &crate::table::TableDoc,
@@ -759,13 +765,31 @@ pub(crate) fn undo_allowed(
     if let Some(status) = status_refusal(repl) {
         return Err(UndoRefusal::Refused(status));
     }
-    let mover = trailing_mover(repl.session.record(), repl.session.rules())?;
-    if mover == viewer && repl.session.state().current_player == viewer {
-        Ok(())
-    } else {
-        Err(UndoRefusal::Refused("undo is not offered once your turn has passed".to_string()))
+    let before = trailing_state(repl.session.record(), repl.session.rules())?;
+    let now = repl.session.state();
+    if before.current_player != viewer || now.current_player != viewer {
+        return Err(UndoRefusal::Refused("undo is not offered once your turn has passed".to_string()));
     }
+    // **A unit that DREW from a hidden deck stays** (R-SEC8(a), finding B2):
+    // the decks of the state before the trailing event against the decks now
+    // — shorter now means the event drew, and the mover has seen the card.
+    // The unit `Session::undo` pops is that event with its bound reveals; a
+    // sim record carries no reveals, and a reveal draws nothing either way.
+    // AFTER the turn test, so a passed turn keeps its own sentence (R-P6).
+    if before.order_deck.len() > now.order_deck.len() || before.tech_deck.len() > now.tech_deck.len() {
+        return Err(UndoRefusal::Refused(UNDO_DREW.to_string()));
+    }
+    Ok(())
 }
+
+/// The sentence an undo whose unit DREW from a hidden deck is refused with at a
+/// table of more than one person (the 2026-10-08 ruling R-SEC8(a), finding
+/// B2). A port take refills the port from the order deck and a lab acquire the
+/// lab from the tech deck, inside the move itself (`game/actions/cards.rs`), so
+/// the mover has read the deck's top; undoing would put the card back where the
+/// other seats never saw it, which physical play cannot do either.
+pub(crate) const UNDO_DREW: &str =
+    "undo is not offered on a move that drew from a deck — the card it showed cannot be un-seen at a shared table";
 
 /// Why [`undo_allowed`] did not wave an undo through — two different answers,
 /// typed so the caller cannot give them one status.
@@ -794,12 +818,13 @@ impl From<UndoRefusal> for crate::games::GameError {
     }
 }
 
-/// Who made `record`'s LAST event: the seat to move in the state before it,
-/// replayed under `rules` (see [`undo_allowed`] on why by replay).
-fn trailing_mover(
+/// The state BEFORE `record`'s last event, replayed under `rules` — whose
+/// `current_player` is who made that event (see [`undo_allowed`] on why by
+/// replay), and whose decks are what the event drew from.
+fn trailing_state(
     record: &yokohama_core::GameRecord,
     rules: &Rules,
-) -> Result<yokohama_core::PlayerId, UndoRefusal> {
+) -> Result<yokohama_core::GameState, UndoRefusal> {
     // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
     // a game whose first prompt has not been answered yet. `Session::undo`'s
     // own words for the same condition, so the answer reads the same whichever
@@ -807,9 +832,7 @@ fn trailing_mover(
     let Some(last) = record.events.len().checked_sub(1) else {
         return Err(UndoRefusal::Refused("nothing to undo".to_string()));
     };
-    yokohama_core::state_at(record, last, rules)
-        .map(|state| state.current_player)
-        .map_err(|e| UndoRefusal::Replay(e.to_string()))
+    yokohama_core::state_at(record, last, rules).map_err(|e| UndoRefusal::Replay(e.to_string()))
 }
 
 /// What `GET /api/games` is being asked (§3.3).
@@ -3376,7 +3399,7 @@ mod tests {
             .expect_err("premise: the record will not replay")
             .to_string();
 
-        let refusal = trailing_mover(&record, &rules).expect_err("no mover to name");
+        let refusal = trailing_state(&record, &rules).expect_err("no mover to name");
         assert_eq!(refusal, UndoRefusal::Replay(sentence.clone()), "a replay failure, not a refusal");
         let answer = ApiError::from(crate::games::GameError::from(refusal));
         assert_eq!((answer.status, answer.message), (StatusCode::INTERNAL_SERVER_ERROR, sentence));

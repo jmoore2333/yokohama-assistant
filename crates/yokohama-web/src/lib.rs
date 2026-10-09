@@ -3212,6 +3212,152 @@ mod tests {
         );
     }
 
+    /// Drive `user`'s turn at `id` through a move that DRAWS from a hidden
+    /// deck: Option B puts two assistants on the Port (its id read off the
+    /// `/areas` panel's `tile.area_type`), the President follows them, and
+    /// the area action is the first `Port: take …` row — a take refills the
+    /// port from the order deck inside the move (`cards.rs`), and a take at
+    /// power 3 leaves the turn running (the 5-Power, building and additional
+    /// prompts follow). Every other prompt takes its `Skip` row or its first;
+    /// a Movement prompt whose only row is the retreat picker — the Port holds
+    /// the other President — is answered `r`, the grammar's direct retreat.
+    /// Answers the deck heights BEFORE the drawing move and the reply, or
+    /// `None` when the turn passed or the bound ran out with nothing drawn.
+    async fn play_until_a_draw(
+        state: &Arc<AppState>,
+        id: &str,
+        user: &str,
+    ) -> Option<((usize, usize), serde_json::Value)> {
+        let heights = |game: &serde_json::Value, labs: &serde_json::Value| {
+            (
+                game["deck_remaining"].as_u64().expect("the order deck's height") as usize,
+                labs["deck_remaining"].as_u64().expect("the tech deck's height") as usize,
+            )
+        };
+        let (_, areas) = get_as(state, user, &format!("/api/games/{id}/areas")).await;
+        let port = areas["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|row| row.as_array())
+            .flatten()
+            .find(|t| t["tile"]["area_type"] == "PortA")
+            .and_then(|t| t["tile"]["area"].as_u64())
+            .map(|n| format!("A{n:02}"))
+            .expect("a 2P board has a Port A");
+        let (_, start) = get_as(state, user, &format!("/api/games/{id}")).await;
+        let mine = start["to_move"].as_u64().expect("a seat to move");
+        for _ in 0..60 {
+            let (_, now) = get_as(state, user, &format!("/api/games/{id}")).await;
+            if now["to_move"].as_u64() != Some(mine) || now["over"] == serde_json::json!(true) {
+                return None;
+            }
+            let (_, labs) = get_as(state, user, &format!("/api/games/{id}/labs")).await;
+            let before = heights(&now, &labs);
+            let rows = now["prompt"]["rows"].as_array().cloned().unwrap_or_default();
+            let words = |r: &serde_json::Value| r["words"].as_str().unwrap_or_default().to_string();
+            let number = |r: &serde_json::Value| r["number"].as_u64().map(|n| n.to_string());
+            let line = if rows.iter().any(|r| words(r).starts_with("Option B")) {
+                format!("b {port}")
+            } else if let Some(r) = rows.iter().find(|r| {
+                let w = words(r);
+                w.starts_with("Port: take") || (w.starts_with("Place President") && w.contains(&port))
+            }) {
+                number(r).expect("a numbered row")
+            } else if !rows.is_empty() && rows.iter().all(|r| words(r).starts_with("Retreat President")) {
+                "r".to_string()
+            } else {
+                rows.iter()
+                    .find(|r| words(r).starts_with("Skip"))
+                    .or(rows.first())
+                    .and_then(number)
+                    .unwrap_or_else(|| "confirm".to_string())
+            };
+            let (status, reply) = post_as(
+                state,
+                user,
+                &format!("/api/games/{id}/input"),
+                serde_json::json!({ "line": line }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{line}: {reply}");
+            let (_, labs) = get_as(state, user, &format!("/api/games/{id}/labs")).await;
+            let after = heights(&reply, &labs);
+            if after.0 < before.0 || after.1 < before.1 {
+                return Some((before, reply));
+            }
+        }
+        None
+    }
+
+    /// **An undo whose unit DREW from a hidden deck is refused at a shared
+    /// table** (R-SEC8(a); finding B2): a port take or a lab acquire refills
+    /// the board from the order or tech deck inside the move, so the mover
+    /// read the deck's top — and an undo would put the card back where the
+    /// other person never saw it. The sentence is `api::UNDO_DREW`; the
+    /// record is unmoved by the refusal. Beside it, the two things the rule
+    /// must NOT touch (Review Focus 4): a non-drawing move at the same shared
+    /// table still undoes, and a person alone at the table — the only other
+    /// person is a bot — undoes a drawing move exactly as before.
+    #[tokio::test]
+    async fn an_undo_that_un_draws_a_deck_card_is_refused_at_a_shared_table_and_allowed_alone() {
+        // The shared table: red and blue, two people. Red's FIRST move is a
+        // placement — nothing drawn — and undoes.
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "undraw", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let (_, fresh) = get_as(&state, "red@wire.test", "/api/games/undraw").await;
+        let n0 = fresh["events"].as_u64().unwrap();
+        let line = first_option(&fresh);
+        let (status, after) = post_as(&state, "red@wire.test", "/api/games/undraw/input", serde_json::json!({ "line": line })).await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_eq!(after["deck_remaining"], fresh["deck_remaining"], "premise: a placement draws nothing");
+        let (status, undone) = post_as(&state, "red@wire.test", "/api/games/undraw/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::OK, "a non-drawing move still undoes at a shared table: {undone}");
+        assert_eq!(undone["events"].as_u64().unwrap(), n0);
+
+        // Play on to a DRAWING move in some turn of either person — the
+        // first person to draw is the one whose undo is refused.
+        let mut drawn = None;
+        for _ in 0..12 {
+            let (_, now) = get_as(&state, "red@wire.test", "/api/games/undraw").await;
+            let mover = if now["to_move"].as_u64() == Some(0) { "red@wire.test" } else { "blue@wire.test" };
+            if let Some(found) = play_until_a_draw(&state, "undraw", mover).await {
+                drawn = Some((mover, found));
+                break;
+            }
+        }
+        let (mover, (before, reply)) = drawn.expect("some turn in twelve held a port take or a lab acquire");
+        let events = reply["events"].as_u64().expect("an event count");
+        assert!(reply["your_turn"] == serde_json::json!(true), "premise: the draw did not end the turn: {reply}");
+        let (status, body) = post_as(&state, mover, "/api/games/undraw/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], api::UNDO_DREW);
+        let (_, still) = get_as(&state, mover, "/api/games/undraw").await;
+        assert_eq!(still["events"].as_u64(), Some(events), "a refused undo moved the record");
+        assert!(
+            still["deck_remaining"].as_u64().map(|d| d as usize) < Some(before.0)
+                || get_as(&state, mover, "/api/games/undraw/labs").await.1["deck_remaining"].as_u64().map(|d| d as usize) < Some(before.1),
+            "premise: a deck is still shorter than before the draw",
+        );
+
+        // Alone: one person holding both seats draws, and undoes.
+        let solo = Arc::new(AppState::in_memory());
+        let router = app(Arc::clone(&solo));
+        start(&router, "solo", 2, &[]).await;
+        let mut drawn = None;
+        for _ in 0..12 {
+            if let Some(found) = play_until_a_draw(&solo, "solo", WHO).await {
+                drawn = Some(found);
+                break;
+            }
+        }
+        let (_, reply) = drawn.expect("some turn in twelve held a draw");
+        let events = reply["events"].as_u64().expect("an event count");
+        let (status, undone) = post_as(&solo, WHO, "/api/games/solo/input", serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::OK, "one person at the table keeps today's undo: {undone}");
+        assert!(undone["events"].as_u64().unwrap() < events);
+    }
+
     /// **`privacy` is refused at every table** (M6.1 §5.4) — asked from the
     /// ACTING seat both times, so nothing but the grammar can be what refused
     /// it, and at both table shapes, because the vs-bot table is the one where
