@@ -158,10 +158,15 @@ people's and the bot's games are 250–600 events under 60 KB pretty-printed, ra
    `docs/temp/security-review-2026-10-08/s1a-sdd/` (full reports to files, three-line replies, the
    probe-and-name-concerns paragraph, no `rm -r`, no Monitor); then Tasks 2–6.
 4. The "after" whole-branch review, the per-edit suites with the web lane's rows and `npm run e2e` (the client
-   moved; no fifteen-gate roster — core and the version are unmoved), the close: the ledger's eight rows,
-   guidingpath's row and current state, this board.
-5. S1b's plan against the stack's head (transcribing the figures, with your knob choice), then S1c; S2's
-   brainstorm from the ledger after S1 lands; S3; the merge to master after S3, on your word.
+   moved; no fifteen-gate roster — core and the version are unmoved), the close's documents (the ledger's eight
+   rows, guidingpath's row and current state, this board), **then the PR: `security-s1` pushed and a PR opened
+   against master, its merge LEFT UNDONE for S1's wrap after S1c** (your note of 2026-10-09; S1b and S1c stack on
+   the same branch and PR). A test deploy and the §5.3 probes are allowed while your maintenance window
+   (2026-10-09/10) holds — the plan's Task 7 Step 8 — else they are owed at the stack's deploy.
+5. The hand-off into S1b's planning session (Task 7 Step 9): this board's Track 4 rewritten for S1b (the stack's
+   head and PR; the figures and your knob choice; the core PR's two notes; the rows S1b and S1c own), memory
+   updated; then S1b's plan against the stack's head, S1c, the merge at S1's wrap on your word; S2's brainstorm
+   from the ledger after; S3.
 
 **Five configuration changes need no code and are reversible today** (spec §2.2 B4, B6):
 the Access cookie's SameSite to Lax, the application session to a day, `wrangler.gate.jsonc` deployed so

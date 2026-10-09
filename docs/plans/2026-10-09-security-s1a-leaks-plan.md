@@ -110,9 +110,14 @@ are S1b's to act on, when A2's wiring lands.
 6. **§2.1 D11, the fix.** "The record route's 'over' read under the lock" is met and joined by a comparison:
    the stored record's event count against the handle's, so a finished game whose last save failed answers a
    409 naming the failed save rather than the running record with its seed.
-7. **§5.3, the live acceptance.** Under §9.2's stacked branch the deploy happens after S3; S1a's probes (A1 on
-   a scratch table's `suggest`; `why` withheld at a scratch vs-bot table) run then, in the maintenance window,
-   as the stack's acceptance.
+7. **§5.3, the live acceptance, and §9.2's stacked branch.** Each S1 cycle ends with a pushed PR whose merge
+   waits for S1's wrap (the owner, 2026-10-09: "the plan will need to end with a PR, it can leave the merge
+   undone"); a test deploy of the branch's build to either host and the review's probes are allowed in the
+   maintenance window the owner opened for 2026-10-09/10 ("pushing the PR and running any checks or deploys are
+   fine for testing"). So S1a's probes — a scratch table's `suggest` carries no invertible field; `why` reads
+   `withheld` at a scratch vs-bot table and the full account at a finished one; a seeded create beside an open
+   seat is a 400 on both hosts — run at S1a's close from a test deploy when the window still holds, else at the
+   stack's deploy after S3. Every probe that creates state removes it.
 
 ## Global Constraints
 
@@ -138,7 +143,9 @@ are S1b's to act on, when A2's wiring lands.
   clean after every task; no `cargo fmt`; stage with explicit paths, never `git add -A`; one commit per task
   at its end (the core PR's shape), the task's suites green at that commit.
 - The branch is `security-s1`, cut from master at `e9824ec9` (the docs close on top of the core PR's merge
-  `9ab8c430`); S1b and S1c stack on it; the merge to master follows S3 on the owner's word (spec §9.2).
+  `9ab8c430`). **The cycle ends with a PUSHED PR against master, its merge left undone** (the owner, 2026-10-09):
+  S1b and S1c stack their commits on the same branch and the same PR, and the merge is S1's wrap, after S1c, on
+  the owner's word (spec §9.2 as amended by that note).
 - Every dispatched agent: the full report to a file under `docs/temp/security-review-2026-10-08/s1a-sdd/`
   (gitignored), a three-line reply; no `rm -rf`, `rm -r` or bulk `rm -f`; no Monitor, no event waits; long
   commands in the foreground or polled; reviewers run their mutants on a `git archive` export, never in the
@@ -2466,7 +2473,7 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   `init` without the switch) and that the guard refuses the switch. One fix wave as new commits; a scoped
   re-review of the fix.
 
-- [ ] **Step 6: The close.** The ledger's eight rows (`docs/security-ledger.md`) rewritten `fixed <commit>` with
+- [ ] **Step 6: The close's documents.** The ledger's eight rows (`docs/security-ledger.md`) rewritten `fixed <commit>` with
   the catcher named — A1 (the inversion pin and the CLI's digest cells), B1 (the withheld route cell and the
   independence pin), B2 (the un-draw cell), B3 (the three policy cells and the guard's), B7 (the seat cells and
   the leakage pin), D5 (the filter cell and, if reachable, the lockdown reply cell), D10 (the document rows, read),
@@ -2474,9 +2481,30 @@ git commit -m "docs: the lane document's admitted, explanation and route rows fo
   the board's Track 4 (S1b next, planned against the stack's head, carrying §"The S1 figures"); `CLAUDE.md` at
   most one standing sentence, if one is genuinely new — the candidate: "the web lane's test constructors honour a
   creator's seed at any table (`SeedPolicy::Diagnostic`, a named opt-in); the production path never does, and a
-  new constructor says which it is by name"; and this plan's §"Review record" with the readings. The live
-  acceptance (spec §5.3: a scratch table's `suggest` carries no invertible field; `why` withheld at a scratch
-  vs-bot table) runs at the stack's deploy after S3, in the maintenance window — recorded as owed, not done.
+  new constructor says which it is by name"; and this plan's §"Review record" with the readings.
+
+- [ ] **Step 7: The PR, pushed, its merge left undone** (the owner, 2026-10-09). `git push -u origin
+  security-s1`, then `gh pr create --base master --head security-s1` with a description naming the rulings
+  (R-SEC3, R-SEC7, R-SEC8(a)(b); the owner's three of 2026-10-09), the eight rows and their catchers, the two
+  corpus regenerations and what each moved, the suites' readings (the web lane's rows and the e2e tier included),
+  the mutants' readings, the seven spec corrections, and the sentence "merge at S1's wrap, after S1c — S1b and
+  S1c stack on this branch and this PR". The PR's checks run; nothing merges.
+
+- [ ] **Step 8: The live tier, in the window (optional, the orchestrator's alone).** With the maintenance window
+  of 2026-10-09/10 still open: a test deploy of the branch's build to the NAS (`deploy/RUNBOOK.md` §3's recipe,
+  a dated line) and/or the Worker (`worker/RUNBOOK.md`'s, `npm run deploy` through the guard — the guard now
+  refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` in a deployable file, which is the first thing the deploy proves), then the
+  §5.3 probes of spec correction 7 from the owner's workstation, every scratch table removed, the readings in the
+  runbooks and this plan's §"Review record". Skipped if the window has closed: then owed at the stack's deploy.
+
+- [ ] **Step 9: The hand-off into S1b's planning session.** The board's Track 4 rewritten for S1b: the stack's
+  head (the branch, the PR number), what S1b's plan transcribes from this one (§"The S1 figures" and the owner's
+  knob choice under R-SEC8(f); the two notes the core PR left — the `CLAUDE.md` parenthetical to drop, the
+  "`replay_strict` itself is unedited" snapshot to revise if `replay_strict` moves; spec correction 2's reading of
+  the CLI fence for A3), the rows S1b and S1c own, and the first step of the next session ("brainstorm nothing —
+  write S1b's plan against `security-s1`'s head from spec §2.1's A2, A3, B12, D6, D25, D27, D29 in this plan's
+  shape"); the project memory updated the same way; `docs/temp/security-review-2026-10-08/s1a-sdd/` left in
+  place with every report. The next session begins at the board.
 
 ## The S1 figures (measured 2026-10-09 for S1b's plan — A2's event-count cap and semaphore, B12's body cap and quota)
 
