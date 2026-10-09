@@ -3894,7 +3894,9 @@ mod tests {
     /// 201; a seed beside a BOT is honoured, a bot being no person (Review
     /// Focus 5); and under `Diagnostic` — the fixtures' named opt-in, which
     /// `games()` sets — every shape is honoured, which is what every other
-    /// cell in this module relies on.
+    /// cell in this module relies on. The refusal's place in `create`'s order
+    /// — after `config_of`'s last, before the id's first — is pinned by two
+    /// two-defect probes.
     #[test]
     fn a_creators_seed_is_honoured_at_a_solo_table_only() {
         use crate::games::SeedPolicy;
@@ -3909,7 +3911,24 @@ mod tests {
         open.seats[1] = SeatSpec { user: None, bot: false, open: true };
         let err = production.create(&open, &creator).expect_err("refused");
         assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "{err:?}");
-        // The same two shapes with NO seed: drawn, 201.
+        // **The ORDER, by two-defect probes at the ADJACENT links** (the M6.2
+        // lesson: a single-defect probe pins nothing about order). The seed is
+        // judged after `config_of`'s last refusal, the password, and before the
+        // id's first, an unusable id: wrong at the seed AND the link after, the
+        // seed's sentence is the one handed back; wrong at the seed AND the link
+        // before, `config_of`'s is.
+        let mut after = open.clone();
+        after.id = Some("bad id".into());
+        let err = production.create(&after, &creator).expect_err("refused");
+        assert!(matches!(&err, GameError::BadRequest(m) if m == SEED_NOT_SOLO), "the seed precedes the id: {err:?}");
+        let mut before = open.clone();
+        before.password = Some("   ".into());
+        let err = production.create(&before, &creator).expect_err("refused");
+        assert!(
+            matches!(&err, GameError::BadRequest(m) if m == "a password is at least one character"),
+            "config_of's last refusal precedes the seed: {err:?}"
+        );
+        // The other-person shape with NO seed: drawn, 201 (the open-seat shape unseeded is route cell (b)'s).
         let mut unseeded = two_people("other2", 7);
         unseeded.seed = None;
         assert!(production.create(&unseeded, &creator).is_ok(), "a drawn seed opens the table");

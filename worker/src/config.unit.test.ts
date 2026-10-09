@@ -129,6 +129,8 @@ describe("YOKOHAMA_WEB_ADMINS (spec §2.9)", () => {
 describe.each([
   ["YOKOHAMA_WEB_COUNT_WAKES", "countWakes"],
   ["YOKOHAMA_DEV_DOOR", "devDoor"],
+  // Security S1a (B3; R-SEC8(b)): the seed switch, on in the pool's two files.
+  ["YOKOHAMA_DIAGNOSTIC_SEEDS", "diagnosticSeeds"],
 ] as const)("%s", (name, field) => {
   it("is off when absent", () => {
     expect(accepted(env())[field]).toBe(false);

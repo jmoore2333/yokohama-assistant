@@ -716,7 +716,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
+      "at the open door no dev door; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
       "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );

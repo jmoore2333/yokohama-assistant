@@ -267,9 +267,9 @@ describe("the deploy guard", () => {
 
   it("refuses a deployed configuration that names YOKOHAMA_DIAGNOSTIC_SEEDS", () => {
     const seeded = PRODUCTION.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
-    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toContainEqual(
+    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
-    );
+    ]);
   });
 
   // Check 7 (the plan's ruling P-1, made mechanical): the operator list is a

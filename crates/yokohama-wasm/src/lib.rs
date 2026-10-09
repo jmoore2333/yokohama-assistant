@@ -425,6 +425,25 @@ mod tests {
         }
     }
 
+    /// **This host builds the production seed rule** (security S1a, finding
+    /// B3; R-SEC8(b)) — the Worker switch's cell, on the browser host: under
+    /// [`init`] a seeded create that seats another person is the layer's 400 in
+    /// `SEED_NOT_SOLO`'s words and stores no table; under [`init_diagnostic`],
+    /// the harness's opt-in by name, the same body is a 201.
+    #[test]
+    fn init_refuses_a_seed_beside_another_person_and_init_diagnostic_honours_it() {
+        let _s = serial();
+        let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"seeded"}"#;
+        init();
+        let (status, refused) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 400, "{refused}");
+        assert!(refused.contains(yokohama_web::tables::SEED_NOT_SOLO), "{refused}");
+        assert_eq!(read_inner("table", "seeded").unwrap(), None, "a refused create stored a table");
+        init_diagnostic();
+        let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 201, "{created}");
+    }
+
     /// **A game dealt in the browser names it** (M6.5c2, spec §2.4): the
     /// record `finalize` writes on this host says `run_id: "web/browser"`.
     #[test]
