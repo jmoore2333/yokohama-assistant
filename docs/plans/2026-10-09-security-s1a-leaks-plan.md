@@ -171,6 +171,11 @@ are S1b's to act on, when A2's wiring lands.
   `9ab8c430`). **The cycle ends with a PUSHED PR against master, its merge left undone** (the owner, 2026-10-09):
   S1b and S1c stack their commits on the same branch and the same PR, and the merge is S1's wrap, after S1c, on
   the owner's word (spec §9.2 as amended by that note).
+- Every task that touches what the layer compiles runs the lane's rows (`docs/web-lane.md` §2) whole before its
+  commit — `cargo test -p yokohama-web`, `-p yokohama-wasm`, `-p yokohama-worker`; `cd web && npm run build:wasm
+  && npm run typecheck && npm test -- --run && npm run test:wasm`; `cd worker && npm run build:module:debug && npm
+  run typecheck && npm run test:scripts && npm test` — and records every count (Task 3's review made the subset
+  the first drafts named a finding).
 - Every dispatched agent: the full report to a file under `docs/temp/security-review-2026-10-08/s1a-sdd/`
   (gitignored), a three-line reply; no `rm -rf`, `rm -r` or bulk `rm -f`; no Monitor, no event waits; long
   commands in the foreground or polled; reviewers run their mutants on a `git archive` export, never in the
@@ -2000,7 +2005,10 @@ the creator" holds for the wrong reason and a name-arm mutant passes; measured) 
 `client.rs:829` builds (a test helper, `#[cfg(test)]` at :803). Measured: 41 occurrences, **28 edits** (the four
 named above, the house pattern, 20 single-line constructions, one multi-line in `games.rs:3615`, the two patterns
 `table.rs:426` and `tables.rs:307`), 13 already carrying `..`. `is_false`'s doc (`table.rs:138`) names
-`TurnMirror::has_events` alone — it gains `SeatDoc::Human::bound_at_create`.
+`TurnMirror::has_events` alone — it gains `SeatDoc::Human::bound_at_create`. The schema-1 convention cell
+`a_schema_one_document_reads_with_every_new_field_at_its_default` (`table.rs:844–856`) names every field added
+since schema 1 and holds each at its default — its `matches!` gains `bound_at_create: false` (and its doc a line),
+so a serde default inverted to `true` reds it (Task 3's review, W3).
 `cargo check -p yokohama-web --all-targets && cargo check -p yokohama-worker --all-targets` is the list of sites:
 fix until clean, and name the count in the task report.
 
@@ -2050,6 +2058,11 @@ JOINED — the stored-table pin's own `addressed` table binds `OTHER` at create 
 `invited: "blue@wire.test"`, and the arm made it an offender (measured). The walk's joiner joins WITH a name
 (`"name": "Blue"`, :923), so no walk payload has ever carried the B7 case; the catchers are the unit cell above
 (three shapes) and this route cell (a nameless joiner), with the corpus golden holding Step 5's one moved line.
+The pin's own "What the rule trusts" paragraph (`wire_fixtures.rs:3196–3202`) names `mine` alone — it gains the
+sentence: a joiner's address served as `invited` passes this pin; its catchers are
+`table::tests::invited_names_a_creator_bound_seat_and_never_a_joiner`,
+`tests::a_nameless_joiners_address_is_served_to_nobody` and the golden through `table_foreign.json`'s seat 0
+(Task 3's review, Minor 2). The pin's CODE is untouched.
 
 - [ ] **Step 5: Regenerate the corpus — the cycle's SECOND regeneration — and read it.**
 
@@ -2070,7 +2083,11 @@ payloads: `cd worker && npm run build:module:debug && npm test` green.
 - [ ] **Step 6: Run the suites, lint, commit.**
 
 Run: `cargo test -p yokohama-web` and `cargo test -p yokohama-worker` green; `cargo clippy --workspace
---all-targets -- -D warnings` clean. Mutant **M5** — `SeatView::of` ignoring `bound_at_create`: the unit cell RED
+--all-targets -- -D warnings` clean; **and the lane's rows the corpus move reaches, whole** — `cd web && npm run
+build:wasm && npm run typecheck && npm test -- --run && npm run test:wasm` (the client's cells read
+`table_foreign.json`) and `cd worker && npm run build:module:debug && npm run typecheck && npm run test:scripts &&
+npm test` (`scripts/live-replay.test.mjs` reads the archive walk) — a subset was the plan's first draft's omission
+(Task 3's review, Minor 3). Mutant **M5** — `SeatView::of` ignoring `bound_at_create`: the unit cell RED
 (`Some("carol.secret@t.test")` where `None`), the route cell RED, and the corpus GOLDEN
 `the_committed_wire_fixtures_are_what_the_server_emits` RED (`table_foreign.json`'s `null` against the address the
 mutant serves) — three catchers, measured; nothing else.
