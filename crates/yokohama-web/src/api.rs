@@ -774,7 +774,11 @@ pub(crate) fn undo_allowed(
     // the decks of the state before the trailing event against the decks now
     // — shorter now means the event drew, and the mover has seen the card.
     // The unit `Session::undo` pops is that event with its bound reveals; a
-    // sim record carries no reveals, and a reveal draws nothing either way.
+    // sim record carries no reveals; in a live record the two bound reveals
+    // exchange cards and keep both lengths, while a standalone starting-order
+    // reveal can take its card out of the order deck (`extract_order_from_deck`
+    // searches it first) and so reads here as a draw — refused, the safe side,
+    // and unreachable at any table this API creates, which deals only sim games.
     // AFTER the turn test, so a passed turn keeps its own sentence (R-P6).
     if before.order_deck.len() > now.order_deck.len() || before.tech_deck.len() > now.tech_deck.len() {
         return Err(UndoRefusal::Refused(UNDO_DREW.to_string()));
