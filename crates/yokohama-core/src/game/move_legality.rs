@@ -950,9 +950,12 @@ mod tests {
     /// `is_move_legal` conjunct — its queue short-circuit — refuses them,
     /// since the family lists them (Review Focus 3); `out_of_phase_family_refusals`
     /// — the same outside the Movement phase, refused by its phase gate alone.
-    /// The cells pin that both gates are PRESENT in the conjunction (the
-    /// family-alone mutant turns both red); taking them first is the cost
-    /// order, not what these counters prove.
+    /// The phase gate's presence is what this cell and the phase cell pin (the
+    /// family-alone mutant turns both red); the queue gate's own pin is
+    /// `a_queued_choice_refuses_a_listed_family_member_at_movement`, because
+    /// in engine-produced states a queued choice never coexists with the
+    /// Movement phase, so every queued member here is out of phase as well.
+    /// Taking the gates first is the cost order, not what these counters prove.
     #[test]
     fn is_listed_move_is_exactly_membership_in_the_legal_list() {
         let mut listed = 0usize;
@@ -1065,10 +1068,10 @@ mod tests {
     /// the NEXT state exactly as the next state's list judges it. The Movement
     /// family's list is phase-blind by contract (`route_enum.rs`), so this is
     /// what proves the conjunction keeps `is_move_legal`'s PHASE gate (the
-    /// queue gate's half is the membership cell's `queued_family_refusals` —
-    /// a movement move's successor never queues a choice, so this cell cannot
-    /// meet it); the counter proves a movement move was judged outside its
-    /// phase at least once.
+    /// queue gate's pin is `a_queued_choice_refuses_a_listed_family_member_at_movement`
+    /// — a movement move's successor never queues a choice, so this cell
+    /// cannot meet it); the counter proves a movement move was judged outside
+    /// its phase at least once.
     #[test]
     fn is_listed_move_reads_the_phase_the_list_reads() {
         let mut checked = 0usize;
@@ -1097,6 +1100,29 @@ mod tests {
             movement_refused_later > 0,
             "no movement move was ever judged outside its phase — the gate is untested",
         );
+    }
+
+    /// The queue gate's own pin for the conjunction. In engine-produced states
+    /// a queued choice never coexists with the Movement phase (every queued
+    /// member the membership cell judges is out of phase as well, so the phase
+    /// gate refuses it too), so only a hand-built state can show that the
+    /// conjunction relies on `is_move_legal`'s queue short-circuit: the diamond
+    /// at Movement with an `AnyGood` choice queued, where the family lists the
+    /// walk and the list holds only the choice's resolutions. A predicate that
+    /// kept the phase gate and dropped the queue gate would accept it.
+    #[test]
+    fn a_queued_choice_refuses_a_listed_family_member_at_movement() {
+        let mut s = diamond(2, &[]);
+        s.pending_choices.push(PendingChoice::AnyGood);
+        let rules = Rules::empty_for_tests();
+        let walk = Move::MovePresident { path: vec![AreaId(1)], destination: AreaId(1) };
+        assert_eq!(s.turn_phase, TurnPhase::Movement, "premise: the Movement phase");
+        assert!(
+            crate::game::route_enum::movement_routes_family(&s, &rules).contains(&walk),
+            "premise: the family lists it",
+        );
+        assert!(!get_legal_moves(&s, &rules).contains(&walk), "premise: the list does not");
+        assert!(!is_listed_move(&s, &walk, &rules), "the queue gate must refuse it: {walk:?}");
     }
 
     // -- (c) zero false rejects -----------------------------------------------
