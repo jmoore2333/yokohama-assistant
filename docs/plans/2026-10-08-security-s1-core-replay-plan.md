@@ -241,7 +241,7 @@ the battery, the gates and the PR.
         );
         assert!(
             queued_family_refusals > 0,
-            "no family member was judged under a queued choice — the queue gate is untested",
+            "no family member was judged under a queued choice — Review Focus 3's queued case is untested by this cell",
         );
         assert!(
             out_of_phase_family_refusals > 0,
@@ -789,17 +789,24 @@ fn the_two_replays_refuse_the_same_tampered_records_with_the_same_words() {
     // (g) a broken state though every event applied (the shape of
     //     game_record.rs:156-172): a RevealStartingOrder into a hand already
     //     holding 3 orders APPLIES as an event and leaves a state
-    //     `check_invariants` refuses — the invariant check pinned under both.
+    //     `check_invariants` refuses — the invariant check pinned under both,
+    //     by its own sentence, so that an event-level refusal of the reveal
+    //     could never stand in for it.
     let (state, mut r, hidden) = (0..64u64)
         .find_map(|seed| record_with_full_order_hand(seed, &rules))
         .expect("some seed must fill P1's order hand, else this case proves nothing");
     let card = *state
         .orders_removed
         .last()
-        .or_else(|| state.order_deck.last())
-        .expect("removed pile holds P1's two Unknown-parked cards at minimum");
+        .expect("the Unknown choice parks P1's two dealt cards in the removed pile");
     r.push_event(RecordedEvent::RevealStartingOrder { player: hidden, card });
-    refuse(&r, "a broken state though every event applied", &mut refusals);
+    let (strict, predicate) = both(&r, &rules);
+    assert!(
+        matches!(&strict, Err((i, m)) if *i == r.events.len() - 1 && m.starts_with("invariant violated")),
+        "premise: the reveal applies and the invariant check refuses the state: {strict:?}",
+    );
+    assert_eq!(predicate, strict, "a broken state though every event applied: the two replays disagree");
+    refusals += 1;
 
     // (h) a move appended after the game's END. The phase machine parks a
     //     finished game at `TurnEnd` (`apply_move.rs`'s `advance_phase`), where
@@ -863,9 +870,10 @@ fn an_engine_version_drift_is_accepted_under_both_checks() {
     assert_eq!(predicate, strict, "the predicate replay must accept the drift too");
 }
 
-/// LEGAL reveal events on the SUCCESS path — `RevealOrders` (the bottom deck
-/// card and a removed-pile card: the conservation-by-exchange path),
-/// `RevealTechs`, and `RevealStartingOrder` of a hidden player — interleaved
+/// LEGAL reveal events on the SUCCESS path — `RevealOrders` of the bottom
+/// deck card, alternately alone (deck-only) and with a removed-pile card (the
+/// conservation-by-exchange path), `RevealTechs`, and `RevealStartingOrder`
+/// of a hidden player — interleaved
 /// with random legal play to the game's end: both replays fold the record to
 /// the live game's own terminal digest. Under `Predicate` every non-move event
 /// is `fold_one_event` itself by construction; this cell holds that
@@ -890,8 +898,10 @@ fn legal_reveal_events_fold_identically_on_the_success_path() {
                 let ev = match rng.gen_range(0..3u8) {
                     0 if state.order_deck.len() >= 2 => {
                         let mut cards = vec![state.order_deck[0]];
-                        if let Some(&c) = state.orders_removed.first() {
-                            cards.push(c);
+                        if orders % 2 == 1 {
+                            if let Some(&c) = state.orders_removed.first() {
+                                cards.push(c);
+                            }
                         }
                         let exchange = cards.len() == 2;
                         s.arrange_orders_on_top(&cards).ok().map(|_| {
@@ -939,11 +949,16 @@ fn legal_reveal_events_fold_identically_on_the_success_path() {
         assert_eq!(predicate, strict, "seed {seed}: the predicate replay diverged on a record with reveals");
     }
     println!("reveals on the success path: orders {orders} (exchanges {exchanges}), techs {techs}, starting {starting}");
-    assert!(orders > 0 && exchanges > 0 && techs > 0 && starting > 0, "every reveal kind ran at least once");
+    assert!(
+        exchanges > 0 && exchanges < orders && techs > 0 && starting > 0,
+        "every reveal kind ran at least once, the deck-only and the exchange shape alike",
+    );
 }
 
-/// Recorded, never asserted: the wall-clock of both replays over the longest
-/// recorded game, printed under `--nocapture` for the task report.
+/// Recorded, never asserted: the wall-clock of both replays over the 4P
+/// 40-event `common` record (the longest it builds), printed under
+/// `--nocapture` for the task report; the figure that matters is the plan's
+/// release measurement of the review's worst-case bodies.
 #[test]
 fn the_two_replays_walls_are_recorded() {
     let rules = Rules::standard();
@@ -955,7 +970,8 @@ fn the_two_replays_walls_are_recorded() {
     let t = std::time::Instant::now();
     let predicate = replay_strict_with(&record, &rules, MoveCheck::Predicate).map(|s| state_digest(&s));
     let predicate_wall = t.elapsed();
-    assert_eq!(predicate.ok(), strict.ok());
+    assert!(strict.is_ok(), "premise: the record replays strictly");
+    assert_eq!(predicate.ok(), strict.ok(), "the predicate replay diverged");
     println!(
         "replay walls over {} events: strict {:?}, predicate {:?}",
         record.events.len(),
@@ -1004,6 +1020,8 @@ pub enum MoveCheck {
 /// differs for a `Move` alone: `is_listed_move`, then the raw transition
 /// `apply_move_unchecked`, refusing a non-member with the `MoveError::NotLegal`
 /// that `apply_move` returns — so the two checks word a refusal identically.
+/// The match is exhaustive on `check`: a third `MoveCheck` variant is a
+/// compile error here, never a silent `Listed`.
 fn fold_one_event_with(
     state: &GameState,
     ev: &RecordedEvent,
@@ -1017,7 +1035,7 @@ fn fold_one_event_with(
             }
             crate::game::apply_move::apply_move_unchecked(state, mv, rules).map_err(|e| e.to_string())
         }
-        _ => fold_one_event(state, ev, rules),
+        (MoveCheck::Listed, _) | (MoveCheck::Predicate, _) => fold_one_event(state, ev, rules),
     }
 }
 
@@ -1132,11 +1150,19 @@ git commit -m "core: replay_strict_with and MoveCheck — the strict replay unde
 **`is_listed_move` (`game/move_legality.rs`) is the single-candidate EXACT membership check, and `replay_strict_with(.., MoveCheck::Predicate)` (`game/record.rs`) the strict replay built on it — the replay an UNTRUSTED record MUST get (an archive upload, a restored save — S1 wires the web layer to it), proven to accept exactly what `replay_strict` accepts by `tests/replay_check_equivalence.rs` (R-SEC2, 2026-10-08); `replay_strict` itself is unedited, and a direct `is_move_legal` replay is never the answer, since that predicate is wider on a president move's witness path.**
 ```
 
-- [ ] **Step 2: Check the file still reads as one bullet** (no new line break inside the bullet; the sentence
+- [ ] **Step 1b (the whole-branch review's R-18): name the predicate in the module's bullet.** In the Architecture
+  section's `game/move_legality.rs` bullet, replace the clause "+ `is_president_path_legal`. Re-stated cheap per-arm
+  predicates" with:
+
+```
++ `is_president_path_legal`, and `is_listed_move(state, mv, rules)` — EXACT membership in the legal list for one candidate: `is_move_legal(.., Canonical)` AND the Movement family's own list for `MovePresident`/`PlacePresident`, `is_move_legal(.., Canonical)` alone for every other variant (the check `replay_strict_with(.., Predicate)` folds with). Re-stated cheap per-arm predicates
+```
+
+- [ ] **Step 2: Check the file still reads as one bullet** (no new line break inside either bullet; the sentence
   joins the existing one with a space).
 
 Run: `grep -c 'is_listed_move' CLAUDE.md`
-Expected: `1`.
+Expected: `2` (the `game/` bullet and the `game/move_legality.rs` bullet, one line each).
 
 - [ ] **Step 3: Commit**
 
@@ -1316,3 +1342,20 @@ restore verdict (`backup.rs` `verdict_of`) still reach `replay_strict` through `
 A2 assigns that wiring to S1 proper; no caller outside core uses `replay_strict_with` at this head. **R-17:** the
 sentence reads "MUST get (an archive upload, a restored save — S1 wires the web layer to it)", the `Predicate` doc's
 own modality, corrected in the block above; the code follows as a new commit.
+
+### 2026-10-08 — the whole-branch review's triage of the deferred minors (R-18), the one fix wave
+
+The "after" review (Task 4 Step 4, the orchestrator's own, on a `git archive` export of `61626323`) found the fences
+whole — the oracle, `apply_move`, `get_legal_moves` and `semantics.rs` byte-untouched, zero deletions in core,
+`record.rs` the original with the block after line 520, every block of this plan in the code exactly once,
+`SEMANTICS_REV` 7 — and took the task reviews' deferred minors as ONE fix wave, corrected at the source here first:
+Task 1's assertion string on `queued_family_refusals` says what that counter tests ("Review Focus 3's queued case is
+untested by this cell"); `fold_one_event_with`'s match is exhaustive on `check` (a third `MoveCheck` variant is a
+compile error, never a silent `Listed`); case (g)'s premise names the invariant check by its sentence and drops the
+dead `order_deck` fallback; the reveal cell alternates the deck-only and the exchange shape, so `exchanges` is a
+counter of its own; the walls cell's doc names its 40-event record and its premise is strict; and **R-18** the
+`game/move_legality.rs` bullet of `CLAUDE.md` names `is_listed_move` beside `is_move_legal` (a second clause in that
+file beyond the one sentence the Global Constraints allowed — ruled worth it, because a bullet that lists the
+module's `pub` surface and omits its newest member is false by omission). Deferred past this PR, for S1's plan: the
+parenthetical "S1 wires the web layer to it" in `CLAUDE.md` becomes history the day S1 lands; and "`replay_strict`
+itself is unedited" is a snapshot of this PR's additivity that any future edit of `replay_strict` must revise.
