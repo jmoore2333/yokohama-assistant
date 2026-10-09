@@ -1989,12 +1989,18 @@ only while the seat has no name …". In `tables.rs`'s `config_of` (:255) the ty
 `SeatDoc::Human { user: user.as_str().to_string(), name: None, bound_at_create: true }`; in `join` (:1603)
 `SeatDoc::Human { user: user.as_str().to_string(), name, bound_at_create: false }`. Every other site: a
 PATTERN gains `..` (`SeatDoc::Human { user, name }` → `SeatDoc::Human { user, name, .. }`; `house.rs:141`'s
-`SeatDoc::Human { user: _, name: _ }` → `SeatDoc::Human { .. }`); a CONSTRUCTION in a cell gains
-`bound_at_create: false` unless the cell is about the creator's typed seat — then `true`: the two seats of
-`the_view_names_no_address_but_the_readers_own` (red's own and blue's, both typed by red; its `invited` assertion
-holds) and the creator's seats `client.rs:829` builds (a test helper, `#[cfg(test)]` at :803). Measured: 41
-occurrences, **27 edits** (the four named above, 20 single-line constructions, one multi-line in `games.rs:3615`,
-the two patterns `table.rs:426` and `tables.rs:307`), 14 already carrying `..`.
+`SeatDoc::Human { user: _, name: _ }` → `SeatDoc::Human { user: _, name: _, bound_at_create: _ }` — NAMED, never
+`..`: that match is the house scrub's guard (its doc: "every field is NAMED, with no `..` … a field added is a
+compile error here (E0027)"), and `{ .. }` would disarm it for every later seat field; the decision it records
+is "kept as stored", a bound flag carrying no address); a CONSTRUCTION in a cell gains
+`bound_at_create: false` unless the cell is about the creator's typed seat — then `true`: the THREE constructions
+of `the_view_names_no_address_but_the_readers_own` (red's own and blue's at its opening, both typed by red, and
+red's own seat re-bound with a name at `:1104` — with `false` there the cell's "a named seat is its name, even to
+the creator" holds for the wrong reason and a name-arm mutant passes; measured) and the creator's seats
+`client.rs:829` builds (a test helper, `#[cfg(test)]` at :803). Measured: 41 occurrences, **28 edits** (the four
+named above, the house pattern, 20 single-line constructions, one multi-line in `games.rs:3615`, the two patterns
+`table.rs:426` and `tables.rs:307`), 13 already carrying `..`. `is_false`'s doc (`table.rs:138`) names
+`TurnMirror::has_events` alone — it gains `SeatDoc::Human::bound_at_create`.
 `cargo check -p yokohama-web --all-targets && cargo check -p yokohama-worker --all-targets` is the list of sites:
 fix until clean, and name the count in the task report.
 
@@ -2005,8 +2011,11 @@ fix until clean, and name the count in the task report.
     /// **A nameless joiner's address is served to nobody** (finding B7): the
     /// creator's `…/table`, their lobby row (`?scope=mine`) and their deal all
     /// read `invited: null` for the joined seat, while the creator's own seat
-    /// — typed at create — still names itself to them. The leakage pin in
-    /// `tests/wire_fixtures.rs` holds the corpus to the same fact.
+    /// — typed at create — still names itself to them. No corpus payload
+    /// carries this case — the walk's joiner gives a name — and the leakage
+    /// pin in `tests/wire_fixtures.rs` cannot tell a typed seat from a joined
+    /// one; the corpus golden catches a view that ignores the field, through
+    /// `table_foreign.json`'s seat 0.
     #[tokio::test]
     async fn a_nameless_joiners_address_is_served_to_nobody() {
         let state = Arc::new(AppState::in_memory());
