@@ -286,11 +286,12 @@ pub fn is_move_legal(state: &GameState, mv: &Move, rules: &Rules, mode: PathMode
 /// every other variant acceptance and membership coincide (the module doc), so
 /// `is_move_legal` IS the answer.
 ///
-/// The proof: `is_listed_move_is_exactly_membership_in_the_legal_list` and
-/// `is_listed_move_reads_the_phase_the_list_reads` below, and
+/// The proof: `is_listed_move_is_exactly_membership_in_the_legal_list`,
+/// `is_listed_move_reads_the_phase_the_list_reads` and
+/// `a_queued_choice_refuses_a_listed_family_member_at_movement` below, and
 /// `tests/replay_check_equivalence.rs` for the replay built on this (the
 /// 2026-10-08 ruling R-SEC2). What this function is FOR: a replay of an
-/// untrusted record whose cost must not follow the legal families' sizes.
+/// untrusted record whose cost must not follow the retreat family's size.
 pub fn is_listed_move(state: &GameState, mv: &Move, rules: &Rules) -> bool {
     match mv {
         Move::MovePresident { .. } | Move::PlacePresident { .. } => {
