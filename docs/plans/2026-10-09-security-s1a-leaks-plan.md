@@ -480,7 +480,8 @@ bytes are the contract, not the closure.)
 - [ ] **Step 4: Run the suggest cells, then the CLI suite.**
 
 Run: `cargo test -p yokohama-cli --lib suggest:: 2>&1 | tail -15`
-Expected: every cell PASS — the purity/keying cell unchanged (a digest keeps both), the two new ones green.
+Expected: every cell PASS but ONE — the purity/keying cell unchanged (a digest keeps both), the two new ones green,
+and the guide pin (next) red until Step 4b: 17 passed / 1 failed.
 Run: `cargo test -p yokohama-cli 2>&1 | grep -E 'test result|FAILED|panicked' | head`
 Expected: ONE cell red — `suggest::tests::the_guide_suggest_capture_is_what_the_fixture_renders` (the lib reads
 828 passed / 1 failed), the T11 regeneration pin that holds the guide's captured `suggest` screen
@@ -902,8 +903,8 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
 Run: `cargo test -p yokohama-web --lib explain::tests 2>&1 | tail -12`
 Expected: the module's cells PASS (9), the three new ones included; under `-- --nocapture` nothing is printed by
 them. Then `cargo test -p yokohama-web --lib 2>&1 | grep -E 'test result|FAILED|panicked'` — FIVE cells RED
-until Step 9: the two route cells at `lib.rs:4551` and `:4675` (`stream_seed` asserted a string; `decision_seed`
-asserted `0x`) and the three cells that compare a WHOLE `why` payload against a `json!` literal — `api.rs`'s
+until Step 9: the two route cells at `lib.rs:4551` and `:4675` (`stream_seed` asserted a string; the old `why`
+cell fails at its FIRST assertion — the one-bot-turn account is now withheld, so `ok` is null) and the three cells that compare a WHOLE `why` payload against a `json!` literal — `api.rs`'s
 `a_finished_foreign_game_opens_scores_downloads_and_masks_the_conversion` and
 `why_reconstructs_a_runnable_non_production_bot_and_refuses_a_foreign_one_with_its_reason`, `games.rs`'s
 `a_same_name_re_point_is_told_apart_in_every_refusal_and_keeps_its_label_on_every_screen` — whose literals lack
@@ -911,7 +912,8 @@ the third half (`"withheld": null`); every other lib cell green (411 passed / 5 
 reading): **M1** — `visibility_of` returning `Visibility::Public` unconditionally: the visibility cell RED on
 "the opponent" and the withheld route cell of Step 9 RED (`ok` non-null); **M2** — `word_line_masked` calling
 `describe_move` for every step: the continuation cell RED ("no later fulfil was masked"); **M3** — `Why::account`'s
-withheld arm carrying `e.explanation.total` anywhere (say in `reason`): the independence cell RED. Record the
+withheld arm carrying `e.explanation.total` anywhere (say in `text`): the independence cell RED alone; carried in
+`reason` instead, the withheld route cell's sentence pin reds beside it — both are catchers. Record the
 three readings in the task report.
 
 - [ ] **Step 9: The route cells.** In `crates/yokohama-web/src/lib.rs`'s `mod tests`:
@@ -1248,7 +1250,7 @@ then `cargo test -p yokohama-web --test wire_fixtures 2>&1 | grep -E 'test resul
 its ranking/explanation MAY move (a different key is a different belief sample — the whole-answer change is A1's
 intended effect, recorded, never "noise"; measured: the suggested move itself changed, 145 lines); `why.json`
 loses `decision_seed`, moves `forced` onto `ok`, and is a DIFFERENT account (from the finished game; measured:
-index 105 → 152, 1,410 lines); `why_withheld.json` is new; **`why_refused.json` and `why_foreign.json` move by
+index 105 → 152, 242 added / 1,178 removed by `git diff --numstat`); `why_withheld.json` is new; **`why_refused.json` and `why_foreign.json` move by
 exactly one line each — `"withheld": null`** — because every `Why`-shaped payload carries the third half
 (`why_refusals.json`, a list of `RefusalDto`, does not move). **Any other file that moved is a finding: name it
 in the task report with its first differing line** (B7's changes land in Task 3's own regeneration — so here a
@@ -1310,11 +1312,18 @@ and `PROVENANCE` without `"decision_seed", "forced"`; after `const _wo …` (:76
 `const _ww: KeysOf<WhyWithheld, typeof WHY_WITHHELD> = WHY_WITHHELD;` **and add `_ww` to the `KeysOf` export list
 at :797 beside `_wo`** (an unexported const is TS6133 under the typecheck); in the `fields` object (:823–824) add
 `whyWithheld: WHY_WITHHELD,`; in the `wire` object (:954) add `whyWithheld: as<WhyResponse>(whyWithheld),`.
-`contract.test.ts`'s root checks read `fields`, so the new list is checked with the rest — confirm by running it;
-**its cell "the fixtures are not degenerate…" (:827) reads `wire.why.ok!.provenance.forced` — it becomes
-`wire.why.ok!.forced`** (the fact moved onto the account).
+**`contract.test.ts`'s root checks are an explicit `it.each` table of (name, payload, list) rows — a list with no row
+is checked at compile time only** (a field planted in `why_withheld.json` passed vitest and `tsc`, measured in
+Task 1): after the `["why_refused.refusal", …]` row add
+`["why_withheld", wire.whyWithheld, KEYS.whyResponse],` and
+`["why_withheld.withheld", wire.whyWithheld.withheld, KEYS.whyWithheld],` (the object the brief elsewhere calls
+`fields` is `export const KEYS`; the two "export lists" at :567–568 and :797 are `void [...]` reference lists) —
+vitest then reads 1,502; **its cell "the fixtures are not degenerate…" (:827) reads `wire.why.ok!.provenance.forced`
+— it becomes `wire.why.ok!.forced`** (the fact moved onto the account).
 
-(c) `web/src/Explain.tsx`: delete the Stream paragraph (:349–352). In `WhyView` (:356–406): BEFORE its refusal
+(c) `web/src/Explain.tsx`: the Stream paragraph (:349–352) becomes `<p className="meta provenance">Nothing was
+applied, recorded or saved.</p>` — the key goes, the reassurance stays (the terminal's own sentence). In `WhyView`
+(:356–406): BEFORE its refusal
 branch (`if (!data.ok) { return data.refusal ? … : null; }` — the same three lines open `SuggestView`, so anchor
 on the function; placed after it, a withheld payload — `ok` null — returns `null` before the branch is reached,
 measured) add
@@ -1367,7 +1376,7 @@ Run, from `web/`: `npm run build:wasm && npm run typecheck && npm test -- --run 
 fourth project needs the wasm module — the lane's own order, §2; `YOKOHAMA_WASM_OPTIONAL=1` reads the three TS
 projects alone).
 Expected: the typecheck clean (the contract's `KeysOf` lines are what fail on a field list that drifted from
-`types.ts`); vitest green, **1,500** in 71 files (cycle F's 1,499 + the withheld cell).
+`types.ts`); vitest green, **1,502** in 71 files (cycle F's 1,499 + the withheld cell + the two contract rows).
 
 - [ ] **Step 12: Lint, the suites, commit.**
 
@@ -2615,6 +2624,14 @@ full account once it is public or the game is over; a typed refusal is a 200". R
 purpose column gains "— withheld while the bot's starting order is hidden from the caller". Run
 `cargo test -p yokohama-web --test lane_document` — green.
 
+- [ ] **Step 2b: The counts and a stale doc.** `docs/web-lane.md` §2's figures are re-counted at the code head
+(Task 5's commit): the corpus's "**108** JSON files" (109 since Task 1), "the eighteen files no script names
+(`THIRD_COLUMN`)" (nineteen), `cargo test -p yokohama-web`'s total, its lib and `wire_fixtures` counts, the Worker
+crate's, vitest's — each as read, with the commit it was re-counted at; and `tests/wire_fixtures.rs`'s
+`constructed()` doc ("**Six of them** … the four `why` payloads": seven since cycle E's `house_frame`, eight with
+`why_withheld`, five `why` payloads) reworded to the count it builds. `cargo test -p yokohama-web --test
+wire_fixtures` and `--test lane_document` green.
+
 - [ ] **Step 3: The spec's §9.3.** Append to `docs/plans/2026-10-08-security-remediation-spec.md` a
 `### 9.3 — 2026-10-09, S1a's plan: the cycle split, the corpus, and six corrections` carrying this plan's
 §"The cycle split" table in one paragraph, its §"Spec corrections" items 1–7 verbatim, and §"The S1 figures"'
@@ -2624,7 +2641,7 @@ specification's corrections, dated, go here").
 - [ ] **Step 4: Commit.**
 
 ```bash
-git add docs/web-lane.md docs/plans/2026-10-08-security-remediation-spec.md
+git add docs/web-lane.md docs/plans/2026-10-08-security-remediation-spec.md crates/yokohama-web/tests/wire_fixtures.rs
 git commit -m "docs: the lane document's admitted, explanation and route rows for S1a (D10), and the spec's §9.3 — the cycle split, the corpus rule and six corrections"
 ```
 
