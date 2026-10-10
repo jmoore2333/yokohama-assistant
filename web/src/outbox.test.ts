@@ -8,7 +8,8 @@
 //
 // **The `fetch` path's answers come from the corpus wherever it has a row.**
 // The archive's 201, 400 and 409 are the committed corpus's rows, and the
-// health read is its row with `archive` set for the cell, all through the real
+// health read is its row with `archive` set for the cell — and, in the
+// keyless-build cell alone, `identity: "open"` beside it — all through the real
 // `fetch` path, so the classification cells run `ApiError` exactly as a browser
 // builds it. The `fetch` answers it carries no row for are written by hand in
 // the cells that need them, because the corpus may not move for a test: the

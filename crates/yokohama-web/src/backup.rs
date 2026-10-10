@@ -813,8 +813,9 @@ pub(crate) mod tests {
     /// pairs pass it, and a planted key reads as a record that does not parse,
     /// naming the key. **The anti-drift arm is the destructure below**: it
     /// names every field of the engine's record with no `..`, so a field core
-    /// adds to `GameRecord` is a COMPILE error in this crate until someone
-    /// looks at the mirror. At run time, a field a browser game writes is
+    /// adds to `GameRecord` is a COMPILE error in this crate until the
+    /// destructure names it, the line that points at the mirror. At run
+    /// time, a field a browser game writes is
     /// refused ("unknown field") by `lib.rs`'s
     /// `the_archive_route_checks_and_files_a_browser_game`, which archives a
     /// freshly played record — the committed fixtures here are static and
@@ -823,8 +824,11 @@ pub(crate) mod tests {
     fn a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass() {
         assert!(check_pair(PLAYED_RECORD, PLAYED_TABLE).is_ok());
         assert!(check_pair(SPREAD_RECORD, SPREAD_TABLE).is_ok());
-        // No `..`: a field core adds to `GameRecord` fails to compile here
-        // until `RecordMirror` names it.
+        // No `..`: a field core adds to `GameRecord` is a compile error here
+        // until this destructure names it — which is where a maintainer meets
+        // the mirror; naming it here leaves `RecordMirror` untouched, and the
+        // mirror's eleven names are pinned by
+        // `the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth`.
         let rec: yokohama_core::GameRecord = serde_json::from_str(PLAYED_RECORD).expect("a record");
         let yokohama_core::GameRecord {
             engine_version: _,

@@ -58,8 +58,10 @@ impl std::error::Error for ApplyError {}
 /// events from the nearest kept state (from a complete ladder; a live-mode gap
 /// — a bound-reveal group stepping over a multiple — adds its extent once,
 /// re-cut on the way) instead of the whole record from setup
-/// — the cost `/at`, a run, an undo and a rebuild paid, which at a record
-/// built to a large retreat family ran to seconds per request. Sixty-four is
+/// — the cost `/at`, a run and an undo paid, which at a record
+/// built to a large retreat family ran to seconds per request. A rebuild
+/// (`from_record`) still folds the whole record, through the predicate,
+/// keeping the ladder as it goes. Sixty-four is
 /// a memory choice, not a measured threshold: a `GameState` is a few
 /// kilobytes in memory (about fifteen serialized), so a 4,096-event record
 /// keeps sixty-four of them.

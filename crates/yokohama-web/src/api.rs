@@ -2901,6 +2901,10 @@ mod tests {
         open_table_ttl_days: None,
     };
 
+    /// Who [`post_archive`] sends as: a cell that reads a path the archive
+    /// keeps builds its prefix from this, as the route does.
+    const ARCHIVE_CALLER: &str = "local@browser";
+
     fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
         let body = serde_json::json!({ "record": record, "table": table }).to_string();
         post_archive_bytes(games, body.as_bytes())
@@ -2909,7 +2913,7 @@ mod tests {
     /// [`post_archive`] with the body as given, for the rows about the body
     /// itself rather than the pair inside it.
     fn post_archive_bytes(games: &Games, body: &[u8]) -> (u16, serde_json::Value) {
-        let user = User::parse("local@browser").expect("an address");
+        let user = User::parse(ARCHIVE_CALLER).expect("an address");
         let res = dispatch(
             games,
             &LOCAL_HOST,
@@ -3518,6 +3522,13 @@ mod tests {
     /// record naming another controller is forged, or a game this build could
     /// not have played — `bots::foreign`'s own answer, the rule the game
     /// routes apply. The sentence names the bot as the game route's 409 does.
+    /// **A held record is refused too** ("a held one included",
+    /// `archive_post`'s doc): through [`HoldsEverything`] the same record reads
+    /// the foreign 400, never the 200 `identical` — the catcher for the held
+    /// early return moved above the foreign check, which answers 200 there.
+    /// The foreign check moved above `check_pair_filed`'s call reads the same
+    /// 400 here; its catcher is the two-defect probe below, which then reads
+    /// the foreign sentence instead of the digest's.
     #[test]
     fn a_record_naming_a_bot_this_server_does_not_run_is_refused() {
         let dir = scratch("archive_foreign_bot");
@@ -3530,6 +3541,12 @@ mod tests {
         assert_eq!(status, 400, "{said}");
         assert!(said["error"].as_str().unwrap_or("").starts_with("seat 1 was played by "), "{said}");
         assert!(said["error"].as_str().unwrap_or("").contains(", which this server does not run: "), "{said}");
+        // Held: an archive that claims these bytes still reads the foreign
+        // 400 — the refusal sits between the validator and the held answer.
+        let claims = games_with(std::sync::Arc::new(HoldsEverything));
+        let (status, said) = post_archive(&claims, &v.to_string(), PLAYED_TABLE);
+        assert_eq!(status, 400, "a held record is refused too: {said}");
+        assert!(said["error"].as_str().unwrap_or("").starts_with("seat 1 was played by "), "{said}");
         // Two defects — the foreign bot and no terminal digest — read the
         // digest's sentence: the validator speaks before the foreign refusal.
         let (status, said) = post_archive(&on, &without(&v.to_string(), "terminal_digest"), PLAYED_TABLE);
@@ -3556,9 +3573,11 @@ mod tests {
         let (status, v) = post_archive(&on, PLAYED_RECORD, &second);
         assert_eq!(status, 507, "{v}");
         assert_eq!(v["error"], archive_full_sentence(1, 1 << 20));
+        // The prefix as the route builds it, for the caller `post_archive` sends as.
+        let caller = User::parse(ARCHIVE_CALLER).expect("an address");
         let (record, table) = crate::archive::paths(
             yokohama_core::SEMANTICS_REV,
-            "browser/local_at_browser/",
+            &format!("browser/{}/", crate::archive::caller_segment(&caller)),
             crate::archive::Why::Over,
             "local-second",
         )
@@ -3821,7 +3840,12 @@ mod tests {
     /// to undo" on an empty record, the state `state_at` names on a played one
     /// — and the arm at the one mapping `input` sends [`UndoRefusal`] through,
     /// with the replay's own sentence. The rule's own refusal is read through
-    /// that mapping too, still a 403.
+    /// that mapping too, still a 403. **`trailing_state`'s `Replay` arm is
+    /// unreachable by construction** — a `Session` cannot hold a record that
+    /// will not replay, since `from_record` refuses it — so the cell asserts
+    /// that refusal and the two answers a session can reach, and the arm's
+    /// `map_err(UndoRefusal::Replay)` is read, not run: what runs is the status
+    /// a `Replay` value maps to.
     #[test]
     fn undo_on_a_record_that_will_not_replay_is_a_500_not_a_403() {
         use yokohama_cli::session::Session;

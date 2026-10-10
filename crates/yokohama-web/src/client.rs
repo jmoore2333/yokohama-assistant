@@ -189,7 +189,8 @@ pub(crate) fn folded_legal(state: &GameState, rules: &Rules) -> Folded {
 /// and the routes family precedes the retreat family in the generator's
 /// order, so the board's `reachable` — derived from the President's
 /// destinations (`MovePresident`, `PlacePresident`) — is whole at any list
-/// the cap does not cut; a list the cap DID cut would lose routes, and the
+/// the cap does not cut. A cut of ONE takes only the recover-nothing retreat,
+/// the list's last move; a cut PAST the retreat would lose routes, and the
 /// board's marks with them. Unreached today (the measured ceiling is 3,303):
 /// the cap is a fence, not a budget.
 pub(crate) fn folded_legal_capped(state: &GameState, rules: &Rules, cap: usize) -> Folded {
@@ -622,6 +623,11 @@ impl ClientState {
         // from the same `seat` through `build_decision_for`; the rule is
         // [`Folded::for_viewer`]'s, pinned by
         // `for_viewer_adds_the_caps_count_for_the_deciding_viewer_alone`.
+        // WHICH flag this call passes is checked only at the fold's count: no
+        // built position reaches the cap, so every frame cell reads `capped`
+        // as zero and a wrong flag here reads the same number — the cap's arm
+        // at this call site is read, not run (the helper's two arms are the
+        // unit cell's).
         let options_omitted = folded.for_viewer(frame.decision.viewer_is_deciding);
 
         Self {
@@ -876,7 +882,9 @@ impl HistoricalFrame {
         drop_hand_for(viewer, &mut frame);
         // The cap's count on the DECIDING viewer's frame alone, read from the
         // frame's own `decision.viewer_is_deciding` — [`ClientState::of`]'s
-        // rule, for its reason ([`Folded::for_viewer`]).
+        // rule, for its reason ([`Folded::for_viewer`]). As there, which flag
+        // this call passes is checked only at the fold's count — no built
+        // position reaches the cap — so the cap's arm here is read, not run.
         let options_omitted = folded.for_viewer(frame.decision.viewer_is_deciding);
 
         Self {

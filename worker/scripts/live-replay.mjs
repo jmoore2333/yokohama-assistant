@@ -22,15 +22,19 @@
 //    and the run does not start.
 // 2. **The house chat's `last` and `rev`**, read as the walk's own house-chat
 //    reader: the base its payloads are taken back by (spec §9.3).
-// 3. **Every row** of `walk.json` the production seed rule lets through, each
-//    `walk-host.json` row after the walk row its `after` names, then
-//    `archive-walk.json`, with the credential and `X-Yokohama-Claimed-User:
-//    <who>` — a row with no `who` sends none: `wire` and `wire2` are seeded
-//    creates beside an open seat, which a production host answers 400
-//    (`SEED_NOT_SOLO`) — the create is sent and held to that answer, every row
-//    at those tables and the lobby pages that name them are skipped and
-//    counted (`productionSeedRule`, security S1b); the pool replays the whole
-//    walk under its diagnostic switch.
+// 3. **Every row the production seed rule lets through**, in `order`'s order:
+//    `walk.json`'s, each `walk-host.json` row after the walk row its `after`
+//    names, then `archive-walk.json`'s — with the credential and
+//    `X-Yokohama-Claimed-User: <who>`, a row with no `who` sending the
+//    credential alone. The rule (`productionSeedRule`, security S1b): `wire`
+//    and `wire2` are seeded creates beside an open seat, which a production
+//    host answers 400 (`SEED_NOT_SOLO`) — each create is sent and held to that
+//    answer, and every row at those tables, the host script's among them, and
+//    every lobby page, whose committed bodies list them, is skipped and
+//    counted (`skippedUnderProductionSeedRule`). A walk whose rule names no
+//    table skips nothing: its lobby pages run, each judged through
+//    `filterLobby` with up to `LOBBY_REREADS` re-reads. The pool replays the
+//    whole walk under its diagnostic switch.
 // 4. **Every row's status, and every named row's body** against its committed
 //    file — the clock frozen first (`freezeClock`), then three named
 //    exemptions (`filterLobby`, `normalizeHouseChat`, `firstSendAccepts`, the
@@ -41,9 +45,15 @@
 //    cycle D, R-D4): the delete row is sent carried forward to the number
 //    that run's post was really given (`houseDeleteRow`, counted like the
 //    rest), so every run answers 204 and no run leaves a post behind.
-// 5. **The force again** once the replay has begun, however it ended; then the
-//    report: rows run, named rows compared, the exemptions spent, and every
-//    mismatch. Exit 1 on a mismatch, a refused force, or a run that stopped.
+// 5. **The force again** whenever the force before held, however the run then
+//    ended — a base that could not be read and a row that stopped the run
+//    included; then the report: rows run of the total, rows skipped under the
+//    production seed rule, named rows compared, the exemptions spent, the
+//    lobby re-reads spent, where the run stopped if it did, the reset's
+//    commands after a first send's 409, and the count of mismatches, each
+//    printed as it was found. Exit 1
+//    on a mismatch, a force that answered other than 204, a run that stopped,
+//    or a refusal before the first send.
 //
 // **The reset** (R3's M-1). The two first sends' saves stay in the bucket for
 // good, by the owner's direction, so every later run's first sends meet them:

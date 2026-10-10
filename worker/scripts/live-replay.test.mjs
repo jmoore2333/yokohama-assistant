@@ -252,7 +252,7 @@ describe("productionSeedRule", () => {
     const nullSeed = [{ ...unseeded[0], body: { ...unseeded[0].body, seed: null } }];
     expect([...productionSeedRule(nullSeed)], "a null seed is none: a server deals that create unseeded").toEqual([]);
   });
-  it("skips every row at a skipped table and every lobby page, and never the create itself or a kept table's row", () => {
+  it("skips every row at a skipped table and, while it names one, every lobby page, and never the create itself or a kept table's row", () => {
     const skipped = new Set(["wire", "wire2"]);
     const at = (path, fixture = null, method = "GET") => ({ method, path, fixture, body: null, who: "red@wire.test" });
     expect(skippedUnderProductionSeedRule(at("/api/games/wire"), skipped)).toBe(true);
@@ -260,6 +260,9 @@ describe("productionSeedRule", () => {
     expect(skippedUnderProductionSeedRule(at("/api/games/wire2/table"), skipped)).toBe(true);
     expect(skippedUnderProductionSeedRule(at("/api/games", "games_open"), skipped)).toBe(true);
     expect(skippedUnderProductionSeedRule(at("/api/games", "games_next"), skipped)).toBe(true);
+    // A rule that names no table skips no lobby page: each is sent, and judged
+    // through `filterLobby` with the re-reads. Mutant: the guard dropped.
+    expect(skippedUnderProductionSeedRule(at("/api/games", "games_open"), new Set()), "a rule naming no table skips no lobby page").toBe(false);
     expect(skippedUnderProductionSeedRule(at("/api/games/wire4"), skipped)).toBe(false);
     expect(skippedUnderProductionSeedRule(at("/api/health", "health"), skipped)).toBe(false);
     expect(skippedUnderProductionSeedRule(at("/api/archive", "archive_post", "POST"), skipped)).toBe(false);
@@ -267,6 +270,31 @@ describe("productionSeedRule", () => {
     expect(skippedUnderProductionSeedRule(create, skipped), "the create is SENT, and held to its 400").toBe(false);
     expect(isProductionSeedCreate(create, skipped)).toBe(true);
     expect(isProductionSeedCreate(at("/api/games/wire"), skipped)).toBe(false);
+  });
+  // **The rows a production-door run sends, pinned** (security S1b): the fake
+  // host and the driver's first cell both plan with the functions under test,
+  // so a rule that skipped one row more passed every other cell. Computed here
+  // over the committed scripts with the three functions, in the pre-flight's
+  // line shape, and compared line by line to the list the review read
+  // (`replay/fixtures/production-door-kept-rows.txt`, its header and footer
+  // kept). Mutant: the skip rule widened to `wire4`'s four keep rows.
+  it("keeps exactly the twenty-six rows the review read, of 2,213", () => {
+    const skipped = productionSeedRule(SCRIPTS.walk);
+    const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
+    const kept = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
+    const lines = [
+      `skipped tables: ${[...skipped].sort().join(", ")}; rows ${rows.length} (walk ${SCRIPTS.walk.length}, host ${SCRIPTS.host.length}, archive ${SCRIPTS.archive.length})`,
+      ...kept.map(({ script, index, row }) => {
+        const held = isProductionSeedCreate(row, skipped) ? "  <- the create, held to its 400" : "";
+        const path = `${row.path}${row.query ? `?${row.query}` : ""}`;
+        return `${script} row ${index}: ${row.method} ${path} as ${row.who ?? "no one"} -> ${row.status} ${row.fixture ?? "(unnamed)"}${held}`;
+      }),
+      `kept ${kept.length}, skipped ${rows.length - kept.length}, total ${rows.length}`,
+    ];
+    const file = readFileSync(new URL("./replay/fixtures/production-door-kept-rows.txt", import.meta.url), "utf8");
+    expect(file.endsWith("\n"), "the list ends in one newline").toBe(true);
+    expect(lines).toEqual(file.slice(0, -1).split("\n"));
+    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([26, 2187, 2213]);
   });
   // The sentence is `tables::SEED_NOT_SOLO`'s, read off the Rust source so
   // the two cannot drift (the edge rule's drift cell is the precedent).

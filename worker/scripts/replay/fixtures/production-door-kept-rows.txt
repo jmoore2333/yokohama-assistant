@@ -1,0 +1,28 @@
+skipped tables: wire, wire2; rows 2213 (walk 2201, host 4, archive 8)
+walk-host.json row 0: GET /api/art as no one -> 200 art_manifest
+walk.json row 0: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
+walk.json row 1: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
+walk.json row 28: GET /api/health as red@wire.test -> 200 health
+walk.json row 29: GET /api/me as red@wire.test -> 200 me
+walk.json row 30: GET /api/me as no one -> 200 me_signed_out
+walk.json row 31: GET /api/labels as red@wire.test -> 200 labels
+walk.json row 43: POST /api/chat as red@wire.test -> 201 house_chat_post
+walk.json row 44: GET /api/chat as blue@wire.test -> 200 house_chat
+walk.json row 48: DELETE /api/chat/1 as red@wire.test -> 204 house_chat_delete
+walk.json row 2179: POST /api/games as red@wire.test -> 201 (unnamed)
+walk.json row 2180: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2181: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2182: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2183: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2184: GET /api/games/wire4 as red@wire.test -> 200 options_4p
+walk.json row 2185: GET /api/games/wire4/areas as red@wire.test -> 200 areas_4p
+walk.json row 2200: GET /api/games/no-such-game as red@wire.test -> 404 error
+archive-walk.json row 0: POST /api/archive as red@wire.test -> 201 archive_post
+archive-walk.json row 1: POST /api/archive as red@wire.test -> 200 archive_post_identical
+archive-walk.json row 2: POST /api/archive as red@wire.test -> 409 archive_409
+archive-walk.json row 3: POST /api/archive as red@wire.test -> 201 archive_post_abandoned
+archive-walk.json row 4: POST /api/archive as red@wire.test -> 400 archive_400_rev
+archive-walk.json row 5: POST /api/archive as red@wire.test -> 400 archive_400_digest
+archive-walk.json row 6: POST /api/archive as red@wire.test -> 400 archive_400_replay
+archive-walk.json row 7: POST /api/archive as red@wire.test -> 400 archive_400_table
+kept 26, skipped 2187, total 2213

@@ -9,9 +9,9 @@
 // host fields are `HOST_FIELDS`, `../corpus-walk.mjs`'s. Beside them, the
 // production seed rule (security S1b): the walk's seeded tables a deployed
 // Worker will not deal, their creates held to its 400 in `SEED_NOT_SOLO`'s
-// words and every other row at them, and every lobby page, skipped and counted
-// (`productionSeedRule`, `isProductionSeedCreate`,
-// `skippedUnderProductionSeedRule`).
+// words and every other row at them, and — while the rule names any table —
+// every lobby page, skipped and counted (`productionSeedRule`,
+// `isProductionSeedCreate`, `skippedUnderProductionSeedRule`).
 
 import { isDeepStrictEqual } from "node:util";
 
@@ -61,16 +61,18 @@ export function isProductionSeedCreate(row, skipped) {
 
 /**
  * Whether a production host cannot be asked `row` under the rule: a row at
- * one of `skipped`'s tables (`/api/games/<id>` and everything under it), or a
- * lobby page, whose committed body names them. A table's create is never
- * skipped, and needs no exception here: it is `POST /api/games`, a path that
- * names no table, and the walk names no fixture for it — so it is sent, and
- * held to its 400 (`isProductionSeedCreate`).
+ * one of `skipped`'s tables (`/api/games/<id>` and everything under it), or,
+ * while the rule names any table, a lobby page, whose committed body names
+ * them. Under a rule that names none, no lobby page is skipped: each is sent
+ * and judged through `filterLobby`, with `replay`'s re-reads. A table's create
+ * is never skipped, and needs no exception here: it is `POST /api/games`, a
+ * path that names no table, and the walk names no fixture for it — so it is
+ * sent, and held to its 400 (`isProductionSeedCreate`).
  */
 export function skippedUnderProductionSeedRule(row, skipped) {
   const m = /^\/api\/games\/([^/?]+)/.exec(row.path);
   if (m !== null && skipped.has(m[1])) return true;
-  return row.fixture !== null && LOBBY.has(row.fixture);
+  return skipped.size > 0 && row.fixture !== null && LOBBY.has(row.fixture);
 }
 
 /**
