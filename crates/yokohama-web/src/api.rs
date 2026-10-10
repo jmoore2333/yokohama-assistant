@@ -2526,7 +2526,10 @@ pub(crate) fn archive_would_accept(record: &str, table: &str) -> bool {
 
 /// The layer's front door: match, answer, and shape the response. A known path
 /// under another method is 405 with an empty body (axum's own shape); a path
-/// that matches nothing is the JSON 404 the server's `fallback` writes.
+/// that matches nothing is the JSON 404 the server's `fallback` writes; and an
+/// `{id}` the store would refuse is the JSON 404 `no game named "<echo>"`
+/// (security S1c, finding B8). All three come before `answer`, so before its
+/// 401 and its 400.
 pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiRequest<'_>) -> ApiResponse {
     let (pattern, bound) = match find(req.method, req.path, host.serves_games) {
         Matched::Route(p, b) => (p, b),

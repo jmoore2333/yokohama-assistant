@@ -5992,9 +5992,12 @@ mod tests {
     /// post, a chat delete — fired at fabricated ids answer 404 and leave the
     /// map EMPTY; a 16 KB id and a 65-byte id are 404s in `dispatch` before any
     /// handler; and a writer that SUCCEEDS at a real table leaves no entry
-    /// behind either, because the entry is pruned on every exit. The mutant
-    /// that takes the lock before the read leaves `nosuch-*` entries; the one
-    /// that prunes only on delete leaves `wire`'s.
+    /// behind either, because the entry is pruned on every exit. A count taken
+    /// after the writes cannot see the pre-read, because the helper prunes on
+    /// every exit; its catcher is `tables.rs`'s
+    /// `a_writer_at_an_absent_id_reads_before_it_takes_the_lock`. The mutant
+    /// that prunes only on delete leaves `wire`'s entry, read at the premise.
+    /// (The two chat rows are refused by `admitted` before their writers.)
     #[tokio::test]
     async fn refused_and_finished_writes_leave_the_lock_map_empty() {
         let state = Arc::new(AppState::in_memory());
