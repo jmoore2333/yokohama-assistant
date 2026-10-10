@@ -2292,10 +2292,12 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The NINE checks `backup::check_pair_with` makes, in the order it makes
-/// them** (ten refusals through this route, because the archive-off 404 is
-/// asked first, and a rev that disagrees and a rev that is absent are two
-/// different sentences): the record parses; its event count is within
+/// **The NINE checks `backup::check_pair_filed` makes, in the order it makes
+/// them** (the archive-off 404 is asked before any of them, and the rev check
+/// speaks two sentences — one for a rev that disagrees, one for a rev that is
+/// absent — so the route's refusals outnumber the checks; a restore meets the
+/// same checks through `check_pair_with`, the wrapper): the record parses; its
+/// event count is within
 /// [`crate::backup::EVENT_CAP`] (security S1b); a `semantics_rev` present and
 /// equal to this build's; a terminal digest present; the table document
 /// parses; it passes [`tables::check_shape`]; it AGREES with the record; its
@@ -2351,7 +2353,7 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     let facts = crate::backup::check_pair_filed(&req.record, &req.table, games.rules(), &filed)
         .map_err(ApiError::bad_request)?;
     // The document again, for the strip and the path. **Unreachable as a
-    // refusal** — `check_pair_with` parsed this very string a line ago — and written
+    // refusal** — `check_pair_filed` parsed this very string a line ago — and written
     // as one anyway rather than as an `expect`, because a panic inside a route
     // takes the process out and this costs a parse of 500 bytes.
     let doc: crate::table::TableDoc = serde_json::from_str(&req.table)
@@ -3333,6 +3335,82 @@ mod tests {
         let (status, v) = post_archive(&real, PLAYED_RECORD, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "{v}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An archive that holds a record under the `Abandoned` leaf and nothing
+    /// under `Over`.
+    struct HoldsAbandoned;
+
+    impl crate::archive::Archive for HoldsAbandoned {
+        fn put(
+            &self,
+            _prefix: &str,
+            _why: crate::archive::Why,
+            _id: &str,
+            _record_json: &str,
+            _table_json: &str,
+        ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+            unreachable!("a held record is answered before the put")
+        }
+        fn kind(&self) -> &'static str {
+            "dir"
+        }
+        fn holds(&self, _prefix: &str, why: crate::archive::Why, _id: &str, _record_json: &str) -> bool {
+            why == crate::archive::Why::Abandoned
+        }
+    }
+
+    /// **A record held under `abandoned/` is answered from that leaf**
+    /// (security S1b, finding A2): 200 `identical`, leaf `"abandoned"`, the path
+    /// under `abandoned/` — the leaf the archive holds, never the one the
+    /// replay would choose, since no replay is paid. The catcher for the hook
+    /// reading every held record as `over` (`.map(|_| true)` in
+    /// `archive_post`'s `filed`), which the retry cell cannot see because both
+    /// of its archives hold the record under `Over`, the leaf asked first.
+    #[test]
+    fn a_record_held_under_the_abandoned_leaf_is_answered_from_that_leaf() {
+        let games = games_with(std::sync::Arc::new(HoldsAbandoned));
+        let (status, v) = post_archive(&games, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
+        assert_eq!(v["leaf"], "abandoned", "{v}");
+        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/abandoned/{PLAYED_ID}.json"));
+    }
+
+    /// **Every cheap check speaks before the archive is asked** (security S1b,
+    /// finding A2): beside an archive that claims to hold everything, each row
+    /// is a pair that could never be accepted, its FIRST defect one cheap
+    /// check's, and reads that check's own 400 — so `filed` is asked after the
+    /// LAST cheap check, the `is_safe_id` refusal included. The catcher for the
+    /// hook asked above the `is_safe_id` refusal, which the retry cell cannot
+    /// see because its one claiming row carries a table that DISAGREES, and the
+    /// agreement check sits above `is_safe_id`.
+    #[test]
+    fn every_cheap_check_speaks_before_a_claiming_archive_is_asked() {
+        let claims = games_with(std::sync::Arc::new(HoldsEverything));
+        let broken = replay_broken(PLAYED_RECORD);
+        let over_cap = {
+            let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+            let events = v["events"].as_array_mut().expect("events");
+            events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
+            v.to_string()
+        };
+        let rows = [
+            ("not json at all".to_string(), PLAYED_TABLE.to_string(), "the record does not parse"),
+            (over_cap, PLAYED_TABLE.to_string(), "the record carries 4097 events"),
+            (keyed(&broken, "semantics_rev", 6.into()), PLAYED_TABLE.to_string(), "this record is at semantics rev 6"),
+            (without(&broken, "semantics_rev"), PLAYED_TABLE.to_string(), "missing semantics provenance"),
+            (without(&broken, "terminal_digest"), PLAYED_TABLE.to_string(), "the record carries no terminal digest"),
+            (broken.clone(), "not json at all".to_string(), "the table document does not parse"),
+            (broken.clone(), keyed(PLAYED_TABLE, "players", 3.into()), "the table document is malformed"),
+            (broken.clone(), keyed(PLAYED_TABLE, "start_seat", 1.into()), "the table document does not agree"),
+            (broken.clone(), keyed(PLAYED_TABLE, "id", "not/a/safe/id".into()), "the table's id is not a safe name"),
+        ];
+        for (record, table, expect) in rows {
+            let (status, v) = post_archive(&claims, &record, &table);
+            assert_eq!(status, 400, "{expect}: {v}");
+            let said = v["error"].as_str().unwrap_or("");
+            assert!(said.starts_with(expect), "{said:?} does not start with {expect:?}");
+        }
     }
 
     // -----------------------------------------------------------------------

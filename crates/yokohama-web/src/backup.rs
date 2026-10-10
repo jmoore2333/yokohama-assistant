@@ -206,17 +206,23 @@ pub fn event_cap_sentence(events: usize) -> String {
 /// not cheap and is immutable once built, so it is constructed once per process
 /// and shared by reference" — and an earlier draft departed from it, paying one
 /// per archive POST and one per record-carrying game in a restore (review M-4).
-/// So `check_pair_with` is the body and takes the rules; this is the ONE
-/// public entry, for a caller that has no `Games` to borrow them from. The two
-/// in-crate callers pass what they already hold: `archive_post` the process's
-/// shared rules, `restore_read` one built per ENVELOPE rather than per game.
+/// So the body, `check_pair_filed`, takes the rules — a restore reaches it
+/// through the wrapper `check_pair_with`, the archive route directly with its
+/// own hook (security S1b) — and this is the ONE public entry, for a caller
+/// that has no `Games` to borrow them from. The two in-crate callers pass what
+/// they already hold: `archive_post` the process's shared rules,
+/// `restore_read` one built per ENVELOPE rather than per game.
 pub fn check_pair(record: &str, table: &str) -> Result<PairFacts, String> {
     check_pair_with(record, table, &yokohama_core::Rules::standard())
 }
 
-/// [`check_pair`]'s body, over rules the caller already holds. One function,
-/// two callers — the claim R-6.5b2.10 makes — with the construction of the
-/// rules left to whoever is in a position not to repeat it.
+/// [`check_pair`] over rules the caller already holds — the WRAPPER since
+/// security S1b (finding A2): [`check_pair_filed`] is the body, and this asks
+/// it with a `filed` hook that answers `None`, so a pair that passes the cheap
+/// checks is always replayed. A restore calls it; the archive route calls the
+/// body with its own hook. One function, two callers — the claim R-6.5b2.10
+/// makes — with the construction of the rules left to whoever is in a
+/// position not to repeat it.
 pub(crate) fn check_pair_with(
     record: &str,
     table: &str,

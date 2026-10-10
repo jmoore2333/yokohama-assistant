@@ -716,6 +716,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// **`holds` never reads outside its root** (security S1b, finding A2): an
+    /// absolute prefix that points at a real file holding exactly the bytes
+    /// asked about reads `false`, and so does a `..` id. The catcher for
+    /// `DirArchive::holds` without its component check, which
+    /// `holds_is_true_for_the_landed_bytes_at_exactly_their_path` cannot see
+    /// because every path it asks about is a plain name under the root.
+    #[cfg(feature = "server")]
+    #[test]
+    fn holds_never_reads_outside_its_root() {
+        let root = std::env::temp_dir().join(format!("yokohama_archive_holds_root_{}", std::process::id()));
+        let elsewhere =
+            std::env::temp_dir().join(format!("yokohama_archive_holds_elsewhere_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        let target = elsewhere.join(format!("rev{}/over/x.json", yokohama_core::SEMANTICS_REV));
+        std::fs::create_dir_all(target.parent().expect("a parent")).unwrap();
+        std::fs::write(&target, "held-bytes").unwrap();
+        let a = DirArchive::new(&root);
+        let absolute = format!("{}/", elsewhere.display());
+        assert!(!a.holds(&absolute, Why::Over, "x", "held-bytes"), "an absolute prefix is never read");
+        assert!(!a.holds("", Why::Over, "..", "held-bytes"), "nor a `..` id");
+        std::fs::remove_dir_all(&elsewhere).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The third answer to the marker read (review fix, spec §2.4): a record
     /// that is THERE but cannot be read is a `Failed`, and nothing is written.
     ///
