@@ -236,6 +236,29 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
     .collect()
 }
 
+/// The routes the NAS answers behind its replay gate (security S1b, findings
+/// A2 and D6): the ones that replay a record or run a search — an archive
+/// upload's strict replay, a run or a position of a game's history, the two
+/// searches. `input` is NOT among them: a move must land while a burst of
+/// replays waits, and an undo folds from the session's own ladder.
+pub const REPLAY_ROUTES: [(&str, &str); 5] = [
+    ("POST", "/api/archive"),
+    ("GET", "/api/games/{id}/at"),
+    ("GET", "/api/games/{id}/at/{k}"),
+    ("GET", "/api/games/{id}/suggest"),
+    ("GET", "/api/games/{id}/why"),
+];
+
+/// Whether `method` and `path` name one of [`REPLAY_ROUTES`] — by the table's
+/// own match, so a path the table does not route, or a wrong method on a gated
+/// one, is never gated.
+pub fn is_replay_route(method: &str, path: &str) -> bool {
+    match find(method, path, true) {
+        Matched::Route(pattern, _) => REPLAY_ROUTES.iter().any(|(m, p)| *m == method && *p == pattern),
+        Matched::WrongMethod | Matched::NoRoute => false,
+    }
+}
+
 /// The rows the multiplayer switch takes away: every game route and both house
 /// chat routes. A prefix test and not a list, so a route added under
 /// `/api/games` is governed by the switch the day it lands rather than the day
@@ -3829,6 +3852,37 @@ mod tests {
         // answers 404 — so no route, in the middle and at the end alike.
         assert!(matches!(find("GET", "/api/games//table", true), Matched::NoRoute), "an empty {{id}}");
         assert!(matches!(find("GET", "/api/games/sim-1/at/", true), Matched::NoRoute), "an empty {{k}}");
+    }
+
+    /// **The replay gate's five routes, by the table's own match** (security
+    /// S1b, findings A2 and D6): an archive upload, a run and a position of a
+    /// game's history, the two searches — and nothing else: a move, a frame,
+    /// the record, the health, a wrong method on a gated path, a path the
+    /// table does not route.
+    #[test]
+    fn the_replay_routes_are_the_five_that_replay_or_search() {
+        for (method, path) in [
+            ("POST", "/api/archive"),
+            ("GET", "/api/games/wire/at"),
+            ("GET", "/api/games/wire/at/12"),
+            ("GET", "/api/games/wire/suggest"),
+            ("GET", "/api/games/wire/why"),
+        ] {
+            assert!(is_replay_route(method, path), "{method} {path} is gated");
+        }
+        for (method, path) in [
+            ("POST", "/api/games/wire/input"),
+            ("GET", "/api/games/wire"),
+            ("GET", "/api/games/wire/record"),
+            ("GET", "/api/health"),
+            ("GET", "/api/archive"),
+            ("POST", "/api/games/wire/at"),
+            ("GET", "/api/games//at"),
+            ("GET", "/api/games/wire/at/12/13"),
+        ] {
+            assert!(!is_replay_route(method, path), "{method} {path} is never gated");
+        }
+        assert_eq!(REPLAY_ROUTES.len(), 5);
     }
 
     /// **`events` reads the table document ONCE per call** (M6.5c2 cycle D, row

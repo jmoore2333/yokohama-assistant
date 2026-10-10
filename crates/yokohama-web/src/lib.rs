@@ -343,6 +343,29 @@ impl Multiplayer {
 }
 // ---- end server ----
 
+/// The replay gate's permits (security S1b, findings A2 and D6; R-SEC8(f)):
+/// how many of the five replay routes (`api::REPLAY_ROUTES`) the NAS runs at
+/// once. Two, from the NAS's four cores (the review's read): two blocking
+/// replays leave two cores to the runtime, and at the ≤ 55 ms an admitted
+/// replay costs under the predicate check two permits clear about
+/// thirty-six worst-case uploads a second — far above the edge's twenty per
+/// ten seconds per client. The gate bounds the server's work, never a
+/// person's: a game's moves are not behind it.
+#[cfg(feature = "server")]
+pub const REPLAY_PERMITS: usize = 2;
+
+/// How long a replay request waits for a permit before the adapter answers
+/// 503 with `Retry-After: 1` (security S1b): two seconds, so queued bodies do
+/// not pile up behind a burst — a client that meets the 503 asks again, as
+/// the outbox and the turn playback both do on their own.
+#[cfg(feature = "server")]
+pub const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The 503's sentence — the ADAPTER's own, since the gate is the NAS's and
+/// not the layer's.
+#[cfg(feature = "server")]
+pub const BUSY: &str = "the server is busy replaying — try again in a second";
+
 /// Everything a transport handler may reach: the layer's state, the identity
 /// door, the streams' cadence and the streams' channels.
 ///
@@ -396,6 +419,12 @@ pub struct AppState {
     /// [`Self::production`], which `new` hands it to; a cell sets them with
     /// [`Self::with_ttls`].
     pub ttls: sweep::Ttls,
+    /// The replay gate (security S1b, findings A2 and D6): the permits the
+    /// five replay routes share — [`REPLAY_PERMITS`] on every constructor; a
+    /// cell sets its own through [`Self::with_replay_gate`].
+    pub replay_gate: Arc<tokio::sync::Semaphore>,
+    /// How long a replay request waits for a permit — [`REPLAY_WAIT`].
+    pub replay_wait: std::time::Duration,
 }
 
 #[cfg(feature = "server")]
@@ -580,6 +609,8 @@ impl AppState {
             // No TTL, which is what an unset variable reads: only `new`,
             // given `main`'s reading, and [`Self::with_ttls`] say otherwise.
             ttls: sweep::Ttls::none(),
+            replay_gate: Arc::new(tokio::sync::Semaphore::new(REPLAY_PERMITS)),
+            replay_wait: REPLAY_WAIT,
         }
     }
 
@@ -612,6 +643,13 @@ impl AppState {
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
         self.games = self.games.with_seed_policy(policy);
         self
+    }
+
+    /// This state under its own replay gate (security S1b) — the builder a
+    /// cell takes to hold the permits and read the 503, [`Self::with_clock`]'s
+    /// shape.
+    pub fn with_replay_gate(self, permits: usize, wait: std::time::Duration) -> Self {
+        Self { replay_gate: Arc::new(tokio::sync::Semaphore::new(permits)), replay_wait: wait, ..self }
     }
 
     /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
@@ -701,7 +739,11 @@ async fn events(
     QueryArgs(q): QueryArgs<EventsQuery>,
 ) -> ApiResult<Events> {
     api::check_wait(q.wait)?;
-    Ok(Json(api::events_at(&state.games, &id, &user)?))
+    let games = Arc::clone(&state);
+    match tokio::task::spawn_blocking(move || api::events_at(&games.games, &id, &user)).await {
+        Ok(reading) => Ok(Json(reading?)),
+        Err(_) => Err(ApiError::server_error("the reading could not be taken — try again")),
+    }
 }
 
 /// `GET /api/games/{id}/stream` — the change signal, PUSHED (spec §3.1).
@@ -850,6 +892,20 @@ async fn house_stream(
 /// host's sentence; the body and query reach the layer as bytes and text. The
 /// body limit is axum's own default (2 MiB), so nothing this API accepted
 /// before is refused now.
+///
+/// **Every dispatch runs on the blocking pool, never on the executor**
+/// (security S1b, finding D6): the layer's call takes a game's lock, reads a
+/// store, and may replay or search, and inline on a runtime worker a slow one
+/// stalled every other task on that worker — the review measured two uploads
+/// freezing a two-worker server for 35 s. The hand-off costs a clone of the
+/// state's `Arc`, the owned request parts, a thread wake and a join, as the
+/// stream's per-bump reading already pays.
+///
+/// **The replay gate** (findings A2 and D6): one of the five replay routes
+/// (`api::REPLAY_ROUTES`) takes a permit first, waiting at most
+/// [`AppState::replay_wait`]; past the wait the answer is 503 with
+/// `Retry-After: 1`, and nothing of the request has run. Every other route is
+/// never behind it.
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -859,22 +915,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
             return ApiError::bad_request(format!("the body could not be read: {e}")).into_response()
         }
     };
+    let method = parts.method.as_str().to_string();
+    let path = parts.uri.path().to_string();
+    let query = parts.uri.query().unwrap_or("").to_string();
     let resolved = identity::resolve(state.identity, &parts.headers);
-    let identity: api::Identity<'_> = match &resolved {
-        Ok(u) => Ok(u),
-        Err(m) => Err(m.as_str()),
-    };
-    let content_type = parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
-    let request = api::ApiRequest {
-        method: parts.method.as_str(),
-        path: parts.uri.path(),
-        query: parts.uri.query().unwrap_or(""),
-        content_type,
-        body: &bytes,
-    };
+    let content_type =
+        parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
     // Art is a server route (the manifest reads the gated `art` module), listed
     // in the layer's table for the 405/404 arithmetic and answered here.
-    if request.path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
+    if path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
         let mut response = match art_manifest().await {
             Ok(j) => j.into_response(),
             Err(e) => e.into_response(),
@@ -885,21 +934,56 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         }
         return response;
     }
+    let _permit = if api::is_replay_route(&method, &path) {
+        match tokio::time::timeout(state.replay_wait, Arc::clone(&state.replay_gate).acquire_owned()).await {
+            Ok(Ok(permit)) => Some(permit),
+            Ok(Err(_)) | Err(_) => return busy(),
+        }
+    } else {
+        None
+    };
     // On THIS host the two multiplayer facts are one answer: an axum deployment
     // that offers no multiplayer serves no game route either, because nothing
     // plays here locally (spec §3.1 — the browser host is where they differ).
     // The TTLs are the ones the sweep runs under (M6.5c2 cycle F, R-F9), so
     // `/api/health` reports what is in force — both `null` where none is set,
     // as before the sweep (R-6.5c2.42).
-    let host = api::Host {
-        identity_name: state.identity.name(),
-        signal_kind: SIGNAL_KIND,
-        serves_games: state.multiplayer.0,
-        multiplayer_offered: state.multiplayer.0,
-        table_ttl_days: state.ttls.table,
-        open_table_ttl_days: state.ttls.open,
+    let serves_games = state.multiplayer.0;
+    let joined = {
+        let state = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            let identity: api::Identity<'_> = match &resolved {
+                Ok(u) => Ok(u),
+                Err(m) => Err(m.as_str()),
+            };
+            let request = api::ApiRequest {
+                method: &method,
+                path: &path,
+                query: &query,
+                content_type: content_type.as_deref(),
+                body: &bytes,
+            };
+            let host = api::Host {
+                identity_name: state.identity.name(),
+                signal_kind: SIGNAL_KIND,
+                serves_games,
+                multiplayer_offered: serves_games,
+                table_ttl_days: state.ttls.table,
+                open_table_ttl_days: state.ttls.open,
+            };
+            let out = api::dispatch(&state.games, &host, identity, &request);
+            let allowed = api::allowed_methods(&path, serves_games);
+            (out, allowed)
+        })
+        .await
     };
-    let out = api::dispatch(&state.games, &host, identity, &request);
+    let (out, allowed) = match joined {
+        Ok(pair) => pair,
+        // A dispatch that PANICKED on the pool: the game's lock, if it held
+        // one, is poisoned and evicted on the next take (`Games::lock_game`);
+        // this request is a 500 that says so.
+        Err(_) => return ApiError::server_error("the request could not be answered — try again").into_response(),
+    };
     let mut response = Response::new(axum::body::Body::from(out.body.clone()));
     *response.status_mut() = StatusCode::from_u16(out.status).expect("a known status");
     if !out.body.is_empty() {
@@ -911,11 +995,25 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // `any()` skips it, so the adapter puts it back from the layer's own table
     // (R-6.5a.3: "axum's 405 shape, reproduced").
     if out.status == 405 {
-        let allow = api::allowed_methods(request.path, host.serves_games).join(",");
         response
             .headers_mut()
-            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allow).expect("ASCII method names"));
+            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allowed.join(",")).expect("ASCII method names"));
     }
+    response
+}
+
+/// The adapter's 503 (security S1b): the replay gate's refusal, with the
+/// header a client's retry reads.
+#[cfg(feature = "server")]
+fn busy() -> Response {
+    let mut response = ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: BUSY.to_string(),
+        table_status: None,
+        foreign_bot: None,
+    }
+    .into_response();
+    response.headers_mut().insert(http::header::RETRY_AFTER, http::HeaderValue::from_static("1"));
     response
 }
 
@@ -2417,6 +2515,121 @@ mod tests {
         uri: &str,
     ) -> (StatusCode, serde_json::Value) {
         request_as(state, who, "DELETE", uri, None).await
+    }
+
+    /// A test archive whose put SLEEPS — the one honest way to make a dispatch
+    /// slow: the archive route's checks pass on the committed pair and the put
+    /// is where the time goes. `kind` reads `dir`, so `is_on` is true.
+    struct SlowArchive(std::time::Duration);
+
+    impl archive::Archive for SlowArchive {
+        fn put(
+            &self,
+            _prefix: &str,
+            _why: archive::Why,
+            _id: &str,
+            _record_json: &str,
+            _table_json: &str,
+        ) -> Result<archive::PutOutcome, archive::PutError> {
+            std::thread::sleep(self.0);
+            Ok(archive::PutOutcome::Landed)
+        }
+        fn kind(&self) -> &'static str {
+            "dir"
+        }
+    }
+
+    const PLAYED_RECORD: &str = include_str!("../tests/fixtures/browser-played-2p.json");
+    const PLAYED_TABLE: &str = include_str!("../tests/fixtures/browser-played-2p.table.json");
+
+    fn archive_body() -> serde_json::Value {
+        serde_json::json!({ "record": PLAYED_RECORD, "table": PLAYED_TABLE })
+    }
+
+    fn slow_state(delay_ms: u64, permits: usize, wait_ms: u64) -> Arc<AppState> {
+        Arc::new(
+            AppState::with_store_chat_and_archive(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(SlowArchive(std::time::Duration::from_millis(delay_ms))),
+            )
+            .with_replay_gate(permits, std::time::Duration::from_millis(wait_ms)),
+        )
+    }
+
+    /// **Two slow replays do not stall the server** (finding D6; the review's
+    /// measured stall: two uploads froze a two-worker server for 35 s). On a
+    /// runtime of TWO workers, two archive posts whose put sleeps a second are
+    /// in flight, and a pause of 150 ms followed by a health read completes in
+    /// well under that second — because every dispatch runs on the blocking
+    /// pool, never on the workers the two posts would otherwise hold. The clock
+    /// runs from before the pause, since with the dispatch inline it is the
+    /// pause's wake that waits for a worker: the mutant that dispatches inline
+    /// reads about a second.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_slow_replays_leave_the_server_answering() {
+        let state = slow_state(1_000, 2, 2_000);
+        let a = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        let b = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        // The clock runs from BEFORE the pause: with the dispatch inline, both
+        // workers sit in the two puts and the pause's own wake waits for one
+        // of them — the stall shows there as much as in the read.
+        let started = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let (status, _) = get_as(&state, WHO, "/api/health").await;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK);
+        assert!(took < std::time::Duration::from_millis(400), "the pause and the health read waited {took:?} behind two replays");
+        let (sa, va) = a.await.expect("the first post");
+        let (sb, vb) = b.await.expect("the second post");
+        assert!(matches!(sa.as_u16(), 200 | 201), "{va}");
+        assert!(matches!(sb.as_u16(), 200 | 201), "{vb}");
+    }
+
+    /// **A replay past the gate's wait is a 503 with `Retry-After: 1`, and a
+    /// move is never behind the gate** (findings A2 and D6; Review Focus 3).
+    /// One permit and a fifty-millisecond wait; a post whose put sleeps a
+    /// second holds the permit; a second post reads the 503 in `BUSY`'s words
+    /// within the wait, while an `input` at a game and a health read answer
+    /// 200 beside it. The mutant that gates nothing answers the second post
+    /// 201 after the second; the one that gates every route answers the move
+    /// 503; the one that drops the header fails the header line.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replay_past_the_gates_wait_is_refused_busy_while_a_move_lands() {
+        let state = slow_state(1_000, 1, 50);
+        a_game(&app(Arc::clone(&state)), "gated", &[]).await;
+        let holder = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let started = std::time::Instant::now();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/archive")
+            .header(identity::CLAIMED_HEADER, "local@browser")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&archive_body()).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(body["error"], BUSY);
+        assert!(started.elapsed() < std::time::Duration::from_millis(600), "refused within the wait, not after the holder");
+        play_turn(&state, "gated", WHO).await;
+        let (status, _) = get_as(&state, WHO, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, v) = holder.await.expect("the holder's post");
+        assert!(matches!(status.as_u16(), 200 | 201), "{v}");
     }
 
     /// **A started game whose seats belong to the NAMED people, each keeping as
