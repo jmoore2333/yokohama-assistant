@@ -245,6 +245,18 @@ describe("a game that finishes", () => {
     ]);
   });
 
+  // A 507 says the caller's share of the archive is FULL — the server's state,
+  // not the record's (security S1b, finding B12). The row is kept and retried
+  // on the next drain, as an offline row is, and it carries the server's own
+  // sentence so the player knows why it waits.
+  it("reads a 507 as a wait that carries the server's sentence, not as a refusal", async () => {
+    const full = "your archive here is full — 256 records or 128 MiB; nothing was written, and the game is kept on this device";
+    hosts({ archive: "dir", onArchive: () => ({ status: 507, body: { error: full } }) });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "offline", sentence: full })]);
+    expect(reasonWords("offline", full)).toBe(full);
+  });
+
   it("queues nothing where the deployment is KNOWN to keep no archive", async () => {
     const off = hosts({ archive: "off" });
     await noteGameOver(GAME);

@@ -2246,6 +2246,17 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
 /// 2 MiB and the Worker's `BODY_LIMIT`.
 pub const ARCHIVE_BODY_LIMIT: usize = 512 << 10;
 
+/// The 507 a browser's save meets once its caller's share of the archive is
+/// full (security S1b, finding B12): the SERVER's state, not the record's —
+/// the outbox keeps the row, shows this sentence and retries it on its next
+/// drain, so an operator who makes room sees the game land.
+pub fn archive_full_sentence(records: usize, bytes: u64) -> String {
+    format!(
+        "your archive here is full — {records} records or {} MiB; nothing was written, and the game is kept on this device",
+        bytes >> 20
+    )
+}
+
 /// The archive route's size check: over [`ARCHIVE_BODY_LIMIT`] is a 413 that
 /// names the bound, answered after the caller and before the body is parsed —
 /// pinned first in
@@ -2330,6 +2341,10 @@ pub struct ArchiveReply {
 /// table RE-STRIPPED server-side from the parsed document, as `delete` does, so
 /// a crafted body carrying a lock or a watcher roster never lands verbatim. The
 /// record string is put exactly as sent, because its bytes are the digest's.
+/// Where the caller's share under `browser/<caller>/` is full (security S1b,
+/// finding B12), the put refuses and the route answers 507 in
+/// [`archive_full_sentence`]'s words, nothing written, and the browser's outbox
+/// keeps the row and retries it.
 ///
 /// 404 where this host keeps no archive — which under `NoArchive`, the
 /// browser's own host, is the answer by construction.
@@ -2403,6 +2418,12 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
             status: StatusCode::CONFLICT,
             message: "a different record is archived under this id".to_string(),
             table_status: None, foreign_bot: None,
+        }),
+        Err(PutError::Quota { records, bytes }) => Err(ApiError {
+            status: StatusCode::INSUFFICIENT_STORAGE,
+            message: archive_full_sentence(records, bytes),
+            table_status: None,
+            foreign_bot: None,
         }),
         Err(PutError::Failed(e)) => {
             Err(ApiError::server_error(format!("the archive could not be written: {e}")))
@@ -3477,6 +3498,29 @@ mod tests {
         assert_eq!(status, 400, "{said}");
         assert!(said["error"].as_str().unwrap_or("").starts_with("the record carries no terminal digest"), "{said}");
         assert!(std::fs::read_dir(dir.join("browser")).is_err(), "nothing was written");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A full share is a 507 in the archive's words, and a retry of a filed
+    /// record is still 200** (finding B12; Review Focus 2): the archive's
+    /// `Quota` is the server's state and not the record's, so it is neither
+    /// the 400 nor the 409 the outbox ENDS a row on — the outbox keeps the row,
+    /// shows this sentence and retries on its next drain.
+    #[test]
+    fn a_full_share_is_a_507_and_the_retry_of_a_filed_record_is_still_200() {
+        let dir = scratch("archive_quota");
+        let on = games_with(std::sync::Arc::new(
+            crate::archive::DirArchive::new(&dir).with_quota(crate::archive::Quota { records: 1, bytes: 1 << 20 }),
+        ));
+        let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!(status, 201, "{v}");
+        let second = keyed(PLAYED_TABLE, "id", "local-second".into());
+        let (status, v) = post_archive(&on, PLAYED_RECORD, &second);
+        assert_eq!(status, 507, "{v}");
+        assert_eq!(v["error"], archive_full_sentence(1, 1 << 20));
+        assert!(!dir.join("browser/local_at_browser/rev7/over/local-second.json").exists(), "nothing was written");
+        let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "{v}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

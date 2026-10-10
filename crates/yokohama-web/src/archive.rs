@@ -74,6 +74,9 @@ pub enum PutError {
     /// names any path RELATIVE to the archive's root (M6.5c2 cycle D, row 56),
     /// for `key`'s reason.
     Failed(String),
+    /// The caller's share is full (security S1b, finding B12): nothing was
+    /// written. Carries the share's two bounds for the route's sentence.
+    Quota { records: usize, bytes: u64 },
 }
 
 impl std::fmt::Display for PutError {
@@ -81,8 +84,33 @@ impl std::fmt::Display for PutError {
         match self {
             Self::Conflict { key, .. } => write!(f, "{key} holds a different record — a game is archived once"),
             Self::Failed(e) => f.write_str(e),
+            Self::Quota { records, bytes } => write!(f, "the caller's archive is full ({records} records or {bytes} bytes)"),
         }
     }
+}
+
+/// A browser caller's share of this archive (security S1b, finding B12;
+/// R-SEC8(f)): 256 records and 128 MiB under `browser/<caller>/`, counted
+/// before every put. Set from real games: a finished game is 25–60 KB
+/// pretty-printed, so 256 is years of one person's play, and 128 MiB is that
+/// count at the body cap (`api::ARCHIVE_BODY_LIMIT`, 512 KiB) — so neither
+/// bound is dead. The archive is a collection of played games, not an import
+/// path for bulk uploads, and on the NAS it shares the volume every live game
+/// saves to; the review filed 19 MB in 1.3 s against it.
+pub const QUOTA_RECORDS: usize = 256;
+/// [`QUOTA_RECORDS`]'s companion in bytes: 128 MiB.
+pub const QUOTA_BYTES: u64 = 128 << 20;
+
+/// What one browser caller may hold: records and bytes under its prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quota {
+    pub records: usize,
+    pub bytes: u64,
+}
+
+impl Quota {
+    /// The production share — every `DirArchive` a server builds.
+    pub const PRODUCTION: Quota = Quota { records: QUOTA_RECORDS, bytes: QUOTA_BYTES };
 }
 
 /// The archive seam. `put` is handed the record bytes the store holds and the
@@ -245,7 +273,7 @@ mod dir {
     use std::path::{Component, Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{paths, Archive, PutError, PutOutcome, Why};
+    use super::{paths, Archive, PutError, PutOutcome, Quota, Why};
 
     pub const ENV_VAR: &str = "YOKOHAMA_WEB_ARCHIVE_DIR";
 
@@ -253,11 +281,12 @@ mod dir {
     /// store's own volume, so saves are collected during development.
     pub struct DirArchive {
         dir: PathBuf,
+        quota: Quota,
     }
 
     impl DirArchive {
         pub fn new(dir: impl Into<PathBuf>) -> Self {
-            Self { dir: dir.into() }
+            Self { dir: dir.into(), quota: Quota::PRODUCTION }
         }
 
         /// `None` when the variable is unset (the archive is off); `Err` when it
@@ -268,7 +297,47 @@ mod dir {
             let dir = PathBuf::from(raw);
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{ENV_VAR}={} cannot be created: {e}", dir.display()))?;
-            Ok(Some(Self { dir }))
+            Ok(Some(Self { dir, quota: Quota::PRODUCTION }))
+        }
+
+        /// This archive under a share of the caller's — the builder a cell takes
+        /// to fill one; every server builds [`Quota::PRODUCTION`].
+        pub fn with_quota(mut self, quota: Quota) -> Self {
+            self.quota = quota;
+            self
+        }
+
+        /// What `prefix` holds: records (`.json` files that are not
+        /// `.table.json`) and the bytes of every `.json` file under it, at any
+        /// depth. Zero where the prefix's directory does not exist yet; a read
+        /// that fails is a `Failed`, never a zero.
+        fn usage(&self, prefix: &str) -> Result<(usize, u64), PutError> {
+            fn walk(dir: &Path, records: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    let meta = entry.metadata()?;
+                    if meta.is_dir() {
+                        walk(&entry.path(), records, bytes)?;
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !name.ends_with(".json") {
+                        continue;
+                    }
+                    *bytes += meta.len();
+                    if !name.ends_with(".table.json") {
+                        *records += 1;
+                    }
+                }
+                Ok(())
+            }
+            let root = self.dir.join(prefix);
+            if !root.exists() {
+                return Ok((0, 0));
+            }
+            let (mut records, mut bytes) = (0usize, 0u64);
+            walk(&root, &mut records, &mut bytes).map_err(|e| PutError::Failed(format!("count {prefix}: {e}")))?;
+            Ok((records, bytes))
         }
 
         /// A name beside `path` that no other put is using — the pid and a
@@ -391,6 +460,17 @@ mod dir {
             }
             if let Some(outcome) = self.read_marker(&record, record_json)? {
                 return Ok(outcome);
+            }
+            // **A browser caller's share, counted before the writes** (security
+            // S1b, finding B12) — AFTER the marker read, so a retry of a filed
+            // record answers `Identical` once the share is full. A server's own
+            // games (the empty prefix) are never counted.
+            if prefix.starts_with("browser/") {
+                let (records, bytes) = self.usage(prefix)?;
+                let adding = (record_json.len() + table_json.len()) as u64;
+                if records >= self.quota.records || bytes + adding > self.quota.bytes {
+                    return Err(PutError::Quota { records: self.quota.records, bytes: self.quota.bytes });
+                }
             }
             // The table FIRST — overwriting a half pair's table is the repair —
             // and the record second, which is what makes the pair complete.
@@ -739,6 +819,42 @@ mod tests {
         assert!(!a.holds("", Why::Over, "..", "held-bytes"), "nor a `..` id");
         std::fs::remove_dir_all(&elsewhere).ok();
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A browser caller's share is counted before a put, and the count
+    /// never touches a retry or the server's own games** (finding B12;
+    /// R-SEC8(f); Review Focus 2). Under a two-record share two pairs land, a
+    /// third is refused as `Quota` with nothing written, the first pair's
+    /// bytes again are `Identical` (the marker read precedes the count),
+    /// another caller's share is its own, and three server games land under
+    /// the empty prefix. Then the BYTES: a hundred-byte share takes one
+    /// eighty-byte pair and refuses the next.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_browser_callers_share_is_counted_before_a_put_and_a_retry_survives_a_full_one() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_quota_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 2, bytes: 1 << 20 });
+        let prefix = "browser/a_at_b/";
+        assert!(matches!(a.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Landed)));
+        assert!(matches!(a.put(prefix, Why::Abandoned, "local-2", "{\"r\":2}", "{\"t\":2}"), Ok(PutOutcome::Landed)));
+        let third = a.put(prefix, Why::Over, "local-3", "{\"r\":3}", "{\"t\":3}");
+        assert!(matches!(third, Err(PutError::Quota { records: 2, bytes }) if bytes == 1 << 20), "{third:?}");
+        let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, Why::Over, "local-3").unwrap();
+        assert!(!dir.join(&record).exists() && !dir.join(&table).exists(), "nothing was written");
+        assert!(matches!(a.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Identical)), "a retry survives a full share");
+        assert!(matches!(a.put("browser/c_at_d/", Why::Over, "local-3", "{\"r\":3}", "{\"t\":3}"), Ok(PutOutcome::Landed)), "another caller's share");
+        for id in ["sim-1", "sim-2", "sim-3"] {
+            assert!(matches!(a.put("", Why::Over, id, "{\"r\":9}", "{\"t\":9}"), Ok(PutOutcome::Landed)), "the server's own games are never counted");
+        }
+        let b = DirArchive::new(&dir).with_quota(Quota { records: 100, bytes: 100 });
+        let forty = format!("{{\"r\":\"{}\"}}", "x".repeat(32));
+        assert_eq!(forty.len(), 40, "the premise");
+        assert!(matches!(b.put("browser/e_at_f/", Why::Over, "local-1", &forty, &forty), Ok(PutOutcome::Landed)), "eighty bytes under a hundred");
+        let over = b.put("browser/e_at_f/", Why::Over, "local-2", &forty, &forty);
+        assert!(matches!(over, Err(PutError::Quota { records: 100, bytes: 100 })), "a hundred and sixty over a hundred: {over:?}");
+        assert_eq!(Quota::PRODUCTION, Quota { records: QUOTA_RECORDS, bytes: QUOTA_BYTES });
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The third answer to the marker read (review fix, spec §2.4): a record
