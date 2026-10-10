@@ -1564,8 +1564,13 @@ a dot is refused at create (S1c Task 3)"`.
 
 **Files:**
 - Modify: `crates/yokohama-web/src/lib.rs` (`stream` :804–849 and its doc :761–803; `UntilLast` new; `adapter`
-  :945–951), `crates/yokohama-web/src/api.rs` (`events_at` — the unsafe-id 404, Task 2's C6)
-- Test: `lib.rs`'s `mod tests`
+  :945–951), `crates/yokohama-web/src/api.rs` (`events_at` — the unsafe-id 404, Task 2's C6; `answer` — the
+  HEAD fold, Task 3's C1), `worker/src/table/sockets.ts` (the `admit` doc) and `worker/test/sockets.test.ts` (the
+  unsafe-id upgrade: the implementer's ruled patch — C6's 404 reaches the Worker's socket upgrade, which refuses an
+  unsafe id as an unknown id's: accepted, the sentence, closed 4404, nothing written, where the store's 500 passed
+  through unupgraded; the "otherwise" test keeps its 401 case alone, the pool unable to make `events` fail with a
+  500 — a coverage residual)
+- Test: `lib.rs`'s `mod tests`; the Worker pool's `sockets.test.ts`
 
 **Interfaces:**
 - Consumes: `stream_frames`, `start_as`, `post_as`, `get_as`, `slow_state`, `archive_body`, `WHO`.
@@ -1624,7 +1629,10 @@ a dot is refused at create (S1c Task 3)"`.
     /// ONE-thread runtime a table read that sleeps 300 ms inside `events`
     /// leaves a health read answering in a few milliseconds, because the sleep
     /// is on a pool thread; the mutant that reads inline holds the runtime's
-    /// only thread for the 300 ms and the health read waits behind it.
+    /// only thread for the 300 ms and the health read waits behind it. The
+    /// clock runs from BEFORE the yield, because the yield is where the
+    /// spawned reading first runs: with the reading inline the 300 ms pass
+    /// inside it, and a clock started after it times the health read alone.
     #[tokio::test(flavor = "current_thread")]
     async fn the_events_reading_leaves_the_runtime_thread_free() {
         struct Slow(MemStore);
@@ -1643,8 +1651,10 @@ a dot is refused at create (S1c Task 3)"`.
         start_as(&state, "slowt", 20260831, &["red@wire.test", "blue@wire.test"]).await;
         let s = Arc::clone(&state);
         let events = tokio::spawn(async move { get_as(&s, "red@wire.test", "/api/games/slowt/events").await });
-        tokio::task::yield_now().await;
+        // The clock starts before the yield; started after it, the inline
+        // mutant passed this cell (S1c Task 4, measured).
         let started = std::time::Instant::now();
+        tokio::task::yield_now().await;
         let (status, _) = get_as(&state, WHO, "/api/health").await;
         let took = started.elapsed();
         assert_eq!(status, StatusCode::OK);
@@ -1663,9 +1673,11 @@ cell's wall, about two seconds, and says so in the cell's doc if it is more; the
     /// **A replay-route request with NO identity takes no permit** (S1b's
     /// residual 6, decision D-5): with the gate's one permit held by a slow
     /// upload and a two-second wait, an identity-less `GET …/why` reads the
-    /// layer's 401 at once, not the 503 after the wait — a refused caller never
-    /// queues behind a real one. The mutant that takes the permit regardless
-    /// reads 503 after two seconds.
+    /// layer's 401 at once — a refused caller never queues behind a real one.
+    /// The mutant that takes the permit regardless QUEUES: the holder's put
+    /// (1.5 s) ends inside the wait, so it reads the same 401 only once the
+    /// holder lets go, about 1.4 s in (measured), and the cell reds at its
+    /// clock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replay_route_without_an_identity_is_refused_without_a_permit() {
         let state = slow_state(1_500, 1, 2_000);
@@ -1784,7 +1796,8 @@ leaves_the_runtime_thread_free without_an_identity transport_routes head_never 2
 — (e) RED at its first row today (a 204; the table gone). — (a) RED at
 `ended` (false) and at the gone count (**the pre-flight's reading: two `gone` frames**); (b) GREEN already — the
 hand-off exists; its mutant (M17) is what proves the cell: the pre-flight reads it red under the inline mutant
-(**about 300 ms**); (c) RED: 503 after two seconds.
+(**about 300 ms**); (c) RED: a 401 after about 1.4 s — the permit taken regardless waits behind the holder, then the layer
+answers its 401; the 500 ms bound catches it (the draft said "a 503 after two seconds" — the implementer's reading).
 
 - [ ] **Step 3: The code.** In `lib.rs`, above `stream` (:804):
 
@@ -1828,9 +1841,7 @@ In `stream` (:819–846): the `then` closure returns `(Event, bool)` — the del
 refusal arm `(Event::default().event("end").data(r#"{"reason":"gone"}"#), true)`, the comment arm `(…, false)`
 — and the handler ends `Ok(Sse::new(UntilLast { inner: Box::pin(frames), done: false
 }).keep_alive(KeepAlive::new().interval(heartbeat)))`. The doc paragraph "Neither arm closes anything by itself"
-(:799–803) is rewritten: "**A refusal closes the connection** (security S1c, finding D1): the `gone` frame is
-the stream's LAST — `UntilLast` ends the body after it — so a caller the table refused learns nothing from its
-later bumps. The failure arm writes its comment and stays open, as before."
+(:799–803) is rewritten; as committed (the implementer made it true of the delete arm marked last too): "is a worse answer than saying nothing.  **A refusal closes the connection** (security S1c, finding D1): the `gone` frame is the stream's LAST — `UntilLast` ends the body after it — so a caller the table refused learns nothing from its later bumps. The failure arm writes its comment and stays open, as before."
 
 In `adapter` (:945–951): `let permit = if api::is_replay_route(&method, &path) && resolved.is_ok() {` — with
 the doc's gate paragraph (:915–926) gaining "A request whose identity did not resolve takes NO permit (S1c): the
@@ -1842,16 +1853,18 @@ in."
 delete arm's `ended` was already true (the sender dropped) and is now true by two mechanisms.
 
 - [ ] **Step 5: The mutants.** **M16** `self.done = last` → `self.done = false` — (a) red (ended false; two gone
-frames); **M17** `events` reads inline (`Ok(Json(api::events_at(&state.games, &id, &user)?))`) — (b) red (~300
-ms); **M18** `&& resolved.is_ok()` dropped — (c) red (503 after the wait); **M19** the delete arm marked `false`
+frames); **M17** `events` reads inline (`Ok(Json(api::events_at(&state.games, &id, &user)?))`) — (b) red (305 ms against
+2.3 ms on the correct code; the draft's cell started its clock AFTER the yield and never failed under M17 — the
+implementer moved it before); **M18** `&& resolved.is_ok()` dropped — (c) red (a 401 after ~1.4 s, past the 500 ms bound — never a 503); **M19** the delete arm marked `false`
 — the earlier end-on-delete cell stays green (the channel closes itself) — recorded as a mutant NO cell
 catches, by design: the wrapper is for the refusal arm; **M19b** `events_at`'s unsafe-id check dropped — (d) red
 at both routes (the store's 500); **M-HEAD** the fold in `answer` dropped — (e) red at its first row.
 
-- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/api.rs` · `git commit -m
-"web: D1 — a refused stream writes gone once and closes (UntilLast); the events reading's pool hand-off has its
-catcher; a replay-route request with no identity takes no permit; an unsafe id at the transport routes is the
-layer's 404; a HEAD never runs a write arm (S1c Task 4)"`.
+- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/api.rs
+worker/src/table/sockets.ts worker/test/sockets.test.ts` · `git commit -m "web: D1 — a refused stream writes gone
+once and closes (UntilLast); the events reading's pool hand-off has its catcher; a replay-route request with no
+identity takes no permit; an unsafe id at the transport routes is the layer's 404; a HEAD never runs a write arm;
+the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
 
 ---
 
