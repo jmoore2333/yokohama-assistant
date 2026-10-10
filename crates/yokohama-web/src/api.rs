@@ -2994,6 +2994,12 @@ mod tests {
     /// keeps builds its prefix from this, as the route does.
     const ARCHIVE_CALLER: &str = "local@browser";
 
+    /// [`ARCHIVE_CALLER`]'s segment, as the route computes it — the readable
+    /// half and a digest since security S1c (D26), which no cell spells.
+    fn archive_segment() -> String {
+        crate::archive::caller_segment(&User::parse(ARCHIVE_CALLER).unwrap())
+    }
+
     fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
         let body = serde_json::json!({ "record": record, "table": table }).to_string();
         post_archive_bytes(games, body.as_bytes())
@@ -3338,7 +3344,7 @@ mod tests {
         assert_eq!(status, 201, "{v}");
         assert_eq!(v["leaf"], "over");
         assert_eq!(v["identical"], false);
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/over/{PLAYED_ID}.json", archive_segment()));
 
         // The same bytes again: 200 `identical`, never a 409.
         let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
@@ -3504,7 +3510,7 @@ mod tests {
         let (status, v) = post_archive(&claims, &broken, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
         assert_eq!(v["leaf"], "over");
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/over/{PLAYED_ID}.json", archive_segment()));
         let disagreeing = keyed(PLAYED_TABLE, "start_seat", 1.into());
         let (status, v) = post_archive(&claims, &broken, &disagreeing);
         assert_eq!(status, 400, "the table's checks come first: {v}");
@@ -3554,7 +3560,7 @@ mod tests {
         let (status, v) = post_archive(&games, PLAYED_RECORD, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
         assert_eq!(v["leaf"], "abandoned", "{v}");
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/abandoned/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/abandoned/{PLAYED_ID}.json", archive_segment()));
     }
 
     /// **Every cheap check speaks before the archive is asked** (security S1b,

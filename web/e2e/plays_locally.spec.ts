@@ -50,17 +50,19 @@ const MODULE = path.join(HERE, "..", "src", "local", "wasm", "yokohama_wasm_bg.w
  * A path-safe, readable rendering of the caller's address.
  *
  * The server's own rule, in `crates/yokohama-web/src/archive.rs`'s
- * `caller_segment` (R-6.5b.15): `@` becomes `_at_`, anything outside
- * `[a-z0-9._-]` becomes `_`, capped at 64. Restated here rather than read off
- * the reply, because the reply is the thing under test — a server that filed a
- * game under the wrong prefix would be believed by a walk that took the prefix
- * from it.
+ * `caller_segment` (R-6.5b.15; security S1c, finding D26): `@` becomes
+ * `_at_`, anything outside `[a-z0-9._-]` becomes `_`, cut at 48, then `-` and
+ * the first twelve hex characters of a SHA-256 over the address. Restated here
+ * rather than read off the reply, because the reply is the thing under test — a
+ * server that filed a game under the wrong prefix would be believed by a walk
+ * that took the prefix from it.
  */
 function callerSegment(email: string): string {
-  return [...email]
+  const readable = [...email]
     .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
     .join("")
-    .slice(0, 64);
+    .slice(0, 48);
+  return `${readable}-${createHash("sha256").update(email).digest("hex").slice(0, 12)}`;
 }
 
 const SEGMENT = callerSegment(WALKER);

@@ -2410,6 +2410,43 @@ The same code as the Worker's twenty-ninth deployment (`worker/RUNBOOK.md` §20)
 
 **What this deployment does NOT claim:** that the sweep has ended a table on the live volume — the real pass at 90 and 7 days listed nothing, and the reading that ended tables was a copy at one day; that the no-click update or the stale second tab's line was observed on this host — the NAS had ONE F release this cycle, so its pin read E's click by construction, and the Worker's readings stand for the client code both hosts share; that the presence files were read from outside Access; and that the scratch file server was stopped — the script's check read 200 after its `kill`.
 
+## The archive's rename, S1c — once, in the deploy window (a plan, not a record)
+
+**The archive's rename (security S1c, finding D26) — once, in the deploy window, after the new build is
+serving.** A browser's saves are filed under `browser/<segment>/`, and the segment changed: the readable half
+cut at 48, then `-` and a twelve-character digest. Every folder written before this release sits under the
+legacy segment and nothing reads it until it is moved. The window renames both hosts together
+(`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
+NAS lines are the ones run.
+
+1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS
+   `ls /data/archive/browser/` (inside the container: `docker exec <container> ls /data/archive/browser/`)
+   and match each folder to the address whose legacy segment it is. In R2 the live replay's own test
+   identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test` address): list that
+   prefix too, so no legacy key is left anywhere — the replay's first sends land at the new key either way,
+   but an orphan under the old one is a key nothing reads.
+2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary
+   locally (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`,
+   tab-separated, one line per address; a value the key grammar refuses is a line on stderr naming it, and
+   the exit code is 1.
+3. NAS: `docker exec <container> mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each
+   folder present; a folder whose legacy segment matches two addresses (the collision) is split by the
+   `created_by` of each table document inside it, by hand, and the record of that split goes in the deploy
+   entry. Worker: for each key under `browser/<legacy>/` in `yokohama-archive`, and under
+   `test/browser/<legacy>/` for a `.test` address (the dashboard's object listing, or the API's
+   `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`), copy, verify the
+   new key answers, then delete — run in `worker/` with wrangler's own login, since the owner's R2 key is
+   read-only, and every command with `--remote`: without it wrangler acts on its LOCAL storage and the real
+   bucket does not move. The archive writes no object metadata, so the copy loses nothing.
+
+   ```sh
+   npx wrangler r2 object get "yokohama-archive/<key>" --file <tmp> --remote
+   npx wrangler r2 object put "yokohama-archive/<new key>" --file <tmp> --remote
+   npx wrangler r2 object delete "yokohama-archive/<key>" --remote
+   ```
+4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` (and, in R2,
+   `test/browser/`) holds no folder whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
+
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 
 **This section described an upgrade path. It is now the record of why that path was deleted**, by

@@ -1288,8 +1288,8 @@ non-200 is logged `stamp-refused` and never thrown: the save is retried after a 
 `rev7/over/<id>.json` and `rev7/abandoned/<id>.json`, each beside its `<id>.table.json`, and a
 browser's save under `browser/<the caller's segment>/`. **A plan whose game belongs to a `.test`
 address goes under `test/` instead.** That is the table creator's address for a server game, and the
-full sender's address for a browser save, never its truncated 64-character segment. *(Since M6.5c2
-the rule asks for an ADDRESS, one with an `@`: a plain name at the open door never takes the `test/`
+full sender's address for a browser save, never its segment, whose readable half is cut at 48
+characters (security S1c). *(Since M6.5c2 the rule asks for an ADDRESS, one with an `@`: a plain name at the open door never takes the `test/`
 root, even one ending `.test`.)* Every test
 identity uses the reserved `.test` domain, so the live test tiers never write into the owner's
 training data. A reply's `path` is relative to that root, as a NAS reply's is relative to its
@@ -1829,7 +1829,8 @@ What a run leaves on the account:
 - saves under the bucket's `test/` root for every `.test` identity's finished and abandoned games,
   which the lifecycle rule `expire-test-after-30-days` removes 30 days after they were written
   (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
-- the replay's own first-send saves under `test/browser/red_at_wire.test/`, which expire after 30
+- the replay's own first-send saves under `test/browser/red_at_wire.test-c91ad2a917f7/` (the
+  segment carries a digest of the address since security S1c), which expire after 30
   days like every `.test` identity's archive (the `test/` prefix's lifecycle rule,
   `RUNBOOK.md` §15);
 - no lobby chat post: each replay run deletes the house post it made ("anyone up for a second
@@ -1850,7 +1851,7 @@ archive's once-rule answers `200` with `"identical": true`, which the replay acc
 rows alone. A `wire` record whose bytes have changed since meets them as a 409 instead: a version
 bump (every record carries `engine_version`), a walk that plays other moves, or a record format
 change. The replay then STOPS, names the cause, and prints the reset: four `npx wrangler r2 object
-delete "yokohama-archive/test/browser/red_at_wire.test/…" --remote` lines, run in `worker/` with
+delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/…" --remote` lines, run in `worker/` with
 wrangler's login, since the owner's R2 key is read-only. RUNBOOK §7 ("The replay's reset") has
 them in full.
 

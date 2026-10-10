@@ -2345,19 +2345,20 @@ mod tests {
             "premise: the body's table does not say the game is over"
         );
 
+        // The caller's prefix is `archive::caller_segment` of the caller's key
+        // — the readable half and a digest since security S1c (D26) — so the
+        // cell computes it rather than spelling a digest.
+        let seg = crate::archive::caller_segment(&crate::identity::User::parse(WHO).unwrap());
+        let over = format!("browser/{seg}/rev7/over/local-pair.json");
         let (status, v) = post_as(&app, WHO, "/api/archive", body(&record_text, &table_text)).await;
         assert_eq!(status, StatusCode::CREATED, "{v}");
         assert_eq!(v["leaf"], "over", "the leaf is the replayed state's, not the body's");
         assert_eq!(v["identical"], false);
-        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/over/local-pair.json");
-        let landed =
-            std::fs::read_to_string(dir.join("browser/red_at_wire.test/rev7/over/local-pair.json"))
-                .unwrap();
+        assert_eq!(v["path"], over);
+        let landed = std::fs::read_to_string(dir.join(&over)).unwrap();
         assert_eq!(landed, record_text, "the record lands as sent — its bytes are the digest's");
-        let table_landed = std::fs::read_to_string(
-            dir.join("browser/red_at_wire.test/rev7/over/local-pair.table.json"),
-        )
-        .unwrap();
+        let table_landed =
+            std::fs::read_to_string(dir.join(format!("browser/{seg}/rev7/over/local-pair.table.json"))).unwrap();
         assert!(
             !table_landed.contains(&salt) && !table_landed.contains(LOCAL_PAIR_PASSWORD),
             "re-stripped server-side: the lock the body carried is gone"
@@ -2369,7 +2370,7 @@ mod tests {
         let (status, v) = post_as(&app, WHO, "/api/archive", body(&record_text, &table_text)).await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!(v["identical"], true);
-        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/over/local-pair.json");
+        assert_eq!(v["path"], over);
 
         // A DIFFERENT record under the same id: the 409 the client KEEPS the
         // game on. And the landed copy is untouched — a conflict never deletes.
@@ -2379,10 +2380,7 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "{v}");
         assert_eq!(v["error"], "a different record is archived under this id");
         assert_eq!(
-            std::fs::read_to_string(
-                dir.join("browser/red_at_wire.test/rev7/over/local-pair.json")
-            )
-            .unwrap(),
+            std::fs::read_to_string(dir.join(&over)).unwrap(),
             record_text,
             "a 409 leaves the archived copy exactly as it was"
         );
@@ -2393,7 +2391,7 @@ mod tests {
         let (status, v) = post_as(&app, WHO, "/api/archive", body(&partial, &table_text)).await;
         assert_eq!(status, StatusCode::CREATED, "{v}");
         assert_eq!(v["leaf"], "abandoned");
-        assert_eq!(v["path"], "browser/red_at_wire.test/rev7/abandoned/local-pair.json");
+        assert_eq!(v["path"], format!("browser/{seg}/rev7/abandoned/local-pair.json"));
 
         // The five refusals, five sentences.
         let refusals = [

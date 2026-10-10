@@ -119,11 +119,14 @@ const ENVELOPE = path.join(HERE, "..", "src", "wire-script", "backup-envelope.js
  * `archive.rs`'s `caller_segment`, restated here for `plays_locally.spec.ts`'s
  * reason: the reply is the thing under test, so a server that filed a game
  * under the wrong prefix would be believed by a walk that took the prefix from
- * it.
+ * it. Since security S1c (finding D26) the readable half is cut at 48 and
+ * followed by `-` and the first twelve hex characters of a SHA-256 over the
+ * address.
  */
-const SEGMENT = [...WALKER]
+const SEGMENT = `${[...WALKER]
   .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
-  .join("");
+  .join("")
+  .slice(0, 48)}-${createHash("sha256").update(WALKER).digest("hex").slice(0, 12)}`;
 
 /**
  * Where `api.ts` keeps the name this browser signs its requests with

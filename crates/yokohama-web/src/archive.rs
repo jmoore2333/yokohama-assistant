@@ -188,39 +188,54 @@ pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> Result<(String, Stri
     Ok((format!("{base}.json"), format!("{base}.table.json")))
 }
 
-/// R-6.5b.15: a path-safe, READABLE rendering of a caller's key — `@` becomes
-/// `_at_`, anything outside `[a-z0-9._-]` becomes `_` (a name's space too),
-/// capped at 64 characters.
+/// How much of the readable half a segment keeps (security S1c, finding D26):
+/// 48, so that with `-` and the digest a segment is at most 61 characters —
+/// under the 64 the old cap allowed and every path rule was measured at.
+pub const SEGMENT_READABLE: usize = 48;
+
+/// The digest's length in hex characters: twelve, forty-eight bits. The
+/// collision left is two addresses whose readable halves AND forty-eight
+/// digest bits agree — not a thing a person can arrange — while the folder
+/// still reads as who sent it.
+pub const SEGMENT_DIGEST: usize = 12;
+
+/// The directory a browser's saves are filed under: the address made readable
+/// and path-safe, then `-` and the leading twelve hex characters of a SHA-256
+/// over the whole normalized address (security S1c, finding D26). The
+/// readable half is [`legacy_caller_segment`]'s mapping cut at
+/// [`SEGMENT_READABLE`]; the digest is what makes `alice+x@corp.test` and
+/// `alice_x@corp.test` — one folder and one quota before this — two.
 ///
-/// **Why the segment is never empty, `.` or `..`** — restated for M6.5c2's key
-/// grammar (spec §2.1; review H1, which MEASURED the hole an unconstrained name
-/// opened: `..` rendered as the segment `..`, and a browser's save landed in
-/// this server's own `rev7/over/`). [`crate::identity::User::parse`] admits two
-/// shapes, and each closes it by its own arithmetic:
-/// - an EMAIL has a non-empty local part and domain either side of one `@`,
-///   which renders as four characters, so its segment is at least six
-///   characters of this alphabet;
-/// - a PLAIN NAME begins with a letter or a digit — the grammar's rule, which
-///   exists for exactly this — and that character is kept, so its segment
-///   begins with `[a-z0-9]`.
+/// The readable half's arguments stand: an email renders at least six
+/// characters of this alphabet, a plain name begins `[a-z0-9]`, neither holds
+/// a `/`, so no segment is empty, `.` or `..`; [`paths`] and `DirArchive::put`
+/// refuse a `.` or `..` component besides. The digest is over the KEY
+/// (`User::as_str`, already lowercased and trimmed), so two spellings of one
+/// address are one segment.
 ///
-/// Neither holds a `/`, and the cap only shortens a segment that is already
-/// non-empty. [`paths`] and `DirArchive::put` refuse a `.` or `..` component
-/// besides, so this argument is no longer the only fence between a key and a
-/// path outside its prefix.
-///
-/// **It COLLIDES, on purpose, and spec §8 records it**: `a/b@c` and `a_b@c`
-/// render alike, and two addresses longer than the cap can share a prefix — and
-/// with it each other's "already archived" refusal. Readable was the trade: the
-/// owner reviews saves by who sent them and a hash would hide that.
+/// **Every folder written before this cycle sits under the legacy segment**
+/// and is renamed once, in the deploy window, from `deploy/RUNBOOK.md`'s and
+/// `worker/RUNBOOK.md`'s recipe with the server binary's `segment` subcommand.
+/// No code reads a legacy prefix.
 pub fn caller_segment(user: &crate::identity::User) -> String {
+    use sha2::{Digest, Sha256};
+    let mut readable = legacy_caller_segment(user);
+    readable.truncate(SEGMENT_READABLE);
+    let digest = Sha256::digest(user.as_str().as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{readable}-{}", &hex[..SEGMENT_DIGEST])
+}
+
+/// The segment as it was before security S1c — kept for the one-time rename
+/// (the `segment` subcommand prints it beside the current one) and for the
+/// cell that pins the two apart. It COLLIDES: `a/b@c` and `a_b@c` render alike,
+/// and two addresses longer than the cap share a prefix. Nothing files under it.
+pub fn legacy_caller_segment(user: &crate::identity::User) -> String {
     let mut out = String::new();
     for c in user.as_str().chars() {
         match c {
             '@' => out.push_str("_at_"),
-            c if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') => {
-                out.push(c)
-            }
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') => out.push(c),
             // Every replacement is ASCII, so `truncate` below is always on a
             // character boundary however odd the address was.
             _ => out.push('_'),
@@ -557,31 +572,34 @@ mod tests {
         }
     }
 
-    /// R-6.5b.15, restated for M6.5c2's key grammar (spec §2.1; review H1): a
-    /// caller's key rendered into ONE path segment that is path-safe and still
-    /// readable — the owner reviews saves by who sent them, and a hash would
-    /// hide that.
-    ///
-    /// **The containment property is arithmetic, with one arm per shape of
-    /// key.** An email's local part and domain are each non-empty and `@`
-    /// becomes four characters, so its segment is at least six characters of
-    /// `[a-z0-9._-]`. A plain name begins with a letter or a digit, which the
-    /// segment keeps, so its segment begins with `[a-z0-9]`. Neither holds a
-    /// `/`, and the cap can only shorten a segment that is already non-empty —
-    /// so no segment is empty, `.` or `..`. The names that WOULD break the
-    /// second arm (`.`, `..`, `. .`, `-`, `.x`) are fed to the grammar and
-    /// must be refused there.
+    /// The segment is READABLE still — the owner reviews saves by who sent them
+    /// — and injective in practice (security S1c, finding D26): the readable
+    /// part is the legacy mapping cut at 48, then `-` and twelve hex characters
+    /// of a SHA-256 over the whole normalized address. Every pair the review
+    /// named as colliding gets two folders; the alphabet stays `[a-z0-9._-]`,
+    /// a plain name's first character `[a-z0-9]` (an email's may be a `.`, as
+    /// it always could: `../../x@y` renders `.._.._x_at_y-…`), no segment
+    /// empty, `.` or `..`, the length at most 61; the names that WOULD break
+    /// the layout are refused by the grammar.
     #[test]
-    fn a_caller_segment_is_path_safe_and_readable() {
+    fn a_caller_segment_is_path_safe_readable_and_injective() {
         use crate::identity::User;
         let seg = |s: &str| caller_segment(&User::parse(s).unwrap());
-        assert_eq!(seg("red@example.test"), "red_at_example.test");
-        assert_eq!(seg("A/B@c"), "a_b_at_c", "a slash is replaced, the address lowercased");
-        assert_eq!(seg("../../x@y"), ".._.._x_at_y");
-        assert_eq!(seg("..@.."), ".._at_..");
-        assert_eq!(seg("  Ben   Castle "), "ben_castle", "a name's one space becomes `_`");
-        let long = format!("{}@{}", "a".repeat(200), "b".repeat(50));
-        assert_eq!(seg(&long).len(), 64, "capped");
+        assert!(seg("red@example.test").starts_with("red_at_example.test-"), "{}", seg("red@example.test"));
+        assert_eq!(seg("red@example.test").len(), "red_at_example.test".len() + 1 + SEGMENT_DIGEST);
+        for (a, b) in [
+            ("alice+x@corp.test", "alice_x@corp.test"),
+            ("a b", "a_b"),
+            ("a/b@c", "a_b@c"),
+            ("a.b@c", "a_b@c"),
+        ] {
+            assert_ne!(seg(a), seg(b), "{a:?} and {b:?} share a folder");
+            assert_eq!(seg(a).split('-').next_back().map(str::len), Some(SEGMENT_DIGEST));
+        }
+        let long_a = format!("{}@{}", "a".repeat(200), "b".repeat(50));
+        let long_b = format!("{}@{}", "a".repeat(200), "c".repeat(50));
+        assert_ne!(seg(&long_a), seg(&long_b), "two long addresses with one 48-prefix");
+        assert!(seg(&long_a).len() <= SEGMENT_READABLE + 1 + SEGMENT_DIGEST);
         for name in [".", "..", ". .", "-", ".x"] {
             assert!(User::parse(name).is_err(), "{name:?} must never be a key");
         }
@@ -590,14 +608,75 @@ mod tests {
             let v = seg(name);
             assert!(v.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()), "{name:?} → {v:?}");
         }
-        for s in ["../../x@y", "..@..", long.as_str(), "a/b@c", "ben castle", "z..", "7"] {
-            let v = seg(s);
-            assert!(!v.is_empty() && v != "." && v != ".." && !v.contains('/'), "{v:?}");
-            assert!(
-                v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')),
-                "{v:?}"
-            );
+        for name in ["ben castle", "z..", "7", n32.as_str(), "../../x@y", "..@..", "a/b@c", long_a.as_str()] {
+            let v = seg(name);
+            assert!(!v.is_empty() && v != "." && v != "..", "{name:?} → {v:?}");
+            assert!(v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')), "{v:?}");
+            assert!(!v.contains("/"), "{v:?}");
         }
+        // Determinism and normalization: the digest is over the KEY, so two
+        // spellings of one address are one segment.
+        assert_eq!(seg("Red@Example.TEST"), seg("red@example.test"));
+        // The directory half of `a_traversal_shaped_caller_writes_inside_the_root`,
+        // over the digested segment: every traversal-shaped address writes
+        // inside the root. Its own directory — the cells run in parallel in
+        // one process, so a shared name would be removed under the other.
+        #[cfg(feature = "server")]
+        {
+            let dir = std::env::temp_dir().join(format!("yokohama_archive_segment_root_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = DirArchive::new(&dir);
+            let root = std::fs::canonicalize(&dir).unwrap();
+            for who in ["../../x@y", "a/b@c", "..@.."] {
+                let prefix = format!("browser/{}/", seg(who));
+                a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+                let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1").unwrap();
+                let written = std::fs::canonicalize(dir.join(&record)).unwrap();
+                assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// **The legacy mapping is what it was, and the new segment differs from it
+    /// for every address** — so a folder the window did not rename is
+    /// detectable, and the `segment` subcommand's two columns are never equal.
+    #[test]
+    fn the_legacy_segment_is_the_old_mapping_and_never_the_new_one() {
+        use crate::identity::User;
+        let old = |s: &str| legacy_caller_segment(&User::parse(s).unwrap());
+        assert_eq!(old("red@example.test"), "red_at_example.test");
+        assert_eq!(old("A/B@c"), "a_b_at_c");
+        assert_eq!(old("../../x@y"), ".._.._x_at_y");
+        assert_eq!(old("  Ben   Castle "), "ben_castle");
+        let long = format!("{}@{}", "a".repeat(200), "b".repeat(50));
+        assert_eq!(old(&long).len(), 64);
+        assert_eq!(old("alice+x@corp.test"), old("alice_x@corp.test"), "premise: the legacy mapping collided");
+        for s in ["red@example.test", "a b", "x", &long, "alice+x@corp.test"] {
+            let u = User::parse(s).unwrap();
+            assert_ne!(legacy_caller_segment(&u), caller_segment(&u), "{s:?}");
+        }
+    }
+
+    /// **The quota counts the NEW prefix alone**: a legacy folder left in place
+    /// for an address is not the caller's share (Review Focus 4) — the window
+    /// renames it, and until then it is nobody's.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_legacy_folder_is_not_counted_against_the_callers_share() {
+        use crate::identity::User;
+        let dir = std::env::temp_dir().join(format!("yokohama_legacy_share_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 1, bytes: 1 << 20 });
+        let u = User::parse("red@example.test").unwrap();
+        let legacy = format!("browser/{}/", legacy_caller_segment(&u));
+        a.put(&legacy, Why::Over, "old-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+        let current = format!("browser/{}/", caller_segment(&u));
+        assert!(matches!(a.put(&current, Why::Over, "new-1", "{\"r\":2}", "{\"t\":2}"), Ok(PutOutcome::Landed)), "the legacy record counted");
+        assert!(matches!(a.put(&current, Why::Over, "new-2", "{\"r\":3}", "{\"t\":3}"), Err(PutError::Quota { .. })), "the share is one record");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The layout refuses a `.` or `..` component** (M6.5c2, spec §2.1's

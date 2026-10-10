@@ -171,6 +171,43 @@ is a secret too (§3).
   for NEW Workers, and keep the `migrations` array this Worker uses fully supported; the two may not
   be mixed.
 
+## The archive's rename, S1c — once, in the deploy window (a plan, not a record)
+
+**The archive's rename (security S1c, finding D26) — once, in the deploy window, after the new build is
+serving.** A browser's saves are filed under `browser/<segment>/`, and the segment changed: the readable half
+cut at 48, then `-` and a twelve-character digest. Every folder written before this release sits under the
+legacy segment and nothing reads it until it is moved. The window renames both hosts together
+(`deploy/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
+R2 lines are the ones run.
+
+1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS
+   `ls /data/archive/browser/` (inside the container: `docker exec <container> ls /data/archive/browser/`)
+   and match each folder to the address whose legacy segment it is. In R2 the live replay's own test
+   identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test` address): list that
+   prefix too, so no legacy key is left anywhere — the replay's first sends land at the new key either way,
+   but an orphan under the old one is a key nothing reads.
+2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary
+   locally (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`,
+   tab-separated, one line per address; a value the key grammar refuses is a line on stderr naming it, and
+   the exit code is 1.
+3. NAS: `docker exec <container> mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each
+   folder present; a folder whose legacy segment matches two addresses (the collision) is split by the
+   `created_by` of each table document inside it, by hand, and the record of that split goes in the deploy
+   entry. Worker: for each key under `browser/<legacy>/` in `yokohama-archive`, and under
+   `test/browser/<legacy>/` for a `.test` address (the dashboard's object listing, or the API's
+   `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`), copy, verify the
+   new key answers, then delete — run in `worker/` with wrangler's own login, since the owner's R2 key is
+   read-only, and every command with `--remote`: without it wrangler acts on its LOCAL storage and the real
+   bucket does not move. The archive writes no object metadata, so the copy loses nothing.
+
+   ```sh
+   npx wrangler r2 object get "yokohama-archive/<key>" --file <tmp> --remote
+   npx wrangler r2 object put "yokohama-archive/<new key>" --file <tmp> --remote
+   npx wrangler r2 object delete "yokohama-archive/<key>" --remote
+   ```
+4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` (and, in R2,
+   `test/browser/`) holds no folder whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
+
 ## 3. The variables — every one, and what its absence means
 
 `wrangler deploy` REPLACES the Worker's variables with `wrangler.jsonc`'s `vars`, so that file is
@@ -830,9 +867,12 @@ fields under the event's `source` and its `$metadata.type` `cf-worker`, where th
   M6.5c2 close, §15). *(Corrected 2026-09-28: this said the choice was the owner's, carried to the
   cleanup cycle; then that the rule was to be set at the close.)*
 - **The replay's own saves**: its two first sends' pairs,
-  `test/browser/red_at_wire.test/rev7/over/wire.json` and
-  `test/browser/red_at_wire.test/rev7/abandoned/wire.json`, each with its `.table.json` — kept for
-  good, by the owner's direction — and the walk's own game-over pair under `test/rev7/over/`.
+  `test/browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.json` and
+  `test/browser/red_at_wire.test-c91ad2a917f7/rev7/abandoned/wire.json`, each with its `.table.json`
+  — kept for good, by the owner's direction — and the walk's own game-over pair under
+  `test/rev7/over/`. *(Since security S1c the segment carries a digest of the address (finding D26);
+  before S1c's deploy window these keys sat under `test/browser/red_at_wire.test/`, which the
+  window's rename moves.)*
 - **A PERMANENT house-chat post per replay run**: Red (`red@wire.test`), "anyone up for a second
   table?", which real people see in the lobby until 500 newer messages trim it. *(Corrected 2026-09-29,
   M6.5c2 cycle D: since cycle D the walk's `house_chat_delete` row DELETES that post in the same run —
@@ -853,11 +893,15 @@ prints the reset (`resetRecipe`, R3's M-1), to run in `worker/` with wrangler's 
 owner's R2 key is read-only (spec §7) — and then the replay again:
 
 ```sh
-npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/over/wire.json" --remote
-npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/over/wire.table.json" --remote
-npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/abandoned/wire.json" --remote
-npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test/rev7/abandoned/wire.table.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.table.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/rev7/abandoned/wire.json" --remote
+npx wrangler r2 object delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/rev7/abandoned/wire.table.json" --remote
 ```
+
+The keys are the committed replies' `path` under the `test/` root, and the replay prints them from
+the corpus it runs, so its printed lines are the authority if the two ever disagree (security S1c
+gave the segment its digest, finding D26).
 
 The walk's own game-over pair under `test/rev7/over/` blocks nothing, since no payload reads it; a
 later game over at that id with other bytes meets it and logs `archive-conflict`.
