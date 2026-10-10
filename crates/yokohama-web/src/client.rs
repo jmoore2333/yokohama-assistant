@@ -8,6 +8,7 @@ use serde::Serialize;
 use yokohama_cli::repl::{Repl, SubPrompt};
 use yokohama_cli::screen_model::{self, FrameModel, SeatFacts, TitleMode, TitleModel};
 use yokohama_cli::{describe, session::TrackingMode};
+use yokohama_cli::session::Session;
 use yokohama_core::{AreaId, GameState, PlayerId};
 
 use crate::identity::User;
@@ -676,15 +677,9 @@ pub struct HistoricalFrame {
 }
 
 impl HistoricalFrame {
-    /// Project `repl`'s record at `k`.
-    ///
-    /// **The caller range-checks `k` first.** This returns `state_at`'s own
-    /// [`yokohama_core::ReplayError`] unchanged, and that error cannot be used
-    /// to tell past-the-end from a failing event: it is a struct carrying a
-    /// `usize` and a `String`, and its own doc says a caller branching on
-    /// `event_index` alone cannot distinguish the two. So the route checks the
-    /// range itself and treats every error from here as a genuine replay
-    /// failure — which makes the ambiguity unreachable instead of navigated.
+    /// Project `repl`'s record at `k`, from the session's nearest kept state
+    /// (`Session::state_before`; security S1b, finding A3). The caller
+    /// range-checks `k` first; an error from here is a genuine fold failure.
     ///
     /// **No provenance verdict is computed here, deliberately.** `/at/{k}` is a
     /// projection over a record the server already holds; adding a
@@ -692,36 +687,23 @@ impl HistoricalFrame {
     /// divergent authority on record validity. Checking is
     /// `Session::from_record`'s job, on the path where a record enters from
     /// disk.
-    pub fn at(repl: &Repl, k: usize, viewer: Viewer) -> Result<Self, yokohama_core::ReplayError> {
-        let state = yokohama_core::state_at(repl.session.record(), k, repl.session.rules())?;
+    pub fn at(repl: &mut Repl, k: usize, viewer: Viewer) -> Result<Self, String> {
+        let state = repl.session.state_before(k)?;
         Ok(Self::from_state(repl, k, &state, viewer))
     }
 
     /// The frames of every position in `[from, to)`, by ONE forward pass: the
-    /// state at `from` once, then one event applied per position (M6.5b,
-    /// R-6.5b.10). `at(k)` for each `k` would replay the record from its start
-    /// `to - from` times; this replays it once. **The caller range-checks
-    /// `from` and `to`**, for the reason `at` gives: a `ReplayError` cannot
-    /// tell past-the-end from a failing event. An error from a step is
-    /// reported at the RECORD's index, not the slice's.
-    pub fn run(
-        repl: &Repl,
-        from: usize,
-        to: usize,
-        viewer: Viewer,
-    ) -> Result<Vec<Self>, yokohama_core::ReplayError> {
-        let record = repl.session.record();
-        let rules = repl.session.rules();
-        let mut state = yokohama_core::state_at(record, from, rules)?;
+    /// state at `from` from the session's ladder, then one event folded per
+    /// position through the predicate (`Session::fold_event`). The caller
+    /// range-checks `from` and `to`. An error names the RECORD's index.
+    pub fn run(repl: &mut Repl, from: usize, to: usize, viewer: Viewer) -> Result<Vec<Self>, String> {
+        let mut state = repl.session.state_before(from)?;
         let mut frames = Vec::with_capacity(to.saturating_sub(from));
         for k in from..to {
             frames.push(Self::from_state(repl, k, &state, viewer));
             if k + 1 < to {
-                state = yokohama_core::replay_from(&state, &record.events[k..k + 1], rules)
-                    .map_err(|e| yokohama_core::ReplayError {
-                        event_index: e.event_index + k,
-                        message: e.message,
-                    })?;
+                let ev = &repl.session.record().events[k];
+                state = Session::fold_event(&state, ev, repl.session.rules()).map_err(|e| format!("at event {k}, {e}"))?;
             }
         }
         Ok(frames)
@@ -1096,10 +1078,10 @@ mod tests {
     /// position is empty enough that a leak would be conspicuous.
     #[test]
     fn a_spectators_replay_frame_names_no_seat_at_either_end_of_the_track() {
-        let repl = human_repl(3);
+        let mut repl = human_repl(3);
         let total = repl.session.record().events.len();
         for k in [0, total] {
-            let frame = HistoricalFrame::at(&repl, k, Viewer::Spectator).expect("a position");
+            let frame = HistoricalFrame::at(&mut repl, k, Viewer::Spectator).expect("a position");
             assert_eq!(frame.seat, None, "at {k}");
             assert!(hand_panels(&frame.frame).is_empty(), "at {k}: no Hand panel");
             assert!(!frame.frame.decision.viewer_is_deciding, "at {k}");
@@ -1110,7 +1092,7 @@ mod tests {
 
         // The anti-vacuity half: a SEATED replay frame at the same stops still
         // names its seat and still carries that seat's own hand.
-        let seated = HistoricalFrame::at(&repl, 0, Viewer::Seat(PlayerId::new(1)))
+        let seated = HistoricalFrame::at(&mut repl, 0, Viewer::Seat(PlayerId::new(1)))
             .expect("a position");
         assert_eq!(seated.seat, Some(PlayerId::new(1)));
         assert_eq!(hand_panels(&seated.frame), vec![(1, false, 1)]);

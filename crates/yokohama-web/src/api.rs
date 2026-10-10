@@ -2062,6 +2062,8 @@ pub struct RunFrames {
 /// the live frame — and the 404 begins at `to = total + 2`, with `at/{k}`'s own
 /// sentence extended to name the range, so the two routes refuse one condition
 /// one way. `from > to` is DELIBERATELY the same 404 rather than a third answer.
+/// The 404 begins at `from = total + 1` as at `to = total + 2`, and an empty run
+/// is answered without a replay (security S1b, finding D27).
 /// **The cap is checked FIRST**: a run longer than the cap is a malformed ask
 /// whatever `total` is, so a fresh game asked for `to=65` reads the cap's
 /// sentence and not the range's.
@@ -2071,7 +2073,7 @@ pub struct RunFrames {
 pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFrames, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = games.lock_game(&handle, id)?;
+    let mut repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if q.to > q.from && q.to - q.from > RUN_CAP {
         return Err(ApiError::bad_request(format!(
@@ -2080,18 +2082,21 @@ pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFram
             q.from + RUN_CAP
         )));
     }
-    if q.from > q.to || q.to > total + 1 {
+    // `from` past the last position is the same 404 as `to` past it (finding
+    // D27): the range test let `from = to = total + 1` through to a replay
+    // that refused it as a 500.
+    if q.from > q.to || q.from > total || q.to > total + 1 {
         return Err(ApiError::not_found(format!(
             "this game has {total} events, so its last position is {total} — there is no run from {} to {}",
             q.from, q.to
         )));
     }
-    let frames = client::HistoricalFrame::run(&repl, q.from, q.to, viewer).map_err(|e| {
-        ApiError::server_error(format!(
-            "replaying this game failed at event {}: {}",
-            e.event_index, e.message
-        ))
-    })?;
+    // An empty run answers without a replay (finding D27).
+    if q.from == q.to {
+        return Ok(RunFrames { frames: Vec::new() });
+    }
+    let frames = client::HistoricalFrame::run(&mut repl, q.from, q.to, viewer)
+        .map_err(|e| ApiError::server_error(format!("replaying this game failed {e}")))?;
     Ok(RunFrames { frames })
 }
 
@@ -2141,7 +2146,7 @@ pub fn at_k(
 ) -> Result<client::HistoricalFrame, ApiError> {
     let (_table, viewer) = admitted(games, id, user)?;
     let handle = games.handle(id)?;
-    let repl = games.lock_game(&handle, id)?;
+    let mut repl = games.lock_game(&handle, id)?;
     let total = repl.session.record().events.len();
     if k > total {
         return Err(ApiError::not_found(format!(
@@ -2157,11 +2162,7 @@ pub fn at_k(
     //
     // **And a SPECTATOR's sweep harvests nothing at all** (M6.3, R-3.7): every
     // hand is hidden at every `k` and `seat` is null.
-    client::HistoricalFrame::at(&repl, k, viewer).map_err(|e| ApiError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!("replaying this game to {k} failed at event {}: {}", e.event_index, e.message),
-        table_status: None, foreign_bot: None,
-    })
+    client::HistoricalFrame::at(&mut repl, k, viewer).map_err(|e| ApiError { status: StatusCode::INTERNAL_SERVER_ERROR, message: format!("replaying this game to {k} failed: {e}"), table_status: None, foreign_bot: None })
 }
 
 /// A route that reads one game and projects it — the three lock-and-project

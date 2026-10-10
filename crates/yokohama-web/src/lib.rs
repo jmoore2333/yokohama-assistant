@@ -1562,6 +1562,148 @@ mod tests {
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
     }
 
+    /// A finished ONE-person hot seat over `store` — `a_finished_two_person_game`'s
+    /// shape (both seats pumped as bots in process, the record installed and
+    /// re-stamped as two people), both seats [`WHO`]'s, so an undo at game over
+    /// is the CLI's own: a one-person table is outside R-P6's shared-table
+    /// refusal. Built this way because driving a hot seat to a winner over the
+    /// route with `play_turn` never ends — its last-row policy passes every turn.
+    async fn a_finished_one_person_game_over(store: Arc<dyn Store>, name: &'static str) -> Arc<AppState> {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let state = Arc::new(AppState::with_store(Arc::clone(&store), identity::IdentityMode::Open));
+        start_as(&state, name, ENDED_SEED, &[WHO, WHO]).await;
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], ENDED_SEED).seat_provenance());
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
+        store.write_if_version(Doc::Record, name, &finished, Some(version)).expect("the finished record");
+        // A fresh state over the same store, so the game is rebuilt from the
+        // record just written rather than served from the resident handle.
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
+    /// A store that delegates everything to a `MemStore` and PARKS a record
+    /// read while the flag is up — the instrument that reads a lock's scope:
+    /// a request parked inside its read holds whatever lock it took to get
+    /// there, and a second request that needs that lock waits.
+    struct ParkedRead {
+        inner: MemStore,
+        parked: std::sync::Mutex<bool>,
+        wake: std::sync::Condvar,
+    }
+
+    impl ParkedRead {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { inner: MemStore::default(), parked: std::sync::Mutex::new(false), wake: std::sync::Condvar::new() })
+        }
+        fn park(&self) {
+            *self.parked.lock().expect("the flag") = true;
+        }
+        fn release(&self) {
+            *self.parked.lock().expect("the flag") = false;
+            self.wake.notify_all();
+        }
+        fn wait_if_parked(&self) {
+            let mut parked = self.parked.lock().expect("the flag");
+            while *parked {
+                parked = self.wake.wait(parked).expect("the flag");
+            }
+        }
+    }
+
+    impl Store for ParkedRead {
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, store::Version)>, String> {
+            if doc == Doc::Record {
+                self.wait_if_parked();
+            }
+            self.inner.read(doc, id)
+        }
+        fn list(&self, doc: Doc) -> Result<Vec<store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<store::Version>,
+        ) -> Result<store::Version, store::WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+        fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+            self.inner.last_written(id)
+        }
+    }
+
+    /// **The record route reads the store UNDER the handle's lock** (S1a's
+    /// residual, the parked-read double; Review Focus 4). A finished
+    /// one-person game (built in process — `a_finished_one_person_game_over`)
+    /// has its record read with the store's record read PARKED;
+    /// the same person's `undo` is posted meanwhile — at a one-person table the
+    /// CLI's undo applies at game over — and the read is released. Under the
+    /// lock the undo WAITED: the record served is the finished one, its event
+    /// count the handle's at the time and its digest present, and the undo
+    /// lands after. Read outside the lock the undo lands during the park and
+    /// the bytes served are a running record — the shape S1a's D11 closed by
+    /// a comparison, which this cell holds to the lock's scope and not to the
+    /// comparison alone: the mutant drops the guard before the store read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_record_route_holds_the_lock_across_its_store_read() {
+        let store = ParkedRead::new();
+        let id = "parked";
+        let state = a_finished_one_person_game_over(Arc::clone(&store) as Arc<dyn Store>, id).await;
+        let (status, finished) = get_as(&state, WHO, &format!("/api/games/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "{finished}");
+        assert_eq!(finished["over"], serde_json::json!(true), "the premise: the game is over");
+        let total = finished["events"].as_u64().expect("events");
+        store.park();
+        let reader = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { get_as(&s, WHO, &format!("/api/games/{id}/record")).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let undo = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, WHO, &format!("/api/games/{id}/input"), serde_json::json!({ "line": "undo" })).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!undo.is_finished(), "the undo waits for the lock the parked read holds");
+        store.release();
+        let (status, record) = reader.await.expect("the read");
+        assert_eq!(status, StatusCode::OK, "{record}");
+        let served: yokohama_core::GameRecord = serde_json::from_value(record).expect("the record's own JSON");
+        assert_eq!(served.events.len() as u64, total, "the finished record, not the undone one");
+        assert!(served.terminal_digest.is_some());
+        let (status, after) = undo.await.expect("the undo");
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_eq!(after["events"].as_u64(), Some(total - 1), "and the undo landed after the read");
+    }
+
     /// **What every save on this host names, carried byte for byte** (M6.5c2,
     /// spec §2.4, "A pin, on every save path"): the record `finalize` writes
     /// through `AppState`'s constructor says `run_id: "web/server"`, and the
@@ -6549,6 +6691,30 @@ mod tests {
         );
         let (status, bad) = call(&router, "GET", "/api/games/edge/at?from=2&to=1", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "from > to is the same 404: {bad}");
+    }
+
+    /// **An out-of-range run is the route's own 404, and an empty run answers
+    /// without a replay** (finding D27). `from = to = total + 1` read a 500
+    /// "replaying this game failed … past the end" — the range test let it
+    /// through and the replay refused it; it reads the range's 404 now, in the
+    /// sentence `run_404_range.json` pins. `from = to ≤ total` is an empty run:
+    /// 200 and no frames.
+    #[tokio::test]
+    async fn an_out_of_range_run_is_a_404_and_an_empty_run_is_empty() {
+        let router = live_router();
+        let game = a_game(&router, "ranges", &[]).await;
+        let total = game["events"].as_u64().expect("events") as usize;
+        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={}&to={}", total + 1, total + 1), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(
+            v["error"],
+            format!("this game has {total} events, so its last position is {total} — there is no run from {} to {}", total + 1, total + 1)
+        );
+        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={total}&to={total}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["frames"], serde_json::json!([]));
+        let (status, v) = call(&router, "GET", "/api/games/ranges/at?from=0&to=0", None).await;
+        assert_eq!((status, v["frames"].as_array().map(Vec::len)), (StatusCode::OK, Some(0)), "{v}");
     }
 
     /// A run over the cap is a 400 naming it — checked BEFORE the range, so a

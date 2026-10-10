@@ -703,9 +703,9 @@ fn set_table(
     // is what makes the previewed table's `is_bot` true — the same one line
     // finalize runs, and the reason no second attachment step is needed here.
     session.set_run_seats(BotSeats::new(contestants_of(seats), THROWAWAY_BOT_SEED).seat_provenance());
-    let repl = Repl::new(session);
-    let mut table = HistoricalFrame::at(&repl, 0, Viewer::Seat(viewer))
-        .map_err(|e| format!("the setup position did not build: {}", e.message))?;
+    let mut repl = Repl::new(session);
+    let mut table = HistoricalFrame::at(&mut repl, 0, Viewer::Seat(viewer))
+        .map_err(|e| format!("the setup position did not build: {e}"))?;
     withhold_until_the_choice(&mut table);
     Ok(table)
 }
@@ -2161,7 +2161,7 @@ mod tests {
         // What the SAME seed puts on a real table, read from the game itself.
         let handle = playing(&g, &req_seeded("withheld-started", ARGMAX_IS_CARD_2), &["red@t.test"]);
         let started =
-            HistoricalFrame::at(&handle.lock().unwrap(), 0, Viewer::Seat(PlayerId::new(0)))
+            HistoricalFrame::at(&mut handle.lock().unwrap(), 0, Viewer::Seat(PlayerId::new(0)))
                 .unwrap();
         let titles: Vec<String> = started
             .labs
