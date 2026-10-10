@@ -1008,22 +1008,50 @@ D29)"`.
     /// return through, and leaves no entry behind — while a SECOND holder keeps
     /// the entry alive until it too is done, so two writers in flight
     /// serialize on the SAME lock (the property `prune_lock`'s doc promises).
+    ///
+    /// **Both holders are the helper, so the end holds by construction**
+    /// (the Task 2 review's I-2): each prunes after dropping its own clone, so
+    /// whichever prunes LAST reads a count of one. A bare `lock_for` holder
+    /// never prunes, and the waiter's prune could then land before that
+    /// holder's drop and keep the entry — measured, 45 runs in 5,000 under
+    /// load. The waiter's clone is read off the entry's count, with a bound,
+    /// rather than assumed after a sleep: three is the map, the first holder
+    /// and the waiter, one lock.
     #[test]
     fn with_table_lock_runs_the_body_serialized_and_prunes_on_the_way_out() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
         let games = Arc::new(games());
         let out: Result<u8, String> = games.with_table_lock("t", || Err("early".to_string()));
         assert_eq!(out, Err("early".to_string()));
         assert_eq!(games.locks.lock().expect("the map").len(), 0);
 
-        let held = games.lock_for("t");
-        let guard = enter(&held);
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let g1 = Arc::clone(&games);
+        let first = std::thread::spawn(move || {
+            g1.with_table_lock("t", || {
+                arrived_tx.send(()).expect("the cell listens");
+                release_rx.recv().expect("the cell releases");
+                1u8
+            })
+        });
+        arrived_rx.recv_timeout(Duration::from_secs(5)).expect("the first holder is inside its body");
         let g2 = Arc::clone(&games);
         let waiter = std::thread::spawn(move || g2.with_table_lock("t", || 7u8));
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let holders = || games.locks.lock().expect("the map").get("t").map_or(0, Arc::strong_count);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while holders() < 3 {
+            assert!(Instant::now() < deadline, "the waiter took no clone of the entry within 5 s: {}", holders());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Held a moment longer, so a waiter that runs without the lock has
+        // the time to finish; one that waits on it cannot, by construction.
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(holders(), 3, "the entry is alive, one lock, while the waiter waits on it");
         assert!(!waiter.is_finished(), "the body ran while another holder had the lock");
-        assert_eq!(games.locks.lock().expect("the map").len(), 1, "the entry is alive while a holder waits");
-        drop(guard);
-        drop(held);
+        release_tx.send(()).expect("the first holder listens");
+        assert_eq!(first.join().expect("the first holder"), 1);
         assert_eq!(waiter.join().expect("the waiter"), 7);
         assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned it");
     }
@@ -1274,7 +1302,9 @@ store refusal comes before any lock, so the draft's "and an entry" was false), (
 404); **M11** a writer restored to `lock_for` by hand — (b) red; **MH** the check as the draft's early `return`
 — (d) red at the HEAD row (a 404 WITH a body: the early return skipped `dispatch`'s HEAD strip — C2); **MI** the
 check behind the identity — (d) red at the 65-byte row; **MS** the helper never enters the lock — (c) red at
-`!waiter.is_finished()`. Noted (C8): a body that PANICS skips the prune — the entry can only be a real table's
+`!waiter.is_finished()` (fix round 1: (c) rewritten — the first holder a helper too, a bounded wait until the entry's
+`strong_count` reads 3 and holds for 20 ms, so the last prune reads 1 by construction; the reviewer's race loop
+read 5/5,000 idle and 45/5,000 at 2× load on the draft, 0 and 0 on the rewrite; **MP** red on it too). Noted (C8): a body that PANICS skips the prune — the entry can only be a real table's
 (the pre-read guarantees it) and the next writer there prunes it; not a growth vector.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs
