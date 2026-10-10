@@ -145,6 +145,11 @@ pub struct PairFacts {
     /// convenience — a row can be reported without reaching for the constant —
     /// and is NOT the record's, which a later reader should not assume.
     pub semantics_rev: u32,
+    /// `true` where the caller's `filed` hook said the archive already holds
+    /// these very bytes under the leaf `over` names, so the replay was never
+    /// paid (security S1b, finding A2) — the archive route's 200 `identical`.
+    /// Always `false` on a restore, which holds nothing.
+    pub held: bool,
 }
 
 /// One row of a restore report, as the module hands it to the page.
@@ -154,17 +159,35 @@ pub struct RestoreRow {
     pub verdict: Verdict,
 }
 
+/// The most events a record may carry to be archived or restored (security
+/// S1b, finding A2; R-SEC8(f)) — a PLAUSIBILITY bound, set from real games.
+/// Every finished game people or the bot have played here is 250–600 events
+/// (the longest measured, the browser-played fixture, 595), so 4,096 is seven
+/// times that. Random play and hand-built records run to 15,000–24,000
+/// events, and the archive is a collection of played games, not an import
+/// path for worst-case records: a record over the bound is refused by its
+/// COUNT before anything is replayed, so what an upload can cost no longer
+/// follows what a record can hold.
+pub const EVENT_CAP: usize = 4_096;
+
+/// The sentence the count refuses with — the archive route's and a restore's
+/// alike, since both go through [`check_pair`].
+pub fn event_cap_sentence(events: usize) -> String {
+    format!("the record carries {events} events — a finished game here is at most {EVENT_CAP}")
+}
+
 /// **THE function the archive route calls**, and the one a restore calls for a
 /// game that carries a record (spec §2.5: "that becomes one function two
 /// callers use, so a backup and an upload cannot disagree about what a valid
 /// game is").
 ///
 /// The checks are `archive_post`'s own, in `archive_post`'s own order and its
-/// own words — a `semantics_rev` present and equal to this build's, a terminal
-/// digest present, the table document parsing, passing
+/// own words — the record parsing, its event count within [`EVENT_CAP`], a
+/// `semantics_rev` present and equal to this build's, a terminal digest
+/// present, the table document parsing, passing
 /// [`tables::check_shape`](crate::tables) and AGREEING with the record, the
 /// document's id being `is_safe_id`'s, because there it becomes a path
-/// component, and LAST `replay_strict` clean. The ORDER is pinned through the
+/// component, and LAST `replay_strict_with(.., Predicate)` clean. The ORDER is pinned through the
 /// real route by
 /// `api::tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
 /// which was written and run BEFORE these checks moved here.
@@ -199,8 +222,31 @@ pub(crate) fn check_pair_with(
     table: &str,
     rules: &yokohama_core::Rules,
 ) -> Result<PairFacts, String> {
+    check_pair_filed(record, table, rules, &|_, _| None)
+}
+
+/// [`check_pair_with`] with the archive route's one addition (security S1b,
+/// finding A2): `filed(&doc, &rec)` is asked ONCE EVERY CHEAP CHECK HAS PASSED
+/// and before the replay — `Some(over)` says the archive already holds these
+/// very bytes under the leaf `over` names, and the pair is accepted with
+/// `held: true` and no replay paid; `None` replays as always. A restore passes
+/// a hook answering `None`. Asked after the table's checks and not before
+/// them, so a table that fails its checks reads its own refusal whether or not
+/// the record is filed — which is what keeps every host answering a row
+/// alike: the NAS's archive can read its files and the Worker's cannot.
+pub(crate) fn check_pair_filed(
+    record: &str,
+    table: &str,
+    rules: &yokohama_core::Rules,
+    filed: &dyn Fn(&crate::table::TableDoc, &yokohama_core::GameRecord) -> Option<bool>,
+) -> Result<PairFacts, String> {
     let rec: yokohama_core::GameRecord =
         serde_json::from_str(record).map_err(|e| format!("the record does not parse: {e}"))?;
+    // **The count, before anything else reads the record** (finding A2): the
+    // cheapest fact about it and the one that bounds every later cost.
+    if rec.events.len() > EVENT_CAP {
+        return Err(event_cap_sentence(rec.events.len()));
+    }
     match rec.semantics_rev {
         Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
         // **This sentence's audience is the ARCHIVE ROUTE** (review M-8): a
@@ -227,7 +273,7 @@ pub(crate) fn check_pair_with(
         // engine that one day accepted a record with no provenance would take
         // the local host down rather than refuse the file.
         None => {
-            return Err(match yokohama_core::replay_strict(&rec, rules) {
+            return Err(match yokohama_core::replay_strict_with(&rec, rules, yokohama_core::MoveCheck::Predicate) {
                 Err(e) => e.message,
                 Ok(_) => "the record carries no semantics provenance".to_string(),
             })
@@ -245,8 +291,26 @@ pub(crate) fn check_pair_with(
     if !crate::store::is_safe_id(&doc.id) {
         return Err("the table's id is not a safe name".to_string());
     }
-    // LAST, behind a table that agrees with the record (the doc above).
-    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
+    // **A record the archive already holds is not replayed** (security S1b,
+    // finding A2): asked here, LAST before the replay, so a retry of a filed
+    // record costs the cheap checks and a read.
+    if let Some(over) = filed(&doc, &rec) {
+        return Ok(PairFacts {
+            players: doc.players,
+            events: rec.events.len(),
+            over,
+            semantics_rev: yokohama_core::SEMANTICS_REV,
+            held: true,
+        });
+    }
+    // LAST, behind a table that agrees with the record (the doc above) — and
+    // through the PREDICATE check (security S1b, finding A2; R-SEC2): the same
+    // accepted set and the same states as `replay_strict`, proven by
+    // `crates/yokohama-core/tests/replay_check_equivalence.rs`, without the
+    // legal list materialized per event, so an admitted record costs tens of
+    // milliseconds whatever its families. This is the ONE replay an untrusted
+    // record gets — the archive route's and a restore's.
+    let state = yokohama_core::replay_strict_with(&rec, rules, yokohama_core::MoveCheck::Predicate).map_err(|e| {
         format!("the record does not replay: at event {}, {}", e.event_index, e.message)
     })?;
     Ok(PairFacts {
@@ -254,6 +318,7 @@ pub(crate) fn check_pair_with(
         events: rec.events.len(),
         over: yokohama_core::is_game_over(&state),
         semantics_rev: yokohama_core::SEMANTICS_REV,
+        held: false,
     })
 }
 
@@ -547,6 +612,96 @@ mod tests {
         assert_ne!(wrong, table, "the mutation must actually change the fixture");
         let said = check_pair(&broken, &wrong).expect_err("refused");
         assert!(said.starts_with("the table document"), "the table's sentence, not the replay's: {said}");
+    }
+
+    /// The cap-sized spread record the pre-flight cut from the review's
+    /// worst-case body: 4,096 events of a four-seat hot seat, seed 11, every
+    /// seat spread across the board and never recovering, then passing turns
+    /// — seat 0's Movement decision offers 442,368 retreats from event 419 on,
+    /// at 235 of the record's positions (the last at 4,083).
+    const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
+    const SPREAD_TABLE: &str = include_str!("../tests/fixtures/spread-4p-4096.table.json");
+
+    /// The DEBUG-profile ceiling the predicate replay of [`SPREAD_RECORD`] is
+    /// held under, in seconds — five times the pre-flight's reading on the Mac
+    /// (0.55 s alone, 0.35 s inside the parallel lib run; the plan's §"Review
+    /// record"), rounded up. **It is the predicate wiring's only catcher**
+    /// (R-SEC2; the plan's D-1): the two strict replays accept the same records
+    /// by the core PR's proof, so no functional cell can tell them apart — but
+    /// 235 of the record's positions, seat 0's Movement decisions, each
+    /// materialize the 442,368-move family under `Listed`, which took 198 s in
+    /// debug (measured), and fold in under a second under `Predicate`.
+    const SPREAD_REPLAY_BOUND_SECS: u64 = 3;
+
+    /// **A record over the cap is refused by its COUNT, before anything is
+    /// replayed** (finding A2; R-SEC8(f)). The probe carries TWO defects — one
+    /// event over `EVENT_CAP`, and that event a placement at a phase that
+    /// cannot take one, so the record would not replay — and reads the
+    /// count's sentence: the two-defect shape that pins an ORDER (the M6.2
+    /// lesson). At the cap exactly, the same record is accepted, so the bound
+    /// is inclusive and not one below.
+    #[test]
+    fn a_record_over_the_event_cap_is_refused_by_count_before_any_replay() {
+        let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        assert_eq!(events.len(), EVENT_CAP, "the premise: the fixture sits exactly at the cap");
+        // An event legal at NO position — a President placed on an area the
+        // board does not have (the review's `PlacePresident 255` probe, which
+        // panics nothing) — so the record would also fail its replay.
+        let illegal = serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } });
+        events.push(illegal.clone());
+        let over = v.to_string();
+        let said = check_pair(&over, SPREAD_TABLE).expect_err("one over the cap");
+        assert_eq!(said, event_cap_sentence(EVENT_CAP + 1));
+        assert!(said.contains("4097") && said.contains("4096"), "{said}");
+        // The appended event really would fail a replay — in the LAST slot of
+        // a record at the cap it is refused at event 4095 — so above, the
+        // count spoke first.
+        let mut same_len: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let ev = same_len["events"].as_array_mut().expect("events");
+        *ev.last_mut().expect("an event") = illegal;
+        let said = check_pair(&same_len.to_string(), SPREAD_TABLE).expect_err("the premise: that event does not replay");
+        assert!(said.starts_with("the record does not replay: at event 4095"), "{said}");
+    }
+
+    /// **The cap-sized worst case replays under the predicate in bounded time**
+    /// (finding A2; R-SEC2) — the catcher for the layer replaying through
+    /// `replay_strict` or `MoveCheck::Listed` (the plan's D-1). The record is
+    /// read whole: 4,096 events accepted, not over, and its replayed state
+    /// really is the spread state — some seat's retreat family is six figures,
+    /// so a re-cut fixture that never spread cannot pass by being cheap.
+    #[test]
+    fn the_cap_sized_spread_record_replays_under_the_predicate_in_bounded_time() {
+        let started = std::time::Instant::now();
+        let facts = check_pair(SPREAD_RECORD, SPREAD_TABLE).expect("the fixture is a valid pair at the cap");
+        let took = started.elapsed();
+        assert_eq!((facts.players, facts.events, facts.over), (4, EVENT_CAP, false));
+        assert!(
+            took.as_secs() < SPREAD_REPLAY_BOUND_SECS,
+            "the predicate replay took {took:?} — above the bound; a materialized replay is minutes",
+        );
+        let rec: yokohama_core::GameRecord = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let rules = yokohama_core::Rules::standard();
+        let state = yokohama_core::replay_strict_with(&rec, &rules, yokohama_core::MoveCheck::Predicate)
+            .expect("the fixture replays");
+        let widest = state.players.iter().map(|p| yokohama_core::retreat_len(&p.assistants.on_board)).max().unwrap_or(0);
+        assert!(widest >= 100_000, "anti-vacuity: the fixture's end state is not the spread state (widest family {widest})");
+    }
+
+    /// A restore refuses the same record with the same sentence — the one
+    /// validator, two callers (R-6.5b2.10): a backup over the cap is REJECTED,
+    /// never written, and the row says why in the archive's own words.
+    #[test]
+    fn a_restore_refuses_a_record_over_the_event_cap_with_the_archives_sentence() {
+        let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
+        let env = envelope_of(&[("local-spread4096", &v.to_string(), SPREAD_TABLE)]);
+        let report = restore_read(&env).expect("the envelope is well formed");
+        match &report[0].1 {
+            Verdict::Rejected { reason } => assert_eq!(reason, &event_cap_sentence(EVENT_CAP + 1)),
+            other => panic!("a record over the cap is rejected: {other:?}"),
+        }
     }
 
     /// R-6.5b2.12: REJECTED and UNPLAYABLE are different answers. Refusing a

@@ -126,6 +126,15 @@ pub trait Archive: Send + Sync {
         record_json: &str,
         table_json: &str,
     ) -> Result<PutOutcome, PutError>;
+    /// Whether the record at `prefix/rev/why/id` holds exactly `record_json`
+    /// (security S1b, finding A2) — asked by the archive route BEFORE the
+    /// replay, so a retry of a filed record costs a read and no replay.
+    /// `false` by default: an implementation that cannot read its own files
+    /// synchronously (the Worker's receipt archive) replays as before and
+    /// meets the once-rule's `Identical` at the put instead.
+    fn holds(&self, _prefix: &str, _why: Why, _id: &str, _record_json: &str) -> bool {
+        false
+    }
     /// What `/api/health` reports: `"off"`, `"dir"`, or M6.5c's `"r2"`.
     fn kind(&self) -> &'static str;
 }
@@ -396,6 +405,13 @@ mod dir {
             self.read_marker(&record, record_json)?.ok_or_else(|| {
                 PutError::Failed(format!("link {record}: the path is taken and reads as absent"))
             })
+        }
+        fn holds(&self, prefix: &str, why: Why, id: &str, record_json: &str) -> bool {
+            let Ok((record, _)) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id) else { return false };
+            if !Path::new(&record).components().all(|c| matches!(c, Component::Normal(_))) {
+                return false;
+            }
+            matches!(self.read_marker(&record, record_json), Ok(Some(PutOutcome::Identical)))
         }
         fn kind(&self) -> &'static str {
             "dir"
@@ -676,6 +692,28 @@ mod tests {
             matches!(NoArchive.put("", Why::Over, "x", "{}", "{}"), Err(PutError::Failed(_))),
             "the guard, not a write — and a FAILURE, never a conflict"
         );
+    }
+
+    /// **`holds` reads the marker and nothing else** (finding A2): true for the
+    /// bytes a put landed at exactly that path, false for other bytes, another
+    /// id, the other leaf, and an archive that keeps nothing — the default
+    /// every implementation that cannot read its own files synchronously
+    /// inherits, the Worker's receipt archive among them.
+    #[cfg(feature = "server")]
+    #[test]
+    fn holds_is_true_for_the_landed_bytes_at_exactly_their_path() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_holds_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}"), "nothing landed yet");
+        a.put("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+        assert!(a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}"));
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":2}"), "other bytes");
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-2", "{\"r\":1}"), "another id");
+        assert!(!a.holds("browser/a_at_b/", Why::Abandoned, "local-1", "{\"r\":1}"), "the other leaf");
+        assert!(!a.holds("browser/c_at_d/", Why::Over, "local-1", "{\"r\":1}"), "another caller");
+        assert!(!NoArchive.holds("", Why::Over, "local-1", "{\"r\":1}"), "the default is false");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The third answer to the marker read (review fix, spec §2.4): a record

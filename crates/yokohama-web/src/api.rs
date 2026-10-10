@@ -2234,16 +2234,17 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
     Ok(json)
 }
 
-/// The largest body `POST /api/archive` reads (M6.5c2 cycle D, straw poll row
-/// 81): 1 MiB. Over it the route answers 413 BEFORE it parses anything
-/// (`check_archive_size`, the route's own check).
-///
-/// **A route's own bound, under both hosts' body limits** — the NAS adapter's
-/// 2 MiB and the Worker's `BODY_LIMIT`, which bound every route alike. This
-/// route is the one whose body an untrusted replay reads whole, so it gets a
-/// bound of its own and a sentence of its own. A finished two-person record is
-/// about 54 KB (`tests/fixtures/browser-played-2p.json`), so the room is wide.
-pub const ARCHIVE_BODY_LIMIT: usize = 1 << 20;
+/// The largest body `POST /api/archive` reads (security S1b, finding B12;
+/// R-SEC8(f)): 512 KiB, down from M6.5c2 cycle D's 1 MiB. Set from real
+/// games: a finished game pretty-printed, which is what a browser sends, is
+/// under 60 KB (the longest measured, the browser-played fixture, 54 KB), so
+/// this is eight times that — and above 5,000 pretty-printed events, so the
+/// event count ([`crate::backup::EVENT_CAP`]) speaks first on every real
+/// record. Random play runs to 1.9 MB and the archive is not an import path
+/// for it. Over the cap the route answers 413 BEFORE it parses anything
+/// (`check_archive_size`), under both hosts' body limits — the NAS adapter's
+/// 2 MiB and the Worker's `BODY_LIMIT`.
+pub const ARCHIVE_BODY_LIMIT: usize = 512 << 10;
 
 /// The archive route's size check: over [`ARCHIVE_BODY_LIMIT`] is a 413 that
 /// names the bound, answered after the caller and before the body is parsed —
@@ -2253,7 +2254,7 @@ fn check_archive_size(body: &[u8]) -> Result<(), ApiError> {
     if body.len() > ARCHIVE_BODY_LIMIT {
         return Err(ApiError {
             status: StatusCode::PAYLOAD_TOO_LARGE,
-            message: "the record is larger than 1 MiB".to_string(),
+            message: "the record is larger than 512 KiB".to_string(),
             table_status: None,
             foreign_bot: None,
         });
@@ -2291,20 +2292,32 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The EIGHT checks `backup::check_pair_with` makes, in spec §2.4's order**
-/// (nine refusals through this route, because the archive-off 404 is asked
-/// first, and a rev that disagrees and a rev that is absent are two different
-/// sentences): the record parses; a `semantics_rev` present and equal to this
-/// build's; a terminal digest present; `replay_strict` clean; the table
-/// document parses; it passes [`tables::check_shape`]; it AGREES with the
-/// record; and its id is `is_safe_id`'s, because it becomes a path component.
-/// **The count is stated here once** — an earlier draft said four here, four
-/// again at the call below and a third count in an earlier document, three
-/// counts for one function (whole-branch review, false sentence 4); the order
-/// is the one
+/// **The NINE checks `backup::check_pair_with` makes, in the order it makes
+/// them** (ten refusals through this route, because the archive-off 404 is
+/// asked first, and a rev that disagrees and a rev that is absent are two
+/// different sentences): the record parses; its event count is within
+/// [`crate::backup::EVENT_CAP`] (security S1b); a `semantics_rev` present and
+/// equal to this build's; a terminal digest present; the table document
+/// parses; it passes [`tables::check_shape`]; it AGREES with the record; its
+/// id is `is_safe_id`'s, because it becomes a path component; and LAST the
+/// replay, `replay_strict_with(.., Predicate)` clean — behind a table that
+/// agrees, so an untrusted record reaches setup only beside one (M6.5c2 cycle
+/// D, straw poll row 81; this paragraph listed the replay before the table's
+/// checks until security S1b, finding D29). **The count is stated here once**
+/// — an earlier draft said four here, four again at the call below and a
+/// third count in an earlier document (whole-branch review, false sentence
+/// 4); the order is the one
 /// `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`
-/// probes pairwise. Then **the leaf IS the `Why`** — `Over` iff the
-/// replayed state is over, else `Abandoned` — and one put under
+/// probes pairwise. **Between the last cheap check and the replay, a retry of
+/// a record already filed is answered** (security S1b, finding A2): the two
+/// leaves are asked through [`Archive::holds`](crate::archive::Archive::holds)
+/// whether they hold these very bytes under this caller — a `true` is the 200
+/// `identical` the put's once-rule would give, with no replay paid — and a
+/// table that fails its checks reads its own refusal first, as on every host,
+/// so the NAS, whose archive reads its files, and the Worker, whose cannot,
+/// answer every row alike (the corpus's `archive_400_table` among them). Then **the
+/// leaf IS the `Why`** — `Over` iff the replayed state is over, else
+/// `Abandoned` — and one put under
 /// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
 /// table RE-STRIPPED server-side from the parsed document, as `delete` does, so
 /// a crafted body carrying a lock or a watcher roster never lands verbatim. The
@@ -2317,13 +2330,25 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     if !is_on(&games.archive) {
         return Err(ApiError::not_found("this server keeps no archive"));
     }
-    // **The eight checks above are `backup::check_pair`'s since M6.5b2**
+    // **The checks above are `backup::check_pair`'s since M6.5b2**
     // (R-6.5b2.10, spec §2.5): one function, two callers, so a backup and an
     // upload cannot disagree about what a valid game is. The order and every sentence are
     // this route's own and did not move — pinned through `dispatch` by
     // `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
     // which was written and green BEFORE the extraction.
-    let facts = crate::backup::check_pair_with(&req.record, &req.table, games.rules())
+    // **A retry of a filed record is answered before any replay** (security S1b,
+    // finding A2; the doc above): once every cheap check has passed, the archive
+    // is asked whether either leaf already holds these very bytes under this
+    // caller — through the validator's `filed` hook, so the question sits
+    // exactly before the replay and after nothing else.
+    let prefix = format!("browser/{}/", caller_segment(user));
+    let filed = |doc: &crate::table::TableDoc, _rec: &yokohama_core::GameRecord| {
+        [Why::Over, Why::Abandoned]
+            .into_iter()
+            .find(|why| games.archive.holds(&prefix, *why, &doc.id, &req.record))
+            .map(|why| why == Why::Over)
+    };
+    let facts = crate::backup::check_pair_filed(&req.record, &req.table, games.rules(), &filed)
         .map_err(ApiError::bad_request)?;
     // The document again, for the strip and the path. **Unreachable as a
     // refusal** — `check_pair_with` parsed this very string a line ago — and written
@@ -2332,11 +2357,13 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     let doc: crate::table::TableDoc = serde_json::from_str(&req.table)
         .map_err(|e| ApiError::bad_request(format!("the table document does not parse: {e}")))?;
     let why = if facts.over { Why::Over } else { Why::Abandoned };
-    let prefix = format!("browser/{}/", caller_segment(user));
     // Unreachable as a refusal — the key grammar and `is_safe_id` admit no `.`
     // or `..` — and answered in the put's own failure words if it ever is.
     let (path, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, why, &doc.id)
         .map_err(|e| ApiError::server_error(format!("the archive could not be written: {e}")))?;
+    if facts.held {
+        return Ok(ArchiveReply { leaf: why.dir(), path, identical: true });
+    }
     match games.archive.put(&prefix, why, &doc.id, &req.record, &strip_for_archive(&doc)) {
         Ok(outcome) => Ok(ArchiveReply {
             leaf: why.dir(),
@@ -2721,6 +2748,11 @@ mod tests {
     const PLAYED_RECORD: &str = include_str!("../tests/fixtures/browser-played-2p.json");
     const PLAYED_TABLE: &str = include_str!("../tests/fixtures/browser-played-2p.table.json");
     const PLAYED_ID: &str = "local-242a5429453c593c";
+
+    /// The cap-sized spread record `backup.rs`'s cells read (security S1b):
+    /// 4,096 events, exactly [`crate::backup::EVENT_CAP`], so one event more is
+    /// the order cell's over-cap record.
+    const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
 
     /// One key of a JSON object replaced, everything else left exactly as it
     /// was. The fixtures are PRETTY-PRINTED, so a textual `replace` of
@@ -3149,19 +3181,26 @@ mod tests {
         // and before the switch would say 404. At the cap exactly, the same
         // non-JSON body reaches the parse — so the bound is the cap and not one
         // below it.
-        let over = vec![b'x'; ARCHIVE_BODY_LIMIT + 1];
+        assert_eq!(ARCHIVE_BODY_LIMIT, 512 << 10, "the cap R-SEC8(f) set (security S1b)");
+        let over = vec![b'x'; (512 << 10) + 1];
         let (status, v) = post_archive_bytes(&off, &over);
-        assert_eq!((status, v["error"].as_str()), (413, Some("the record is larger than 1 MiB")), "{v}");
-        let (status, v) = post_archive_bytes(&on, &over[..ARCHIVE_BODY_LIMIT]);
+        assert_eq!((status, v["error"].as_str()), (413, Some("the record is larger than 512 KiB")), "{v}");
+        let (status, v) = post_archive_bytes(&on, &over[..512 << 10]);
         assert_eq!(status, 400, "at the cap the body is read, and refused for what it is: {v}");
 
-        // The nine checks, in order, each named by the sentence it answers.
+        // The checks, in order, each named by the sentence it answers.
         let rev_wrong = keyed(PLAYED_RECORD, "semantics_rev", 6.into());
         let no_digest = without(PLAYED_RECORD, "terminal_digest");
         let no_replay = replay_broken(PLAYED_RECORD);
         let bad_players = keyed(PLAYED_TABLE, "players", 3.into());
         let bad_seat = keyed(PLAYED_TABLE, "start_seat", 1.into());
         let unsafe_id = keyed(PLAYED_TABLE, "id", "not/a/safe/id".into());
+        let over_cap = {
+            let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+            let events = v["events"].as_array_mut().expect("events");
+            events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
+            v.to_string()
+        };
 
         // **The adjacent-pair probes.** Each row carries the defects of TWO
         // neighbouring checks and expects the earlier one's sentence.
@@ -3174,16 +3213,13 @@ mod tests {
         // catcher for "the table checks after the replay" is the digest row's
         // partner and the id row's: each carries a record that would not
         // replay, and expects a TABLE sentence.
-        let probes: [(&Games, String, String, &str); 8] = [
+        let probes: [(&Games, String, String, &str); 9] = [
             // archive-off  <  the record parses
             (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
-            // the record parses  <  the rev agrees
-            (
-                &on,
-                keyed(&rev_wrong, "seed", "not a number".into()),
-                PLAYED_TABLE.to_string(),
-                "the record does not parse",
-            ),
+            // the record parses  <  the count is within the cap
+            (&on, keyed(&over_cap, "seed", "not a number".into()), PLAYED_TABLE.to_string(), "the record does not parse"),
+            // the count is within the cap  <  the rev agrees
+            (&on, keyed(&over_cap, "semantics_rev", 6.into()), PLAYED_TABLE.to_string(), "the record carries 4097 events"),
             // the rev agrees  <  a terminal digest is present
             (&on, without(&rev_wrong, "terminal_digest"), PLAYED_TABLE.to_string(),
              "this record is at semantics rev 6; this server archives rev 7"),
@@ -3215,9 +3251,9 @@ mod tests {
             assert!(said.starts_with(expect), "{said:?} does not start with {expect:?}");
             sentences.insert(said);
         }
-        assert_eq!(sentences.len(), 8, "eight checks, eight different sentences");
+        assert_eq!(sentences.len(), 9, "nine checks, nine different sentences");
 
-        // The ninth, on its own — nothing follows it to probe against.
+        // The last, on its own — nothing follows it to probe against.
         let (status, v) = post_archive(&on, &no_replay, PLAYED_TABLE);
         assert_eq!(status, 400, "{v}");
         assert!(
@@ -3234,6 +3270,68 @@ mod tests {
             "{v}"
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An archive that claims to hold EVERYTHING — the instrument that reads
+    /// where the retry's answer sits: a record that could not replay is
+    /// answered `identical` through it only if the question was asked before
+    /// the replay.
+    struct HoldsEverything;
+
+    impl crate::archive::Archive for HoldsEverything {
+        fn put(
+            &self,
+            _prefix: &str,
+            _why: crate::archive::Why,
+            _id: &str,
+            _record_json: &str,
+            _table_json: &str,
+        ) -> Result<crate::archive::PutOutcome, crate::archive::PutError> {
+            unreachable!("a held record is answered before the put")
+        }
+        fn kind(&self) -> &'static str {
+            "dir"
+        }
+        fn holds(&self, _prefix: &str, _why: crate::archive::Why, _id: &str, _record_json: &str) -> bool {
+            true
+        }
+    }
+
+    /// **A retry of a filed record is answered before any replay** (finding
+    /// A2): once every cheap check has passed, the archive is asked whether
+    /// either leaf already holds these very bytes under this caller, and a
+    /// `true` is the 200 `identical` the put's once-rule gives — with no replay
+    /// paid. The proof: a record that does NOT replay reads 200 `identical`
+    /// through an archive that claims it, where the same pair on a real, empty
+    /// archive reads the replay's 400 — so the answer came before the replay.
+    /// And the cheap checks still speak first: the claiming archive beside a
+    /// table that disagrees reads the agreement's 400, which is what keeps the
+    /// committed corpus's `archive_400_table` row a 400 on every host, the
+    /// Worker's included.
+    #[test]
+    fn a_retry_of_a_filed_record_is_answered_identical_before_any_replay() {
+        let claims = games_with(std::sync::Arc::new(HoldsEverything));
+        let dir = scratch("archive_retry");
+        let real = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
+        let broken = replay_broken(PLAYED_RECORD);
+        let (status, v) = post_archive(&real, &broken, PLAYED_TABLE);
+        assert_eq!(status, 400, "the control, on a real archive holding nothing: {v}");
+        assert!(v["error"].as_str().unwrap_or("").starts_with("the record does not replay"), "{v}");
+        let (status, v) = post_archive(&claims, &broken, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
+        assert_eq!(v["leaf"], "over");
+        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+        let disagreeing = keyed(PLAYED_TABLE, "start_seat", 1.into());
+        let (status, v) = post_archive(&claims, &broken, &disagreeing);
+        assert_eq!(status, 400, "the table's checks come first: {v}");
+        assert!(v["error"].as_str().unwrap_or("").starts_with("the table document does not agree"), "{v}");
+        // A real archive's retry of landed bytes is the same 200, through
+        // the same hook (`DirArchive::holds` reads the marker).
+        let (status, _) = post_archive(&real, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!(status, 201);
+        let (status, v) = post_archive(&real, PLAYED_RECORD, PLAYED_TABLE);
+        assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "{v}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
