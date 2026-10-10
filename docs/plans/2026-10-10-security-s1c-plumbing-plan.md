@@ -912,11 +912,11 @@ In `tables.rs`, each writer: the table read FIRST, outside any lock, as the abse
         // Absent before locked (security S1c, finding B8): a fabricated id is a
         // 404 that never creates a lock entry. The read under the lock below is
         // the one the write is checked against; this one only says "there".
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{}\"", crate::echo::echo(id))))?;
+        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         self.with_table_lock(id, || {
             let (mut doc, version) = self
                 .read_table(id)?
-                .ok_or_else(|| GameError::NotFound(format!("no game named \"{}\"", crate::echo::echo(id))))?;
+                .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
             // … the body from `match doc.status {` on, verbatim …
         })
     }
@@ -926,7 +926,11 @@ and the same shape for `chat_append`, `delete_chat`, `unlock`, `keep` (the pre-r
 `settle_locked` as today), `delete` (the pre-read; inside, `delete_locked`; the trailing `if deleted.is_ok() {
 self.prune_lock(id) }` removed — the helper prunes) and `settle`'s locked arm (`self.with_table_lock(id, ||
 self.settle_locked(id))`). The `?` inside a closure returns from the closure, which is what every body wants;
-each closure's return type is the function's `Result`.
+each closure's return type is the function's `Result` — inferred when the `with_table_lock` call is the
+function's TAIL expression (`join`, `keep`, `unlock`, `chat_append`, `delete_chat`, `delete`, `settle`'s arm all
+can be); a call that is not the tail needs `|| -> Result<_, GameError> { … }` spelled out. Task 1 landed every
+`no game named` sentence in the named-argument form (`\"{id}\"` with `id = crate::echo::echo(id)`); the pre-read
+line and the dispatch check use the same form.
 
 In `api.rs`, `dispatch` (:2503), after the match:
 
@@ -936,7 +940,7 @@ In `api.rs`, `dispatch` (:2503), after the match:
     // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
     // nothing this refuses could have been a table.
     if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
-        return error_response(ApiError::not_found(format!("no game named \"{}\"", crate::echo::echo(bound[0]))));
+        return error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))));
     }
 ```
 
