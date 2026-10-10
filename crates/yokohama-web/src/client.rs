@@ -143,37 +143,61 @@ pub struct ScoreRow {
 /// worst-case state offered 442,368 retreats — 58 MB a frame — before this.
 pub const OPTIONS_CAP: usize = 4_096;
 
+/// What [`folded_legal_capped`] answers (security S1b, finding A3): the moves
+/// a frame lists, and the two counts of what it does not, kept APART because
+/// they differ in who may read them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Folded {
+    /// The moves a frame lists, in the generator's order.
+    pub(crate) listed: Vec<Move>,
+    /// The retreat family's members beyond its recover-nothing one — the
+    /// family's size less one, a product over the mover's on-board
+    /// assistants, which every seat sees on the board.
+    pub(crate) folded: usize,
+    /// What [`OPTIONS_CAP`] cut — a function of the mover's WHOLE legal list,
+    /// which reads the mover's hand (the fulfil-order moves), so it rides the
+    /// deciding viewer's frame alone.
+    pub(crate) capped: usize,
+}
+
+impl Folded {
+    /// Everything the list leaves out, `folded + capped` — the count the
+    /// DECIDING viewer's frame carries.
+    pub(crate) fn omitted(&self) -> usize {
+        self.folded + self.capped
+    }
+}
+
 /// The legal list a frame is built from (security S1b, finding A3): every
 /// family of the factored action source in the generator's order, the retreat
 /// family at its recover-nothing member alone — the family's size less one
-/// counted, never materialized — and the whole capped at [`OPTIONS_CAP`].
+/// counted as `folded`, never materialized — and the whole capped at
+/// [`OPTIONS_CAP`], what the cap cuts counted as `capped`.
 /// Equal to the generator's list folded by hand
 /// (`folded_legal_is_the_generators_list_folded_by_hand_at_every_decision`).
-pub(crate) fn folded_legal(state: &GameState, rules: &Rules) -> (Vec<Move>, usize) {
+pub(crate) fn folded_legal(state: &GameState, rules: &Rules) -> Folded {
     folded_legal_capped(state, rules, OPTIONS_CAP)
 }
 
 /// [`folded_legal`] at a cap of the caller's — the production cap's mechanism,
 /// read by a cell at a cap it can reach.
-pub(crate) fn folded_legal_capped(state: &GameState, rules: &Rules, cap: usize) -> (Vec<Move>, usize) {
+pub(crate) fn folded_legal_capped(state: &GameState, rules: &Rules, cap: usize) -> Folded {
     let mut listed = Vec::new();
-    let mut omitted = 0usize;
+    let mut folded = 0usize;
     for family in families(state, rules) {
         if let MoveFamily::MovementRetreat { .. } = &family {
             let len = family_len(state, rules, &family);
             if let Some(first) = iter_family(state, rules, &family).next() {
                 listed.push(first);
-                omitted += len.saturating_sub(1);
+                folded += len.saturating_sub(1);
             }
         } else {
             listed.extend(iter_family(state, rules, &family));
         }
     }
-    if listed.len() > cap {
-        omitted += listed.len() - cap;
-        listed.truncate(cap);
-    }
-    (listed, omitted)
+    let capped = listed.len().saturating_sub(cap);
+    listed.truncate(cap);
+    Folded { listed, folded, capped }
 }
 
 /// The whole payload for one game.
@@ -238,11 +262,15 @@ pub struct ClientState {
     /// for an all-human game. From the record's `run.seats`, not from the
     /// resident `Repl`'s bot table.
     pub bots: Vec<crate::bots::SeatBot>,
-    /// Legal moves `frame.decision.options` does NOT list (security S1b,
-    /// finding A3): the retreat family's members beyond its recover-nothing one
-    /// and anything past [`OPTIONS_CAP`] — counted, so a frame says what it
-    /// folded rather than reading as the whole list. `0` on every frame
-    /// outside a folded Movement decision.
+    /// The POSITION's legal moves this frame's builder folded or capped rather
+    /// than listed (security S1b, finding A3): the retreat family's members
+    /// beyond its recover-nothing one — a count of public on-board assistants
+    /// — and, on the DECIDING viewer's frame alone, anything past
+    /// [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for every
+    /// viewer of the position, so a frame for a seat that is not deciding,
+    /// whose `frame.decision.options` is empty, still says what was folded
+    /// rather than reading as the whole list. `0` on every frame outside a
+    /// folded Movement decision.
     pub options_omitted: usize,
 }
 
@@ -542,13 +570,13 @@ impl ClientState {
         let over = session.is_over();
         let seat = built_for(state, viewer);
 
-        let (legal, options_omitted) = folded_legal(state, session.rules());
+        let folded = folded_legal(state, session.rules());
         let mut frame = screen_model::build_frame(
             state,
             session.rules(),
             &facts_for(repl, viewer),
             seat,
-            &legal,
+            &folded.listed,
             TitleModel {
                 mode: match session.mode {
                     TrackingMode::Simulation => TitleMode::Sim,
@@ -574,6 +602,16 @@ impl ClientState {
             },
         );
         drop_hand_for(viewer, &mut frame);
+        // **The cap's count rides the DECIDING viewer's frame alone** (security
+        // S1b, finding A3; a hidden-information rule): `capped` is a function
+        // of the mover's whole legal list, which reads the mover's hand, while
+        // `folded` counts public on-board assistants. "Deciding" is the
+        // frame's own `decision.viewer_is_deciding`, which `build_frame` set
+        // from the same `seat` through `build_decision_for`. No built position
+        // reaches the cap — the largest list measured is 3,303 against 4,096
+        // (`OPTIONS_CAP`'s doc) — so no cell can tell the two arms apart: this
+        // selection is proven by reading.
+        let options_omitted = if frame.decision.viewer_is_deciding { folded.omitted() } else { folded.folded };
 
         Self {
             id: id.to_string(),
@@ -728,11 +766,15 @@ pub struct HistoricalFrame {
     /// take shows the card leaving (M5.5 spec §3.2.1).
     pub ports: screen_model::PortsPanel,
     pub labs: screen_model::LabsPanel,
-    /// Legal moves `frame.decision.options` does NOT list (security S1b,
-    /// finding A3): the retreat family's members beyond its recover-nothing one
-    /// and anything past [`OPTIONS_CAP`] — counted, so a frame says what it
-    /// folded rather than reading as the whole list. `0` at every position
-    /// outside a folded Movement decision.
+    /// The POSITION's legal moves this frame's builder folded or capped rather
+    /// than listed (security S1b, finding A3): the retreat family's members
+    /// beyond its recover-nothing one — a count of public on-board assistants
+    /// — and, on the DECIDING viewer's frame alone, anything past
+    /// [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for every
+    /// viewer of the position, so a frame for a seat that is not deciding,
+    /// whose `frame.decision.options` is empty, still says what was folded
+    /// rather than reading as the whole list. `0` at every position outside a
+    /// folded Movement decision.
     pub options_omitted: usize,
 }
 
@@ -794,7 +836,7 @@ impl HistoricalFrame {
         // already folded the record to this position through the predicate;
         // this is the one enumeration a frame pays, and it never materializes
         // the family.
-        let (legal, options_omitted) = folded_legal(state, rules);
+        let folded = folded_legal(state, rules);
         let over = yokohama_core::is_game_over(state);
 
         let mut frame = screen_model::build_frame(
@@ -802,7 +844,7 @@ impl HistoricalFrame {
             rules,
             &facts_for(repl, viewer),
             seat,
-            &legal,
+            &folded.listed,
             TitleModel {
                 mode: match session.mode {
                     TrackingMode::Simulation => TitleMode::Sim,
@@ -820,6 +862,11 @@ impl HistoricalFrame {
             },
         );
         drop_hand_for(viewer, &mut frame);
+        // The cap's count on the DECIDING viewer's frame alone, read from the
+        // frame's own `decision.viewer_is_deciding` — [`ClientState::of`]'s
+        // rule, for its reason. No built position reaches the cap, so this
+        // selection too is proven by reading, not by a cell.
+        let options_omitted = if frame.decision.viewer_is_deciding { folded.omitted() } else { folded.folded };
 
         Self {
             index: k,
@@ -1325,14 +1372,14 @@ mod tests {
     /// **The factored fold IS the generator's list folded by hand, at every
     /// decision of random play at two, three and four players** (finding A3;
     /// R-SEC8(e)) — the same moves in the same order with the retreat family
-    /// at its recover-nothing member, and the omitted count the family's size
-    /// less one. A lone retreat — no assistant on the board — is listed as it
-    /// is and omits nothing (Review Focus 5): CONSTRUCTED, since placement
-    /// precedes movement within a turn and a random walk all but never
-    /// reaches a Movement decision with nothing on the board; from the
-    /// opening, the first phase ended and nothing placed, the retreat family
-    /// is one. Mutants: the last member kept instead of the first; the count
-    /// off by one; a family skipped.
+    /// at its recover-nothing member, the folded count the family's size less
+    /// one, and the capped count zero on the walk. A lone retreat — no
+    /// assistant on the board — is listed as it is and omits nothing (Review
+    /// Focus 5): CONSTRUCTED, since placement precedes movement within a turn
+    /// and a random walk all but never reaches a Movement decision with
+    /// nothing on the board; from the opening, the first phase ended and
+    /// nothing placed, the retreat family is one. Mutants: the last member
+    /// kept instead of the first; the count off by one; a family skipped.
     #[test]
     fn folded_legal_is_the_generators_list_folded_by_hand_at_every_decision() {
         let rules = Rules::standard();
@@ -1350,8 +1397,8 @@ mod tests {
                 let legal = yokohama_core::get_legal_moves(&state, &rules);
                 let expected = fold_by_hand(legal.clone());
                 let got = folded_legal(&state, &rules);
-                assert_eq!(got, expected, "{players}P seed {seed}: the fold differs from the generator's list folded by hand");
-                if got.1 > 0 {
+                assert_eq!((&got.listed, got.folded, got.capped), (&expected.0, expected.1, 0), "{players}P seed {seed}: the fold differs from the generator's list folded by hand");
+                if got.folded > 0 {
                     folded_some += 1;
                 }
                 x ^= x << 13;
@@ -1372,7 +1419,7 @@ mod tests {
         let legal = yokohama_core::get_legal_moves(&moving, &rules);
         let retreats = legal.iter().filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).count();
         assert_eq!(retreats, 1, "the premise: nothing on the board, one retreat");
-        assert_eq!(folded_legal(&moving, &rules), (legal, 0), "a lone retreat is listed as it is and omits nothing");
+        assert_eq!(folded_legal(&moving, &rules), Folded { listed: legal, folded: 0, capped: 0 }, "a lone retreat is listed as it is and omits nothing");
     }
 
     /// **The cap counts what it cuts** (R-SEC8(e)): the first Placement's
@@ -1380,7 +1427,12 @@ mod tests {
     /// uncapped list is whole. The production cap is never reached by today's
     /// generator — this is the mechanism, read at a cap a cell can reach. The
     /// opening itself is the first additional-action phase and offers ONE
-    /// move, so the cell walks to the first position that offers more.
+    /// move, so the cell walks to the first position that offers more. **The
+    /// two counts come back APART** (the hidden-information rule the frame
+    /// builders apply: the cap's count rides the deciding viewer's frame
+    /// alone): at the Placement the fold is zero and the cap's count is the
+    /// rest; at the spread fixture's decision, a cap of seventeen cuts one
+    /// beside the fold's 442,367.
     #[test]
     fn folded_legal_capped_counts_what_the_cap_cuts() {
         let rules = Rules::standard();
@@ -1397,10 +1449,27 @@ mod tests {
             whole = yokohama_core::get_legal_moves(&state, &rules).len();
         }
         assert!(whole > 3, "the premise: a position offering more than three moves ({whole})");
-        let (listed, omitted) = folded_legal_capped(&state, &rules, 3);
-        assert_eq!((listed.len(), omitted), (3, whole - 3));
-        let (all, none) = folded_legal_capped(&state, &rules, OPTIONS_CAP);
-        assert_eq!((all.len(), none), (whole, 0));
-        assert_eq!(listed, all[..3].to_vec(), "the cap keeps the list's head");
+        assert_eq!(state.turn_phase, yokohama_core::TurnPhase::Placement, "the premise: the first Placement");
+        let cut = folded_legal_capped(&state, &rules, 3);
+        assert_eq!((cut.listed.len(), cut.folded, cut.capped), (3, 0, whole - 3), "a Placement folds nothing; the cap counts the rest");
+        let all = folded_legal_capped(&state, &rules, OPTIONS_CAP);
+        assert_eq!((all.listed.len(), all.folded, all.capped), (whole, 0, 0));
+        assert_eq!(cut.listed, all.listed[..3].to_vec(), "the cap keeps the list's head");
+
+        // Both counts at once, apart: the spread fixture's decision (seat 0 in
+        // Movement, the 442,368-member family), reached through the session's
+        // ladder as the layer reaches it.
+        let record: yokohama_core::GameRecord =
+            serde_json::from_str(include_str!("../tests/fixtures/spread-4p-4096.json")).expect("the spread record");
+        let provenance: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/spread-4p-4096.provenance.json")).expect("its provenance");
+        let k = provenance["spread_decision_at"].as_u64().expect("spread_decision_at") as usize;
+        let mut session = Session::from_record(record, Rules::standard()).expect("the spread record resumes");
+        let spread = session.state_before(k).expect("the spread decision");
+        let whole = folded_legal(&spread, &rules);
+        assert_eq!((whole.listed.len(), whole.folded, whole.capped), (18, 442_367, 0), "the premise: seventeen placements and the recover-nothing retreat");
+        let cut = folded_legal_capped(&spread, &rules, 17);
+        assert_eq!((cut.listed.len(), cut.folded, cut.capped), (17, 442_367, 1), "the cap's one beside the fold's 442,367, apart");
+        assert_eq!(cut.omitted(), 442_368, "the deciding viewer's count is the two together");
     }
 }

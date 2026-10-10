@@ -348,11 +348,15 @@ export interface ClientState {
   /** Every bot seat the RECORD names, labelled (M6.5c2, R-6.5c2.10) — empty
    *  for an all-human game. The record's, not the resident session's. */
   bots: SeatBot[];
-  /** Legal moves `frame.decision.options` does NOT list (security S1b): the
-   *  retreat family's members beyond its recover-nothing one — a hot-seat
+  /** The POSITION's legal moves the server folded or capped rather than
+   *  listed (security S1b): the retreat family's members beyond its
+   *  recover-nothing one — a count of public on-board assistants; a hot-seat
    *  table in the engine's worst-case state offered 442,368 of them, 58 MB a
-   *  frame — and anything past the server's cap. The numbered rows are the
-   *  prompt's and were always the REPL's grouped entries; the guided retreat
+   *  frame — and, on the DECIDING viewer's frame alone, anything past the
+   *  server's cap. Counted for every viewer of the position, so a frame for a
+   *  seat that is not deciding (whose `frame.decision.options` is empty)
+   *  still says what was folded. The numbered rows are the prompt's and were
+   *  always the REPL's grouped entries; the guided retreat
    *  (`kind: "retreat"`) is how a retreat is chosen. `0` on every frame
    *  outside a folded Movement decision. */
   options_omitted: number;
@@ -476,11 +480,15 @@ export interface HistoricalFrame {
    *  card leaving. */
   ports: PortsPanel;
   labs: LabsPanel;
-  /** Legal moves `frame.decision.options` does NOT list (security S1b): the
-   *  retreat family's members beyond its recover-nothing one — a hot-seat
+  /** The POSITION's legal moves the server folded or capped rather than
+   *  listed (security S1b): the retreat family's members beyond its
+   *  recover-nothing one — a count of public on-board assistants; a hot-seat
    *  table in the engine's worst-case state offered 442,368 of them, 58 MB a
-   *  frame — and anything past the server's cap. The numbered rows are the
-   *  prompt's and were always the REPL's grouped entries; the guided retreat
+   *  frame — and, on the DECIDING viewer's frame alone, anything past the
+   *  server's cap. Counted for every viewer of the position, so a frame for a
+   *  seat that is not deciding (whose `frame.decision.options` is empty)
+   *  still says what was folded. The numbered rows are the prompt's and were
+   *  always the REPL's grouped entries; the guided retreat
    *  (`kind: "retreat"`) is how a retreat is chosen. `0` at every position
    *  outside a folded Movement decision. */
   options_omitted: number;

@@ -2987,8 +2987,8 @@ mod tests {
         let live: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
         assert_eq!((live["events"].as_u64(), live["to_move"].as_u64()), (Some(k as u64), Some(0)));
         assert!(live["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", live["options_omitted"]);
-        let retreats = live["frame"]["decision"]["options"].as_array().expect("options").iter().filter(|o| o["mv"].get("ReturnPresidentToHand").is_some()).count();
-        assert_eq!(retreats, 1, "the recover-nothing member alone");
+        let retreats: Vec<&serde_json::Value> = live["frame"]["decision"]["options"].as_array().expect("options").iter().filter_map(|o| o["mv"].get("ReturnPresidentToHand")).collect();
+        assert_eq!((retreats.len(), retreats.first().map(|r| &r["recover"])), (1, Some(&serde_json::json!({}))), "the recover-nothing member alone");
     }
 
     /// **A run of sixty-four at the spread state is bounded** (finding A3): the
@@ -3032,16 +3032,18 @@ mod tests {
     /// **A shared-table undo at the spread table is bounded** (finding A3, with
     /// B2): what it pins is B2's deck-shrink guard reading the state before
     /// the trailing event from the session's LADDER (`api::trailing_state`,
-    /// `Session::state_before`) — under the old `state_at(record, len - 1)`,
-    /// a checked replay from setup with the legal list materialized per
-    /// event, this request was the review's 198 s replay. The spread table
-    /// with seat 1 re-seated to a second person, so `undo_allowed` takes its
-    /// shared arm; the caller holds seats 0, 2 and 3, seat 3 is to move and
-    /// the trailing event is seat 3's own and drew nothing, so R-P6 and B2
-    /// both wave it through: a 200 within [`SPREAD_UNDO_MS`] and a small
-    /// reply. The second person's undo after it reads R-P6's own refusal —
-    /// the premise that the arm in force was the shared one, which reaches
-    /// the guard's read before it refuses.
+    /// `Session::state_before`). Under the old `state_at(record, len - 1)`, a
+    /// checked replay from setup with the legal list materialized per event,
+    /// this request read 118 s on this Mac at Task 6's head (the one replay,
+    /// as a mutant inside the whole web lib run); the pre-flight read 198 s
+    /// for the `Listed` mutant's whole-lib run over the same record. The
+    /// spread table with seat 1 re-seated to a second person, so
+    /// `undo_allowed` takes its shared arm; the caller holds seats 0, 2 and 3,
+    /// seat 3 is to move and the trailing event is seat 3's own and drew
+    /// nothing, so R-P6 and B2 both wave it through: a 200 within
+    /// [`SPREAD_UNDO_MS`] and a small reply. The second person's undo after
+    /// it reads R-P6's own refusal — the premise that the arm in force was
+    /// the shared one, which reaches the guard's read before it refuses.
     #[tokio::test]
     async fn a_shared_table_undo_at_the_spread_table_is_bounded() {
         let store = Arc::new(MemStore::default());
