@@ -349,8 +349,10 @@ mod dir {
                 Ok(())
             }
             let root = self.dir.join(prefix);
-            if !root.exists() {
-                return Ok((0, 0));
+            match root.try_exists() {
+                Ok(false) => return Ok((0, 0)),
+                Err(e) => return Err(PutError::Failed(format!("count {prefix}: {e}"))),
+                Ok(true) => {}
             }
             let (mut records, mut bytes) = (0usize, 0u64);
             walk(&root, own, &mut records, &mut bytes).map_err(|e| PutError::Failed(format!("count {prefix}: {e}")))?;
@@ -847,9 +849,14 @@ mod tests {
     /// **A browser caller's share is counted before a put, and the count
     /// never touches a retry or the server's own games** (finding B12;
     /// R-SEC8(f); Review Focus 2). Under a two-record share two pairs land, a
-    /// third is refused as `Quota` with nothing written, the first pair's
-    /// bytes again are `Identical` (the marker read precedes the count),
-    /// another caller's share is its own, and three server games land under
+    /// third is refused as `Quota` with nothing written, and the first pair's
+    /// bytes again are `Identical`. That retry does not pin the ORDER on its
+    /// own: the share is exactly full, and a put's own two paths never count
+    /// against it, so it passes the count either way. What pins it is the
+    /// same retry under a one-record share, which the two filed records put
+    /// OVER its bound, as a quota lowered after they were filed would: it is
+    /// `Identical` only because the marker read answers before the count.
+    /// Another caller's share is its own, and three server games land under
     /// the empty prefix. Then the BYTES: a hundred-byte share takes one
     /// eighty-byte pair and refuses the next.
     #[cfg(feature = "server")]
@@ -866,6 +873,9 @@ mod tests {
         let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, Why::Over, "local-3").unwrap();
         assert!(!dir.join(&record).exists() && !dir.join(&table).exists(), "nothing was written");
         assert!(matches!(a.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Identical)), "a retry survives a full share");
+        let lowered = DirArchive::new(&dir).with_quota(Quota { records: 1, bytes: 1 << 20 });
+        let retry = lowered.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}");
+        assert!(matches!(retry, Ok(PutOutcome::Identical)), "a retry survives a share OVER its bound, the marker read first: {retry:?}");
         assert!(matches!(a.put("browser/c_at_d/", Why::Over, "local-3", "{\"r\":3}", "{\"t\":3}"), Ok(PutOutcome::Landed)), "another caller's share");
         for id in ["sim-1", "sim-2", "sim-3"] {
             assert!(matches!(a.put("", Why::Over, id, "{\"r\":9}", "{\"t\":9}"), Ok(PutOutcome::Landed)), "the server's own games are never counted");

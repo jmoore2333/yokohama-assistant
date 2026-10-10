@@ -3518,7 +3518,14 @@ mod tests {
         let (status, v) = post_archive(&on, PLAYED_RECORD, &second);
         assert_eq!(status, 507, "{v}");
         assert_eq!(v["error"], archive_full_sentence(1, 1 << 20));
-        assert!(!dir.join("browser/local_at_browser/rev7/over/local-second.json").exists(), "nothing was written");
+        let (record, table) = crate::archive::paths(
+            yokohama_core::SEMANTICS_REV,
+            "browser/local_at_browser/",
+            crate::archive::Why::Over,
+            "local-second",
+        )
+        .unwrap();
+        assert!(!dir.join(&record).exists() && !dir.join(&table).exists(), "nothing was written");
         let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "{v}");
         std::fs::remove_dir_all(&dir).ok();
