@@ -1544,14 +1544,15 @@ carries headers; no fixture creates a dotted id — the pre-flight's grep over `
 "[^"]*\.` reads nothing).
 
 - [ ] **Step 5: The mutants.** **M12** the layer dropped — (a) red on the first row; **M12b** `route_layer` in place of `layer` — (a) red at
-`/api` exactly, the fallback's (the draft's reason, `/api/nothing`, is the adapter's catch-all, not the fallback's —
+`/api/` (the reviewer's reading: the trailing slash is the fallback's; `/api` exactly reds M13) (the draft's reason, `/api/nothing`, is the adapter's catch-all, not the fallback's —
 the implementer's C2, with rows `/api`, `/api/` and `/apix`); **M13** `starts_with("/api/")` alone — (a) red at
 `/api` exactly (the draft's `POST /api/games` starts with `/api/` and could not tell); **M14** the dotted arm
 dropped — (b) red at `x.js`; **M15** the dotted arm placed BEFORE the `is_safe_id` arm — (b) red at its two-defect
 pin (`..` and `x.table` read `is_safe_id`'s sentence, never `DOTTED_ID`'s; the draft left the order unpinned and
 M15 survived every cell — C3); (c) reads the events and one stream frame of the stored dotted table (Review Focus
-2's "streams" — C4), which also refuses a Task 4 transport check stricter than `is_safe_id`; **M15b** the dot refused in `store::is_safe_id` instead of `create` — (c) red (the
-stored table is refused) and (b)'s stored half red.
+2's "streams" — C4), which also refuses a Task 4 transport check stricter than `is_safe_id`; **M15b** the dot refused in `store::is_safe_id` instead of `create` — (b) red in its FIRST loop (the
+reviewer's reading: `x.js` reads `is_safe_id`'s sentence, not `DOTTED_ID`'s) and (c) red (the stored table is
+refused).
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/tables.rs` · `git
 commit -m "web: B9 — every answer under /api is Cache-Control: no-store from one layer; a creator-chosen id with
