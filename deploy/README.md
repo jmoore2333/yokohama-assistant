@@ -311,7 +311,7 @@ restarts every table's clock.
 | `/data/games/<id>.table.json` | the table: who sits where, the status, the lock, the setup seed |
 | `/data/games/<id>.chat.json` | the table's chat |
 | `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
-| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document; a browser's uploads under `browser/<caller>/` stop at 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller (security S1b) |
+| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/`; a browser's uploads under `/data/archive/browser/<caller>/rev7/{over,abandoned}/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document; a browser's uploads under `browser/<caller>/` stop at 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller (security S1b) |
 
 **The preferred way** to end one table is the creator's **Abandon** in the lobby: it files the archive copy
 (once, even for a finished game) and removes the table, as the sweep does. Everything below is for a server

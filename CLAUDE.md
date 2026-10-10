@@ -113,3 +113,4 @@ Workspace crates: `crates/yokohama-core` (library), `crates/yokohama-cli` (game 
   - A read that never settles is a state, not a delay: a wait for a fact needs a bound (M6.5c, I-86).
   - "The same code" is a premise a stored replay must CHECK, not assume: stamp what gives a line its meaning — the engine's order included (M6.5c, I-85, I-91).
   - A plan's code block is the single source: correct it THERE first and transcribe byte for byte, and have the implementer PROBE the brief's code before reporting — every task of the security core PR came back with a real gap that way, and the plan and the code never diverged (the core PR's Review record, R-10–R-18).
+  - A permit or a lock taken in an async handler's frame is released when the client hangs up while the blocking work runs on — hold it inside the work — and a count-then-write is a race until a lock says otherwise (security S1b Tasks 3–4; both measured, one over real TCP).

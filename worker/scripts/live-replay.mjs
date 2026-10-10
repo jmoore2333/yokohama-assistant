@@ -24,7 +24,7 @@
 //    reader: the base its payloads are taken back by (spec §9.3).
 // 3. **Every row the production seed rule lets through**, in `order`'s order:
 //    `walk.json`'s, each `walk-host.json` row after the walk row its `after`
-//    names, then `archive-walk.json`'s — with the credential and
+//    names (`-1`: before the first), then `archive-walk.json`'s — with the credential and
 //    `X-Yokohama-Claimed-User: <who>`, a row with no `who` sending the
 //    credential alone. The rule (`productionSeedRule`, security S1b): `wire`
 //    and `wire2` are seeded creates beside an open seat, which a production
