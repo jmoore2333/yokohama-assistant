@@ -146,16 +146,21 @@ pub struct ApiError {
 /// finding D12, decision D-2). Sixteen echoes of `echo::ECHO_MAX` — no sentence
 /// in this crate repeats more than two values — and a fence under every
 /// sentence a site composes from a library's own words: serde names an unknown
-/// field verbatim, axum names a path segment. Applied in every constructor
-/// and in `From<GameError>`, so a site the echo inventory missed is bounded all
-/// the same when its sentence reaches a body through one — a handler that
-/// builds `ApiError` literally is not, and repeats a caller's text through
-/// [`echo`] or not at all.
+/// field verbatim, axum names a path segment. Applied twice: at
+/// construction — every constructor and the `From<GameError>` arms, so the
+/// in-memory sentence is bounded — and at the boundary, in `api::error_value`,
+/// the one serializer behind `IntoResponse` and [`api::error_body`] that the
+/// server, the browser module and the Worker module write a refusal through.
+/// So a handler that builds `ApiError` literally is bounded all the same, and
+/// so is a site the echo inventory missed. (The Worker's `identity_inner`
+/// writes its 401 by hand from `User::parse`'s sentence, outside both; that
+/// sentence's one caller value is bounded by [`echo()`].)
 pub const MESSAGE_MAX: usize = 1_024;
 
 impl ApiError {
     /// `message` cut to [`MESSAGE_MAX`] characters with a `…`; every
-    /// constructor below passes through here.
+    /// constructor below passes through here, and so does `api::error_value`
+    /// at the boundary.
     pub fn capped(message: String) -> String {
         if message.chars().nth(MESSAGE_MAX).is_none() {
             return message;
@@ -1178,13 +1183,14 @@ mod tests {
     const WHO: &str = "red@wire.test";
 
     /// **No error body carries more than `MESSAGE_MAX` characters of message**
-    /// (finding D12, decision D-2): the cap is in the constructors and in the
-    /// `From<GameError>` arms that build the struct literally, so a site the
-    /// echo inventory missed is bounded anyway when it reaches a body through
-    /// one. Every constructor that takes a message is listed; a new one joins
-    /// the list or fails the count line. A handler that builds the struct
-    /// literally (`busy`, `unauthorized`, `api.rs`'s own) is not capped: it
-    /// repeats a caller's text through `echo` or not at all.
+    /// (finding D12, decision D-2), by two layers. The FIRST is pinned here:
+    /// the cap at construction, in the constructors and in the
+    /// `From<GameError>` arms that build the struct literally, so the in-memory
+    /// sentence is bounded too. Every constructor that takes a message is
+    /// listed; a new one joins the list or fails the count line. The SECOND is
+    /// the boundary, `api::error_value`, which caps whatever built the error —
+    /// a handler's own struct literal (`busy`, `unauthorized`, `api.rs`'s own)
+    /// included — and is pinned by `a_literal_api_error_is_capped_at_the_boundary`.
     #[test]
     fn every_api_error_message_is_capped_at_construction() {
         let long = "m".repeat(MESSAGE_MAX * 3);
@@ -1219,6 +1225,40 @@ mod tests {
         for e in &literal {
             assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
         }
+    }
+
+    /// **The second layer: the cap at the BOUNDARY** (finding D12, decision
+    /// D-2, S1c Task 1 fix round 1). A handler that builds `ApiError` as a
+    /// struct literal passes no constructor, so the first layer never sees its
+    /// message; `api::error_value` — the one serializer behind
+    /// `IntoResponse` and `api::error_body`/`error_response`, which the server,
+    /// the browser module and the Worker module write a refusal through — cuts
+    /// it whatever built it. Read through both arms: the mutant that serializes
+    /// `.message` raw reads 3,072 characters on both, while every
+    /// constructor-built error stays capped by the first layer.
+    #[tokio::test]
+    async fn a_literal_api_error_is_capped_at_the_boundary() {
+        let literal = || ApiError {
+            status: StatusCode::CONFLICT,
+            message: "m".repeat(MESSAGE_MAX * 3),
+            table_status: None,
+            foreign_bot: None,
+        };
+        let res = literal().into_response();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let via_axum: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON body");
+        let layer = api::error_response(literal());
+        assert_eq!(layer.status, 409);
+        let via_layer: serde_json::Value = serde_json::from_str(&layer.body).expect("a JSON body");
+        for (arm, body) in [("IntoResponse", via_axum), ("error_response", via_layer)] {
+            let error = body["error"].as_str().expect("an error sentence");
+            assert_eq!(error.chars().count(), MESSAGE_MAX + 1, "{arm}");
+            assert!(error.ends_with('…'), "{arm}");
+        }
+        // A message under the cap is written as it always was, byte for byte.
+        let short = ApiError { status: StatusCode::CONFLICT, message: "short".into(), table_status: Some("open"), foreign_bot: None };
+        assert_eq!(api::error_body(&short), r#"{"error":"short","status":"open"}"#);
     }
 
     /// **A hostile value anywhere a sentence echoes it is bounded** (finding

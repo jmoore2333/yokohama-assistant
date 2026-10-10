@@ -98,8 +98,14 @@ pub fn error_body(e: &ApiError) -> String {
 /// [`error_body`] as a value, for `IntoResponse for ApiError`, whose `Json`
 /// serializes it — the same bytes, one rule, THREE arms. (The first draft of
 /// this export carried two; the corpus's foreign-bot 409 is what caught it.)
+///
+/// **The message is cut to [`crate::MESSAGE_MAX`] HERE, at the boundary**
+/// (security S1c, decision D-2's second layer): whatever built the error — a
+/// constructor, which caps already, or a handler's own struct literal, which
+/// does not — its sentence becomes bytes through this function and no other
+/// in the layer, so no refusal leaves the layer longer than the cap.
 pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
-    let mut body = serde_json::json!({ "error": e.message });
+    let mut body = serde_json::json!({ "error": ApiError::capped(e.message.clone()) });
     if let Some(status) = e.table_status {
         body["status"] = status.into();
     }
