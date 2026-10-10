@@ -113,7 +113,10 @@ export interface Pending {
   id: string;
   reason: PendingReason;
   lastTried: number;
-  /** The SERVER's own sentence, on a `refused` row alone. */
+  /** The SERVER's own sentence on a `refused` row, and on an `offline` row
+   *  that met a 507, the caller's share of the archive full (security S1b).
+   *  On any other `offline` row it is a LOCAL failure's own sentence, where
+   *  `attempt` had one. */
   sentence?: string;
 }
 

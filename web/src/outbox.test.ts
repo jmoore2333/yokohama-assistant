@@ -6,9 +6,14 @@
 // answer "is it still there after a reload?" the way its author expected. Every
 // cell below reopens the real database.
 //
-// **Nothing here fabricates a payload.** The archive's three answers and the
-// health read are the committed corpus's, through the real `fetch` path, so the
-// classification cells run `ApiError` exactly as a browser builds it.
+// **Every answer the corpus carries is the corpus's.** The archive's 201, 400
+// and 409 and the health read are the committed corpus's, through the real
+// `fetch` path, so the classification cells run `ApiError` exactly as a browser
+// builds it. The answers it carries no row for are written by hand in the cells
+// that need them, because the corpus may not move for a test: the `{ error }`
+// bodies of a 401, a 503, a 404 and a full share's 507 (security S1b), and the
+// edge's own answers, which are Access's 401, the challenge's 403 and an HTML
+// 404.
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

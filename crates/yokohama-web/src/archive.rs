@@ -50,14 +50,16 @@ pub enum PutOutcome {
     Identical,
 }
 
-/// Why a put was refused: a DIFFERENT record is already at this path, or the
-/// write itself failed.
+/// Why a put was refused: a DIFFERENT record is already at this path, the
+/// write itself failed, or the caller's share is full.
 ///
-/// Two variants rather than one string, because the caller answers them
-/// differently and must: a conflict is a 409 the client KEEPS its game on, and
-/// a failure is "the archive could not be reached — the game was kept"
-/// (R-6.5b.7). A 409 that read as a failure, or a failure that read as a 409,
-/// is the shape that deletes somebody's only complete copy.
+/// Three variants rather than one string, because the caller answers them
+/// differently and must: a conflict is a 409 the client KEEPS its game on; a
+/// failure is a 500, "the archive could not be reached — the game was kept"
+/// (R-6.5b.7), and the outbox retries it; and a full share (security S1b,
+/// finding B12) is a 507 with nothing written, which the client keeps its game
+/// on and the outbox retries. A 409 that read as a failure, or a failure that
+/// read as a 409, is the shape that deletes somebody's only complete copy.
 #[derive(Debug)]
 pub enum PutError {
     /// The path holds a different record. `key` is the path RELATIVE to the
@@ -282,11 +284,19 @@ mod dir {
     pub struct DirArchive {
         dir: PathBuf,
         quota: Quota,
+        /// **One put at a time through this archive** (security S1b, finding
+        /// B12): `put` takes it at the top and holds it across the marker
+        /// read, the count and both writes. The count is a read and the writes
+        /// come after it, so without it N puts in flight from one caller could
+        /// each read the count under the bound and all land. It serializes the
+        /// puts of ONE value in ONE process, and every server builds one
+        /// `DirArchive`, through `from_env`.
+        puts: std::sync::Mutex<()>,
     }
 
     impl DirArchive {
         pub fn new(dir: impl Into<PathBuf>) -> Self {
-            Self { dir: dir.into(), quota: Quota::PRODUCTION }
+            Self { dir: dir.into(), quota: Quota::PRODUCTION, puts: std::sync::Mutex::new(()) }
         }
 
         /// `None` when the variable is unset (the archive is off); `Err` when it
@@ -297,7 +307,7 @@ mod dir {
             let dir = PathBuf::from(raw);
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{ENV_VAR}={} cannot be created: {e}", dir.display()))?;
-            Ok(Some(Self { dir, quota: Quota::PRODUCTION }))
+            Ok(Some(Self { dir, quota: Quota::PRODUCTION, puts: std::sync::Mutex::new(()) }))
         }
 
         /// This archive under a share of the caller's — the builder a cell takes
@@ -307,21 +317,28 @@ mod dir {
             self
         }
 
-        /// What `prefix` holds: records (`.json` files that are not
-        /// `.table.json`) and the bytes of every `.json` file under it, at any
-        /// depth. Zero where the prefix's directory does not exist yet; a read
-        /// that fails is a `Failed`, never a zero.
-        fn usage(&self, prefix: &str) -> Result<(usize, u64), PutError> {
-            fn walk(dir: &Path, records: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
+        /// What `prefix` holds, less the put's OWN two paths (`own`): records
+        /// (`.json` files that are not `.table.json`) and the bytes of every
+        /// `.json` file under it, at any depth. Zero where the prefix's
+        /// directory does not exist yet; a read that fails is a `Failed`, never
+        /// a zero.
+        ///
+        /// **A put's own paths never count against it** (security S1b, finding
+        /// B12): a crash between the two writes leaves the pair's table with no
+        /// record, and the put that repairs it would otherwise count that table
+        /// twice, on disk here and again in what it adds, so a repair at the
+        /// byte margin was refused for ever and the outbox never left its retry.
+        fn usage(&self, prefix: &str, own: &[PathBuf]) -> Result<(usize, u64), PutError> {
+            fn walk(dir: &Path, own: &[PathBuf], records: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
                 for entry in std::fs::read_dir(dir)? {
                     let entry = entry?;
                     let meta = entry.metadata()?;
                     if meta.is_dir() {
-                        walk(&entry.path(), records, bytes)?;
+                        walk(&entry.path(), own, records, bytes)?;
                         continue;
                     }
                     let name = entry.file_name().to_string_lossy().into_owned();
-                    if !name.ends_with(".json") {
+                    if !name.ends_with(".json") || own.contains(&entry.path()) {
                         continue;
                     }
                     *bytes += meta.len();
@@ -336,7 +353,7 @@ mod dir {
                 return Ok((0, 0));
             }
             let (mut records, mut bytes) = (0usize, 0u64);
-            walk(&root, &mut records, &mut bytes).map_err(|e| PutError::Failed(format!("count {prefix}: {e}")))?;
+            walk(&root, own, &mut records, &mut bytes).map_err(|e| PutError::Failed(format!("count {prefix}: {e}")))?;
             Ok((records, bytes))
         }
 
@@ -444,6 +461,10 @@ mod dir {
             record_json: &str,
             table_json: &str,
         ) -> Result<PutOutcome, PutError> {
+            // One put at a time (the `puts` field's doc). A poisoned lock is
+            // still a lock here, since nothing behind it is left half-written
+            // that the once-rule does not already handle.
+            let _serialized = self.puts.lock().unwrap_or_else(|e| e.into_inner());
             let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id).map_err(PutError::Failed)?;
             // **Contained, LEXICALLY** (M6.5c2, spec §2.1; review R2-m3): every
             // component of both RELATIVE paths is a plain name, so joining them
@@ -464,9 +485,11 @@ mod dir {
             // **A browser caller's share, counted before the writes** (security
             // S1b, finding B12) — AFTER the marker read, so a retry of a filed
             // record answers `Identical` once the share is full. A server's own
-            // games (the empty prefix) are never counted.
+            // games (the empty prefix) are never counted, and nor are this
+            // pair's own two paths (`usage`'s doc: a half pair's repair).
             if prefix.starts_with("browser/") {
-                let (records, bytes) = self.usage(prefix)?;
+                let own = [self.dir.join(&record), self.dir.join(&table)];
+                let (records, bytes) = self.usage(prefix, &own)?;
                 let adding = (record_json.len() + table_json.len()) as u64;
                 if records >= self.quota.records || bytes + adding > self.quota.bytes {
                     return Err(PutError::Quota { records: self.quota.records, bytes: self.quota.bytes });
@@ -854,6 +877,37 @@ mod tests {
         let over = b.put("browser/e_at_f/", Why::Over, "local-2", &forty, &forty);
         assert!(matches!(over, Err(PutError::Quota { records: 100, bytes: 100 })), "a hundred and sixty over a hundred: {over:?}");
         assert_eq!(Quota::PRODUCTION, Quota { records: QUOTA_RECORDS, bytes: QUOTA_BYTES });
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **A put's own two paths never count against it** (security S1b, finding
+    /// B12). A crash between the two writes leaves a half pair, the table with
+    /// no record, and the put that repairs it counted that table twice: on
+    /// disk, and again in what it adds. At the byte margin the repair was then
+    /// refused for ever, and the outbox never left its retry. Here a 40-byte
+    /// table at the pair's OWN path under an 80-byte share takes the 80-byte
+    /// pair, since the finished pair is exactly the share. The control is the
+    /// same share with a 40-byte table of ANOTHER id, which is the caller's
+    /// and refuses the pair.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_half_pairs_repair_never_counts_its_own_table_against_the_share() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_half_pair_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let forty = format!("{{\"r\":\"{}\"}}", "x".repeat(32));
+        assert_eq!(forty.len(), 40, "the premise");
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 100, bytes: 80 });
+        let plant = |prefix: &str, id: &str| {
+            let (_, table) = paths(yokohama_core::SEMANTICS_REV, prefix, Why::Over, id).unwrap();
+            std::fs::create_dir_all(dir.join(&table).parent().expect("a parent")).unwrap();
+            std::fs::write(dir.join(&table), &forty).unwrap();
+        };
+        plant("browser/g_at_h/", "local-1");
+        let repair = a.put("browser/g_at_h/", Why::Over, "local-1", &forty, &forty);
+        assert!(matches!(repair, Ok(PutOutcome::Landed)), "the repair lands at exactly the share: {repair:?}");
+        plant("browser/i_at_j/", "local-9");
+        let control = a.put("browser/i_at_j/", Why::Over, "local-1", &forty, &forty);
+        assert!(matches!(control, Err(PutError::Quota { records: 100, bytes: 80 })), "another id's table counts: {control:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
