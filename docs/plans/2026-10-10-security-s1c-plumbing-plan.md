@@ -100,11 +100,19 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
   it cut; a site that quoted with `{x:?}` now writes `\"{x}\"` with `x = echo(x)` as a named argument, and
   `no such endpoint: {}` stays unquoted. The Worker's TS cells pin that 404's text through the module (`worker/test/worker.test.ts:677`,
   `open/door.test.ts:273`, `:280`), so a quoting change there would ripple across three suites for nothing.
-- **D-2 — the message cap lives in `ApiError`'s constructors, not at the sites.** A serde error names an unknown
+- **D-2 — the message cap is TWO layers: the constructors, and the boundary.** A serde error names an unknown
   field verbatim (`deny_unknown_fields`), axum's path sentences name the segment, and a site the inventory misses
-  is the one that bites; 1,024 characters at `bad_request`/`not_found`/`forbidden`/`conflict`/`server_error`
-  (and the struct's own literal constructions, `busy()` included — a cell counts them) bounds every body by
-  construction. The per-site 64 keeps the sentences readable.
+  is the one that bites. The first layer is 1,024 characters at `bad_request`/`not_found`/`server_error` and in
+  the `From<GameError>` arms, so the in-memory sentence is bounded. The second (Task 1's fix round 1, 2026-10-10 —
+  the owner's side note read the first layer's twenty-two holes: `api.rs`'s own struct literals, `busy()`,
+  `unauthorized`, the Worker's one) is `api::error_value`, the ONE serializer behind `error_body`,
+  `error_response` and `IntoResponse`, so whatever built an `ApiError` — a handler's literal included — its
+  sentence leaves the layer capped, and the browser module (through `dispatch`) and the Worker module (through
+  `error_body`) inherit it unedited. A private marker field was the alternative, refused: it would have forced an
+  edit in the Worker crate (fenced until Task 5) and covered no host that serializes a message itself. The
+  per-site 64 keeps the sentences readable. The one refusal written by hand outside both layers is the Worker's
+  `identity_inner` 401 (its `lib.rs:381`, built from `User::parse`'s sentence, whose caller value the echo rule
+  bounds) — recorded, S2's door rows' territory.
 - **D-3 — B8's two halves are one helper and one check.** `Games::with_table_lock(id, body)` takes the lock,
   runs the body, drops its clone and prunes, so "prune on every exit" cannot be forgotten at a site; every writer
   reads the table before calling it (an absent table is a 404 that never touches the map); `tables.rs` then
@@ -442,13 +450,14 @@ mod tests {
 
 ```rust
     /// **No error body carries more than `MESSAGE_MAX` characters of message**
-    /// (finding D12, decision D-2): the cap is in the constructors and in the
-    /// `From<GameError>` arms that build the struct literally, so a site the
-    /// echo inventory missed is bounded anyway when it reaches a body through
-    /// one. Every constructor that takes a message is listed; a new one joins
-    /// the list or fails the count line. A handler that builds the struct
-    /// literally (`busy`, `unauthorized`, `api.rs`'s own) is not capped: it
-    /// repeats a caller's text through `echo` or not at all.
+    /// (finding D12, decision D-2), by two layers. The FIRST is pinned here:
+    /// the cap at construction, in the constructors and in the
+    /// `From<GameError>` arms that build the struct literally, so the in-memory
+    /// sentence is bounded too. Every constructor that takes a message is
+    /// listed; a new one joins the list or fails the count line. The SECOND is
+    /// the boundary, `api::error_value`, which caps whatever built the error —
+    /// a handler's own struct literal (`busy`, `unauthorized`, `api.rs`'s own)
+    /// included — and is pinned by `a_literal_api_error_is_capped_at_the_boundary`.
     #[test]
     fn every_api_error_message_is_capped_at_construction() {
         let long = "m".repeat(MESSAGE_MAX * 3);
@@ -558,6 +567,40 @@ mod tests {
         assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
         assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "a {} byte body", text.len());
     }
+
+    /// **The second layer: the cap at the BOUNDARY** (finding D12, decision
+    /// D-2, S1c Task 1 fix round 1). A handler that builds `ApiError` as a
+    /// struct literal passes no constructor, so the first layer never sees its
+    /// message; `api::error_value` — the one serializer behind
+    /// `IntoResponse` and `api::error_body`/`error_response`, which the server,
+    /// the browser module and the Worker module write a refusal through — cuts
+    /// it whatever built it. Read through both arms: the mutant that serializes
+    /// `.message` raw reads 3,072 characters on both, while every
+    /// constructor-built error stays capped by the first layer.
+    #[tokio::test]
+    async fn a_literal_api_error_is_capped_at_the_boundary() {
+        let literal = || ApiError {
+            status: StatusCode::CONFLICT,
+            message: "m".repeat(MESSAGE_MAX * 3),
+            table_status: None,
+            foreign_bot: None,
+        };
+        let res = literal().into_response();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let via_axum: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON body");
+        let layer = api::error_response(literal());
+        assert_eq!(layer.status, 409);
+        let via_layer: serde_json::Value = serde_json::from_str(&layer.body).expect("a JSON body");
+        for (arm, body) in [("IntoResponse", via_axum), ("error_response", via_layer)] {
+            let error = body["error"].as_str().expect("an error sentence");
+            assert_eq!(error.chars().count(), MESSAGE_MAX + 1, "{arm}");
+            assert!(error.ends_with('…'), "{arm}");
+        }
+        // A message under the cap is written as it always was, byte for byte.
+        let short = ApiError { status: StatusCode::CONFLICT, message: "short".into(), table_status: Some("open"), foreign_bot: None };
+        assert_eq!(api::error_body(&short), r#"{"error":"short","status":"open"}"#);
+    }
 ```
 
 (The `index/{kind}` row today answers the kind's sentence with `{other:?}`; the `at/{k}` row reaches
@@ -594,16 +637,21 @@ In `lib.rs`, with the modules (:60–75): `pub mod echo;` and `pub use echo::ech
 /// finding D12, decision D-2). Sixteen echoes of `echo::ECHO_MAX` — no sentence
 /// in this crate repeats more than two values — and a fence under every
 /// sentence a site composes from a library's own words: serde names an unknown
-/// field verbatim, axum names a path segment. Applied in every constructor
-/// and in `From<GameError>`, so a site the echo inventory missed is bounded all
-/// the same when its sentence reaches a body through one — a handler that
-/// builds `ApiError` literally is not, and repeats a caller's text through
-/// [`echo`] or not at all.
+/// field verbatim, axum names a path segment. Applied twice: at
+/// construction — every constructor and the `From<GameError>` arms, so the
+/// in-memory sentence is bounded — and at the boundary, in `api::error_value`,
+/// the one serializer behind `IntoResponse` and [`api::error_body`] that the
+/// server, the browser module and the Worker module write a refusal through.
+/// So a handler that builds `ApiError` literally is bounded all the same, and
+/// so is a site the echo inventory missed. (The Worker's `identity_inner`
+/// writes its 401 by hand from `User::parse`'s sentence, outside both; that
+/// sentence's one caller value is bounded by [`echo()`].)
 pub const MESSAGE_MAX: usize = 1_024;
 
 impl ApiError {
     /// `message` cut to [`MESSAGE_MAX`] characters with a `…`; every
-    /// constructor below passes through here.
+    /// constructor below passes through here, and so does `api::error_value`
+    /// at the boundary.
     pub fn capped(message: String) -> String {
         if message.chars().nth(MESSAGE_MAX).is_none() {
             return message;
@@ -622,8 +670,23 @@ impl ApiError {
 }
 ```
 
-`busy()` (:1017) builds the struct literally with `BUSY.to_string()` — a constant, under the cap by inspection;
-the count cell names the constructors, not the literal.
+`busy()` (:1017) builds the struct literally with `BUSY.to_string()` — a constant; since fix round 1 every
+literal is capped at the boundary anyway. In `api.rs`, the one serializer (fix round 1):
+
+```rust
+/// **The message is cut to [`crate::MESSAGE_MAX`] HERE, at the boundary**
+/// (security S1c, decision D-2's second layer): whatever built the error — a
+/// constructor, which caps already, or a handler's own struct literal, which
+/// does not — its sentence becomes bytes through this function and no other
+/// in the layer, so no refusal leaves the layer longer than the cap.
+pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
+    let mut body = serde_json::json!({ "error": ApiError::capped(e.message.clone()) });
+    // … the `status` and `foreign_bot` keys as before …
+```
+
+`error_body` is `error_value(e).to_string()`, `error_response` calls `error_body`, and `lib.rs`'s `IntoResponse` is
+`Json(api::error_value(&self))`; the Worker module's `host_refusal`, `events.rs`, `picker.rs` and `receipt.rs` reach
+the wire through `error_body`, re-exported, so no host is edited.
 
 In `grammar.rs`, above `is_gameplay_line` (:84):
 
@@ -741,7 +804,9 @@ row); **M15** `MemStore::read`'s sentence back; **M16** `create`'s; **M17** the 
 `NoRoute` path unwrapped (the first row). **Two equivalent mutants, recorded**: **M14b** `fallback`'s `uri.path()`
 unwrapped and **M14c** `dispatch`'s inner `_` arm unwrapped — `/api/{*rest}` sends every non-empty tail to the
 adapter and the inner arm fires only if the table and the match disagree, so no router-level cell reaches either;
-both stay wrapped by the rule.
+both stay wrapped by the rule. Fix round 1's: **MB** the boundary cap dropped (`error_value` writes
+`e.message` raw) — `a_literal_api_error_is_capped_at_the_boundary` red at its `IntoResponse` arm alone; **MC**
+`bad_request`'s construction cap dropped — the construction cell alone; M2 (`capped` the identity) now reds both.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/echo.rs crates/yokohama-web/src/lib.rs
 crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/games.rs
