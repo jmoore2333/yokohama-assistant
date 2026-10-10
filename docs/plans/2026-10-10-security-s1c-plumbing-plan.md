@@ -983,9 +983,16 @@ D29)"`.
     /// B8, decision D-3): the helper is where "drop, then prune" lives, so this
     /// file must not take a lock by hand. The one site allowed to call
     /// `lock_for` is the helper itself, in `games.rs`.
+    ///
+    /// The scan reads the CODE, cut at the file's first column-0
+    /// `#[cfg(test)]` (the layer's scan convention): uncut, this cell's own
+    /// two literals match, so the first assertion could never pass and the
+    /// count would carry one helper call too many.
     #[test]
     fn no_writer_in_this_file_takes_a_lock_by_hand() {
-        let source = include_str!("tables.rs");
+        let whole = include_str!("tables.rs");
+        let source = whole.split("\n#[cfg(test)]\n").next().expect("the code above the tests");
+        assert!(source.len() < whole.len(), "the cut found the test module");
         assert!(!source.contains("lock_for("), "a writer calls lock_for directly — use with_table_lock");
         assert!(source.matches("with_table_lock(").count() >= 7, "the seven writers go through the helper");
     }
@@ -1021,11 +1028,152 @@ D29)"`.
 
 (`games()` is `test_support`'s constructor, `games.rs:3180`, in scope through `use super::test_support::*`.)
 
+(d) In `api.rs`'s `mod tests` (the implementer's, 2026-10-10 — C9): the 404 read off the IDENTITY, since "before
+any handler" means before `answer` asks for one; a refused HEAD bodiless (C2's catcher); every `{id}` pattern
+binds `{id}` first (the `bound[0]` premise):
+
+```rust
+    /// **An unsafe `{id}` is `dispatch`'s own 404, BEFORE any handler**
+    /// (security S1c, finding B8). "Before any handler" is read off the
+    /// identity: `answer` asks for it ahead of every game route, so a refused
+    /// identity at a SAFE id is the 401 and at an UNSAFE one the 404. The
+    /// boundary is `is_safe_id`'s — 64 safe bytes reach the handler and a 65th
+    /// does not — and the check reads `bound[0]` because every pattern that
+    /// carries `{id}` binds it FIRST, which the last loop pins. A HEAD of an
+    /// unsafe id leaves with no body, as every refused HEAD does.
+    #[test]
+    fn an_unsafe_id_is_dispatchs_own_404_before_any_handler() {
+        fn ask(games: &Games, method: &str, path: &str, identity: Identity<'_>) -> ApiResponse {
+            dispatch(games, &LOCAL_HOST, identity, &ApiRequest { method, path, query: "", content_type: None, body: b"" })
+        }
+        let games = crate::games::test_support::games();
+        let red = User::parse("red@t.test").expect("an address");
+        let (safe, unsafe_) = ("a".repeat(64), "a".repeat(65));
+        let sentence = |id: &str| error_body(&ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Err("no identity"));
+        assert_eq!(res.status, 401, "64 safe bytes reach `answer`, which asks the identity first: {}", res.body);
+        let res = ask(&games, "GET", &format!("/api/games/{unsafe_}/table"), Err("no identity"));
+        assert_eq!((res.status, res.body), (404, sentence(&unsafe_)), "a 65th byte is refused before the identity is asked");
+        for id in ["..", ".hidden", "a b", "-x", "_house", "caf\u{e9}"] {
+            let res = ask(&games, "GET", &format!("/api/games/{id}"), Err("no identity"));
+            assert_eq!((res.status, res.body), (404, sentence(id)), "{id:?} is not a name the store keeps");
+        }
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Ok(&red));
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "the handler's own absence, the same sentence");
+        let res = dispatch(
+            &games,
+            &LOCAL_HOST,
+            Ok(&red),
+            &ApiRequest { method: "POST", path: &format!("/api/games/{safe}/join"), query: "", content_type: Some("application/json"), body: br#"{"seat":1}"# },
+        );
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "a join at an absent safe id is the handler's 404");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "and it never touched the lock map");
+
+        let res = ask(&games, "HEAD", &format!("/api/games/{unsafe_}"), Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "a refused HEAD carries no body");
+
+        for r in routes(true).iter().filter(|r| r.pattern.contains("{id}")) {
+            assert_eq!(r.pattern.find('{'), r.pattern.find("{id}"), "{} binds {{id}} first", r.pattern);
+        }
+    }
+```
+
+(e) In `tables.rs`'s `mod tests` (the implementer's — C3): the pre-read's one observable effect is that a
+fabricated id never makes an entry even for the length of one call, which cell (a) CANNOT see, because the
+helper prunes on every exit; this cell parks each writer's FIRST table read in a `ReadGate` store and counts the
+map while it waits — red under each of the six dropped pre-reads, naming the writer (`settle` is no row: at an
+absent id its own first read decides there is nothing to repair, and it never locks):
+
+```rust
+    /// A [`MemStore`] that parks the FIRST table read after it is armed, so a
+    /// cell can look at the lock map while a writer waits on that read.
+    struct ReadGate {
+        inner: MemStore,
+        armed: std::sync::atomic::AtomicBool,
+        arrived: Mutex<std::sync::mpsc::Sender<()>>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl Store for ReadGate {
+        fn list(&self, doc: Doc) -> Result<Vec<GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
+            if doc == Doc::Table && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let _ = self.arrived.lock().expect("the gate").send(());
+                let _ = self.release.lock().expect("the gate").recv();
+            }
+            self.inner.read(doc, id)
+        }
+        fn write_if_version(&self, doc: Doc, id: &str, json: &str, expected: Option<Version>) -> Result<Version, WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+    }
+
+    /// **A writer at an absent id never makes a lock entry, not even for the
+    /// length of its own call** (finding B8: the read before the lock). The
+    /// helper prunes on every exit, so a count taken AFTER a refused write
+    /// cannot tell a writer that read first from one that locked first — the
+    /// entry is gone either way, and dropping a pre-read passes every other
+    /// cell. This one parks each writer's FIRST table read and counts the map
+    /// while it waits: read first, the map is empty; locked first, the entry
+    /// is there. `settle` is not a row: at an absent id it never locks, since
+    /// its own first read decides whether there is a repair to lock for.
+    #[test]
+    fn a_writer_at_an_absent_id_reads_before_it_takes_the_lock() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let store = Arc::new(ReadGate {
+            inner: MemStore::default(),
+            armed: AtomicBool::new(false),
+            arrived: Mutex::new(arrived_tx),
+            release: Mutex::new(release_rx),
+        });
+        let games = Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        type Writer = fn(&Games, &User) -> Result<(), GameError>;
+        let rows: [(&str, Writer); 6] = [
+            ("join", |g, u| g.join("nosuch", u, PlayerId::new(1), None, None).map(drop)),
+            ("keep", |g, u| g.keep("nosuch", u, PlayerId::new(0), 1, None).map(drop)),
+            ("unlock", |g, u| g.unlock("nosuch", u, "x").map(drop)),
+            ("delete", |g, u| g.delete("nosuch", u)),
+            ("chat_append", |g, _| g.chat_append("nosuch", red_seat(), "hi").map(drop)),
+            ("delete_chat", |g, u| g.delete_chat("nosuch", 1, u)),
+        ];
+        for (name, writer) in rows {
+            store.armed.store(true, Ordering::SeqCst);
+            let running = {
+                let games = Arc::clone(&games);
+                std::thread::spawn(move || writer(&games, &who("red@t.test")))
+            };
+            arrived_rx.recv_timeout(Duration::from_secs(10)).unwrap_or_else(|_| panic!("{name} reads the table"));
+            let entries = games.locks.lock().expect("the map").len();
+            release_tx.send(()).expect("the parked read is listening");
+            let answer = running.join().expect("the writer's thread");
+            assert_eq!(entries, 0, "{name} held a lock entry during its first read: it locked before it read");
+            assert!(matches!(answer, Err(GameError::NotFound(_))), "{name}: {answer:?}");
+        }
+        assert_eq!(games.locks.lock().expect("the map").len(), 0);
+    }
+```
+
+
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web -- lock_map_empty takes_a_lock_by_hand
 with_table_lock 2>&1 | grep -E '^error|test result|panicked' | head` — `with_table_lock` not found; stubbed as
-`let lock = self.lock_for(id); let _s = enter(&lock); body()`: (a) RED at the first map count after the refused
-writes (**the pre-flight's reading: 300 entries after the loop; 302 after the big and the long ids**); (b) RED
-on `lock_for(`; (c) RED at the final count.
+`let lock = self.lock_for(id); let _s = enter(&lock); body()`: (a) RED at its PREMISE line (`start_as`'s keeps leave `wire`'s entry
+under the stub — the plan's draft "300 after the loop; 302 after the big and the long ids" was never measured and is
+false: the six writers of an iteration share ONE id, and `chat_post`/`chat_delete` call `admitted` before their
+writers, so the stub reads 1 at the premise and 51 after the loop, and the 16 KB row is the store's 500); (b) RED
+on `lock_for(` (and, uncut, on its own literal — C1); (c) RED at its FIRST count, after the early return (the stub
+never prunes); (d) RED at the 65-byte row (a 401: the identity is asked first); (e) written after M9 survived.
 
 - [ ] **Step 3: The code.** In `games.rs`, after `prune_lock` (:636):
 
@@ -1091,10 +1239,16 @@ In `api.rs`, `dispatch` (:2503), after the match:
     // **An `{id}` the store would refuse is a 404 here, before any handler**
     // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
     // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
-    // nothing this refuses could have been a table.
-    if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
-        return error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))));
-    }
+    // nothing this refuses could have been a table. An arm of `out` and not an
+    // early return, so the HEAD below leaves this refusal bodiless too.
+    let out = if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
+        error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
+    } else {
+        match answer(games, host, identity, req, pattern, &bound) {
+            Ok(r) => r,
+            Err(e) => error_response(e),
+        }
+    };
 ```
 
 `matches`' doc (:276–281): the sentence "Bound, it reached `get_table` and came back as the store's 'not a usable
@@ -1106,13 +1260,21 @@ that drove a dotted or odd id through a handler now read the 404 where they read
 them; expected: none — `matches`' own cell reads the empty segment, which is `NoRoute`); `wire_fixtures` green
 without the flag.
 
-- [ ] **Step 5: The mutants.** **M8** `with_table_lock` without the prune — (a) red at the final count, (c) red at
-the final count; **M9** `join`'s pre-read dropped — (a) red after the refused writes (the join row's 50 entries);
-**M10** the `dispatch` check dropped — (a) red at the 16 KB row (a 500, not a 404, and an entry); **M11** a writer
-restored to `lock_for` by hand — (b) red.
+- [ ] **Step 5: The mutants.** **M8** `with_table_lock` without the prune — (a) red at the PREMISE, (c) red at its FIRST count (after the
+early return), `a_deleted_tables_lock_is_pruned` red too; **M9** `join`'s pre-read dropped — SURVIVES (a), (b) and
+(c) (the draft's "the join row's 50 entries" cannot happen: the helper prunes on every exit, so a writer that locked
+first leaves the map as empty as one that read first — the implementer's C3); (e) red, naming `join`; **M9.1–M9.5**
+each other pre-read dropped (`chat_append`, `delete_chat`, `unlock`, `keep`, `delete`) — (e) red, naming the
+writer; **M10** the `dispatch` check dropped — (a) red at the 16 KB row (500 ≠ 404; NO entry — the pre-read's
+store refusal comes before any lock, so the draft's "and an entry" was false), (d) red at the 65-byte row (401 ≠
+404); **M11** a writer restored to `lock_for` by hand — (b) red; **MH** the check as the draft's early `return`
+— (d) red at the HEAD row (a 404 WITH a body: the early return skipped `dispatch`'s HEAD strip — C2); **MI** the
+check behind the identity — (d) red at the 65-byte row; **MS** the helper never enters the lock — (c) red at
+`!waiter.is_finished()`. Noted (C8): a body that PANICS skips the prune — the entry can only be a real table's
+(the pre-read guarantees it) and the next writer there prunes it; not a growth vector.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs
-crates/yokohama-web/src/api.rs` · `git commit -m "web: B8 — every writer reads before it locks and prunes on the
+crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs` · `git commit -m "web: B8 — every writer reads before it locks and prunes on the
 way out through Games::with_table_lock; an unsafe {id} is dispatch's 404 before any handler (S1c Task 2)"`.
 
 ---
@@ -1335,7 +1497,7 @@ a dot is refused at create (S1c Task 3)"`.
 
 **Files:**
 - Modify: `crates/yokohama-web/src/lib.rs` (`stream` :804–849 and its doc :761–803; `UntilLast` new; `adapter`
-  :945–951)
+  :945–951), `crates/yokohama-web/src/api.rs` (`events_at` — the unsafe-id 404, Task 2's C6)
 - Test: `lib.rs`'s `mod tests`
 
 **Interfaces:**
@@ -1457,8 +1619,37 @@ cell's wall, about two seconds, and says so in the cell's doc if it is more; the
     }
 ```
 
+(d) Beside (b) — **the two transport routes `app()` serves itself bypass `dispatch`** (Task 2's C6, the
+implementer's probe: `GET /api/games/<65 a's>/events` and `/stream` answer the store's 500 "is not a usable game
+name" where every other route answers Task 2's 404): the check goes at the head of `api::events_at`, the one
+reading both handlers and both hosts share, so an `{id}` `is_safe_id` refuses is `not_found("no game named
+\"<echo>\"")` before any store read:
+
+```rust
+    /// **An unsafe `{id}` at the two axum-native routes is the layer's 404, not
+    /// the store's 500** (security S1c, Task 2's C6): `app()` serves
+    /// `…/events` and `…/stream` itself, so `dispatch`'s check never sees them;
+    /// `events_at` refuses the id first, in the same sentence. The mutant that
+    /// drops the check reads the store's 500 at both.
+    #[tokio::test]
+    async fn an_unsafe_id_at_the_transport_routes_is_the_layers_404() {
+        let state = Arc::new(AppState::in_memory());
+        let big = "a".repeat(65);
+        for path in [format!("/api/games/{big}/events"), format!("/api/games/{big}/stream")] {
+            let (status, body) = get_as(&state, WHO, &path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(body["error"].as_str().unwrap_or("").starts_with("no game named \"aaaa"), "{path}: {body}");
+        }
+    }
+```
+
+(The stream row: `get_as` on a stream URI — a 404 is answered as JSON before any SSE body, so the helper's JSON
+read holds; if the helper hangs on a 200 the implementer uses `stream_frames`.) In `api.rs`, at the head of
+`events_at` (find by content): `if !crate::store::is_safe_id(id) { return Err(ApiError::not_found(format!("no game
+named \"{id}\"", id = crate::echo::echo(id)))); }` with a one-line comment naming C6.
+
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- writes_gone_once
-leaves_the_runtime_thread_free without_an_identity 2>&1 | grep -E 'test result|panicked' | head` — (a) RED at
+leaves_the_runtime_thread_free without_an_identity transport_routes 2>&1 | grep -E 'test result|panicked' | head` — (a) RED at
 `ended` (false) and at the gone count (**the pre-flight's reading: two `gone` frames**); (b) GREEN already — the
 hand-off exists; its mutant (M17) is what proves the cell: the pre-flight reads it red under the inline mutant
 (**about 300 ms**); (c) RED: 503 after two seconds.
@@ -1522,11 +1713,13 @@ delete arm's `ended` was already true (the sender dropped) and is now true by tw
 frames); **M17** `events` reads inline (`Ok(Json(api::events_at(&state.games, &id, &user)?))`) — (b) red (~300
 ms); **M18** `&& resolved.is_ok()` dropped — (c) red (503 after the wait); **M19** the delete arm marked `false`
 — the earlier end-on-delete cell stays green (the channel closes itself) — recorded as a mutant NO cell
-catches, by design: the wrapper is for the refusal arm.
+catches, by design: the wrapper is for the refusal arm; **M19b** `events_at`'s unsafe-id check dropped — (d) red
+at both routes (the store's 500).
 
-- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs` · `git commit -m "web: D1 — a refused stream
-writes gone once and closes (UntilLast); the events reading's pool hand-off has its catcher; a replay-route
-request with no identity takes no permit (S1c Task 4)"`.
+- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/api.rs` · `git commit -m
+"web: D1 — a refused stream writes gone once and closes (UntilLast); the events reading's pool hand-off has its
+catcher; a replay-route request with no identity takes no permit; an unsafe id at the transport routes is the
+layer's 404 (S1c Task 4)"`.
 
 ---
 
