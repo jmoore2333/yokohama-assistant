@@ -159,8 +159,9 @@ pub const MESSAGE_MAX: usize = 1_024;
 
 impl ApiError {
     /// `message` cut to [`MESSAGE_MAX`] characters with a `…`; every
-    /// constructor below passes through here, and so does `api::error_value`
-    /// at the boundary.
+    /// constructor below that takes a message passes through here (`dealing`,
+    /// `open` and `playing` carry constants), and `api::error_value` caps at
+    /// the boundary besides.
     pub fn capped(message: String) -> String {
         if message.chars().nth(MESSAGE_MAX).is_none() {
             return message;
@@ -1262,35 +1263,70 @@ mod tests {
     }
 
     /// **A hostile value anywhere a sentence echoes it is bounded** (finding
-    /// D12): the path, a game id in the path, the index kind, the filter term,
-    /// the identity header, the input line, the prompt kind an input expects,
-    /// a creator-chosen id, a path number.
-    /// Each site is driven through the router with a 16 KB value and the body
-    /// read for its size and for the raw value's absence; the mutant that
-    /// restores any one `{x:?}` fails that row.
+    /// D12). Each row drives ONE echo site through the router with a 16 KB
+    /// value — `z`s, or spaces where the grammar trims the ends — names a
+    /// fragment of the sentence it must reach, and reads the body for its size
+    /// and for the raw run's absence. The cap keeps every body near a kilobyte
+    /// whatever the echo does, so the absence line is the one that tells the
+    /// echo from the cap. The mutant that restores the `{x:?}` (or unwraps the
+    /// plain `{x}`) at one of THESE sites fails its row: `dispatch`'s
+    /// unmatched path, `MemStore::read`'s id, the index kind, the filter guard
+    /// (dropped whole, `parse_filter` repeats the term raw),
+    /// `parse_path_usize`, `parse_path_u64`, the input's `expect`, `create`'s
+    /// id and its seed (`WireSeed`, through `parse_json`), the four sentences
+    /// of `User::parse` (the header for "neither" and "whitespace"; a seat's
+    /// user for "reserved" and "not an email", since the header is trimmed
+    /// before the grammar reads it and only a trimmed end makes those two
+    /// long), and `check_shape`'s watcher (an archive upload). The input
+    /// route's `check_line` call and the filter guard's `echo` half are pinned
+    /// by the lines after the loop. The inventory's other sites carry no row:
+    /// each is wrapped by the same rule, and bounded by the cap besides.
     #[tokio::test]
     async fn every_echo_site_answers_a_bounded_body() {
         let state = Arc::new(AppState::in_memory());
         a_game(&app(Arc::clone(&state)), "echoed", &[]).await;
         let big = "z".repeat(16 * 1024);
-        let rows: Vec<(&str, String, Option<serde_json::Value>, &str)> = vec![
-            ("GET", format!("/api/{big}"), None, WHO),
-            ("GET", format!("/api/games/{big}"), None, WHO),
-            ("GET", format!("/api/games/echoed/index/{big}"), None, WHO),
-            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO),
+        let pad = " ".repeat(16 * 1024);
+        let create = |seats: serde_json::Value, more: serde_json::Value| {
+            let mut body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": seats, "name": "x" });
+            for (k, v) in more.as_object().expect("an object") {
+                body[k] = v.clone();
+            }
+            Some(body)
+        };
+        let two = serde_json::json!([{ "user": WHO }, { "user": WHO }]);
+        // (method, uri, body, the identity header, a fragment of the sentence the row reaches)
+        let rows: Vec<(&str, String, Option<serde_json::Value>, String, &str)> = vec![
+            ("GET", format!("/api/{big}"), None, WHO.into(), "no such endpoint"),
+            // The store's 500 until Task 2's `dispatch` check makes it a 404;
+            // "game name" reads in both sentences.
+            ("GET", format!("/api/games/{big}"), None, WHO.into(), "game name"),
+            ("GET", format!("/api/games/echoed/index/{big}"), None, WHO.into(), "no card index named"),
+            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO.into(), "a filter is at most"),
             // A path number: `at/{k}` reads it with `parse_path_usize`, a chat
             // message's DELETE with `parse_path_u64` (a GET there is a bare 405).
-            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO),
-            ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO),
-            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO),
+            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO.into(), "Cannot parse value at index 1"),
+            ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO.into(), "Cannot parse value at index 1"),
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO.into(), "this one is"),
             // `expect` is the caller's own string, and the 409 that names a
             // prompt that moved on repeats it — through a literal `ApiError`
             // the constructors' cap never sees.
-            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO),
-            ("POST", "/api/games".to_string(), Some(serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{ "user": WHO }, { "user": WHO }], "id": format!("a/{big}"), "name": "x" })), WHO),
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO.into(), "the prompt moved on"),
+            ("POST", "/api/games".to_string(), create(two.clone(), serde_json::json!({ "id": format!("a/{big}") })), WHO.into(), "is not a usable game id"),
+            // The seed's own sentence, inside serde's, inside `parse_json`'s.
+            ("POST", "/api/games".to_string(), create(two.clone(), serde_json::json!({ "seed": big })), WHO.into(), "is not a u64 seed"),
+            // A seat's user is parsed untrimmed: a trimmed end is what lets
+            // the two sentences below repeat a long value at all.
+            ("POST", "/api/games".to_string(), create(serde_json::json!([{ "user": format!("anonymous{pad}") }, { "user": WHO }]), serde_json::json!({})), WHO.into(), "is reserved"),
+            ("POST", "/api/games".to_string(), create(serde_json::json!([{ "user": format!("a@b@c{pad}") }, { "user": WHO }]), serde_json::json!({})), WHO.into(), "is not an email"),
+            // The identity header, under the open door: a value that is
+            // neither an email nor a name, and one whose inner spaces
+            // `typed_form` collapses before the whitespace rule refuses it.
+            ("GET", "/api/games".to_string(), None, big.clone(), "is neither an email nor a name"),
+            ("GET", "/api/games".to_string(), None, format!("a{pad}b@c"), "contains whitespace"),
         ];
-        for (method, uri, body, who) in rows {
-            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, who);
+        for (method, uri, body, who, reaches) in rows {
+            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, &who);
             let req = match body {
                 Some(b) => req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&b).expect("a body"))),
                 None => req.body(Body::empty()),
@@ -1299,12 +1335,15 @@ mod tests {
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             let status = res.status();
             let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+            let text = String::from_utf8_lossy(&bytes);
+            let row = format!("{method} {} ({reaches})", uri.chars().take(60).collect::<String>());
             // Every row is a refusal; WHICH refusal is each route's own cell's
             // claim — the 16 KB game id is the store's 500 until Task 2's
             // `dispatch` check makes it the 404 that cell pins (finding B8).
-            assert!(status.is_client_error() || status.is_server_error(), "{method} {uri}: {status}");
-            assert!(bytes.len() <= 2_048, "{method} {}: a {} byte body", uri.chars().take(60).collect::<String>(), bytes.len());
-            assert!(!String::from_utf8_lossy(&bytes).contains(&"z".repeat(65)), "{method}: the raw value came back");
+            assert!(status.is_client_error() || status.is_server_error(), "{row}: {status}");
+            assert!(bytes.len() <= 2_048, "{row}: a {} byte body", bytes.len());
+            assert!(!text.contains(&"z".repeat(65)) && !text.contains(&" ".repeat(65)), "{row}: the raw value came back");
+            assert!(text.contains(reaches), "{row}: the row reaches its sentence: {}", text.chars().take(200).collect::<String>());
         }
         // The input route asks `check_line` BEFORE the grammar: the long line
         // is refused by its LENGTH, not echoed back cut — `refusal`'s echo
@@ -1314,13 +1353,18 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
         let said = v["error"].as_str().unwrap_or_default();
         assert!(said.contains(&format!("this one is {} bytes", big.len() + 5)) && !said.contains("save"), "{said}");
-        // The identity header: a 16 KB value that is neither an email nor a
-        // name, under the open door, is the grammar's refusal — bounded.
-        let req = Request::builder().method("GET").uri("/api/games").header(identity::CLAIMED_HEADER, &big).body(Body::empty()).expect("a request");
-        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
-        assert!(bytes.len() <= 2_048, "{}", bytes.len());
+        // The filter guard refuses what `echo` would change — a double quote,
+        // a backslash, a U+202E override — since the CLI's `parse_filter`
+        // repeats the term raw; an apostrophe is plain text and passes, to
+        // `parse_filter`'s own sentence. The mutant that keeps only the length
+        // half of the guard fails the first three.
+        let guard = "a filter is at most 64 characters of plain text — no quote, control or format character";
+        for (term, refused) in [("%22silk%22", true), ("si%5Clk", true), ("si%E2%80%AElk", true), ("o'brien", false)] {
+            let (status, v) = get_as(&state, WHO, &format!("/api/games/echoed/index/orders?filter={term}")).await;
+            let said = v["error"].as_str().unwrap_or_default();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{term}: {v}");
+            assert_eq!(said == guard, refused, "{term}: {said}");
+        }
         // A watcher entry in an UPLOADED table document is the caller's value
         // too: `check_shape` repeats the one that does not parse, and the
         // archive route reaches it. The message cap alone would keep this body
@@ -1331,8 +1375,8 @@ mod tests {
         let (status, v) = post_as(&slow_state(0, 1, 1_000), WHO, "/api/archive", serde_json::json!({ "record": PLAYED_RECORD, "table": table.to_string() })).await;
         let text = v.to_string();
         assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "POST /api/archive (on the watcher list): the raw value came back in a {} byte body", text.len());
         assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
-        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "a {} byte body", text.len());
     }
 
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {

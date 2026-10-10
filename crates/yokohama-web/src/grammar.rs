@@ -73,7 +73,7 @@ const HEADS: &[&str] = &[
 /// grammars for the terminal's sake, whose longest meaningful line is a 4P
 /// retreat naming every area with its count — eighteen `A17:5` pairs behind
 /// `r `, 99 bytes (109 zero-padded; the pre-flight's measurement) — so 256 is
-/// more than twice the longest legal line and a thousandth of the 2 MiB body
+/// more than twice the longest legal line and an eight-thousandth of the 2 MiB body
 /// limit a hostile line could fill.
 pub const LINE_MAX: usize = 256;
 
@@ -258,7 +258,8 @@ mod tests {
     }
 
     /// `refusal` repeats the line through the echo rule: sixty-four characters,
-    /// escaped — the mutant that keeps `{line:?}` fails the length line.
+    /// escaped — the mutant that keeps `{line:?}` fails the `…` line first,
+    /// then the length line.
     #[test]
     fn a_refusal_echoes_at_most_sixty_four_characters() {
         let r = refusal(&"save ".repeat(100));

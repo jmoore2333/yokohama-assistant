@@ -1765,9 +1765,16 @@ pub fn card_index(
     };
     let filter = match q.filter.as_deref() {
         None => None,
-        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || term.chars().any(char::is_control) => {
+        // **What `echo` would change is refused, not echoed**: the CLI's
+        // `parse_filter` (a fenced crate) repeats the term raw in single
+        // quotes, so a term `{:?}` would escape — a double quote, a backslash,
+        // a control, a format character such as U+202E, a combining mark —
+        // never reaches it. An apostrophe is plain text to `{:?}`, and passes.
+        // (The length half is subsumed — an echo cut at `ECHO_MAX` ends in `…`
+        // and never equals the term — and kept so the bound reads here.)
+        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
             return Err(ApiError::bad_request(format!(
-                "a filter is at most {} characters with no control character",
+                "a filter is at most {} characters of plain text — no quote, control or format character",
                 crate::echo::ECHO_MAX
             )))
         }
