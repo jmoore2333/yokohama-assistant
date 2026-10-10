@@ -2292,17 +2292,20 @@ pub struct ArchiveReply {
 /// `POST /api/archive` (M6.5b, R-6.5b.6) — a game played in a browser, filed by
 /// what a strict replay shows it to be.
 ///
-/// **The NINE checks `backup::check_pair_filed` makes, in the order it makes
+/// **The TWELVE checks `backup::check_pair_filed` makes, in the order it makes
 /// them** (the archive-off 404 is asked before any of them, and the rev check
 /// speaks two sentences — one for a rev that disagrees, one for a rev that is
 /// absent — so the route's refusals outnumber the checks; a restore meets the
-/// same checks through `check_pair_with`, the wrapper): the record parses; its
-/// event count is within
-/// [`crate::backup::EVENT_CAP`] (security S1b); a `semantics_rev` present and
-/// equal to this build's; a terminal digest present; the table document
-/// parses; it passes [`tables::check_shape`]; it AGREES with the record; its
-/// id is `is_safe_id`'s, because it becomes a path component; and LAST the
-/// replay, `replay_strict_with(.., Predicate)` clean — behind a table that
+/// same checks through `check_pair_with`, the wrapper): the record parsing —
+/// through a mirror that refuses a key the engine's record does not have, then
+/// as the engine's own type — its event count within
+/// [`crate::backup::EVENT_CAP`], a `semantics_rev` present and equal to this
+/// build's, a terminal digest present, no lockdown, the table document
+/// parsing, passing [`tables::check_shape`] and AGREEING with the record, the
+/// document's id being `is_safe_id`'s, the configuration one `validate_config`
+/// accepts, the seats agreeing with the record's bots
+/// ([`crate::bots::seat_disagreement`]), and LAST
+/// `replay_strict_with(.., Predicate)` clean — behind a table that
 /// agrees, so an untrusted record reaches setup only beside one (M6.5c2 cycle
 /// D, straw poll row 81; this paragraph listed the replay before the table's
 /// checks until security S1b, finding D29). **The count is stated here once**
@@ -2352,6 +2355,19 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     };
     let facts = crate::backup::check_pair_filed(&req.record, &req.table, games.rules(), &filed)
         .map_err(ApiError::bad_request)?;
+    // **A bot this server does not run is refused** (finding D25): the record
+    // is the module's own production bot's game or it is not a browser's game;
+    // `bots::foreign` is the game routes' rule, asked once more here. The
+    // record parsed a line ago inside `check_pair_filed`; this second parse is
+    // the price of keeping `PairFacts` four scalars.
+    let rec: yokohama_core::GameRecord = serde_json::from_str(&req.record)
+        .map_err(|e| ApiError::bad_request(format!("the record does not parse: {e}")))?;
+    if let Some((seat, played, why)) = crate::bots::foreign(&rec).into_iter().next() {
+        let (played, _) = crate::bots::distinguishing_labels(&played, &crate::bots::production());
+        return Err(ApiError::bad_request(format!(
+            "seat {seat} was played by {played}, which this server does not run: {why}"
+        )));
+    }
     // The document again, for the strip and the path. **Unreachable as a
     // refusal** — `check_pair_filed` parsed this very string a line ago — and written
     // as one anyway rather than as an `expect`, because a panic inside a route
@@ -2756,23 +2772,9 @@ mod tests {
     /// the order cell's over-cap record.
     const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
 
-    /// One key of a JSON object replaced, everything else left exactly as it
-    /// was. The fixtures are PRETTY-PRINTED, so a textual `replace` of
-    /// `"players": 2` would be a different edit on a re-cut file; this one is
-    /// about the key.
-    fn keyed(text: &str, key: &str, value: serde_json::Value) -> String {
-        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
-        v.as_object_mut().expect("an object").insert(key.to_string(), value);
-        let out = v.to_string();
-        assert_ne!(out, text, "the edit must actually change the fixture");
-        out
-    }
-
-    fn without(text: &str, key: &str) -> String {
-        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
-        v.as_object_mut().expect("an object").remove(key).expect("the fixture carried it");
-        v.to_string()
-    }
+    // The two one-key JSON edits, ONE copy shared with `backup.rs`'s cells
+    // (security S1b, finding D25), which edit the same fixtures the same way.
+    use crate::backup::tests::{keyed, without};
 
     /// The first event replaced by a later one, which the position it now sits
     /// in cannot legally take — and if it could, the terminal digest no longer
@@ -3192,7 +3194,6 @@ mod tests {
 
         // The checks, in order, each named by the sentence it answers.
         let rev_wrong = keyed(PLAYED_RECORD, "semantics_rev", 6.into());
-        let no_digest = without(PLAYED_RECORD, "terminal_digest");
         let no_replay = replay_broken(PLAYED_RECORD);
         let bad_players = keyed(PLAYED_TABLE, "players", 3.into());
         let bad_seat = keyed(PLAYED_TABLE, "start_seat", 1.into());
@@ -3201,6 +3202,13 @@ mod tests {
             let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
             let events = v["events"].as_array_mut().expect("events");
             events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
+            v.to_string()
+        };
+        let locked = keyed(PLAYED_RECORD, "lockdown", "a fault".into());
+        let impossible = {
+            let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
+            v["config"]["has_port_b"] = true.into();
+            v["config"]["has_lab_b"] = true.into();
             v.to_string()
         };
 
@@ -3215,7 +3223,7 @@ mod tests {
         // catcher for "the table checks after the replay" is the digest row's
         // partner and the id row's: each carries a record that would not
         // replay, and expects a TABLE sentence.
-        let probes: [(&Games, String, String, &str); 9] = [
+        let probes: [(&Games, String, String, &str); 12] = [
             // archive-off  <  the record parses
             (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
             // the record parses  <  the count is within the cap
@@ -3225,9 +3233,10 @@ mod tests {
             // the rev agrees  <  a terminal digest is present
             (&on, without(&rev_wrong, "terminal_digest"), PLAYED_TABLE.to_string(),
              "this record is at semantics rev 6; this server archives rev 7"),
-            // a terminal digest is present  <  the table parses
-            (&on, no_digest.clone(), "not json at all".to_string(),
-             "the record carries no terminal digest"),
+            // a terminal digest is present  <  the record is not locked down
+            (&on, without(&locked, "terminal_digest"), PLAYED_TABLE.to_string(), "the record carries no terminal digest"),
+            // the record is not locked down  <  the table parses
+            (&on, locked.clone(), "not json at all".to_string(), crate::backup::LOCKED_DOWN),
             // the table parses  <  the table's shape
             (
                 &on,
@@ -3241,8 +3250,12 @@ mod tests {
             // the table agrees  <  the table's id is a safe name
             (&on, no_replay.clone(), keyed(&bad_seat, "id", "not/a/safe/id".into()),
              "the table document does not agree with the record"),
-            // the table's id is a safe name  <  the record replays
-            (&on, no_replay.clone(), unsafe_id.clone(), "the table's id is not a safe name"),
+            // the table's id is a safe name  <  the configuration is possible
+            (&on, impossible.clone(), unsafe_id.clone(), "the table's id is not a safe name"),
+            // the configuration is possible  <  the seats agree with the record's bots
+            (&on, without(&impossible, "run"), PLAYED_TABLE.to_string(), "the record's configuration is impossible"),
+            // the seats agree with the record's bots  <  the record replays
+            (&on, replay_broken(&without(PLAYED_RECORD, "run")), PLAYED_TABLE.to_string(), "the table's seats disagree"),
         ];
         let mut sentences = std::collections::BTreeSet::new();
         for (games, record, table, expect) in probes {
@@ -3253,7 +3266,7 @@ mod tests {
             assert!(said.starts_with(expect), "{said:?} does not start with {expect:?}");
             sentences.insert(said);
         }
-        assert_eq!(sentences.len(), 9, "nine checks, nine different sentences");
+        assert_eq!(sentences.len(), 12, "twelve checks, twelve different sentences");
 
         // The last, on its own — nothing follows it to probe against.
         let (status, v) = post_archive(&on, &no_replay, PLAYED_TABLE);
@@ -3383,7 +3396,10 @@ mod tests {
     /// LAST cheap check, the `is_safe_id` refusal included. The catcher for the
     /// hook asked above the `is_safe_id` refusal, which the retry cell cannot
     /// see because its one claiming row carries a table that DISAGREES, and the
-    /// agreement check sits above `is_safe_id`.
+    /// agreement check sits above `is_safe_id`. The rows of finding D25's
+    /// three checks (security S1b, Task 2) — the lockdown, the configuration
+    /// and the seats — hold the same for them, the last two the catcher for
+    /// the hook asked above the two checks that follow `is_safe_id`.
     #[test]
     fn every_cheap_check_speaks_before_a_claiming_archive_is_asked() {
         let claims = games_with(std::sync::Arc::new(HoldsEverything));
@@ -3394,16 +3410,25 @@ mod tests {
             events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
             v.to_string()
         };
+        let impossible = {
+            let mut v: serde_json::Value = serde_json::from_str(&broken).expect("a record");
+            v["config"]["has_port_b"] = true.into();
+            v["config"]["has_lab_b"] = true.into();
+            v.to_string()
+        };
         let rows = [
             ("not json at all".to_string(), PLAYED_TABLE.to_string(), "the record does not parse"),
             (over_cap, PLAYED_TABLE.to_string(), "the record carries 4097 events"),
             (keyed(&broken, "semantics_rev", 6.into()), PLAYED_TABLE.to_string(), "this record is at semantics rev 6"),
             (without(&broken, "semantics_rev"), PLAYED_TABLE.to_string(), "missing semantics provenance"),
             (without(&broken, "terminal_digest"), PLAYED_TABLE.to_string(), "the record carries no terminal digest"),
+            (keyed(&broken, "lockdown", "a fault".into()), PLAYED_TABLE.to_string(), crate::backup::LOCKED_DOWN),
             (broken.clone(), "not json at all".to_string(), "the table document does not parse"),
             (broken.clone(), keyed(PLAYED_TABLE, "players", 3.into()), "the table document is malformed"),
             (broken.clone(), keyed(PLAYED_TABLE, "start_seat", 1.into()), "the table document does not agree"),
             (broken.clone(), keyed(PLAYED_TABLE, "id", "not/a/safe/id".into()), "the table's id is not a safe name"),
+            (impossible, PLAYED_TABLE.to_string(), "the record's configuration is impossible"),
+            (without(&broken, "run"), PLAYED_TABLE.to_string(), "the table's seats disagree"),
         ];
         for (record, table, expect) in rows {
             let (status, v) = post_archive(&claims, &record, &table);
@@ -3411,6 +3436,26 @@ mod tests {
             let said = v["error"].as_str().unwrap_or("");
             assert!(said.starts_with(expect), "{said:?} does not start with {expect:?}");
         }
+    }
+
+    /// **A bot this server does not run is refused at the archive** (finding
+    /// D25): a browser's game is played by the module's production bot, so a
+    /// record naming another controller is forged, or a game this build could
+    /// not have played — `bots::foreign`'s own answer, the rule the game
+    /// routes apply. The sentence names the bot as the game route's 409 does.
+    #[test]
+    fn a_record_naming_a_bot_this_server_does_not_run_is_refused() {
+        let dir = scratch("archive_foreign_bot");
+        let on = games_with(std::sync::Arc::new(crate::archive::DirArchive::new(&dir)));
+        let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        let seat = v.pointer_mut("/run/seats/1/controller").expect("the bot's controller");
+        assert_eq!(seat.as_str(), Some("v4-step9-draft1"), "the premise");
+        *seat = "mcts-v1".into();
+        let (status, said) = post_archive(&on, &v.to_string(), PLAYED_TABLE);
+        assert_eq!(status, 400, "{said}");
+        assert!(said["error"].as_str().unwrap_or("").starts_with("seat 1 was played by "), "{said}");
+        assert!(std::fs::read_dir(dir.join("browser")).is_err(), "nothing was written");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // -----------------------------------------------------------------------
