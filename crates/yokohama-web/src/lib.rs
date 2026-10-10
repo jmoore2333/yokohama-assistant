@@ -778,9 +778,10 @@ async fn events(
 /// executor. Frames stay in order: `then` awaits each before it takes the next
 /// bump. The on-connect reading above the subscribe is left where it is — one
 /// per connection, not one per bump, as before — and since security S1b
-/// (finding D6) it is the ONE route reading left on a runtime worker: every
-/// other route's reading runs on the blocking pool, the adapter's and
-/// `events`'.
+/// (finding D6) it is the one `events_at` reading left on a runtime worker:
+/// `events`' reading and the adapter's whole dispatch run on the blocking
+/// pool. The static files — the art manifest, the art and the built client —
+/// are still read synchronously on the executor, from local disk, as before.
 ///
 /// On the table's `end` the stream writes one `end` frame and CLOSES, and the
 /// close is the CHANNEL's rather than this closure's: `Signals::end` drops the
@@ -909,7 +910,10 @@ async fn house_stream(
 /// before the read would be held for the whole upload, so two slow uploaders
 /// could hold both permits for as long as they trickle. Past the wait the
 /// answer is 503 with `Retry-After: 1`, and nothing of the LAYER has run.
-/// Every other route is never behind it.
+/// The permit is held for the dispatch's whole run, a caller's departure
+/// included: it moves into the pool's closure, so a hang-up, which drops this
+/// future, does not free it while the replay runs on. Every other route is
+/// never behind it.
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -938,7 +942,7 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         }
         return response;
     }
-    let _permit = if api::is_replay_route(&method, &path) {
+    let permit = if api::is_replay_route(&method, &path) {
         match tokio::time::timeout(state.replay_wait, Arc::clone(&state.replay_gate).acquire_owned()).await {
             Ok(Ok(permit)) => Some(permit),
             Ok(Err(_)) | Err(_) => return busy(),
@@ -956,6 +960,8 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     let joined = {
         let state = Arc::clone(&state);
         tokio::task::spawn_blocking(move || {
+            // Held until the dispatch ENDS, a caller's hang-up included.
+            let _permit = permit;
             let identity: api::Identity<'_> = match &resolved {
                 Ok(u) => Ok(u),
                 Err(m) => Err(m.as_str()),
@@ -976,7 +982,7 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
                 open_table_ttl_days: state.ttls.open,
             };
             let out = api::dispatch(&state.games, &host, identity, &request);
-            let allowed = api::allowed_methods(&path, serves_games);
+            let allowed = if out.status == 405 { api::allowed_methods(&path, serves_games) } else { Vec::new() };
             (out, allowed)
         })
         .await
@@ -2605,11 +2611,14 @@ mod tests {
     /// second holds the permit; a second post reads the 503 in `BUSY`'s words
     /// within the wait, and a HEAD of a run reads the same 503 with an empty
     /// body, while an `input` at a game and a health read answer 200 beside
-    /// it. The mutant that gates nothing answers the second post 201 after the
-    /// second; the one that gates every route answers the move 503; the one
-    /// that drops the header fails the header line; the one that compares the
-    /// method beside the pattern answers the HEAD 200. `BUSY`'s words are
-    /// pinned by value.
+    /// it — the permit checked held before and after the turn. The mutant that
+    /// gates nothing answers the second post 201 after the second; the one
+    /// that gates every route answers `play_turn`'s first frame read 503, so
+    /// the cell reds at its `a seat to move` before any input is posted (a
+    /// gate on the move alone reds at the input's own 200); the one that drops
+    /// the header fails the header line; the one that compares the method
+    /// beside the pattern answers the HEAD 200. `BUSY`'s words are pinned by
+    /// value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replay_past_the_gates_wait_is_refused_busy_while_a_move_lands() {
         let state = slow_state(1_000, 1, 50);
@@ -2648,11 +2657,58 @@ mod tests {
         assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
         assert!(bytes.is_empty(), "a HEAD's 503 carries no body");
+        assert_eq!(state.replay_gate.available_permits(), 0, "the holder's permit is held as the turn begins");
         play_turn(&state, "gated", WHO).await;
+        assert_eq!(state.replay_gate.available_permits(), 0, "and still held as it ends: the move landed beside it");
         let (status, _) = get_as(&state, WHO, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
         let (status, v) = holder.await.expect("the holder's post");
         assert!(matches!(status.as_u16(), 200 | 201), "{v}");
+    }
+
+    /// **A caller who hangs up mid-replay leaves the permit held until the
+    /// work ends** (findings A2 and D6; the Task 4 review's Important 1).
+    /// When a client disconnects, hyper drops the handler's future while the
+    /// `spawn_blocking` dispatch runs on to its end; a permit held in the
+    /// adapter's frame went with the future, and a second replay was admitted
+    /// beside the first. One permit and a fifty-millisecond wait; a post whose
+    /// put sleeps a second is DROPPED 300 ms in — the hang-up. The running
+    /// dispatch still holds the permit, a second post reads the 503 within the
+    /// wait, and the permit is back once the put's second has passed. The
+    /// mutant that holds the permit in the adapter's frame reads it free at
+    /// the drop and admits the second post 201 after a second.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_caller_who_hangs_up_mid_replay_leaves_the_permit_held_until_the_work_ends() {
+        let state = slow_state(1_000, 1, 50);
+        let post = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/archive")
+                .header(identity::CLAIMED_HEADER, "local@browser")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&archive_body()).expect("a body")))
+                .expect("a request")
+        };
+        // The hang-up: the caller's future is dropped mid-put.
+        let hung_up =
+            tokio::time::timeout(std::time::Duration::from_millis(300), app(Arc::clone(&state)).oneshot(post())).await;
+        assert!(hung_up.is_err(), "the caller left before its put's second was out");
+        let free_after_drop = state.replay_gate.available_permits();
+        let started = std::time::Instant::now();
+        let res = app(Arc::clone(&state)).oneshot(post()).await.expect("the router answers");
+        let took = started.elapsed();
+        assert_eq!(
+            free_after_drop,
+            0,
+            "the hung-up caller's dispatch still holds the permit (a second post then read {} after {took:?})",
+            res.status()
+        );
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        assert!(took < std::time::Duration::from_millis(600), "refused within the wait, not after the put");
+        // Past the put's second: the dispatch has ended and the permit is back.
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert_eq!(state.replay_gate.available_permits(), 1, "released when the work ended");
     }
 
     /// **A started game whose seats belong to the NAMED people, each keeping as
