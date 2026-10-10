@@ -94,9 +94,11 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 ## The decisions this plan takes (the orchestrator's; the owner reads them at the plan review)
 
 - **D-1 — the echo helper escapes without quoting, so every existing sentence is byte-identical for a short,
-  clean value.** `echo(value)` returns the first 64 characters through `str::escape_debug` with a `…` appended
-  when it cut; a site that quoted with `{x:?}` now writes `"{}"` around `echo(x)`, and `no such endpoint: {}`
-  stays unquoted. The Worker's TS cells pin that 404's text through the module (`worker/test/worker.test.ts:677`,
+  clean value.** `echo(value)` returns the first 64 characters as `{:?}` renders a `str`, less its two quotes — NOT
+  `str::escape_debug`, which writes `it\'s` and leaves a combining mark after the first character raw, so an
+  apostrophe in a name would have read differently (the implementer's C1, 2026-10-10) — with a `…` appended when
+  it cut; a site that quoted with `{x:?}` now writes `\"{x}\"` with `x = echo(x)` as a named argument, and
+  `no such endpoint: {}` stays unquoted. The Worker's TS cells pin that 404's text through the module (`worker/test/worker.test.ts:677`,
   `open/door.test.ts:273`, `:280`), so a quoting change there would ripple across three suites for nothing.
 - **D-2 — the message cap lives in `ApiError`'s constructors, not at the sites.** A serde error names an unknown
   field verbatim (`deny_unknown_fields`), axum's path sentences name the segment, and a site the inventory misses
@@ -159,6 +161,10 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
    "the CLI is touched only at `suggest::stream_seed`" is read, as S1b read it for `session.rs`, as "nowhere the
    bot decides and nowhere the user sees".
 7. **The served `why` chart's real-browser pin stays recorded** (ruling 5).
+8. **The corpus moves once in S1c, in Task 5, not in Task 6** (the pre-flight, 2026-10-10): the archive route's
+   reply names the caller segment in `path`, so the three `archive_post*.json` fixtures regenerate once; the
+   `why_refusals.json` `mismatch` row is a construction and Task 6 moves nothing (decision D-8). Still one
+   regeneration per cycle, as §9.3's correction 1 allows — a value moved, not the wire's shape.
 
 ## Global Constraints
 
@@ -235,7 +241,7 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 
 | name | where | meaning |
 |---|---|---|
-| `echo::ECHO_MAX: usize = 64` · `echo::echo(value: &str) -> String` | `crates/yokohama-web/src/echo.rs`, `pub`, re-exported as `crate::echo` | a caller-supplied value as an error sentence repeats it: the first 64 characters, `str::escape_debug`-escaped, `…` after a cut, NO quotes (Task 1) |
+| `echo::ECHO_MAX: usize = 64` · `echo::echo(value: &str) -> String` | `crates/yokohama-web/src/echo.rs`, `pub`, re-exported as `crate::echo` | a caller-supplied value as an error sentence repeats it: the first 64 characters as `{:?}` renders them, less the quotes, `…` after a cut (Task 1) |
 | `MESSAGE_MAX: usize = 1_024` · `ApiError::capped(message: String) -> String` | `crates/yokohama-web/src/lib.rs` beside `ApiError` (:122) | every constructor's message bound (Task 1) |
 | `grammar::LINE_MAX: usize = 256` · `grammar::check_line(line: &str) -> Result<(), String>` | `crates/yokohama-web/src/grammar.rs`, `pub` | the byte bound and the control-character rule the `input` route asks BEFORE `is_gameplay_line`; the sentence names the length (Task 1) |
 | `Games::with_table_lock<T>(&self, id: &str, body: impl FnOnce() -> T) -> T` | `crates/yokohama-web/src/games.rs`, `pub(crate)`, beside `lock_for` (:616) | the one way a writer holds a table's own lock: take, run, drop, prune (Task 2) |
@@ -329,20 +335,29 @@ Task 9 is the orchestrator's frame and the wrap.
 //! echoed whole. One helper bounds every echo; the sites keep their words.
 
 /// How much of a caller's value a sentence repeats. Sixty-four characters is
-/// the longest value this API admits anywhere by rule — a game id, a name's
-/// thirty-two — so a legitimate value is never cut, and a hostile one is cut
-/// to the size of a legitimate one.
+/// the longest id or name this API admits by rule — a game id; a name's
+/// thirty-two — so a legitimate one is never cut, and a hostile value is cut
+/// to the size of a legitimate one. (An email may run to 254 bytes; the
+/// sites that echo an address echo one they refused.)
 pub const ECHO_MAX: usize = 64;
 
 /// `value` as a sentence repeats it: the first [`ECHO_MAX`] characters,
-/// escaped as `str::escape_debug` escapes (quotes, backslashes, controls and
-/// every non-printable code point as `\u{…}`), and `…` after a cut. NO quotes
-/// of its own — the site writes them, so a site that quoted with `{x:?}`
-/// writes `"{}"` and reads byte-identically for a short, clean value.
+/// escaped as `{:?}` escapes a `str` (double quotes, backslashes, controls,
+/// combining marks and every non-printable code point as `\u{…}`), and `…`
+/// after a cut. NO quotes of its own — the site writes them, so a site that
+/// quoted with `{x:?}` writes `"{}"` and reads byte-identically for every
+/// value of at most [`ECHO_MAX`] characters.
+///
+/// **`{:?}` itself, less its two quotes, and not `str::escape_debug`**: the
+/// latter escapes a single quote (`it\'s`) and leaves a combining mark after
+/// the first character raw, so an apostrophe in a name would have read
+/// differently from the `{x:?}` sentence it replaced.
 pub fn echo(value: &str) -> String {
     let shown: String = value.chars().take(ECHO_MAX).collect();
     let cut = value.chars().nth(ECHO_MAX).is_some();
-    let mut out: String = shown.escape_debug().collect();
+    let mut out = format!("{shown:?}");
+    out.pop();
+    out.remove(0);
     if cut {
         out.push('…');
     }
@@ -354,10 +369,12 @@ mod tests {
     use super::*;
 
     /// A short, clean value reads exactly as `{:?}` read it, less the quotes —
-    /// the premise every pinned sentence in the crate rests on.
+    /// the premise every pinned sentence in the crate rests on. The last two
+    /// are where `str::escape_debug` reads differently: an apostrophe and a
+    /// combining mark after the first character.
     #[test]
     fn a_short_clean_value_is_itself() {
-        for v in ["wire", "/api/nope", "x.js", "red@wire.test", "A.b-c_d", "a b"] {
+        for v in ["wire", "/api/nope", "x.js", "red@wire.test", "A.b-c_d", "a b", "it's", "e\u{301}"] {
             assert_eq!(format!("\"{}\"", echo(v)), format!("{v:?}"));
         }
     }
@@ -419,27 +436,19 @@ mod tests {
             assert!(!is_gameplay_line(line), "{line:?} is refused by the grammar as well");
         }
     }
-
-    /// `refusal` repeats the line through the echo rule: sixty-four characters,
-    /// escaped — the mutant that keeps `{line:?}` fails the length line.
-    #[test]
-    fn a_refusal_echoes_at_most_sixty_four_characters() {
-        let r = refusal(&"save ".repeat(100));
-        assert!(r.starts_with("\"save save"), "{r}");
-        assert!(r.contains('…'), "{r}");
-        assert!(r.len() < 400, "{}", r.len());
-        assert_eq!(refusal("save x"), format!("{:?} writes a file on the server; games persist automatically after every move. This endpoint takes an option number, a sub-prompt answer (confirm/cancel/an area/a count), a move grammar (a/b/m/r), more/list, undo/back, or an empty line to apply a sole option.", "save x"));
-    }
 ```
 
 (c) In `lib.rs`'s `mod tests`, after `const WHO` (:1153) — the module has no `ApiError` cells to sit beside:
 
 ```rust
     /// **No error body carries more than `MESSAGE_MAX` characters of message**
-    /// (finding D12, decision D-2): the cap is in the constructors, so a site
-    /// the echo inventory missed is bounded anyway. Every constructor and the
-    /// one literal construction (`busy`) are listed; a new constructor joins
-    /// the list or fails the count line.
+    /// (finding D12, decision D-2): the cap is in the constructors and in the
+    /// `From<GameError>` arms that build the struct literally, so a site the
+    /// echo inventory missed is bounded anyway when it reaches a body through
+    /// one. Every constructor that takes a message is listed; a new one joins
+    /// the list or fails the count line. A handler that builds the struct
+    /// literally (`busy`, `unauthorized`, `api.rs`'s own) is not capped: it
+    /// repeats a caller's text through `echo` or not at all.
     #[test]
     fn every_api_error_message_is_capped_at_construction() {
         let long = "m".repeat(MESSAGE_MAX * 3);
@@ -464,11 +473,22 @@ mod tests {
         assert_eq!(impl_block.matches("Self::capped(message.into())").count(), built.len(), "every message-taking constructor caps: {impl_block}");
         let short = ApiError::bad_request("short");
         assert_eq!(short.message, "short");
+        // The `From<GameError>` arms that build the struct literally cap too,
+        // so every `GameError`'s sentence reaches a body bounded.
+        let literal = [
+            ApiError::from(games::GameError::Forbidden(long.clone())),
+            ApiError::from(games::GameError::Conflict(long.clone())),
+            ApiError::from(games::GameError::ForeignBot { played: "x".into(), runs: "y".into(), why: long.clone() }),
+        ];
+        for e in &literal {
+            assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
+        }
     }
 
     /// **A hostile value anywhere a sentence echoes it is bounded** (finding
     /// D12): the path, a game id in the path, the index kind, the filter term,
-    /// the identity header, the input line, a creator-chosen id, a path number.
+    /// the identity header, the input line, the prompt kind an input expects,
+    /// a creator-chosen id, a path number.
     /// Each site is driven through the router with a 16 KB value and the body
     /// read for its size and for the raw value's absence; the mutant that
     /// restores any one `{x:?}` fails that row.
@@ -482,9 +502,15 @@ mod tests {
             ("GET", format!("/api/games/{big}"), None, WHO),
             ("GET", format!("/api/games/echoed/index/{big}"), None, WHO),
             ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO),
-            ("GET", format!("/api/games/echoed/chat/{big}"), None, WHO),
+            // A path number: `at/{k}` reads it with `parse_path_usize`, a chat
+            // message's DELETE with `parse_path_u64` (a GET there is a bare 405).
+            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO),
             ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO),
             ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO),
+            // `expect` is the caller's own string, and the 409 that names a
+            // prompt that moved on repeats it — through a literal `ApiError`
+            // the constructors' cap never sees.
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO),
             ("POST", "/api/games".to_string(), Some(serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{ "user": WHO }, { "user": WHO }], "id": format!("a/{big}"), "name": "x" })), WHO),
         ];
         for (method, uri, body, who) in rows {
@@ -504,6 +530,14 @@ mod tests {
             assert!(bytes.len() <= 2_048, "{method} {}: a {} byte body", uri.chars().take(60).collect::<String>(), bytes.len());
             assert!(!String::from_utf8_lossy(&bytes).contains(&"z".repeat(65)), "{method}: the raw value came back");
         }
+        // The input route asks `check_line` BEFORE the grammar: the long line
+        // is refused by its LENGTH, not echoed back cut — `refusal`'s echo
+        // alone would bound the body too, so this is the line that pins the
+        // route's call.
+        let (status, v) = post_as(&state, WHO, "/api/games/echoed/input", serde_json::json!({ "line": format!("save {big}") })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let said = v["error"].as_str().unwrap_or_default();
+        assert!(said.contains(&format!("this one is {} bytes", big.len() + 5)) && !said.contains("save"), "{said}");
         // The identity header: a 16 KB value that is neither an email nor a
         // name, under the open door, is the grammar's refusal — bounded.
         let req = Request::builder().method("GET").uri("/api/games").header(identity::CLAIMED_HEADER, &big).body(Body::empty()).expect("a request");
@@ -511,13 +545,31 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
         assert!(bytes.len() <= 2_048, "{}", bytes.len());
+        // A watcher entry in an UPLOADED table document is the caller's value
+        // too: `check_shape` repeats the one that does not parse, and the
+        // archive route reaches it. The message cap alone would keep this body
+        // near a kilobyte, so the line that tells the echo from the cap is the
+        // raw value's absence.
+        let mut table: serde_json::Value = serde_json::from_str(PLAYED_TABLE).expect("the played table");
+        table["unlocked"] = serde_json::json!([big]);
+        let (status, v) = post_as(&slow_state(0, 1, 1_000), WHO, "/api/archive", serde_json::json!({ "record": PLAYED_RECORD, "table": table.to_string() })).await;
+        let text = v.to_string();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
+        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "a {} byte body", text.len());
     }
 ```
 
-(The `index/{kind}` row today answers the kind's sentence with `{other:?}`; the chat `{seq}` rows answer axum's
-own path sentence with `{raw}`; the create row answers `tables::create`'s id sentence; the identity row answers
-`User::parse`'s. The first cell's count line reads the `impl ApiError` block's `pub fn` count, which is the
-five constructors plus `capped`: a sixth constructor that skips the cap fails the count before it fails a body.)
+(The `index/{kind}` row today answers the kind's sentence with `{other:?}`; the `at/{k}` row reaches
+`parse_path_usize` and the chat DELETE row `parse_path_u64`, axum's own path sentence with `{raw}` — a GET at
+`chat/{seq}` is a bare 405 with an empty body, which the draft's row was (the implementer's C4); the `expect` row
+reaches the 409 that names a prompt that moved on (C2); the archive block reaches `tables::check_shape`'s
+watcher sentence through an upload (C3); the create row answers `tables::create`'s id sentence; the identity row
+answers `User::parse`'s; the route line pins `input`'s `check_line` call (C6). The first cell counts
+`message: impl Into<String>` signatures against `Self::capped(message.into())` calls — three and three — and
+builds the three `From<GameError>` arms that construct the struct literally (C5): a message-taking constructor
+that skips the cap fails the count before it fails a body; a handler that builds `ApiError` literally is NOT
+capped and repeats a caller's text through `echo` or not at all.)
 
 (d) In `api.rs`'s `mod tests`, the existing pins `assert_eq!((res.status, res.body), (404,
 error_body(&ApiError::not_found("no such endpoint: /api/nope"))))` (:2791) and `lib.rs:2114`'s
@@ -528,8 +580,10 @@ quoting change.
 sixty_four capped every_echo_site 2>&1 | grep -E '^error|test result|panicked' | head` — `echo`, `LINE_MAX`,
 `check_line`, `MESSAGE_MAX` not found; stubbed (the function `value.to_string()`, the constants, `check_line`
 `Ok(())`, `capped` the identity): (a)'s second cell RED on the cut; (b) RED on the long line (no refusal) and on
-the control line; (c) RED on the cap and on the 16 KB rows (today's bodies carry the value whole — the pre-flight read the `GET /api/games/<16 KB>` row's 500 at 16 KB from `store.rs`'s own
-sentence; the other rows' sizes are the implementer's Step 2 reading).
+the control line; (c) RED on the cap and on the 16 KB rows (today's bodies carry the value whole — measured on the stubbed tree, 2026-10-10: `GET /api/<16 KB>` 16,419 bytes; `GET /api/games/<16 KB>` 16,426 (the
+store's 500); the index kind 16,468; the filter 16,486; the chat DELETE 16,463; the input `save …` 16,661; the input
+`expect` 16,537 (a 409 built literally, which the cap never sees); the create 16,426; the identity header 16,540 —
+every row carried the raw value).
 
 - [ ] **Step 3: The code.**
 
@@ -540,8 +594,11 @@ In `lib.rs`, with the modules (:60–75): `pub mod echo;` and `pub use echo::ech
 /// finding D12, decision D-2). Sixteen echoes of `echo::ECHO_MAX` — no sentence
 /// in this crate repeats more than two values — and a fence under every
 /// sentence a site composes from a library's own words: serde names an unknown
-/// field verbatim, axum names a path segment. Applied in every constructor,
-/// so a site the echo inventory missed is bounded all the same.
+/// field verbatim, axum names a path segment. Applied in every constructor
+/// and in `From<GameError>`, so a site the echo inventory missed is bounded all
+/// the same when its sentence reaches a body through one — a handler that
+/// builds `ApiError` literally is not, and repeats a caller's text through
+/// [`echo`] or not at all.
 pub const MESSAGE_MAX: usize = 1_024;
 
 impl ApiError {
@@ -639,10 +696,17 @@ plain); every non-test `{id:?}` in `tables.rs` (nineteen — the four at `create
 the body's seed string) and `{other:?}` (:750, the query's scope); `games.rs`'s eight `{id:?}` (:687, :713, :845,
 :911, :948, :962, :1012, :1151); `store.rs`'s four `{id:?}` (:278, :509, :528, :563 — "is not a usable game name",
 the sentence a 16 KB game id's 500 carries today, which the draft inventory missed and the cell went red on);
-`identity.rs:169`, `:172`, `:184`, `:189` (`raw`); `lib.rs:1058` (`uri.path()`). Left alone, by inspection: `api.rs:470`
-(`key_of`'s serde value), `:1437` (two prompt states), `tables.rs:239`, `:387`, `:413` (a sort key, a status, a
-validated watcher), the two environment-variable sentences (`identity.rs:112`, `lib.rs:330`). The after review
-greps the seven files. The filter term (`api.rs:1759`): before `parse_filter`,
+`identity.rs:169`, `:172`, `:184`, `:189` (`raw`); `lib.rs:1058` (`uri.path()`); **and three the draft read wrong
+(the implementer's C2, C3, C8)**: `api.rs:1437`'s `{expected:?}` is the caller's `Input.expect`, repeated whole
+through a 409 built literally (16,537 bytes measured) — wrapped, `{actual:?}` beside it a `&'static str` left
+alone; `tables.rs:413`'s `{bad:?}` is the watcher entry that FAILED `User::parse` in an UPLOADED table document
+(`archive_post` → `check_pair_filed` → `check_shape`) — wrapped; `store.rs` holds EIGHT non-test `{id:?}` (the four
+above plus `:245`, `:440`, `:461`, `:557`), all wrapped. **The `From<GameError>` arms** that build the struct
+literally — `Forbidden`, `Conflict`, `ForeignBot` — pass their sentence through `Self::capped` too (C5): the
+`Conflict` sentences carry ids. Left alone, by inspection: `api.rs:470` (`key_of`'s serde value), `:1438`'s
+`{actual:?}` (a prompt kind), `tables.rs:239`, `:387` (a sort key, a status), `store.rs:245`'s and `:461`'s
+`{:?}` beside the echoed id (the house constant, the `Doc` enum), the two environment-variable sentences
+(`identity.rs:112`, `lib.rs:330`). The after review greps the seven files and accounts for exactly those hits. The filter term (`api.rs:1759`): before `parse_filter`,
 
 ```rust
         Some(term) if term.chars().count() > crate::echo::ECHO_MAX || term.chars().any(char::is_control) => {
@@ -663,11 +727,21 @@ lane's rows (the Worker's `npm test` pins the 404's text at three places — unc
 - [ ] **Step 5: The mutants** (the reviewer re-runs each on an export): **M1** `echo` returns `value.to_string()`
 — `a_long_or_hostile_value_is_cut_and_escaped` red, `every_echo_site_answers_a_bounded_body` red on the first
 row; **M2** `capped` the identity — `every_api_error_message_is_capped_at_construction` red; **M3** `check_line`
-`Ok(())` — the line-bound cell red on the long line AND `every_echo_site…`'s input row red (the body carries the
-value); **M4** the control rule dropped from `is_gameplay_line` alone — the line-bound cell's `is_gameplay_line`
+`Ok(())` — the line-bound cell red on the long line AND `every_echo_site…`'s route line red (the draft said "the
+input row's body carries the value" — false, since `refusal`'s own echo bounds that body; the route line pins the
+`check_line` CALL by its length sentence, the implementer's C6); **M3b** the route's `check_line` call deleted —
+the same line red; **M4** the control rule dropped from `is_gameplay_line` alone — the line-bound cell's `is_gameplay_line`
 line red; **M5** `refusal` back to `{line:?}` — `a_refusal_echoes_at_most_sixty_four_characters` red; **M6** the
 filter guard dropped — `every_echo_site…`'s filter row red; **M7** one identity site back to `{raw:?}` — the
-header row red.
+header row red. The implementer's own (2026-10-10, each red at `every_echo_site…` or the cap cell): **M8** `expect`
+back to `{expected:?}`; **M9** `parse_path_usize` unwrapped (the `at/{k}` row); **M10** `tables.rs:413` back to
+`{bad:?}` (the archive block); **M11** `echo` through `str::escape_debug` (the short-clean cell's `it's` and
+`e\u{301}`); **M12** a `From<GameError>` arm uncapped (the cap cell); **M13** `parse_path_u64` unwrapped (the DELETE
+row); **M15** `MemStore::read`'s sentence back; **M16** `create`'s; **M17** the index kind's; **M14a** `dispatch`'s
+`NoRoute` path unwrapped (the first row). **Two equivalent mutants, recorded**: **M14b** `fallback`'s `uri.path()`
+unwrapped and **M14c** `dispatch`'s inner `_` arm unwrapped — `/api/{*rest}` sends every non-empty tail to the
+adapter and the inner arm fires only if the table and the match disagree, so no router-level cell reaches either;
+both stay wrapped by the rule.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/echo.rs crates/yokohama-web/src/lib.rs
 crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/games.rs
@@ -1536,7 +1610,10 @@ deploy §2), the same text adapted to each host:
 > cut at 48, then `-` and a twelve-character digest. Every folder written before this release sits under the
 > legacy segment and nothing reads it until it is moved.
 > 1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS `ls
->    /data/archive/browser/` and match each folder to the address whose legacy segment it is.
+>    /data/archive/browser/` and match each folder to the address whose legacy segment it is. In R2 the live
+>    replay's own test identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test`
+>    address): list that prefix too, so no legacy key is left anywhere — the replay's first sends land at the new
+>    key either way, but an orphan under the old one is a key nothing reads.
 > 2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary locally
 >    (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`.
 > 3. NAS: `mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each folder present; a folder
@@ -1779,7 +1856,7 @@ visibility and names no move while the account is withheld (S1c Task 6)"`.
 
 ---
 
-### Task 7: The documents the code changed, and the CLI's two comments — Opus (D10's rule; ruling 6; spec corrections 1–7)
+### Task 7: The documents the code changed, and the CLI's two comments — Opus (D10's rule; ruling 6; spec corrections 1–8)
 
 **Files:**
 - Modify: `docs/web-lane.md` (§2 counts, §4 standing rules, §13 the API map, §15 by design),
@@ -1806,7 +1883,7 @@ ledger against the route table: run both.
 
 - [ ] **Step 2: The spec's §9.5**, appended under §9 after §9.4, dated 2026-10-10, titled "S1c's plan: the
 plumbing's rulings and seven corrections": the owner's seven rulings verbatim from this plan's section, the
-decisions D-1–D-10 verbatim, the spec corrections 1–7 verbatim. Nothing above §9.5 is edited.
+decisions D-1–D-10 verbatim, the spec corrections 1–8 verbatim. Nothing above §9.5 is edited.
 
 - [ ] **Step 3: The CLI's two comments** (`screen_model.rs`; the fenced crate; doc only). :2463–2464:
 
