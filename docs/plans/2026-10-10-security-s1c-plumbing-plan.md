@@ -446,7 +446,8 @@ mod tests {
     }
 
     /// `refusal` repeats the line through the echo rule: sixty-four characters,
-    /// escaped — the mutant that keeps `{line:?}` fails the length line.
+    /// escaped — the mutant that keeps `{line:?}` fails the `…` line first,
+    /// then the length line.
     #[test]
     fn a_refusal_echoes_at_most_sixty_four_characters() {
         let r = refusal(&"save ".repeat(100));
@@ -506,35 +507,70 @@ mod tests {
     }
 
     /// **A hostile value anywhere a sentence echoes it is bounded** (finding
-    /// D12): the path, a game id in the path, the index kind, the filter term,
-    /// the identity header, the input line, the prompt kind an input expects,
-    /// a creator-chosen id, a path number.
-    /// Each site is driven through the router with a 16 KB value and the body
-    /// read for its size and for the raw value's absence; the mutant that
-    /// restores any one `{x:?}` fails that row.
+    /// D12). Each row drives ONE echo site through the router with a 16 KB
+    /// value — `z`s, or spaces where the grammar trims the ends — names a
+    /// fragment of the sentence it must reach, and reads the body for its size
+    /// and for the raw run's absence. The cap keeps every body near a kilobyte
+    /// whatever the echo does, so the absence line is the one that tells the
+    /// echo from the cap. The mutant that restores the `{x:?}` (or unwraps the
+    /// plain `{x}`) at one of THESE sites fails its row: `dispatch`'s
+    /// unmatched path, `MemStore::read`'s id, the index kind, the filter guard
+    /// (dropped whole, `parse_filter` repeats the term raw),
+    /// `parse_path_usize`, `parse_path_u64`, the input's `expect`, `create`'s
+    /// id and its seed (`WireSeed`, through `parse_json`), the four sentences
+    /// of `User::parse` (the header for "neither" and "whitespace"; a seat's
+    /// user for "reserved" and "not an email", since the header is trimmed
+    /// before the grammar reads it and only a trimmed end makes those two
+    /// long), and `check_shape`'s watcher (an archive upload). The input
+    /// route's `check_line` call and the filter guard's `echo` half are pinned
+    /// by the lines after the loop. The inventory's other sites carry no row:
+    /// each is wrapped by the same rule, and bounded by the cap besides.
     #[tokio::test]
     async fn every_echo_site_answers_a_bounded_body() {
         let state = Arc::new(AppState::in_memory());
         a_game(&app(Arc::clone(&state)), "echoed", &[]).await;
         let big = "z".repeat(16 * 1024);
-        let rows: Vec<(&str, String, Option<serde_json::Value>, &str)> = vec![
-            ("GET", format!("/api/{big}"), None, WHO),
-            ("GET", format!("/api/games/{big}"), None, WHO),
-            ("GET", format!("/api/games/echoed/index/{big}"), None, WHO),
-            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO),
+        let pad = " ".repeat(16 * 1024);
+        let create = |seats: serde_json::Value, more: serde_json::Value| {
+            let mut body = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": seats, "name": "x" });
+            for (k, v) in more.as_object().expect("an object") {
+                body[k] = v.clone();
+            }
+            Some(body)
+        };
+        let two = serde_json::json!([{ "user": WHO }, { "user": WHO }]);
+        // (method, uri, body, the identity header, a fragment of the sentence the row reaches)
+        let rows: Vec<(&str, String, Option<serde_json::Value>, String, &str)> = vec![
+            ("GET", format!("/api/{big}"), None, WHO.into(), "no such endpoint"),
+            // The store's 500 until Task 2's `dispatch` check makes it a 404;
+            // "game name" reads in both sentences.
+            ("GET", format!("/api/games/{big}"), None, WHO.into(), "game name"),
+            ("GET", format!("/api/games/echoed/index/{big}"), None, WHO.into(), "no card index named"),
+            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO.into(), "nothing a quoted string would escape"),
             // A path number: `at/{k}` reads it with `parse_path_usize`, a chat
             // message's DELETE with `parse_path_u64` (a GET there is a bare 405).
-            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO),
-            ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO),
-            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO),
+            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO.into(), "Cannot parse value at index 1"),
+            ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO.into(), "Cannot parse value at index 1"),
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO.into(), "this one is"),
             // `expect` is the caller's own string, and the 409 that names a
             // prompt that moved on repeats it — through a literal `ApiError`
             // the constructors' cap never sees.
-            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO),
-            ("POST", "/api/games".to_string(), Some(serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{ "user": WHO }, { "user": WHO }], "id": format!("a/{big}"), "name": "x" })), WHO),
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO.into(), "the prompt moved on"),
+            ("POST", "/api/games".to_string(), create(two.clone(), serde_json::json!({ "id": format!("a/{big}") })), WHO.into(), "is not a usable game id"),
+            // The seed's own sentence, inside serde's, inside `parse_json`'s.
+            ("POST", "/api/games".to_string(), create(two.clone(), serde_json::json!({ "seed": big })), WHO.into(), "is not a u64 seed"),
+            // A seat's user is parsed untrimmed: a trimmed end is what lets
+            // the two sentences below repeat a long value at all.
+            ("POST", "/api/games".to_string(), create(serde_json::json!([{ "user": format!("anonymous{pad}") }, { "user": WHO }]), serde_json::json!({})), WHO.into(), "is reserved"),
+            ("POST", "/api/games".to_string(), create(serde_json::json!([{ "user": format!("a@b@c{pad}") }, { "user": WHO }]), serde_json::json!({})), WHO.into(), "is not an email"),
+            // The identity header, under the open door: a value that is
+            // neither an email nor a name, and one whose inner spaces
+            // `typed_form` collapses before the whitespace rule refuses it.
+            ("GET", "/api/games".to_string(), None, big.clone(), "is neither an email nor a name"),
+            ("GET", "/api/games".to_string(), None, format!("a{pad}b@c"), "contains whitespace"),
         ];
-        for (method, uri, body, who) in rows {
-            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, who);
+        for (method, uri, body, who, reaches) in rows {
+            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, &who);
             let req = match body {
                 Some(b) => req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&b).expect("a body"))),
                 None => req.body(Body::empty()),
@@ -543,12 +579,15 @@ mod tests {
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             let status = res.status();
             let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+            let text = String::from_utf8_lossy(&bytes);
+            let row = format!("{method} {} ({reaches})", uri.chars().take(60).collect::<String>());
             // Every row is a refusal; WHICH refusal is each route's own cell's
             // claim — the 16 KB game id is the store's 500 until Task 2's
             // `dispatch` check makes it the 404 that cell pins (finding B8).
-            assert!(status.is_client_error() || status.is_server_error(), "{method} {uri}: {status}");
-            assert!(bytes.len() <= 2_048, "{method} {}: a {} byte body", uri.chars().take(60).collect::<String>(), bytes.len());
-            assert!(!String::from_utf8_lossy(&bytes).contains(&"z".repeat(65)), "{method}: the raw value came back");
+            assert!(status.is_client_error() || status.is_server_error(), "{row}: {status}");
+            assert!(bytes.len() <= 2_048, "{row}: a {} byte body", bytes.len());
+            assert!(!text.contains(&"z".repeat(65)) && !text.contains(&" ".repeat(65)), "{row}: the raw value came back");
+            assert!(text.contains(reaches), "{row}: the row reaches its sentence: {}", text.chars().take(200).collect::<String>());
         }
         // The input route asks `check_line` BEFORE the grammar: the long line
         // is refused by its LENGTH, not echoed back cut — `refusal`'s echo
@@ -558,13 +597,28 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
         let said = v["error"].as_str().unwrap_or_default();
         assert!(said.contains(&format!("this one is {} bytes", big.len() + 5)) && !said.contains("save"), "{said}");
-        // The identity header: a 16 KB value that is neither an email nor a
-        // name, under the open door, is the grammar's refusal — bounded.
-        let req = Request::builder().method("GET").uri("/api/games").header(identity::CLAIMED_HEADER, &big).body(Body::empty()).expect("a request");
-        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
-        assert!(bytes.len() <= 2_048, "{}", bytes.len());
+        // The filter guard refuses what `echo` would change — a double quote,
+        // a backslash, a U+202E override, a combining mark — since the CLI's
+        // `parse_filter` repeats the term raw; an apostrophe and a precomposed
+        // `é` are plain text and pass, to `parse_filter`'s own sentence, so the
+        // sentence's last word is pinned by `cafe` + U+0301 against `caf` +
+        // U+00E9. The mutant that keeps only the length half of the guard fails
+        // the refused rows.
+        let guard = "a filter is at most 64 characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character";
+        let terms = [
+            ("%22silk%22", true),
+            ("si%5Clk", true),
+            ("si%E2%80%AElk", true),
+            ("cafe%CC%81", true),
+            ("caf%C3%A9", false),
+            ("o'brien", false),
+        ];
+        for (term, refused) in terms {
+            let (status, v) = get_as(&state, WHO, &format!("/api/games/echoed/index/orders?filter={term}")).await;
+            let said = v["error"].as_str().unwrap_or_default();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{term}: {v}");
+            assert_eq!(said == guard, refused, "{term}: {said}");
+        }
         // A watcher entry in an UPLOADED table document is the caller's value
         // too: `check_shape` repeats the one that does not parse, and the
         // archive route reaches it. The message cap alone would keep this body
@@ -575,8 +629,8 @@ mod tests {
         let (status, v) = post_as(&slow_state(0, 1, 1_000), WHO, "/api/archive", serde_json::json!({ "record": PLAYED_RECORD, "table": table.to_string() })).await;
         let text = v.to_string();
         assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "POST /api/archive (on the watcher list): the raw value came back in a {} byte body", text.len());
         assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
-        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "a {} byte body", text.len());
     }
 
     /// **The second layer: the cap at the BOUNDARY** (finding D12, decision
@@ -661,8 +715,9 @@ pub const MESSAGE_MAX: usize = 1_024;
 
 impl ApiError {
     /// `message` cut to [`MESSAGE_MAX`] characters with a `…`; every
-    /// constructor below passes through here, and so does `api::error_value`
-    /// at the boundary.
+    /// constructor below that takes a message passes through here (`dealing`,
+    /// `open` and `playing` carry constants), and `api::error_value` caps at
+    /// the boundary besides.
     pub fn capped(message: String) -> String {
         if message.chars().nth(MESSAGE_MAX).is_none() {
             return message;
@@ -783,16 +838,861 @@ literally — `Forbidden`, `Conflict`, `ForeignBot` — pass their sentence thro
 (`identity.rs:112`, `lib.rs:330`). The after review greps the seven files and accounts for exactly those hits. The filter term (`api.rs:1759`): before `parse_filter`,
 
 ```rust
-        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || term.chars().any(char::is_control) => {
+        Some(c) => {
+            let (at, id) = c
+                .split_once(',')
+                .ok_or_else(|| ApiError::bad_request("before is <created_at>,<id>"))?;
+            let at: u64 =
+                at.parse().map_err(|_| ApiError::bad_request("before is <created_at>,<id>"))?;
+            Some((at, id.to_string()))
+        }
+    };
+    let (games, next) =
+        games.list(user, scope, limit, before).map_err(ApiError::server_error)?;
+    Ok(GamesList { games, next })
+}
+
+/// **201 with the TABLE, and no game yet.** Nothing is dealt into anyone's hand
+/// by this call: the seats are bound and every human seat is owed a deal it
+/// fetches for itself.
+pub fn create_game(
+    games: &Games,
+    user: &User,
+    req: &NewGame,
+) -> Result<crate::table::TableView, ApiError> {
+    let view = games.create(req, user)?;
+    Ok(view)
+}
+
+/// The table as this caller may read it.
+///
+/// **The one route R-2.7 widens**: at `Open` any signed-in caller is answered,
+/// because a join link is an address and the person following one has to see
+/// what they are joining. At every other status this is `Games::table`'s fence
+/// unchanged, and `my_seats` on the view may therefore be EMPTY.
+pub fn get_table(
+    games: &Games,
+    user: &User,
+    id: &str,
+) -> Result<crate::table::TableView, ApiError> {
+    let doc = games.table_for_anyone(id, user)?;
+    Ok(doc.view(user, games.archive_on()))
+}
+
+/// The caller's own two cards, over the set table. A seated caller's, or a 403.
+pub fn deal(games: &Games, user: &User, id: &str) -> Result<crate::table::DealView, ApiError> {
+    Ok(games.deal(id, user)?)
+}
+
+/// Which of the two dealt cards a seat keeps.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Keep {
+    pub seat: u8,
+    pub card: u8,
+    /// What this seat is called on screen (M6.2, §3.5). Written onto the seat
+    /// only when it has no name yet — see [`Games::keep`](crate::games::Games::keep).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Taking an open seat at an open table (M6.2, §3.2).
+///
+/// The password is the TABLE's and not the caller's: a table without a lock
+/// ignores one, and a table with a lock refuses without it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Join {
+    pub seat: u8,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+pub fn join(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &Join,
+) -> Result<crate::table::TableView, ApiError> {
+    // The same fallible parse `keep` makes, and for the same reason: the number
+    // came off the wire and `PlayerId::new` panics at four and above.
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(games.join(id, user, seat, req.name.as_deref(), req.password.as_deref())?)
+}
+
+/// The table's password, presented once so this caller may WATCH (M6.3, §3.4).
+///
+/// **The table's and not the caller's** — the same sentence [`Join`] carries,
+/// and for the same reason: it gates a shared game behind a door Cloudflare
+/// Access has already opened, and nobody's identity rests on it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Unlock {
+    pub password: String,
+}
+
+/// `POST /api/games/{id}/unlock` — knock, and be remembered.
+///
+/// The whole of the ladder is [`Games::unlock`](crate::games::Games::unlock)'s, held under the
+/// table's own lock; this handler carries no rule of its own. It answers the
+/// `TableView`, whose `can_watch` now reads true, so a client that was
+/// drawing the unlock face has the payload it needs to draw the game instead
+/// without a second request.
+pub fn unlock(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &Unlock,
+) -> Result<crate::table::TableView, ApiError> {
+    Ok(games.unlock(id, user, &req.password)?)
+}
+
+/// A message to post (M6.4, spec §3.2). `name` is a WATCHER's (and anyone's
+/// at the house); a seated caller sending one is a 400, because a seat's name
+/// is the seat's (R-6.4.2).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatPost {
+    pub text: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// The cursor: messages numbered ABOVE it (spec §3.1). Typed, so a negative
+/// cursor is serde's 400.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatQuery {
+    #[serde(default)]
+    pub after: Option<u64>,
+}
+
+/// What the read answers: the retained messages above the cursor, and the
+/// newest number ever assigned — the client's next cursor.
+///
+/// **`last` is the DOCUMENT's and not the page's**, which is what makes a
+/// cursor survive a trim: a client that asks from a number the retention has
+/// already dropped is told where the room has got to rather than left to infer
+/// it from an empty page.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatPage {
+    /// Built for the reader ([`chat::ChatDoc::page_for`]): `you` on their own
+    /// messages, and no author's address (M6.5c2 cycle D, R-6.5c2.35).
+    pub messages: Vec<chat::MessageView>,
+    pub last: u64,
+    /// The document's REVISION (M6.5c2 cycle D, R-D4), beside `last` for the
+    /// same reason `last` is the document's: a reader holding `rev - last`
+    /// from its previous page sees it move exactly when a message it may
+    /// already hold was deleted. Every chat panel is a count host and compares
+    /// that held difference with each signal frame's — `Events.chat` and
+    /// `chat_rev` at a table, the house frame's `chat` and `rev` in the lobby —
+    /// which are this document's `last` and `rev` on both hosts.
+    pub rev: u64,
+}
+
+/// `GET /api/games/{id}/chat?after=N` — admitted exactly as a read is.
+///
+/// **The same [`admitted`] every projection takes, and deliberately not a rule
+/// of its own** (spec §3.2): a seat holder at every status, a watcher once the
+/// table admits them, and the lock's own sentence for the caller who has not
+/// knocked.
+///
+/// **Which is NARROWER than seeing the table, and the gap is the point.**
+/// `GET …/table` and `…/events` answer any signed-in caller at an OPEN table
+/// (R-2.7, R-4.3) so that someone who followed a join link can read the seat
+/// picker and watch for the seats to fill; the chat takes no such widening. A
+/// stranger on that screen reads the table and the message COUNT off the
+/// signal, and is 403 on the messages themselves — pinned by
+/// `events_carries_the_chat_count_at_open_dealing_and_playing`, which asserts
+/// both halves of that one caller in two adjacent lines. A room is readable by
+/// the people `admitted` admits, not by everyone who can see the door.
+pub fn chat_read(
+    games: &Games,
+    user: &User,
+    id: &str,
+    q: &ChatQuery,
+) -> Result<ChatPage, ApiError> {
+    // The admission's table is the page's too (M6.5c2 cycle D, row 130): the
+    // chat is bounded by its seat count, and reading the document again for
+    // that one number was a second read per page.
+    let (table, _) = admitted(games, id, user)?;
+    let (messages, counts) = games.chat_page(id, &table, user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
+}
+
+/// `POST /api/games/{id}/chat` — the one write a watcher may make (R-6.4.11).
+///
+/// The order is the spec's §3.2 and is pinned by adjacent-pair probes:
+/// admission, the text, the seat/name rule, the watcher's name, the append.
+/// Every step before the append is a refusal this caller can fix, and the text
+/// is checked before the APPEND takes the table's lock, so a message that will
+/// be refused never makes anyone wait behind another message. (Not "before any
+/// lock": `admitted` runs first, and on a dealing table where every human has
+/// kept it goes through `settle`, which takes that table's lock to finish the
+/// deal.)
+///
+/// **The reply is the message as its POSTER reads it** (M6.5c2 cycle D,
+/// R-6.5c2.35): `you: true`, and no address — the page's shape, so a client
+/// reads one author type.
+pub fn chat_post(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &ChatPost,
+) -> Result<chat::MessageView, ApiError> {
+    let (table, viewer) = admitted(games, id, user)?;
+    let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
+    let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
+    let message = games.chat_append(id, author, &text)?;
+    Ok(message.view_for(user))
+}
+
+/// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
+///
+/// **A seat's name is read off the TABLE and never off the body**, which is the
+/// whole of the rule: a name in a message is a claim about who is speaking, and
+/// at a seat the table has already settled that claim. A seated caller who
+/// sends one is refused rather than quietly overridden, because a client that
+/// believed it was setting a name and was answered 201 would go on sending it.
+///
+/// **It takes the SEATS, not the table** (M6.5c2 cycle D, row 130), so the
+/// house — which has none — asks it too, as a [`client::Viewer::Spectator`]
+/// over `&[]`: the watcher's rule (the name checked, the key the caller's) is
+/// written once, here, and not restated in [`house_chat_post`].
+fn author_of(
+    seats: &[crate::table::SeatDoc],
+    viewer: client::Viewer,
+    user: &identity::User,
+    name: Option<&str>,
+) -> Result<chat::Author, ApiError> {
+    match viewer {
+        client::Viewer::Seat(seat) => {
+            if name.is_some() {
+                return Err(ApiError::bad_request("a seated caller is named by their seat"));
+            }
+            let stored = match seats.get(usize::from(seat.0)) {
+                Some(crate::table::SeatDoc::Human { name, .. }) => name.clone(),
+                _ => None,
+            };
+            Ok(chat::Author::Seat { seat: seat.0, user: user.as_str().to_string(), name: stored })
+        }
+        client::Viewer::Spectator => {
+            let name = name.map(tables::check_name).transpose().map_err(ApiError::bad_request)?;
+            Ok(chat::Author::Watcher { user: user.as_str().to_string(), name })
+        }
+    }
+}
+
+/// The house switch (R-6.4.6): a 404 with a sentence, before anything else.
+///
+/// A 404 rather than a 403, because with the lobby chat off the route is not
+/// something this deployment refuses you — it is something this deployment does
+/// not have. The client reads the same fact off `/api/health` and draws no
+/// panel at all; the sentence is for whoever asks anyway.
+pub fn lobby_chat_on(games: &Games) -> Result<(), ApiError> {
+    if games.chat.lobby {
+        Ok(())
+    } else {
+        Err(ApiError::not_found("the lobby chat is off"))
+    }
+}
+
+/// `GET /api/chat?after=N` — the house. Any signed-in caller.
+pub fn house_chat_read(games: &Games, user: &User, q: &ChatQuery) -> Result<ChatPage, ApiError> {
+    lobby_chat_on(games)?;
+    let (messages, counts) = games.house_page(user, q.after.unwrap_or(0))?;
+    Ok(ChatPage { messages, last: counts.last, rev: counts.rev })
+}
+
+/// `POST /api/chat` — the house. Every author is a `Watcher`: the house has
+/// no seats.
+///
+/// Which is not a simplification but the shape rule's own answer: the house
+/// document is checked with `players: None`, and a `Seat` author there is
+/// refused on write. There is nothing to be seated at.
+///
+/// The reply is the message as its poster reads it, as [`chat_post`]'s is.
+pub fn house_chat_post(
+    games: &Games,
+    user: &User,
+    req: &ChatPost,
+) -> Result<chat::MessageView, ApiError> {
+    lobby_chat_on(games)?;
+    let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
+    let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
+    let message = games.house_append(author, &text)?;
+    Ok(message.view_for(user))
+}
+
+/// `DELETE /api/games/{id}/chat/{seq}` (M6.5c2 cycle D, R-D4) — a message
+/// taken down by its AUTHOR or by the table's CREATOR, and by nobody else.
+///
+/// **Admitted exactly as [`chat_post`] is**, by the same [`admitted`]: a seat
+/// holder at every status, a watcher once the table admits them, the lock's
+/// sentence to a caller who has not knocked — so the one write a spectator
+/// may make and its undoing are behind the same door. Then the standing,
+/// which is [`chat::ChatDoc::delete`]'s: `only the message's author or the
+/// table's creator may delete it` (403) for anyone else, and `no message N in
+/// this chat` (404) for a number the document does not hold.
+///
+/// **The answer is an empty 204**, and a second delete of the same message by
+/// someone entitled is the same 204 — idempotent, writing and signalling
+/// nothing. The message stays as a TOMBSTONE (`text: ""`, `deleted: true`), so
+/// its number is never reused and every cursor still means what it meant; the
+/// table's `Events.chat_rev` moves and `Events.chat` does not.
+pub fn chat_delete(games: &Games, user: &User, id: &str, seq: u64) -> Result<(), ApiError> {
+    admitted(games, id, user)?;
+    Ok(games.delete_chat(id, seq, user)?)
+}
+
+/// `DELETE /api/chat/{seq}` (M6.5c2 cycle D, R-D4) — the house, where nobody
+/// is a creator, so only the message's AUTHOR may take it down. The switch
+/// first, as the read and the post have it; any signed-in caller is asked.
+/// The house frame's `rev` moves and its `chat` does not.
+pub fn house_chat_delete(games: &Games, user: &User, seq: u64) -> Result<(), ApiError> {
+    lobby_chat_on(games)?;
+    Ok(games.delete_house_chat(seq, user)?)
+}
+
+pub fn keep(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &Keep,
+) -> Result<crate::table::TableView, ApiError> {
+    // **`PlayerId::new` PANICS at four and above**, and this number came off the
+    // wire — so it is parsed through the fallible constructor and refused as a
+    // 400. A panic here would poison nothing (the seat is read before any lock)
+    // but would still drop the connection with no sentence in it.
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(games.keep(id, user, seat, req.card, req.name.as_deref())?)
+}
+
+pub fn get_game(games: &Games, user: &User, id: &str) -> Result<ClientState, ApiError> {
+    // Admitted first, so a caller with no business here is a 403 rather than a
+    // frame; then the frame is built for that caller — the hand on it is their
+    // own and every other seat's is a count (R-1.7), or, for a watcher, every
+    // seat's is (M6.3, R-3.7).
+    let (_table, viewer) = admitted(games, id, user)?;
+    let handle = games.handle(id)?;
+    let repl = games.lock_game(&handle, id)?;
+    Ok(ClientState::of(id, &repl, viewer, Vec::new()))
+}
+
+pub fn delete_game(games: &Games, user: &User, id: &str) -> Result<(), ApiError> {
+    games.delete(id, user)?;
+    Ok(())
+}
+
+/// What the client sends to act.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Input {
+    /// An option's `number`, or a sub-prompt token (`confirm`, `cancel`, an
+    /// area id, a count). The grammar is the CLI's — but only the GAMEPLAY part
+    /// of it; see [`crate::grammar`] for the fence and why it exists.
+    pub line: String,
+    /// The `prompt.kind` the client was looking at when it chose this line.
+    ///
+    /// **This is what stops a number meaning a different move.** In-flight
+    /// sub-prompt state lives only in the resident `Repl` — `SubPrompt` is not
+    /// in the `GameRecord` and does not belong there — so a game evicted or a
+    /// process restarted rebuilds with `SubPrompt::None`. The client, which
+    /// never re-fetches, keeps sending area ids from an open placement picker,
+    /// and `pick_option` reads them against the MAIN option list. Measured
+    /// across two processes over one store: a client holding
+    /// `{"kind":"place_a","selected":[3,7]}` clicked area 3, and the rebuilt
+    /// `Repl` applied option 3 — "Place no assistants" — spending the turn's
+    /// placement on nothing the player chose.
+    ///
+    /// Optional, so `curl` and the integration test stay terse; when present it
+    /// is checked, and a mismatch is a refusal that names both prompts instead
+    /// of a move nobody asked for.
+    #[serde(default)]
+    pub expect: Option<String>,
+}
+
+/// `input`'s messages when THIS step engaged a lockdown (finding D5): the
+/// lines before the lockdown line — the mover's own deltas — and the line,
+/// and nothing under it. `Repl::step` appends `lockdown_dump()` there — the
+/// setup seed, the turn and the log tail — for a terminal's operator, who owns
+/// the game; a seat at a shared table does not. A text with no lockdown line
+/// is replaced by the reason alone.
+pub(crate) fn lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String> {
+    match lines.iter().position(|l| l.starts_with("LOCKDOWN — ")) {
+        Some(i) => lines.into_iter().take(i + 1).collect(),
+        None => vec![format!("LOCKDOWN — {reason}")],
+    }
+}
+
+/// The one mutation.
+///
+/// Deliberately a single endpoint over `Repl::step`, not a family of typed
+/// verbs. `step` already IS the state machine — it validates against the
+/// engine's legal list, opens and closes sub-pickers, and pumps any bot seats
+/// that are owed a move afterwards. A second dispatcher here would be a
+/// reimplementation of it, and the two would drift; the client's typed
+/// affordances come from `PromptState` telling it what to send, not from the
+/// server growing a verb per interaction.
+///
+/// **The line is fenced before it gets there.** `step` is the terminal's front
+/// door and answers to more than the game — it writes files, and it opens
+/// sticky overlays in which a number stops meaning a move. [`crate::grammar`]
+/// carries the allowlist and the reasoning; the fence is here, at the boundary,
+/// rather than inside `grammar` calling `step`, so that reading this handler
+/// shows both that a line is checked and that a checked line goes through
+/// untouched.
+pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<ClientState, ApiError> {
+    grammar::check_line(&req.line).map_err(ApiError::bad_request)?;
+    if !grammar::is_gameplay_line(&req.line) {
+        return Err(ApiError::bad_request(grammar::refusal(&req.line)));
+    }
+    let (table, viewer) = admitted(games, id, user)?;
+    // **A watcher writes nothing, and hears it before the handle is touched**
+    // (M6.3, R-3.6). Above the undo rule and the acting-seat fence because both
+    // of those are about a SEAT, and this caller has none: R-P6 would read the
+    // trailing event's mover against a seat that does not exist.
+    spectators_write_nothing(viewer)?;
+    let handle = games.handle(id)?;
+    let mut repl = games.lock_game(&handle, id)?;
+    // **The seat the rules below compare against is read AGAIN, under THIS
+    // take** (M6.5c2 cycle D, row 129). `admitted` read one under its own take
+    // and let that go, and a move landing in between — this person's other
+    // tab, a double click — moves the turn from one of their seats to the
+    // other: the fence then compared the NEW acting seat against the OLD one
+    // and told the holder of both "it is seat 1's turn". It never admitted
+    // anybody wrongly; it refused the one person it should have let through.
+    // Pinned, with the gap held open, by
+    // `a_hot_seat_creator_is_never_told_it_is_not_their_turn_between_two_lock_takes`.
+    //
+    // `None` is unreachable — a caller admitted as a seat holds one, and
+    // `viewer_seat` answers for everyone who does — and is refused rather than
+    // unwrapped, so nothing under the game's lock can panic here.
+    let seat = client::viewer_seat(&table, user, repl.session.state()).ok_or_else(|| ApiError {
+        status: StatusCode::FORBIDDEN,
+        message: NOT_SEATED.to_string(),
+        table_status: None,
+        foreign_bot: None,
+    })?;
+    let viewer = client::Viewer::Seat(seat);
+
+    // **An undo reaches back into your own turn and no further** (R-P6).
+    //
+    // The check is HERE rather than inside `step` because it needs the TABLE:
+    // the rule turns on how many PEOPLE sit at this one, which is a fact of the
+    // seat bindings and not of the record. Before `step`, because
+    // `Session::undo` pops events and a refusal afterwards would be a refusal
+    // of something that already happened.
+    //
+    // **And before the acting-seat fence, deliberately** (R-5.1). Both refuse
+    // the same caller — a player whose turn has passed is neither the acting
+    // seat nor entitled to undo — and both are a 403 that mutates nothing, so
+    // the only thing the order decides is which true sentence they hear. "Undo
+    // is not offered once your turn has passed" answers the button they
+    // pressed; "it is seat 1's turn" answers a question they did not ask. The
+    // fence is untouched and still runs, for this line and every other.
+    if grammar::is_undo(&req.line) {
+        undo_allowed(&mut repl, &table, seat).map_err(crate::games::GameError::from)?;
+    }
+
+    // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
+    //
+    // `viewer_seat` returns the acting seat whenever the caller holds it, so
+    // this comparison IS "do you hold the seat that is to move" — one person in
+    // several seats passes it at every one of them, which is what keeps a hot
+    // seat playable. Everyone else is refused by a sentence that names whose
+    // turn it is, because "403" alone tells a player nothing about what to do
+    // next: wait, or look at another table.
+    //
+    // Before `step`, so a refused caller cannot advance the game, and before
+    // the `expect` check below, so a watcher is told whose turn it is rather
+    // than handed a prompt-moved-on conflict about a prompt that was never
+    // theirs.
+    //
+    // **The fence never drops. Only its WORDING changes** (R-4.3).
+    //
+    // A finished game has no turn and a locked one accepts no gameplay, so
+    // naming a seat there is a false sentence — the false half of a pair, since
+    // the holder of that same seat is told the truth by `step`. But the first
+    // fix for that let a non-acting caller's POST through to `step` when the
+    // game was over, and `undo` is an allowlisted gameplay line that
+    // `Session::undo` applies with no game-over guard of its own. Measured on
+    // that code: a seated WATCHER posted `undo` at a finished game, got 200,
+    // and the record went from 357 events to 200 with `over` back to false —
+    // any seated player could rewind a completed shared game, and this server
+    // persisted it because `events.len()` had changed.
+    //
+    // So the comparison is unconditional and the SENTENCE is chosen: the
+    // lockdown's own reason, the CLI's own `ApplyError::GameOver` line, or whose
+    // turn it is. The acting seat's holder's path is untouched in all three.
+    //
+    // **The measured defect stays closed with R-P6's check now in front of
+    // this one** (R-5.1): that seated watcher's `undo` is refused by
+    // `undo_allowed` before it arrives here, because the watcher is not the
+    // current player. Where `undo_allowed` waves a line through — a table with
+    // ONE person at it — this comparison is what guards, exactly as it did
+    // before. Neither check is the other's fallback; both run.
+    let acting = repl.session.state().current_player;
+    if acting != seat {
+        let message = status_refusal(&repl).unwrap_or_else(|| {
+            format!("it is seat {}'s turn ({})", acting.0, holder_of(&table, acting))
+        });
+        return Err(ApiError { status: StatusCode::FORBIDDEN, message, table_status: None, foreign_bot: None });
+    }
+
+    if let Some(expected) = &req.expect {
+        let actual = crate::client::prompt_kind(&repl);
+        if expected != actual {
+            return Err(ApiError {
+                status: StatusCode::CONFLICT,
+                message: format!(
+                    "this game is asking {actual:?}, not \"{expected}\" — the prompt moved on \
+                     (a restart drops an open picker). Re-read the game and answer what it asks.",
+                    expected = crate::echo::echo(expected),
+                ),
+                table_status: None, foreign_bot: None,
+            });
+        }
+    }
+
+    let before = repl.session.record().events.len();
+    let locked_before = repl.session.is_locked();
+    let out = repl.step(&req.line);
+
+    // A FAILED SAVE IS NOT A FAILED MOVE, and must not be reported as one.
+    //
+    // `step` has already mutated the resident `Repl`; every later request
+    // reuses that handle. Returning the store's error as a 400 told the client
+    // its move was refused while the server kept it — measured with the store
+    // directory at mode 0555: the client got `400 Permission denied` and the
+    // very next GET showed the move applied, with the durable record still one
+    // event behind. So the applied state is returned, and the failure is said
+    // OUT LOUD as a warning: the move happened, and it is not saved.
+    // A LOCKDOWN MUST BE WRITTEN THROUGH even though it adds no event.
+    //
+    // `Repl::step` engages one AFTER an apply has failed, so `events.len()` is
+    // unchanged and an event-count gate skips the write. `Session::lock_down`
+    // tries to persist itself via `autosave`, but that is a no-op here —
+    // `from_record` and `new_sim` both leave `save_path` as `None`, so this
+    // layer is the only writer. Without this the container sleeps, the game is
+    // rebuilt from a record with no `lockdown`, `Repl::new` restores
+    // `locked = false`, and a desynced game is handed back playable with the
+    // fault's reason lost from the record it was deliberately written into.
+    let mut warnings = Vec::new();
+    if repl.session.record().events.len() != before || repl.session.is_locked() != locked_before {
+        if let Err(e) = games.persist(id, &repl) {
+            warnings.push(format!("APPLIED BUT NOT SAVED — {e}"));
+        }
+    }
+
+    // STRIP THE TERMINAL PROMPT BLOCK, keep the deltas.
+    //
+    // `Repl::out` composes `text` as "what just happened" plus a rendered
+    // screen — for the main decision that screen is `prompt()`, which the
+    // browser already draws structurally from `PromptState`. Passing it through
+    // meant the client printed the numbered options a second time as dead text,
+    // a bare `>` caret, and the CLI's standing hint: "'view' any surface · '?'
+    // the card index · 'help' for commands" — three words this same server
+    // REFUSES, in a client with no text input to type them into. The browser was
+    // instructing the player in a grammar it cannot accept.
+    //
+    // The suffix is removed by IDENTITY, not by pattern-matching prose:
+    // `prompt()` is `pub` and pure over the post-step state, so it returns
+    // exactly what `out` appended. A sub-prompt's block is deliberately KEPT —
+    // it carries the live legality verdict and the placement fee, which have no
+    // structured equivalent on the wire yet, so dropping it would lose the only
+    // statement of a cost the player is about to pay.
+    let body = if matches!(repl.sub, yokohama_cli::repl::SubPrompt::None) {
+        let tail = repl.prompt();
+        out.text.strip_suffix(&tail).unwrap_or(&out.text).to_string()
+    } else {
+        out.text.clone()
+    };
+    let lines: Vec<String> =
+        body.lines().map(str::trim_end).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    // **A lockdown's dump stays in the terminal** (finding D5): the reply
+    // carries the lockdown line and nothing under it.
+    let messages = match (repl.session.is_locked() && !locked_before, repl.session.record().lockdown.as_deref()) {
+        (true, Some(reason)) => lockdown_messages(lines, reason),
+        _ => lines,
+    };
+    // **The reply is the CALLER's view, not the new mover's.** A move that ends
+    // a turn therefore answers its own mover with a `watching` prompt, which is
+    // the true thing to say: the game has moved on and this person is not the
+    // one it is waiting for.
+    let mut client = ClientState::of(id, &repl, viewer, messages);
+    // **The banner must not say "saved" on the payload that says it is not.**
+    //
+    // `TitleModel::autosaved` is a literal `true` in `client.rs` — correct as a
+    // statement about this server, which persists after every applied move — but
+    // when THIS write failed the payload carried both "· saved" in the banner and
+    // "APPLIED BUT NOT SAVED" three inches below it, on the same screen. The
+    // warning is the true one; the banner is corrected to agree with it here,
+    // where the write's outcome is actually known.
+    if !warnings.is_empty() {
+        client.frame.title.autosaved = false;
+    }
+    client.warnings.extend(warnings);
+    Ok(client)
+}
+
+/// How much of the log a request gets when it does not say.
+///
+/// **The whole thing.** The CLI tails it because a terminal has 24 lines to
+/// spend; a browser has a scrollbar, and truncating by default would make the
+/// most common request the one that quietly hides the move you are looking for.
+/// `?tail=N` trims for a caller that wants a summary, and `LogPanel::total`
+/// stays truthful either way, so a client can always say how many it is not
+/// showing.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogQuery {
+    #[serde(default)]
+    pub tail: Option<usize>,
+}
+
+/// `GET /api/games/{id}/suggest` — what the production contestant would play on
+/// the viewing seat's own view.
+///
+/// **The first route in this crate that COMPUTES something**, which is why the
+/// module doc's "if it ever computes something about the game, that is a bug"
+/// carries its one exception: this reads an OPINION about a state and never
+/// advances one. It applies nothing, records nothing and autosaves nothing —
+/// `suggest`'s contract in the terminal, kept exactly — so GET is honest about
+/// the effect, and it is idempotent in the strong sense the CLI already
+/// guarantees: byte-identical on repeat, keyed by game identity, seat and move
+/// count.
+///
+/// **A refusal is a 200, not a 4xx.** Being asked to advise on a bot's seat is
+/// an ANSWER; only a missing game (404) or a malformed request (400) is an
+/// error. The four conditions are `repl::suggest_cmd`'s own, restated because
+/// they live in the terminal's command wrapper rather than in `suggest.rs` — a
+/// handler that called `suggest::suggest` directly would inherit none of them
+/// and would happily search a live game, which the module doc forbids.
+///
+/// **The lock is dropped before the search runs.** Every other handler holds the
+/// per-game `Mutex<Repl>` across its whole body, which is right for a projection
+/// and wrong for a multi-second search: it would block every request for this
+/// game, including the poll that draws the board. `GameState` is history-free
+/// and cheap to clone for exactly this reason.
+pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestResponse, ApiError> {
+    use explain::SuggestRefusal as R;
+    let (table, viewer) = admitted(games, id, user)?;
+    // **A watcher gets the not-seated sentence, not the advisor's panel**
+    // (M6.3, R-3.6). The R-1.8 refusal below is for a non-acting HOLDER — "it
+    // is not your turn" is a true thing to tell somebody who has a turn coming.
+    spectators_write_nothing(viewer)?;
+    let handle = games.handle(id)?;
+
+    // **R-1.8: the acting seat's holder only, and this is a 403 rather than a
+    // typed refusal.** The four refusals in the ladder are ANSWERS about the
+    // game — it is over, it is locked, a bot is thinking — and a client renders
+    // each as a sentence in the advisor panel. "This is not your seat" is not
+    // that: it is the same access answer every other route on this table gives,
+    // and serving it as a 200 would put the advisor's own panel in front of a
+    // person who must not be ranking that seat's moves.
+    //
+    // **It sits AFTER the three refusals that are true of the GAME, and that
+    // ordering was a review finding.** A finished game has no turn, so telling
+    // a watcher "it is not your turn" there is false — and the holder of the
+    // same seat was being told the truth on the same table. Whatever the game
+    // itself has to say, every caller hears it; the seat answer is for the case
+    // where the game is genuinely waiting for somebody.
+    //
+    // It still subsumes `SuggestRefusal::BotSeat` at a table where no human
+    // holds the bot's seat, which is every table: a bot seat is nobody's, so
+    // the caller is refused here first. That refusal stays declared because it
+    // is the CLI's own and this crate carries `repl::suggest_cmd`'s ladder
+    // verbatim rather than a subset of it.
+    let read = {
+        let repl = games.lock_game(&handle, id)?;
+        let refuse = if repl.session.record().lockdown.is_some() {
+            Some(R::Locked)
+        } else if matches!(repl.session.mode, yokohama_cli::session::TrackingMode::Live) {
+            Some(R::LiveMode)
+        } else if repl.session.is_over() {
+            Some(R::GameOver)
+        } else {
+            let acting = repl.session.state().current_player;
+            if !table.seats_of(user).contains(&acting) {
+                return Err(ApiError {
+                    status: StatusCode::FORBIDDEN,
+                    message: "it is not your turn".to_string(),
+                    table_status: None, foreign_bot: None,
+                });
+            }
+            if repl.bots().is_bot(acting) {
+                Some(R::BotSeat)
+            } else {
+                None
+            }
+        };
+        match refuse {
+            Some(r) => Err(r),
+            None => {
+                let seat = repl.session.state().current_player;
+                Ok((
+                    seat,
+                    repl.session.state().clone(),
+                    yokohama_cli::suggest::stream_seed(repl.session.record(), seat),
+                ))
+            }
+        }
+    };
+
+    let (seat, game, seed) = match read {
+        Err(r) => return Ok(explain::SuggestResponse::refused(r.kind(), r.message())),
+        Ok(parts) => parts,
+    };
+
+    Ok(match yokohama_cli::suggest::suggest(&game, games.rules(), seat, seed) {
+        Ok(s) => explain::SuggestResponse::granted(explain::Suggest::of(&s, &game, games.rules())),
+        // The agent's own errors are surfaced VERBATIM rather than swallowed —
+        // `SuggestError::Inconsistent` describes itself as a bug worth
+        // reporting, and a generic "no suggestion" would throw that away.
+        Err(e) => explain::SuggestResponse::refused("search", e.to_string()),
+    })
+}
+
+/// `GET /api/games/{id}/why[?event=n]` — a bot move, reconstructed by replay.
+///
+/// `event` is the log's printed 0-based index; omitted means the most recent bot
+/// move, which is what bare `why` does in the terminal.
+///
+/// **The refusals are `why::account_parts`', and not one of them is re-derived
+/// here.** That function's own doc is the instruction: *"it must not
+/// reimplement the first half: the refusals ARE the honesty gate."* A
+/// reconstruction that does not equal the recorded move refuses, naming both
+/// moves and both versions — and that refusal reaches the browser as data,
+/// because a branch nobody has ever seen is where defects live.
+///
+/// Same lock discipline as `suggest`, for the same reason: the reconstruction
+/// runs the same `decide` path the pump ran.
+pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain::Why, ApiError> {
+    // Seated, with the seats the caller holds in hand: `why` is served at the
+    // REQUESTER's visibility (finding B1) — withheld while the mover's starting
+    // order is hidden from them, which the engine's own view decides, save
+    // that a seat holder reads everything once the game is over, as the record
+    // route serves them the record (`explain::visibility_of`); what this fence
+    // adds is the seat one — an account of a search at a table the caller has
+    // no place at is not theirs to read.
+    let (table, _viewer) = admitted(games, id, user)?;
+    let held = table.seats_of(user);
+    let handle = games.handle(id)?;
+    let (mode, record, bots, now) = {
+        let repl = games.lock_game(&handle, id)?;
+        // **The lockdown gate fences COMPUTATION, not projection**, and this is
+        // the rule the three route families follow. M2 already settled that a
+        // read-only GET serves a locked session — `ports`/`labs`/`areas`/`log`
+        // do, and `ClientState` reports the lockdown as its prompt rather than
+        // refusing. But `why` is not a projection: it re-runs the same `decide`
+        // path against a record the driver has declared faulty, and answering
+        // with an authoritative account of a search over a suspect record is
+        // exactly what a lockdown exists to stop. `suggest` refuses for the same
+        // reason; the card indexes and the final score do not, because they read
+        // the state rather than an opinion about it.
+        if let Some(reason) = repl.session.record().lockdown.clone() {
+            return Ok(explain::Why::locked(reason));
+        }
+        (
+            repl.session.mode,
+            repl.session.record().clone(),
+            repl.bots().clone(),
+            // History-free and cheap to clone (the engine's own rule); the
+            // visibility is a fact about NOW, read off this copy outside the lock.
+            repl.session.state().clone(),
+        )
+    };
+    // **A move a foreign bot made is the layer's to word** (M6.5c2,
+    // R-6.5c2.10): `account_parts` would call that seat a diagnostic that
+    // "resumed as a HUMAN seat". Outside the lock, over the clone, as the
+    // search below is.
+    if let Some(refused) = explain::foreign_why(&record, games.rules(), q.event) {
+        return Ok(refused);
+    }
+    Ok(
+        match yokohama_cli::why::account_parts(mode, &record, games.rules(), &bots, q.event) {
+            Ok(account) => {
+                let visibility = explain::visibility_of(&now, account.reconstruction.seat, &held);
+                explain::Why::account(&account, games.rules(), visibility)
+            }
+            Err(refusal) => explain::Why::refused(&refusal),
+        },
+    )
+}
+
+/// `GET /api/games/{id}/index/{kind}` — a card index, as a VIEW.
+///
+/// The four indexes are the CLI's canonical identification mechanism, and this
+/// serves the same model the terminal draws: `screen_model::build_index` over
+/// `Repl::index_placements_for`, which is why that function was widened rather
+/// than copied — its doc defends a leak fence (no other seat's hand, because in
+/// a live game an opponent's starting order is hidden and an index that dimmed
+/// it with "in Seat 1's hand" would leak the one card the observation boundary
+/// exists to protect).
+///
+/// **The `_for` is M6.1's, and it is the difference between that fence holding
+/// and reading as though it did.** The terminal's fence is around the MOVER's
+/// hand, because the terminal's one operator is the mover; this API's reader is
+/// whoever asked. Asking the REPL for the viewer's placements keeps one fence in
+/// one place rather than writing a second one here.
+///
+/// **`target` is always `None` here, and that is the whole difference between
+/// an index the terminal opens and an index this API serves.** In the CLI an
+/// index can be open INSIDE a card capture, and then its cards carry selection
+/// numbers that answer that capture. This API has no capture — the web's input
+/// grammar refuses `?`/`index`/`orders`/`techs` precisely so that a digit never
+/// silently changes meaning — so the index is a read-only view and its cards
+/// carry no numbers.
+///
+/// The filter is parsed by the CLI's own `card_prompt::parse_filter`. There is
+/// exactly ONE card-entry grammar in this project and the web does not get a
+/// second one: a second parser would answer an ambiguous prefix differently from
+/// the terminal on the first `f s` a player typed.
+pub fn card_index(
+    games: &Games,
+    user: &User,
+    id: &str, kind: &str,
+    q: &IndexQuery,
+) -> Result<yokohama_cli::screen_model::IndexModel, ApiError> {
+    use yokohama_cli::screen_model::IndexKind;
+    let kind = match kind {
+        "orders" => IndexKind::Orders,
+        "techs" => IndexKind::Techs,
+        "goals" => IndexKind::Achievements,
+        "sites" => IndexKind::Sites,
+        other => {
             return Err(ApiError::bad_request(format!(
-                "a filter is at most {} characters with no control character",
+                "no card index named \"{other}\" — the four are orders, techs, goals and sites",
+                other = crate::echo::echo(other)
+            )))
+        }
+    };
+    let filter = match q.filter.as_deref() {
+        None => None,
+        // **What `echo` would change is refused, not echoed**: the CLI's
+        // `parse_filter` (a fenced crate) repeats the term raw in single
+        // quotes, so a term `{:?}` would escape — a double quote, a backslash,
+        // a control, a format character such as U+202E, a combining mark —
+        // never reaches it. An apostrophe is plain text to `{:?}`, and passes.
+        // (The length half is subsumed — an echo cut at `ECHO_MAX` ends in `…`
+        // and never equals the term — and kept so the bound reads here.)
+        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
+            return Err(ApiError::bad_request(format!(
+                "a filter is at most {} characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character",
                 crate::echo::ECHO_MAX
             )))
         }
 ```
 
-so the CLI's own `parse_filter` sentence (the fenced crate's, which embeds the term) is bounded by what reaches
-it. The Worker's `identity_of` and the wasm `init` call `User::parse` too and inherit the bounded sentences.
+so the CLI's own `parse_filter` sentence (the fenced crate's, which embeds the term RAW in single quotes) is
+bounded by what reaches it — and since fix round 2 the guard refuses any term `echo` would change, so nothing a
+quoted string would escape (a quote, a backslash, a control, format or combining character) reaches the CLI's
+sentence; the length half is subsumed (a cut echo ends in `…`) and kept so the bound reads at the site. The Worker's `identity_of` and the wasm `init` call `User::parse` too and inherit the bounded sentences.
 
 - [ ] **Step 4: Run the cells and the crate.** `cargo test -p yokohama-web` — every cell green, `wire_fixtures`
 green WITHOUT the flag (no sentence a fixture carries changed: every value there is short and clean). Then the
@@ -817,7 +1717,14 @@ unwrapped and **M14c** `dispatch`'s inner `_` arm unwrapped — `/api/{*rest}` s
 adapter and the inner arm fires only if the table and the match disagree, so no router-level cell reaches either;
 both stay wrapped by the rule. Fix round 1's: **MB** the boundary cap dropped (`error_value` writes
 `e.message` raw) — `a_literal_api_error_is_capped_at_the_boundary` red at its `IntoResponse` arm alone; **MC**
-`bad_request`'s construction cap dropped — the construction cell alone; M2 (`capped` the identity) now reds both.
+`bad_request`'s construction cap dropped — the construction cell alone; M2 (`capped` the identity) now reds both. Fix rounds 2 and 3's: **X1** `identity.rs:184` back to `{raw:?}` (the
+reviewer's — GREEN at d6e12f54: reachable through a header of `a` + 16 KB of spaces + `b@c`, which `typed_form`
+collapses), **X2**/**X3** `:172` and `:189` (reachable through `create`'s untrimmed seat `user`, never the header,
+which `resolve` trims), **X6** the seed's `{t:?}` (through `parse_json`'s `{e}`), **MF** the guard's `echo` half
+dropped (the `%22silk%22` line) — each red on "<row>: the raw value came back"; **M7** reds AGAIN (fix round 1's
+boundary cap had made the old size-only header block pass it — the implementer's own catch); **M11** now also
+reds the echo cell at the `cafe%CC%81` line. Equivalent, recorded: the guard's LENGTH half dropped (a cut echo ends
+in `…` and never equals the term).
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/echo.rs crates/yokohama-web/src/lib.rs
 crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/games.rs
