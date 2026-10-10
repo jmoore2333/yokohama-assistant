@@ -843,8 +843,10 @@ literally — `Forbidden`, `Conflict`, `ForeignBot` — pass their sentence thro
         // quotes, so a term `{:?}` would escape — a double quote, a backslash,
         // a control, a format character such as U+202E, a combining mark —
         // never reaches it. An apostrophe is plain text to `{:?}`, and passes.
-        // (The length half is subsumed — an echo cut at `ECHO_MAX` ends in `…`
-        // and never equals the term — and kept so the bound reads here.)
+        // (The length half is LOAD-BEARING, not subsumed: a term whose 65th
+        // character is `…` echoes as itself — `x`×64+`…` — so without the
+        // count a 129-character `\`×128+`…` would reach `parse_filter` raw.
+        // The cell's terms carry one such term; mutant ML reads it.)
         Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
             return Err(ApiError::bad_request(format!(
                 "a filter is at most {} characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character",
@@ -856,7 +858,8 @@ literally — `Forbidden`, `Conflict`, `ForeignBot` — pass their sentence thro
 so the CLI's own `parse_filter` sentence (the fenced crate's, which embeds the term RAW in single quotes) is
 bounded by what reaches it — and since fix round 2 the guard refuses any term `echo` would change, so nothing a
 quoted string would escape (a quote, a backslash, a control, format or combining character) reaches the CLI's
-sentence; the length half is subsumed (a cut echo ends in `…`) and kept so the bound reads at the site. The Worker's `identity_of` and the wasm `init` call `User::parse` too and inherit the bounded sentences.
+sentence; the length half is load-bearing — a term whose 65th character is `…` echoes as itself (the re-reviewer's ML) —
+and the cell pins it with such a term (the final fix wave). The Worker's `identity_of` and the wasm `init` call `User::parse` too and inherit the bounded sentences.
 
 - [ ] **Step 4: Run the cells and the crate.** `cargo test -p yokohama-web` — every cell green, `wire_fixtures`
 green WITHOUT the flag (no sentence a fixture carries changed: every value there is short and clean). Then the
@@ -887,8 +890,11 @@ collapses), **X2**/**X3** `:172` and `:189` (reachable through `create`'s untrim
 which `resolve` trims), **X6** the seed's `{t:?}` (through `parse_json`'s `{e}`), **MF** the guard's `echo` half
 dropped (the `%22silk%22` line) — each red on "<row>: the raw value came back"; **M7** reds AGAIN (fix round 1's
 boundary cap had made the old size-only header block pass it — the implementer's own catch); **M11** now also
-reds the echo cell at the `cafe%CC%81` line. Equivalent, recorded: the guard's LENGTH half dropped (a cut echo ends
-in `…` and never equals the term).
+reds the echo cell at the `cafe%CC%81` line. **ML**, the guard's LENGTH half dropped, is NOT equivalent (the re-reviewer, 2026-10-10 — the implementer's
+"subsumed" claim was false): a term whose 65th character is `…` echoes as itself, so under ML `x`×64+`…` and
+`\`×128+`…` pass the guard and `parse_filter` repeats 128 raw backslashes; at `ae89c36c` the lib reads 464 green
+under ML. Deferred to the final fix wave as a Minor: the comment above corrected (transcribed here already) and a
+refused term `x`×64+`%E2%80%A6` added to the cell's `terms`, so ML goes red.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/echo.rs crates/yokohama-web/src/lib.rs
 crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/games.rs
