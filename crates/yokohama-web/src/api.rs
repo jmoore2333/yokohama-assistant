@@ -2341,7 +2341,11 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     // **The checks above are `backup::check_pair_filed`'s** — `check_pair`'s
     // since M6.5b2, the body's name since security S1b
     // (R-6.5b2.10, spec §2.5): one function, two callers, so a backup and an
-    // upload cannot disagree about what a valid game is. The order and every sentence are
+    // upload cannot disagree about what a VALID GAME is. Whether this server
+    // RUNS the game's bot is this route's own question, asked after the
+    // validator (`bots::foreign`, finding D25, below) and not by a restore —
+    // a restored game is the device's own, and the game routes refuse to play
+    // on one whose bot this build does not run. The order and every sentence are
     // this route's own and did not move — pinned through `dispatch` by
     // `tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
     // which was written and green BEFORE the extraction.
@@ -2406,9 +2410,15 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     }
 }
 
-/// What [`archive_post`] would answer about this pair, with no archive, no
-/// caller and no put — for the cell that compares the two callers of
+/// The VALIDATOR's verdict on this pair — whether the checks [`archive_post`]
+/// makes through `backup::check_pair_filed` accept it — with no archive, no
+/// caller and no put, for the cell that compares the two callers of
 /// [`backup::check_pair`](crate::backup::check_pair).
+///
+/// **It is not the route's whole answer**: the route's foreign-bot refusal
+/// (`bots::foreign`, finding D25), asked after the validator, is not asked
+/// here — so a pair naming a bot this server does not run reads `true` here
+/// and 400 at the route.
 ///
 /// **Not evidence that the route is unchanged**: it is a SECOND ENTRY POINT
 /// into the same function, so it can only ever agree with itself. What the
@@ -3225,9 +3235,10 @@ mod tests {
         // record's own configuration, and it is the table's checks that bound
         // `players`, `colors` and `start_seat` against it — so an untrusted
         // record now reaches setup only once a table agrees with it. The
-        // catcher for "the table checks after the replay" is the digest row's
-        // partner and the id row's: each carries a record that would not
-        // replay, and expects a TABLE sentence.
+        // catcher for "the table checks after the replay" is the row after the
+        // lockdown row ("the table parses < the table's shape") and the id
+        // row: each carries a record that would not replay, and expects a
+        // TABLE sentence.
         let probes: [(&Games, String, String, &str); 12] = [
             // archive-off  <  the record parses
             (&off, "not json at all".to_string(), PLAYED_TABLE.to_string(), "this server keeps no archive"),
@@ -3459,6 +3470,12 @@ mod tests {
         let (status, said) = post_archive(&on, &v.to_string(), PLAYED_TABLE);
         assert_eq!(status, 400, "{said}");
         assert!(said["error"].as_str().unwrap_or("").starts_with("seat 1 was played by "), "{said}");
+        assert!(said["error"].as_str().unwrap_or("").contains(", which this server does not run: "), "{said}");
+        // Two defects — the foreign bot and no terminal digest — read the
+        // digest's sentence: the validator speaks before the foreign refusal.
+        let (status, said) = post_archive(&on, &without(&v.to_string(), "terminal_digest"), PLAYED_TABLE);
+        assert_eq!(status, 400, "{said}");
+        assert!(said["error"].as_str().unwrap_or("").starts_with("the record carries no terminal digest"), "{said}");
         assert!(std::fs::read_dir(dir.join("browser")).is_err(), "nothing was written");
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -10,6 +10,14 @@
 //! and an upload that disagreed would mean a game you could send to the server
 //! but not put back on your own device.
 //!
+//! **It decides what a VALID GAME is, and no more.** Whether this server RUNS
+//! a game's bot is the archive route's own question, asked after the
+//! validator (`bots::foreign`, finding D25), and a restore does not ask it: a
+//! restored game is the device's own, and the game routes refuse to play on
+//! one whose bot this build does not run (`Games::live_handle`). So a pair
+//! naming such a bot restores and is refused by the archive — the opposite of
+//! the disagreement the paragraph above guards against.
+//!
 //! ## Why this module is not behind the `server` feature
 //!
 //! The browser host calls it. `crates/yokohama-wasm` wraps [`backup::restore_report_json`]
@@ -189,11 +197,15 @@ pub const LOCKED_DOWN: &str = "the record is locked down — a game the driver d
 /// and a reader of saves stays lenient toward a newer field — so the archive
 /// reads the text through this mirror FIRST, which refuses a key the record
 /// does not have; every field is read and ignored, the mirror says what keys
-/// may be present and the real parse says what they mean. A field core adds
-/// to `GameRecord` fails
-/// `a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass`
-/// until it is named here: the drift a lenient mirror would hide. The
-/// mirror's claim is the record's TOP level: `GameConfig`, `RunProvenance`
+/// may be present and the real parse says what they mean. **A field core
+/// adds to `GameRecord` is caught before it ships** — the drift a lenient
+/// mirror would hide — at COMPILE time, by the exhaustive destructure in
+/// `a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass`,
+/// and at run time, for a field a browser game writes, by `lib.rs`'s
+/// `the_archive_route_checks_and_files_a_browser_game`, which archives a
+/// freshly played record; the eleven names below are pinned by
+/// `the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth`.
+/// The mirror's claim is the record's TOP level: `GameConfig`, `RunProvenance`
 /// with its `SeatProvenance` seats, and the bodies of the events' moves are
 /// the engine's own types and stay lenient, so a key planted inside one is
 /// accepted — the design, not an oversight.
@@ -646,8 +658,12 @@ pub(crate) mod tests {
     }
 
     /// R-6.5b2.10: one validator, two callers. A backup and an upload cannot
-    /// disagree about what a valid game is, and this cell is what keeps them
-    /// from drifting — it calls BOTH and compares the verdict.
+    /// disagree about what a VALID GAME is, and this cell is what keeps the
+    /// validator's two entries from drifting — it calls BOTH and compares the
+    /// verdict. It does not see the route's own foreign-bot refusal
+    /// (`bots::foreign`, finding D25), which the route asks after the
+    /// validator and a restore does not: a pair naming a bot this server does
+    /// not run is valid here and refused at the route, by design.
     ///
     /// **`archive_would_accept` is a SECOND ENTRY POINT and not evidence the
     /// route is unchanged** — it calls this very function. The route's own
@@ -794,17 +810,69 @@ pub(crate) mod tests {
     /// `GameRecord` stays lenient — it is the engine's type, and a reader of
     /// saves must not refuse a newer field — so the archive reads the text
     /// through a mirror that denies unknown keys FIRST. The two committed
-    /// pairs pass it (the anti-drift arm: a field core adds to `GameRecord`
-    /// fails here until the mirror names it), and a planted key reads as a
-    /// record that does not parse, naming the key.
+    /// pairs pass it, and a planted key reads as a record that does not parse,
+    /// naming the key. **The anti-drift arm is the destructure below**: it
+    /// names every field of the engine's record with no `..`, so a field core
+    /// adds to `GameRecord` is a COMPILE error in this crate until someone
+    /// looks at the mirror. At run time, a field a browser game writes is
+    /// refused ("unknown field") by `lib.rs`'s
+    /// `the_archive_route_checks_and_files_a_browser_game`, which archives a
+    /// freshly played record — the committed fixtures here are static and
+    /// would carry no new field.
     #[test]
     fn a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass() {
         assert!(check_pair(PLAYED_RECORD, PLAYED_TABLE).is_ok());
         assert!(check_pair(SPREAD_RECORD, SPREAD_TABLE).is_ok());
+        // No `..`: a field core adds to `GameRecord` fails to compile here
+        // until `RecordMirror` names it.
+        let rec: yokohama_core::GameRecord = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        let yokohama_core::GameRecord {
+            engine_version: _,
+            rules_hash: _,
+            seed: _,
+            config: _,
+            choices: _,
+            events: _,
+            setup_observations: _,
+            semantics_rev: _,
+            terminal_digest: _,
+            lockdown: _,
+            run: _,
+        } = rec;
         let planted = PLAYED_RECORD.replacen("{", "{\"planted_by_an_uploader\": 1,", 1);
         assert_ne!(planted, PLAYED_RECORD, "the mutation must actually change the fixture");
         let said = check_pair(&planted, PLAYED_TABLE).expect_err("an unknown key");
         assert!(said.starts_with("the record does not parse") && said.contains("planted_by_an_uploader"), "{said}");
+    }
+
+    /// **The mirror admits each of the engine record's eleven keys, and not a
+    /// twelfth** (finding D25). The committed fixtures carry neither
+    /// `setup_observations` nor `lockdown`, so no other cell reads the first
+    /// through the mirror: a mirror missing it passed every cell, and would
+    /// refuse a record carrying it with "unknown field". Here all eleven are
+    /// present — with any value, since the mirror reads none of them — and
+    /// the record parses; the same record with a twelfth key does not, and
+    /// the refusal names the key.
+    #[test]
+    fn the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth() {
+        let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        let o = v.as_object_mut().expect("an object");
+        o.insert("setup_observations".into(), serde_json::json!({ "any": "value" }));
+        o.insert("lockdown".into(), "any value".into());
+        let mut keys: Vec<&str> = o.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "choices", "config", "engine_version", "events", "lockdown", "rules_hash", "run", "seed",
+                "semantics_rev", "setup_observations", "terminal_digest",
+            ],
+            "anti-vacuity: every key the engine's record has is present",
+        );
+        assert!(serde_json::from_str::<RecordMirror>(&v.to_string()).is_ok(), "all eleven keys are the record's");
+        v.as_object_mut().expect("an object").insert("a_twelfth_key".into(), 1.into());
+        let said = serde_json::from_str::<RecordMirror>(&v.to_string()).err().map(|e| e.to_string());
+        assert!(said.as_deref().is_some_and(|s| s.contains("a_twelfth_key")), "{said:?}");
     }
 
     /// **A locked-down record is not a game** (finding D25): the driver
