@@ -284,7 +284,9 @@ fn is_game_route(pattern: &str) -> bool {
 /// **An empty segment binds nothing** (M6.5c2 cycle D, straw poll row 10), as
 /// axum's matchit reads it: `/api/games//table` is no route, a 404. Bound, it
 /// reached `get_table` and came back as the store's "not a usable game name",
-/// a 500 — the server blamed for a path the caller mistyped.
+/// a 500 — the server blamed for a path the caller mistyped — and since
+/// security S1c an id the store would refuse is `dispatch`'s own 404 before
+/// any handler (finding B8).
 fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     let mut bound = Vec::new();
     let mut ps = pattern.split('/');
@@ -2533,9 +2535,18 @@ pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiReq
             return error_response(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path))))
         }
     };
-    let out = match answer(games, host, identity, req, pattern, &bound) {
-        Ok(r) => r,
-        Err(e) => error_response(e),
+    // **An `{id}` the store would refuse is a 404 here, before any handler**
+    // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
+    // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
+    // nothing this refuses could have been a table. An arm of `out` and not an
+    // early return, so the HEAD below leaves this refusal bodiless too.
+    let out = if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
+        error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
+    } else {
+        match answer(games, host, identity, req, pattern, &bound) {
+            Ok(r) => r,
+            Err(e) => error_response(e),
+        }
     };
     // HEAD leaves with an empty body on BOTH arms — a refused HEAD too — so a
     // non-HTTP host never emits a body a HEAD did not ask for.
@@ -2794,6 +2805,52 @@ mod tests {
         );
         assert_eq!((res.status, res.body), (400, serde_json::json!({ "error": NOT_AN_OBJECT }).to_string()));
         assert!(games.store().list(crate::store::Doc::Table).expect("a listing").is_empty(), "no table opened");
+    }
+
+    /// **An unsafe `{id}` is `dispatch`'s own 404, BEFORE any handler**
+    /// (security S1c, finding B8). "Before any handler" is read off the
+    /// identity: `answer` asks for it ahead of every game route, so a refused
+    /// identity at a SAFE id is the 401 and at an UNSAFE one the 404. The
+    /// boundary is `is_safe_id`'s — 64 safe bytes reach the handler and a 65th
+    /// does not — and the check reads `bound[0]` because every pattern that
+    /// carries `{id}` binds it FIRST, which the last loop pins. A HEAD of an
+    /// unsafe id leaves with no body, as every refused HEAD does.
+    #[test]
+    fn an_unsafe_id_is_dispatchs_own_404_before_any_handler() {
+        fn ask(games: &Games, method: &str, path: &str, identity: Identity<'_>) -> ApiResponse {
+            dispatch(games, &LOCAL_HOST, identity, &ApiRequest { method, path, query: "", content_type: None, body: b"" })
+        }
+        let games = crate::games::test_support::games();
+        let red = User::parse("red@t.test").expect("an address");
+        let (safe, unsafe_) = ("a".repeat(64), "a".repeat(65));
+        let sentence = |id: &str| error_body(&ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Err("no identity"));
+        assert_eq!(res.status, 401, "64 safe bytes reach `answer`, which asks the identity first: {}", res.body);
+        let res = ask(&games, "GET", &format!("/api/games/{unsafe_}/table"), Err("no identity"));
+        assert_eq!((res.status, res.body), (404, sentence(&unsafe_)), "a 65th byte is refused before the identity is asked");
+        for id in ["..", ".hidden", "a b", "-x", "_house", "caf\u{e9}"] {
+            let res = ask(&games, "GET", &format!("/api/games/{id}"), Err("no identity"));
+            assert_eq!((res.status, res.body), (404, sentence(id)), "{id:?} is not a name the store keeps");
+        }
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Ok(&red));
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "the handler's own absence, the same sentence");
+        let res = dispatch(
+            &games,
+            &LOCAL_HOST,
+            Ok(&red),
+            &ApiRequest { method: "POST", path: &format!("/api/games/{safe}/join"), query: "", content_type: Some("application/json"), body: br#"{"seat":1}"# },
+        );
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "a join at an absent safe id is the handler's 404");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "and it never touched the lock map");
+
+        let res = ask(&games, "HEAD", &format!("/api/games/{unsafe_}"), Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "a refused HEAD carries no body");
+
+        for r in routes(true).iter().filter(|r| r.pattern.contains("{id}")) {
+            assert_eq!(r.pattern.find('{'), r.pattern.find("{id}"), "{} binds {{id}} first", r.pattern);
+        }
     }
 
     /// **`error_body` is the body `dispatch` writes for a refusal** (M6.5c2,

@@ -330,11 +330,14 @@ pub struct Games {
     /// The outer mutex is held only long enough to hand back the `Arc`, never
     /// across the table's own lock, so the two can never be taken in two orders.
     ///
-    /// **A delete prunes its table's entry, and only an UNSHARED one** (M6.5c2
-    /// cycle D, row 128; [`Games::prune_lock`]). The map used to grow by one
-    /// entry per table ever written and never shrink, by design, because a
-    /// delete that removed an entry while a blocked writer held a clone of it
-    /// would hand the NEXT writer a different lock for the same table. That
+    /// **Every writer prunes its table's entry on the way out, and only an
+    /// UNSHARED one** ([`Games::with_table_lock`], [`Games::prune_lock`]). A
+    /// delete alone pruned from M6.5c2 cycle D, row 128, and every writer since
+    /// security S1c, finding B8, which reads the table first so a fabricated id
+    /// never makes an entry at all. The map used to grow by one entry per table
+    /// ever written and never shrink, by design, because a prune that removed
+    /// an entry while a blocked writer held a clone of it would hand the NEXT
+    /// writer a different lock for the same table. That
     /// hazard is exactly the entry whose `Arc` someone else holds, so the prune
     /// takes an entry only when the map's reference is the last one — read
     /// under this mutex, the only place a clone is made — and leaves any other
@@ -600,17 +603,22 @@ impl Games {
         self.chat.limits
     }
 
-    /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
-    /// `settle` TAKE it for the whole of what they do, and `settle_locked`,
+    /// The table's OWN lock (R-2.9). `join`, `keep`, `unlock`, `delete`, the
+    /// table's chat append and chat delete, and a repairing `settle` TAKE it
+    /// for the whole of what they do, through [`Games::with_table_lock`], the
+    /// one site that calls this outside a cell; `settle_locked`,
     /// `finalize` and `flip_to_playing` are CALLED with it held — the
     /// distinction matters, because the mutex is not reentrant and a second
     /// take from inside one of those three would deadlock. `create` holds the
     /// global [`Games::table_lock`] instead, because the thing it is protecting
     /// is the id space and not one document.
     ///
-    /// The entry is created on first use, so a table nobody has written costs
-    /// nothing, and a DELETE prunes it once nobody else holds it — see
-    /// [`Games::locks`] for why only then ([`Games::prune_lock`]).
+    /// The entry is created on first use and PRUNED by every writer on its way
+    /// out ([`Games::with_table_lock`]), so a table nobody is writing costs
+    /// nothing — true since security S1c, finding B8; before it only a delete
+    /// pruned, and a refused write at a fabricated id left an entry for ever.
+    /// See [`Games::locks`] for why only an unshared entry goes
+    /// ([`Games::prune_lock`]).
     ///
     /// Taken through [`enter`], never `expect`: the mutex guards no data.
     pub(crate) fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
@@ -619,8 +627,9 @@ impl Games {
     }
 
     /// Drop `id`'s entry from [`Games::locks`] if the map's is the ONLY
-    /// reference to it (M6.5c2 cycle D, row 128) — `delete` calls it after it
-    /// has let go of its own.
+    /// reference to it (M6.5c2 cycle D, row 128) — [`Games::with_table_lock`]
+    /// calls it on every writer's way out, after it has let go of its own
+    /// clone (security S1c, finding B8; before it, `delete` alone did).
     ///
     /// Every clone of an entry is made by [`Games::lock_for`] under the map's
     /// own mutex, and this reads the count under that same mutex, so a count of
@@ -633,6 +642,26 @@ impl Games {
         if locks.get(id).is_some_and(|lock| Arc::strong_count(lock) == 1) {
             locks.remove(id);
         }
+    }
+
+    /// **The one way a writer holds a table's own lock** (security S1c, finding
+    /// B8): take it, run `body` with it held, let go of this clone, and prune
+    /// the entry if the map's is now the only reference. The review grew the
+    /// map without bound with refused writes at fabricated ids — `lock_for`
+    /// inserts on first use and only `delete` pruned — so now every writer
+    /// READS the table before calling this (an absent table is a 404 that never
+    /// touches the map) and every exit prunes. A second writer in flight holds
+    /// its own clone, so the entry stays and the two serialize on one lock
+    /// (`prune_lock`'s argument).
+    pub(crate) fn with_table_lock<T>(&self, id: &str, body: impl FnOnce() -> T) -> T {
+        let lock = self.lock_for(id);
+        let out = {
+            let _serialized = enter(&lock);
+            body()
+        };
+        drop(lock);
+        self.prune_lock(id);
+        out
     }
 
     /// **Take a game's own lock — the ONE way this layer does** (M6.5c2 cycle
@@ -3151,6 +3180,30 @@ mod tests {
             Arc::ptr_eq(&games.lock_for(&id), &held),
             "a lock another writer holds is kept, so the next writer takes the same one",
         );
+    }
+
+    /// `with_table_lock` serializes two bodies at one id, lets a body's early
+    /// return through, and leaves no entry behind — while a SECOND holder keeps
+    /// the entry alive until it too is done, so two writers in flight
+    /// serialize on the SAME lock (the property `prune_lock`'s doc promises).
+    #[test]
+    fn with_table_lock_runs_the_body_serialized_and_prunes_on_the_way_out() {
+        let games = Arc::new(games());
+        let out: Result<u8, String> = games.with_table_lock("t", || Err("early".to_string()));
+        assert_eq!(out, Err("early".to_string()));
+        assert_eq!(games.locks.lock().expect("the map").len(), 0);
+
+        let held = games.lock_for("t");
+        let guard = enter(&held);
+        let g2 = Arc::clone(&games);
+        let waiter = std::thread::spawn(move || g2.with_table_lock("t", || 7u8));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!waiter.is_finished(), "the body ran while another holder had the lock");
+        assert_eq!(games.locks.lock().expect("the map").len(), 1, "the entry is alive while a holder waits");
+        drop(guard);
+        drop(held);
+        assert_eq!(waiter.join().expect("the waiter"), 7);
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned it");
     }
 }
 

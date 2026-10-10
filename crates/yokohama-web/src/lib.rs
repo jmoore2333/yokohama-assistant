@@ -5986,6 +5986,57 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "a second delete says so");
     }
 
+    /// **The per-id lock map holds only the tables a writer is INSIDE** (security
+    /// S1c, finding B8: the review grew the map to 107 MB with 3,000 refused
+    /// writes at 16 KB ids). Six writers — join, keep, unlock, delete, a chat
+    /// post, a chat delete — fired at fabricated ids answer 404 and leave the
+    /// map EMPTY; a 16 KB id and a 65-byte id are 404s in `dispatch` before any
+    /// handler; and a writer that SUCCEEDS at a real table leaves no entry
+    /// behind either, because the entry is pruned on every exit. The mutant
+    /// that takes the lock before the read leaves `nosuch-*` entries; the one
+    /// that prunes only on delete leaves `wire`'s.
+    #[tokio::test]
+    async fn refused_and_finished_writes_leave_the_lock_map_empty() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "wire", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, body) = post_as(&state, "red@wire.test", "/api/games", serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": "red@wire.test" }, { "open": true }], "id": "openk", "name": "openk",
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(state.games.locks.lock().expect("the map").len(), 0, "premise: a create takes no per-id lock");
+
+        for n in 0..50 {
+            let id = format!("nosuch-{n}");
+            let rows: Vec<(StatusCode, serde_json::Value)> = vec![
+                post_as(&state, WHO, &format!("/api/games/{id}/join"), serde_json::json!({ "seat": 1 })).await,
+                post_as(&state, WHO, &format!("/api/games/{id}/keep"), serde_json::json!({ "seat": 0, "card": 1 })).await,
+                post_as(&state, WHO, &format!("/api/games/{id}/unlock"), serde_json::json!({ "password": "x" })).await,
+                delete_as(&state, WHO, &format!("/api/games/{id}")).await,
+                post_as(&state, WHO, &format!("/api/games/{id}/chat"), serde_json::json!({ "text": "hi" })).await,
+                delete_as(&state, WHO, &format!("/api/games/{id}/chat/1")).await,
+            ];
+            for (status, body) in rows {
+                assert_eq!(status, StatusCode::NOT_FOUND, "{id}: {body}");
+            }
+        }
+        let big = "z".repeat(16 * 1024);
+        let (status, body) = post_as(&state, WHO, &format!("/api/games/{big}/unlock"), serde_json::json!({ "password": "x" })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(body["error"].as_str().unwrap_or("").starts_with("no game named \"zzzz"), "{body}");
+        let (status, _) = post_as(&state, WHO, &format!("/api/games/{}/unlock", "a".repeat(65)), serde_json::json!({ "password": "x" })).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(state.games.locks.lock().expect("the map").len(), 0, "refused writes grew the map");
+
+        // A successful write — blue joins the open seat — and a chat post at
+        // the playing table: both leave the map empty on the way out.
+        let (status, body) = post_as(&state, "blue@wire.test", "/api/games/openk/join", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = post_as(&state, "red@wire.test", "/api/games/wire/chat", serde_json::json!({ "text": "hello" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(state.games.locks.lock().expect("the map").len(), 0, "a finished write left its entry");
+    }
+
     /// **The explanation FOOTS, and that is the whole claim of the `why` screen.**
     ///
     /// `Explanation`'s own documented identity is
