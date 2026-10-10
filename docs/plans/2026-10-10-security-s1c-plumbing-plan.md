@@ -1,9 +1,9 @@
 # Security S1c — the plumbing: implementation plan, and the wrap of S1
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan
-> task-by-task. Every code task subagent-driven, the implementer's tier in each task's title — **Sonnet** for
-> Tasks 1, 3, 7 and 8, **Opus** for Tasks 2, 4, 5 and 6 — every task reviewer **Opus** (the owner's tiers for the
-> S1 series, 2026-10-09: Sonnet/Opus and Opus/Opus; Fable for nothing here), and a **Mythos** orchestrator that
+> task-by-task. Every code task subagent-driven, **Opus** for every implementer and every task reviewer (the
+> owner's ruling of 2026-10-10 at the pre-flight's stop, over the 2026-10-09 draft tiers of Sonnet for Tasks 1,
+> 3, 7 and 8: the reviewers' mutant runs and the after review carry the validation; Fable for nothing here), and a **Mythos** orchestrator that
 > conducts the plan review at the top and the whole-branch review at the end ITSELF, on exports; the suites, the
 > documents' close, the SDD ledger and the wrap of S1 are the orchestrator's too (Task 9). Steps use checkbox
 > (`- [ ]`) syntax. **Read the spec first** (`docs/plans/2026-10-08-security-remediation-spec.md`: §1 the rulings
@@ -43,7 +43,8 @@ does and names no move while the account is withheld.
 **Tech Stack:** Rust 1.97.1 (`rust-toolchain.toml`): `crates/yokohama-web` (the layer, its route cells, one new
 module `echo.rs`, a `segment` subcommand in `main.rs`), `crates/yokohama-worker` (three receipt cells),
 `crates/yokohama-cli` (`screen_model.rs`, two doc comments, no behaviour); the committed wire corpus
-`web/src/wire/` (expected unmoved; at most one regeneration, Task 6); the documents (`docs/web-lane.md`, the
+`web/src/wire/` (one regeneration, Task 5's: the three archive replies' `path` carries the caller segment; nothing
+else moves); the documents (`docs/web-lane.md`, the
 spec's §9.5, both runbooks, `deploy/README.md`); the release bump's eight steps (`docs/web-lane.md` §7).
 
 **Spec:** `docs/plans/2026-10-08-security-remediation-spec.md` — §2.1's rows B8, B9, D1, D7, D12, D26, D28,
@@ -125,10 +126,15 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
   the bot's last recorded move is swapped for another member of the legal list at that position, the record
   written back through the store, and a fresh `AppState` built over the same store (the restart that evicts the
   live handle). The pre-flight proves the construction reaches `Refusal::Mismatch` (Task 9 Step 1).
-- **D-8 — the corpus is expected NOT to move.** No frame, header or sentence a fixture carries changes for a
-  short, clean value. The one candidate is a `why` fixture whose refusal is a mismatch served at a withheld
-  visibility (`why_refused.json`, `why_refusals.json`); the pre-flight reads them, and if one moves, Task 6
-  regenerates ONCE and reads the diff. A moved byte anywhere else is a finding.
+- **D-8 — the corpus moves ONCE, in Task 5, and nowhere else.** No frame, header or sentence a fixture carries
+  changes for a short, clean value — except the archive route's reply, whose `path` names the caller segment:
+  `archive_post.json`, `archive_post_identical.json` and `archive_post_abandoned.json` carry
+  `browser/red_at_wire.test/…` and move to the digested segment (Task 5 regenerates once and reads the diff: three
+  `path` values and nothing else). The `why` fixture that carries a `mismatch` (`why_refusals.json`) is a
+  CONSTRUCTION — `wire_fixtures.rs::every_refusal_payload` builds the twelve from `explain::refusal_samples()`
+  through `RefusalDto::of`, never through the route — so Task 6 moves nothing. A moved byte anywhere else is a
+  finding. (The pre-flight's reading, 2026-10-10: the draft expected Task 6 to be the one candidate and Task 5
+  none; the plan's own greps, run, read the opposite.)
 - **D-9 — the Worker crate is NOT fenced this cycle.** Its receipt cells compute `caller_segment` dynamically
   but one pins the legacy cap (`receipt.rs:825–827`: `(70, 64)` and the stripped `.test`); Task 5 rewrites that
   premise. The five fenced crates of spec §6 (core, oracle, difftest, bridge, gen-data) and `yokohama-wasm` stay
@@ -167,8 +173,8 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 - No bot behaviour moves: `decide`, `suggest`'s answer, `why`'s reconstruction (`why::account_parts`) and every
   arena figure are untouched; Task 6 changes what a REFUSAL says to a withheld requester, not what the search
   finds.
-- The wire corpus (`web/src/wire/`) is expected unmoved; the ONE permitted regeneration is Task 6's, only if the
-  pre-flight finds a mismatch fixture served withheld, run once, its diff read and recorded naming every file.
+- The wire corpus (`web/src/wire/`) moves ONCE, in Task 5 (the three archive replies' `path`, decision D-8), run
+  once, its diff read and recorded naming every file; any other moved byte, in any task, is a finding.
 - Every refusal this plan adds is a plain sentence, a constant or a builder in the module that raises it, through
   the layer's own `ApiError` arms (400, 401, 404) — no new status shape; the `no-store` header is the ADAPTER
   host's (axum's), as the 503 is.
@@ -196,8 +202,9 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 Five inputs the spec implies and this plan pins, each to the task that owns the code:
 
 1. **The longest legal gameplay line** — a 4P retreat naming every area the mover has an assistant in, with its
-   count (`r A17:5 A16:5 …`). It must pass the 256-byte bound with room. Task 1's cell composes the longest line
-   the grammar admits from the picker's own spelling and asserts it passes; the pre-flight measures it.
+   count (`r A17:5 A16:5 …`). It must pass the 256-byte bound with room. Task 1's cell composes it from the CLI's
+   retreat spelling (the web client composes no retreat line — its longest line is an area token, `App.tsx:2424`)
+   and asserts it passes; measured 99 bytes (109 zero-padded).
 2. **A table stored before this cycle whose id carries a dot** (`old.js`). It still loads, plays, streams and
    deletes; only a CREATE refuses dots. Task 3's cell writes such a table through the store and drives it.
 3. **A watcher whose admission is revoked mid-stream.** The stream writes `end` with `gone` and the connection
@@ -211,7 +218,7 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 
 ## Execution shape
 
-- Tasks 2, 4, 5, 6: implementer **Opus**; Tasks 1, 3, 7, 8: implementer **Sonnet**; every reviewer **Opus**.
+- Every implementer and every reviewer **Opus** (the owner's ruling of 2026-10-10, at the pre-flight's stop).
   Task 9: the orchestrator, **Mythos**, who conducts the "before" plan review (executing Tasks 1–6's cells against
   scratch implementations of this plan's code in an export, measuring the longest line, building the drifted
   record, reading the two `why` fixtures, reading every named mutant red) and the "after" whole-branch review
@@ -248,7 +255,8 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
   `pub use echo::echo;` with the other modules at :60–75; `ApiError` :122–160 — `MESSAGE_MAX`, `capped`; the
   fallback's `no such endpoint` :1058), `api.rs` (:1752 the index kind, :1757 the filter term, :2252 `no game
   named`, :2511 and :2630 `no such endpoint`, :2644 and :2657 the path sentences, :1335 the line bound),
-  `tables.rs` (:827 the id sentence; `no game named` at :1070, :1138, :1356, :1585, :1670), `identity.rs` (:169,
+  `tables.rs` (every non-test `{id:?}` and `{key:?}`, the seed's `{t:?}`, the scope's `{other:?}`), `games.rs`
+  (eight `{id:?}`), `store.rs` (four `{id:?}`, "is not a usable game name"), `identity.rs` (:169,
   :172, :184, :189), `grammar.rs` (:102 `is_token`'s doc; :148 the refusal's echo; `LINE_MAX`, `check_line`) —
   Task 1.
 - Modify `games.rs` (`lock_for` :604–619 doc, `prune_lock` :621–636, `with_table_lock` new), `tables.rs`
@@ -262,7 +270,9 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 - Modify `archive.rs` (`caller_segment` :196–232, `legacy_caller_segment` new, the two constants; the cells
   :575–605, :721–745), `main.rs` (the `segment` subcommand), `crates/yokohama-worker/src/receipt.rs` (the premise
   at :825–827; the doc at :34), `deploy/RUNBOOK.md` and `worker/RUNBOOK.md` (the rename recipe),
-  `deploy/README.md:314` (the path) — Task 5.
+  `deploy/README.md:192` and `:314` (the path), `worker/test/archive.test.ts` and
+  `worker/scripts/live-replay.test.mjs` (the hand-written legacy segments), the three `archive_post*.json`
+  corpus files and `worker/test/corpus.gen.ts` (regenerated) — Task 5.
 - Modify `explain.rs` (`refused` :529; `refused_at`, `MISMATCH_WITHHELD` new; a unit cell beside :1142), `api.rs`
   (`why` :1706 — the `Err` arm) — Task 6.
 - Modify `docs/web-lane.md` (§2, §4, §13, §15), `docs/plans/2026-10-08-security-remediation-spec.md` (§9.5
@@ -284,15 +294,21 @@ Task 9 is the orchestrator's frame and the wrap.
 
 ---
 
-### Task 1: The echo rule — `echo::echo`, the message cap, the line bound, D29's sentence — Sonnet (D12, D28, D29; Review Focus 1)
+### Task 1: The echo rule — `echo::echo`, the message cap, the line bound, D29's sentence — Opus (D12, D28, D29; Review Focus 1)
 
 **Files:**
 - Create: `crates/yokohama-web/src/echo.rs`
-- Modify: `crates/yokohama-web/src/lib.rs` (the module list :60–75; `ApiError` :122–160; `fallback` :1058),
-  `crates/yokohama-web/src/api.rs` (:1335, :1752, :1757, :2252, :2511, :2630, :2644, :2657),
-  `crates/yokohama-web/src/tables.rs` (:827, :1070, :1138, :1356, :1585, :1670),
-  `crates/yokohama-web/src/identity.rs` (:169, :172, :184, :189), `crates/yokohama-web/src/grammar.rs` (:84–104,
-  :140–152)
+- Modify: `crates/yokohama-web/src/lib.rs` (the module list :53–77; `ApiError` :122–160; `fallback` :1058),
+  `crates/yokohama-web/src/api.rs` (:1335 the line check; :1753 the index kind; :1759 the filter guard; :2252;
+  :2511 and :2630 `req.path`; :2645 and :2658 `{raw}`),
+  `crates/yokohama-web/src/tables.rs` (every non-test `{id:?}` — :827, :855, :858, :930, :932, :1072, :1140,
+  :1287, :1322, :1357, :1381, :1482, :1500, :1586, :1647, :1673, :1733, :1922, :2017 — the positional `doc.id`
+  at :907, `{key:?}` at :973, :975, :1002, the seed's `{t:?}` at :111 and the scope's `{other:?}` at :750),
+  `crates/yokohama-web/src/games.rs` (`{id:?}` at :687, :713, :845, :911, :948, :962, :1012, :1151),
+  `crates/yokohama-web/src/store.rs` (`{id:?}` at :278, :509, :528, :563 — "is not a usable game name", the
+  sentence a 16 KB game id's 500 carries today),
+  `crates/yokohama-web/src/identity.rs` (:169, :172, :184, :189), `crates/yokohama-web/src/grammar.rs` (:74
+  `is_gameplay_line`; :102 `is_token`'s doc; :148 the refusal)
 - Test: `echo.rs`'s, `grammar.rs`'s, `lib.rs`'s and `api.rs`'s `mod tests`
 
 **Interfaces:**
@@ -380,9 +396,10 @@ mod tests {
     /// note: `split_whitespace` read it as three tokens), by the control rule.
     #[test]
     fn the_line_bound_admits_the_longest_legal_line_and_refuses_a_long_or_control_one() {
-        // The longest line the retreat picker can compose at a 4P table: an
-        // `A`-prefixed area id and a count for every one of the eighteen
-        // areas — the pre-flight's measured maximum, with the `r ` head.
+        // The longest line the GRAMMAR admits with meaning — the CLI's retreat
+        // at a 4P table, an `A`-prefixed area id and a count for every one of
+        // the eighteen areas behind `r `, 99 bytes; the web client itself
+        // composes nothing longer than an option number or an area token.
         let longest = format!("r {}", (0..18).map(|a| format!("A{a}:5")).collect::<Vec<_>>().join(" "));
         assert!(longest.len() <= LINE_MAX / 2, "the longest legal line is {} bytes, the bound {LINE_MAX}", longest.len());
         assert!(check_line(&longest).is_ok() && is_gameplay_line(&longest));
@@ -415,8 +432,7 @@ mod tests {
     }
 ```
 
-(c) In `lib.rs`'s `mod tests`, beside the `ApiError` cells (find `fn an_api_error` or the `error_body` cells by
-content):
+(c) In `lib.rs`'s `mod tests`, after `const WHO` (:1153) — the module has no `ApiError` cells to sit beside:
 
 ```rust
     /// **No error body carries more than `MESSAGE_MAX` characters of message**
@@ -430,18 +446,22 @@ content):
         let built: Vec<ApiError> = vec![
             ApiError::bad_request(long.clone()),
             ApiError::not_found(long.clone()),
-            ApiError::forbidden(long.clone()),
-            ApiError::conflict(long.clone()),
             ApiError::server_error(long.clone()),
         ];
         for e in &built {
             assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
             assert!(e.message.ends_with('…'));
         }
+        // Every constructor that TAKES a message passes it through `capped`: the
+        // count of `message: impl Into<String>` signatures in the impl block is
+        // the count of `Self::capped(message.into())` calls, and both are the
+        // three built above. A fourth constructor that skips the cap fails the
+        // second count before it fails a body; `dealing`, `open` and `playing`
+        // carry constants, and `busy()` builds the struct literally from one.
         let source = include_str!("lib.rs");
         let impl_block = source.split("impl ApiError {").nth(1).and_then(|r| r.split("\n}\n").next()).expect("ApiError's impl");
-        let named = impl_block.matches("pub fn ").count();
-        assert_eq!(named, built.len() + 1, "every public constructor is exercised above (plus `capped` itself): {impl_block}");
+        assert_eq!(impl_block.matches("message: impl Into<String>").count(), built.len(), "every message-taking constructor is built above: {impl_block}");
+        assert_eq!(impl_block.matches("Self::capped(message.into())").count(), built.len(), "every message-taking constructor caps: {impl_block}");
         let short = ApiError::bad_request("short");
         assert_eq!(short.message, "short");
     }
@@ -468,7 +488,7 @@ content):
             ("POST", "/api/games".to_string(), Some(serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{ "user": WHO }, { "user": WHO }], "id": format!("a/{big}"), "name": "x" })), WHO),
         ];
         for (method, uri, body, who) in rows {
-            let mut req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, who);
+            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, who);
             let req = match body {
                 Some(b) => req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&b).expect("a body"))),
                 None => req.body(Body::empty()),
@@ -477,7 +497,10 @@ content):
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             let status = res.status();
             let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
-            assert!(status.is_client_error(), "{method} {uri}: {status}");
+            // Every row is a refusal; WHICH refusal is each route's own cell's
+            // claim — the 16 KB game id is the store's 500 until Task 2's
+            // `dispatch` check makes it the 404 that cell pins (finding B8).
+            assert!(status.is_client_error() || status.is_server_error(), "{method} {uri}: {status}");
             assert!(bytes.len() <= 2_048, "{method} {}: a {} byte body", uri.chars().take(60).collect::<String>(), bytes.len());
             assert!(!String::from_utf8_lossy(&bytes).contains(&"z".repeat(65)), "{method}: the raw value came back");
         }
@@ -505,8 +528,8 @@ quoting change.
 sixty_four capped every_echo_site 2>&1 | grep -E '^error|test result|panicked' | head` — `echo`, `LINE_MAX`,
 `check_line`, `MESSAGE_MAX` not found; stubbed (the function `value.to_string()`, the constants, `check_line`
 `Ok(())`, `capped` the identity): (a)'s second cell RED on the cut; (b) RED on the long line (no refusal) and on
-the control line; (c) RED on the cap and on the 16 KB rows (today's bodies carry the value whole — **measured in
-the pre-flight: the `index/{kind}` row answers 16,4xx bytes and the input row 16,5xx**).
+the control line; (c) RED on the cap and on the 16 KB rows (today's bodies carry the value whole — the pre-flight read the `GET /api/games/<16 KB>` row's 500 at 16 KB from `store.rs`'s own
+sentence; the other rows' sizes are the implementer's Step 2 reading).
 
 - [ ] **Step 3: The code.**
 
@@ -549,11 +572,13 @@ In `grammar.rs`, above `is_gameplay_line` (:84):
 
 ```rust
 /// The most bytes a gameplay line may carry (security S1c, finding D28). The
-/// longest line the client composes is a 4P retreat naming every area the
-/// mover has an assistant in with its count — eighteen `A17:5` pairs behind
-/// `r `, about 110 bytes (the pre-flight's measurement) — so 256 is more than
-/// twice the longest legal line and a thousandth of the 2 MiB body limit a
-/// hostile line could fill.
+/// web client composes nothing longer than an option number or an area token
+/// (`A05`), under six bytes; the grammar also admits the CLI's four move
+/// grammars for the terminal's sake, whose longest meaningful line is a 4P
+/// retreat naming every area with its count — eighteen `A17:5` pairs behind
+/// `r `, 99 bytes (109 zero-padded; the pre-flight's measurement) — so 256 is
+/// more than twice the longest legal line and a thousandth of the 2 MiB body
+/// limit a hostile line could fill.
 pub const LINE_MAX: usize = 256;
 
 /// The shape of a line BEFORE its grammar is read: at most [`LINE_MAX`] bytes,
@@ -602,10 +627,22 @@ In `api.rs`, `input` (:1335): before `if !grammar::is_gameplay_line(&req.line)`:
     grammar::check_line(&req.line).map_err(ApiError::bad_request)?;
 ```
 
-The echo sites, each `{x:?}` → `"{}"` with `crate::echo::echo(x)`, each `{x}` → `{}` with `echo(x)`:
-`api.rs:1752` (`other`), `:2252` (`id`), `:2511` and `:2630` (`req.path`), `:2644` and `:2657` (`raw`);
-`tables.rs:827` (`id`), `:1070`, `:1138`, `:1356`, `:1585`, `:1670` (`id`); `identity.rs:169`, `:172`, `:184`,
-`:189` (`raw`); `lib.rs:1058` (`uri.path()`). The filter term (`api.rs:1757`): before `parse_filter`,
+The echo sites — the RULE is mechanical (the pre-flight's `echo_sites.py` did every site and the lib read 463
+green): a `{x:?}` inside a `format!` becomes `\"{x}\"` and the call gains `x = crate::echo::echo(x)` as a NAMED
+argument (named, not positional, so a string that already carries positional `{}` — `games.rs:948`, `:962` —
+keeps its order; a `String` site borrows, `echo(&x)`); a plain `{x}` keeps its spelling and gains the same named
+argument; the positional `{:?}` of `doc.id` (`tables.rs:907`) becomes `\"{}\"` with `crate::echo::echo(&doc.id)`;
+`req.path` and `uri.path()` are wrapped in place. A short, clean value reads byte-identically to `{x:?}` (D-1). The
+inventory: `api.rs:1753` (`other`), `:2252` (`id`), `:2511` and `:2630` (`req.path`), `:2645` and `:2658` (`{raw}`,
+plain); every non-test `{id:?}` in `tables.rs` (nineteen — the four at `create`, :827, :855, :858 and :907's
+`doc.id`, are the BODY's id, bounded by nothing else), `tables.rs`'s `{key:?}` (:973, :975, :1002), `{t:?}` (:111,
+the body's seed string) and `{other:?}` (:750, the query's scope); `games.rs`'s eight `{id:?}` (:687, :713, :845,
+:911, :948, :962, :1012, :1151); `store.rs`'s four `{id:?}` (:278, :509, :528, :563 — "is not a usable game name",
+the sentence a 16 KB game id's 500 carries today, which the draft inventory missed and the cell went red on);
+`identity.rs:169`, `:172`, `:184`, `:189` (`raw`); `lib.rs:1058` (`uri.path()`). Left alone, by inspection: `api.rs:470`
+(`key_of`'s serde value), `:1437` (two prompt states), `tables.rs:239`, `:387`, `:413` (a sort key, a status, a
+validated watcher), the two environment-variable sentences (`identity.rs:112`, `lib.rs:330`). The after review
+greps the seven files. The filter term (`api.rs:1759`): before `parse_filter`,
 
 ```rust
         Some(term) if term.chars().count() > crate::echo::ECHO_MAX || term.chars().any(char::is_control) => {
@@ -633,8 +670,9 @@ filter guard dropped — `every_echo_site…`'s filter row red; **M7** one ident
 header row red.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/echo.rs crates/yokohama-web/src/lib.rs
-crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/identity.rs
-crates/yokohama-web/src/grammar.rs` · `git commit -m "web: the echo rule — every echoed caller value through
+crates/yokohama-web/src/api.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/games.rs
+crates/yokohama-web/src/store.rs crates/yokohama-web/src/identity.rs crates/yokohama-web/src/grammar.rs` ·
+`git commit -m "web: the echo rule — every echoed caller value through
 echo::echo (64 characters, escaped), every ApiError message capped at 1,024, a gameplay line at most 256 bytes
 with no control character and its refusal naming the length, is_token's doc made true (S1c Task 1; D12, D28,
 D29)"`.
@@ -735,7 +773,7 @@ D29)"`.
     /// serialize on the SAME lock (the property `prune_lock`'s doc promises).
     #[test]
     fn with_table_lock_runs_the_body_serialized_and_prunes_on_the_way_out() {
-        let games = Arc::new(Games::in_memory());
+        let games = Arc::new(games());
         let out: Result<u8, String> = games.with_table_lock("t", || Err("early".to_string()));
         assert_eq!(out, Err("early".to_string()));
         assert_eq!(games.locks.lock().expect("the map").len(), 0);
@@ -754,7 +792,7 @@ D29)"`.
     }
 ```
 
-(`Games::in_memory()` is whatever `games.rs`'s cells build a `Games` with — find by content at :3100.)
+(`games()` is `test_support`'s constructor, `games.rs:3180`, in scope through `use super::test_support::*`.)
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web -- lock_map_empty takes_a_lock_by_hand
 with_table_lock 2>&1 | grep -E '^error|test result|panicked' | head` — `with_table_lock` not found; stubbed as
@@ -848,7 +886,7 @@ way out through Games::with_table_lock; an unsafe {id} is dispatch's 404 before 
 
 ---
 
-### Task 3: B9 — `Cache-Control: no-store` under `/api`; no dot in a creator-chosen id — Sonnet (B9; ruling 3; Review Focus 2)
+### Task 3: B9 — `Cache-Control: no-store` under `/api`; no dot in a creator-chosen id — Opus (B9; ruling 3; Review Focus 2)
 
 **Files:**
 - Modify: `crates/yokohama-web/src/lib.rs` (`app()` :1114–1134; `no_store` new beside it),
@@ -937,30 +975,69 @@ yields a header would hang it; the pre-flight measures the cell's wall. `assets:
         let games = games();
         let red = who("red@t.test");
         for id in ["x.js", "x.css", "x.png", "x.bin", "evening.2", "a.b.c"] {
-            let mut req = two_people("dotted", "sesame");
+            let mut req = two_people("dotted", CORPUS_SEED);
             req.id = Some(id.to_string());
             let err = games.create(&req, &red).expect_err(id);
             assert!(matches!(&err, GameError::BadRequest(m) if m == &format!("\"{id}\" {DOTTED_ID}")), "{id}: {err:?}");
         }
-        let mut req = two_people("dash-ok", "sesame");
+        let mut req = two_people("dash-ok", CORPUS_SEED);
         req.id = Some("x-js".to_string());
         games.create(&req, &red).expect("a dash is fine");
 
-        // Stored before the rule: written through the store, read and deleted.
-        let doc = stored_table("old.js");
+        // Stored before the rule: a real document — the dotless table's, re-keyed
+        // through the store under `old.js` — reads and deletes; the route-level
+        // drive (`lib.rs`, cell (c)) plays one.
+        games.create(&two_people("oldjs", CORPUS_SEED), &red).expect("a table");
+        let (json, _) = games.store().read(Doc::Table, "oldjs").unwrap().expect("the table");
+        let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
+        doc.id = "old.js".to_string();
         games.store().write_if_version(Doc::Table, "old.js", &serde_json::to_string(&doc).unwrap(), None).unwrap();
         assert!(games.table_for_anyone("old.js", &red).is_ok(), "a stored dotted table still reads");
         games.delete("old.js", &red).expect("and deletes");
     }
 ```
 
-(`two_people`, `games`, `who`, `stored_table` are `tables.rs`'s own cell helpers — find each by content; a
-helper that builds a `TableDoc` by a name is there under some name, since the parked-read cells write documents
-by hand.)
+(`games()`, `who()`, `two_people(id, seed)` and `CORPUS_SEED` are `test_support`'s, in scope through
+`use crate::games::test_support::*`; no `TableDoc` builder exists, so the stored dotted document is a REAL one
+re-keyed through `games.store()`.)
+
+(c) In `lib.rs`'s `mod tests`, after `const WHO` — Review Focus 2's route-level half, since cell (b) reads and
+deletes but plays nothing:
+
+```rust
+    /// **A table stored before the dot rule still loads, plays and deletes
+    /// through the routes** (Review Focus 2): a solo hot seat is re-keyed under
+    /// `old.js` through the store — both documents, the table's `id` rewritten —
+    /// and `GET`, an input and the delete all answer, because the storage rule
+    /// and `dispatch`'s `{id}` check admit a dot; only `create` refuses one.
+    #[tokio::test]
+    async fn a_stored_dotted_table_still_loads_plays_and_deletes() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "oldjs", 20260831, &[WHO, WHO]).await;
+        let store = Arc::clone(state.games.store());
+        let (json, _) = store.read(Doc::Table, "oldjs").expect("a store").expect("the table");
+        let mut doc: crate::table::TableDoc = serde_json::from_str(&json).expect("the table parses");
+        doc.id = "old.js".to_string();
+        store.write_if_version(Doc::Table, "old.js", &serde_json::to_string(&doc).expect("json"), None).expect("written");
+        let (json, _) = store.read(Doc::Record, "oldjs").expect("a store").expect("the record");
+        store.write_if_version(Doc::Record, "old.js", &json, None).expect("written");
+        let (status, frame) = get_as(&state, WHO, "/api/games/old.js").await;
+        assert_eq!(status, StatusCode::OK, "{frame}");
+        let (status, after) = post_as(&state, WHO, "/api/games/old.js/input", serde_json::json!({ "line": "1" })).await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_ne!(frame["events"], after["events"], "the input landed: {after}");
+        let (status, body) = delete_as(&state, WHO, "/api/games/old.js").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+```
+
+(Unexecuted by the pre-flight: the implementer confirms `"1"` is an option at the opening and that `start_as`
+with one address at both seats opens a solo hot seat, and adjusts the line or the seats if not.)
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web -- no_store dotted_id 2>&1 | grep -E
 '^error|test result|panicked' | head` — `DOTTED_ID` not found; stubbed: (a) RED on the first row (no header);
-(b) RED on `x.js` (created).
+(b) RED on `x.js` (created); (c) GREEN already — the storage rule admits dots, and the cell pins what the
+dotted arm must NOT touch.
 
 - [ ] **Step 3: The code.** In `lib.rs`, beside `app()`:
 
@@ -1014,7 +1091,8 @@ carries headers; no fixture creates a dotted id — the pre-flight's grep over `
 - [ ] **Step 5: The mutants.** **M12** the layer dropped — (a) red on the first row; **M13** `starts_with("/api/")`
 alone — (a) red at `POST /api/games`; **M14** the dotted arm dropped — (b) red at `x.js`; **M15** the dotted arm
 placed BEFORE the `is_safe_id` arm — (b)'s `a.b.c` row still passes but a probe of `..` reads the dotted sentence:
-the reviewer's probe, recorded.
+the reviewer's probe, recorded; **M15b** the dot refused in `store::is_safe_id` instead of `create` — (c) red (the
+stored table is refused) and (b)'s stored half red.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/tables.rs` · `git
 commit -m "web: B9 — every answer under /api is Cache-Control: no-store from one layer; a creator-chosen id with
@@ -1228,8 +1306,12 @@ request with no identity takes no permit (S1c Task 4)"`.
   `SEGMENT_READABLE`, `SEGMENT_DIGEST` new; the cells :575–605 and :721–745), `crates/yokohama-web/src/main.rs`
   (the `segment` subcommand), `crates/yokohama-worker/src/receipt.rs` (:34 the doc; :825–827 the premise),
   `deploy/RUNBOOK.md` (a new section "The archive's rename, S1c"), `worker/RUNBOOK.md` (the same),
-  `deploy/README.md:314` (the path)
-- Test: `archive.rs`'s `mod tests`; the Worker's receipt cells
+  `deploy/README.md:192` and `:314` (the path), `worker/test/archive.test.ts` (:1179, :1207 — two hand-written
+  legacy segments), `worker/scripts/live-replay.test.mjs` (:317–335 — the four keys and `resetRecipe`'s first key
+  pinned as literal `red_at_wire.test` strings), the three corpus files `web/src/wire/archive_post.json`,
+  `archive_post_identical.json`, `archive_post_abandoned.json` (regenerated once: their `path` moves) and the
+  Worker's generated copy `worker/test/corpus.gen.ts` (`worker/scripts/test-assets.mjs` writes it)
+- Test: `archive.rs`'s `mod tests`; the Worker's receipt cells; the two TS files above
 
 **Interfaces:**
 - Consumes: `sha2` (already a dependency; `table.rs:206` uses it); `identity::User`.
@@ -1467,16 +1549,31 @@ deploy §2), the same text adapted to each host:
 > 4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` holds no folder
 >    whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
 
-`deploy/README.md:314`: `browser/<caller>/` → `browser/<segment>/` with one clause: "the segment is the address
-made readable, then `-` and a twelve-character digest (security S1c)". `receipt.rs:34`'s doc clause "which the
-64-character cap can strip" → "whose readable half the 48-character cut can strip".
+`deploy/README.md:192` and `:314`: `browser/<caller>/` → `browser/<segment>/` with one clause: "the segment is
+the address made readable, then `-` and a twelve-character digest (security S1c)". `receipt.rs:34`'s doc clause
+"which the 64-character cap can strip" → "whose readable half the 48-character cut can strip".
+
+**The Worker's two test files and the corpus** (the pre-flight's reading, F2 — the draft said neither moved):
+`worker/test/archive.test.ts:1179` writes `browser/saver_at_t.test/rev7/over/wire.json` by hand and `:1207`
+`test/browser/failer_at_t.test/rev7/over/wire.json`; each takes its path from the module's own 201 reply
+(`path`) where the cell has one, else from a small test helper computing readable-plus-digest with `node:crypto`'s
+SHA-256 over the address — never a literal that spells the legacy mapping. `worker/scripts/live-replay.test.mjs:317–335`
+pins `resetRecipe`'s four keys and its first key as literal `red_at_wire.test` strings; `resetRecipe` itself
+computes nothing (`replay/exemptions.mjs:220` reads `path` off the committed reply), so those cells read the
+expected keys from the corpus (`archive_post.json`'s and `archive_post_abandoned.json`'s `path`) rather than
+spelling them. The three corpus replies carry the segment in `path` and are regenerated ONCE (Step 4); the
+Worker's `test/corpus.gen.ts` is regenerated from them by `worker/scripts/test-assets.mjs`. The Worker's own
+code (`worker/src/`) computes no segment — the module's Rust `caller_segment` is the one source (grep clean).
 
 - [ ] **Step 4: Run the cells, both crates and the lane's rows.** `cargo test -p yokohama-web`, `cargo test -p
 yokohama-worker` (77 — the three segment cells compute dynamically; the premise rewritten), the wasm32 check and
 both wasm builds (the layer compiles to wasm; `sha2` builds there — `table.rs` already proves it), `worker/`'s
-`build:module:debug`, `test:scripts` and the pool (`npm test`: the pool's archive rows compute no segment by
-hand — the pre-flight greps `worker/test` for `_at_` to be sure), `wire_fixtures` green without the flag (the
-corpus's `archive_post*.json` carry no segment — the pre-flight's grep).
+`build:module:debug`, `test:scripts` and the pool (`npm test`, after the two TS files are re-pointed and
+`test/corpus.gen.ts` regenerated), and **the corpus regenerated ONCE** — `UPDATE_WIRE_FIXTURES=1 cargo test -p
+yokohama-web --test wire_fixtures`, then `wire_fixtures` green WITHOUT the flag; the diff READ: the three
+`archive_post*.json` `path` values move from `browser/red_at_wire.test/…` to `browser/red_at_wire.test-<12 hex>/…`
+and NOTHING else moves (the task report names the three files and quotes the three lines; any other moved byte is
+a finding — the M6.1 lesson: read a regeneration's diff).
 
 - [ ] **Step 5: The mutants.** **M20** the digest dropped (`caller_segment` = the readable half) — the first cell
 red at the first collision pair; **M21** the digest over `raw` spelling instead of the key — the normalization
@@ -1486,7 +1583,10 @@ segment — no cell; the reviewer runs `cargo run -p yokohama-web -- segment red
 columns (recorded).
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/archive.rs crates/yokohama-web/src/main.rs
-crates/yokohama-worker/src/receipt.rs deploy/RUNBOOK.md worker/RUNBOOK.md deploy/README.md` · `git commit -m
+crates/yokohama-worker/src/receipt.rs deploy/RUNBOOK.md worker/RUNBOOK.md deploy/README.md
+worker/test/archive.test.ts worker/scripts/live-replay.test.mjs web/src/wire/archive_post.json
+web/src/wire/archive_post_identical.json web/src/wire/archive_post_abandoned.json worker/test/corpus.gen.ts` ·
+`git commit -m
 "web+worker: D26 — the archive's caller segment is readable plus a twelve-character digest, injective in practice;
 the legacy mapping kept for the rename; the segment subcommand and the window's recipe in both runbooks (S1c
 Task 5)"`.
@@ -1664,11 +1764,11 @@ and beside `refused` (:529):
 In `api.rs`, `why` (:1706): `Err(refusal) => explain::Why::refused(&refusal)` → `Err(refusal) =>
 explain::Why::refused_at(&refusal, &now, &held)`. (`now` and `held` are in scope: :1667 and :1672–1685.)
 
-- [ ] **Step 4: Run the cells, the crate and the lane's rows.** `wire_fixtures`: the pre-flight read
-`why_refused.json` and `why_refusals.json` for a `mismatch` kind at a withheld visibility — **expected: none
-(the walk's refusals are the twelve typed ones at a solo hot seat with no bot)**; if one is, this task's commit
-regenerates the corpus ONCE (`UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`), reads the
-diff, and the task report names the file.
+- [ ] **Step 4: Run the cells, the crate and the lane's rows.** `wire_fixtures` green WITHOUT the flag is the
+claim: the corpus's `why_refusals.json` DOES carry a `mismatch` row, and it is a CONSTRUCTION —
+`wire_fixtures.rs::every_refusal_payload` builds the twelve from `explain::refusal_samples()` through
+`RefusalDto::of`, never through the route or `Why::refused` — so this task moves no fixture (decision D-8); a moved
+byte is a finding, reported, never regenerated here.
 
 - [ ] **Step 5: The mutants.** **M25** `refused_at` = `refused` — (a) and (b) red; **M26** the visibility read
 inverted — (a) red at the public line; **M27** `kind` changed — (a) red at the kind line.
@@ -1679,7 +1779,7 @@ visibility and names no move while the account is withheld (S1c Task 6)"`.
 
 ---
 
-### Task 7: The documents the code changed, and the CLI's two comments — Sonnet (D10's rule; ruling 6; spec corrections 1–7)
+### Task 7: The documents the code changed, and the CLI's two comments — Opus (D10's rule; ruling 6; spec corrections 1–7)
 
 **Files:**
 - Modify: `docs/web-lane.md` (§2 counts, §4 standing rules, §13 the API map, §15 by design),
@@ -1727,7 +1827,7 @@ screen_model's two doc sentences made true of the web's folded rows (S1c Task 7)
 
 ---
 
-### Task 8: The release bump to 0.6.1 — Sonnet (ruling 7; decision D-10; `docs/web-lane.md` §7)
+### Task 8: The release bump to 0.6.1 — Opus (ruling 7; decision D-10; `docs/web-lane.md` §7)
 
 **Files:**
 - Modify: `Cargo.toml` (`[workspace.package] version`), `Cargo.lock` (the nine members' lines),
@@ -1774,14 +1874,17 @@ app_version regenerated, the version alone (S1c Task 8)"`.
   cell that cannot go red on its mutant, every name here the tree does not spell, and every sentence of the
   spec's rows or this plan the code contradicts; fix them in this plan at the source BEFORE Task 1 is
   dispatched; the scratch is discarded with the export; the findings file is
-  `docs/temp/security-review-2026-10-08/s1c-before/findings.md`.
+  `docs/temp/security-review-2026-10-08/s1c-before/findings.md`. **Stopped by the owner on 2026-10-10 after
+  Task 1's cells ran green (the lib 463) and before any mutant ran**: the reviewers' mutant runs and the after
+  review carry the validation; Tasks 2–6's cells were not executed (their splice scripts are written, unrun);
+  the eleven findings are in the Review record below.
 
 - [ ] **Step 2: The branch.** `git checkout -b security-s1c 680737e5` (= `security-s1b`'s head); the plan and
   the board committed on it first ("docs: S1c's plan and the board…"); S1c's commits stack on it; PR #51
   (`security-s1c` → `security-s1b`) opened at Step 7.
 
-- [ ] **Step 3: The dispatches.** Tasks 2, 4, 5, 6 Opus and Tasks 1, 3, 7, 8 Sonnet, each with an Opus reviewer
-  who reruns the task's mutants on an export; the probe-and-name-concerns paragraph in every implementer brief;
+- [ ] **Step 3: The dispatches.** every task Opus/Opus (the owner, 2026-10-10), each reviewer rerunning the task's mutants on
+  an export; the probe-and-name-concerns paragraph in every implementer brief;
   the SDD ledger under `docs/temp/security-review-2026-10-08/s1c-sdd/`; the heartbeat protocol for every wait
   past an hour. A `DONE_WITH_CONCERNS` correctness item is ruled on and fixed as a new commit before the review;
   a fix round quotes its hunks; a reported SHA is never amended.
@@ -1800,10 +1903,12 @@ app_version regenerated, the version alone (S1c Task 8)"`.
   branch head: the fences of §"Global Constraints" (`git diff 680737e5 -- crates/yokohama-core
   crates/yokohama-oracle crates/yokohama-difftest crates/yokohama-bridge crates/gen-data crates/yokohama-wasm`
   empty; the CLI's diff confined to `screen_model.rs`'s two comments; the Worker's to `receipt.rs`'s cells;
-  `SEMANTICS_REV` 7); the corpus unmoved but for Task 6's permitted regeneration and Task 8's version fields,
+  `SEMANTICS_REV` 7); the corpus unmoved but for Task 5's permitted regeneration (three `path` values) and Task 8's version fields,
   each diff read; every mutant M1–M27 re-run; the argument of each row re-derived from the code — that every
-  `format!` in the five files that repeats a caller value goes through `echo` (a grep for `{id:?}`, `{raw:?}`,
-  `{line:?}`, `{other:?}`, `{}` of `req.path` reads nothing), that `tables.rs` holds no `lock_for(`, that
+  `format!` in the seven files (`lib.rs`, `api.rs`, `tables.rs`, `games.rs`, `store.rs`, `identity.rs`,
+  `grammar.rs`) that repeats a caller value goes through `echo` (a grep for `{id:?}`, `{raw:?}`, `{line:?}`,
+  `{key:?}`, `{t:?}`, `{other:?}` outside `key_of` and the environment sentences, and `{}` of `req.path`, reads
+  nothing in non-test code), that `tables.rs` holds no `lock_for(`, that
   `no_store` is a `layer` and not a `route_layer`, that `UntilLast` wraps the table stream and the house stream
   is untouched (it has no refusal arm), that the permit's condition is exactly `is_replay_route && resolved.is_ok()`,
   that `caller_segment` is `legacy` cut at 48 plus the digest and that NOTHING reads a legacy prefix, that
@@ -1895,3 +2000,47 @@ measurements (Task 9 Step 1, by the orchestrator before Task 1 is dispatched), w
 that this plan did not know (Tasks 1–8, from the SDD ledger), and the "after" review with the four-agent stack
 review's verified findings (Task 9 Steps 5 and 8). Until each part is written, its section is absent, not
 empty — a reader who finds no "before" section knows the pre-flight has not run.
+
+### The "before" review (Task 9 Step 1), 2026-10-10 — the orchestrator's own, on an export of `680737e5`, STOPPED at the owner's direction after Task 1
+
+**Method.** A `git archive` export (`scratchpad/export-680737e5`; `web/node_modules`, `worker/node_modules` and
+`bridge-captures` linked in); this plan's code blocks lifted by `docs/temp/security-review-2026-10-08/s1c-before/blocks.py`
+and keyed by their FIRST content line (`edit.py`'s `BY_FIRST`/`blk`, so a correction that moves the plan's lines
+moves no reference), spliced by `apply_t<N>.py` through exact anchors, the echo sites by `echo_sites.py` (a
+`format!` parser, named-argument form); the findings and readings in `s1c-before/findings.md`, the logs under
+`s1c-before/logs/`. **The owner stopped the pre-flight after Task 1's cells** (2026-10-10): the reviewers re-run
+every task's mutants on an export per Step 3, and the after review (Step 5) re-runs M1–M27 and re-derives every
+row, so the pre-flight's mutant pass would have been the same work a third time; with it the owner ruled every
+task **Opus/Opus**. What ran: Task 1's blocks spliced and its seven cells GREEN, the whole web lib **463** (456 + 7);
+Task 1's mutants were queued and killed unrun; Tasks 2–6's splice scripts are written and unrun. The after review
+carries a list of what the pre-flight did not execute (the SDD ledger's "What the after review looks for").
+
+**The findings** (F-numbers as `findings.md` carries them; each corrected in this plan at the source before Task 1's
+brief was cut):
+
+- **F2 — the corpus carries the caller segment (Task 5; the load-bearing finding).** `archive_post.json`,
+  `archive_post_identical.json` and `archive_post_abandoned.json` each carry `"path": "browser/red_at_wire.test/…"`;
+  Task 5 regenerates the corpus once (three `path` lines), where the draft forbade any regeneration but Task 6's.
+  `worker/test/archive.test.ts:1179`/`:1207` and `worker/scripts/live-replay.test.mjs:317–335` spell the legacy
+  segment as literals (the draft: "the pool's archive rows compute no segment by hand"); `resetRecipe` reads the
+  path off the committed reply. Task 5's files, Step 3, Step 4, Step 6, D-8 and the Global Constraint rewritten.
+- **F4 — the echo inventory was short by thirty sites and a file.** `store.rs`'s four "is not a usable game
+  name" sites are the sentence a 16 KB game id's 500 carries today — Task 1's bounded-body cell went RED there;
+  `tables.rs` holds nineteen `{id:?}` (four at `create` the BODY's id), three `{key:?}`, the seed's `{t:?}` and the
+  scope's `{other:?}`; `games.rs` eight. The rule is mechanical and named-argument (`\"{x}\"` with
+  `x = crate::echo::echo(x)`), so a string with positional `{}` keeps its order; the after review greps seven files.
+- **F1 — D-8's mechanism.** `why_refusals.json` DOES carry a `mismatch` row, and it is a construction built from
+  `refusal_samples()` through `RefusalDto::of`, never served — Task 6 moves nothing, for that reason.
+- **F3** `ApiError` has three message-taking constructors (no `forbidden`/`conflict`); the cap cell pins them by
+  two source counts. **F5** the web client composes no retreat line (option numbers, counts, five words, an area
+  token); the 99-byte 4P retreat is the GRAMMAR's longest meaningful line — `LINE_MAX`'s comment, cell (b) and
+  Review Focus 1 rewritten. **F6** the 16 KB game-id row is the store's 500 until Task 2 — the cell asserts a
+  refusal per row, the bound being its claim. **F7** an unused `mut` the lint gate refuses. **F8** `Games::in_memory()`
+  does not exist (`test_support::games()`), `two_people(id, seed)` takes a seed, no `TableDoc` builder exists.
+  **F9** Review Focus 2 promised a table that "plays" and the draft's cell read and deleted — a route-level cell
+  added (Task 3 cell (c)). **F10** the `Store` trait's fifth method has a default (no change). **F11** `is_gameplay_line`
+  at `grammar.rs:74`, `SEED_NOT_SOLO` at `:764`, no `ApiError` cells in `lib.rs` to anchor on, `deploy/README.md`
+  names the path at `:192` too.
+
+**Readings.** Task 1: the seven cells green on the spliced export; the web lib 463; the longest grammar line 99
+bytes (109 zero-padded); the `GET /api/games/<16 KB>` row 16 KB from the store's sentence. Nothing else measured.
