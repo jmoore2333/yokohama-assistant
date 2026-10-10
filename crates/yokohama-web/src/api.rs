@@ -2320,7 +2320,10 @@ pub struct ArchiveReply {
 /// `identical` the put's once-rule would give, with no replay paid — and a
 /// table that fails its checks reads its own refusal first, as on every host,
 /// so the NAS, whose archive reads its files, and the Worker, whose cannot,
-/// answer every row alike (the corpus's `archive_400_table` among them). Then **the
+/// answer every row alike (the corpus's `archive_400_table` among them). After
+/// the validator, the route refuses a record naming a bot this server does not
+/// run (`bots::foreign`, finding D25 — the game routes' rule, asked once more
+/// here), a held one included, so a retry reads `identical` only past it. Then **the
 /// leaf IS the `Why`** — `Over` iff the replayed state is over, else
 /// `Abandoned` — and one put under
 /// `browser/<`[`caller_segment`](crate::archive::caller_segment)`>/` with the
@@ -2335,7 +2338,8 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     if !is_on(&games.archive) {
         return Err(ApiError::not_found("this server keeps no archive"));
     }
-    // **The checks above are `backup::check_pair`'s since M6.5b2**
+    // **The checks above are `backup::check_pair_filed`'s** — `check_pair`'s
+    // since M6.5b2, the body's name since security S1b
     // (R-6.5b2.10, spec §2.5): one function, two callers, so a backup and an
     // upload cannot disagree about what a valid game is. The order and every sentence are
     // this route's own and did not move — pinned through `dispatch` by
@@ -2359,7 +2363,8 @@ pub fn archive_post(games: &Games, user: &User, req: &ArchivePost) -> Result<Arc
     // is the module's own production bot's game or it is not a browser's game;
     // `bots::foreign` is the game routes' rule, asked once more here. The
     // record parsed a line ago inside `check_pair_filed`; this second parse is
-    // the price of keeping `PairFacts` four scalars.
+    // the price of keeping `PairFacts` a few scalars rather than carrying the
+    // parsed record.
     let rec: yokohama_core::GameRecord = serde_json::from_str(&req.record)
         .map_err(|e| ApiError::bad_request(format!("the record does not parse: {e}")))?;
     if let Some((seat, played, why)) = crate::bots::foreign(&rec).into_iter().next() {

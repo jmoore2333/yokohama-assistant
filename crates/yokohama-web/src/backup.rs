@@ -3,7 +3,10 @@
 //!
 //! **One envelope, one game or all of them**, so there is a single format
 //! rather than two, and **one function decides what a valid game is** — the
-//! archive route calls [`backup::check_pair`] and so does a restore, because a backup
+//! archive route calls its body, [`backup::check_pair_filed`], with its own
+//! hook; a restore calls the wrapper, [`backup::check_pair_with`]; and
+//! [`backup::check_pair`] is the public entry for a caller without a `Games`;
+//! all three reach that one body, because a backup
 //! and an upload that disagreed would mean a game you could send to the server
 //! but not put back on your own device.
 //!
@@ -189,7 +192,11 @@ pub const LOCKED_DOWN: &str = "the record is locked down — a game the driver d
 /// may be present and the real parse says what they mean. A field core adds
 /// to `GameRecord` fails
 /// `a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass`
-/// until it is named here: the drift a lenient mirror would hide.
+/// until it is named here: the drift a lenient mirror would hide. The
+/// mirror's claim is the record's TOP level: `GameConfig`, `RunProvenance`
+/// with its `SeatProvenance` seats, and the bodies of the events' moves are
+/// the engine's own types and stay lenient, so a key planted inside one is
+/// accepted — the design, not an oversight.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -816,7 +823,8 @@ pub(crate) mod tests {
     /// `Session::from_record` makes before it builds anything, and which the
     /// archive never made. Two defects: the impossible config (Port B and Lab
     /// B at two players) also moves the board, so the record would fail its
-    /// replay at the digest; the config's sentence comes first.
+    /// replay too (measured: at event 96, a move not in the legal list); the
+    /// config's sentence comes first.
     #[test]
     fn an_impossible_configuration_is_refused_before_the_replay() {
         let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
