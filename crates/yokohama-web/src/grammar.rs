@@ -67,11 +67,38 @@ const HEADS: &[&str] = &[
     "a", "b", "m", "r",
 ];
 
+/// The most bytes a gameplay line may carry (security S1c, finding D28). The
+/// web client composes nothing longer than an option number or an area token
+/// (`A05`), under six bytes; the grammar also admits the CLI's four move
+/// grammars for the terminal's sake, whose longest meaningful line is a 4P
+/// retreat naming every area with its count — eighteen `A17:5` pairs behind
+/// `r `, 99 bytes (109 zero-padded; the pre-flight's measurement) — so 256 is
+/// more than twice the longest legal line and a thousandth of the 2 MiB body
+/// limit a hostile line could fill.
+pub const LINE_MAX: usize = 256;
+
+/// The shape of a line BEFORE its grammar is read: at most [`LINE_MAX`] bytes,
+/// no control character (a newline inside a "line" once read as three tokens;
+/// finding D29's note). The refusal names the LENGTH and never the text, since
+/// a refusal that echoed the line was the review's 3.5× amplifier.
+pub fn check_line(line: &str) -> Result<(), String> {
+    if line.len() > LINE_MAX {
+        return Err(format!("a line is at most {LINE_MAX} bytes — this one is {} bytes", line.len()));
+    }
+    if let Some(c) = line.chars().find(|c| c.is_control()) {
+        return Err(format!("a line carries no control character — this one has {}", c.escape_unicode()));
+    }
+    Ok(())
+}
+
 /// Whether `line` is a gameplay line a browser may send.
 ///
 /// A bare empty line IS allowed: it is the CLI's "apply the sole option", which
 /// the client offers as a button whenever there is exactly one.
 pub fn is_gameplay_line(line: &str) -> bool {
+    if line.chars().any(char::is_control) {
+        return false;
+    }
     let mut tokens = line.split_whitespace();
     let Some(head) = tokens.next() else {
         return true;
@@ -96,9 +123,16 @@ fn is_area_or_number(head: &str) -> bool {
 ///
 /// Covers every shape the grammars use — a bare option number (`7`), an area
 /// with or without its prefix (`15`, `A15`, `a15`), a retreat pair (`3:2`), the
-/// `t` separator in `b 5 t 6`, and `hand` as an assistant-move endpoint. It
-/// admits no `/`, no `\`, no `.` and no space, so nothing that reaches `step`
-/// through here can be read as a path even if a future REPL word wanted one.
+/// `t` separator in `b 5 t 6`, and `hand` as an assistant-move endpoint.
+///
+/// **What this fences is the SHAPE of an argument, not what a word means**:
+/// it admits no `/`, `\`, `.` or space, so no token names a path's components
+/// — but any alphanumeric token IS a relative path, and `save`, `undo` and
+/// `a` are tokens too. What keeps a REPL word from reaching `step` as a
+/// command is [`HEADS`] and [`is_area_or_number`]: a head that is not listed
+/// is refused there, and the REPL matches whole token slices, so an admitted
+/// `undo save` is `["undo", "save"]` — no command of that shape exists. A
+/// line with a newline inside it is refused before this by [`check_line`].
 fn is_token(token: &str) -> bool {
     !token.is_empty()
         && token.len() <= 16
@@ -145,9 +179,10 @@ pub fn refusal(line: &str) -> String {
         _ => "is not a gameplay line",
     };
     format!(
-        "{line:?} {why}. This endpoint takes an option number, a sub-prompt answer \
+        "\"{}\" {why}. This endpoint takes an option number, a sub-prompt answer \
          (confirm/cancel/an area/a count), a move grammar (a/b/m/r), more/list, undo/back, \
-         or an empty line to apply a sole option."
+         or an empty line to apply a sole option.",
+        crate::echo::echo(line)
     )
 }
 
@@ -188,6 +223,49 @@ mod tests {
         ] {
             assert!(is_gameplay_line(line), "{line:?} must be allowed");
         }
+    }
+
+    /// **The line bound** (finding D28): the longest line the client's own
+    /// grammar composes passes with room, and a line over the bound or
+    /// carrying any control character is refused by a sentence that names the
+    /// LENGTH and never the text — a 940 KB line of soft hyphens once came
+    /// back as a 3.3 MB body. `1\nsave x` is refused here too (finding D29's
+    /// note: `split_whitespace` read it as three tokens), by the control rule.
+    #[test]
+    fn the_line_bound_admits_the_longest_legal_line_and_refuses_a_long_or_control_one() {
+        // The longest line the GRAMMAR admits with meaning — the CLI's retreat
+        // at a 4P table, an `A`-prefixed area id and a count for every one of
+        // the eighteen areas behind `r `, 99 bytes; the web client itself
+        // composes nothing longer than an option number or an area token.
+        let longest = format!("r {}", (0..18).map(|a| format!("A{a}:5")).collect::<Vec<_>>().join(" "));
+        assert!(longest.len() <= LINE_MAX / 2, "the longest legal line is {} bytes, the bound {LINE_MAX}", longest.len());
+        assert!(check_line(&longest).is_ok() && is_gameplay_line(&longest));
+        assert!(check_line("").is_ok(), "the empty line applies the sole option");
+
+        let long = "1".repeat(LINE_MAX + 1);
+        let err = check_line(&long).expect_err("over the bound");
+        assert!(err.contains(&format!("{} bytes", LINE_MAX + 1)), "{err}");
+        assert!(!err.contains("111111"), "the sentence names the length, never the text: {err}");
+        let huge = "\u{ad}".repeat(940 * 1024 / 2);
+        let err = check_line(&huge).expect_err("over the bound");
+        assert!(err.len() < 200, "the refusal of a {} byte line is {} bytes", huge.len(), err.len());
+
+        for line in ["1\nsave x", "1\rsave", "a\tb", "1\u{0}"] {
+            let err = check_line(line).expect_err("a control character");
+            assert!(err.contains("control character"), "{line:?}: {err}");
+            assert!(!is_gameplay_line(line), "{line:?} is refused by the grammar as well");
+        }
+    }
+
+    /// `refusal` repeats the line through the echo rule: sixty-four characters,
+    /// escaped — the mutant that keeps `{line:?}` fails the length line.
+    #[test]
+    fn a_refusal_echoes_at_most_sixty_four_characters() {
+        let r = refusal(&"save ".repeat(100));
+        assert!(r.starts_with("\"save save"), "{r}");
+        assert!(r.contains('…'), "{r}");
+        assert!(r.len() < 400, "{}", r.len());
+        assert_eq!(refusal("save x"), format!("{:?} writes a file on the server; games persist automatically after every move. This endpoint takes an option number, a sub-prompt answer (confirm/cancel/an area/a count), a move grammar (a/b/m/r), more/list, undo/back, or an empty line to apply a sole option.", "save x"));
     }
 
     /// The filesystem write, in every shape a caller would try.

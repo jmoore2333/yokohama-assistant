@@ -684,7 +684,7 @@ impl Games {
             return Ok(Arc::clone(h));
         }
         match self.settle(id)? {
-            None => Err(GameError::NotFound(format!("no game named {id:?}"))),
+            None => Err(GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id)))),
             // **Before the dealing arm**, and the order is the claim: an open
             // table has no record either, and a client polling one must be told
             // which of the two it is looking at.
@@ -710,7 +710,7 @@ impl Games {
             .store
             .read(Doc::Record, id)
             .map_err(GameError::Server)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         // The base for `persist`'s compare-and-swap: what we found in the store
         // is what we may overwrite until someone else changes it. Recorded
         // BEFORE `live` is taken — nothing may take `written` while holding
@@ -842,7 +842,7 @@ impl Games {
         // None`, and the write below CREATED a record with no table. Pinned by
         // `a_save_reads_the_tombstone_only_while_it_holds_the_save_lock`.
         if self.deleted.lock().expect("games lock").contains(id) {
-            return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
+            return Err(self.conflict(id, format!("\"{id}\" was deleted while this move was in flight", id = crate::echo::echo(id))));
         }
 
         let record = repl.session.record();
@@ -908,8 +908,9 @@ impl Games {
                     return Err(self.conflict(
                         id,
                         format!(
-                            "{id:?} now holds a different game — refusing to write one game's \
-                             events over another's"
+                            "\"{id}\" now holds a different game — refusing to write one game's \
+                             events over another's",
+                            id = crate::echo::echo(id)
                         ),
                     ));
                 }
@@ -945,9 +946,10 @@ impl Games {
                         return Err(self.conflict(
                             id,
                             format!(
-                                "{id:?} changed under this handle since it last wrote ({} stored) — \
+                                "\"{id}\" changed under this handle since it last wrote ({} stored) — \
                                  refusing to overwrite another writer's record",
                                 on_disk.events.len(),
+                                id = crate::echo::echo(id)
                             ),
                         ));
                     }
@@ -959,8 +961,9 @@ impl Games {
                             return Err(self.conflict(
                                 id,
                                 format!(
-                                    "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
+                                    "\"{id}\" has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
                                     on_disk.events.len(),
+                                    id = crate::echo::echo(id)
                                 ),
                             ));
                         }
@@ -1009,7 +1012,7 @@ impl Games {
             Err(WriteError::Conflict { .. }) => {
                 return Err(self.conflict(
                     id,
-                    format!("{id:?} changed under this handle between the compare and the write"),
+                    format!("\"{id}\" changed under this handle between the compare and the write", id = crate::echo::echo(id)),
                 ))
             }
             Err(WriteError::Io(e)) => return Err(e),
@@ -1148,7 +1151,7 @@ impl Games {
         let handle = self.handle(id)?;
         let repl = self.lock_game(&handle, id)?;
         let Some((record_json, _)) = self.store.read(Doc::Record, id).map_err(GameError::Server)? else {
-            return Err(GameError::NotFound(format!("no game named {id:?}")));
+            return Err(GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
         };
         self.archive_if_over(id, &repl, &record_json);
         Ok(())

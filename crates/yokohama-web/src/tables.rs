@@ -108,7 +108,7 @@ impl<'de> Deserialize<'de> for WireSeed {
                 .trim()
                 .parse::<u64>()
                 .map(WireSeed)
-                .map_err(|e| serde::de::Error::custom(format!("{t:?} is not a u64 seed: {e}"))),
+                .map_err(|e| serde::de::Error::custom(format!("\"{t}\" is not a u64 seed: {e}", t = crate::echo::echo(&t)))),
         }
     }
 }
@@ -410,7 +410,7 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
         return Err(format!("{} watchers — a table remembers {UNLOCKED_CAP}", doc.unlocked.len()));
     }
     if let Some(bad) = doc.unlocked.iter().find(|u| User::parse(u).is_err()) {
-        return Err(format!("{bad:?} on the watcher list is neither an email nor a name"));
+        return Err(format!("\"{bad}\" on the watcher list is neither an email nor a name", bad = crate::echo::echo(bad)));
     }
     // M6.5a's stamp, bounded like a message's `created_at` (R-6.5a.10).
     if let Some(at) = doc.archived_at {
@@ -747,7 +747,8 @@ impl std::str::FromStr for Scope {
             "open" => Ok(Self::Open),
             "playing" => Ok(Self::Playing),
             other => Err(format!(
-                "no scope named {other:?} — the three are mine, open and playing"
+                "no scope named \"{other}\" — the three are mine, open and playing",
+                other = crate::echo::echo(other)
             )),
         }
     }
@@ -824,7 +825,7 @@ impl Games {
 
         let id = match &req.id {
             Some(id) if !is_safe_id(id) => {
-                return Err(GameError::BadRequest(format!("{id:?} is not a usable game id")))
+                return Err(GameError::BadRequest(format!("\"{id}\" is not a usable game id", id = crate::echo::echo(id))))
             }
             Some(id) => id.clone(),
             // An INDEPENDENT draw, never `seed`. A default id of
@@ -852,10 +853,10 @@ impl Games {
             match self.store.read(doc, &id) {
                 Ok(None) => {}
                 Ok(Some(_)) => {
-                    return Err(GameError::BadRequest(format!("a game named {id:?} already exists")))
+                    return Err(GameError::BadRequest(format!("a game named \"{id}\" already exists", id = crate::echo::echo(&id))))
                 }
                 Err(e) => {
-                    return Err(GameError::Server(format!("the store could not be read for {id:?}: {e}")))
+                    return Err(GameError::Server(format!("the store could not be read for \"{id}\": {e}", id = crate::echo::echo(&id))))
                 }
             }
         }
@@ -904,7 +905,7 @@ impl Games {
                 Ok(doc.view(creator, self.archive_on()))
             }
             Err(WriteError::Conflict { .. }) => {
-                Err(GameError::BadRequest(format!("a game named {:?} already exists", doc.id)))
+                Err(GameError::BadRequest(format!("a game named \"{}\" already exists", crate::echo::echo(&doc.id))))
             }
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
@@ -927,9 +928,9 @@ impl Games {
             return Ok(None);
         };
         let doc: TableDoc = serde_json::from_str(&json)
-            .map_err(|e| GameError::Server(format!("{id:?}'s table document does not parse: {e}")))?;
+            .map_err(|e| GameError::Server(format!("\"{id}\"'s table document does not parse: {e}", id = crate::echo::echo(id))))?;
         check_shape(&doc).map_err(|why| {
-            GameError::Server(format!("{id:?}'s table document is malformed: {why}"))
+            GameError::Server(format!("\"{id}\"'s table document is malformed: {why}", id = crate::echo::echo(id)))
         })?;
         Ok(Some((doc, version)))
     }
@@ -970,9 +971,9 @@ impl Games {
             return Ok((ChatDoc::empty(key), None));
         };
         let parsed: ChatDoc = serde_json::from_str(&json)
-            .map_err(|e| GameError::Server(format!("{key:?}'s chat document does not parse: {e}")))?;
+            .map_err(|e| GameError::Server(format!("\"{key}\"'s chat document does not parse: {e}", key = crate::echo::echo(key))))?;
         check_chat_shape(&parsed, at.players())
-            .map_err(|why| GameError::Server(format!("{key:?}'s chat document is malformed: {why}")))?;
+            .map_err(|why| GameError::Server(format!("\"{key}\"'s chat document is malformed: {why}", key = crate::echo::echo(key))))?;
         Ok((crate::chat::normalized(parsed), Some(version)))
     }
 
@@ -999,7 +1000,8 @@ impl Games {
         match self.store.write_if_version(at.doc(), key, &json, expected) {
             Ok(v) => Ok(v),
             Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
-                "{key:?}'s chat changed while this message was in flight"
+                "\"{key}\"'s chat changed while this message was in flight",
+                key = crate::echo::echo(key)
             ))),
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
@@ -1069,7 +1071,7 @@ impl Games {
         let _serialized = enter(&lock);
         let (table, _) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         let (message, counts) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
         // `message.seq` IS the document's `last`: the trim drops the oldest and
         // leaves the number alone, which is the whole of R-6.4.9.
@@ -1137,7 +1139,7 @@ impl Games {
         let _serialized = enter(&lock);
         let (table, _) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         let at = ChatAt::Table { id, players: table.players };
         let Some(counts) = self.delete_message_locked(at, seq, user, Some(&table.created_by))? else {
             return Ok(());
@@ -1284,7 +1286,7 @@ impl Games {
     pub fn table(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
         let (doc, _) = self
             .settle(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         if doc.seats_of(user).is_empty() {
             return Err(GameError::Forbidden("you are not seated at this table".to_string()));
         }
@@ -1319,7 +1321,7 @@ impl Games {
     pub fn table_for_anyone(&self, id: &str, user: &User) -> Result<TableDoc, GameError> {
         let (doc, _) = self
             .settle(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         if doc.status != TableStatus::Dealing || !doc.seats_of(user).is_empty() {
             return Ok(doc);
         }
@@ -1354,7 +1356,7 @@ impl Games {
         let _serialized = enter(&lock);
         let (mut doc, version) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         // There is nothing to watch yet at either of these, and a joiner sends
         // the password to `join`. Typed, so the client branches on the status
         // rather than on the sentence.
@@ -1378,7 +1380,7 @@ impl Games {
         match self.write_table(&doc, Some(version)) {
             Ok(_) => Ok(doc.view(user, self.archive_on())),
             Err(WriteError::Conflict { .. }) => {
-                Err(GameError::Conflict(format!("{id:?} changed while this unlock was in flight")))
+                Err(GameError::Conflict(format!("\"{id}\" changed while this unlock was in flight", id = crate::echo::echo(id))))
             }
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
@@ -1479,7 +1481,7 @@ impl Games {
     fn flip_to_playing(&self, id: &str, turn: TurnMirror) -> Result<(TableDoc, Version), GameError> {
         let (mut doc, version) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         doc.status = TableStatus::Playing;
         doc.turn = Some(turn);
         match self.write_table(&doc, Some(version)) {
@@ -1497,7 +1499,7 @@ impl Games {
             // the record is the same record — so report what is there.
             Err(WriteError::Conflict { .. }) => self
                 .read_table(id)?
-                .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}"))),
+                .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id)))),
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
     }
@@ -1583,7 +1585,7 @@ impl Games {
         let _serialized = enter(&lock);
         let (mut doc, version) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         match doc.status {
             TableStatus::Open => {}
             TableStatus::Dealing => return Err(GameError::Dealing),
@@ -1644,7 +1646,8 @@ impl Games {
             // table is the table — `create`'s rule and `finalize`'s — so the
             // answer is a conflict and not a retry.
             Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
-                "{id:?} changed while this join was in flight"
+                "\"{id}\" changed while this join was in flight",
+                id = crate::echo::echo(id)
             ))),
             Err(WriteError::Io(e)) => Err(GameError::Server(e)),
         }
@@ -1670,7 +1673,7 @@ impl Games {
         // the same call that would otherwise refuse a keep it has already taken.
         let (mut doc, version) = self
             .settle_locked(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         let n = seat.0;
         // A seat nobody holds and a seat somebody ELSE holds are the same
         // refusal, and deliberately: a caller learning which of the two it was
@@ -1730,7 +1733,8 @@ impl Games {
             Ok(_) => {}
             Err(WriteError::Conflict { .. }) => {
                 return Err(GameError::Conflict(format!(
-                    "{id:?} changed while this keep was in flight"
+                    "\"{id}\" changed while this keep was in flight",
+                    id = crate::echo::echo(id)
                 )))
             }
             Err(WriteError::Io(e)) => return Err(GameError::Server(e)),
@@ -1919,7 +1923,7 @@ impl Games {
     fn delete_locked(&self, id: &str, user: &User) -> Result<(), GameError> {
         let (doc, _) = self
             .read_table(id)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         if doc.seats_of(user).is_empty() {
             return Err(GameError::Forbidden("you are not seated at this table".to_string()));
         }
@@ -2014,7 +2018,7 @@ impl Games {
             if let Some((record_json, _)) = record {
                 let events = serde_json::from_str::<GameRecord>(&record_json)
                     .map(|r| r.events.len())
-                    .map_err(|e| GameError::Server(format!("{id:?}'s record does not parse: {e}")))?;
+                    .map_err(|e| GameError::Server(format!("\"{id}\"'s record does not parse: {e}", id = crate::echo::echo(id))))?;
                 if saves_on_abandon(doc, events > 0, archive_on) {
                     // R-6.5b.13: the leaf follows the MIRROR's truth. `turn` is a
                     // cache `mirror_turn` may leave one move stale when its write

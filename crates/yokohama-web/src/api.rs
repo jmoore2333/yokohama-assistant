@@ -1332,6 +1332,7 @@ pub(crate) fn lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>
 /// shows both that a line is checked and that a checked line goes through
 /// untouched.
 pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<ClientState, ApiError> {
+    grammar::check_line(&req.line).map_err(ApiError::bad_request)?;
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
@@ -1434,8 +1435,9 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
             return Err(ApiError {
                 status: StatusCode::CONFLICT,
                 message: format!(
-                    "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
+                    "this game is asking {actual:?}, not \"{expected}\" — the prompt moved on \
                      (a restart drops an open picker). Re-read the game and answer what it asks.",
+                    expected = crate::echo::echo(expected),
                 ),
                 table_status: None, foreign_bot: None,
             });
@@ -1750,12 +1752,19 @@ pub fn card_index(
         "sites" => IndexKind::Sites,
         other => {
             return Err(ApiError::bad_request(format!(
-                "no card index named {other:?} — the four are orders, techs, goals and sites"
+                "no card index named \"{other}\" — the four are orders, techs, goals and sites",
+                other = crate::echo::echo(other)
             )))
         }
     };
     let filter = match q.filter.as_deref() {
         None => None,
+        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || term.chars().any(char::is_control) => {
+            return Err(ApiError::bad_request(format!(
+                "a filter is at most {} characters with no control character",
+                crate::echo::ECHO_MAX
+            )))
+        }
         Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
             .map_err(ApiError::bad_request)?,
     };
@@ -2249,7 +2258,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         .store()
         .read(crate::store::Doc::Record, id)
         .map_err(ApiError::server_error)?
-        .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
     #[derive(Deserialize)]
     struct StoredRecord {
         events: Vec<serde::de::IgnoredAny>,
@@ -2508,7 +2517,7 @@ pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiReq
         Matched::Route(p, b) => (p, b),
         Matched::WrongMethod => return ApiResponse { status: 405, body: String::new() },
         Matched::NoRoute => {
-            return error_response(ApiError::not_found(format!("no such endpoint: {}", req.path)))
+            return error_response(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path))))
         }
     };
     let out = match answer(games, host, identity, req, pattern, &bound) {
@@ -2627,7 +2636,7 @@ fn answer(
                 "/api/games/{id}/record" => {
                     record(games, u, b[0]).map(|json| ApiResponse { status: 200, body: json })
                 }
-                _ => Err(ApiError::not_found(format!("no such endpoint: {}", req.path))),
+                _ => Err(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path)))),
             }
         }
     }
@@ -2642,7 +2651,8 @@ fn answer(
 pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiError> {
     raw.parse::<usize>().map_err(|_| {
         ApiError::bad_request(format!(
-            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`",
+            raw = crate::echo::echo(raw)
         ))
     })
 }
@@ -2655,7 +2665,8 @@ pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiErro
 pub(crate) fn parse_path_u64(index: usize, raw: &str) -> Result<u64, ApiError> {
     raw.parse::<u64>().map_err(|_| {
         ApiError::bad_request(format!(
-            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`",
+            raw = crate::echo::echo(raw)
         ))
     })
 }

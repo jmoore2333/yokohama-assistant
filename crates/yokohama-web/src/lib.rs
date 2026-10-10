@@ -63,6 +63,7 @@ pub mod backup;
 pub mod bots;
 pub mod chat;
 pub mod client;
+pub mod echo;
 pub mod explain;
 pub mod games;
 pub mod grammar;
@@ -85,6 +86,7 @@ pub use api::{
     Unlock, WhyQuery, RUN_CAP,
 };
 pub use archive::{PutError, PutOutcome};
+pub use echo::echo;
 
 use http::StatusCode;
 
@@ -140,12 +142,33 @@ pub struct ApiError {
     pub foreign_bot: Option<bots::ForeignBot>,
 }
 
+/// The most characters any error body's `message` carries (security S1c,
+/// finding D12, decision D-2). Sixteen echoes of `echo::ECHO_MAX` — no sentence
+/// in this crate repeats more than two values — and a fence under every
+/// sentence a site composes from a library's own words: serde names an unknown
+/// field verbatim, axum names a path segment. Applied in every constructor
+/// and in `From<GameError>`, so a site the echo inventory missed is bounded all
+/// the same when its sentence reaches a body through one — a handler that
+/// builds `ApiError` literally is not, and repeats a caller's text through
+/// [`echo`] or not at all.
+pub const MESSAGE_MAX: usize = 1_024;
+
 impl ApiError {
+    /// `message` cut to [`MESSAGE_MAX`] characters with a `…`; every
+    /// constructor below passes through here.
+    pub fn capped(message: String) -> String {
+        if message.chars().nth(MESSAGE_MAX).is_none() {
+            return message;
+        }
+        let mut out: String = message.chars().take(MESSAGE_MAX).collect();
+        out.push('…');
+        out
+    }
     pub fn bad_request(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::BAD_REQUEST, message: message.into(), table_status: None, foreign_bot: None }
+        Self { status: StatusCode::BAD_REQUEST, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self { status: StatusCode::NOT_FOUND, message: message.into(), table_status: None, foreign_bot: None }
+        Self { status: StatusCode::NOT_FOUND, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
     /// This process failed at something the caller asked for correctly.
     ///
@@ -156,7 +179,7 @@ impl ApiError {
     pub fn server_error(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: message.into(),
+            message: Self::capped(message.into()),
             table_status: None, foreign_bot: None,
         }
     }
@@ -201,17 +224,19 @@ impl From<games::GameError> for ApiError {
             E::Dealing => Self::dealing(),
             E::Open => Self::open(),
             E::Playing => Self::playing(),
+            // The arms built literally pass through the cap too, so every
+            // `GameError`'s sentence reaches a body bounded (decision D-2).
             E::Forbidden(m) => {
-                Self { status: StatusCode::FORBIDDEN, message: m, table_status: None, foreign_bot: None }
+                Self { status: StatusCode::FORBIDDEN, message: Self::capped(m), table_status: None, foreign_bot: None }
             }
-            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: m, table_status: None, foreign_bot: None },
+            E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: Self::capped(m), table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
             // `why` rides the sentence only: the pair beside it keeps exactly
             // `{played, runs}` (cycle F, spec §2.3).
             E::ForeignBot { played, runs, why } => Self {
                 status: StatusCode::CONFLICT,
-                message: bots::cannot_continue(&played, &runs, &why),
+                message: Self::capped(bots::cannot_continue(&played, &runs, &why)),
                 table_status: None,
                 foreign_bot: Some(bots::ForeignBot { played, runs }),
             },
@@ -1055,7 +1080,7 @@ async fn art_manifest() -> Result<Json<art::ArtManifest>, ApiError> {
 #[cfg(feature = "server")]
 async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path().starts_with("/api/") {
-        return ApiError::not_found(format!("no such endpoint: {}", uri.path())).into_response();
+        return ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(uri.path()))).into_response();
     }
     // **`/enter` never falls through to the shell** (M6.5b2, spec §2.1). It is
     // extensionless, so without this arm a deployment that does not serve it
@@ -1151,6 +1176,124 @@ mod tests {
     /// route rather than about the 401 in front of it. The identity cells
     /// choose their own headers with [`get_with`].
     const WHO: &str = "red@wire.test";
+
+    /// **No error body carries more than `MESSAGE_MAX` characters of message**
+    /// (finding D12, decision D-2): the cap is in the constructors and in the
+    /// `From<GameError>` arms that build the struct literally, so a site the
+    /// echo inventory missed is bounded anyway when it reaches a body through
+    /// one. Every constructor that takes a message is listed; a new one joins
+    /// the list or fails the count line. A handler that builds the struct
+    /// literally (`busy`, `unauthorized`, `api.rs`'s own) is not capped: it
+    /// repeats a caller's text through `echo` or not at all.
+    #[test]
+    fn every_api_error_message_is_capped_at_construction() {
+        let long = "m".repeat(MESSAGE_MAX * 3);
+        let built: Vec<ApiError> = vec![
+            ApiError::bad_request(long.clone()),
+            ApiError::not_found(long.clone()),
+            ApiError::server_error(long.clone()),
+        ];
+        for e in &built {
+            assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
+            assert!(e.message.ends_with('…'));
+        }
+        // Every constructor that TAKES a message passes it through `capped`: the
+        // count of `message: impl Into<String>` signatures in the impl block is
+        // the count of `Self::capped(message.into())` calls, and both are the
+        // three built above. A fourth constructor that skips the cap fails the
+        // second count before it fails a body; `dealing`, `open` and `playing`
+        // carry constants, and `busy()` builds the struct literally from one.
+        let source = include_str!("lib.rs");
+        let impl_block = source.split("impl ApiError {").nth(1).and_then(|r| r.split("\n}\n").next()).expect("ApiError's impl");
+        assert_eq!(impl_block.matches("message: impl Into<String>").count(), built.len(), "every message-taking constructor is built above: {impl_block}");
+        assert_eq!(impl_block.matches("Self::capped(message.into())").count(), built.len(), "every message-taking constructor caps: {impl_block}");
+        let short = ApiError::bad_request("short");
+        assert_eq!(short.message, "short");
+        // The `From<GameError>` arms that build the struct literally cap too,
+        // so every `GameError`'s sentence reaches a body bounded.
+        let literal = [
+            ApiError::from(games::GameError::Forbidden(long.clone())),
+            ApiError::from(games::GameError::Conflict(long.clone())),
+            ApiError::from(games::GameError::ForeignBot { played: "x".into(), runs: "y".into(), why: long.clone() }),
+        ];
+        for e in &literal {
+            assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
+        }
+    }
+
+    /// **A hostile value anywhere a sentence echoes it is bounded** (finding
+    /// D12): the path, a game id in the path, the index kind, the filter term,
+    /// the identity header, the input line, the prompt kind an input expects,
+    /// a creator-chosen id, a path number.
+    /// Each site is driven through the router with a 16 KB value and the body
+    /// read for its size and for the raw value's absence; the mutant that
+    /// restores any one `{x:?}` fails that row.
+    #[tokio::test]
+    async fn every_echo_site_answers_a_bounded_body() {
+        let state = Arc::new(AppState::in_memory());
+        a_game(&app(Arc::clone(&state)), "echoed", &[]).await;
+        let big = "z".repeat(16 * 1024);
+        let rows: Vec<(&str, String, Option<serde_json::Value>, &str)> = vec![
+            ("GET", format!("/api/{big}"), None, WHO),
+            ("GET", format!("/api/games/{big}"), None, WHO),
+            ("GET", format!("/api/games/echoed/index/{big}"), None, WHO),
+            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO),
+            // A path number: `at/{k}` reads it with `parse_path_usize`, a chat
+            // message's DELETE with `parse_path_u64` (a GET there is a bare 405).
+            ("GET", format!("/api/games/echoed/at/{big}"), None, WHO),
+            ("DELETE", format!("/api/games/echoed/chat/{big}"), None, WHO),
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": format!("save {big}") })), WHO),
+            // `expect` is the caller's own string, and the 409 that names a
+            // prompt that moved on repeats it — through a literal `ApiError`
+            // the constructors' cap never sees.
+            ("POST", "/api/games/echoed/input".to_string(), Some(serde_json::json!({ "line": "1", "expect": big })), WHO),
+            ("POST", "/api/games".to_string(), Some(serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{ "user": WHO }, { "user": WHO }], "id": format!("a/{big}"), "name": "x" })), WHO),
+        ];
+        for (method, uri, body, who) in rows {
+            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, who);
+            let req = match body {
+                Some(b) => req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&b).expect("a body"))),
+                None => req.body(Body::empty()),
+            }
+            .expect("a request");
+            let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+            let status = res.status();
+            let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+            // Every row is a refusal; WHICH refusal is each route's own cell's
+            // claim — the 16 KB game id is the store's 500 until Task 2's
+            // `dispatch` check makes it the 404 that cell pins (finding B8).
+            assert!(status.is_client_error() || status.is_server_error(), "{method} {uri}: {status}");
+            assert!(bytes.len() <= 2_048, "{method} {}: a {} byte body", uri.chars().take(60).collect::<String>(), bytes.len());
+            assert!(!String::from_utf8_lossy(&bytes).contains(&"z".repeat(65)), "{method}: the raw value came back");
+        }
+        // The input route asks `check_line` BEFORE the grammar: the long line
+        // is refused by its LENGTH, not echoed back cut — `refusal`'s echo
+        // alone would bound the body too, so this is the line that pins the
+        // route's call.
+        let (status, v) = post_as(&state, WHO, "/api/games/echoed/input", serde_json::json!({ "line": format!("save {big}") })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        let said = v["error"].as_str().unwrap_or_default();
+        assert!(said.contains(&format!("this one is {} bytes", big.len() + 5)) && !said.contains("save"), "{said}");
+        // The identity header: a 16 KB value that is neither an email nor a
+        // name, under the open door, is the grammar's refusal — bounded.
+        let req = Request::builder().method("GET").uri("/api/games").header(identity::CLAIMED_HEADER, &big).body(Body::empty()).expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        assert!(bytes.len() <= 2_048, "{}", bytes.len());
+        // A watcher entry in an UPLOADED table document is the caller's value
+        // too: `check_shape` repeats the one that does not parse, and the
+        // archive route reaches it. The message cap alone would keep this body
+        // near a kilobyte, so the line that tells the echo from the cap is the
+        // raw value's absence.
+        let mut table: serde_json::Value = serde_json::from_str(PLAYED_TABLE).expect("the played table");
+        table["unlocked"] = serde_json::json!([big]);
+        let (status, v) = post_as(&slow_state(0, 1, 1_000), WHO, "/api/archive", serde_json::json!({ "record": PLAYED_RECORD, "table": table.to_string() })).await;
+        let text = v.to_string();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
+        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "a {} byte body", text.len());
+    }
 
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {
         let res = app(Arc::new(AppState::in_memory()))

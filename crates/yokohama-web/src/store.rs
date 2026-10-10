@@ -242,7 +242,7 @@ fn spells_another_document(id: &str) -> bool {
 /// both implementations, as the id guard does.
 fn check_house_id(doc: Doc, id: &str) -> Result<(), String> {
     if doc == Doc::House && id != crate::chat::HOUSE {
-        return Err(format!("the house chat has one id, {:?}, not {id:?}", crate::chat::HOUSE));
+        return Err(format!("the house chat has one id, {:?}, not \"{id}\"", crate::chat::HOUSE, id = crate::echo::echo(id)));
     }
     Ok(())
 }
@@ -275,7 +275,7 @@ impl FsStore {
             return Ok(self.dir.join(format!("{}{}", house_stem(), doc.suffix())));
         }
         if !is_safe_id(id) {
-            return Err(format!("{id:?} is not a usable game name"));
+            return Err(format!("\"{id}\" is not a usable game name", id = crate::echo::echo(id)));
         }
         Ok(self.dir.join(format!("{id}{}", doc.suffix())))
     }
@@ -437,7 +437,7 @@ impl Store for FsStore {
         if removed {
             Ok(())
         } else {
-            Err(format!("no game named {id:?}"))
+            Err(format!("no game named \"{id}\"", id = crate::echo::echo(id)))
         }
     }
 
@@ -458,7 +458,7 @@ impl Store for FsStore {
             };
             let secs = modified
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| format!("{id:?}'s {doc:?} document was modified before 1970"))?
+                .map_err(|_| format!("\"{id}\"'s {doc:?} document was modified before 1970", id = crate::echo::echo(id)))?
                 .as_secs();
             latest = Some(latest.map_or(secs, |l| l.max(secs)));
         }
@@ -506,7 +506,7 @@ impl Store for MemStore {
     fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, Version)>, String> {
         check_house_id(doc, id)?;
         if !is_safe_id(id) {
-            return Err(format!("{id:?} is not a usable game name"));
+            return Err(format!("\"{id}\" is not a usable game name", id = crate::echo::echo(id)));
         }
         Ok(self
             .docs
@@ -525,7 +525,7 @@ impl Store for MemStore {
     ) -> Result<Version, WriteError> {
         check_house_id(doc, id).map_err(WriteError::Io)?;
         if !is_safe_id(id) {
-            return Err(WriteError::Io(format!("{id:?} is not a usable game name")));
+            return Err(WriteError::Io(format!("\"{id}\" is not a usable game name", id = crate::echo::echo(id))));
         }
         // The map's own lock spans the read, the compare and the write, which
         // is the same guarantee `FsStore` buys with a separate mutex.
@@ -554,13 +554,13 @@ impl Store for MemStore {
         if removed > 0 {
             Ok(())
         } else {
-            Err(format!("no game named {id:?}"))
+            Err(format!("no game named \"{id}\"", id = crate::echo::echo(id)))
         }
     }
 
     fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
         if !is_safe_id(id) {
-            return Err(format!("{id:?} is not a usable game name"));
+            return Err(format!("\"{id}\" is not a usable game name", id = crate::echo::echo(id)));
         }
         Ok(self.stamps.lock().expect("store lock").get(id).copied())
     }
