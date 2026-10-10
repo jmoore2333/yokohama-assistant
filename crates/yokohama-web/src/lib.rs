@@ -1621,8 +1621,9 @@ mod tests {
 
     /// How long a parked read waits before it proceeds anyway: a wait for a
     /// fact needs a bound, so a path that never releases — a failing
-    /// assertion between `park` and `release` — FAILS instead of hanging the
-    /// runtime's shutdown on a parked blocking-pool thread.
+    /// assertion between `park` and `release`, should one ever stand there —
+    /// FAILS instead of hanging the runtime's shutdown on a parked
+    /// blocking-pool thread.
     const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
 
     impl ParkedRead {
@@ -6724,19 +6725,26 @@ mod tests {
     /// "replaying this game failed … past the end" — the range test let it
     /// through and the replay refused it; it reads the range's 404 now, in the
     /// sentence `run_404_range.json` pins. `from = to ≤ total` is an empty run:
-    /// 200 and no frames.
+    /// 200 and no frames — asked INSIDE a played record (`total / 2`) and at
+    /// its start. The shortcut that answers it is cost-only: without it a run
+    /// with `from == to` folds to `from` and answers no frames all the same, so
+    /// removing it changes no response, and this cell pins the answer, not the
+    /// shortcut.
     #[tokio::test]
     async fn an_out_of_range_run_is_a_404_and_an_empty_run_is_empty() {
         let router = live_router();
-        let game = a_game(&router, "ranges", &[]).await;
-        let total = game["events"].as_u64().expect("events") as usize;
+        a_game(&router, "ranges", &[]).await;
+        play(&router, "ranges", 4).await;
+        let total = total_events(&router, "ranges").await;
+        assert!(total >= 2, "the premise: a position strictly inside the record ({total} events)");
         let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={}&to={}", total + 1, total + 1), None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
         assert_eq!(
             v["error"],
             format!("this game has {total} events, so its last position is {total} — there is no run from {} to {}", total + 1, total + 1)
         );
-        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={total}&to={total}"), None).await;
+        let inside = total / 2;
+        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={inside}&to={inside}"), None).await;
         assert_eq!(status, StatusCode::OK, "{v}");
         assert_eq!(v["frames"], serde_json::json!([]));
         let (status, v) = call(&router, "GET", "/api/games/ranges/at?from=0&to=0", None).await;

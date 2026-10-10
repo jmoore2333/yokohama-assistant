@@ -724,12 +724,13 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// every other — where this function waves a line through (a table with one
 /// person at it) the fence is what guards, exactly as before.
 ///
-/// **The mover of event `len - 1` is `state_at(record, len - 1).current_player`
-/// — replay-derived** ([`trailing_state`]), which is the CLI's own attribution
-/// for exactly this question (`repl.rs`'s undo unwinds by replay, not by a
-/// boundary stack, so it survives a save and reload). A `RecordedEvent` carries
-/// no seat of its own — nor does the `Move` inside one — and a second
-/// attribution here would be a second thing to keep true.
+/// **The mover of event `len - 1` is the state before it, `.current_player` —
+/// replay-derived** ([`trailing_state`], read from the session's ladder since
+/// security S1b; the state `state_at(record, len - 1)` names), which is the
+/// CLI's own attribution for exactly this question (`repl.rs`'s undo unwinds
+/// by replay, not by a boundary stack, so it survives a save and reload). A
+/// `RecordedEvent` carries no seat of its own — nor does the `Move` inside one
+/// — and a second attribution here would be a second thing to keep true.
 ///
 /// **A record that will not replay is the SERVER's failure, not a refusal**
 /// (M6.5c2 cycle D, straw poll row 5): [`UndoRefusal::Replay`], a 500 carrying
@@ -750,7 +751,7 @@ pub(crate) fn status_refusal(repl: &yokohama_cli::repl::Repl) -> Option<String> 
 /// one person, or one person and a bot — keeps today's undo, bot run and all:
 /// the rule is about a card another PERSON never saw.
 pub(crate) fn undo_allowed(
-    repl: &yokohama_cli::repl::Repl,
+    repl: &mut yokohama_cli::repl::Repl,
     table: &crate::table::TableDoc,
     viewer: yokohama_core::PlayerId,
 ) -> Result<(), UndoRefusal> {
@@ -792,7 +793,7 @@ pub(crate) fn undo_allowed(
     if let Some(status) = status_refusal(repl) {
         return Err(UndoRefusal::Refused(status));
     }
-    let before = trailing_state(repl.session.record(), repl.session.rules())?;
+    let before = trailing_state(&mut repl.session)?;
     let now = repl.session.state();
     if before.current_player != viewer || now.current_player != viewer {
         return Err(UndoRefusal::Refused("undo is not offered once your turn has passed".to_string()));
@@ -833,7 +834,7 @@ pub(crate) enum UndoRefusal {
     /// older ones exactly as they have always answered.
     Refused(String),
     /// The record would not replay far enough to name who made its last move:
-    /// a 500 carrying the replay's sentence (`ReplayError`'s `Display`, which
+    /// a 500 carrying the replay's sentence (`Session::state_before`'s, which
     /// names the event that failed).
     Replay(String),
 }
@@ -851,21 +852,28 @@ impl From<UndoRefusal> for crate::games::GameError {
     }
 }
 
-/// The state BEFORE `record`'s last event, replayed under `rules` — whose
-/// `current_player` is who made that event (see [`undo_allowed`] on why by
-/// replay), and whose decks are what the event drew from.
+/// The state BEFORE the session's last event — whose `current_player` is who
+/// made that event (see [`undo_allowed`] on why by replay), and whose decks are
+/// what the event drew from.
+///
+/// **Read from the session's ladder** (`Session::state_before`; security S1b,
+/// finding A3): the state `state_at(record, len - 1)` names, by the core PR's
+/// proof, folded from the nearest kept state through the predicate. It was
+/// `state_at` itself — a checked replay from setup through the legal list
+/// materialized per event — on every undo asked of a live game at a table of
+/// more than one person, which at a record built to a large retreat family is the cost A3 exists to
+/// remove. `&mut` because a read past a gap keeps the multiples it folds past.
 fn trailing_state(
-    record: &yokohama_core::GameRecord,
-    rules: &Rules,
+    session: &mut yokohama_cli::session::Session,
 ) -> Result<yokohama_core::GameState, UndoRefusal> {
     // Not R-P6 speaking: the guard that keeps `len - 1` from underflowing, on
     // a game whose first prompt has not been answered yet. `Session::undo`'s
     // own words for the same condition, so the answer reads the same whichever
     // of the two paths reaches it.
-    let Some(last) = record.events.len().checked_sub(1) else {
+    let Some(last) = session.record().events.len().checked_sub(1) else {
         return Err(UndoRefusal::Refused("nothing to undo".to_string()));
     };
-    yokohama_core::state_at(record, last, rules).map_err(|e| UndoRefusal::Replay(e.to_string()))
+    session.state_before(last).map_err(UndoRefusal::Replay)
 }
 
 /// What `GET /api/games` is being asked (§3.3).
@@ -1372,7 +1380,7 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // pressed; "it is seat 1's turn" answers a question they did not ask. The
     // fence is untouched and still runs, for this line and every other.
     if grammar::is_undo(&req.line) {
-        undo_allowed(&repl, &table, seat).map_err(crate::games::GameError::from)?;
+        undo_allowed(&mut repl, &table, seat).map_err(crate::games::GameError::from)?;
     }
 
     // **A move is the ACTING SEAT'S HOLDER'S, and nobody else's.**
@@ -3803,15 +3811,20 @@ mod tests {
     /// **No route reaches this arm, and the cell says why rather than
     /// pretending otherwise.** A resident `Repl` exists only through
     /// `Session::from_record` (or a session that applied every event itself),
-    /// which folds the SAME `new_game` → `finalize_setup` → `replay_from` chain
-    /// over the whole record; a prefix of a record that folds, folds. So the
-    /// cell holds the arm at the two places that decide its status: the mover's
-    /// derivation, handed a HAND-BUILT record that will not replay (a 5-Power
-    /// take before any placement — asserted as a premise through `state_at`
-    /// itself), and the one mapping `input` sends [`UndoRefusal`] through.
-    /// The rule's own refusal is read through that mapping too, still a 403.
+    /// which folds the SAME `new_game` → `finalize_setup` → fold chain over the
+    /// whole record; a prefix of a record that folds, folds. Since security S1b
+    /// the mover's derivation reads a SESSION's ladder (`trailing_state`), and
+    /// a session cannot hold a HAND-BUILT record that will not replay (a
+    /// 5-Power take before any placement — asserted as a premise through
+    /// `state_at` itself): `from_record` refuses it, asserted here. So the
+    /// cell holds the derivation at the two answers a session can reach — "nothing
+    /// to undo" on an empty record, the state `state_at` names on a played one
+    /// — and the arm at the one mapping `input` sends [`UndoRefusal`] through,
+    /// with the replay's own sentence. The rule's own refusal is read through
+    /// that mapping too, still a 403.
     #[test]
     fn undo_on_a_record_that_will_not_replay_is_a_500_not_a_403() {
+        use yokohama_cli::session::Session;
         use yokohama_core::{GameConfig, GameRecord, Move, RecordedEvent, StartingOrderChoice};
         let rules = Rules::standard();
         let mut record =
@@ -3820,9 +3833,25 @@ mod tests {
         let sentence = yokohama_core::state_at(&record, 1, &rules)
             .expect_err("premise: the record will not replay")
             .to_string();
+        assert!(
+            Session::from_record(record, rules.clone()).is_err(),
+            "no session holds the record this arm would need"
+        );
 
-        let refusal = trailing_state(&record, &rules).expect_err("no mover to name");
-        assert_eq!(refusal, UndoRefusal::Replay(sentence.clone()), "a replay failure, not a refusal");
+        let mut session = Session::new_sim(
+            GameConfig::for_player_count(2),
+            7,
+            vec![StartingOrderChoice::Keep(0); 2],
+            rules.clone(),
+        )
+        .expect("a game");
+        assert_eq!(trailing_state(&mut session), Err(UndoRefusal::Refused("nothing to undo".to_string())));
+        let mv = session.legal()[0].clone();
+        session.apply(mv, Vec::new()).expect("a listed move applies");
+        let before = trailing_state(&mut session).expect("the mover's state");
+        assert_eq!(before, yokohama_core::state_at(session.record(), 0, &rules).expect("position 0"));
+
+        let refusal = UndoRefusal::Replay(sentence.clone());
         let answer = ApiError::from(crate::games::GameError::from(refusal));
         assert_eq!((answer.status, answer.message), (StatusCode::INTERNAL_SERVER_ERROR, sentence));
 

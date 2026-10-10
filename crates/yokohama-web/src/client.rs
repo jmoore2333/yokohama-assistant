@@ -7,8 +7,7 @@
 use serde::Serialize;
 use yokohama_cli::repl::{Repl, SubPrompt};
 use yokohama_cli::screen_model::{self, FrameModel, SeatFacts, TitleMode, TitleModel};
-use yokohama_cli::{describe, session::TrackingMode};
-use yokohama_cli::session::Session;
+use yokohama_cli::{describe, session::{Session, TrackingMode}};
 use yokohama_core::{AreaId, GameState, PlayerId};
 
 use crate::identity::User;

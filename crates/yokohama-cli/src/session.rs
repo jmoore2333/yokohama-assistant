@@ -55,11 +55,14 @@ impl std::error::Error for ApplyError {}
 
 /// How often a session keeps a state (security S1b, finding A3): every
 /// sixty-four events. A replay to any position then folds at most sixty-three
-/// events from the nearest kept state instead of the whole record from setup
+/// events from the nearest kept state (from a complete ladder; a live-mode gap
+/// — a bound-reveal group stepping over a multiple — adds its extent once,
+/// re-cut on the way) instead of the whole record from setup
 /// — the cost `/at`, a run, an undo and a rebuild paid, which at a record
 /// built to a large retreat family ran to seconds per request. Sixty-four is
-/// a memory choice, not a measured threshold: a `GameState` is tens of
-/// kilobytes, so a 4,096-event record keeps sixty-four of them.
+/// a memory choice, not a measured threshold: a `GameState` is a few
+/// kilobytes in memory (about fifteen serialized), so a 4,096-event record
+/// keeps sixty-four of them.
 pub const CHECKPOINT_EVERY: usize = 64;
 
 /// The simulation/live-tracking core: `{Rules, GameRecord, GameState}` kept
@@ -2228,6 +2231,36 @@ mod tests {
         }
         assert_eq!(after_the_undos, vec![64], "the undo to 127 drops the entry at 128");
         assert_eq!(session.ladder_indices(), vec![64, 128], "the re-grow re-cuts 128");
+    }
+
+    /// **A read past a gap in the ladder keeps every multiple it folds past,
+    /// in order and never twice** (finding A3; `fold_to`'s insertion). A gap
+    /// is what live mode leaves: a bound-reveal group that steps over a
+    /// multiple keeps nothing at `apply` (`keep_checkpoint` keeps a landing
+    /// only), so the first read past it folds across the gap and must re-cut
+    /// what it passes. No other cell builds a gapped ladder — `from_record`
+    /// and `keep_checkpoint` keep every multiple of a simulated record — so
+    /// this one opens the gaps by hand: of cell (a)'s 300-event record's
+    /// `[64, 128, 192, 256]` it keeps `[64, 256]`. Position 200 then folds
+    /// 136 events from 64 and leaves `[64, 128, 192, 256]`; read again, it
+    /// folds 8 from 192 and leaves the ladder as it was. Mutants: the
+    /// insertion deleted (the indices; the second count reads 136), an
+    /// unguarded `push` (the order: `[64, 256, 128, 192]`).
+    #[test]
+    fn a_read_past_a_gap_in_the_ladder_keeps_every_multiple_it_passes_in_order_and_never_twice() {
+        let (record, rules) = random_record(3, 2026_1009, 300);
+        let mut session = Session::from_record(record.clone(), rules.clone()).expect("rebuilds");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "the premise: a complete ladder past 256");
+        session.ladder.retain(|(i, _)| *i == 64 || *i == 256);
+        assert_eq!(session.ladder_indices(), vec![64, 256], "the gaps opened");
+        let (state, folded) = session.state_before_counted(200).expect("a position");
+        assert_eq!(state, state_at(&record, 200, &rules).expect("the engine's position"));
+        assert_eq!(folded, 136, "folded from 64, across the gap");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "every multiple passed, kept in order");
+        let (again, folded) = session.state_before_counted(200).expect("a position");
+        assert_eq!(again, state);
+        assert_eq!(folded, 8, "folded from 192, the entry the first read kept");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "never twice");
     }
 
     /// **`fold_event` refuses a non-member in `apply_move`'s own words**
