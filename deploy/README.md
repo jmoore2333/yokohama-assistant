@@ -189,7 +189,7 @@ docker run -d --name yokohama-web \
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
-| `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document |
+| `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<caller>/` (security S1b) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
 | `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
@@ -311,7 +311,7 @@ restarts every table's clock.
 | `/data/games/<id>.table.json` | the table: who sits where, the status, the lock, the setup seed |
 | `/data/games/<id>.chat.json` | the table's chat |
 | `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
-| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document |
+| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document; a browser's uploads under `browser/<caller>/` stop at 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller (security S1b) |
 
 **The preferred way** to end one table is the creator's **Abandon** in the lobby: it files the archive copy
 (once, even for a finished game) and removes the table, as the sweep does. Everything below is for a server
