@@ -1587,7 +1587,8 @@ a dot is refused at create (S1c Task 3)"`.
     /// before it stayed open and wrote one `gone` per later bump: an activity
     /// oracle on a table the caller was refused. A delete still ends with
     /// `deleted` (the earlier cell), and a transient store failure still writes
-    /// a comment and stays open (the next cell). The mutant that never marks
+    /// a comment and stays open
+    /// (`a_failed_reading_writes_a_comment_and_the_stream_stays_open_for_the_next_bump`). The mutant that never marks
     /// the frame last reads `ended == false` and a second `gone` after the
     /// second bump.
     #[tokio::test]
@@ -1806,7 +1807,7 @@ answers its 401; the 500 ms bound catches it (the draft said "a 503 after two se
 /// D1). `tokio-stream`'s `take_while` stops BEFORE the failing item, and the
 /// `gone` frame must be written and then the body closed — the refusal was
 /// written on every later bump before this, an activity oracle on a table the
-/// caller was refused. Fifteen lines over a pinned box, rather than a
+/// caller was refused. A few lines over a pinned box, rather than a
 /// dependency on `futures-util` for `scan`.
 #[cfg(feature = "server")]
 struct UntilLast<S> {
