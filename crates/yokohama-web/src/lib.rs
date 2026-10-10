@@ -777,6 +777,39 @@ async fn events(
     }
 }
 
+/// **A stream that ENDS after the frame marked last** (security S1c, finding
+/// D1). `tokio-stream`'s `take_while` stops BEFORE the failing item, and the
+/// `gone` frame must be written and then the body closed — the refusal was
+/// written on every later bump before this, an activity oracle on a table the
+/// caller was refused. Fifteen lines over a pinned box, rather than a
+/// dependency on `futures-util` for `scan`.
+#[cfg(feature = "server")]
+struct UntilLast<S> {
+    inner: S,
+    done: bool,
+}
+
+#[cfg(feature = "server")]
+impl<S> tokio_stream::Stream for UntilLast<S>
+where
+    S: tokio_stream::Stream<Item = (axum::response::sse::Event, bool)> + Unpin,
+{
+    type Item = Result<axum::response::sse::Event, std::convert::Infallible>;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+        if self.done {
+            return std::task::Poll::Ready(None);
+        }
+        match std::pin::Pin::new(&mut self.inner).poll_next(cx) {
+            std::task::Poll::Ready(Some((event, last))) => {
+                self.done = last;
+                std::task::Poll::Ready(Some(Ok(event)))
+            }
+            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
 /// `GET /api/games/{id}/stream` — the change signal, PUSHED (spec §3.1).
 ///
 /// **The same admission and the same object as `…/events`**, which is the whole
@@ -814,10 +847,10 @@ async fn events(
 /// pool. The static files — the art manifest, the art and the built client —
 /// are still read synchronously on the executor, from local disk, as before.
 ///
-/// On the table's `end` the stream writes one `end` frame and CLOSES, and the
-/// close is the CHANNEL's rather than this closure's: `Signals::end` drops the
-/// sender after sending, and a `WatchStream` terminates once its sender is
-/// gone.
+/// On the table's `end` the stream writes one `end` frame and CLOSES, by two
+/// mechanisms since security S1c: the frame is marked last, so `UntilLast`
+/// ends the body after it, and `Signals::end` drops the sender after sending,
+/// so the `WatchStream` under it terminates once its sender is gone.
 ///
 /// **The `Err` arm is not that, and it SPLITS** (final review M-5). An
 /// admission that changed underneath a live connection — a 403 or a 404 — is
@@ -828,9 +861,12 @@ async fn events(
 /// stopped answering writes a COMMENT — indistinguishable to the client's
 /// parser from a heartbeat — and the connection stays open, because telling
 /// every watcher a game is "no longer available" over a transient disk error
-/// is a worse answer than saying nothing. Neither arm closes anything by
-/// itself: what closes a connection is the client acting on `end`, or the
-/// delete that is the only ordinary cause.
+/// is a worse answer than saying nothing.
+///
+/// **A refusal closes the connection** (security S1c, finding D1): the `gone`
+/// frame is the stream's LAST — `UntilLast` ends the body after it — so a
+/// caller the table refused learns nothing from its later bumps. The failure
+/// arm writes its comment and stays open, as before.
 #[cfg(feature = "server")]
 async fn stream(
     identity::Identity(user): identity::Identity,
@@ -847,16 +883,17 @@ async fn stream(
         let (state, id, user) = (Arc::clone(&state), id.clone(), user.clone());
         async move {
             if bump.end {
-                return Ok::<_, std::convert::Infallible>(
-                    Event::default().event("end").data(r#"{"reason":"deleted"}"#),
-                );
+                return (Event::default().event("end").data(r#"{"reason":"deleted"}"#), true);
             }
             let reading = tokio::task::spawn_blocking(move || api::events_at(&state.games, &id, &user)).await;
-            Ok(match reading {
-                Ok(Ok(e)) => Event::default()
-                    .event("signal")
-                    .json_data(e)
-                    .expect("`Events` is six scalars and serializes"),
+            match reading {
+                Ok(Ok(e)) => (
+                    Event::default()
+                        .event("signal")
+                        .json_data(e)
+                        .expect("`Events` is six scalars and serializes"),
+                    false,
+                ),
                 // **A REFUSAL ends the stream; a failure does not** (final
                 // review M-5). A 403 or a 404 is an answer about this table —
                 // the join that filled the open seats without this caller, the
@@ -869,15 +906,15 @@ async fn stream(
                 // drops exactly as it drops a heartbeat — and the connection
                 // stays open for the next bump to retry.
                 Ok(Err(e)) if e.status == StatusCode::FORBIDDEN || e.status == StatusCode::NOT_FOUND => {
-                    Event::default().event("end").data(r#"{"reason":"gone"}"#)
+                    (Event::default().event("end").data(r#"{"reason":"gone"}"#), true)
                 }
                 // A reading that PANICKED in the pool is the same: a failure,
                 // not an answer about the table.
-                Ok(Err(_)) | Err(_) => Event::default().comment("the reading failed; the next bump retries"),
-            })
+                Ok(Err(_)) | Err(_) => (Event::default().comment("the reading failed; the next bump retries"), false),
+            }
         }
     });
-    Ok(Sse::new(frames).keep_alive(KeepAlive::new().interval(heartbeat)))
+    Ok(Sse::new(UntilLast { inner: Box::pin(frames), done: false }).keep_alive(KeepAlive::new().interval(heartbeat)))
 }
 
 /// `GET /api/stream` — the house channel (spec §3.2).
@@ -944,7 +981,11 @@ async fn house_stream(
 /// The permit is held for the dispatch's whole run, a caller's departure
 /// included: it moves into the pool's closure, so a hang-up, which drops this
 /// future, does not free it while the replay runs on. Every other route is
-/// never behind it.
+/// never behind it. A request whose identity did not resolve takes NO permit
+/// (S1c): the five gated routes all need one, so the layer answers its 401
+/// having replayed nothing, and a refused caller never queues behind a real
+/// one. The route's own refusals stay under the permit — behind Access every
+/// caller is signed in.
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -973,7 +1014,7 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         }
         return response;
     }
-    let permit = if api::is_replay_route(&method, &path) {
+    let permit = if api::is_replay_route(&method, &path) && resolved.is_ok() {
         match tokio::time::timeout(state.replay_wait, Arc::clone(&state.replay_gate).acquire_owned()).await {
             Ok(Ok(permit)) => Some(permit),
             Ok(Err(_)) | Err(_) => return busy(),
@@ -1201,6 +1242,51 @@ mod tests {
     /// route rather than about the 401 in front of it. The identity cells
     /// choose their own headers with [`get_with`].
     const WHO: &str = "red@wire.test";
+
+    /// **A HEAD never runs a write arm** (security S1c, Task 3's finding — pre-
+    /// existing): `find` folds HEAD onto GET, and `answer` must pick its arm by
+    /// the SAME folded method, else a HEAD of a two-method path takes the other
+    /// arm — the creator's HEAD of a game deleted it, a HEAD of `/api/games`
+    /// with a create body created one. Four paths, each HEAD answers 200 with
+    /// an empty body and writes nothing: the table remains, the list does not
+    /// grow, no chat message lands. The mutant that drops the fold reads a 204
+    /// at the first row and the table gone.
+    #[tokio::test]
+    async fn a_head_never_runs_a_write_arm() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "headed", 20260831, &[WHO, "blue@wire.test"]).await;
+        let head = |uri: &str, body: Option<serde_json::Value>| {
+            let s = Arc::clone(&state);
+            let uri = uri.to_string();
+            async move {
+                let req = Request::builder().method("HEAD").uri(&uri).header(identity::CLAIMED_HEADER, WHO)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.map(|b| serde_json::to_vec(&b).expect("a body")).unwrap_or_default()))
+                    .expect("a request");
+                let res = app(s).oneshot(req).await.expect("the router answers");
+                let status = res.status();
+                let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, bytes.len())
+            }
+        };
+        let create = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": WHO }, { "user": WHO }], "id": "headmade", "name": "headmade" });
+        assert_eq!(head("/api/games/headed", None).await, (StatusCode::OK, 0), "the creator's HEAD of a game");
+        let (status, _) = get_as(&state, WHO, "/api/games/headed").await;
+        assert_eq!(status, StatusCode::OK, "the table remains");
+        let (_, before) = get_as(&state, WHO, "/api/games").await;
+        assert_eq!(head("/api/games", Some(create)).await, (StatusCode::OK, 0), "a HEAD of the list with a create body");
+        let (_, after) = get_as(&state, WHO, "/api/games").await;
+        assert_eq!(before["games"].as_array().map(Vec::len), after["games"].as_array().map(Vec::len), "nothing created: {after}");
+        let (status, _) = get_as(&state, WHO, "/api/games/headmade").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "nothing created");
+        for uri in ["/api/games/headed/chat", "/api/chat"] {
+            let (_, before) = get_as(&state, WHO, uri).await;
+            assert_eq!(head(uri, Some(serde_json::json!({ "text": "hi" }))).await, (StatusCode::OK, 0), "{uri}");
+            let (_, after) = get_as(&state, WHO, uri).await;
+            assert_eq!(before, after, "{uri}: a HEAD posted a message");
+        }
+    }
 
     /// **A table stored before the dot rule still loads, plays, streams and
     /// deletes through the routes** (Review Focus 2): a solo hot seat is
@@ -3089,6 +3175,61 @@ mod tests {
         assert!(matches!(sb.as_u16(), 200 | 201), "{vb}");
     }
 
+    /// **The `events` route's reading runs on the blocking pool** (security S1b,
+    /// finding D6; the catcher S1b left owed — spec §9.4 residual 5). On a
+    /// ONE-thread runtime a table read that sleeps 300 ms inside `events`
+    /// leaves a health read answering in a few milliseconds, because the sleep
+    /// is on a pool thread; the mutant that reads inline holds the runtime's
+    /// only thread for the 300 ms and the health read waits behind it. The
+    /// clock runs from BEFORE the yield, because the yield is where the
+    /// spawned reading first runs: with the reading inline the 300 ms pass
+    /// inside it, and a clock started after it times the health read alone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_events_reading_leaves_the_runtime_thread_free() {
+        struct Slow(MemStore);
+        impl Store for Slow {
+            fn list(&self, doc: Doc) -> Result<Vec<crate::store::GameId>, String> { self.0.list(doc) }
+            fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, crate::store::Version)>, String> {
+                if doc == Doc::Table && id == "slowt" { std::thread::sleep(std::time::Duration::from_millis(300)); }
+                self.0.read(doc, id)
+            }
+            fn write_if_version(&self, doc: Doc, id: &str, json: &str, expected: Option<crate::store::Version>) -> Result<crate::store::Version, crate::store::WriteError> {
+                self.0.write_if_version(doc, id, json, expected)
+            }
+            fn delete(&self, id: &str) -> Result<(), String> { self.0.delete(id) }
+        }
+        let state = Arc::new(AppState::with_store(Arc::new(Slow(MemStore::default())), identity::IdentityMode::Open));
+        start_as(&state, "slowt", 20260831, &["red@wire.test", "blue@wire.test"]).await;
+        let s = Arc::clone(&state);
+        let events = tokio::spawn(async move { get_as(&s, "red@wire.test", "/api/games/slowt/events").await });
+        // The clock starts before the yield; started after it, the inline
+        // mutant passed this cell (S1c Task 4, measured).
+        let started = std::time::Instant::now();
+        tokio::task::yield_now().await;
+        let (status, _) = get_as(&state, WHO, "/api/health").await;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK);
+        assert!(took < std::time::Duration::from_millis(150), "the health read waited {took:?} behind the events reading");
+        let (status, body) = events.await.expect("the events task");
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// **An unsafe `{id}` at the two axum-native routes is the layer's 404, not
+    /// the store's 500** (security S1c, Task 2's C6): `app()` serves
+    /// `…/events` and `…/stream` itself, so `dispatch`'s check never sees them;
+    /// `events_at` refuses the id first, in the same sentence. The mutant that
+    /// drops the check reads the store's 500 at both.
+    #[tokio::test]
+    async fn an_unsafe_id_at_the_transport_routes_is_the_layers_404() {
+        let state = Arc::new(AppState::in_memory());
+        let big = "a".repeat(65);
+        for path in [format!("/api/games/{big}/events"), format!("/api/games/{big}/stream")] {
+            let (status, body) = get_as(&state, WHO, &path).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+            assert!(body["error"].as_str().unwrap_or("").starts_with("no game named \"aaaa"), "{path}: {body}");
+        }
+    }
+
     /// **A replay past the gate's wait is a 503 with `Retry-After: 1`, and a
     /// move is never behind the gate** (findings A2 and D6; Review Focus 3).
     /// One permit and a fifty-millisecond wait; a post whose put sleeps a
@@ -3146,6 +3287,33 @@ mod tests {
         assert_eq!(state.replay_gate.available_permits(), 0, "and still held as it ends: the move landed beside it");
         let (status, _) = get_as(&state, WHO, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
+        let (status, v) = holder.await.expect("the holder's post");
+        assert!(matches!(status.as_u16(), 200 | 201), "{v}");
+    }
+
+    /// **A replay-route request with NO identity takes no permit** (S1b's
+    /// residual 6, decision D-5): with the gate's one permit held by a slow
+    /// upload and a two-second wait, an identity-less `GET …/why` reads the
+    /// layer's 401 at once — a refused caller never queues behind a real one.
+    /// The mutant that takes the permit regardless QUEUES: the holder's put
+    /// (1.5 s) ends inside the wait, so it reads the same 401 only once the
+    /// holder lets go, about 1.4 s in (measured), and the cell reds at its
+    /// clock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replay_route_without_an_identity_is_refused_without_a_permit() {
+        let state = slow_state(1_500, 1, 2_000);
+        a_game(&app(Arc::clone(&state)), "gated2", &[]).await;
+        let holder = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(state.replay_gate.available_permits(), 0, "premise: the holder has the permit");
+        let started = std::time::Instant::now();
+        let req = Request::builder().method("GET").uri("/api/games/gated2/why").body(Body::empty()).expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "the 401 waited for the permit");
         let (status, v) = holder.await.expect("the holder's post");
         assert!(matches!(status.as_u16(), 200 | 201), "{v}");
     }
@@ -8335,6 +8503,45 @@ mod tests {
             data.iter().any(|f| f["status"] == "dealing"),
             "the join never reached the stranger's stream: {text}",
         );
+    }
+
+    /// **A refusal ENDS the stream** (security S1c, finding D1): a stranger
+    /// holding an open table's stream reads `end` with `gone` when a join fills
+    /// the last seat — and the connection CLOSES behind that frame, where
+    /// before it stayed open and wrote one `gone` per later bump: an activity
+    /// oracle on a table the caller was refused. A delete still ends with
+    /// `deleted` (the earlier cell), and a transient store failure still writes
+    /// a comment and stays open (the next cell). The mutant that never marks
+    /// the frame last reads `ended == false` and a second `gone` after the
+    /// second bump.
+    #[tokio::test]
+    async fn a_refused_stream_writes_gone_once_and_closes() {
+        let state = Arc::new(AppState::in_memory_with_heartbeat(std::time::Duration::from_secs(25)));
+        let (status, body) = post_as(&state, "red@wire.test", "/api/games", serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": "red@wire.test" }, { "open": true }], "id": "filling", "name": "filling",
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let s = Arc::clone(&state);
+        let reader = tokio::spawn(async move {
+            stream_frames(s, "/api/games/filling/stream", "green@wire.test", std::time::Duration::from_secs(2)).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let (status, body) = post_as(&state, "blue@wire.test", "/api/games/filling/join", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        // A second bump after the refusal: a stream that stayed open would
+        // write a second `gone` here.
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let (status, body) = post_as(&state, "blue@wire.test", "/api/games/filling/keep", serde_json::json!({ "seat": 1, "card": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, text, ended) = reader.await.expect("the reader task");
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let frames = sse_frames(&text);
+        assert!(frames.first().is_some_and(|f| f.starts_with("event: signal")), "the on-connect frame: {text}");
+        let gone: Vec<&&str> = frames.iter().filter(|f| f.starts_with("event: end") && f.contains("gone")).collect();
+        assert_eq!(gone.len(), 1, "exactly one gone frame: {text}");
+        assert!(frames.last().is_some_and(|f| f.contains("gone")), "gone is the LAST frame: {text}");
+        assert!(ended, "the gone frame arrived but the body stayed open: {text:?}");
     }
 
     /// **The house stream says nothing on connect and one frame per house

@@ -369,11 +369,33 @@ describe("the table's sockets (spec §2.4)", () => {
       `{"event":"end","data":{"reason":"gone","sentence":${JSON.stringify(missingSentence)}}}`,
     ]);
     expect(await sqlOf(nobody, "SELECT count(*) AS n FROM sqlite_master"), "the probe wrote nothing").toEqual([{ n: 0 }]);
+
+    // An id the store will not use is the layer's own 404 since security S1c
+    // (Task 2's C6: `events_at` refuses it before any store read), so its
+    // upgrade is refused as an unknown id's is: accepted, ended with the
+    // layer's sentence, closed 4404, and nothing written.
+    const unsafe = "bad!stream";
+    const unusableStub = tableStub(unsafe);
+    const unusableRefusal = readReply(referenceModule().events(unsafe, RED, ""));
+    const unusableSentence = (JSON.parse(unusableRefusal.body) as { error: string }).error;
+    expect([unusableRefusal.status, unusableSentence], "premise: the layer's 404 for an id the store will not use").toEqual([
+      404,
+      'no game named "bad!stream"',
+    ]);
+    const unusable = await openTab(unusableStub, RED, unsafe);
+    expect(unusable.res.status).toBe(101);
+    expect(await unusable.closed()).toEqual({ code: 4404, reason: unusableSentence });
+    expect(unusable.messages).toEqual([
+      `{"event":"end","data":{"reason":"gone","sentence":${JSON.stringify(unusableSentence)}}}`,
+    ]);
+    expect(await sqlOf(unusableStub, "SELECT count(*) AS n FROM sqlite_master"), "the probe wrote nothing").toEqual([{ n: 0 }]);
   });
 
   // Spec §2.4: "on any other status it answers that status unupgraded, as the
   // layer answered it" — the 401 among them, which a browser cannot read and
-  // spec §2.7's probe does. Mutant: every refusal accepted and closed.
+  // spec §2.7's probe does. Mutant: every refusal accepted and closed. (Its
+  // second case was an id the store will not use, the store's 500 until
+  // security S1c made it the layer's 404 — refused, above, as an unknown id.)
   it("an upgrade the layer answers otherwise is answered unupgraded, as the layer answered it", async () => {
     const id = "unupgraded";
     const stub = await seedPlaying(id);
@@ -381,11 +403,6 @@ describe("the table's sockets (spec §2.4)", () => {
     const noCaller = readReply(referenceModule().events(id, undefined, ""));
     expect(noCaller.status, "premise: the layer's 401").toBe(401);
     expect([anonymous.status, anonymous.webSocket, await anonymous.text()]).toEqual([401, null, noCaller.body]);
-    const bad = "bad!stream";
-    const unusable = await upgrade(tableStub(bad), RED, bad);
-    const refusal = readReply(referenceModule().events(bad, RED, ""));
-    expect(refusal.status, "premise: the layer's refusal of an id the store will not use").toBe(500);
-    expect([unusable.status, unusable.webSocket, await unusable.text()]).toEqual([500, null, refusal.body]);
   });
 
   // Mutants: the `end` never read, so nothing is sent and no close comes; no

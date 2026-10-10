@@ -40,9 +40,10 @@ export function withSockets<T extends TableParts>(Base: T) {
      *   and closed 4403 or 4404 with that sentence as the reason — because a browser
      *   reports a refused upgrade as an anonymous failure it cannot tell from
      *   the network;
-     * - **anything else** — the 401, an id the store will not use, a 500 — is
-     *   answered unupgraded, exactly as the layer answered it (a browser cannot
-     *   read a 401; spec §2.7's probe does).
+     * - **anything else** — the 401, a 500 — is answered unupgraded, exactly
+     *   as the layer answered it (a browser cannot read a 401; spec §2.7's
+     *   probe does). An id the store will not use is not among them since
+     *   security S1c: the layer refuses it with its own 404 (Task 2's C6).
      *
      * The socket is accepted after the request's frames were sent, so it is
      * sent only its first frame, which already reads whatever those frames

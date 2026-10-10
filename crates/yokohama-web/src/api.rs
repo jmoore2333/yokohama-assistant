@@ -2017,6 +2017,10 @@ pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: 
 /// and `playing` fall straight through, so a stranger at a deal is refused and
 /// a locked game still asks for its password.
 pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, ApiError> {
+    // An unsafe `{id}` is the layer's 404 here too: `app()` serves the two transport routes outside `dispatch` (S1c, Task 2's C6).
+    if !crate::store::is_safe_id(id) {
+        return Err(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
+    }
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
     let table = games.table_for_anyone(id, user)?;
@@ -2572,6 +2576,7 @@ fn answer(
     pattern: &'static str,
     b: &[&str],
 ) -> Result<ApiResponse, ApiError> {
+    let method = if req.method == "HEAD" { "GET" } else { req.method };
     match pattern {
         "/api/health" => Ok(ok_json(200, &health(games, host))),
         "/api/me" => Ok(ok_json(200, &me(host, identity))),
@@ -2582,12 +2587,12 @@ fn answer(
             // axum ran the extractors in, so every refusal keeps its precedence.
             let u = identity.map_err(unauthorized)?;
             match pattern {
-                "/api/games" if req.method == "GET" => {
+                "/api/games" if method == "GET" => {
                     list_games(games, u, &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/games" => create_game(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
-                "/api/games/{id}" if req.method == "GET" => {
+                "/api/games/{id}" if method == "GET" => {
                     get_game(games, u, b[0]).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}" => {
@@ -2602,7 +2607,7 @@ fn answer(
                 "/api/games/{id}/unlock" => {
                     unlock(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
-                "/api/games/{id}/chat" if req.method == "GET" => {
+                "/api/games/{id}/chat" if method == "GET" => {
                     chat_read(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}/chat" => {
@@ -2627,7 +2632,7 @@ fn answer(
                 "/api/games/{id}/log" => {
                     log(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
-                "/api/chat" if req.method == "GET" => {
+                "/api/chat" if method == "GET" => {
                     house_chat_read(games, u, &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
