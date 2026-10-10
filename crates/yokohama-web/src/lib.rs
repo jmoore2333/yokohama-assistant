@@ -1302,7 +1302,7 @@ mod tests {
             // "game name" reads in both sentences.
             ("GET", format!("/api/games/{big}"), None, WHO.into(), "game name"),
             ("GET", format!("/api/games/echoed/index/{big}"), None, WHO.into(), "no card index named"),
-            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO.into(), "a filter is at most"),
+            ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO.into(), "nothing a quoted string would escape"),
             // A path number: `at/{k}` reads it with `parse_path_usize`, a chat
             // message's DELETE with `parse_path_u64` (a GET there is a bare 405).
             ("GET", format!("/api/games/echoed/at/{big}"), None, WHO.into(), "Cannot parse value at index 1"),
@@ -1354,12 +1354,22 @@ mod tests {
         let said = v["error"].as_str().unwrap_or_default();
         assert!(said.contains(&format!("this one is {} bytes", big.len() + 5)) && !said.contains("save"), "{said}");
         // The filter guard refuses what `echo` would change — a double quote,
-        // a backslash, a U+202E override — since the CLI's `parse_filter`
-        // repeats the term raw; an apostrophe is plain text and passes, to
-        // `parse_filter`'s own sentence. The mutant that keeps only the length
-        // half of the guard fails the first three.
-        let guard = "a filter is at most 64 characters of plain text — no quote, control or format character";
-        for (term, refused) in [("%22silk%22", true), ("si%5Clk", true), ("si%E2%80%AElk", true), ("o'brien", false)] {
+        // a backslash, a U+202E override, a combining mark — since the CLI's
+        // `parse_filter` repeats the term raw; an apostrophe and a precomposed
+        // `é` are plain text and pass, to `parse_filter`'s own sentence, so the
+        // sentence's last word is pinned by `cafe` + U+0301 against `caf` +
+        // U+00E9. The mutant that keeps only the length half of the guard fails
+        // the refused rows.
+        let guard = "a filter is at most 64 characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character";
+        let terms = [
+            ("%22silk%22", true),
+            ("si%5Clk", true),
+            ("si%E2%80%AElk", true),
+            ("cafe%CC%81", true),
+            ("caf%C3%A9", false),
+            ("o'brien", false),
+        ];
+        for (term, refused) in terms {
             let (status, v) = get_as(&state, WHO, &format!("/api/games/echoed/index/orders?filter={term}")).await;
             let said = v["error"].as_str().unwrap_or_default();
             assert_eq!(status, StatusCode::BAD_REQUEST, "{term}: {v}");

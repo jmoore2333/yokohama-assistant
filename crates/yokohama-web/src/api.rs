@@ -1774,7 +1774,7 @@ pub fn card_index(
         // and never equals the term — and kept so the bound reads here.)
         Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
             return Err(ApiError::bad_request(format!(
-                "a filter is at most {} characters of plain text — no quote, control or format character",
+                "a filter is at most {} characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character",
                 crate::echo::ECHO_MAX
             )))
         }
