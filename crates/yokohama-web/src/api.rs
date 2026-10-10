@@ -250,11 +250,15 @@ pub const REPLAY_ROUTES: [(&str, &str); 5] = [
 ];
 
 /// Whether `method` and `path` name one of [`REPLAY_ROUTES`] — by the table's
-/// own match, so a path the table does not route, or a wrong method on a gated
-/// one, is never gated.
+/// own match, with the PATTERN as the key. The method is `find`'s to match,
+/// and it folds HEAD onto GET as [`dispatch`] answers it (the body dropped,
+/// the replay paid), so a HEAD is gated with its GET. A wrong method on a
+/// gated path is `WrongMethod` and a path the table does not route is
+/// `NoRoute`, and neither is gated. The method column of [`REPLAY_ROUTES`]
+/// names the row each pattern routes: each routes that one method alone.
 pub fn is_replay_route(method: &str, path: &str) -> bool {
     match find(method, path, true) {
-        Matched::Route(pattern, _) => REPLAY_ROUTES.iter().any(|(m, p)| *m == method && *p == pattern),
+        Matched::Route(pattern, _) => REPLAY_ROUTES.iter().any(|(_, p)| *p == pattern),
         Matched::WrongMethod | Matched::NoRoute => false,
     }
 }
@@ -3856,9 +3860,12 @@ mod tests {
 
     /// **The replay gate's five routes, by the table's own match** (security
     /// S1b, findings A2 and D6): an archive upload, a run and a position of a
-    /// game's history, the two searches — and nothing else: a move, a frame,
-    /// the record, the health, a wrong method on a gated path, a path the
-    /// table does not route.
+    /// game's history, the two searches, and a HEAD of each gated GET, which
+    /// `find` folds onto it and `dispatch` pays the replay for — and nothing
+    /// else: a move, a frame, the record, the health, a wrong method on a
+    /// gated path, a path the table does not route. Each gated pattern routes
+    /// ONE method in the table, so the pattern is the whole key: a second
+    /// method a future row adds to a gated pattern fails here, not unseen.
     #[test]
     fn the_replay_routes_are_the_five_that_replay_or_search() {
         for (method, path) in [
@@ -3867,6 +3874,10 @@ mod tests {
             ("GET", "/api/games/wire/at/12"),
             ("GET", "/api/games/wire/suggest"),
             ("GET", "/api/games/wire/why"),
+            ("HEAD", "/api/games/wire/at"),
+            ("HEAD", "/api/games/wire/at/12"),
+            ("HEAD", "/api/games/wire/suggest"),
+            ("HEAD", "/api/games/wire/why"),
         ] {
             assert!(is_replay_route(method, path), "{method} {path} is gated");
         }
@@ -3876,6 +3887,7 @@ mod tests {
             ("GET", "/api/games/wire/record"),
             ("GET", "/api/health"),
             ("GET", "/api/archive"),
+            ("HEAD", "/api/archive"),
             ("POST", "/api/games/wire/at"),
             ("GET", "/api/games//at"),
             ("GET", "/api/games/wire/at/12/13"),
@@ -3883,6 +3895,11 @@ mod tests {
             assert!(!is_replay_route(method, path), "{method} {path} is never gated");
         }
         assert_eq!(REPLAY_ROUTES.len(), 5);
+        let table = routes(true);
+        for (method, pattern) in REPLAY_ROUTES {
+            let routed: Vec<&str> = table.iter().filter(|r| r.pattern == pattern).map(|r| r.method).collect();
+            assert_eq!(routed, vec![method], "{pattern} routes {method} alone");
+        }
     }
 
     /// **`events` reads the table document ONCE per call** (M6.5c2 cycle D, row

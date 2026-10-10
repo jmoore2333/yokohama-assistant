@@ -776,8 +776,11 @@ async fn events(
 /// frames that queue in the pool when more readings are in flight than it has
 /// threads (tokio's default cap is 512), where they used to queue on the
 /// executor. Frames stay in order: `then` awaits each before it takes the next
-/// bump. The on-connect reading above the subscribe is left where it is, as
-/// every other route's is — one per connection, not one per bump.
+/// bump. The on-connect reading above the subscribe is left where it is — one
+/// per connection, not one per bump, as before — and since security S1b
+/// (finding D6) it is the ONE route reading left on a runtime worker: every
+/// other route's reading runs on the blocking pool, the adapter's and
+/// `events`'.
 ///
 /// On the table's `end` the stream writes one `end` frame and CLOSES, and the
 /// close is the CHANNEL's rather than this closure's: `Signals::end` drops the
@@ -885,8 +888,6 @@ async fn house_stream(
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
 }
 
-/// The art manifest, or an honest 404.
-///
 /// The ONE piece of axum between a request and the layer (R-6.5a.3). Identity
 /// is resolved here with today's extractor logic and handed to the layer as the
 /// host's sentence; the body and query reach the layer as bytes and text. The
@@ -902,10 +903,13 @@ async fn house_stream(
 /// stream's per-bump reading already pays.
 ///
 /// **The replay gate** (findings A2 and D6): one of the five replay routes
-/// (`api::REPLAY_ROUTES`) takes a permit first, waiting at most
-/// [`AppState::replay_wait`]; past the wait the answer is 503 with
-/// `Retry-After: 1`, and nothing of the request has run. Every other route is
-/// never behind it.
+/// (`api::REPLAY_ROUTES`), a HEAD of a gated GET with it, takes a permit,
+/// waiting at most [`AppState::replay_wait`]. The body is read FIRST, bounded
+/// at 2 MiB by the adapter, and the permit is taken after it: a permit taken
+/// before the read would be held for the whole upload, so two slow uploaders
+/// could hold both permits for as long as they trickle. Past the wait the
+/// answer is 503 with `Retry-After: 1`, and nothing of the LAYER has run.
+/// Every other route is never behind it.
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -1017,6 +1021,8 @@ fn busy() -> Response {
     response
 }
 
+/// The art manifest, or an honest 404.
+///
 /// **A checkout with no cropped art is a supported state**, not a broken one:
 /// the client falls back to drawing what it drew before there was any art. So
 /// the absence answers as a refusal with the sentence that explains it — which
@@ -2597,10 +2603,13 @@ mod tests {
     /// move is never behind the gate** (findings A2 and D6; Review Focus 3).
     /// One permit and a fifty-millisecond wait; a post whose put sleeps a
     /// second holds the permit; a second post reads the 503 in `BUSY`'s words
-    /// within the wait, while an `input` at a game and a health read answer
-    /// 200 beside it. The mutant that gates nothing answers the second post
-    /// 201 after the second; the one that gates every route answers the move
-    /// 503; the one that drops the header fails the header line.
+    /// within the wait, and a HEAD of a run reads the same 503 with an empty
+    /// body, while an `input` at a game and a health read answer 200 beside
+    /// it. The mutant that gates nothing answers the second post 201 after the
+    /// second; the one that gates every route answers the move 503; the one
+    /// that drops the header fails the header line; the one that compares the
+    /// method beside the pattern answers the HEAD 200. `BUSY`'s words are
+    /// pinned by value.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_replay_past_the_gates_wait_is_refused_busy_while_a_move_lands() {
         let state = slow_state(1_000, 1, 50);
@@ -2624,7 +2633,21 @@ mod tests {
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
         let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
         assert_eq!(body["error"], BUSY);
+        assert_eq!(BUSY, "the server is busy replaying — try again in a second");
         assert!(started.elapsed() < std::time::Duration::from_millis(600), "refused within the wait, not after the holder");
+        // A HEAD of a gated GET waits for the same permit (`find` folds it onto
+        // the GET row, and `dispatch` would pay the whole replay for it).
+        let head = Request::builder()
+            .method("HEAD")
+            .uri("/api/games/gated/at?from=0&to=1")
+            .header(identity::CLAIMED_HEADER, WHO)
+            .body(Body::empty())
+            .expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(head).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE, "a HEAD of a run is gated with its GET");
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        assert!(bytes.is_empty(), "a HEAD's 503 carries no body");
         play_turn(&state, "gated", WHO).await;
         let (status, _) = get_as(&state, WHO, "/api/health").await;
         assert_eq!(status, StatusCode::OK);
