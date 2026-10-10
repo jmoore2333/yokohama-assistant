@@ -1880,8 +1880,17 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
   legacy segments), `worker/scripts/live-replay.test.mjs` (:317–335 — the four keys and `resetRecipe`'s first key
   pinned as literal `red_at_wire.test` strings), the three corpus files `web/src/wire/archive_post.json`,
   `archive_post_identical.json`, `archive_post_abandoned.json` (regenerated once: their `path` moves) and the
-  Worker's generated copy `worker/test/corpus.gen.ts` (`worker/scripts/test-assets.mjs` writes it)
-- Test: `archive.rs`'s `mod tests`; the Worker's receipt cells; the two TS files above
+  Worker's generated copy `worker/test/corpus.gen.ts` (`worker/scripts/test-assets.mjs` writes it on every
+  `pretest`/`pretypecheck` — it is GITIGNORED, never staged; its regeneration is read against a HEAD-export
+  generation), `worker/test/helpers.ts` (`segmentOf`, WebCrypto — `node:crypto` fails the pool's typecheck, TS2307;
+  cross-checked against the Rust on nine keys), **and seven sites the draft's list missed, each spelling or
+  restating the legacy segment** (the implementer's reading): `api.rs`'s three archive cells (`archive_segment()`
+  beside `ARCHIVE_CALLER`), `lib.rs`'s `the_archive_route_checks_and_files_a_browser_game`, `tests/wire_fixtures.rs`'s
+  `archive_payloads` (the readable half `red_at_wire.test-`), `receipt.rs`'s two further cells and `root`'s doc,
+  `worker/test/open/door.test.ts` (the segment column gone; `segmentOf(claim)`), `web/e2e/offline.spec.ts` and
+  `plays_locally.spec.ts` (each restates the rule on purpose), `worker/RUNBOOK.md` §7 and `worker/README.md`'s
+  standing key sentences (the dated deploy records untouched)
+- Test: `archive.rs`'s `mod tests`; the Worker's receipt cells; the TS files above; the two e2e cells
 
 **Interfaces:**
 - Consumes: `sha2` (already a dependency; `table.rs:206` uses it); `identity::User`.
@@ -1896,8 +1905,10 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
     /// part is the legacy mapping cut at 48, then `-` and twelve hex characters
     /// of a SHA-256 over the whole normalized address. Every pair the review
     /// named as colliding gets two folders; the alphabet stays `[a-z0-9._-]`,
-    /// the first character `[a-z0-9]`, the length at most 61; the names that
-    /// WOULD break the layout are refused by the grammar.
+    /// a plain name's first character `[a-z0-9]` (an email's may be a `.`, as
+    /// it always could: `../../x@y` renders `.._.._x_at_y-…`), no segment
+    /// empty, `.` or `..`, the length at most 61; the names that WOULD break
+    /// the layout are refused by the grammar.
     #[test]
     fn a_caller_segment_is_path_safe_readable_and_injective() {
         use crate::identity::User;
@@ -1921,30 +1932,39 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
             assert!(User::parse(name).is_err(), "{name:?} must never be a key");
         }
         let n32 = "n".repeat(32);
-        for name in ["ben castle", "7", "x", "a.test", "z..", "r2-d2_x.y", n32.as_str(), "../../x@y", "..@.."] {
+        for name in ["ben castle", "7", "x", "a.test", "z..", "r2-d2_x.y", n32.as_str()] {
             let v = seg(name);
             assert!(v.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()), "{name:?} → {v:?}");
+        }
+        for name in ["ben castle", "z..", "7", n32.as_str(), "../../x@y", "..@..", "a/b@c", long_a.as_str()] {
+            let v = seg(name);
+            assert!(!v.is_empty() && v != "." && v != "..", "{name:?} → {v:?}");
             assert!(v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')), "{v:?}");
             assert!(!v.contains("/"), "{v:?}");
         }
         // Determinism and normalization: the digest is over the KEY, so two
         // spellings of one address are one segment.
         assert_eq!(seg("Red@Example.TEST"), seg("red@example.test"));
-        // The directory half of the old cell, verbatim: every traversal-shaped
-        // address writes inside the root.
-        let dir = std::env::temp_dir().join(format!("yokohama_archive_root_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let a = DirArchive::new(&dir);
-        let root = std::fs::canonicalize(&dir).unwrap();
-        for who in ["../../x@y", "a/b@c", "..@.."] {
-            let prefix = format!("browser/{}/", seg(who));
-            a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
-            let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1").unwrap();
-            let written = std::fs::canonicalize(dir.join(&record)).unwrap();
-            assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
+        // The directory half of `a_traversal_shaped_caller_writes_inside_the_root`,
+        // over the digested segment: every traversal-shaped address writes
+        // inside the root. Its own directory — the cells run in parallel in
+        // one process, so a shared name would be removed under the other.
+        #[cfg(feature = "server")]
+        {
+            let dir = std::env::temp_dir().join(format!("yokohama_archive_segment_root_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = DirArchive::new(&dir);
+            let root = std::fs::canonicalize(&dir).unwrap();
+            for who in ["../../x@y", "a/b@c", "..@.."] {
+                let prefix = format!("browser/{}/", seg(who));
+                a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+                let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1").unwrap();
+                let written = std::fs::canonicalize(dir.join(&record)).unwrap();
+                assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The legacy mapping is what it was, and the new segment differs from it
@@ -1970,6 +1990,7 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
     /// **The quota counts the NEW prefix alone**: a legacy folder left in place
     /// for an address is not the caller's share (Review Focus 4) — the window
     /// renames it, and until then it is nobody's.
+    #[cfg(feature = "server")]
     #[test]
     fn a_legacy_folder_is_not_counted_against_the_callers_share() {
         use crate::identity::User;
@@ -2101,26 +2122,42 @@ arguments, are untouched.)
 The recipe, in `deploy/RUNBOOK.md` (a new section after the deploy's §3) and `worker/RUNBOOK.md` (after the
 deploy §2), the same text adapted to each host:
 
+> ## The archive's rename, S1c — once, in the deploy window (a plan, not a record)
+>
 > **The archive's rename (security S1c, finding D26) — once, in the deploy window, after the new build is
 > serving.** A browser's saves are filed under `browser/<segment>/`, and the segment changed: the readable half
 > cut at 48, then `-` and a twelve-character digest. Every folder written before this release sits under the
-> legacy segment and nothing reads it until it is moved.
-> 1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS `ls
->    /data/archive/browser/` and match each folder to the address whose legacy segment it is. In R2 the live
->    replay's own test identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test`
->    address): list that prefix too, so no legacy key is left anywhere — the replay's first sends land at the new
->    key either way, but an orphan under the old one is a key nothing reads.
-> 2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary locally
->    (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`.
-> 3. NAS: `mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each folder present; a folder
->    whose legacy segment matches two addresses (the collision) is split by the `created_by` of each table
->    document inside it, by hand, and the record of that split goes in the deploy entry. Worker: for each key
->    under `browser/<legacy>/` in `yokohama-archive` (the dashboard's object listing, or the API's
->    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`): `wrangler r2 object
->    get yokohama-archive/<key> --file <tmp>`, `wrangler r2 object put yokohama-archive/<new key> --file <tmp>`,
->    verify the new key answers, `wrangler r2 object delete yokohama-archive/<key>`.
-> 4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` holds no folder
->    whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
+> legacy segment and nothing reads it until it is moved. The window renames both hosts together
+> (`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
+> NAS lines are the ones run.
+>
+> 1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS
+>    `ls /data/archive/browser/` (inside the container: `docker exec <container> ls /data/archive/browser/`)
+>    and match each folder to the address whose legacy segment it is. In R2 the live replay's own test
+>    identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test` address): list that
+>    prefix too, so no legacy key is left anywhere — the replay's first sends land at the new key either way,
+>    but an orphan under the old one is a key nothing reads.
+> 2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary
+>    locally (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`,
+>    tab-separated, one line per address; a value the key grammar refuses is a line on stderr naming it, and
+>    the exit code is 1.
+> 3. NAS: `docker exec <container> mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each
+>    folder present; a folder whose legacy segment matches two addresses (the collision) is split by the
+>    `created_by` of each table document inside it, by hand, and the record of that split goes in the deploy
+>    entry. Worker: for each key under `browser/<legacy>/` in `yokohama-archive`, and under
+>    `test/browser/<legacy>/` for a `.test` address (the dashboard's object listing, or the API's
+>    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`), copy, verify the
+>    new key answers, then delete — run in `worker/` with wrangler's own login, since the owner's R2 key is
+>    read-only, and every command with `--remote`: without it wrangler acts on its LOCAL storage and the real
+>    bucket does not move. The archive writes no object metadata, so the copy loses nothing.
+>
+>    ```sh
+>    npx wrangler r2 object get "yokohama-archive/<key>" --file <tmp> --remote
+>    npx wrangler r2 object put "yokohama-archive/<new key>" --file <tmp> --remote
+>    npx wrangler r2 object delete "yokohama-archive/<key>" --remote
+>    ```
+> 4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` (and, in R2,
+>    `test/browser/`) holds no folder whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
 
 `deploy/README.md:192` and `:314`: `browser/<caller>/` → `browser/<segment>/` with one clause: "the segment is
 the address made readable, then `-` and a twelve-character digest (security S1c)". `receipt.rs:34`'s doc clause
@@ -2139,7 +2176,8 @@ Worker's `test/corpus.gen.ts` is regenerated from them by `worker/scripts/test-a
 code (`worker/src/`) computes no segment — the module's Rust `caller_segment` is the one source (grep clean).
 
 - [ ] **Step 4: Run the cells, both crates and the lane's rows.** `cargo test -p yokohama-web`, `cargo test -p
-yokohama-worker` (77 — the three segment cells compute dynamically; the premise rewritten), the wasm32 check and
+yokohama-worker` (77 — THREE receipt cells spell or compute the segment: the premise rewritten, two more computing
+it from `RED` where they spelled `red_at_t.test`; `root`'s "collide by design" doc made true), the wasm32 check and
 both wasm builds (the layer compiles to wasm; `sha2` builds there — `table.rs` already proves it), `worker/`'s
 `build:module:debug`, `test:scripts` and the pool (`npm test`, after the two TS files are re-pointed and
 `test/corpus.gen.ts` regenerated), and **the corpus regenerated ONCE** — `UPDATE_WIRE_FIXTURES=1 cargo test -p
@@ -2148,17 +2186,27 @@ yokohama-web --test wire_fixtures`, then `wire_fixtures` green WITHOUT the flag;
 and NOTHING else moves (the task report names the three files and quotes the three lines; any other moved byte is
 a finding — the M6.1 lesson: read a regeneration's diff).
 
-- [ ] **Step 5: The mutants.** **M20** the digest dropped (`caller_segment` = the readable half) — the first cell
-red at the first collision pair; **M21** the digest over `raw` spelling instead of the key — the normalization
-line red; **M22** `legacy_caller_segment` edited (say `@` → `_`) — the legacy cell red at its first line; **M23**
-the quota counting the legacy prefix too — the share cell red; **M24** the subcommand printing only the current
-segment — no cell; the reviewer runs `cargo run -p yokohama-web -- segment red@example.test` and reads three
-columns (recorded).
+- [ ] **Step 5: The mutants** (the implementer's readings, 2026-10-10). **M20** the digest dropped
+(`caller_segment` = the readable half) — all three cells red; the segment cell at its FIRST line (the
+`starts_with`), not the collision pair (a cell stops at its first failure); the Worker premise red `(70, 48)`;
+**M20b** a constant tail in place of the digest — the segment cell red at the first collision pair, and through the
+pool `archive.test.ts`'s saver cell and `door.test.ts`'s browser-save cell; **M20c** the digest over the first 48
+bytes of the key — red at the long pair; **M21** "the digest over the raw spelling" CANNOT be written —
+`caller_segment` takes `&User`, whose only string is the normalized key, so the normalization line is a pin on
+`User::parse`, not a catcher here; **M21x** the digest over the RENDERING instead of the key — red at the first
+collision pair; **M22** `legacy_caller_segment` edited (`@` → `_`) — the legacy cell red at its first line and the
+segment cell too (the readable half is the legacy mapping); **M23** the quota counting the legacy prefix too — the
+share cell red; **M24** the subcommand printing only the current segment — no cell; `cargo run -p yokohama-web --
+segment red@example.test` prints TWO columns under it and three at the commit:
+`red@example.test\tred_at_example.test\tred_at_example.test-f8767b24c48f`; a refused address goes to stderr with
+exit 1.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/archive.rs crates/yokohama-web/src/main.rs
-crates/yokohama-worker/src/receipt.rs deploy/RUNBOOK.md worker/RUNBOOK.md deploy/README.md
-worker/test/archive.test.ts worker/scripts/live-replay.test.mjs web/src/wire/archive_post.json
-web/src/wire/archive_post_identical.json web/src/wire/archive_post_abandoned.json worker/test/corpus.gen.ts` ·
+crates/yokohama-web/src/api.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/tests/wire_fixtures.rs
+crates/yokohama-worker/src/receipt.rs deploy/RUNBOOK.md deploy/README.md worker/RUNBOOK.md worker/README.md
+worker/test/archive.test.ts worker/test/helpers.ts worker/test/open/door.test.ts worker/scripts/live-replay.test.mjs
+web/e2e/offline.spec.ts web/e2e/plays_locally.spec.ts web/src/wire/archive_post.json
+web/src/wire/archive_post_identical.json web/src/wire/archive_post_abandoned.json` (`corpus.gen.ts` is gitignored) ·
 `git commit -m
 "web+worker: D26 — the archive's caller segment is readable plus a twelve-character digest, injective in practice;
 the legacy mapping kept for the rename; the segment subcommand and the window's recipe in both runbooks (S1c
