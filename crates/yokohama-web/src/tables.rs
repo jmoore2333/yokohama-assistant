@@ -765,6 +765,13 @@ pub const UNLOCKED_CAP: usize = 256;
 pub const SEED_NOT_SOLO: &str =
     "a seed is honoured only at a table whose every human seat is yours — leave it blank and the server draws one";
 
+/// The sentence a creator-chosen id with a dot is refused with (security S1c,
+/// finding B9): a cache keys a path's last dot-suffix as a file type, and a
+/// table named `evening.js` is a private frame the edge would keep. The
+/// storage rule (`store::is_safe_id`) still admits dots, so a table stored
+/// before this cycle loads; only a CREATE refuses them.
+pub const DOTTED_ID: &str = "is not a usable game id: a dot names a file type to a cache, and a table's id has none";
+
 pub const LIST_LIMIT_DEFAULT: usize = 20;
 pub const LIST_LIMIT_MAX: usize = 100;
 
@@ -826,6 +833,9 @@ impl Games {
         let id = match &req.id {
             Some(id) if !is_safe_id(id) => {
                 return Err(GameError::BadRequest(format!("\"{id}\" is not a usable game id", id = crate::echo::echo(id))))
+            }
+            Some(id) if id.contains('.') => {
+                return Err(GameError::BadRequest(format!("\"{}\" {DOTTED_ID}", crate::echo::echo(id))))
             }
             Some(id) => id.clone(),
             // An INDEPENDENT draw, never `seed`. A default id of
@@ -4038,6 +4048,48 @@ mod tests {
         r.id = Some("bad id".into());
         let e = games.create(&r, &red).unwrap_err().to_string();
         assert!(e.contains("at least one character"), "the password precedes the id: {e}");
+    }
+
+    /// **A creator-chosen id with a dot is refused at create** (finding B9's
+    /// second half): `evening.js` named a private frame to the edge's
+    /// extension rule. The storage rule is untouched — a table stored before
+    /// this cycle under `old.js` still loads, plays and deletes — so the fence
+    /// is the create's alone. Every id the corpus and the client use is dotless.
+    #[test]
+    fn a_dotted_id_is_refused_at_create_and_a_stored_one_still_plays() {
+        let games = games();
+        let red = who("red@t.test");
+        for id in ["x.js", "x.css", "x.png", "x.bin", "evening.2", "a.b.c"] {
+            let mut req = two_people("dotted", CORPUS_SEED);
+            req.id = Some(id.to_string());
+            let err = games.create(&req, &red).expect_err(id);
+            assert!(matches!(&err, GameError::BadRequest(m) if m == &format!("\"{id}\" {DOTTED_ID}")), "{id}: {err:?}");
+        }
+        // **The ORDER, by two-defect probes** (the M6.2 lesson): an id the
+        // storage rule refuses AND that carries a dot reads the storage rule's
+        // sentence, so the dotted arm sits after `is_safe_id`'s and never
+        // speaks for an id no table could have been stored under.
+        for id in ["..", "x.table"] {
+            let mut req = two_people("dotted", CORPUS_SEED);
+            req.id = Some(id.to_string());
+            let err = games.create(&req, &red).expect_err(id);
+            assert!(matches!(&err, GameError::BadRequest(m) if m == &format!("\"{id}\" is not a usable game id")), "{id}: {err:?}");
+        }
+        let mut req = two_people("dash-ok", CORPUS_SEED);
+        req.id = Some("x-js".to_string());
+        games.create(&req, &red).expect("a dash is fine");
+
+        // Stored before the rule: a real document — the dotless table's, re-keyed
+        // through the store under `old.js` — reads and deletes; the route-level
+        // drive (`lib.rs`'s `a_stored_dotted_table_still_loads_plays_and_deletes`)
+        // plays and streams one.
+        games.create(&two_people("oldjs", CORPUS_SEED), &red).expect("a table");
+        let (json, _) = games.store().read(Doc::Table, "oldjs").unwrap().expect("the table");
+        let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
+        doc.id = "old.js".to_string();
+        games.store().write_if_version(Doc::Table, "old.js", &serde_json::to_string(&doc).unwrap(), None).unwrap();
+        assert!(games.table_for_anyone("old.js", &red).is_ok(), "a stored dotted table still reads");
+        games.delete("old.js", &red).expect("and deletes");
     }
 
     /// **A creator's seed is honoured at a SOLO table only** (R-SEC8(b),

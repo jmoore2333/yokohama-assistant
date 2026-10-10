@@ -1127,6 +1127,24 @@ async fn enter() -> Response {
     (StatusCode::FOUND, [(http::header::LOCATION, "/#/lobby")]).into_response()
 }
 
+/// **Every answer under `/api` is `no-store`** (security S1c, finding B9). The
+/// zone caches by file EXTENSION by default, and the review named a table
+/// `evening.js` and read the victim's private frame from the edge; the header
+/// is what keeps an API answer out of every cache, whatever the path spells.
+/// One layer over the whole router, keyed on the path, so the adapter, the
+/// three transport routes, the art manifest and the fallback's own 404 all
+/// carry it, and the static release outside `/api` keeps `assets.rs`'s rule.
+#[cfg(feature = "server")]
+async fn no_store(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = req.uri().path();
+    let api = path == "/api" || path.starts_with("/api/");
+    let mut res = next.run(req).await;
+    if api {
+        res.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
+    }
+    res
+}
+
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
 ///
@@ -1161,6 +1179,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         // BEFORE `with_state`, which `fallback` now needs: it reads the client
         // root off the state rather than the environment (M6.5b2).
         .fallback(fallback)
+        .layer(axum::middleware::from_fn(no_store))
         .with_state(state)
 }
 // ---- end server ----
@@ -1182,6 +1201,41 @@ mod tests {
     /// route rather than about the 401 in front of it. The identity cells
     /// choose their own headers with [`get_with`].
     const WHO: &str = "red@wire.test";
+
+    /// **A table stored before the dot rule still loads, plays, streams and
+    /// deletes through the routes** (Review Focus 2): a solo hot seat is
+    /// re-keyed under `old.js` through the store — both documents, the table's
+    /// `id` rewritten — and `GET`, an input, the two transport routes and the
+    /// delete all answer, because the storage rule and `dispatch`'s `{id}`
+    /// check admit a dot; only `create` refuses one. The transport routes never
+    /// reach `dispatch`, so their rows pin that their own admission admits a
+    /// dot too.
+    #[tokio::test]
+    async fn a_stored_dotted_table_still_loads_plays_and_deletes() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "oldjs", 20260831, &[WHO, WHO]).await;
+        let store = Arc::clone(state.games.store());
+        let (json, _) = store.read(Doc::Table, "oldjs").expect("a store").expect("the table");
+        let mut doc: crate::table::TableDoc = serde_json::from_str(&json).expect("the table parses");
+        doc.id = "old.js".to_string();
+        store.write_if_version(Doc::Table, "old.js", &serde_json::to_string(&doc).expect("json"), None).expect("written");
+        let (json, _) = store.read(Doc::Record, "oldjs").expect("a store").expect("the record");
+        store.write_if_version(Doc::Record, "old.js", &json, None).expect("written");
+        let (status, frame) = get_as(&state, WHO, "/api/games/old.js").await;
+        assert_eq!(status, StatusCode::OK, "{frame}");
+        let (status, after) = post_as(&state, WHO, "/api/games/old.js/input", serde_json::json!({ "line": "1" })).await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_ne!(frame["events"], after["events"], "the input landed: {after}");
+        let (status, events) = get_as(&state, WHO, "/api/games/old.js/events").await;
+        assert_eq!(status, StatusCode::OK, "{events}");
+        assert_eq!(events["events"], after["events"], "the reading is the stored dotted table's: {events}");
+        let (status, text, _) =
+            stream_frames(Arc::clone(&state), "/api/games/old.js/stream", WHO, std::time::Duration::from_millis(100)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(sse_frames(&text).iter().any(|f| f.starts_with("event: signal")), "the on-connect frame: {text}");
+        let (status, body) = delete_as(&state, WHO, "/api/games/old.js").await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
 
     /// **No error body carries more than `MESSAGE_MAX` characters of message**
     /// (finding D12, decision D-2), by two layers. The FIRST is pinned here:
@@ -3617,6 +3671,67 @@ mod tests {
             assert!(
                 expected.iter().any(|(m, path)| m == method && *path == path_of(suffix)),
                 "session_routes() names {method} {suffix}, which the router does not serve",
+            );
+        }
+    }
+
+    /// **Every answer under `/api` is `no-store`** (security S1c, finding B9:
+    /// the zone cached a `.js`-named table's private frame at the edge for a
+    /// signed-in attacker, `HIT` after `HIT`). Every row of the layer's table
+    /// with every method it takes and HEAD beside GET, the three transport
+    /// routes, the art manifest, a 404 under `/api`, a 405 — all read the
+    /// header; the static release outside `/api` does not read it from this
+    /// layer (`/shell.bin` reads it from `assets.rs`'s own rule and is not
+    /// asked here). The mutant that drops the layer fails the first row; the
+    /// one that tests `starts_with("/api/")` alone fails `/api`, the one path
+    /// that test changes. `/api/` and `/api` are the two rows the FALLBACK
+    /// answers — every other path under `/api/` is the adapter's catch-all,
+    /// `/api/nothing` included — so they are what fails `route_layer`, which
+    /// wraps the routes and not the fallback; and `/apix` fails a bare
+    /// `starts_with("/api")`, which would mark a path that is not the API.
+    #[tokio::test]
+    async fn every_answer_under_api_is_no_store_and_the_static_release_is_not() {
+        let state = Arc::new(AppState::in_memory());
+        a_game(&app(Arc::clone(&state)), "x", &[]).await;
+        let mut rows: Vec<(String, String)> = api::routes(true)
+            .into_iter()
+            .map(|r| (r.method.to_string(), r.pattern.replace("{id}", "x").replace("{seq}", "1").replace("{k}", "0").replace("{kind}", "orders")))
+            .collect();
+        for (m, p) in rows.clone() {
+            if m == "GET" {
+                rows.push(("HEAD".to_string(), p));
+            }
+        }
+        for p in ["/api/games/x/events", "/api/games/x/stream", "/api/stream", "/api/nothing", "/api/games/x/no/such", "/api/", "/api"] {
+            rows.push(("GET".to_string(), p.to_string()));
+        }
+        rows.push(("PUT".to_string(), "/api/games".to_string()));
+        for (method, path) in &rows {
+            let req = Request::builder().method(method.as_str()).uri(path).header(identity::CLAIMED_HEADER, WHO)
+                .header("content-type", "application/json").body(Body::from("{}")).expect("a request");
+            let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+            assert_eq!(
+                res.headers().get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+                Some("no-store"),
+                "{method} {path} answered {} without no-store",
+                res.status()
+            );
+        }
+        // Outside `/api` the layer marks nothing: the static release's headers
+        // are `assets.rs`'s own rule (`cache_control`, :210), which marks the
+        // shell `no-store` and leaves the fingerprinted assets alone. The
+        // paths below are ones that rule leaves UNMARKED — the pre-flight
+        // confirms each against `assets::cache_control` and swaps in another
+        // unmarked path if one of these is not. `/apix` is the SPA fallback's,
+        // which that rule leaves unmarked too: a name that only BEGINS like
+        // the API's.
+        for path in ["/art/nothing.png", "/assets/nothing-abc123.js", "/apix"] {
+            let req = Request::builder().method("GET").uri(path).body(Body::empty()).expect("a request");
+            let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+            assert_ne!(
+                res.headers().get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+                Some("no-store"),
+                "{path}: the static release is not this layer's to mark"
             );
         }
     }
