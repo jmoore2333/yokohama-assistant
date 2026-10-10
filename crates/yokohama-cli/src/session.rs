@@ -83,14 +83,17 @@ pub struct Session {
     /// the state `undo` bottoms out at once `record.events` is fully
     /// unwound, in place of `replay`'s normal `new_game`+`finalize_setup`
     /// base. `None` for every session built by `new_sim`/`new_live`/`load`
-    /// -- those always bottom out at a state `replay` DOES reconstruct
-    /// correctly, so `undo` uses the real `replay` function for them
-    /// unchanged.
+    /// -- those bottom out at the record's own setup, which `state_at`
+    /// reconstructs. Since security S1b `undo` folds through `fold_to` for
+    /// every session: from the nearest kept state of the ladder, or, below
+    /// the first one, from this base (the setup when `None`).
     checkpoint: Option<GameState>,
     /// The states kept at the multiples of [`CHECKPOINT_EVERY`] (security
     /// S1b, finding A3), ascending by index: `from_record`'s fold keeps them as
-    /// it goes, `apply` keeps one when the record crosses a multiple,
-    /// `state_before` keeps every multiple it folds past, and `undo` drops
+    /// it goes, `apply` keeps one when the record LANDS on a multiple (a
+    /// live-mode bound-reveal group that steps over one keeps nothing at
+    /// apply, and a later `state_before` re-cuts it), `state_before` keeps
+    /// every multiple it folds past, and `undo` drops
     /// every entry past the popped length — an entry is valid for any record
     /// that shares the prefix it was cut from, so the ones at or below the
     /// new length stay. Never serialized: a rebuild re-cuts them.
@@ -318,7 +321,7 @@ impl Session {
         // than calling `replay` for the whole record in one shot: each
         // event needs to be described against the state AS OF THAT EVENT
         // before it folds, so the loop below interleaves
-        // `describe_recorded_event` with `replay_from` one event at a time
+        // `describe_recorded_event` with `fold_event` one event at a time
         // -- the same per-event pattern `examples/record_stats.rs` uses to
         // interleave its own `metrics.observe` call.
         // A malformed/tampered config would otherwise reach board generation,
@@ -2144,8 +2147,11 @@ mod tests {
     /// below it** (finding A3). Sixty-five random applies; the ladder reads
     /// `[64]`; sixty-four undos leave the record at one event and the ladder
     /// empty, the state equal to the engine's replay of the popped record at
-    /// every step. Mutant: `undo` not dropping the stale entry — the state
-    /// after the sixty-fourth undo is the stale checkpoint's.
+    /// every step. Mutant: `undo` not dropping the stale entry — caught by
+    /// the index assertion "no entry past the record" on the undo to 63. The
+    /// state after every undo is CORRECT under that mutant, since `fold_to`
+    /// reads only the entries at or before `k`; the stale entry's hazard is a
+    /// later read past it, which is cell (d)'s.
     #[test]
     fn apply_keeps_a_checkpoint_and_undo_drops_the_entries_it_pops_past() {
         let (seed_record, rules) = random_record(2, 20260831, 0);
@@ -2169,6 +2175,59 @@ mod tests {
             assert!(session.ladder_indices().iter().all(|i| *i <= expected_len), "no entry past the record");
         }
         assert!(session.ladder_indices().is_empty());
+    }
+
+    /// **An undo below a kept state drops it, and a re-grow along ANOTHER
+    /// line re-cuts it** (finding A3, the hazard cell (b)'s mutant leaves). A
+    /// hundred and twenty-nine random applies keep `[64, 128]`; two undos
+    /// leave 127 events; a re-grow to 140 events picks along a different line,
+    /// so the state at 128 is not the one first kept there (asserted). Every
+    /// position `0..=140` then reads `state_at`'s state by the ladder (each
+    /// fold under sixty-four), and the ladder reads `[64, 128]` again. The
+    /// ladder after the undos is read BEFORE the positions but asserted
+    /// AFTER them, so the mutant fails at the state it serves: with `undo`
+    /// not dropping the stale entry, `keep_checkpoint` refuses to re-cut 128
+    /// while the stale 128 is `last()`, and position 128 is served stale.
+    #[test]
+    fn an_undo_below_a_kept_state_drops_it_and_a_regrow_along_another_line_re_cuts_it() {
+        let (seed_record, rules) = random_record(2, 31, 0);
+        let mut session = Session::from_record(seed_record, rules.clone()).expect("an empty record rebuilds");
+        let mut x = 99u64;
+        for _ in 0..129 {
+            let legal = session.legal();
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            session.apply(legal[(x % legal.len() as u64) as usize].clone(), Vec::new()).expect("a listed move applies");
+        }
+        let first = session.record().clone();
+        assert_eq!(first.events.len(), 129, "the premise: the game outlives 129 events");
+        assert_eq!(session.ladder_indices(), vec![64, 128]);
+        session.undo().expect("something to undo");
+        session.undo().expect("something to undo");
+        assert_eq!(session.record().events.len(), 127);
+        let after_the_undos = session.ladder_indices();
+        let mut y = 12345u64;
+        while session.record().events.len() < 140 {
+            let legal = session.legal();
+            y ^= y << 13;
+            y ^= y >> 7;
+            y ^= y << 17;
+            session.apply(legal[(y % legal.len() as u64) as usize].clone(), Vec::new()).expect("a listed move applies");
+        }
+        let record = session.record().clone();
+        assert_ne!(
+            state_at(&record, 128, &rules).expect("the new line at 128"),
+            state_at(&first, 128, &rules).expect("the first line at 128"),
+            "the premise: the re-grown line's state at 128 is not the one first kept there"
+        );
+        for k in 0..=record.events.len() {
+            let (ours, folded) = session.state_before_counted(k).expect("a position");
+            assert_eq!(ours, state_at(&record, k, &rules).expect("the engine's position"), "position {k}");
+            assert!(folded < CHECKPOINT_EVERY, "position {k} folded {folded} events");
+        }
+        assert_eq!(after_the_undos, vec![64], "the undo to 127 drops the entry at 128");
+        assert_eq!(session.ladder_indices(), vec![64, 128], "the re-grow re-cuts 128");
     }
 
     /// **`fold_event` refuses a non-member in `apply_move`'s own words**

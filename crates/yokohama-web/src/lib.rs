@@ -1604,38 +1604,54 @@ mod tests {
         Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
     }
 
-    /// A store that delegates everything to a `MemStore` and PARKS a record
-    /// read while the flag is up — the instrument that reads a lock's scope:
-    /// a request parked inside its read holds whatever lock it took to get
-    /// there, and a second request that needs that lock waits.
+    /// A store that delegates everything to a `MemStore` and PARKS the
+    /// first record read after [`ParkedRead::park`] while the flag is up —
+    /// the instrument that reads a lock's scope: a request parked inside its
+    /// read holds whatever lock it took to get there, and a second request
+    /// that needs that lock waits. ONE-SHOT, because a second request may
+    /// read the record too — an `undo`'s `Games::persist` reads it before it
+    /// writes — and parking that read would hold the second request for the
+    /// double's reason rather than the lock's (S1b Task 5's fix round).
     struct ParkedRead {
         inner: MemStore,
+        armed: std::sync::atomic::AtomicBool,
         parked: std::sync::Mutex<bool>,
         wake: std::sync::Condvar,
     }
 
+    /// How long a parked read waits before it proceeds anyway: a wait for a
+    /// fact needs a bound, so a path that never releases — a failing
+    /// assertion between `park` and `release` — FAILS instead of hanging the
+    /// runtime's shutdown on a parked blocking-pool thread.
+    const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
     impl ParkedRead {
         fn new() -> Arc<Self> {
-            Arc::new(Self { inner: MemStore::default(), parked: std::sync::Mutex::new(false), wake: std::sync::Condvar::new() })
+            Arc::new(Self {
+                inner: MemStore::default(),
+                armed: std::sync::atomic::AtomicBool::new(false),
+                parked: std::sync::Mutex::new(false),
+                wake: std::sync::Condvar::new(),
+            })
         }
         fn park(&self) {
             *self.parked.lock().expect("the flag") = true;
+            self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         fn release(&self) {
             *self.parked.lock().expect("the flag") = false;
             self.wake.notify_all();
         }
+        /// Wait while the flag is up, at most [`PARK_BOUND`], then proceed.
         fn wait_if_parked(&self) {
-            let mut parked = self.parked.lock().expect("the flag");
-            while *parked {
-                parked = self.wake.wait(parked).expect("the flag");
-            }
+            let parked = self.parked.lock().expect("the flag");
+            let _ = self.wake.wait_timeout_while(parked, PARK_BOUND, |parked| *parked).expect("the flag");
         }
     }
 
     impl Store for ParkedRead {
         fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, store::Version)>, String> {
-            if doc == Doc::Record {
+            if doc == Doc::Record && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
                 self.wait_if_parked();
             }
             self.inner.read(doc, id)
@@ -1668,10 +1684,17 @@ mod tests {
     /// CLI's undo applies at game over — and the read is released. Under the
     /// lock the undo WAITED: the record served is the finished one, its event
     /// count the handle's at the time and its digest present, and the undo
-    /// lands after. Read outside the lock the undo lands during the park and
-    /// the bytes served are a running record — the shape S1a's D11 closed by
-    /// a comparison, which this cell holds to the lock's scope and not to the
-    /// comparison alone: the mutant drops the guard before the store read.
+    /// lands after. Read outside the lock the undo lands during the park —
+    /// the park is one-shot, so the undo's own `persist` read passes — and
+    /// the premise line fails: the cell holds to the LOCK's scope there, not
+    /// to S1a's D11 comparison alone. Both ways of dropping the guard before
+    /// the store read fail at that line (measured, S1b Task 5's fix round).
+    /// Behind it, the comparison is the second catcher of the first way —
+    /// the handle's count and digest captured under the lock, then compared:
+    /// the record served after the undo is one event short, 409
+    /// `RECORD_UNSAVED` — while the second way, which re-takes the lock and
+    /// compares against the live handle, passes the comparison and serves the
+    /// undone record, which the event-count line refuses.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_record_route_holds_the_lock_across_its_store_read() {
         let store = ParkedRead::new();
@@ -1692,8 +1715,11 @@ mod tests {
             tokio::spawn(async move { post_as(&s, WHO, &format!("/api/games/{id}/input"), serde_json::json!({ "line": "undo" })).await })
         };
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(!undo.is_finished(), "the undo waits for the lock the parked read holds");
+        // Read, released, THEN asserted: a premise that fails must not leave
+        // the read parked (the bound is the second guard).
+        let undo_waited = !undo.is_finished();
         store.release();
+        assert!(undo_waited, "the undo waits for the lock the parked read holds");
         let (status, record) = reader.await.expect("the read");
         assert_eq!(status, StatusCode::OK, "{record}");
         let served: yokohama_core::GameRecord = serde_json::from_value(record).expect("the record's own JSON");

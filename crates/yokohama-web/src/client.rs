@@ -695,9 +695,12 @@ impl HistoricalFrame {
     /// The frames of every position in `[from, to)`, by ONE forward pass: the
     /// state at `from` from the session's ladder, then one event folded per
     /// position through the predicate (`Session::fold_event`). The caller
-    /// range-checks `from` and `to`. An error names the RECORD's index.
+    /// range-checks `from` and `to`. An error names the RECORD's index, and
+    /// reads on after the route's "replaying this game failed": "to reach
+    /// position {from}: …" when the start position does not fold, "at event
+    /// {k}, …" when a step does.
     pub fn run(repl: &mut Repl, from: usize, to: usize, viewer: Viewer) -> Result<Vec<Self>, String> {
-        let mut state = repl.session.state_before(from)?;
+        let mut state = repl.session.state_before(from).map_err(|e| format!("to reach position {from}: {e}"))?;
         let mut frames = Vec::with_capacity(to.saturating_sub(from));
         for k in from..to {
             frames.push(Self::from_state(repl, k, &state, viewer));

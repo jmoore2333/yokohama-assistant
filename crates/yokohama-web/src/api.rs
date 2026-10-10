@@ -2118,10 +2118,12 @@ pub fn run(games: &Games, user: &User, id: &str, q: &RunQuery) -> Result<RunFram
 /// refusal at the top.
 ///
 /// **The range is checked HERE, against a length this handler already holds,
-/// and every error from `state_at` is then a 500.** The alternative — reading
-/// `ReplayError::event_index` to tell past-the-end from a failing event — cannot
-/// be done correctly: `ReplayError` is a struct, not an enum, and its own doc
-/// says the past-the-end convention is shared with `replay_strict`'s
+/// and every error from `HistoricalFrame::at` is then a 500** — since security
+/// S1b, `Session::state_before`'s `String`, which past the end never reaches,
+/// so what it carries is a genuine fold failure. The range was first checked
+/// here because `state_at`'s error could not tell past-the-end from a failing
+/// event: `ReplayError` is a struct, not an enum, and its own doc says the
+/// past-the-end convention is shared with `replay_strict`'s
 /// terminal-digest mismatch, so *"a caller branching on `event_index` alone
 /// cannot tell those from a last-event failure — the message text is the
 /// discriminator."* Checking first makes that ambiguity unreachable rather than
