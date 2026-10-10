@@ -930,9 +930,12 @@ D29)"`.
     /// post, a chat delete — fired at fabricated ids answer 404 and leave the
     /// map EMPTY; a 16 KB id and a 65-byte id are 404s in `dispatch` before any
     /// handler; and a writer that SUCCEEDS at a real table leaves no entry
-    /// behind either, because the entry is pruned on every exit. The mutant
-    /// that takes the lock before the read leaves `nosuch-*` entries; the one
-    /// that prunes only on delete leaves `wire`'s.
+    /// behind either, because the entry is pruned on every exit. A count taken
+    /// after the writes cannot see the pre-read, because the helper prunes on
+    /// every exit; its catcher is `tables.rs`'s
+    /// `a_writer_at_an_absent_id_reads_before_it_takes_the_lock`. The mutant
+    /// that prunes only on delete leaves `wire`'s entry, read at the premise.
+    /// (The two chat rows are refused by `admitted` before their writers.)
     #[tokio::test]
     async fn refused_and_finished_writes_leave_the_lock_map_empty() {
         let state = Arc::new(AppState::in_memory());
@@ -1253,7 +1256,8 @@ In `api.rs`, `dispatch` (:2503), after the match:
 
 `matches`' doc (:276–281): the sentence "Bound, it reached `get_table` and came back as the store's 'not a usable
 game name', a 500" gains "— and since security S1c an id the store would refuse is `dispatch`'s own 404 before
-any handler (finding B8)".
+any handler (finding B8)". `dispatch`'s own doc (the reviewer's M-4) names its THREE pre-`answer` refusals: the
+405, the no-route 404 and the unsafe-`{id}` 404, which comes before `answer`'s 401 and 400.
 
 - [ ] **Step 4: Run the cells, the crate and the lane's rows.** `cargo test -p yokohama-web` — the route cells
 that drove a dotted or odd id through a handler now read the 404 where they read a 500 (the pre-flight lists
