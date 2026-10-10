@@ -617,7 +617,7 @@ type KeysOf<T, K extends readonly string[]> = [
 const CLIENT_STATE = [
   "id", "mode", "seat", "to_move", "your_turn", "frame", "prompt",
   "messages", "over", "end_triggers", "deck_remaining", "end_game_triggered",
-  "scores", "warnings", "events", "bots",
+  "scores", "warnings", "events", "bots", "options_omitted",
 ] as const;
 const FRAME = ["title", "board", "dashboard", "decision"] as const;
 const DECISION = [
@@ -655,6 +655,7 @@ const ARCHIVE_REPLY = ["leaf", "path", "identical"] as const;
 const HISTORICAL_FRAME = [
   "index", "total", "seat", "to_move", "frame", "over", "end_triggers",
   "deck_remaining", "end_game_triggered", "scores", "ports", "labs",
+  "options_omitted",
 ] as const;
 const LABELS = [
   "area_types", "phases", "phase_chain", "tech_effects", "achievements", "features",

@@ -8,7 +8,7 @@ use serde::Serialize;
 use yokohama_cli::repl::{Repl, SubPrompt};
 use yokohama_cli::screen_model::{self, FrameModel, SeatFacts, TitleMode, TitleModel};
 use yokohama_cli::{describe, session::{Session, TrackingMode}};
-use yokohama_core::{AreaId, GameState, PlayerId};
+use yokohama_core::{families, family_len, iter_family, AreaId, GameState, Move, MoveFamily, PlayerId, Rules};
 
 use crate::identity::User;
 use crate::table::TableDoc;
@@ -129,6 +129,53 @@ pub struct ScoreRow {
     pub total: u32,
 }
 
+/// The most legal moves a frame lists (security S1b, finding A3; R-SEC8(e)) —
+/// the retreat family folded to its recover-nothing member, the rest capped.
+/// From measured play: outside the retreat family the largest list the
+/// generator offers is a placement list — 189 moves at the opening of the
+/// corpus walk, and over 200 uniform-random games at each count the
+/// pre-flight's sweep read at most 432 (2P), 1,154 (3P) and 3,303 (4P, deep in
+/// a game no person plays) — so 4,096 is above every legal list the generator
+/// has produced.
+/// The cap is the fence against a family no ceiling is known for (the routes'
+/// label count, L9), not a budget; what it or the fold leaves out is COUNTED
+/// in `options_omitted`, never silent. A hot-seat table in the engine's
+/// worst-case state offered 442,368 retreats — 58 MB a frame — before this.
+pub const OPTIONS_CAP: usize = 4_096;
+
+/// The legal list a frame is built from (security S1b, finding A3): every
+/// family of the factored action source in the generator's order, the retreat
+/// family at its recover-nothing member alone — the family's size less one
+/// counted, never materialized — and the whole capped at [`OPTIONS_CAP`].
+/// Equal to the generator's list folded by hand
+/// (`folded_legal_is_the_generators_list_folded_by_hand_at_every_decision`).
+pub(crate) fn folded_legal(state: &GameState, rules: &Rules) -> (Vec<Move>, usize) {
+    folded_legal_capped(state, rules, OPTIONS_CAP)
+}
+
+/// [`folded_legal`] at a cap of the caller's — the production cap's mechanism,
+/// read by a cell at a cap it can reach.
+pub(crate) fn folded_legal_capped(state: &GameState, rules: &Rules, cap: usize) -> (Vec<Move>, usize) {
+    let mut listed = Vec::new();
+    let mut omitted = 0usize;
+    for family in families(state, rules) {
+        if let MoveFamily::MovementRetreat { .. } = &family {
+            let len = family_len(state, rules, &family);
+            if let Some(first) = iter_family(state, rules, &family).next() {
+                listed.push(first);
+                omitted += len.saturating_sub(1);
+            }
+        } else {
+            listed.extend(iter_family(state, rules, &family));
+        }
+    }
+    if listed.len() > cap {
+        omitted += listed.len() - cap;
+        listed.truncate(cap);
+    }
+    (listed, omitted)
+}
+
 /// The whole payload for one game.
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientState {
@@ -191,6 +238,12 @@ pub struct ClientState {
     /// for an all-human game. From the record's `run.seats`, not from the
     /// resident `Repl`'s bot table.
     pub bots: Vec<crate::bots::SeatBot>,
+    /// Legal moves `frame.decision.options` does NOT list (security S1b,
+    /// finding A3): the retreat family's members beyond its recover-nothing one
+    /// and anything past [`OPTIONS_CAP`] — counted, so a frame says what it
+    /// folded rather than reading as the whole list. `0` on every frame
+    /// outside a folded Movement decision.
+    pub options_omitted: usize,
 }
 
 impl PromptState {
@@ -489,12 +542,13 @@ impl ClientState {
         let over = session.is_over();
         let seat = built_for(state, viewer);
 
+        let (legal, options_omitted) = folded_legal(state, session.rules());
         let mut frame = screen_model::build_frame(
             state,
             session.rules(),
             &facts_for(repl, viewer),
             seat,
-            &session.legal(),
+            &legal,
             TitleModel {
                 mode: match session.mode {
                     TrackingMode::Simulation => TitleMode::Sim,
@@ -553,6 +607,7 @@ impl ClientState {
             ),
             events: session.record().events.len(),
             bots: crate::bots::seat_bots(session.record()),
+            options_omitted,
         }
     }
 }
@@ -673,6 +728,12 @@ pub struct HistoricalFrame {
     /// take shows the card leaving (M5.5 spec §3.2.1).
     pub ports: screen_model::PortsPanel,
     pub labs: screen_model::LabsPanel,
+    /// Legal moves `frame.decision.options` does NOT list (security S1b,
+    /// finding A3): the retreat family's members beyond its recover-nothing one
+    /// and anything past [`OPTIONS_CAP`] — counted, so a frame says what it
+    /// folded rather than reading as the whole list. `0` at every position
+    /// outside a folded Movement decision.
+    pub options_omitted: usize,
 }
 
 impl HistoricalFrame {
@@ -726,13 +787,14 @@ impl HistoricalFrame {
         let rules = session.rules();
         let seat = built_for(state, viewer);
 
-        // **Paid deliberately, not defensively.** `build_board` derives
-        // `tile.reachable` from the legal list, so a historical board built with
-        // an empty one silently marks every tile unreachable and the `◈` mark
-        // vanishes with NO error. `state_at` already ran one enumeration per
-        // replayed Move event through the checked `apply_move`, so one more is
-        // strictly cheaper than one more event.
-        let legal = yokohama_core::get_legal_moves(state, rules);
+        // **The fold, not the generator** (security S1b, finding A3): the
+        // board's `tile.reachable` is derived from the list's `MovePresident`
+        // destinations, which the fold keeps whole; what it folds is the
+        // retreat family, which names no tile. The session's `state_before`
+        // already folded the record to this position through the predicate;
+        // this is the one enumeration a frame pays, and it never materializes
+        // the family.
+        let (legal, options_omitted) = folded_legal(state, rules);
         let over = yokohama_core::is_game_over(state);
 
         let mut frame = screen_model::build_frame(
@@ -780,6 +842,7 @@ impl HistoricalFrame {
             }),
             ports: screen_model::build_ports(state, rules),
             labs: screen_model::build_labs(state, rules),
+            options_omitted,
         }
     }
 }
@@ -1239,5 +1302,105 @@ mod tests {
             vec![rules, drift, human],
         );
         assert_eq!(without_foreign_conversion(vec![converted], &record), Vec::<String>::new());
+    }
+
+    /// The fold done by HAND over the generator's list — the reference the
+    /// factored fold is held to: the first `ReturnPresidentToHand` kept, every
+    /// other dropped and counted.
+    fn fold_by_hand(legal: Vec<Move>) -> (Vec<Move>, usize) {
+        let mut out = Vec::new();
+        let mut retreats = 0usize;
+        for mv in legal {
+            if matches!(mv, Move::ReturnPresidentToHand { .. }) {
+                retreats += 1;
+                if retreats > 1 {
+                    continue;
+                }
+            }
+            out.push(mv);
+        }
+        (out, retreats.saturating_sub(1))
+    }
+
+    /// **The factored fold IS the generator's list folded by hand, at every
+    /// decision of random play at two, three and four players** (finding A3;
+    /// R-SEC8(e)) — the same moves in the same order with the retreat family
+    /// at its recover-nothing member, and the omitted count the family's size
+    /// less one. A lone retreat — no assistant on the board — is listed as it
+    /// is and omits nothing (Review Focus 5): CONSTRUCTED, since placement
+    /// precedes movement within a turn and a random walk all but never
+    /// reaches a Movement decision with nothing on the board; from the
+    /// opening, the first phase ended and nothing placed, the retreat family
+    /// is one. Mutants: the last member kept instead of the first; the count
+    /// off by one; a family skipped.
+    #[test]
+    fn folded_legal_is_the_generators_list_folded_by_hand_at_every_decision() {
+        let rules = Rules::standard();
+        let mut folded_some = 0usize;
+        for (players, seed) in [(2u8, 11u64), (3, 13), (4, 17)] {
+            let config = GameConfig::for_player_count(players);
+            let choices = vec![StartingOrderChoice::Keep(0); players as usize];
+            let pending = new_game(config, &rules, seed).expect("new_game");
+            let mut state = finalize_setup(pending, &choices).expect("finalize_setup");
+            let mut x = seed ^ 0x5DEE_CE66_D1CE_4A1F;
+            for _ in 0..240 {
+                if yokohama_core::is_game_over(&state) {
+                    break;
+                }
+                let legal = yokohama_core::get_legal_moves(&state, &rules);
+                let expected = fold_by_hand(legal.clone());
+                let got = folded_legal(&state, &rules);
+                assert_eq!(got, expected, "{players}P seed {seed}: the fold differs from the generator's list folded by hand");
+                if got.1 > 0 {
+                    folded_some += 1;
+                }
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let mv = legal[(x % legal.len() as u64) as usize].clone();
+                state = yokohama_core::apply_move_unchecked(&state, &mv, &rules).expect("a listed move applies");
+            }
+        }
+        assert!(folded_some > 0, "anti-vacuity: the walk met a family it folded");
+
+        // The lone retreat, constructed (Review Focus 5).
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 11).expect("new_game");
+        let opening = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).expect("finalize_setup");
+        let placing = yokohama_core::apply_move(&opening, &Move::EndAdditionalPhase, &rules).expect("the first phase ends");
+        let nothing = Move::PlaceThreeAreas { placements: Vec::new() };
+        let moving = yokohama_core::apply_move(&placing, &nothing, &rules).expect("an empty placement is always legal");
+        let legal = yokohama_core::get_legal_moves(&moving, &rules);
+        let retreats = legal.iter().filter(|m| matches!(m, Move::ReturnPresidentToHand { .. })).count();
+        assert_eq!(retreats, 1, "the premise: nothing on the board, one retreat");
+        assert_eq!(folded_legal(&moving, &rules), (legal, 0), "a lone retreat is listed as it is and omits nothing");
+    }
+
+    /// **The cap counts what it cuts** (R-SEC8(e)): the first Placement's
+    /// list under a cap of three lists three and counts the rest, and the
+    /// uncapped list is whole. The production cap is never reached by today's
+    /// generator — this is the mechanism, read at a cap a cell can reach. The
+    /// opening itself is the first additional-action phase and offers ONE
+    /// move, so the cell walks to the first position that offers more.
+    #[test]
+    fn folded_legal_capped_counts_what_the_cap_cuts() {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let pending = new_game(config, &rules, 20260831).expect("new_game");
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).expect("finalize_setup");
+        let mut whole = yokohama_core::get_legal_moves(&state, &rules).len();
+        for _ in 0..8 {
+            if whole > 3 {
+                break;
+            }
+            let only = yokohama_core::get_legal_moves(&state, &rules).swap_remove(0);
+            state = yokohama_core::apply_move(&state, &only, &rules).expect("the one move applies");
+            whole = yokohama_core::get_legal_moves(&state, &rules).len();
+        }
+        assert!(whole > 3, "the premise: a position offering more than three moves ({whole})");
+        let (listed, omitted) = folded_legal_capped(&state, &rules, 3);
+        assert_eq!((listed.len(), omitted), (3, whole - 3));
+        let (all, none) = folded_legal_capped(&state, &rules, OPTIONS_CAP);
+        assert_eq!((all.len(), none), (whole, 0));
+        assert_eq!(listed, all[..3].to_vec(), "the cap keeps the list's head");
     }
 }

@@ -1298,6 +1298,7 @@
     "#2 Red: 46 VP (base 25 + church 0 + customs 0 + tech 5 + country 8 + remainder 8)"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": true,
   "prompt": {
     "kind": "game_over"

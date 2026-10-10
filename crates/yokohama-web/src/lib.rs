@@ -2673,6 +2673,30 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
     }
 
+    /// `request_as` with the body returned as BYTES, for the cells whose fact
+    /// is a reply's size.
+    async fn request_raw(state: &Arc<AppState>, who: &str, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who).body(Body::empty()).expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
+    async fn request_raw_with_body(state: &Arc<AppState>, who: &str, method: &str, uri: &str, body: serde_json::Value) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(identity::CLAIMED_HEADER, who)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
     async fn post_as(
         state: &Arc<AppState>,
         who: &str,
@@ -2878,6 +2902,169 @@ mod tests {
         // Past the put's second: the dispatch has ended and the permit is back.
         tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
         assert_eq!(state.replay_gate.available_permits(), 1, "released when the work ended");
+    }
+
+    const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
+    const SPREAD_TABLE: &str = include_str!("../tests/fixtures/spread-4p-4096.table.json");
+    const SPREAD_ID: &str = "local-spread4096";
+    const SPREAD_PROVENANCE: &str = include_str!("../tests/fixtures/spread-4p-4096.provenance.json");
+
+    /// The position of the spread DECISION — seat 0 to move in Movement, the
+    /// 442,368-move family — as the pre-flight recorded it when it cut the
+    /// fixture (`spread_decision_at` in the provenance file, 4,083): the
+    /// record's END sits in seat 3's second additional-action phase, where
+    /// nothing folds.
+    fn spread_decision_at() -> usize {
+        let v: serde_json::Value = serde_json::from_str(SPREAD_PROVENANCE).expect("the provenance file");
+        v["spread_decision_at"].as_u64().expect("spread_decision_at") as usize
+    }
+
+    /// The spread fixture's pair written into a fresh store, as a hosted game
+    /// the browser's own player holds every seat of — the review's hot-seat
+    /// table, in the spread state it reached at event 419 and holds to 4,096.
+    fn a_spread_table() -> Arc<AppState> {
+        let store = Arc::new(MemStore::default());
+        store.write_if_version(Doc::Record, SPREAD_ID, SPREAD_RECORD, None).expect("the record");
+        store.write_if_version(Doc::Table, SPREAD_ID, SPREAD_TABLE, None).expect("the table");
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
+    /// The DEBUG-profile ceilings the spread table's three reads are held
+    /// under, in milliseconds — each five times the pre-flight's reading on
+    /// the Mac inside the parallel lib run (the plan's §"Review record": the
+    /// first read 62–65 ms alone and 130 ms in-suite; the run 46–48 ms; the
+    /// undo 14 ms), rounded up: the first read pays the rebuild (4,096 events
+    /// through the predicate fold), the run folds sixty-three events from the
+    /// ladder and builds sixty-four frames from the factored source, the undo
+    /// folds from the nearest kept state. What they catch is a MATERIALIZED
+    /// replay or frame — seconds, 235 positions at a six-figure family — not
+    /// the ladder, whose pin is the session cell's fold count.
+    const SPREAD_FIRST_READ_MS: u128 = 700;
+    const SPREAD_RUN_MS: u128 = 500;
+    const SPREAD_UNDO_MS: u128 = 150;
+
+    /// **A frame at the spread state is small, and says what it folded**
+    /// (finding A3; R-SEC8(e)): the review read 58,304,650 bytes here — one
+    /// worded option per legal move, 442,368 retreats among them. The frame
+    /// now carries `options_omitted` in six figures and its bytes are under
+    /// 256 KiB; the numbered rows are the REPL's grouped entries, a handful.
+    /// The first read, which rebuilds the game from its record, is under its
+    /// bound — the predicate fold's. A hot seat is viewed as the seat to move,
+    /// so the POSITION's frame lists no option rows (seat 3 is to move at the
+    /// record's end) and carries the count alone; undone to the decision, the
+    /// LIVE frame is seat 0's and lists the recover-nothing retreat alone.
+    #[tokio::test]
+    async fn a_frame_at_the_spread_state_is_small_and_counts_what_it_folded() {
+        let state = a_spread_table();
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_FIRST_READ_MS, "the first read took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the frame is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert!(frame["options_omitted"].is_u64(), "the field rides every frame: {}", frame["options_omitted"]);
+        assert_eq!(frame["prompt"]["kind"], "options");
+        assert!(frame["prompt"]["rows"].as_array().is_some_and(|r| r.len() < 40), "the REPL's grouped rows");
+        // The spread DECISION itself, at its position in the record.
+        let k = spread_decision_at();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at/{k}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the position's frame is {} bytes", raw.len());
+        let at: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert!(at["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", at["options_omitted"]);
+        assert_eq!(at["frame"]["decision"]["viewer_is_deciding"], false, "the viewer is the seat to move now, not seat 0");
+        assert_eq!(at["frame"]["decision"]["options"].as_array().map(Vec::len), Some(0), "no rows for another seat's decision");
+        // Undone to the decision: the live frame is seat 0's, and lists the fold.
+        let total = frame["events"].as_u64().expect("events") as usize;
+        for _ in k..total {
+            let (status, _) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the decision's live frame is {} bytes", raw.len());
+        let live: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((live["events"].as_u64(), live["to_move"].as_u64()), (Some(k as u64), Some(0)));
+        assert!(live["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", live["options_omitted"]);
+        let retreats = live["frame"]["decision"]["options"].as_array().expect("options").iter().filter(|o| o["mv"].get("ReturnPresidentToHand").is_some()).count();
+        assert_eq!(retreats, 1, "the recover-nothing member alone");
+    }
+
+    /// **A run of sixty-four at the spread state is bounded** (finding A3): the
+    /// review read 234,674,680 bytes and two seconds; from the session's
+    /// ladder and the factored source it is under 8 MiB and under its bound.
+    #[tokio::test]
+    async fn a_run_at_the_spread_state_is_bounded() {
+        let state = a_spread_table();
+        let (status, _) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let started = std::time::Instant::now();
+        let k = spread_decision_at();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at?from={}&to={}", k - 63, k + 1)).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_RUN_MS, "the run took {took} ms");
+        assert!(raw.len() < 8 * 1024 * 1024, "the run is {} bytes", raw.len());
+        let run: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(run["frames"].as_array().map(Vec::len), Some(64));
+        assert!(run["frames"][63]["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "the run's last frame is the spread decision: {}", run["frames"][63]["options_omitted"]);
+    }
+
+    /// **An undo at the spread table is bounded and its reply small** (finding
+    /// A3): the review read 1.9 s and 58 MB; from the ladder it is under its
+    /// bound, and the frame it answers with is the folded one.
+    #[tokio::test]
+    async fn an_undo_at_the_spread_table_is_bounded() {
+        let state = a_spread_table();
+        let (status, _) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_UNDO_MS, "the undo took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the reply is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(frame["events"].as_u64(), Some(4095));
+    }
+
+    /// **A shared-table undo at the spread table is bounded** (finding A3, with
+    /// B2): what it pins is B2's deck-shrink guard reading the state before
+    /// the trailing event from the session's LADDER (`api::trailing_state`,
+    /// `Session::state_before`) — under the old `state_at(record, len - 1)`,
+    /// a checked replay from setup with the legal list materialized per
+    /// event, this request was the review's 198 s replay. The spread table
+    /// with seat 1 re-seated to a second person, so `undo_allowed` takes its
+    /// shared arm; the caller holds seats 0, 2 and 3, seat 3 is to move and
+    /// the trailing event is seat 3's own and drew nothing, so R-P6 and B2
+    /// both wave it through: a 200 within [`SPREAD_UNDO_MS`] and a small
+    /// reply. The second person's undo after it reads R-P6's own refusal —
+    /// the premise that the arm in force was the shared one, which reaches
+    /// the guard's read before it refuses.
+    #[tokio::test]
+    async fn a_shared_table_undo_at_the_spread_table_is_bounded() {
+        let store = Arc::new(MemStore::default());
+        let mut table: serde_json::Value = serde_json::from_str(SPREAD_TABLE).expect("the table");
+        table["seats"][1]["user"] = serde_json::json!("other@browser");
+        store.write_if_version(Doc::Record, SPREAD_ID, SPREAD_RECORD, None).expect("the record");
+        store.write_if_version(Doc::Table, SPREAD_ID, &table.to_string(), None).expect("the table");
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((frame["events"].as_u64(), frame["seat"].as_u64()), (Some(4096), Some(3)), "seat 3 is to move, and the caller holds it");
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_UNDO_MS, "the shared-table undo took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the reply is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(frame["events"].as_u64(), Some(4095));
+        let (status, refused) = post_as(&state, "other@browser", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        assert_eq!(refused["error"], "undo is not offered once your turn has passed", "the shared arm is in force");
     }
 
     /// **A started game whose seats belong to the NAMED people, each keeping as
