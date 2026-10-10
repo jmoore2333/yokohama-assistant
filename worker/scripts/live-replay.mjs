@@ -179,7 +179,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       if (isProductionSeedCreate(row, skipped)) {
         const id = row.body.id;
         if (reply.status === 400 && parsed(reply)?.error === SEED_NOT_SOLO) {
-          result.spent.push(`productionSeedRule ${id}: the seeded create beside an open seat answered 400 in SEED_NOT_SOLO's words`);
+          result.spent.push(`productionSeedRule ${id}: the seeded create beside a seat that is not its creator's answered 400 in SEED_NOT_SOLO's words`);
         } else {
           differs(label, null, { path: "(production seed rule)", reason: `expected 400 in SEED_NOT_SOLO's words · got ${reply.status}${said(reply)}` });
         }

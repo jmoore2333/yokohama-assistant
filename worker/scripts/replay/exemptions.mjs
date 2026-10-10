@@ -39,14 +39,16 @@ export const SEED_NOT_SOLO = "a seed is honoured only at a table whose every hum
 /**
  * The tables a PRODUCTION host cannot deal from the walk (security S1b, the
  * production-door walk): each create row that carries a seed and seats anyone
- * but its creator — an open seat, or a user other than its `who`. The pool
+ * but its creator — an open seat, or a user other than its `who`. A `null`
+ * seed is none, as the layer's `Option` reads it: a server deals that create
+ * unseeded, so it is never named here. The pool
  * deals them under `YOKOHAMA_DIAGNOSTIC_SEEDS`; a deployed Worker answers the
  * create 400 in `SEED_NOT_SOLO`'s words, so the create is sent and held to
  * that answer, and every row at the table is skipped and counted.
  */
 export function productionSeedRule(walk) {
   const ids = walk
-    .filter((row) => row.method === "POST" && row.path === "/api/games" && row.body !== null && row.body.seed !== undefined)
+    .filter((row) => row.method === "POST" && row.path === "/api/games" && row.body !== null && row.body.seed != null)
     .filter((row) => (row.body.seats ?? []).some((s) => s.open === true || (typeof s.user === "string" && s.user !== row.who)))
     .map((row) => row.body.id);
   return new Set(ids);
@@ -59,11 +61,13 @@ export function isProductionSeedCreate(row, skipped) {
 
 /**
  * Whether a production host cannot be asked `row` under the rule: a row at
- * one of `skipped`'s tables (`/api/games/<id>` and everything under it, the
- * create excepted), or a lobby page, whose committed body names them.
+ * one of `skipped`'s tables (`/api/games/<id>` and everything under it), or a
+ * lobby page, whose committed body names them. A table's create is never
+ * skipped, and needs no exception here: it is `POST /api/games`, a path that
+ * names no table, and the walk names no fixture for it — so it is sent, and
+ * held to its 400 (`isProductionSeedCreate`).
  */
 export function skippedUnderProductionSeedRule(row, skipped) {
-  if (isProductionSeedCreate(row, skipped)) return false;
   const m = /^\/api\/games\/([^/?]+)/.exec(row.path);
   if (m !== null && skipped.has(m[1])) return true;
   return row.fixture !== null && LOBBY.has(row.fixture);

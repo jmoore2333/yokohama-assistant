@@ -249,6 +249,8 @@ describe("productionSeedRule", () => {
     expect([...productionSeedRule(seeded([{ user: "red@wire.test" }, { user: "red@wire.test" }]))]).toEqual([]);
     const unseeded = [{ method: "POST", path: "/api/games", who: "red@wire.test", body: { id: "t", seats: [{ user: "red@wire.test" }, { open: true }] } }];
     expect([...productionSeedRule(unseeded)]).toEqual([]);
+    const nullSeed = [{ ...unseeded[0], body: { ...unseeded[0].body, seed: null } }];
+    expect([...productionSeedRule(nullSeed)], "a null seed is none: a server deals that create unseeded").toEqual([]);
   });
   it("skips every row at a skipped table and every lobby page, and never the create itself or a kept table's row", () => {
     const skipped = new Set(["wire", "wire2"]);
@@ -502,8 +504,15 @@ describe("replay", () => {
       ].sort(),
     );
     expect(host.requests.filter((r) => /\/api\/games\/wire2?(\/|$)/.test(r.url) && !r.url.includes("/api/admin/"))).toEqual([]);
+    // The run's own post is the one it deletes (R-D4): the fake's post was
+    // given the committed number plus the base.
+    const deleted = host.requests.filter((r) => r.method === "DELETE" && r.url.startsWith(`${ORIGIN}/api/chat/`));
+    expect(deleted.map((r) => r.url)).toEqual([`${ORIGIN}/api/chat/${BASE + 1}`]);
+    expect(result.forcedBefore.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
+    expect(result.forcedAfter.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
     expect(text).toContain("rows skipped under the production seed rule: ");
     expect(text).toContain("live-replay: HOLDS");
+    expect(text).toContain("the house chat's base: last 4321, rev 9876, read as blue@wire.test");
   });
 
   // A host that HONOURED a seeded create beside an open seat is not under
