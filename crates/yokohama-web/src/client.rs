@@ -48,7 +48,9 @@ pub struct OptionRow {
 /// move.** Movement collapses to one row per destination with the retreat
 /// family folded into a single row; Placement collapses to Option A / Option B
 /// / place-none; a queued assistant-move groups by source. A client that
-/// numbered `FrameModel::decision::options` — which IS one per legal move —
+/// numbered `FrameModel::decision::options` — which IS one per LISTED legal
+/// move: the folded, capped list, the retreat family at its recover-nothing
+/// member alone and the rest counted in [`ClientState::options_omitted`] —
 /// would send back a number naming a different move, and in Movement it would
 /// usually still be a legal one, so the game would quietly diverge from what
 /// the player clicked. `Repl::option_rows` is the authority and this carries it.
@@ -161,10 +163,13 @@ pub(crate) struct Folded {
 }
 
 impl Folded {
-    /// Everything the list leaves out, `folded + capped` — the count the
-    /// DECIDING viewer's frame carries.
-    pub(crate) fn omitted(&self) -> usize {
-        self.folded + self.capped
+    /// The count a frame carries as `options_omitted` for its viewer — the
+    /// hidden-information rule, single-sourced: the fold's count for every
+    /// viewer, and the cap's added on the DECIDING viewer's frame alone,
+    /// since `capped` reads the mover's hand. Both arms pinned by
+    /// `for_viewer_adds_the_caps_count_for_the_deciding_viewer_alone`.
+    pub(crate) fn for_viewer(&self, deciding: bool) -> usize {
+        self.folded + if deciding { self.capped } else { 0 }
     }
 }
 
@@ -180,7 +185,13 @@ pub(crate) fn folded_legal(state: &GameState, rules: &Rules) -> Folded {
 }
 
 /// [`folded_legal`] at a cap of the caller's — the production cap's mechanism,
-/// read by a cell at a cap it can reach.
+/// read by a cell at a cap it can reach. The cap truncates the list's TAIL,
+/// and the routes family precedes the retreat family in the generator's
+/// order, so the board's `reachable` — derived from the President's
+/// destinations (`MovePresident`, `PlacePresident`) — is whole at any list
+/// the cap does not cut; a list the cap DID cut would lose routes, and the
+/// board's marks with them. Unreached today (the measured ceiling is 3,303):
+/// the cap is a fence, not a budget.
 pub(crate) fn folded_legal_capped(state: &GameState, rules: &Rules, cap: usize) -> Folded {
     let mut listed = Vec::new();
     let mut folded = 0usize;
@@ -264,13 +275,14 @@ pub struct ClientState {
     pub bots: Vec<crate::bots::SeatBot>,
     /// The POSITION's legal moves this frame's builder folded or capped rather
     /// than listed (security S1b, finding A3): the retreat family's members
-    /// beyond its recover-nothing one — a count of public on-board assistants
-    /// — and, on the DECIDING viewer's frame alone, anything past
-    /// [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for every
-    /// viewer of the position, so a frame for a seat that is not deciding,
-    /// whose `frame.decision.options` is empty, still says what was folded
-    /// rather than reading as the whole list. `0` on every frame outside a
-    /// folded Movement decision.
+    /// beyond its recover-nothing one — the product over the mover's occupied
+    /// areas of (assistants there + 1), less one, a function of public
+    /// per-area counts — and, on the DECIDING viewer's frame alone, anything
+    /// past [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for
+    /// every viewer of the position, so a frame for a seat that is not
+    /// deciding, whose `frame.decision.options` is empty, still says what was
+    /// folded rather than reading as the whole list. `0` on every frame
+    /// outside a folded Movement decision.
     pub options_omitted: usize,
 }
 
@@ -605,13 +617,12 @@ impl ClientState {
         // **The cap's count rides the DECIDING viewer's frame alone** (security
         // S1b, finding A3; a hidden-information rule): `capped` is a function
         // of the mover's whole legal list, which reads the mover's hand, while
-        // `folded` counts public on-board assistants. "Deciding" is the
+        // `folded` is a function of public per-area counts. "Deciding" is the
         // frame's own `decision.viewer_is_deciding`, which `build_frame` set
-        // from the same `seat` through `build_decision_for`. No built position
-        // reaches the cap — the largest list measured is 3,303 against 4,096
-        // (`OPTIONS_CAP`'s doc) — so no cell can tell the two arms apart: this
-        // selection is proven by reading.
-        let options_omitted = if frame.decision.viewer_is_deciding { folded.omitted() } else { folded.folded };
+        // from the same `seat` through `build_decision_for`; the rule is
+        // [`Folded::for_viewer`]'s, pinned by
+        // `for_viewer_adds_the_caps_count_for_the_deciding_viewer_alone`.
+        let options_omitted = folded.for_viewer(frame.decision.viewer_is_deciding);
 
         Self {
             id: id.to_string(),
@@ -768,13 +779,14 @@ pub struct HistoricalFrame {
     pub labs: screen_model::LabsPanel,
     /// The POSITION's legal moves this frame's builder folded or capped rather
     /// than listed (security S1b, finding A3): the retreat family's members
-    /// beyond its recover-nothing one — a count of public on-board assistants
-    /// — and, on the DECIDING viewer's frame alone, anything past
-    /// [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for every
-    /// viewer of the position, so a frame for a seat that is not deciding,
-    /// whose `frame.decision.options` is empty, still says what was folded
-    /// rather than reading as the whole list. `0` at every position outside a
-    /// folded Movement decision.
+    /// beyond its recover-nothing one — the product over the mover's occupied
+    /// areas of (assistants there + 1), less one, a function of public
+    /// per-area counts — and, on the DECIDING viewer's frame alone, anything
+    /// past [`OPTIONS_CAP`], whose count reads the mover's hand. Counted for
+    /// every viewer of the position, so a frame for a seat that is not
+    /// deciding, whose `frame.decision.options` is empty, still says what was
+    /// folded rather than reading as the whole list. `0` at every position
+    /// outside a folded Movement decision.
     pub options_omitted: usize,
 }
 
@@ -864,9 +876,8 @@ impl HistoricalFrame {
         drop_hand_for(viewer, &mut frame);
         // The cap's count on the DECIDING viewer's frame alone, read from the
         // frame's own `decision.viewer_is_deciding` — [`ClientState::of`]'s
-        // rule, for its reason. No built position reaches the cap, so this
-        // selection too is proven by reading, not by a cell.
-        let options_omitted = if frame.decision.viewer_is_deciding { folded.omitted() } else { folded.folded };
+        // rule, for its reason ([`Folded::for_viewer`]).
+        let options_omitted = folded.for_viewer(frame.decision.viewer_is_deciding);
 
         Self {
             index: k,
@@ -1470,6 +1481,20 @@ mod tests {
         assert_eq!((whole.listed.len(), whole.folded, whole.capped), (18, 442_367, 0), "the premise: seventeen placements and the recover-nothing retreat");
         let cut = folded_legal_capped(&spread, &rules, 17);
         assert_eq!((cut.listed.len(), cut.folded, cut.capped), (17, 442_367, 1), "the cap's one beside the fold's 442,367, apart");
-        assert_eq!(cut.omitted(), 442_368, "the deciding viewer's count is the two together");
+        assert_eq!(cut.for_viewer(true), 442_368, "the deciding viewer's count is the two together");
+    }
+
+    /// **The cap's count rides the DECIDING viewer's frame alone** (security
+    /// S1b, finding A3; the hidden-information rule): a hand-built [`Folded`]
+    /// with both counts nonzero, read for each kind of viewer. The cap's count
+    /// is a function of the mover's whole legal list, which reads the mover's
+    /// hand; no built position reaches the cap, so the rule is pinned here, on
+    /// the helper both frame builders call. Mutants: either arm dropping the
+    /// cap's count or adding it to the other.
+    #[test]
+    fn for_viewer_adds_the_caps_count_for_the_deciding_viewer_alone() {
+        let folded = Folded { listed: Vec::new(), folded: 5, capped: 2 };
+        assert_eq!(folded.for_viewer(false), 5, "a viewer who is not deciding reads the fold's count alone");
+        assert_eq!(folded.for_viewer(true), 7, "the deciding viewer reads the fold's and the cap's together");
     }
 }
