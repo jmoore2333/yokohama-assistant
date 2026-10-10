@@ -1337,7 +1337,12 @@ way out through Games::with_table_lock; an unsafe {id} is dispatch's 404 before 
     /// header; the static release outside `/api` does not read it from this
     /// layer (`/shell.bin` reads it from `assets.rs`'s own rule and is not
     /// asked here). The mutant that drops the layer fails the first row; the
-    /// one that tests `starts_with("/api/")` alone fails `/api/games`.
+    /// one that tests `starts_with("/api/")` alone fails `/api`, the one path
+    /// that test changes. `/api/` and `/api` are the two rows the FALLBACK
+    /// answers — every other path under `/api/` is the adapter's catch-all,
+    /// `/api/nothing` included — so they are what fails `route_layer`, which
+    /// wraps the routes and not the fallback; and `/apix` fails a bare
+    /// `starts_with("/api")`, which would mark a path that is not the API.
     #[tokio::test]
     async fn every_answer_under_api_is_no_store_and_the_static_release_is_not() {
         let state = Arc::new(AppState::in_memory());
@@ -1351,7 +1356,7 @@ way out through Games::with_table_lock; an unsafe {id} is dispatch's 404 before 
                 rows.push(("HEAD".to_string(), p));
             }
         }
-        for p in ["/api/games/x/events", "/api/games/x/stream", "/api/stream", "/api/nothing", "/api/games/x/no/such"] {
+        for p in ["/api/games/x/events", "/api/games/x/stream", "/api/stream", "/api/nothing", "/api/games/x/no/such", "/api/", "/api"] {
             rows.push(("GET".to_string(), p.to_string()));
         }
         rows.push(("PUT".to_string(), "/api/games".to_string()));
@@ -1368,11 +1373,13 @@ way out through Games::with_table_lock; an unsafe {id} is dispatch's 404 before 
         }
         // Outside `/api` the layer marks nothing: the static release's headers
         // are `assets.rs`'s own rule (`cache_control`, :210), which marks the
-        // shell `no-store` and leaves the fingerprinted assets alone. The two
+        // shell `no-store` and leaves the fingerprinted assets alone. The
         // paths below are ones that rule leaves UNMARKED — the pre-flight
         // confirms each against `assets::cache_control` and swaps in another
-        // unmarked path if one of these is not.
-        for path in ["/art/nothing.png", "/assets/nothing-abc123.js"] {
+        // unmarked path if one of these is not. `/apix` is the SPA fallback's,
+        // which that rule leaves unmarked too: a name that only BEGINS like
+        // the API's.
+        for path in ["/art/nothing.png", "/assets/nothing-abc123.js", "/apix"] {
             let req = Request::builder().method("GET").uri(path).body(Body::empty()).expect("a request");
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             assert_ne!(
@@ -1407,13 +1414,24 @@ yields a header would hang it; the pre-flight measures the cell's wall. `assets:
             let err = games.create(&req, &red).expect_err(id);
             assert!(matches!(&err, GameError::BadRequest(m) if m == &format!("\"{id}\" {DOTTED_ID}")), "{id}: {err:?}");
         }
+        // **The ORDER, by two-defect probes** (the M6.2 lesson): an id the
+        // storage rule refuses AND that carries a dot reads the storage rule's
+        // sentence, so the dotted arm sits after `is_safe_id`'s and never
+        // speaks for an id no table could have been stored under.
+        for id in ["..", "x.table"] {
+            let mut req = two_people("dotted", CORPUS_SEED);
+            req.id = Some(id.to_string());
+            let err = games.create(&req, &red).expect_err(id);
+            assert!(matches!(&err, GameError::BadRequest(m) if m == &format!("\"{id}\" is not a usable game id")), "{id}: {err:?}");
+        }
         let mut req = two_people("dash-ok", CORPUS_SEED);
         req.id = Some("x-js".to_string());
         games.create(&req, &red).expect("a dash is fine");
 
         // Stored before the rule: a real document — the dotless table's, re-keyed
         // through the store under `old.js` — reads and deletes; the route-level
-        // drive (`lib.rs`, cell (c)) plays one.
+        // drive (`lib.rs`'s `a_stored_dotted_table_still_loads_plays_and_deletes`)
+        // plays and streams one.
         games.create(&two_people("oldjs", CORPUS_SEED), &red).expect("a table");
         let (json, _) = games.store().read(Doc::Table, "oldjs").unwrap().expect("the table");
         let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
@@ -1432,11 +1450,14 @@ re-keyed through `games.store()`.)
 deletes but plays nothing:
 
 ```rust
-    /// **A table stored before the dot rule still loads, plays and deletes
-    /// through the routes** (Review Focus 2): a solo hot seat is re-keyed under
-    /// `old.js` through the store — both documents, the table's `id` rewritten —
-    /// and `GET`, an input and the delete all answer, because the storage rule
-    /// and `dispatch`'s `{id}` check admit a dot; only `create` refuses one.
+    /// **A table stored before the dot rule still loads, plays, streams and
+    /// deletes through the routes** (Review Focus 2): a solo hot seat is
+    /// re-keyed under `old.js` through the store — both documents, the table's
+    /// `id` rewritten — and `GET`, an input, the two transport routes and the
+    /// delete all answer, because the storage rule and `dispatch`'s `{id}`
+    /// check admit a dot; only `create` refuses one. The transport routes never
+    /// reach `dispatch`, so their rows pin that their own admission admits a
+    /// dot too.
     #[tokio::test]
     async fn a_stored_dotted_table_still_loads_plays_and_deletes() {
         let state = Arc::new(AppState::in_memory());
@@ -1453,6 +1474,13 @@ deletes but plays nothing:
         let (status, after) = post_as(&state, WHO, "/api/games/old.js/input", serde_json::json!({ "line": "1" })).await;
         assert_eq!(status, StatusCode::OK, "{after}");
         assert_ne!(frame["events"], after["events"], "the input landed: {after}");
+        let (status, events) = get_as(&state, WHO, "/api/games/old.js/events").await;
+        assert_eq!(status, StatusCode::OK, "{events}");
+        assert_eq!(events["events"], after["events"], "the reading is the stored dotted table's: {events}");
+        let (status, text, _) =
+            stream_frames(Arc::clone(&state), "/api/games/old.js/stream", WHO, std::time::Duration::from_millis(100)).await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(sse_frames(&text).iter().any(|f| f.starts_with("event: signal")), "the on-connect frame: {text}");
         let (status, body) = delete_as(&state, WHO, "/api/games/old.js").await;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     }
@@ -1464,7 +1492,7 @@ with one address at both seats opens a solo hot seat, and adjusts the line or th
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web -- no_store dotted_id 2>&1 | grep -E
 '^error|test result|panicked' | head` — `DOTTED_ID` not found; stubbed: (a) RED on the first row (no header);
 (b) RED on `x.js` (created); (c) GREEN already — the storage rule admits dots, and the cell pins what the
-dotted arm must NOT touch.
+dotted arm must NOT touch (the filter `no_store dotted_id` does not select (c): run it by name).
 
 - [ ] **Step 3: The code.** In `lib.rs`, beside `app()`:
 
@@ -1515,10 +1543,14 @@ and in `create` (:826–830), between the `!is_safe_id` arm and the `Some(id) =>
 carries headers; no fixture creates a dotted id — the pre-flight's grep over `web/src/wire/*.json` for `"id":
 "[^"]*\.` reads nothing).
 
-- [ ] **Step 5: The mutants.** **M12** the layer dropped — (a) red on the first row; **M13** `starts_with("/api/")`
-alone — (a) red at `POST /api/games`; **M14** the dotted arm dropped — (b) red at `x.js`; **M15** the dotted arm
-placed BEFORE the `is_safe_id` arm — (b)'s `a.b.c` row still passes but a probe of `..` reads the dotted sentence:
-the reviewer's probe, recorded; **M15b** the dot refused in `store::is_safe_id` instead of `create` — (c) red (the
+- [ ] **Step 5: The mutants.** **M12** the layer dropped — (a) red on the first row; **M12b** `route_layer` in place of `layer` — (a) red at
+`/api` exactly, the fallback's (the draft's reason, `/api/nothing`, is the adapter's catch-all, not the fallback's —
+the implementer's C2, with rows `/api`, `/api/` and `/apix`); **M13** `starts_with("/api/")` alone — (a) red at
+`/api` exactly (the draft's `POST /api/games` starts with `/api/` and could not tell); **M14** the dotted arm
+dropped — (b) red at `x.js`; **M15** the dotted arm placed BEFORE the `is_safe_id` arm — (b) red at its two-defect
+pin (`..` and `x.table` read `is_safe_id`'s sentence, never `DOTTED_ID`'s; the draft left the order unpinned and
+M15 survived every cell — C3); (c) reads the events and one stream frame of the stored dotted table (Review Focus
+2's "streams" — C4), which also refuses a Task 4 transport check stricter than `is_safe_id`; **M15b** the dot refused in `store::is_safe_id` instead of `create` — (c) red (the
 stored table is refused) and (b)'s stored half red.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/tables.rs` · `git
@@ -1682,8 +1714,73 @@ read holds; if the helper hangs on a 200 the implementer uses `stream_frames`.) 
 `events_at` (find by content): `if !crate::store::is_safe_id(id) { return Err(ApiError::not_found(format!("no game
 named \"{id}\"", id = crate::echo::echo(id)))); }` with a one-line comment naming C6.
 
+(e) **Task 3's finding C1 (HIGH, pre-existing, outside B9 — a HEAD runs a route's WRITE arm; found by Task 3's
+implementer on this tree's router, 2026-10-10).** `find` folds HEAD onto GET (`api.rs`, `let method = if method ==
+"HEAD" { "GET" } else { method };`) so a HEAD matches a GET row, but `answer` picks the arm by the LITERAL method
+(`"/api/games/{id}" if req.method == "GET"`, and the same guard at `/api/games`, `…/chat`, `/api/chat`) — so a
+HEAD falls into the OTHER arm at the four paths that carry two methods: the creator's `HEAD /api/games/{id}` runs
+DELETE (204, the table gone), `HEAD /api/games` with a create body runs POST (201), `HEAD …/{id}/chat` and
+`HEAD /api/chat` with a text body POST. The fix, in `answer`: ONE binding at its head — `let method = if req.method
+== "HEAD" { "GET" } else { req.method };` — and every `if req.method == "GET"` arm guard reads `method`, so a HEAD
+takes the GET arm and leaves bodiless through the strip, as before. The cell, in `lib.rs`'s `mod tests` after
+`const WHO`:
+
+```rust
+    /// **A HEAD never runs a write arm** (security S1c, Task 3's finding — pre-
+    /// existing): `find` folds HEAD onto GET, and `answer` must pick its arm by
+    /// the SAME folded method, else a HEAD of a two-method path takes the other
+    /// arm — the creator's HEAD of a game deleted it, a HEAD of `/api/games`
+    /// with a create body created one. Four paths, each HEAD answers 200 with
+    /// an empty body and writes nothing: the table remains, the list does not
+    /// grow, no chat message lands. The mutant that drops the fold reads a 204
+    /// at the first row and the table gone.
+    #[tokio::test]
+    async fn a_head_never_runs_a_write_arm() {
+        let state = Arc::new(AppState::in_memory());
+        start_as(&state, "headed", 20260831, &[WHO, "blue@wire.test"]).await;
+        let head = |uri: &str, body: Option<serde_json::Value>| {
+            let s = Arc::clone(&state);
+            let uri = uri.to_string();
+            async move {
+                let req = Request::builder().method("HEAD").uri(&uri).header(identity::CLAIMED_HEADER, WHO)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.map(|b| serde_json::to_vec(&b).expect("a body")).unwrap_or_default()))
+                    .expect("a request");
+                let res = app(s).oneshot(req).await.expect("the router answers");
+                let status = res.status();
+                let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+                (status, bytes.len())
+            }
+        };
+        let create = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": WHO }, { "user": WHO }], "id": "headmade", "name": "headmade" });
+        assert_eq!(head("/api/games/headed", None).await, (StatusCode::OK, 0), "the creator's HEAD of a game");
+        let (status, _) = get_as(&state, WHO, "/api/games/headed").await;
+        assert_eq!(status, StatusCode::OK, "the table remains");
+        let (_, before) = get_as(&state, WHO, "/api/games").await;
+        assert_eq!(head("/api/games", Some(create)).await, (StatusCode::OK, 0), "a HEAD of the list with a create body");
+        let (_, after) = get_as(&state, WHO, "/api/games").await;
+        assert_eq!(before["games"].as_array().map(Vec::len), after["games"].as_array().map(Vec::len), "nothing created: {after}");
+        let (status, _) = get_as(&state, WHO, "/api/games/headmade").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "nothing created");
+        for uri in ["/api/games/headed/chat", "/api/chat"] {
+            let (_, before) = get_as(&state, WHO, uri).await;
+            assert_eq!(head(uri, Some(serde_json::json!({ "text": "hi" }))).await, (StatusCode::OK, 0), "{uri}");
+            let (_, after) = get_as(&state, WHO, uri).await;
+            assert_eq!(before, after, "{uri}: a HEAD posted a message");
+        }
+    }
+```
+
+(The list's and the chat's JSON field names are the implementer's to read off `client.rs`/`chat.rs` — `games`,
+`messages` or whatever the frame spells; the shape of the cell is the claim. Mutant **M-HEAD**: `let method =
+req.method;` — the cell red at its first row, a 204 and the table gone.) The security ledger gains a row for this
+at the close (Task 9 Step 6) — the review's method inventory missed it; the live acceptance (Step 10(d)) adds a
+HEAD of a scratch table that must survive, on both hosts.
+
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web --lib -- writes_gone_once
-leaves_the_runtime_thread_free without_an_identity transport_routes 2>&1 | grep -E 'test result|panicked' | head` — (a) RED at
+leaves_the_runtime_thread_free without_an_identity transport_routes head_never 2>&1 | grep -E 'test result|panicked' | head`
+— (e) RED at its first row today (a 204; the table gone). — (a) RED at
 `ended` (false) and at the gone count (**the pre-flight's reading: two `gone` frames**); (b) GREEN already — the
 hand-off exists; its mutant (M17) is what proves the cell: the pre-flight reads it red under the inline mutant
 (**about 300 ms**); (c) RED: 503 after two seconds.
@@ -1748,12 +1845,12 @@ frames); **M17** `events` reads inline (`Ok(Json(api::events_at(&state.games, &i
 ms); **M18** `&& resolved.is_ok()` dropped — (c) red (503 after the wait); **M19** the delete arm marked `false`
 — the earlier end-on-delete cell stays green (the channel closes itself) — recorded as a mutant NO cell
 catches, by design: the wrapper is for the refusal arm; **M19b** `events_at`'s unsafe-id check dropped — (d) red
-at both routes (the store's 500).
+at both routes (the store's 500); **M-HEAD** the fold in `answer` dropped — (e) red at its first row.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/lib.rs crates/yokohama-web/src/api.rs` · `git commit -m
 "web: D1 — a refused stream writes gone once and closes (UntilLast); the events reading's pool hand-off has its
 catcher; a replay-route request with no identity takes no permit; an unsafe id at the transport routes is the
-layer's 404 (S1c Task 4)"`.
+layer's 404; a HEAD never runs a write arm (S1c Task 4)"`.
 
 ---
 
