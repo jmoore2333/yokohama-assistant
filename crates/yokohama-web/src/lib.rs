@@ -446,6 +446,11 @@ pub struct AppState {
     /// a test, and `identity::from_env_value`'s own doc is this crate's rule
     /// against mutating the process environment under a threaded runner.
     pub dist: std::path::PathBuf,
+    /// The header set every answer carries (security S2a, decision D-1): `dist/headers.json`'s pairs, read once
+    /// where `dist` is resolved — the production constructor and [`Self::with_dist`] — and set by [`app`]'s
+    /// one response layer. Empty for a state with no dist, and for a dist without the file (the client build is
+    /// older than 0.6.2, or absent — `main` says so once); a cell gives a state a set with [`Self::with_headers`].
+    pub headers: Arc<Vec<(http::HeaderName, http::HeaderValue)>>,
     /// The two table TTLs (M6.5c2 cycle F, R-F9): what `main` hands the sweep
     /// ([`sweep::run`]) and what `/api/health` reports through the adapter's
     /// [`api::Host`]. [`sweep::Ttls::none`] on every constructor but
@@ -507,9 +512,13 @@ impl AppState {
         ttls: sweep::Ttls,
     ) -> Result<Self, String> {
         sweep::check_archive(&ttls, archive::is_on(&archive))?;
-        Ok(Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
+        let state = Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
             .with_multiplayer(multiplayer)
-            .with_ttls(ttls))
+            .with_ttls(ttls);
+        // The header set (security S2a, decision D-1): read ONCE here, where `dist` is resolved; a malformed file
+        // is this `Err`, which `main` prints and exits 1 on. An absent file is an empty set — `main` says so once.
+        let headers = assets::response_headers(&state.dist)?;
+        Ok(state.with_headers(headers))
     }
 
     /// Backed by memory, in `open` mode — the mode every test drives with a
@@ -640,6 +649,9 @@ impl AppState {
             // [`Self::with_multiplayer`] can say otherwise.
             multiplayer: Multiplayer(true),
             dist: assets::dist_dir(),
+            // No set: only [`Self::production`] and [`Self::with_dist`], which
+            // read a dist's file, and [`Self::with_headers`] say otherwise.
+            headers: Arc::new(Vec::new()),
             // No TTL, which is what an unset variable reads: only `new`,
             // given `main`'s reading, and [`Self::with_ttls`] say otherwise.
             ttls: sweep::Ttls::none(),
@@ -650,8 +662,21 @@ impl AppState {
 
     /// This state serving the client from `dist` (M6.5b2) — [`Self::with_clock`]'s
     /// shape again, for the cells that need a real shell behind the fallback.
+    /// It reads `dist`'s header set as [`Self::production`] does (security S2a,
+    /// decision D-1), and a file of any other shape panics: every caller is a
+    /// cell, so a malformed file is the fixture's error.
     pub fn with_dist(self, dist: impl Into<std::path::PathBuf>) -> Self {
-        Self { dist: dist.into(), ..self }
+        let dist = dist.into();
+        Self {
+            headers: Arc::new(assets::response_headers(&dist).expect("a dist's headers.json is the client build's")),
+            dist,
+            ..self
+        }
+    }
+
+    /// A header set chosen for it — how a cell gives an in-memory state the pairs a dist would (security S2a).
+    pub fn with_headers(self, headers: Vec<(http::HeaderName, http::HeaderValue)>) -> Self {
+        Self { headers: Arc::new(headers), ..self }
     }
 
     /// This state with the multiplayer switch thrown (M6.5b2, R-6.5b2.4).
@@ -1174,18 +1199,26 @@ async fn enter() -> Response {
     (StatusCode::FOUND, [(http::header::LOCATION, "/#/lobby")]).into_response()
 }
 
-/// **Every answer under `/api` is `no-store`** (security S1c, finding B9). The
-/// zone caches by file EXTENSION by default, and the review named a table
-/// `evening.js` and read the victim's private frame from the edge; the header
-/// is what keeps an API answer out of every cache, whatever the path spells.
-/// One layer over the whole router, keyed on the path, so the adapter, the
-/// three transport routes, the art manifest and the fallback's own 404 all
-/// carry it, and the static release outside `/api` keeps `assets.rs`'s rule.
+/// **Every answer carries the header set, and every answer under `/api` is `no-store`** (security S2a, decision
+/// D-1; S1c's finding B9). The set is the client build's (`dist/headers.json`, read once into
+/// [`AppState::headers`]) — the same pairs the Worker's asset layer serves from `_headers` — set on EVERY answer,
+/// static and API, the fallback's 404 and `/enter`'s 302 included: one layer over the whole router, so no answer
+/// is the exception a reviewer finds, and `insert`, so a handler's own header of the same name is the set's.
+/// `no-store` stays keyed on the path, as it was: the zone caches by file EXTENSION by default, and the review
+/// read a victim's private frame from the edge under a table named `evening.js`. `Router::layer`, not
+/// `route_layer`: the layer must wrap the fallback (`/`, `/shell.bin`, the assets, `/t/…`) as well as the routes.
 #[cfg(feature = "server")]
-async fn no_store(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+async fn response_headers(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
     let path = req.uri().path();
     let api = path == "/api" || path.starts_with("/api/");
     let mut res = next.run(req).await;
+    for (name, value) in state.headers.iter() {
+        res.headers_mut().insert(name.clone(), value.clone());
+    }
     if api {
         res.headers_mut().insert(http::header::CACHE_CONTROL, http::HeaderValue::from_static("no-store"));
     }
@@ -1226,7 +1259,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         // BEFORE `with_state`, which `fallback` now needs: it reads the client
         // root off the state rather than the environment (M6.5b2).
         .fallback(fallback)
-        .layer(axum::middleware::from_fn(no_store))
+        .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), response_headers))
         .with_state(state)
 }
 // ---- end server ----
@@ -3958,6 +3991,8 @@ mod tests {
     /// `/api/nothing` included — so they are what fails `route_layer`, which
     /// wraps the routes and not the fallback; and `/apix` fails a bare
     /// `starts_with("/api")`, which would mark a path that is not the API.
+    /// Since security S2a the layer is `response_headers`, which sets the
+    /// dist's header set beside `no-store`; this state has no dist, so no set.
     #[tokio::test]
     async fn every_answer_under_api_is_no_store_and_the_static_release_is_not() {
         let state = Arc::new(AppState::in_memory());
@@ -4003,6 +4038,82 @@ mod tests {
                 "{path}: the static release is not this layer's to mark"
             );
         }
+    }
+
+    /// **Every answer carries the header set `dist/headers.json` holds** (security S2a, finding B4's static half,
+    /// D13's host half; decision D-1): the shell, `/shell.bin`, a fingerprinted asset, the 404 page a miss with an
+    /// extension is answered with, the SPA fallback, `/enter`'s 302, and every answer under `/api` — a 200, a
+    /// 401, a 404 and a stream — all read every pair, and the `/api` rows read `no-store` beside them, from ONE
+    /// layer, so no answer is the exception a reviewer finds. The dist is a scratch tree, so the pairs here are
+    /// the cell's own two and not the build's six: what is pinned is that the file's pairs reach every answer.
+    #[tokio::test]
+    async fn every_answer_carries_the_dist_header_set_and_the_api_rows_no_store_beside_it() {
+        let dist = std::env::temp_dir().join(format!("yokohama-headers-{}-b", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dist);
+        std::fs::create_dir_all(&dist).expect("a scratch dist");
+        for (name, body) in [
+            ("index.html", "<!doctype html><div id=root></div>"),
+            ("shell.bin", "<!doctype html><div id=root></div>"),
+            ("404.html", "<!doctype html><title>Nothing here</title>"),
+        ] {
+            std::fs::write(dist.join(name), body).unwrap();
+        }
+        std::fs::create_dir(dist.join("assets")).unwrap();
+        std::fs::write(dist.join("assets/app-abc.js"), "console.log(1)").unwrap();
+        std::fs::write(
+            dist.join(assets::HEADERS_FILE),
+            r#"[["X-Frame-Options", "DENY"], ["Content-Security-Policy-Report-Only", "default-src 'self'"]]"#,
+        )
+        .unwrap();
+        let router = app_with(true, false, &dist).await;
+        a_game(&router, "x", &[]).await;
+        let rows: &[(&str, &str, bool)] = &[
+            ("GET", "/", false),
+            ("HEAD", "/", false),
+            ("GET", "/shell.bin", false),
+            ("GET", "/assets/app-abc.js", false),
+            ("GET", "/assets/missing-x.js", false),
+            ("GET", "/t/anything", false),
+            ("GET", "/enter", false),
+            ("GET", "/api/health", true),
+            ("GET", "/api/me", true),
+            ("GET", "/api/nothing", true),
+            ("GET", "/api/games", true),
+            ("GET", "/api/games/x", true),
+            ("GET", "/api/games/x/stream", true),
+        ];
+        for (method, path, api) in rows {
+            let mut req = Request::builder().method(*method).uri(*path);
+            if *api {
+                req = req.header(identity::CLAIMED_HEADER, WHO);
+            }
+            let res = router.clone().oneshot(req.body(Body::empty()).unwrap()).await.expect("the router answers");
+            let h = res.headers();
+            assert_eq!(h.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"), "{method} {path} answered {}", res.status());
+            assert_eq!(
+                h.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+                Some("default-src 'self'"),
+                "{method} {path}"
+            );
+            if *api {
+                assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "{method} {path}");
+            }
+        }
+    }
+
+    /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it
+    /// one** — the mutant that reads a set from anywhere but the state fails the second half.
+    #[tokio::test]
+    async fn an_in_memory_state_serves_no_header_set_and_with_headers_gives_it_one() {
+        let bare = app(Arc::new(AppState::in_memory()));
+        let res = bare.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
+        assert!(res.headers().get("x-frame-options").is_none(), "no dist, no set");
+        let given = app(Arc::new(AppState::in_memory().with_headers(vec![(
+            http::HeaderName::from_static("x-frame-options"),
+            http::HeaderValue::from_static("DENY"),
+        )])));
+        let res = given.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.headers().get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
     }
 
     /// **Every route that needs a session refuses a signed-in stranger at an

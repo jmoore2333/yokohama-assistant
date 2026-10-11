@@ -78,6 +78,14 @@ get() {
   body="$(cat "$tmp")"; rm -f "$tmp"
 }
 
+# header <path> <name>: the value of one response header of a plain GET, matched
+# without regard to case, or nothing (security S2a, decision D-1). A refused
+# connection, or no answer within ten seconds, reads as nothing and fails the
+# next check by name, rather than exiting under -e.
+header() {
+  curl -sS --max-time 10 -D - -o /dev/null "${base}$1" | tr -d '\r' | awk -v n="$2" -F': ' 'tolower($1)==tolower(n){print $2}' || true
+}
+
 expect() { # expect <what> <got> <want>
   [ "$2" = "$3" ] || fail "$1: got $2, want $3"
   echo "smoke:   $1 = $2"
@@ -122,6 +130,16 @@ door() {
   expect "GET /api/me with the worker door's header: user" "$(field "$body" user)" null
   get /
   expect "GET / status" "$status" 200
+  # The header set (security S2a, decision D-1): the client build's file, read at
+  # start and set by one layer on every answer, `no-store` beside it under /api.
+  # The policy is printed, not compared: its values are the image's build's.
+  expect "GET / x-frame-options" "$(header / x-frame-options)" DENY
+  local csp
+  csp="$(header / content-security-policy-report-only)"
+  test -n "$csp" || fail "GET / carries no content-security-policy-report-only"
+  echo "smoke:   GET / content-security-policy-report-only = $csp"
+  expect "GET /api/health cache-control" "$(header /api/health cache-control)" no-store
+  expect "GET /api/health x-content-type-options" "$(header /api/health x-content-type-options)" nosniff
   get /sw.js
   expect "GET /sw.js status" "$status" 200
   get /art/areas/Church.webp

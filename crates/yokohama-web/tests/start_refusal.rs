@@ -30,6 +30,13 @@
 //! or two swapped ones would rename every folder wrongly, and nothing else
 //! runs the subcommand.
 //!
+//! And since security S2a (decision D-1), the header set on the seed rule's
+//! path: `production` reads the scratch `dist`'s `headers.json`,
+//! so the running binary answers `/` and `/api/health` with its pairs, and
+//! `no-store` beside them under `/api`; a `dist` with no file starts and
+//! says so on stderr; a malformed file exits 1 before it listens, naming
+//! the file.
+//!
 //! **Every wait is bounded.** Both pipes are read on their own threads into
 //! channels; a start is polled every 50 ms for its listening line or its exit,
 //! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
@@ -42,8 +49,8 @@
 //! `dist`, a store directory under the scratch root, and port 0 — the OS picks
 //! a port nobody holds at the moment of the bind, so the cells run in parallel
 //! with each other and on a busy machine without a collision (the listening
-//! line names the configured port, so it reads `:0`). The one cell that sends
-//! the server a request binds a port it found free a moment before
+//! line names the configured port, so it reads `:0`). The two cells that send
+//! the server a request each bind a port found free a moment before
 //! ([`free_port`]), since a child bound to 0 cannot say where it listens.
 //! `Command::env` sets the CHILD's environment, never this process's, so
 //! nothing here mutates the test runner's environment
@@ -344,6 +351,34 @@ fn post(port: u16, user: &str, path: &str, body: &serde_json::Value) -> (u16, se
     (status, serde_json::from_str(rest).unwrap_or(serde_json::Value::Null))
 }
 
+/// One `GET` to the server at `port` with NO identity header (security S2a, decision D-1), over the same plain
+/// socket [`post`] uses: `Connection: close`, so the response is everything until the server closes, and each
+/// read and write bounded by [`BOUND`]. The status, and the response's head as an [`http::HeaderMap`] — the
+/// headers as the server wrote them, a repeated name kept as both lines; a head line that is no header fails
+/// here by name rather than being dropped, so a header the cell asks for is never missing for a parse's sake.
+#[cfg(feature = "open-door")]
+fn get(port: u16, path: &str) -> (u16, http::HeaderMap) {
+    use std::io::Write;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").expect("the request writes");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("the response reads");
+    let response = String::from_utf8_lossy(&response);
+    let (head, _) = response.split_once("\r\n\r\n").expect("a head and a body");
+    let mut lines = head.split("\r\n");
+    let status = lines.next().and_then(|l| l.split(' ').nth(1)).and_then(|s| s.parse().ok()).expect("a status line");
+    let mut headers = http::HeaderMap::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').unwrap_or_else(|| panic!("a head line that is no header: {line:?}"));
+        let name = http::HeaderName::from_bytes(name.trim().as_bytes()).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+        let value = http::HeaderValue::from_str(value.trim()).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+        headers.append(name, value);
+    }
+    (status, headers)
+}
+
 /// No stamp sentence of any of the rule's three shapes: each names the stamp
 /// file, and each says "Turnstile site key".
 fn assert_no_stamp_sentence(stderr: &str, shown: &str, what: &str) {
@@ -527,4 +562,53 @@ fn the_segment_subcommand_prints_address_legacy_and_current_and_exits_1_when_a_v
 
     let (status, stdout, stderr) = Server::segment(&[]).exited("no address");
     assert_eq!((status.code(), stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
+}
+
+/// **The production path reads `dist/headers.json`** (security S2a, decision D-1) — `main → AppState::new →
+/// production → assets::response_headers`, which no in-process cell runs: `/` answers every pair of a scratch
+/// dist's file and `/api/health` the pairs plus `no-store`; with NO file the binary still starts, prints one line
+/// naming `headers.json` on stderr and answers `/api/health` 200 without the set; with a MALFORMED file it exits 1
+/// before it listens, naming the file.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
+    let pairs = r#"[["X-Frame-Options", "DENY"], ["Content-Security-Policy-Report-Only", "default-src 'self'"]]"#;
+    // (1) The file present: both pairs on `/`, and `no-store` beside them on `/api/health`. The scratch dist holds
+    // an `index.html`, else `/` is the 404 page (which carries the set too, but 200 is what this arm reads).
+    let scratch = Scratch::new("headers-present");
+    std::fs::write(scratch.dist().join("headers.json"), pairs).unwrap();
+    std::fs::write(scratch.dist().join("index.html"), "<!doctype html><div id=root></div>").unwrap();
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    server.listening("present");
+    let (status, headers) = get(port, "/");
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(
+        headers.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'")
+    );
+    let (status, headers) = get(port, "/api/health");
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"));
+    drop(server);
+    // (2) No file: the binary starts, says so once on stderr, serves without the set.
+    let scratch = Scratch::new("headers-absent");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    server.listening("absent");
+    let (status, headers) = get(port, "/api/health");
+    assert_eq!(status, 200);
+    assert!(headers.get("x-frame-options").is_none(), "no file, no set");
+    let (_, _, stderr) = server.finish();
+    assert!(stderr.contains("headers.json"), "the start says once what it could not read: {stderr}");
+    drop(server);
+    // (3) A malformed file: exit 1 before the listening line, the file named — read as the keyed-build cell
+    // reads its exit.
+    let scratch = Scratch::new("headers-malformed");
+    std::fs::write(scratch.dist().join("headers.json"), "{}").unwrap();
+    let (status, _, stderr) = Server::spawn("open", &scratch).exited("a malformed headers.json");
+    assert_eq!(status.code(), Some(1));
+    assert!(stderr.contains("headers.json"), "{stderr}");
 }

@@ -184,6 +184,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // **No header set** (security S2a, decision D-1): a dist without `headers.json` — a client build older than
+    // 0.6.2, or none — still serves, and says so once here, where the layer's own prints do not go.
+    if state.headers.is_empty() {
+        eprintln!(
+            "{} has no {} — no security header is served; the client build is older than 0.6.2 or absent",
+            state.dist.display(),
+            yokohama_web::assets::HEADERS_FILE
+        );
+    }
     // Hourly, the first pass a minute after start (spec §2.4).
     if state.ttls.table.is_some() {
         tokio::spawn(yokohama_web::sweep::run(
