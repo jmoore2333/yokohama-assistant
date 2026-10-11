@@ -195,8 +195,10 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 - No bot behaviour moves: `decide`, `suggest`'s answer, `why`'s reconstruction (`why::account_parts`) and every
   arena figure are untouched; Task 6 changes what a REFUSAL says to a withheld requester, not what the search
   finds.
-- The wire corpus (`web/src/wire/`) moves ONCE, in Task 5 (the three archive replies' `path`, decision D-8), run
-  once, its diff read and recorded naming every file; any other moved byte, in any task, is a finding.
+- The wire corpus (`web/src/wire/`) moves ONCE for a shape or value, in Task 5 (the three archive replies' `path`,
+  decision D-8), run once, its diff read and recorded naming every file — and once more for the VERSION fields
+  alone in Task 8 (`health.json`'s `server_version`, the envelope's `app_version`, `archive-walk.json`'s records;
+  `docs/web-lane.md` §7's rule); any other moved byte, in any task, is a finding.
 - Every refusal this plan adds is a plain sentence, a constant or a builder in the module that raises it, through
   the layer's own `ApiError` arms (400, 401, 404) — no new status shape; the `no-store` header is the ADAPTER
   host's (axum's), as the 503 is.
