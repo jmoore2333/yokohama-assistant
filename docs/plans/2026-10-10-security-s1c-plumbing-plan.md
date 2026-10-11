@@ -2583,9 +2583,32 @@ Task 6's head (the lib count moved by this cycle's cells; the implementer re-cou
 the head it was read at). `lane_document`'s six cells and `lane-variables.test.mjs` hold the map and the
 ledger against the route table: run both.
 
+**The run's additions (2026-10-10/11), each a row or a sentence in the same register — what Tasks 1–6 landed
+beyond the draft:** §4 — the cap's SECOND layer, `api::error_value`, the one serializer behind `error_body`,
+`error_response` and `IntoResponse` (a handler's literal `ApiError` is bounded all the same; the one refusal
+written by hand outside both layers is the Worker's `identity_inner` 401, whose one value the echo rule bounds);
+the filter guard refuses any term `echo` would change (nothing a quoted string would escape reaches the CLI's
+`parse_filter`); `api::events_at` refuses an unsafe `{id}` with the layer's 404 before any store read (the two
+axum-native transport routes bypass `dispatch`); `answer` folds HEAD onto GET for its arm guards, so a HEAD never
+runs a write arm (pre-existing, found by Task 3's implementer: the creator's HEAD of a game deleted it); the Worker
+refuses an unsafe id's socket upgrade as an unknown id's (accepted, the layer's sentence, closed 4404). §13 —
+`GET …/events` and `…/stream`: an unsafe id is the layer's 404, not the store's 500; the four two-method paths
+(`/api/games`, `…/{id}`, `…/{id}/chat`, `/api/chat`): a HEAD takes the GET arm, bodiless; `GET …/index/{kind}?filter=`:
+the guard's sentence ("a filter is at most 64 characters of plain text — nothing a quoted string would escape:
+no quote, backslash, control, format or combining character"); `GET …/why`: a `mismatch` refusal served while the
+account is withheld names no move (`explain::MISMATCH_WITHHELD`). §15 — the segment row says the rename's ORDER
+(the NAS between the swap's stop and start with a guarded move; R2 after its atomic deploy with the new key read
+first; the allow-list table before the window) and that the corpus moved once here (three archive replies' `path`,
+`red_at_wire.test` → `red_at_wire.test-c91ad2a917f7`); the `identity_inner` exception. §2 — the counts at Task 6's
+head, re-read by the implementer at its own: web 517 (lib 482; `start_refusal` 5 with the `segment` cell;
+`wire_fixtures` 17 without a flag), wasm 10, Worker 77, vitest 1,506, `test:wasm` 353, `test:scripts` 542, the
+pool 224.
+
 - [ ] **Step 2: The spec's §9.5**, appended under §9 after §9.4, dated 2026-10-10, titled "S1c's plan: the
 plumbing's rulings and seven corrections": the owner's seven rulings verbatim from this plan's section, the
-decisions D-1–D-10 verbatim, the spec corrections 1–8 verbatim. Nothing above §9.5 is edited.
+decisions D-1–D-10 verbatim (D-7 and D-8 as the run corrected them), the spec corrections 1–8 verbatim; the run's
+rulings paragraph is the close's (Task 9 Step 6), as §9.4's 2026-10-10 paragraph was S1b's. Nothing above §9.5 is
+edited.
 
 - [ ] **Step 3: The CLI's two comments** (`screen_model.rs`; the fenced crate; doc only). :2463–2464:
 
