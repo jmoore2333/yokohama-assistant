@@ -1020,29 +1020,43 @@ current web/dist/headers.json's block — assemble the assets again: npm run bui
   it("holds the assembled _headers to worker/static/_headers plus the current web/dist/headers.json's block (security S2a)", () => {
     // The block missing: the static text copied as it was, as the assembly did before this cycle.
     const stale = worker({}, { "assets/_headers": "/sw.js\n  Cache-Control: no-store\n" });
-    expect(deployGuard(stale, join(stale, ".."))).toEqual(
-      naming(/_headers is not worker\/static\/_headers with the current web\/dist\/headers\.json/),
-    );
+    // EXACTLY one sentence (the reviewer's m-1): `naming` is `arrayContaining`, which a second sentence would pass.
+    expect(deployGuard(stale, join(stale, ".."))).toEqual([
+      expect.stringMatching(/_headers is not worker\/static\/_headers with the current web\/dist\/headers\.json/),
+    ]);
     // The build moved: web/dist/headers.json now names a socket host the assembled block does not.
     const moved = worker({}, {
       "../web/dist/headers.json": headersJson(headerSet({ siteUrl: "https://moved.test", releaseFeed: null, styleHashes: [] })),
     });
-    expect(deployGuard(moved, join(moved, ".."))).toEqual(naming(/_headers is not worker\/static\/_headers with the current/));
+    expect(deployGuard(moved, join(moved, ".."))).toEqual([expect.stringMatching(/_headers is not worker\/static\/_headers with the current/)]);
   });
 
   it("refuses when web/dist/headers.json is absent, naming it", () => {
     const root = worker({}, { "../web/dist/headers.json": null });
-    expect(deployGuard(root, join(root, ".."))).toEqual(naming(/web\/dist\/headers\.json is absent/));
+    expect(deployGuard(root, join(root, ".."))).toEqual([expect.stringMatching(/web\/dist\/headers\.json is absent/)]);
   });
 
   it("refuses a web/dist/headers.json the reader refuses — not JSON, a BOM, not UTF-8 — naming it in the list, never a throw", () => {
     // `lay` writes a string or a Buffer; the third row is `[["X-A","<0xff>"]]`, one byte no UTF-8 sequence admits.
     for (const bad of ["nonsense", "\ufeff[]", Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')])]) {
       const root = worker({}, { "../web/dist/headers.json": bad });
-      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual(
-        naming(/web\/dist\/headers\.json is not the client build's header set/),
-      );
+      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual([
+        expect.stringMatching(/web\/dist\/headers\.json is not the client build's header set/),
+      ]);
     }
+  });
+
+  it("holds the assembled _headers to the block alone when worker/static has no _headers — the assembly writes one anyway (Task 2's review, I-1)", () => {
+    const json = headersJson(headerSet({ siteUrl: null, releaseFeed: null, styleHashes: [] }));
+    // The static file gone and the tree's _headers the block over "", which is what the assembly writes: passes.
+    const bare = worker({ "static/_headers": null, "assets/_headers": assembledHeaders("", json) });
+    expect(deployGuard(bare, join(bare, ".."))).toEqual([]);
+    // The static file gone and the tree's _headers anything else: the same one sentence as with the file present.
+    const stale = worker({ "static/_headers": null, "assets/_headers": "nothing at all\n" });
+    expect(deployGuard(stale, join(stale, ".."))).toEqual([expect.stringMatching(/_headers is not worker\/static\/_headers with the current/)]);
+    // And no headers.json either: named, never silent.
+    const none = worker({ "static/_headers": null, "assets/_headers": "nothing at all\n", "../web/dist/headers.json": null });
+    expect(deployGuard(none, join(none, ".."))).toEqual([expect.stringMatching(/web\/dist\/headers\.json is absent/)]);
   });
 ```
 
@@ -1054,6 +1068,8 @@ describe("every answer under /api carries no-store and nosniff (security S2a, B9
   // a JSON body needs on the way out — the shell's own answers and the objects' alike (decision D-3).
   it("on the shell's own answers and the house's; never on /enter or a path outside /api", async () => {
     const rows: [string, Sent][] = [
+      // `/api` exactly — the path a `startsWith("/api/")` alone would miss (the wrapper's own first arm).
+      ["/api", {}],
       ["/api/health", {}],
       ["/api/me", {}],
       ["/api/art", {}],
@@ -1150,35 +1166,39 @@ The assembly file's top comment: its dist-copy sentence ("…rather than one sil
 the `/*` block, a dist without it refused — and its shared-functions sentence names `assembledHeaders` beside the
 three (Task 2's implementer corrected the sentence the change made false).
 
-`worker/scripts/deploy-guard.mjs`, `staleAssets` (:479–499): the loop over `worker/static`'s files compares every
-file byte for byte but `_headers`, which is compared with `assembledHeaders(the static text, web/dist/headers.json's
-text)`; `web/dist/headers.json` absent is its own failure:
+`worker/scripts/deploy-guard.mjs`, `staleAssets` (:479–499): the `_headers` arm stands OUTSIDE the loop — held
+whether or not the static file exists, the static text `""` when it is absent, as the assembly reads it (Task 2's
+review, I-1) — and the loop compares every OTHER static file byte for byte; `web/dist/headers.json` absent is its own
+failure, named before anything else:
 
 ```js
+  // Check 9's `_headers` arm, OUTSIDE the loop over the static files (Task 2's review, I-1: inside it, a tree whose
+  // `worker/static` had no `_headers` was never held, and a missing `headers.json` never named): the assembled
+  // `_headers` is held to `assembledHeaders(the static text — "" when the static file is absent, as the assembly
+  // reads it —, web/dist/headers.json's text)` whether or not the static file exists.
   const generated = join(repo, "web", "dist", "headers.json");
   const statics = join(root, "static");
+  const staticHeaders = join(statics, "_headers");
+  const headersCopy = join(tree, "_headers");
+  if (!existsSync(generated)) {
+    failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
+  } else {
+    // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
+    // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
+    let want = null;
+    try {
+      want = assembledHeaders(existsSync(staticHeaders) ? readFileSync(staticHeaders, "utf8") : "", readHeadersText(generated));
+    } catch (e) {
+      failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
+    }
+    if (want !== null && (!existsSync(headersCopy) || readFileSync(headersCopy, "utf8") !== want)) {
+      failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
+    }
+  }
   for (const file of existsSync(statics) ? readdirSync(statics).sort() : []) {
+    if (file === "_headers") continue;
     const copy = join(tree, file);
     const source = readFileSync(join(statics, file));
-    if (file === "_headers") {
-      if (!existsSync(generated)) {
-        failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
-        continue;
-      }
-      // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
-      // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
-      let want;
-      try {
-        want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
-      } catch (e) {
-        failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
-        continue;
-      }
-      if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
-        failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
-      }
-      continue;
-    }
     if (!existsSync(copy) || !readFileSync(copy).equals(source)) {
       failures.push(`worker/${shown}/${file} is not worker/static/${file} — assemble the assets again: npm run build`);
     }
@@ -1196,9 +1216,12 @@ amended to read "**The Worker** (spec §2.3), wrapped by [`handle`]: stateless, 
 /** The two headers every answer under `/api` carries (security S2a, finding B9's Worker half; the S1 stack
  *  review's DC-F4). A `_headers` block never applies to a Worker-generated answer — Cloudflare's rule for static
  *  assets — so the shell sets them itself, ON THE WAY OUT, for its own answers and the objects' alike:
- *  `no-store`, because the zone caches by file extension and a table named to look like a file would be a
- *  private frame kept at the edge (the NAS's one `Router::layer` has said the same since S1c); `nosniff`, so an
- *  API body is never read as a script. The whole set the static release carries (`_headers`' `/*` block) buys
+ *  `no-store`, so no cache in reach keeps an API answer — the browser's, a proxy's, the back/forward cache: a
+ *  routed request reaches this Worker BEFORE the zone's cache, which applies to the Worker's own `fetch`
+ *  subrequests and never to the answer it returns (Cloudflare's rule; the Workers Cache for static-asset requests
+ *  is the one setting that could keep a frame, and the guard's check 10 refuses it), while the NAS's one
+ *  `Router::layer` says the same for the host where the zone's extension rule DID keep a private frame at the
+ *  edge (S1c, B9); `nosniff`, so an API body is never read as a script. The whole set the static release carries (`_headers`' `/*` block) buys
  *  nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
 export const API_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["Cache-Control", "no-store"],
@@ -1233,12 +1256,14 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
 scripts/deploy-guard.mjs` passes and its door line prints.
 
 - [ ] **Step 5: The mutants.** **M8** `withApiHeaders` dropped from `handle` — (c)'s first row red; **M9**
-`isApiPath` as `startsWith("/api")` — (c)'s `/apiary` row red; **M10** the 101 not excepted — the upgrade cell
+`isApiPath` as `startsWith("/api")` — (c)'s `/apiary` row red; **M9b** the `=== "/api"` arm dropped — (c)'s `/api` row red; **M10** the 101 not excepted — the upgrade cell
 red (workerd refuses the constructor: `RangeError: Responses may only be constructed with status codes in the range
 200 to 599` — measured); **M11** the block not appended at assembly — (a)'s first cell red (the guard's cells lay
 their trees with `assembledHeaders` themselves, so they stay green); **M12** `staleAssets` comparing `_headers` to
 the static text alone — (b)'s first cell red, and every `deployGuard(worker())` cell with it (about fifty); **M12b** the
-`try` around the reader dropped — (b)'s unreadable-file cell red (a throw, not a list); **M13**
+`try` around the reader dropped — (b)'s unreadable-file cell red (a throw, not a list); **M12c** the `_headers` arm moved
+back inside the loop over the static files — (b)'s static-absent cell red (a bare tree passes; its `continue` branches
+returning two sentences fail the exact one-sentence cells); **M13**
 a missing `headers.json` tolerated at assembly — (a)'s second cell red; **M13b** `headers.json` copied into the
 assets tree — (a)'s first cell red at the file's presence, and the two assembly cells whose `report.files`/`report.unlisted`
 lists name every file in the tree ("lays out dist…", "lands the 404 page…") with it; `edge-rule.test.mjs`'s drift cell
