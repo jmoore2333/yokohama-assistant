@@ -342,7 +342,7 @@ Five inputs the spec implies and this plan pins, each to the task that owns the 
 
 | name | where | meaning |
 |---|---|---|
-| `CSP_MODE: "report-only" \| "enforce"` (= `"report-only"`) · `CSP_HEADER` · `CLOUDFLARE` · `styleHashesOf(html) -> string[]` · `cspOf({siteUrl, releaseFeed, styleHashes}) -> string` · `headerSet({siteUrl, releaseFeed, styleHashes, mode?}) -> [string, string][]` · `headersBlock(set) -> string` · `headersJson(set) -> string` · `parseHeadersJson(text) -> [string, string][]` | `web/scripts/headers.mjs` (+ `headers.d.mts`) | the one place a directive is spelled; the set as ordered `[name, value]` pairs; the `_headers` `/*` block; the file's text and its reader (Task 1) |
+| `CSP_MODE: "report-only" \| "enforce"` (= `"report-only"`) · `CSP_HEADER` · `CLOUDFLARE` · `styleHashesOf(html) -> string[]` · `cspOf({siteUrl, releaseFeed, styleHashes}) -> string` · `headerSet({siteUrl, releaseFeed, styleHashes, mode?}) -> [string, string][]` · `headersBlock(set) -> string` · `headersJson(set) -> string` · `parseHeadersJson(text) -> [string, string][]` · `readHeadersText(file) -> string` | `web/scripts/headers.mjs` (+ `headers.d.mts`) | the one place a directive is spelled; the set as ordered `[name, value]` pairs; the `_headers` `/*` block; the file's text and its reader (Task 1) |
 | `dist/headers.json` | written by `vite build` (`web/vite.config.ts`'s stamp plugin) beside `build-values.json`; not precached | the set both hosts serve, as `headersJson` writes it (Task 1) |
 | the `/*` block of `worker/assets/_headers` | appended by `assemble-assets.mjs` from `web/dist/headers.json`; held by `deploy-guard.mjs`'s check 9 | the static release's headers on the Worker (Task 2) |
 | `API_HEADERS` · `isApiPath(pathname) -> boolean` · `withApiHeaders(res) -> Response` · `answer(req, env, ctx, keys)` (the former body of `handle`) | `worker/src/index.ts` | `no-store` and `nosniff` on every `/api` answer but a 101 (Task 2) |
@@ -447,7 +447,9 @@ shipping head. Task 9 is the orchestrator's frame and the window.
 // order, every directive and its sources, what the build values add, what the 404 page's style hashes to — so a
 // directive loosened by hand, or a host added without its reason, fails here before either host serves it.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLOUDFLARE,
@@ -458,6 +460,7 @@ import {
   headersBlock,
   headersJson,
   parseHeadersJson,
+  readHeadersText,
   styleHashesOf,
 } from "./headers.mjs";
 
@@ -610,6 +613,19 @@ describe("the set, its block and its file", () => {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
   });
+
+  it("reads a file's BYTES strictly: an invalid UTF-8 byte and a BOM are refused, where readFileSync(.., 'utf8') would substitute U+FFFD or drop the BOM — what serde_json's read_to_string refuses on the NAS", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yokohama-headers-"));
+    const file = join(dir, "headers.json");
+    writeFileSync(file, headersJson(headerSet(NONE)));
+    expect(parseHeadersJson(readHeadersText(file))).toEqual(headerSet(NONE));
+    // `[["X-A","<0xff>"]]`: one byte no UTF-8 sequence admits, inside a value.
+    writeFileSync(file, Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')]));
+    expect(() => readHeadersText(file)).toThrow(/headers\.json is not valid UTF-8/);
+    // A BOM before a valid set: kept, so the parse refuses it as the NAS's would.
+    writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(headersJson(headerSet(NONE)))]));
+    expect(() => parseHeadersJson(readHeadersText(file))).toThrow(/headers\.json does not parse/);
+  });
 });
 ```
 
@@ -672,6 +688,7 @@ scripts/headers.node.test.ts` — RED: the module does not exist. The real-build
 // is the door's one cross-origin fetch; the 404 page's inline style is admitted by its hash (D-4), so the page
 // stays self-contained and the policy strict.
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 /** The policy's mode, a CONSTANT and not a build value (decision D-1): `report-only` ships
  *  `Content-Security-Policy-Report-Only` — this release, 0.6.2, one release in the wild whose violations are read
@@ -804,7 +821,9 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  whose escape `JSON.parse` admits and `serde_json` does not; a pair of any other arity — and two value shapes
  *  `http` admits besides, a tab and an empty value: so a file that passes the assembly always passes the NAS's
  *  reader at start, and the one-host-down release (passed the assembly, stopped the NAS) cannot arise. Measured
- *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes.
+ *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes. A FILE
+ *  reaches this through [`readHeadersText`], never `readFileSync(.., "utf8")`, which would put U+FFFD where
+ *  `serde_json`'s `read_to_string` refuses the byte (Task 1's fix round, C-2).
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -828,6 +847,24 @@ export function parseHeadersJson(text) {
   }
   return parsed.map(([name, value]) => [name, value]);
 }
+
+/** `dist/headers.json`'s TEXT, read from `file` with its bytes decoded STRICTLY — a `TextDecoder` with `fatal`, the
+ *  BOM kept — so an invalid UTF-8 byte is a throw naming the file, and a BOM reaches `parseHeadersJson`, which
+ *  refuses it: both are what `serde_json`'s `read_to_string` refuses on the NAS, and what `readFileSync(.., "utf8")`
+ *  would have hidden (U+FFFD substituted; the BOM dropped). Every read of the file goes through this — the Worker's
+ *  assembly, the deploy guard, the e2e build's override — so the "passes the assembly, passes the NAS" sentence
+ *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync`
+ *  does; the callers test for the file first.
+ *  @param {string | URL} file
+ *  @returns {string} */
+export function readHeadersText(file) {
+  const bytes = readFileSync(file);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`headers.json is not valid UTF-8 — ${file}`);
+  }
+}
 ```
 
 `web/scripts/headers.d.mts` (the node project type-checks `vite.config.ts`'s imports, as `build-values.d.mts` does):
@@ -847,6 +884,7 @@ export declare function headerSet(values: HeaderValues & { mode?: "report-only" 
 export declare function headersBlock(set: readonly (readonly [string, string])[]): string;
 export declare function headersJson(set: readonly (readonly [string, string])[]): string;
 export declare function parseHeadersJson(text: string): [string, string][];
+export declare function readHeadersText(file: string | URL): string;
 ```
 
 `web/vite.config.ts`: import `headerSet`, `headersJson`, `styleHashesOf` from `./scripts/headers.mjs`; beside the
@@ -886,7 +924,8 @@ hash cell red; **M4b** the CR normalization dropped — the hash cell's CRLF row
 object keyed by name — the round-trip cell red (and the order lost); **M5b** `parseHeadersJson` accepting a name
 with a space, or a value with a newline — the round-trip cell's bad rows red; **M5c** `p.length >= 2`, `isWellFormed`
 dropped, or the name bound dropped — the round-trip cell's three Rust-refused rows red, one each; **M5d** a tab or an empty
-value admitted — its two rows red; **M6** `headers.json` dropped from
+value admitted — its two rows red; **M5e** `readHeadersText` decoding with `readFileSync(file, "utf8")`, or `fatal` off — the
+bytes cell's invalid-byte row red; **M5f** `ignoreBOM` dropped — its BOM row red; **M6** `headers.json` dropped from
 `NOT_PRECACHED` in the generator — the real-build cell red at `toEqual(entries)` (the list names it); **M7**
 `writeBundle` not writing `headers.json` — the real-build cell red ("the build emits the header set"); **M7b**
 `styleHashes: []`, **M7c** `siteUrl: null`, **M7d** `releaseFeed: null` in `vite.config.ts`'s call — the stamp
@@ -913,7 +952,7 @@ c1 review's policy in Report-Only, the 404 page's style hashed, Cloudflare's thr
 - Test: `cd worker && npm run typecheck && npm run test:scripts && npm test`
 
 **Interfaces:**
-- Consumes: `headersBlock`, `parseHeadersJson` (`web/scripts/headers.mjs`, Task 1) — imported as
+- Consumes: `headersBlock`, `parseHeadersJson`, `readHeadersText` (`web/scripts/headers.mjs`, Task 1) — imported as
   `../../web/scripts/headers.mjs` (the two packages already import across the tree: `web/e2e/door_unmetered.spec.ts`
   reads `worker/scripts/precache-list.mjs`); `web/dist/headers.json`.
 - Produces: the `/*` block of `worker/assets/_headers`; `API_HEADERS`, `isApiPath`, `withApiHeaders`.
@@ -1051,7 +1090,7 @@ missing file tolerated), (b) RED; `npm test` — (c) RED on `/api/health`'s firs
 
 - [ ] **Step 3: The code.**
 
-`worker/scripts/assemble-assets.mjs`: import `headersBlock` and `parseHeadersJson` from
+`worker/scripts/assemble-assets.mjs`: import `headersBlock`, `parseHeadersJson` and `readHeadersText` from
 `../../web/scripts/headers.mjs`, and `writeFileSync` joins `copyFileSync` in the `node:fs` import (:28); a new export
 beside `verifyTree`:
 
@@ -1092,7 +1131,7 @@ then after the copy loop and before `walk(out)`:
   }
   const target = join(out, "_headers");
   const statik = existsSync(target) ? readFileSync(target, "utf8") : "";
-  writeFileSync(target, assembledHeaders(statik, readFileSync(generated, "utf8")));
+  writeFileSync(target, assembledHeaders(statik, readHeadersText(generated)));
 ```
 
 `worker/scripts/deploy-guard.mjs`, `staleAssets` (:479–499): the loop over `worker/static`'s files compares every
@@ -1110,7 +1149,7 @@ text)`; `web/dist/headers.json` absent is its own failure:
         failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
         continue;
       }
-      const want = assembledHeaders(source.toString("utf8"), readFileSync(generated, "utf8"));
+      const want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
       if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
         failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
       }
@@ -1122,8 +1161,9 @@ text)`; `web/dist/headers.json` absent is its own failure:
   }
 ```
 
-(`assembledHeaders` imported from `./assemble-assets.mjs`, beside `precacheEntriesFrom` and `verifyTree`. Check
-9's header comment in the file's top block gains one sentence.)
+(`assembledHeaders` imported from `./assemble-assets.mjs`, beside `precacheEntriesFrom` and `verifyTree`, and
+`readHeadersText` from `../../web/scripts/headers.mjs` — a new import line: the file's bytes are decoded strictly
+wherever it is read, Task 1's C-2. Check 9's header comment in the file's top block gains one sentence.)
 
 `worker/src/index.ts`: the current `handle` is renamed `answer` (its doc comment stays above it, its first line
 amended: "**The Worker** … in this order —, wrapped by [`handle`]"), and above it:
@@ -1908,8 +1948,8 @@ if (framed(window)) {
 }
 ```
 
-`web/scripts/e2e-build.mjs`: `readFileSync`, `writeFileSync` from `node:fs` and `CSP_HEADER`, `headersJson`,
-`parseHeadersJson` from `./headers.mjs` imported at the top; after the `spawnSync` of `build:client` and before
+`web/scripts/e2e-build.mjs`: `writeFileSync` from `node:fs` and `CSP_HEADER`, `headersJson`, `parseHeadersJson`,
+`readHeadersText` from `./headers.mjs` imported at the top; after the `spawnSync` of `build:client` and before
 `process.exit(run.status ?? 1)`:
 
 ```js
@@ -1921,7 +1961,7 @@ if (framed(window)) {
 // already refuses a post-e2e dist for its debug module, and the NAS recipe rebuilds.)
 if (run.status === 0) {
   const file = new URL("../dist/headers.json", import.meta.url);
-  const set = parseHeadersJson(readFileSync(file, "utf8")).map(([name, value]) =>
+  const set = parseHeadersJson(readHeadersText(file)).map(([name, value]) =>
     name === CSP_HEADER["report-only"] ? [CSP_HEADER.enforce, value] : [name, value],
   );
   writeFileSync(file, headersJson(set));
