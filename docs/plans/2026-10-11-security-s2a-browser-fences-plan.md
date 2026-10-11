@@ -1034,6 +1034,16 @@ current web/dist/headers.json's block — assemble the assets again: npm run bui
     const root = worker({}, { "../web/dist/headers.json": null });
     expect(deployGuard(root, join(root, ".."))).toEqual(naming(/web\/dist\/headers\.json is absent/));
   });
+
+  it("refuses a web/dist/headers.json the reader refuses — not JSON, a BOM, not UTF-8 — naming it in the list, never a throw", () => {
+    // `lay` writes a string or a Buffer; the third row is `[["X-A","<0xff>"]]`, one byte no UTF-8 sequence admits.
+    for (const bad of ["nonsense", "\ufeff[]", Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')])]) {
+      const root = worker({}, { "../web/dist/headers.json": bad });
+      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual(
+        naming(/web\/dist\/headers\.json is not the client build's header set/),
+      );
+    }
+  });
 ```
 
 (c) `worker/test/worker.test.ts`, a new describe:
@@ -1135,6 +1145,11 @@ then after the copy loop and before `walk(out)`:
   writeFileSync(target, assembledHeaders(statik, readHeadersText(generated)));
 ```
 
+The assembly file's top comment: its dist-copy sentence ("…rather than one silently replacing the other.") gains that
+`web/dist/headers.json` is the one file of the dist NOT copied — read, its pairs appended to the copied `_headers` as
+the `/*` block, a dist without it refused — and its shared-functions sentence names `assembledHeaders` beside the
+three (Task 2's implementer corrected the sentence the change made false).
+
 `worker/scripts/deploy-guard.mjs`, `staleAssets` (:479–499): the loop over `worker/static`'s files compares every
 file byte for byte but `_headers`, which is compared with `assembledHeaders(the static text, web/dist/headers.json's
 text)`; `web/dist/headers.json` absent is its own failure:
@@ -1150,7 +1165,15 @@ text)`; `web/dist/headers.json` absent is its own failure:
         failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
         continue;
       }
-      const want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
+      // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
+      // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
+      let want;
+      try {
+        want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
+      } catch (e) {
+        failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
+        continue;
+      }
       if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
         failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
       }
@@ -1167,7 +1190,7 @@ text)`; `web/dist/headers.json` absent is its own failure:
 wherever it is read, Task 1's C-2. Check 9's header comment in the file's top block gains one sentence.)
 
 `worker/src/index.ts`: the current `handle` is renamed `answer` (its doc comment stays above it, its first line
-amended: "**The Worker** … in this order —, wrapped by [`handle`]"), and above it:
+amended to read "**The Worker** (spec §2.3), wrapped by [`handle`]: stateless, and in this order —"), and above it:
 
 ```ts
 /** The two headers every answer under `/api` carries (security S2a, finding B9's Worker half; the S1 stack
@@ -1214,7 +1237,8 @@ scripts/deploy-guard.mjs` passes and its door line prints.
 red (workerd refuses the constructor: `RangeError: Responses may only be constructed with status codes in the range
 200 to 599` — measured); **M11** the block not appended at assembly — (a)'s first cell red (the guard's cells lay
 their trees with `assembledHeaders` themselves, so they stay green); **M12** `staleAssets` comparing `_headers` to
-the static text alone — (b)'s first cell red, and every `deployGuard(worker())` cell with it (about fifty); **M13**
+the static text alone — (b)'s first cell red, and every `deployGuard(worker())` cell with it (about fifty); **M12b** the
+`try` around the reader dropped — (b)'s unreadable-file cell red (a throw, not a list); **M13**
 a missing `headers.json` tolerated at assembly — (a)'s second cell red; **M13b** `headers.json` copied into the
 assets tree — (a)'s first cell red at the file's presence, and the two assembly cells whose `report.files`/`report.unlisted`
 lists name every file in the tree ("lays out dist…", "lands the 404 page…") with it; `edge-rule.test.mjs`'s drift cell
