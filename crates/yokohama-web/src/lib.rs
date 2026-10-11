@@ -4099,6 +4099,17 @@ mod tests {
                 assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "{method} {path}");
             }
         }
+        // The 401 the doc names — `GET /api/games` with NO identity header, which the rows above all send — carries
+        // the set and `no-store` too: the layer wraps a refusal as it wraps an answer (Task 3's C-2).
+        let res = router
+            .clone()
+            .oneshot(Request::builder().uri("/api/games").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no identity header at the open door is a 401");
+        let h = res.headers();
+        assert_eq!(h.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"), "the 401 carries the set");
+        assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "and no-store");
     }
 
     /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it

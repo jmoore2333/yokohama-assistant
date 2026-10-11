@@ -728,8 +728,8 @@ mod tests {
     /// because a build that wrote the wrong thing must not be served without its policy in silence.
     #[test]
     fn response_headers_reads_the_pairs_in_order_and_refuses_any_other_shape() {
-        // The file's own scratch idiom (:419, :518, :667): `tempfile` is not a dependency, and the owner's
-        // dependency fence keeps it so.
+        // The file's own scratch idiom (the cache, assets and stamp cells' `temp_dir()` roots): `tempfile` is not a
+        // dependency, and the owner's dependency fence keeps it so.
         let dir = std::env::temp_dir().join(format!("yokohama-headers-{}-a", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch dist");
