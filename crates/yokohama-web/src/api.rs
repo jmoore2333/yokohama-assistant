@@ -104,13 +104,25 @@ pub fn error_body(e: &ApiError) -> String {
 /// constructor, which caps already, or a handler's own struct literal, which
 /// does not — its sentence becomes bytes through this function and no other
 /// in the layer, so no refusal leaves the layer longer than the cap.
+///
+/// **The `foreign_bot` pair is capped here too, each string as the message
+/// is** (the S1 stack review's HI-F1): its two labels are echoed where they
+/// are made ([`crate::bots::label`]), but the knobbed arm of
+/// [`crate::bots::distinguishing_labels`] joins every parameter of a record's
+/// map, a map the record's writer chose, so a pair can still be long after
+/// the echo. Before this a 409 carried a 1,025-character message beside a
+/// 20,012-character pair.
 pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
     let mut body = serde_json::json!({ "error": ApiError::capped(e.message.clone()) });
     if let Some(status) = e.table_status {
         body["status"] = status.into();
     }
     if let Some(pair) = &e.foreign_bot {
-        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+        let capped = crate::bots::ForeignBot {
+            played: ApiError::capped(pair.played.clone()),
+            runs: ApiError::capped(pair.runs.clone()),
+        };
+        body["foreign_bot"] = serde_json::to_value(&capped).expect("the pair serializes");
     }
     body
 }
@@ -3123,6 +3135,86 @@ mod tests {
         assert_eq!(v["bot"], serde_json::json!({ "label": "V2 lookahead", "runs_here": false }));
         let (status, v) = ask(&games, "local@browser", "DELETE", &base, "", "");
         assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+    }
+
+    /// **A stored record's bot controller is cut and escaped wherever the layer
+    /// repeats it** (the S1 stack review's HI-F1; finding D12's echo rule). A
+    /// controller of 20,000 characters holding a bidi override and control
+    /// characters — a record the browser host's restore admits — is read
+    /// back through every game route's 409 at the unfinished game (its
+    /// sentence and the `foreign_bot` pair beside it, which the message cap
+    /// never covered), the table's and the list's `bot.label`, and the
+    /// finished game's `why`, a 200 no cap sees at all. The review read a
+    /// 21 KB 409, a 20 KB label and a 60,392-character `why` sentence. Each
+    /// body here stays under 2 KB, and no string in it carries a raw control
+    /// character, the override or a 65-character run of the value.
+    #[test]
+    fn a_hostile_bot_controller_is_cut_and_escaped_wherever_the_layer_repeats_it() {
+        use crate::games::test_support::BOT_TO_MOVE_AT;
+        let hostile = format!("\u{202e}EVIL\n{}\u{7}\u{1b}[31m", "q".repeat(20_000));
+        let call = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, String, serde_json::Value) {
+            let user = User::parse("local@browser").expect("an address");
+            let res = dispatch(
+                games,
+                &LOCAL_HOST,
+                Ok(&user),
+                &ApiRequest {
+                    method,
+                    path,
+                    query,
+                    content_type: (!body.is_empty()).then_some("application/json"),
+                    body: body.as_bytes(),
+                },
+            );
+            let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
+            (res.status, res.body, v)
+        };
+        // A string the layer wrote: bounded, and the value cut and escaped.
+        let clean = |what: &str, s: &str| {
+            assert!(s.chars().count() < 2_048, "{what}: {} characters", s.chars().count());
+            assert!(!s.chars().any(|c| c.is_control() || c == '\u{202e}'), "{what}: a raw control or override character: {:?}", s.chars().take(80).collect::<String>());
+            assert!(!s.contains(&"q".repeat(65)), "{what}: the raw run came back");
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+        let unfinished = holding_foreign(&hostile, Some(BOT_TO_MOVE_AT));
+        for (method, route, query, body) in [
+            ("GET", "", "", ""),
+            ("POST", "/input", "", r#"{"line":"1"}"#),
+            ("GET", "/ports", "", ""),
+            ("GET", "/labs", "", ""),
+            ("GET", "/areas", "", ""),
+            ("GET", "/log", "", ""),
+            ("GET", "/at", "from=0&to=1", ""),
+            ("GET", "/at/0", "", ""),
+            ("GET", "/suggest", "", ""),
+            ("GET", "/why", "", ""),
+            ("GET", "/index/orders", "", ""),
+            ("GET", "/result", "", ""),
+            ("GET", "/record", "", ""),
+            ("GET", "/chat", "", ""),
+        ] {
+            let row = format!("{method} {base}{route}");
+            let (status, text, v) = call(&unfinished, method, &format!("{base}{route}"), query, body);
+            assert_eq!(status, 409, "{row}: {}", text.chars().take(200).collect::<String>());
+            assert!(text.len() < 2_048, "{row}: a {} byte body", text.len());
+            for (part, s) in [("error", &v["error"]), ("played", &v["foreign_bot"]["played"]), ("runs", &v["foreign_bot"]["runs"])] {
+                clean(&format!("{row} {part}"), s.as_str().unwrap_or_else(|| panic!("{row}: no {part}")));
+            }
+        }
+        let (status, text, v) = call(&unfinished, "GET", &format!("{base}/table"), "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        clean("the table's bot.label", v["bot"]["label"].as_str().expect("a label"));
+        let (status, text, v) = call(&unfinished, "GET", "/api/games", "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        let row = v["games"].as_array().expect("a list").iter().find(|g| g["id"] == PLAYED_ID).expect("the table is listed");
+        clean("the list's bot.label", row["bot"]["label"].as_str().expect("a label"));
+
+        let finished = holding_foreign(&hostile, None);
+        let (status, text, v) = call(&finished, "GET", &format!("{base}/why"), "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() < 2_048, "the finished game's why: a {} byte body", text.len());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        clean("the finished game's why", v["refusal"]["message"].as_str().expect("a message"));
     }
 
     /// **`why` reconstructs a move by a runnable bot that is not the production

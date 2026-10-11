@@ -1401,14 +1401,18 @@ mod tests {
     /// the browser module and the Worker module write a refusal through — cuts
     /// it whatever built it. Read through both arms: the mutant that serializes
     /// `.message` raw reads 3,072 characters on both, while every
-    /// constructor-built error stays capped by the first layer.
+    /// constructor-built error stays capped by the first layer. **The
+    /// `foreign_bot` pair beside the message is capped the same way** (the S1
+    /// stack review's HI-F1: a 409 once carried a 20,012-character pair beside
+    /// a capped message) — each of its two strings, read through both arms;
+    /// the mutant that serializes the pair as it came reads 3,072 here.
     #[tokio::test]
     async fn a_literal_api_error_is_capped_at_the_boundary() {
         let literal = || ApiError {
             status: StatusCode::CONFLICT,
             message: "m".repeat(MESSAGE_MAX * 3),
             table_status: None,
-            foreign_bot: None,
+            foreign_bot: Some(bots::ForeignBot { played: "p".repeat(MESSAGE_MAX * 3), runs: "r".repeat(MESSAGE_MAX * 3) }),
         };
         let res = literal().into_response();
         assert_eq!(res.status(), StatusCode::CONFLICT);
@@ -1421,10 +1425,21 @@ mod tests {
             let error = body["error"].as_str().expect("an error sentence");
             assert_eq!(error.chars().count(), MESSAGE_MAX + 1, "{arm}");
             assert!(error.ends_with('…'), "{arm}");
+            for half in ["played", "runs"] {
+                let said = body["foreign_bot"][half].as_str().unwrap_or_else(|| panic!("{arm}: no {half}"));
+                assert_eq!(said.chars().count(), MESSAGE_MAX + 1, "{arm}: the pair's {half}");
+                assert!(said.ends_with('…'), "{arm}: the pair's {half}");
+            }
         }
-        // A message under the cap is written as it always was, byte for byte.
+        // A message under the cap is written as it always was, byte for byte,
+        // and so is a pair under it.
         let short = ApiError { status: StatusCode::CONFLICT, message: "short".into(), table_status: Some("open"), foreign_bot: None };
         assert_eq!(api::error_body(&short), r#"{"error":"short","status":"open"}"#);
+        let paired = ApiError {
+            foreign_bot: Some(bots::ForeignBot { played: "V2".into(), runs: "V4".into() }),
+            ..short
+        };
+        assert_eq!(api::error_body(&paired), r#"{"error":"short","foreign_bot":{"played":"V2","runs":"V4"},"status":"open"}"#);
     }
 
     /// **A hostile value anywhere a sentence echoes it is bounded** (finding
@@ -1563,6 +1578,22 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
         assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "POST /api/archive (on the watcher list): the raw value came back in a {} byte body", text.len());
         assert!(text.contains("on the watcher list"), "the row reaches the sentence: {}", text.chars().take(200).collect::<String>());
+        // A bot seat's controller in an UPLOADED record is the caller's value
+        // too (the S1 stack review's HI-F1): the archive's foreign-bot
+        // sentence names the bot the game was played by, and the CLI's reason
+        // after it names the controller again. A 16 KB controller holding a
+        // bidi override and control characters is cut and escaped in both;
+        // the cap alone kept this body near a kilobyte while it carried the
+        // override, a 1,000-character run and the raw controls.
+        let mut record: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("the played record");
+        record["run"]["seats"][1]["controller"] = serde_json::json!(format!("\u{202e}{big}\u{7}\u{1b}[31m"));
+        let (status, v) = post_as(&slow_state(0, 1, 1_000), WHO, "/api/archive", serde_json::json!({ "record": record.to_string(), "table": PLAYED_TABLE })).await;
+        let text = v.to_string();
+        let said = v["error"].as_str().unwrap_or_default();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{}", text.chars().take(200).collect::<String>());
+        assert!(said.contains("was played by"), "the row reaches the sentence: {}", said.chars().take(200).collect::<String>());
+        assert!(text.len() <= 2_048 && !text.contains(&"z".repeat(65)), "POST /api/archive (was played by): the raw value came back in a {} byte body", text.len());
+        assert!(!said.chars().any(|c| c.is_control() || c == '\u{202e}'), "POST /api/archive (was played by): a raw control or override character came back");
     }
 
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {

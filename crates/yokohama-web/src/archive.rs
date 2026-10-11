@@ -1017,6 +1017,46 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// **Sixteen puts in flight from one caller land exactly the share**
+    /// (finding B12; the S1 stack review's CB-F1, AH-F2 and DC-F1, three
+    /// reviewers independently). The count is a read and the writes come
+    /// after it, so without `DirArchive::puts` held across both, puts released
+    /// together each read the count under the bound and all land — the review
+    /// read sixteen of sixteen in the first round with the lock dropped, and
+    /// 257 records under a 256-record share through the binary. Sixteen
+    /// threads behind one barrier, a four-record share, five rounds on fresh
+    /// directories: exactly four `Landed` and twelve `Quota` in every round.
+    #[cfg(feature = "server")]
+    #[test]
+    fn sixteen_puts_in_flight_land_exactly_the_share() {
+        use std::sync::{Arc, Barrier};
+        for round in 0..5 {
+            let dir = std::env::temp_dir().join(format!("yokohama_archive_race_{}_{round}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let a = Arc::new(DirArchive::new(&dir).with_quota(Quota { records: 4, bytes: 1 << 20 }));
+            let barrier = Arc::new(Barrier::new(16));
+            let puts: Vec<_> = (0..16)
+                .map(|i| {
+                    let (a, barrier) = (Arc::clone(&a), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        a.put("browser/q_at_r/", Why::Over, &format!("local-{i}"), &format!("{{\"r\":{i}}}"), "{\"t\":1}")
+                    })
+                })
+                .collect();
+            let (mut landed, mut full) = (0, 0);
+            for put in puts {
+                match put.join().expect("a put thread") {
+                    Ok(PutOutcome::Landed) => landed += 1,
+                    Err(PutError::Quota { .. }) => full += 1,
+                    other => panic!("round {round}: {other:?}"),
+                }
+            }
+            assert_eq!((landed, full), (4, 12), "round {round}: sixteen puts in flight against a four-record share");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
     /// **A put's own two paths never count against it** (security S1b, finding
     /// B12). A crash between the two writes leaves a half pair, the table with
     /// no record, and the put that repairs it counted that table twice: on
