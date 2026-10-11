@@ -98,15 +98,49 @@ pub fn error_body(e: &ApiError) -> String {
 /// [`error_body`] as a value, for `IntoResponse for ApiError`, whose `Json`
 /// serializes it — the same bytes, one rule, THREE arms. (The first draft of
 /// this export carried two; the corpus's foreign-bot 409 is what caught it.)
+///
+/// **The message is cut to [`crate::MESSAGE_MAX`] HERE, at the boundary**
+/// (security S1c, decision D-2's second layer): whatever built the error — a
+/// constructor, which caps already, or a handler's own struct literal, which
+/// does not — its sentence becomes bytes through this function and no other
+/// in the layer, so no refusal leaves the layer longer than the cap.
+///
+/// **The `foreign_bot` pair is capped here too, each string as the message
+/// is** (the S1 stack review's HI-F1): its two labels are echoed where they
+/// are made ([`crate::bots::label`]), but the knobbed arm of
+/// [`crate::bots::distinguishing_labels`] joins every parameter of a record's
+/// map, a map the record's writer chose, so a pair can still be long after
+/// the echo. Before this a 409 carried a 1,025-character message beside a
+/// 20,012-character pair.
 pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
-    let mut body = serde_json::json!({ "error": e.message });
+    let mut body = serde_json::json!({ "error": ApiError::capped(e.message.clone()) });
     if let Some(status) = e.table_status {
         body["status"] = status.into();
     }
     if let Some(pair) = &e.foreign_bot {
-        body["foreign_bot"] = serde_json::to_value(pair).expect("the pair serializes");
+        let capped = crate::bots::ForeignBot {
+            played: ApiError::capped(pair.played.clone()),
+            runs: ApiError::capped(pair.runs.clone()),
+        };
+        body["foreign_bot"] = serde_json::to_value(&capped).expect("the pair serializes");
     }
     body
+}
+
+/// The `why` answer as it leaves the layer — the ONE site it is serialized,
+/// [`dispatch`]'s arm, which every host answers through: a refusal's
+/// `message` cut to [`crate::MESSAGE_MAX`] characters and the ellipsis, as
+/// [`error_value`] cuts an error's (the S1 stack review's re-review, Finding
+/// 2). A `why` refusal is a 200, not an `ApiError`, so no cap saw it, and the
+/// echo bounds each value a label repeats but not how many: a record whose
+/// bot ties production's label renders every key of its map, and 30,000 keys
+/// read a 270,350-character message. Every refusal the CLI or the layer words
+/// is far under the cap, and is written as it always was.
+fn why_response(mut w: crate::explain::Why) -> ApiResponse {
+    if let Some(refusal) = w.refusal.as_mut() {
+        refusal.message = ApiError::capped(std::mem::take(&mut refusal.message));
+    }
+    ok_json(200, &w)
 }
 
 /// The body `IntoResponse for ApiError` writes, byte for byte.
@@ -278,7 +312,9 @@ fn is_game_route(pattern: &str) -> bool {
 /// **An empty segment binds nothing** (M6.5c2 cycle D, straw poll row 10), as
 /// axum's matchit reads it: `/api/games//table` is no route, a 404. Bound, it
 /// reached `get_table` and came back as the store's "not a usable game name",
-/// a 500 — the server blamed for a path the caller mistyped.
+/// a 500 — the server blamed for a path the caller mistyped — and since
+/// security S1c an id the store would refuse is `dispatch`'s own 404 before
+/// any handler (finding B8).
 fn matches<'a>(pattern: &str, path: &'a str) -> Option<Vec<&'a str>> {
     let mut bound = Vec::new();
     let mut ps = pattern.split('/');
@@ -1332,6 +1368,7 @@ pub(crate) fn lockdown_messages(lines: Vec<String>, reason: &str) -> Vec<String>
 /// shows both that a line is checked and that a checked line goes through
 /// untouched.
 pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<ClientState, ApiError> {
+    grammar::check_line(&req.line).map_err(ApiError::bad_request)?;
     if !grammar::is_gameplay_line(&req.line) {
         return Err(ApiError::bad_request(grammar::refusal(&req.line)));
     }
@@ -1434,8 +1471,9 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
             return Err(ApiError {
                 status: StatusCode::CONFLICT,
                 message: format!(
-                    "this game is asking {actual:?}, not {expected:?} — the prompt moved on \
+                    "this game is asking {actual:?}, not \"{expected}\" — the prompt moved on \
                      (a restart drops an open picker). Re-read the game and answer what it asks.",
+                    expected = crate::echo::echo(expected),
                 ),
                 table_status: None, foreign_bot: None,
             });
@@ -1651,7 +1689,12 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
 /// reimplement the first half: the refusals ARE the honesty gate."* A
 /// reconstruction that does not equal the recorded move refuses, naming both
 /// moves and both versions — and that refusal reaches the browser as data,
-/// because a branch nobody has ever seen is where defects live.
+/// because a branch nobody has ever seen is where defects live. **The one
+/// exception is served at the requester's visibility**
+/// ([`explain::Why::refused_at`], S1a's residual M-3): a `mismatch` served
+/// while the mover's account is withheld carries the layer's
+/// [`explain::MISMATCH_WITHHELD`], naming neither move nor version, since the
+/// reconstructed move was chosen over the bot's hidden hand.
 ///
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
@@ -1703,7 +1746,7 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
                 let visibility = explain::visibility_of(&now, account.reconstruction.seat, &held);
                 explain::Why::account(&account, games.rules(), visibility)
             }
-            Err(refusal) => explain::Why::refused(&refusal),
+            Err(refusal) => explain::Why::refused_at(&refusal, &now, &held),
         },
     )
 }
@@ -1750,12 +1793,28 @@ pub fn card_index(
         "sites" => IndexKind::Sites,
         other => {
             return Err(ApiError::bad_request(format!(
-                "no card index named {other:?} — the four are orders, techs, goals and sites"
+                "no card index named \"{other}\" — the four are orders, techs, goals and sites",
+                other = crate::echo::echo(other)
             )))
         }
     };
     let filter = match q.filter.as_deref() {
         None => None,
+        // **What `echo` would change is refused, not echoed**: the CLI's
+        // `parse_filter` (a fenced crate) repeats the term raw in single
+        // quotes, so a term `{:?}` would escape — a double quote, a backslash,
+        // a control, a format character such as U+202E, a combining mark —
+        // never reaches it. An apostrophe is plain text to `{:?}`, and passes.
+        // (The length half is LOAD-BEARING, not subsumed: a term whose 65th
+        // character is `…` echoes as itself — `x`×64+`…` — so without the
+        // count a 129-character `\`×128+`…` would reach `parse_filter` raw.
+        // The cell's terms carry one such term; mutant ML reads it.)
+        Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
+            return Err(ApiError::bad_request(format!(
+                "a filter is at most {} characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character",
+                crate::echo::ECHO_MAX
+            )))
+        }
         Some(term) => yokohama_cli::card_prompt::parse_filter(term, kind)
             .map_err(ApiError::bad_request)?,
     };
@@ -1993,6 +2052,10 @@ pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: 
 /// and `playing` fall straight through, so a stranger at a deal is refused and
 /// a locked game still asks for its password.
 pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, ApiError> {
+    // An unsafe `{id}` is the layer's 404 here too: `app()` serves the two transport routes outside `dispatch` (S1c, Task 2's C6).
+    if !crate::store::is_safe_id(id) {
+        return Err(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
+    }
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
     let table = games.table_for_anyone(id, user)?;
@@ -2213,6 +2276,19 @@ pub(crate) const RECORD_UNSAVED: &str =
 /// seed — hidden-set member #1 — until the last move. Lockdown does not fence
 /// it: this is projection, not computation (the M3 lockdown rule).
 ///
+/// **The last move is final only at a SHARED table** (the S1 stack review's
+/// HI-F2). At a table of one person whose bot, if any, this build runs,
+/// `undo_allowed` answers `Ok` before its finished-game arm (the refinish
+/// rule, R-6.5c2.11), so that person may read this record, seed included, and
+/// then undo the game back to running. That undo gains them nothing: a solo
+/// creator's seed is theirs to choose (security S1a, finding B3), and no other
+/// person holds a seat to read it against. `undo_allowed`'s FIRST arm refuses
+/// an undo of a game played against a bot this build does not run, at any
+/// table, so a lone person who played a foreign bot cannot undo at all (the
+/// re-review's Finding 5 corrected "with or without a bot"). Where two people
+/// sit, nobody rewinds a finished game (R-5.2), and the fence holds as
+/// written.
+///
 /// Since security S1a the store is read UNDER the handle's lock and its record
 /// held to the handle by its event count AND its terminal digest — a stored
 /// record of the same length that is not the finished game (undone and
@@ -2249,7 +2325,7 @@ pub fn record(games: &Games, user: &User, id: &str) -> Result<String, ApiError> 
         .store()
         .read(crate::store::Doc::Record, id)
         .map_err(ApiError::server_error)?
-        .ok_or_else(|| ApiError::not_found(format!("no game named {id:?}")))?;
+        .ok_or_else(|| ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
     #[derive(Deserialize)]
     struct StoredRecord {
         events: Vec<serde::de::IgnoredAny>,
@@ -2502,21 +2578,34 @@ pub(crate) fn archive_would_accept(record: &str, table: &str) -> bool {
 
 /// The layer's front door: match, answer, and shape the response. A known path
 /// under another method is 405 with an empty body (axum's own shape); a path
-/// that matches nothing is the JSON 404 the server's `fallback` writes.
+/// that matches nothing is the JSON 404 the server's `fallback` writes; and an
+/// `{id}` the store would refuse is the JSON 404 `no game named "<echo>"`
+/// (security S1c, finding B8). All three come before `answer`, so before its
+/// 401 and its 400. Under HEAD both 404s leave with no body.
 pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiRequest<'_>) -> ApiResponse {
-    let (pattern, bound) = match find(req.method, req.path, host.serves_games) {
-        Matched::Route(p, b) => (p, b),
+    let out = match find(req.method, req.path, host.serves_games) {
         Matched::WrongMethod => return ApiResponse { status: 405, body: String::new() },
+        // An arm of `out` and not an early return (security S1c's final wave),
+        // so the HEAD below leaves this refusal bodiless too.
         Matched::NoRoute => {
-            return error_response(ApiError::not_found(format!("no such endpoint: {}", req.path)))
+            error_response(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path))))
         }
+        // **An `{id}` the store would refuse is a 404 here, before any handler**
+        // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
+        // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
+        // nothing this refuses could have been a table. An arm of `out` and not
+        // an early return, so the HEAD below leaves this refusal bodiless too.
+        Matched::Route(pattern, bound) if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) => {
+            error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
+        }
+        Matched::Route(pattern, bound) => match answer(games, host, identity, req, pattern, &bound) {
+            Ok(r) => r,
+            Err(e) => error_response(e),
+        },
     };
-    let out = match answer(games, host, identity, req, pattern, &bound) {
-        Ok(r) => r,
-        Err(e) => error_response(e),
-    };
-    // HEAD leaves with an empty body on BOTH arms — a refused HEAD too — so a
-    // non-HTTP host never emits a body a HEAD did not ask for.
+    // HEAD leaves with an empty body on every arm of `out` — a refused HEAD too,
+    // an unknown path's included — so a non-HTTP host never emits a body a
+    // HEAD did not ask for.
     if req.method == "HEAD" {
         ApiResponse { status: out.status, body: String::new() }
     } else {
@@ -2536,6 +2625,8 @@ fn answer(
     pattern: &'static str,
     b: &[&str],
 ) -> Result<ApiResponse, ApiError> {
+    // A HEAD once took a write arm because the guards read the literal method (S1c Task 3's finding); every arm guard below reads `method`, never `req.method`.
+    let method = if req.method == "HEAD" { "GET" } else { req.method };
     match pattern {
         "/api/health" => Ok(ok_json(200, &health(games, host))),
         "/api/me" => Ok(ok_json(200, &me(host, identity))),
@@ -2546,12 +2637,12 @@ fn answer(
             // axum ran the extractors in, so every refusal keeps its precedence.
             let u = identity.map_err(unauthorized)?;
             match pattern {
-                "/api/games" if req.method == "GET" => {
+                "/api/games" if method == "GET" => {
                     list_games(games, u, &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/games" => create_game(games, u, &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(201, &v)),
-                "/api/games/{id}" if req.method == "GET" => {
+                "/api/games/{id}" if method == "GET" => {
                     get_game(games, u, b[0]).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}" => {
@@ -2566,7 +2657,7 @@ fn answer(
                 "/api/games/{id}/unlock" => {
                     unlock(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
-                "/api/games/{id}/chat" if req.method == "GET" => {
+                "/api/games/{id}/chat" if method == "GET" => {
                     chat_read(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}/chat" => {
@@ -2591,7 +2682,7 @@ fn answer(
                 "/api/games/{id}/log" => {
                     log(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
-                "/api/chat" if req.method == "GET" => {
+                "/api/chat" if method == "GET" => {
                     house_chat_read(games, u, &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
                 "/api/chat" => house_chat_post(games, u, &parse_json(req.content_type, req.body)?)
@@ -2616,9 +2707,7 @@ fn answer(
                     at_k(games, u, b[0], k).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}/suggest" => suggest(games, u, b[0]).map(|v| ok_json(200, &v)),
-                "/api/games/{id}/why" => {
-                    why(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
-                }
+                "/api/games/{id}/why" => why(games, u, b[0], &parse_query(req.query)?).map(why_response),
                 "/api/games/{id}/index/{kind}" => {
                     card_index(games, u, b[0], b[1], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
@@ -2627,7 +2716,7 @@ fn answer(
                 "/api/games/{id}/record" => {
                     record(games, u, b[0]).map(|json| ApiResponse { status: 200, body: json })
                 }
-                _ => Err(ApiError::not_found(format!("no such endpoint: {}", req.path))),
+                _ => Err(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path)))),
             }
         }
     }
@@ -2642,7 +2731,8 @@ fn answer(
 pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiError> {
     raw.parse::<usize>().map_err(|_| {
         ApiError::bad_request(format!(
-            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`",
+            raw = crate::echo::echo(raw)
         ))
     })
 }
@@ -2655,7 +2745,8 @@ pub(crate) fn parse_path_usize(index: usize, raw: &str) -> Result<usize, ApiErro
 pub(crate) fn parse_path_u64(index: usize, raw: &str) -> Result<u64, ApiError> {
     raw.parse::<u64>().map_err(|_| {
         ApiError::bad_request(format!(
-            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`"
+            "Invalid URL: Cannot parse value at index {index} with value `{raw}` to a `u64`",
+            raw = crate::echo::echo(raw)
         ))
     })
 }
@@ -2770,6 +2861,60 @@ mod tests {
         );
         assert_eq!((res.status, res.body), (400, serde_json::json!({ "error": NOT_AN_OBJECT }).to_string()));
         assert!(games.store().list(crate::store::Doc::Table).expect("a listing").is_empty(), "no table opened");
+    }
+
+    /// **An unsafe `{id}` is `dispatch`'s own 404, BEFORE any handler**
+    /// (security S1c, finding B8). "Before any handler" is read off the
+    /// identity: `answer` asks for it ahead of every game route, so a refused
+    /// identity at a SAFE id is the 401 and at an UNSAFE one the 404. The
+    /// boundary is `is_safe_id`'s — 64 safe bytes reach the handler and a 65th
+    /// does not — and the check reads `bound[0]` because every pattern that
+    /// carries `{id}` binds it FIRST, which the last loop pins. A HEAD of an
+    /// unsafe id leaves with no body, as every refused HEAD does — an unknown
+    /// path's 404 included.
+    #[test]
+    fn an_unsafe_id_is_dispatchs_own_404_before_any_handler() {
+        fn ask(games: &Games, method: &str, path: &str, identity: Identity<'_>) -> ApiResponse {
+            dispatch(games, &LOCAL_HOST, identity, &ApiRequest { method, path, query: "", content_type: None, body: b"" })
+        }
+        let games = crate::games::test_support::games();
+        let red = User::parse("red@t.test").expect("an address");
+        let (safe, unsafe_) = ("a".repeat(64), "a".repeat(65));
+        let sentence = |id: &str| error_body(&ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Err("no identity"));
+        assert_eq!(res.status, 401, "64 safe bytes reach `answer`, which asks the identity first: {}", res.body);
+        let res = ask(&games, "GET", &format!("/api/games/{unsafe_}/table"), Err("no identity"));
+        assert_eq!((res.status, res.body), (404, sentence(&unsafe_)), "a 65th byte is refused before the identity is asked");
+        for id in ["..", ".hidden", "a b", "-x", "_house", "caf\u{e9}"] {
+            let res = ask(&games, "GET", &format!("/api/games/{id}"), Err("no identity"));
+            assert_eq!((res.status, res.body), (404, sentence(id)), "{id:?} is not a name the store keeps");
+        }
+
+        let res = ask(&games, "GET", &format!("/api/games/{safe}/table"), Ok(&red));
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "the handler's own absence, the same sentence");
+        let res = dispatch(
+            &games,
+            &LOCAL_HOST,
+            Ok(&red),
+            &ApiRequest { method: "POST", path: &format!("/api/games/{safe}/join"), query: "", content_type: Some("application/json"), body: br#"{"seat":1}"# },
+        );
+        assert_eq!((res.status, res.body), (404, sentence(&safe)), "a join at an absent safe id is the handler's 404");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "and it never touched the lock map");
+
+        let res = ask(&games, "HEAD", &format!("/api/games/{unsafe_}"), Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "a refused HEAD carries no body");
+        // The unknown path's 404 too: an arm of `out`, so the HEAD strip reads
+        // it (the GET beside it carries the sentence, so the strip is the
+        // difference).
+        let res = ask(&games, "GET", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body), (404, error_body(&ApiError::not_found("no such endpoint: /api/nope"))));
+        let res = ask(&games, "HEAD", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "an unknown path's HEAD carries no body");
+
+        for r in routes(true).iter().filter(|r| r.pattern.contains("{id}")) {
+            assert_eq!(r.pattern.find('{'), r.pattern.find("{id}"), "{} binds {{id}} first", r.pattern);
+        }
     }
 
     /// **`error_body` is the body `dispatch` writes for a refusal** (M6.5c2,
@@ -2905,6 +3050,12 @@ mod tests {
     /// keeps builds its prefix from this, as the route does.
     const ARCHIVE_CALLER: &str = "local@browser";
 
+    /// [`ARCHIVE_CALLER`]'s segment, as the route computes it — the readable
+    /// half and a digest since security S1c (D26), which no cell spells.
+    fn archive_segment() -> String {
+        crate::archive::caller_segment(&User::parse(ARCHIVE_CALLER).unwrap())
+    }
+
     fn post_archive(games: &Games, record: &str, table: &str) -> (u16, serde_json::Value) {
         let body = serde_json::json!({ "record": record, "table": table }).to_string();
         post_archive_bytes(games, body.as_bytes())
@@ -3011,6 +3162,185 @@ mod tests {
         assert_eq!(v["bot"], serde_json::json!({ "label": "V2 lookahead", "runs_here": false }));
         let (status, v) = ask(&games, "local@browser", "DELETE", &base, "", "");
         assert_eq!(status, 204, "Abandon never rebuilds, so it is not refused: {v}");
+    }
+
+    /// **A stored record's bot controller is cut and escaped wherever the layer
+    /// repeats it** (the S1 stack review's HI-F1; finding D12's echo rule). A
+    /// controller of 20,000 characters holding a bidi override and control
+    /// characters — a record the browser host's restore admits — is read
+    /// back through every game route's 409 at the unfinished game (its
+    /// sentence and the `foreign_bot` pair beside it, which the message cap
+    /// never covered), the table's and the list's `bot.label`, and the
+    /// finished game's `why`, a 200 no cap sees at all. The review read a
+    /// 21 KB 409, a 20 KB label and a 60,392-character `why` sentence. Each
+    /// body here stays under 2 KB, and no string in it carries a raw control
+    /// character, the override or a 65-character run of the value.
+    #[test]
+    fn a_hostile_bot_controller_is_cut_and_escaped_wherever_the_layer_repeats_it() {
+        use crate::games::test_support::BOT_TO_MOVE_AT;
+        let hostile = format!("\u{202e}EVIL\n{}\u{7}\u{1b}[31m", "q".repeat(20_000));
+        let call = |games: &Games, method: &str, path: &str, query: &str, body: &str| -> (u16, String, serde_json::Value) {
+            let user = User::parse("local@browser").expect("an address");
+            let res = dispatch(
+                games,
+                &LOCAL_HOST,
+                Ok(&user),
+                &ApiRequest {
+                    method,
+                    path,
+                    query,
+                    content_type: (!body.is_empty()).then_some("application/json"),
+                    body: body.as_bytes(),
+                },
+            );
+            let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
+            (res.status, res.body, v)
+        };
+        // A string the layer wrote: bounded, and the value cut and escaped.
+        let clean = |what: &str, s: &str| {
+            assert!(s.chars().count() < 2_048, "{what}: {} characters", s.chars().count());
+            assert!(!s.chars().any(|c| c.is_control() || c == '\u{202e}'), "{what}: a raw control or override character: {:?}", s.chars().take(80).collect::<String>());
+            assert!(!s.contains(&"q".repeat(65)), "{what}: the raw run came back");
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+        let unfinished = holding_foreign(&hostile, Some(BOT_TO_MOVE_AT));
+        for (method, route, query, body) in [
+            ("GET", "", "", ""),
+            ("POST", "/input", "", r#"{"line":"1"}"#),
+            ("GET", "/ports", "", ""),
+            ("GET", "/labs", "", ""),
+            ("GET", "/areas", "", ""),
+            ("GET", "/log", "", ""),
+            ("GET", "/at", "from=0&to=1", ""),
+            ("GET", "/at/0", "", ""),
+            ("GET", "/suggest", "", ""),
+            ("GET", "/why", "", ""),
+            ("GET", "/index/orders", "", ""),
+            ("GET", "/result", "", ""),
+            ("GET", "/record", "", ""),
+            ("GET", "/chat", "", ""),
+        ] {
+            let row = format!("{method} {base}{route}");
+            let (status, text, v) = call(&unfinished, method, &format!("{base}{route}"), query, body);
+            assert_eq!(status, 409, "{row}: {}", text.chars().take(200).collect::<String>());
+            assert!(text.len() < 2_048, "{row}: a {} byte body", text.len());
+            for (part, s) in [("error", &v["error"]), ("played", &v["foreign_bot"]["played"]), ("runs", &v["foreign_bot"]["runs"])] {
+                clean(&format!("{row} {part}"), s.as_str().unwrap_or_else(|| panic!("{row}: no {part}")));
+            }
+        }
+        let (status, text, v) = call(&unfinished, "GET", &format!("{base}/table"), "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        clean("the table's bot.label", v["bot"]["label"].as_str().expect("a label"));
+        let (status, text, v) = call(&unfinished, "GET", "/api/games", "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        let row = v["games"].as_array().expect("a list").iter().find(|g| g["id"] == PLAYED_ID).expect("the table is listed");
+        clean("the list's bot.label", row["bot"]["label"].as_str().expect("a label"));
+
+        let finished = holding_foreign(&hostile, None);
+        let (status, text, v) = call(&finished, "GET", &format!("{base}/why"), "", "");
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() < 2_048, "the finished game's why: a {} byte body", text.len());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        clean("the finished game's why", v["refusal"]["message"].as_str().expect("a message"));
+    }
+
+    /// A `Games` holding the committed pair as [`holding_foreign`] does, with
+    /// seat 1's parameters — in the record's run provenance AND the table
+    /// mirror's descriptor, so the two say one bot — replaced by `params`.
+    fn holding_foreign_with_params(controller: &str, cut: Option<usize>, params: serde_json::Value) -> Games {
+        let (record, table) = crate::games::test_support::foreign_pair(controller, cut);
+        let mut record: serde_json::Value = serde_json::from_str(&record).expect("the pair's record");
+        let mut table: serde_json::Value = serde_json::from_str(&table).expect("the pair's table");
+        record["run"]["seats"][1]["params"] = params.clone();
+        table["turn"]["bot"]["params"] = params;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        games.load_document(crate::store::Doc::Record, PLAYED_ID, &record.to_string()).unwrap();
+        games.load_document(crate::store::Doc::Table, PLAYED_ID, &table.to_string()).unwrap();
+        games
+    }
+
+    /// One call through `dispatch` as `local@browser`, answering the status,
+    /// the body's bytes as written and the body parsed.
+    fn dispatch_raw(games: &Games, method: &str, path: &str) -> (u16, String, serde_json::Value) {
+        let user = User::parse("local@browser").expect("an address");
+        let res = dispatch(
+            games,
+            &LOCAL_HOST,
+            Ok(&user),
+            &ApiRequest { method, path, query: "", content_type: None, body: b"" },
+        );
+        let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
+        (res.status, res.body, v)
+    }
+
+    /// **A hostile parameter KEY on a controller this build KNOWS is cut and
+    /// escaped too** (the S1 stack review's re-review, Finding 1). The CLI
+    /// parses `lookahead-v1`'s name, refuses the key in `from_parts`' own words
+    /// — `unknown param {key:?} for lookahead-v1 (…)`, escaped by `{:?}` but
+    /// whole — and the web repeats that clause in the unfinished game's 409
+    /// and the finished game's `why` 200. `echo_record_values` echoes every key
+    /// of the record's map; the mutant that echoes the controller alone left
+    /// all 492 lib cells green, and this cell's key reached the `why` 200 whole
+    /// (the re-reviewer read 20,208 characters against 266). The key is 20,000
+    /// characters holding a bidi override and an escape; the controller and
+    /// every other knob are the pair's own, so the clause is the key's alone.
+    #[test]
+    fn a_hostile_parameter_key_on_a_known_controller_is_cut_and_escaped() {
+        use crate::games::test_support::BOT_TO_MOVE_AT;
+        let key = format!("\u{202e}{}\u{1b}[31m", "q".repeat(20_000));
+        let params = || {
+            let mut map = serde_json::to_value(&crate::bots::production().params).expect("production's params");
+            map[key.as_str()] = serde_json::json!(1);
+            map
+        };
+        let clean = |what: &str, s: &str| {
+            assert!(s.len() < 2_048, "{what}: {} bytes", s.len());
+            assert!(!s.chars().any(|c| c.is_control() || c == '\u{202e}'), "{what}: a raw control or override character");
+            assert!(!s.contains(&"q".repeat(65)), "{what}: the raw run came back ({} bytes)", s.len());
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+        let unfinished = holding_foreign_with_params("lookahead-v1", Some(BOT_TO_MOVE_AT), params());
+        let (status, text, v) = dispatch_raw(&unfinished, "GET", &base);
+        assert_eq!(status, 409, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() < 2_048, "the 409: a {} byte body", text.len());
+        let said = v["error"].as_str().expect("a sentence");
+        // The probe's own reading: the clause is `from_parts`' refusal of the key.
+        assert!(said.contains("unknown param \""), "the clause is the key's: {}", said.chars().take(300).collect::<String>());
+        for (part, s) in [("error", &v["error"]), ("played", &v["foreign_bot"]["played"]), ("runs", &v["foreign_bot"]["runs"])] {
+            clean(&format!("the 409's {part}"), s.as_str().unwrap_or_else(|| panic!("no {part}")));
+        }
+
+        let finished = holding_foreign_with_params("lookahead-v1", None, params());
+        let (status, text, v) = dispatch_raw(&finished, "GET", &format!("{base}/why"));
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        clean("the finished game's why", v["refusal"]["message"].as_str().expect("a message"));
+    }
+
+    /// **The `why` 200's refusal message is capped at the boundary, as an
+    /// error's is** (the S1 stack review's re-review, Finding 2). The echo
+    /// bounds each value a label repeats, not how MANY: a record whose
+    /// controller is spelled as production's label at production's version
+    /// ties both labels, so the knobbed arm renders every key of the record's
+    /// map — 30,000 here, `k00001…k30000`. The 409 was capped already
+    /// (`api::error_value`); the finished game's `why` is a 200 no cap saw, and
+    /// read 270,427 bytes with a 270,350-character message. Now the message is
+    /// cut at the one site the answer is serialized, to `MESSAGE_MAX`
+    /// characters and the ellipsis. The mutant that drops the cap fails the
+    /// count.
+    #[test]
+    fn the_why_refusal_message_is_capped_at_the_boundary() {
+        let keys: serde_json::Map<String, serde_json::Value> =
+            (1..=30_000).map(|i| (format!("k{i:05}"), serde_json::json!(1))).collect();
+        let finished = holding_foreign_with_params("V4", None, serde_json::Value::Object(keys));
+        let (status, text, v) = dispatch_raw(&finished, "GET", &format!("/api/games/{PLAYED_ID}/why"));
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        let said = v["refusal"]["message"].as_str().expect("a message");
+        assert!(said.starts_with("This move was made by V4 (V4 k00001=1,k00002=1,"), "the knobbed arm: {}", said.chars().take(120).collect::<String>());
+        assert_eq!(said.chars().count(), crate::MESSAGE_MAX + 1, "the message is cut to MESSAGE_MAX and the ellipsis");
+        assert!(said.ends_with('…'));
+        assert!(text.len() < 4_096, "a {} byte body", text.len());
     }
 
     /// **`why` reconstructs a move by a runnable bot that is not the production
@@ -3249,7 +3579,7 @@ mod tests {
         assert_eq!(status, 201, "{v}");
         assert_eq!(v["leaf"], "over");
         assert_eq!(v["identical"], false);
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/over/{PLAYED_ID}.json", archive_segment()));
 
         // The same bytes again: 200 `identical`, never a 409.
         let (status, v) = post_archive(&on, PLAYED_RECORD, PLAYED_TABLE);
@@ -3415,7 +3745,7 @@ mod tests {
         let (status, v) = post_archive(&claims, &broken, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
         assert_eq!(v["leaf"], "over");
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/over/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/over/{PLAYED_ID}.json", archive_segment()));
         let disagreeing = keyed(PLAYED_TABLE, "start_seat", 1.into());
         let (status, v) = post_archive(&claims, &broken, &disagreeing);
         assert_eq!(status, 400, "the table's checks come first: {v}");
@@ -3465,7 +3795,7 @@ mod tests {
         let (status, v) = post_archive(&games, PLAYED_RECORD, PLAYED_TABLE);
         assert_eq!((status, v["identical"].as_bool()), (200, Some(true)), "held, so never replayed: {v}");
         assert_eq!(v["leaf"], "abandoned", "{v}");
-        assert_eq!(v["path"], format!("browser/local_at_browser/rev7/abandoned/{PLAYED_ID}.json"));
+        assert_eq!(v["path"], format!("browser/{}/rev7/abandoned/{PLAYED_ID}.json", archive_segment()));
     }
 
     /// **Every cheap check speaks before the archive is asked** (security S1b,

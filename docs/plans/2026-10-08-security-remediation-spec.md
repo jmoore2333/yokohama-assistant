@@ -378,3 +378,135 @@ S1b's execution found what the plan did not know, and the controller ruled on ea
 10. **Plan gaps the run fixed in code**: the shared-table undo's `trailing_state` (the undo half of A3), the HEAD request's bypass of the gate, the permit held in the async frame instead of the pool's closure, the put's check-then-write race on the quota, the half pair's double count, the catchers for M29, M20, M21–22 and the `fold_to` insertion, and the plan's account of the corpus (correction 1 of §9.3 stands, but the regeneration did not leave every frame payload at `0`: it added `options_omitted` to 27 frame-bearing payload files, 22 reading `0` throughout, three retreat fixtures folded to their recover-nothing member and reading 2, 3 and 3, and two carrying the fold's count on a non-deciding viewer's frame, `run.json`'s frame 0 reading 3 and `spectator.json` reading 2; nothing was renumbered, because the retreat family is the list's tail).
 11. **The `CHECKPOINT_EVERY` figures in the pre-flight were wrong and are corrected in the code's comment**: a state is a few kilobytes in memory (about 15 KB serialized), and a position read or an undo folds at most sixty-three events from a complete ladder.
 12. **The plan-text corrections** (the sentences about the RED readings, M6's rows, M17's mechanism, M19's status, M31's iteration, `record.rs`'s range, the renumbering and the `git add` lines) belong to the plan's own §"Review record" at the close, not to this specification.
+
+### 9.5 — 2026-10-10, S1c's plan: the plumbing's rulings and eight corrections
+
+S1c's plan (`docs/plans/2026-10-10-security-s1c-plumbing-plan.md`) transcribes the owner's seven rulings for the cycle, takes ten decisions of its own and makes eight corrections, recorded forward: seven of this specification and one of the board's residual list. The three sections follow VERBATIM, as the plan reads at `b58026d7` (D-6 re-copied there in Task 7's fix round; the rest as transcribed at `05334847`, unchanged since): the rulings as the brainstorm of 2026-10-10 settled them, and the decisions and corrections with the plan's amendments in place — D-1 and D-2 from Task 1's run, D-6 from Task 7's, D-7 from Task 6's, D-8 and the eighth correction on the pre-flight's reading — so what follows is what the cycle executed, not its first draft. The run's rulings are the close's paragraph after them, as §9.4's 2026-10-10 paragraph was S1b's.
+
+**The owner's rulings for this cycle (2026-10-10), and what each binds**
+
+The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them and nothing re-opens them.
+
+1. **D7, the watcher roster's cap: `accepted`.** The 257th unlock answering 409 is the design (`tables.rs:756–760`,
+   M6.3 §3.4): a roster that forgot its oldest entry would re-lock a watcher mid-game. Filling it needs 256
+   distinct identities, which only the dev door (B6) or the public door (C1, C2) supplies — S2's rows. The ledger
+   row reads `accepted` with the owner's sentence (Task 9 Step 6); no code moves; the cell that pins the 409 at
+   the cap stays as it is.
+2. **D26, the caller segment: readable plus a digest, and a rename.** The segment keeps its readable form (cut at
+   48) and appends `-` and the first twelve hex characters of a SHA-256 over the whole normalized address. Every
+   existing folder on the NAS and every key under `browser/` in R2 is renamed ONCE, by the orchestrator, in the
+   deploy window, from the recipe Task 5 writes into both runbooks and the `segment` subcommand it adds to the
+   server binary. No legacy read path is kept in the layer.
+3. **B9: no dot in a creator-chosen id, and `no-store` under `/api`.** A hosted create refuses any id containing
+   `.` rather than keeping Cloudflare's extension list current; the storage rule `is_safe_id` keeps admitting
+   dots, so a table stored before this cycle still loads. Every answer under `/api` — the adapter's, the three
+   transport routes', the art manifest's and the fallback's 404 — carries `Cache-Control: no-store`; the static
+   release (`/assets/…`, `/art/…`, `/shell.bin`) keeps its own rule (`assets.rs`).
+4. **D12 and D28: one echo rule.** One helper cuts an echoed caller value to 64 characters and escapes it; every
+   site that formats one uses it; `ApiError`'s constructors cap any message at 1,024 characters. The gameplay line
+   is at most 256 bytes and carries no control character; the refusal of a long line names the length, never the
+   text. The pre-flight measures the longest legal line (Task 9 Step 1) and records the margin.
+5. **M-3 and the `why` chart.** A mismatch refusal served to a requester the account is withheld from carries the
+   typed kind and a fixed sentence naming no move. The served chart's real-browser pin stays a RECORDED residual:
+   it is test coverage, not a finding, and the e2e tier already runs twelve minutes.
+6. **The fenced CLI doc sentence: taken.** Two doc comments in `crates/yokohama-cli/src/screen_model.rs` are made
+   true (Task 7); the fence is restated as "no CLI behaviour or user-visible text moves" and the CLI suite is the
+   gate.
+7. **The wrap of S1.** `security-s1c` is cut from `security-s1b`'s head with a stacked PR; the whole-stack review
+   before the master merge is a **four-agent Sonnet workflow run, its findings verified by the orchestrator**
+   (the owner's explicit opt-in to the Workflow tool for that step, 2026-10-10; in place of a Fable whole-stack
+   review); the fifteen-gate roster runs at the stack's head, as a merge to master owes it; the workspace version
+   bumps to **0.6.1** at the wrap (Task 8), since the CLI's `suggest` derivation and the web wire both changed in
+   S1; **the deploys are approved** — both hosts in one maintenance window, with the live acceptance, the rename
+   and the five configuration changes the board lists.
+
+**The decisions this plan takes** (the orchestrator's; the owner reads them at the plan review)
+
+- **D-1 — the echo helper escapes without quoting, so every existing sentence is byte-identical for a short,
+  clean value.** `echo(value)` returns the first 64 characters as `{:?}` renders a `str`, less its two quotes — NOT
+  `str::escape_debug`, which writes `it\'s` and leaves a combining mark after the first character raw, so an
+  apostrophe in a name would have read differently (the implementer's C1, 2026-10-10) — with a `…` appended when
+  it cut; a site that quoted with `{x:?}` now writes `\"{x}\"` with `x = echo(x)` as a named argument, and
+  `no such endpoint: {}` stays unquoted. The Worker's TS cells pin that 404's text through the module (`worker/test/worker.test.ts:677`,
+  `open/door.test.ts:273`, `:280`), so a quoting change there would ripple across three suites for nothing.
+- **D-2 — the message cap is TWO layers: the constructors, and the boundary.** A serde error names an unknown
+  field verbatim (`deny_unknown_fields`), axum's path sentences name the segment, and a site the inventory misses
+  is the one that bites. The first layer is 1,024 characters at `bad_request`/`not_found`/`server_error` and in
+  the `From<GameError>` arms, so the in-memory sentence is bounded. The second (Task 1's fix round 1, 2026-10-10 —
+  the owner's side note read the first layer's twenty-two holes: `api.rs`'s own struct literals, `busy()`,
+  `unauthorized`, the Worker's one) is `api::error_value`, the ONE serializer behind `error_body`,
+  `error_response` and `IntoResponse`, so whatever built an `ApiError` — a handler's literal included — its
+  sentence leaves the layer capped, and the browser module (through `dispatch`) and the Worker module (through
+  `error_body`) inherit it unedited. A private marker field was the alternative, refused: it would have forced an
+  edit in the Worker crate (fenced until Task 5) and covered no host that serializes a message itself. The
+  per-site 64 keeps the sentences readable. The one refusal written by hand outside both layers is the Worker's
+  `identity_inner` 401 (its `lib.rs:381`, built from `User::parse`'s sentence, whose caller value the echo rule
+  bounds) — recorded, S2's door rows' territory.
+- **D-3 — B8's two halves are one helper and one check.** `Games::with_table_lock(id, body)` takes the lock,
+  runs the body, drops its clone and prunes, so "prune on every exit" cannot be forgotten at a site; every writer
+  reads the table before calling it (an absent table is a 404 that never touches the map); `tables.rs` then
+  contains no `lock_for(` call, which a source-scan cell pins. The `{id}` check sits in `api::dispatch` after the
+  match: an id `is_safe_id` refuses is a 404 in the words the layer already uses for an absent game — today it is
+  the store's 500 (`matches`' doc, `api.rs:276–281`).
+- **D-4 — the stream's end is a stream wrapper, not a dependency.** `tokio-stream` 0.1.19 has no inclusive
+  `take_while`, and `futures-util` is not a direct dependency of the crate. A fifteen-line `UntilLast` stream over
+  `Pin<Box<_>>` yields the frame marked last and then ends; the `then` closure marks both `end` arms.
+- **D-5 — the permit is skipped when the identity did not resolve, and nothing else moves.** Public routes
+  (`/api/health`, `/api/me`, `/api/labels`, `/api/art`) answer without identity through the layer, so the adapter
+  cannot 401 before dispatch; the five replay routes all need identity, so a replay-route request whose identity
+  is `Err` dispatches WITHOUT a permit and the layer answers its 401 having run no replay. The route's own
+  refusals (a missing game, a stranger) stay under the permit: behind Access every caller is signed in, and a
+  pre-read would be a second statement of the route's rule.
+- **D-6 — the legacy segment is kept as a named function, in the layer, for the rename and for a cell.**
+  `archive::legacy_caller_segment` is the pre-S1c mapping verbatim; `caller_segment` differs from it for EVERY
+  address (a cell), so an unmigrated folder is detectable; the server binary's `segment <address>…` subcommand
+  prints both for the window's recipe. No code FILES under a legacy segment or READS one — `caller_segment` itself
+  calls `legacy_caller_segment` for its readable half, so "read by nothing" (the draft's words) was false of the
+  function and true of the prefix (Task 7's implementer, 2026-10-11).
+- **D-7 — the drifted record for M-3's route cell is built inside the cell**, from a vs-bot game the cell plays:
+  the bot's last recorded move is swapped for another member of the legal list at that position, the record
+  written back through the store, and a fresh `AppState` built over the same store (the restart that evicts the
+  live handle). The construction was MEASURED by Task 6's implementer (2026-10-11), not by the pre-flight: the draft's swap of the
+  bot's LAST MOVE never reached the route — that move was forced (a one-member list, so no other member exists)
+  and the rebuild refused the cut record's stale terminal digest with a 500 — so the cell swaps the bot's last
+  DECISION (the first position, from the end, whose legal list has two members; event 3, a Laboratory for a
+  Skip at the corpus seed) and re-stamps the cut record's digest; a bare `why` on the drifted record reads the
+  WITHHELD account of the later forced move, because the rebuild's pump replays forced moves — correct. A third
+  cell pins Review Focus 5's game-over half (a route passing an EMPTY seat list survived the first two).
+- **D-8 — the corpus moves ONCE, in Task 5, and nowhere else.** No frame, header or sentence a fixture carries
+  changes for a short, clean value — except the archive route's reply, whose `path` names the caller segment:
+  `archive_post.json`, `archive_post_identical.json` and `archive_post_abandoned.json` carry
+  `browser/red_at_wire.test/…` and move to the digested segment (Task 5 regenerates once and reads the diff: three
+  `path` values and nothing else). The `why` fixture that carries a `mismatch` (`why_refusals.json`) is a
+  CONSTRUCTION — `wire_fixtures.rs::every_refusal_payload` builds the twelve from `explain::refusal_samples()`
+  through `RefusalDto::of`, never through the route — so Task 6 moves nothing. A moved byte anywhere else is a
+  finding. (The pre-flight's reading, 2026-10-10: the draft expected Task 6 to be the one candidate and Task 5
+  none; the plan's own greps, run, read the opposite.)
+- **D-9 — the Worker crate is NOT fenced this cycle.** Its receipt cells compute `caller_segment` dynamically
+  but one pins the legacy cap (`receipt.rs:825–827`: `(70, 64)` and the stripped `.test`); Task 5 rewrites that
+  premise. The five fenced crates of spec §6 (core, oracle, difftest, bridge, gen-data) and `yokohama-wasm` stay
+  byte-identical.
+- **D-10 — the version bump is a task of this cycle (Task 8), on the stack, before the roster**, so the roster,
+  the workflow review and the merge all read the head that ships. The tag `v0.6.1` is cut on master after the
+  merge (`docs/web-lane.md` §7).
+
+**Spec corrections** (to be recorded as §9.5 by Task 7, dated 2026-10-10)
+
+1. **B9's hosted-id rule is "no dot", not "a known extension"** (the owner's ruling 3): the list is Cloudflare's
+   to change and the client never sends an id.
+2. **D7 is `accepted`, not fixed** (ruling 1), with the owner's sentence in the ledger.
+3. **D26's segment is readable plus a digest, with a one-time rename on both hosts** (ruling 2); spec §2.1's
+   "an injective caller segment" is met in practice (a 48-bit digest collision is the only collision left).
+4. **S1b's residual list on the board was stale by two items**: the live replay's lobby skip IS guarded on an
+   empty rule and its 26 kept rows ARE pinned (`worker/scripts/live-replay.test.mjs:297`, the final wave
+   `17085e72`, W9 and W10). S1c does not take them; the board is corrected at the close.
+5. **The `{id}` an unsafe path segment carries is a 404, no longer the store's 500** (D-3); `matches`' doc at
+   `api.rs:276–281` is rewritten to say so.
+6. **The CLI is touched in ONE file this cycle, `screen_model.rs`, two doc comments** (ruling 6) — spec §6's
+   "the CLI is touched only at `suggest::stream_seed`" is read, as S1b read it for `session.rs`, as "nowhere the
+   bot decides and nowhere the user sees".
+7. **The served `why` chart's real-browser pin stays recorded** (ruling 5).
+8. **The corpus moves once in S1c, in Task 5, not in Task 6** (the pre-flight, 2026-10-10): the archive route's
+   reply names the caller segment in `path`, so the three `archive_post*.json` fixtures regenerate once; the
+   `why_refusals.json` `mismatch` row is a construction and Task 6 moves nothing (decision D-8). Still one
+   regeneration per cycle, as §9.3's correction 1 allows — a value moved, not the wire's shape.

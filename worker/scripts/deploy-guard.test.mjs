@@ -131,6 +131,12 @@ const OPEN_TEST_CONFIG = `{
  *  about). */
 const naming = (...patterns) => expect.arrayContaining(patterns.map((p) => expect.stringMatching(p)));
 
+/** `name` with its last character spelled as a JSON `\u` escape: a key the
+ *  parsed configuration carries and the file's text never names (the S1
+ *  stack review's HI-F3). Built from the whole name, so this file spells no
+ *  variable the lane document's table does not hold. */
+const escapedKey = (name) => `${name.slice(0, -1)}\\u${name.charCodeAt(name.length - 1).toString(16).padStart(4, "0")}`;
+
 const dirs = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -270,6 +276,35 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toEqual([
       expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
     ]);
+  });
+
+  // The two keys spelled with a JSON escape (the S1 stack review's HI-F3):
+  // the TEXT never names them, and the parsed configuration carries them —
+  // `jsonc-parser`, the guard's own, reads `\u0053` as `S`. The guard judges
+  // every `vars` block's keys as well as the text: the top level's, and an
+  // environment's. Mutant: the parsed check dropped (every row ships with no
+  // failure).
+  it("refuses the diagnostic seeds and the test clock spelled with a JSON escape, in any vars block", () => {
+    const keyed = (key, value) =>
+      PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "${key}": "${value}"`);
+    const seeded = keyed(escapedKey("YOKOHAMA_DIAGNOSTIC_SEEDS"), "on");
+    expect(seeded).not.toContain("YOKOHAMA_DIAGNOSTIC_SEEDS");
+    expect(deployGuard(worker({ "wrangler.jsonc": seeded }))).toEqual([
+      expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
+    ]);
+    const clocked = keyed(escapedKey("YOKOHAMA_WEB_TEST_CLOCK"), "tick:1");
+    expect(clocked).not.toContain("YOKOHAMA_WEB_TEST_CLOCK");
+    expect(deployGuard(worker({ "wrangler.jsonc": clocked }))).toEqual([
+      expect.stringMatching(/^wrangler\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/),
+    ]);
+    const staged = PRODUCTION.replace(
+      DOOR_VARS,
+      `${DOOR_VARS},\n  "env": { "staging": { "vars": { "${escapedKey("YOKOHAMA_DIAGNOSTIC_SEEDS")}": "on" } } }`,
+    );
+    expect(staged).not.toContain("YOKOHAMA_DIAGNOSTIC_SEEDS");
+    expect(deployGuard(worker({ "wrangler.jsonc": staged }))).toEqual(
+      naming(/^wrangler\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/),
+    );
   });
 
   // Check 7 (the plan's ruling P-1, made mechanical): the operator list is a
@@ -616,6 +651,13 @@ describe("the deploy guard", () => {
     expect(at(clocked)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/));
     const seeded = OPEN.replace('"main"', '"vars": { "YOKOHAMA_DIAGNOSTIC_SEEDS": "on" },\n  "main"');
     expect(at(seeded)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/));
+    // And spelled with a JSON escape (HI-F3), into the open file's own vars.
+    const escaped = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open", "${escapedKey("YOKOHAMA_DIAGNOSTIC_SEEDS")}": "on"`);
+    expect(escaped).not.toContain("YOKOHAMA_DIAGNOSTIC_SEEDS");
+    expect(at(escaped)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_DIAGNOSTIC_SEEDS/));
+    const escapedClock = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open", "${escapedKey("YOKOHAMA_WEB_TEST_CLOCK")}": "tick:1"`);
+    expect(escapedClock).not.toContain("YOKOHAMA_WEB_TEST_CLOCK");
+    expect(at(escapedClock)).toEqual(naming(/^wrangler\.open\.jsonc names YOKOHAMA_WEB_TEST_CLOCK/));
   });
   // The open file is held to production's blocks whichever file is named:
   // a deploy of either must ship the objects, migration and bucket the other

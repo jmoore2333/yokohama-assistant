@@ -311,13 +311,17 @@ describe("productionSeedRule", () => {
 // version bump, a walk that applies other moves — meets the earlier save as a
 // 409 on every later run. The recipe names the four keys to delete.
 describe("resetRecipe", () => {
+  // The walk caller's segment, read off the committed reply rather than
+  // spelled: since security S1c (D26) it ends in a digest of the address.
+  const SEGMENT = committed("archive_post").path.split("/")[1];
   it("names the four keys the two first sends leave, under test/, and a delete for each", () => {
+    expect(SEGMENT, "premise: the readable half, then a twelve-character digest").toMatch(/^red_at_wire\.test-[0-9a-f]{12}$/);
     const recipe = resetRecipe(CORPUS, "red@wire.test");
     expect(recipe.keys).toEqual([
-      "test/browser/red_at_wire.test/rev7/over/wire.json",
-      "test/browser/red_at_wire.test/rev7/over/wire.table.json",
-      "test/browser/red_at_wire.test/rev7/abandoned/wire.json",
-      "test/browser/red_at_wire.test/rev7/abandoned/wire.table.json",
+      `test/browser/${SEGMENT}/rev7/over/wire.json`,
+      `test/browser/${SEGMENT}/rev7/over/wire.table.json`,
+      `test/browser/${SEGMENT}/rev7/abandoned/wire.json`,
+      `test/browser/${SEGMENT}/rev7/abandoned/wire.table.json`,
     ]);
     expect(recipe.commands).toEqual(recipe.keys.map((key) => `npx wrangler r2 object delete "yokohama-archive/${key}" --remote`));
   });
@@ -325,14 +329,14 @@ describe("resetRecipe", () => {
   // with its dot, and the bucket's top otherwise. Mutant: the root read off
   // anything but the sender's full address.
   it("keys a sender outside .test at the bucket's top", () => {
-    expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
+    expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe(`browser/${SEGMENT}/rev7/over/wire.json`);
   });
   // The module's own rule (`receipt.rs`'s `is_test_identity`): a test identity
   // is an EMAIL in `.test`, so a plain name that ends `.test` — a legal name
   // under the open door — is keyed at the bucket's top, as the module keys its
   // save. Mutant: the old rule, `who.endsWith(".test")` alone.
   it("keys a plain name that ends .test at the bucket's top: no @, no test identity", () => {
-    expect(resetRecipe(CORPUS, "wire.test").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
+    expect(resetRecipe(CORPUS, "wire.test").keys[0]).toBe(`browser/${SEGMENT}/rev7/over/wire.json`);
   });
 });
 

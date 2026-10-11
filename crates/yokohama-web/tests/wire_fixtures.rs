@@ -2011,7 +2011,8 @@ fn bot_table_body() -> Value {
 /// state's store, which is where a finished game's bytes are — so the body is a
 /// real pair, the table less its lock (see the strip below), and not a
 /// construction. The path in the reply is a function of the walk's id and the
-/// walk's caller: `browser/red_at_wire.test/rev7/over/wire.json`.
+/// walk's caller: `browser/<caller_segment>/rev7/over/wire.json`, the segment
+/// `red_at_wire.test-` and a twelve-character digest since security S1c (D26).
 async fn archive_payloads(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
     use yokohama_web::store::Doc;
     let store = api.state.games.store();
@@ -2054,9 +2055,14 @@ async fn archive_payloads(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>) {
 
     let (status, archive_post) = archived.call("POST", "/api/archive", body(&record_text, &table_text)).await;
     assert_eq!(status, StatusCode::CREATED, "{archive_post}");
+    let segment = yokohama_web::archive::caller_segment(
+        &yokohama_web::identity::User::parse(WALKER).expect("the walk's caller is a key"),
+    );
+    assert!(segment.starts_with("red_at_wire.test-"), "the readable half: {segment}");
     assert_eq!(
-        archive_post["path"], "browser/red_at_wire.test/rev7/over/wire.json",
-        "the caller prefix is the ENCODED address (R-6.5b.15)"
+        archive_post["path"],
+        format!("browser/{segment}/rev7/over/wire.json"),
+        "the caller prefix is the ENCODED address (R-6.5b.15; security S1c, D26)"
     );
 
     // The same bytes again: the retry, answered 200 `identical` rather than a

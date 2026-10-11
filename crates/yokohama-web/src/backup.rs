@@ -430,19 +430,30 @@ struct RecordRev {
 /// namespace and passes `is_safe_id`, it matches the id INSIDE the table
 /// document, and the game admits `local@browser`. Without all three an accepted
 /// import can be missing from "your games" or route its moves to the server.
+///
+/// **Its sentences repeat the backup's ids through [`crate::echo::echo`]**, as
+/// [`restore_read`]'s duplicate-id refusal does (security S1c's final wave).
+/// No route reaches this path: its one way in is the wasm module's
+/// `restore_read`, which reads the browser's own backup file for the user who
+/// chose it.
 fn check_addressable(id: &str, table: &str) -> Result<(), String> {
     if !id.starts_with(LOCAL_PREFIX) {
         return Err(format!(
-            "{id:?} is not a game this device plays — a local game's name begins {LOCAL_PREFIX:?}"
+            "\"{id}\" is not a game this device plays — a local game's name begins {LOCAL_PREFIX:?}",
+            id = crate::echo::echo(id)
         ));
     }
     if !crate::store::is_safe_id(id) {
-        return Err(format!("{id:?} is not a safe name"));
+        return Err(format!("\"{id}\" is not a safe name", id = crate::echo::echo(id)));
     }
     let doc: Addressable = serde_json::from_str(table)
         .map_err(|e| format!("the table document does not parse: {e}"))?;
     if doc.id != id {
-        return Err(format!("the backup calls this game {id:?} and its table document {:?}", doc.id));
+        return Err(format!(
+            "the backup calls this game \"{id}\" and its table document \"{doc_id}\"",
+            id = crate::echo::echo(id),
+            doc_id = crate::echo::echo(&doc.id)
+        ));
     }
     if !doc.seats.iter().any(
         |s| matches!(s, crate::table::SeatDoc::Human { user, .. } if user == LOCAL_USER),
@@ -528,9 +539,11 @@ pub fn envelope_version_of(text: &str) -> Result<u32, String> {
     let head: Head = serde_json::from_str(text)
         .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
     if head.kind != ENVELOPE_KIND {
+        // The file's own value, so through the echo rule (DC-F6): the same
+        // sentence as `{:?}` for any kind of at most sixty-four characters.
         return Err(format!(
-            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
-            head.kind
+            "this file says it is \"{}\"; a backup envelope says {ENVELOPE_KIND:?}",
+            crate::echo::echo(&head.kind)
         ));
     }
     Ok(head.envelope)
@@ -563,7 +576,7 @@ pub fn restore_read(envelope: &str) -> Result<Vec<(String, Verdict)>, String> {
     let mut seen = std::collections::BTreeSet::new();
     for g in &env.games {
         if !seen.insert(g.id.as_str()) {
-            return Err(format!("duplicate game {:?} in one backup", g.id));
+            return Err(format!("duplicate game \"{id}\" in one backup", id = crate::echo::echo(&g.id)));
         }
     }
     // **ONE `Rules` for the whole file** (review M-4), not one per game.
@@ -1029,6 +1042,23 @@ pub(crate) mod tests {
         assert_ne!(doubled, v1, "the mutation must actually change the envelope");
         let err = envelope_version_of(&doubled).expect_err("two kinds in one file");
         assert!(err.contains("duplicate field"), "{err}");
+    }
+
+    /// **A file's own `kind` is repeated through the echo rule** (the S1 stack
+    /// review's DC-F6; finding D12): the restore path's refusal of another
+    /// file's kind repeated it whole with `{:?}`, and the sentence is a plain
+    /// `String`, which no `ApiError` cap ever sees — a 50,000-character kind
+    /// answered a 350 KB refusal. The person's own file, read in their own
+    /// browser, hence Minor; bounded all the same. The mutant that restores
+    /// `{:?}` answers 50 KB here.
+    #[test]
+    fn another_files_kind_is_repeated_cut_and_escaped() {
+        let kind = format!("\u{1b}[31m{}", "k".repeat(50_000));
+        let text = serde_json::json!({ "kind": kind, "envelope": 1 }).to_string();
+        let err = envelope_version_of(&text).expect_err("another file's kind");
+        assert!(err.starts_with("this file says it is \"\\u{1b}[31mkkk"), "{}", err.chars().take(120).collect::<String>());
+        assert!(err.len() < 200, "a {} byte refusal", err.len());
+        assert!(!err.contains(&"k".repeat(65)) && !err.chars().any(char::is_control), "the raw kind came back");
     }
 
     /// The other two whole-file refusals, and the one that is not about a

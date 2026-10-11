@@ -31,7 +31,8 @@
 //!
 //! The builders are pure functions over `&GameState` + `&Rules` plus the
 //! smallest presentation context each genuinely needs ([`SeatFacts`], the
-//! viewing seat, the engine's legal list). They never call the engine's move
+//! viewing seat, the legal list the caller holds (the engine's, or a caller's
+//! projection of it)). They never call the engine's move
 //! generator themselves: a caller passes the list it already has, so the model
 //! can neither re-derive legality nor cost a second enumeration
 //! (engine-as-sole-authority).
@@ -2461,7 +2462,10 @@ pub fn build_log(total: usize, described: Vec<(usize, String)>) -> LogPanel {
 }
 
 /// The decision zone over the legal list the caller already holds. `legal` is
-/// the ENGINE's list verbatim — this builder never generates or filters moves.
+/// the list the CALLER holds — the CLI passes the engine's list verbatim, the
+/// web layer a folded, capped projection of it (`client::folded_legal_capped`,
+/// security S1b) — and this builder never generates or filters moves: one row
+/// per move it is handed, in that order.
 pub fn build_decision(state: &GameState, rules: &Rules, legal: &[Move]) -> DecisionModel {
     let deciding = if state.is_game_over() {
         Deciding::GameOver

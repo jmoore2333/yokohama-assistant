@@ -264,6 +264,22 @@ describe("a game that finishes", () => {
     expect(reasonWords("offline", full)).toBe(full);
   });
 
+  // A 413 says THIS RECORD is over the archive's body limit (the S1 stack
+  // review's CB-F12): its size, which no retry changes. It is a refusal with
+  // the server's sentence, never an offline row retried on every drain — and,
+  // as with a 400, the drain neither posts it again nor asks the server.
+  it("reads a 413 as a refusal that carries the server's sentence", async () => {
+    const tooBig = "the record is larger than 512 KiB";
+    const big = hosts({ archive: "dir", onArchive: () => ({ status: 413, body: { error: tooBig } }) });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "refused", sentence: tooBig })]);
+    const posted = big.posts.length;
+    const healths = big.healths.length;
+    await drain();
+    expect(big.posts).toHaveLength(posted);
+    expect(big.healths).toHaveLength(healths);
+  });
+
   it("queues nothing where the deployment is KNOWN to keep no archive", async () => {
     const off = hosts({ archive: "off" });
     await noteGameOver(GAME);
