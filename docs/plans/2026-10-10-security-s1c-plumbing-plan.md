@@ -135,7 +135,13 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 - **D-7 — the drifted record for M-3's route cell is built inside the cell**, from a vs-bot game the cell plays:
   the bot's last recorded move is swapped for another member of the legal list at that position, the record
   written back through the store, and a fresh `AppState` built over the same store (the restart that evicts the
-  live handle). The pre-flight proves the construction reaches `Refusal::Mismatch` (Task 9 Step 1).
+  live handle). The construction was MEASURED by Task 6's implementer (2026-10-11), not by the pre-flight: the draft's swap of the
+  bot's LAST MOVE never reached the route — that move was forced (a one-member list, so no other member exists)
+  and the rebuild refused the cut record's stale terminal digest with a 500 — so the cell swaps the bot's last
+  DECISION (the first position, from the end, whose legal list has two members; event 3, a Laboratory for a
+  Skip at the corpus seed) and re-stamps the cut record's digest; a bare `why` on the drifted record reads the
+  WITHHELD account of the later forced move, because the rebuild's pump replays forced moves — correct. A third
+  cell pins Review Focus 5's game-over half (a route passing an EMPTY seat list survived the first two).
 - **D-8 — the corpus moves ONCE, in Task 5, and nowhere else.** No frame, header or sentence a fixture carries
   changes for a short, clean value — except the archive route's reply, whose `path` names the caller segment:
   `archive_post.json`, `archive_post_identical.json` and `archive_post_abandoned.json` carry
@@ -2343,14 +2349,16 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
 
 ```rust
     /// **Through the route, on a DRIFTED record** (Review Focus 5; decision
-    /// D-7): a vs-bot game is played to the bot's first move, the bot's last
-    /// recorded move is swapped for ANOTHER member of the legal list at that
-    /// position, the record written back and the handle rebuilt from the
-    /// store; `why` at that event, asked by the human while the bot's starting
-    /// order is hidden, is a `mismatch` refusal naming no move. The pre-flight
-    /// proved the construction reaches `Refusal::Mismatch`; the mutant that
-    /// serves `refused` regardless names the reconstructed move in `Debug`
-    /// form, which the cell reads for.
+    /// D-7): a vs-bot game is played through the bot's first turn, the bot's
+    /// last DECISION — its last move whose position offered another — is
+    /// swapped for ANOTHER member of the legal list at that position, the
+    /// record cut after it, re-stamped and written back, and the handle
+    /// rebuilt from the store; `why` at that event, asked by the human while
+    /// the bot's starting order is hidden, is a `mismatch` refusal naming no
+    /// move. The construction is measured to reach `Refusal::Mismatch`: with
+    /// `refused_at` stubbed as `refused`, this cell read the CLI's sentence at
+    /// event 3, both moves named. The mutant that serves `refused` regardless
+    /// names the reconstructed move in `Debug` form, which the cell reads for.
     #[tokio::test]
     async fn a_why_on_a_drifted_record_names_no_reconstructed_move_to_a_withheld_requester() {
         use yokohama_core::{get_legal_moves, state_at, GameRecord, RecordedEvent};
@@ -2370,15 +2378,32 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         let (json, version) = store.read(Doc::Record, "drift").expect("a store").expect("the record");
         let mut record: GameRecord = serde_json::from_str(&json).expect("the record parses");
         let rules = Rules::standard();
-        // The bot's LAST move: the greatest k whose mover is seat 0.
+        // The bot's last DECISION: the greatest k whose mover is seat 0 and
+        // whose position offers another legal move. The bot's last MOVE is
+        // forced (measured at this seed: the turn closes on three one-member
+        // lists, the skipped bonus, the skipped building and
+        // `EndAdditionalPhase`), so it has no other member to swap in, and a
+        // forced move's reconstruction could never mismatch anyway.
         let k = (0..record.events.len()).rev().find(|&k| {
-            matches!(record.events[k], RecordedEvent::Move(_)) && state_at(&record, k, &rules).expect("a prefix").current_player == yokohama_core::PlayerId(0)
-        }).expect("the bot has moved");
+            matches!(record.events[k], RecordedEvent::Move(_)) && {
+                let at = state_at(&record, k, &rules).expect("a prefix");
+                at.current_player == yokohama_core::PlayerId(0) && get_legal_moves(&at, &rules).len() > 1
+            }
+        }).expect("the bot has decided");
         let before = state_at(&record, k, &rules).expect("the position");
         let RecordedEvent::Move(recorded) = record.events[k].clone() else { unreachable!() };
         let other = get_legal_moves(&before, &rules).into_iter().find(|m| *m != recorded).expect("another legal move");
         record.events[k] = RecordedEvent::Move(other.clone());
+        // The rest of the bot's turn may not be legal after the swap: the
+        // record ends at the drifted move, and the rebuild's pump plays the
+        // rest of the turn.
         record.events.truncate(k + 1);
+        // A drift a build WRITES agrees with its own digest — the build that
+        // played `other` stamped the state it reached — and the rebuild
+        // refuses a digest the events do not reproduce (measured: a 500 naming
+        // both digests), so the drifted record is stamped over its own end.
+        let end = state_at(&record, k + 1, &rules).expect("the drifted record replays");
+        record.stamp_terminal_digest(&end);
         store.write_if_version(Doc::Record, "drift", &serde_json::to_string(&record).expect("json"), Some(version)).expect("written back");
         // The restart: a fresh state over the same store rebuilds the handle.
         let restarted = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Open));
@@ -2390,6 +2415,82 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         assert!(!message.contains(&format!("{other:?}")) && !message.contains(&format!("{recorded:?}")), "{message}");
         assert!(why["ok"].is_null() && why["withheld"].is_null(), "{why}");
     }
+
+    /// **The same drift at GAME OVER, to a seat holder and to a watcher**
+    /// (Review Focus 5's second half): the finished vs-bot table, whose bot
+    /// still holds its starting order at game over, has its latest bot
+    /// decision that another legal member can replace — the rest of the record
+    /// still legal, the game still over, the card still hidden — swapped,
+    /// re-stamped and rebuilt. The SEAT HOLDER, whom the record route serves
+    /// the whole record, reads the CLI's own sentence, both moves named
+    /// (`account_parts`' refusal over the drifted record, word for word); a
+    /// WATCHER, whom that route refuses, reads `MISMATCH_WITHHELD`. The mutant
+    /// that hands `refused_at` an empty seat list in place of the requester's
+    /// seats survives the two cells above and fails the seat holder's line.
+    #[tokio::test]
+    async fn a_why_on_a_drifted_record_at_game_over_names_both_moves_to_a_seat_holder_and_none_to_a_watcher() {
+        use yokohama_core::{get_legal_moves, is_game_over, state_at, GameRecord, GameState, RecordedEvent};
+        let over = a_finished_vs_bot_game("late").await;
+        let store = Arc::clone(over.games.store());
+        let (json, version) = store.read(Doc::Record, "late").expect("a store").expect("the record");
+        let record: GameRecord = serde_json::from_str(&json).expect("the record parses");
+        let rules = Rules::standard();
+        let bot = yokohama_core::PlayerId(0);
+        let hidden = |end: &GameState| {
+            yokohama_core::game::observe(end, yokohama_core::PlayerId(1))
+                .expect("seat 1's view")
+                .players[0]
+                .hand
+                .contains(&yokohama_core::HandCard::HiddenStartingOrder)
+        };
+        // Searched from the end, not assumed, so a reseed cannot skip it.
+        let mut drift = None;
+        'scan: for k in (0..record.events.len()).rev() {
+            let RecordedEvent::Move(recorded) = record.events[k].clone() else { continue };
+            let at = state_at(&record, k, &rules).expect("a prefix");
+            if at.current_player != bot {
+                continue;
+            }
+            for other in get_legal_moves(&at, &rules).into_iter().filter(|m| *m != recorded) {
+                let mut drifted = record.clone();
+                drifted.events[k] = RecordedEvent::Move(other);
+                if let Ok(end) = state_at(&drifted, drifted.events.len(), &rules) {
+                    if is_game_over(&end) && hidden(&end) {
+                        drifted.stamp_terminal_digest(&end);
+                        drift = Some((k, recorded, drifted));
+                        break 'scan;
+                    }
+                }
+            }
+        }
+        let (k, recorded, drifted) = drift.expect("a late bot decision another member can replace");
+        store
+            .write_if_version(Doc::Record, "late", &serde_json::to_string(&drifted).expect("json"), Some(version))
+            .expect("written back");
+        // The CLI's own sentence for this drift, from the CLI's own function.
+        let repl = yokohama_cli::repl::Repl::new(
+            yokohama_cli::session::Session::from_record(drifted, rules.clone()).expect("the drifted record loads"),
+        );
+        let cli = match yokohama_cli::why::account_parts(repl.session.mode, repl.session.record(), &rules, repl.bots(), Some(k)) {
+            Err(r) => r,
+            Ok(_) => panic!("event {k} reconstructs: the drift is not a drift"),
+        };
+        assert_eq!(explain::kind_of(&cli), "mismatch", "premise: {cli}");
+        let restarted = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
+        let (status, why) = get_as(&restarted, "blue@wire.test", &format!("/api/games/late/why?event={k}")).await;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        assert_eq!(why["refusal"]["kind"], "mismatch", "{why}");
+        assert_eq!(why["refusal"]["message"], cli.to_string(), "the seat holder at game over reads the CLI's sentence");
+        assert!(why["refusal"]["message"].as_str().unwrap_or_default().contains(&format!("{recorded:?}")), "{why}");
+        let (status, seen) = get_as(&restarted, "watcher@wire.test", &format!("/api/games/late/why?event={k}")).await;
+        assert_eq!(status, StatusCode::OK, "{seen}");
+        assert_eq!(seen["refusal"]["kind"], "mismatch", "{seen}");
+        assert_eq!(
+            seen["refusal"]["message"],
+            explain::MISMATCH_WITHHELD.replace("{index}", &k.to_string()).replace("{seat}", "0"),
+            "a watcher at game over, the card still hidden"
+        );
+    }
 ```
 
 (`record.events.truncate(k + 1)`: the events after the bot's last move, if any, are the human's and may not be
@@ -2399,8 +2500,8 @@ choice queue — the pre-flight's construction is what the cell transcribes; thi
 
 - [ ] **Step 2: Run them to verify they fail.** `cargo test -p yokohama-web -- names_no_move drifted_record 2>&1 |
 grep -E '^error|test result|panicked' | head` — `refused_at`, `MISMATCH_WITHHELD` not found; stubbed
-(`refused_at` = `refused`): (a) RED at the withheld message; (b) RED at the message (**the pre-flight's reading:
-the CLI's sentence with both moves**).
+(`refused_at` = `refused`): (a) RED at the withheld message; (b) RED at the message (the CLI's sentence with both moves — the implementer's
+reading; the draft's construction read a 500 from the rebuild instead, see D-7); (c) RED at the watcher's line.
 
 - [ ] **Step 3: The code.** In `explain.rs`, beside `WITHHELD_REASON` (:332):
 
@@ -2449,7 +2550,7 @@ claim: the corpus's `why_refusals.json` DOES carry a `mismatch` row, and it is a
 byte is a finding, reported, never regenerated here.
 
 - [ ] **Step 5: The mutants.** **M25** `refused_at` = `refused` — (a) and (b) red; **M26** the visibility read
-inverted — (a) red at the public line; **M27** `kind` changed — (a) red at the kind line.
+inverted — (a) red at the WITHHELD line (the implementer's reading; the draft said the public line), (c) red; **M27** `kind` changed — (a) red at the kind line.
 
 - [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/explain.rs crates/yokohama-web/src/api.rs` (and the
 corpus files, if any moved) · `git commit -m "web: M-3 — a why mismatch refusal is served at the requester's
