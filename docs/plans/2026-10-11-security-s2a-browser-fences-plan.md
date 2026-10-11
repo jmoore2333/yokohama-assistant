@@ -1154,7 +1154,9 @@ red (workerd refuses the constructor: `RangeError: Responses may only be constru
 their trees with `assembledHeaders` themselves, so they stay green); **M12** `staleAssets` comparing `_headers` to
 the static text alone — (b)'s first cell red, and every `deployGuard(worker())` cell with it (about fifty); **M13**
 a missing `headers.json` tolerated at assembly — (a)'s second cell red; **M13b** `headers.json` copied into the
-assets tree — (a)'s first cell red at the file's presence, and `edge-rule.test.mjs`'s drift cell with it.
+assets tree — (a)'s first cell red at the file's presence, and the two assembly cells whose `report.files`/`report.unlisted`
+lists name every file in the tree ("lays out dist…", "lands the 404 page…") with it; `edge-rule.test.mjs`'s drift cell
+reads the COMMITTED tree, so it catches the mutant only after a real `npm run build` (the pre-flight's reading, 2026-10-11).
 
 - [ ] **Step 6: Commit.** `git add worker/scripts/assemble-assets.mjs worker/scripts/assemble-assets.test.mjs
 worker/scripts/deploy-guard.mjs worker/scripts/deploy-guard.test.mjs worker/src/index.ts worker/test/worker.test.ts`
@@ -3019,11 +3021,35 @@ error (no effect); the client lens removed a scratch directory of its own with `
 reports was written and no live host was touched. Every dispatch from here names "no call to the Cloudflare account,
 read-only included" beside the removal rule (§"Global Constraints").
 
-### The "before" review (Task 9 Step 1), 2026-10-1x — what the plan review left, on an export of `1e9c092d`
+### The "before" review (Task 9 Step 1), 2026-10-11 — what the plan review left, on an export of `1e9c092d`
 
-(to be written: the corrected Tasks 1 and 2 cells executed once more on a private target; the debug-client walk
-under `enforce`, its console lines; the widened filter under `report-only`; the no-default-features lint; every
-finding and its correction at the source)
+**Method.** A `git archive` export of master `1e9c092d` in the session's scratchpad (`node_modules` linked, the export's
+own `target/`); Tasks 1–4's blocks lifted from this plan by `blocks.py` and spliced by `apply_t1..4.py` (the material
+under `docs/temp/security-review-2026-10-08/s2a-before/`, gitignored, with `logs/`); the one prose-only piece,
+`start_refusal.rs`'s `get`, written as an implementer would (25 lines in `post`'s shape); one scratch-only addition, a
+`CSP_LOG` console dump in the harness, for the enforce run's record. **The owner's ruling mid-run:** the mutant pass
+stops — each task's reviewer runs its mutants on its export and the after review runs M1–M38 ("no need to redo the
+same work that will be done here"); Task 2's seven had run and are recorded, Task 1's were not run.
+
+**Readings.** (a) Task 1's cells **12/12** green on the first run (`headers.node.test.ts` 10; the real-build and
+three-build stamp cells, 6.4 s); Task 2's pool describe **2/2** green on the first run; Task 2's scripts suite **543
+passed, 1 skipped, 3 failed of 547** — the three `lane-variables` cells, red on any export because `git ls-files` finds
+no `.git` (the real tree is green); the plan review's prediction was 547–553. Task 2's mutants M8–M13b: every one red
+where named (M8 both pool cells; M12 fifty-one cells beyond the three; M13b the appends cell AND the two assembly list
+cells — F-1, corrected at its sentence: the edge-rule drift cell reads the committed tree). (b) The DEBUG-client
+`npm run e2e` under the policy ENFORCED (Task 4's override, Task 3's layer, Task 1's set): **81 passed, 0 failed,
+9.2 min** — S1b's 79 plus Task 4's two framed cells, green on the plan's blocks — and the console carried **no CSP line
+of any kind**: seven `Failed to load resource` lines, all for statuses cells stage (404, 503, 409, 403). Nothing the
+covered flows need is blocked under enforcement today — the wrap's input (D-9). The Report-Only re-run was not taken: a
+green enforced walk implies a green Report-Only walk under the same policy (no violation, no line) — the
+orchestrator's ruling, in the ledger. (c) `cargo clippy -p yokohama-web --no-default-features --features server
+--all-targets -- -D warnings` with the gated `get`: **clean**; the workspace lint clean. Beyond the trim, free once
+the test binary existed: Task 3's three lib cells and its binary cell, **4/4** green.
+
+**Corrections.** One, F-1 (Task 2 Step 5's M13b sentence). Two environment notes, no correction (E-1 the
+`lane-variables` cells on an export; E-2 a splice gap of the orchestrator's own — the `it.each` dists — not the
+plan's). Among the cells run, none failed to go red on its mutant; no name the tree does not spell was met; no
+sentence of this plan was contradicted by the code. The findings file: `docs/temp/security-review-2026-10-08/s2a-before/findings.md`.
 
 ### The run (Tasks 1–8) — what each task's review found that this plan did not know
 
