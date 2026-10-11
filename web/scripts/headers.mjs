@@ -131,17 +131,24 @@ export function headersJson(set) {
 /** A header name: RFC 9110's token grammar, which is what `http::HeaderName` accepts on the NAS. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
+/** `http::HeaderName`'s length bound (`MAX_HEADER_NAME_LEN`, 65,535 bytes — a token is ASCII, so characters):
+ *  a longer name would pass the assembly and stop the NAS at start. */
+const HEADER_NAME_MAX = 65_535;
+
 /** A control character in a value (`\u0000`–`\u001f`, `\u007f`): what would let one pair render as two
  *  `_headers` lines. Stricter than `http::HeaderValue`, which admits a tab (`http` 1.5.0's `is_valid`:
  *  `b >= 32 && b != 127 || b == b'\t'`) — the strict side is this one, deliberately (see `parseHeadersJson`). */
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** `dist/headers.json` read back: an array of at least one `[string, string]` pair — each name a token, each
- *  value non-empty and free of control characters — or a throw naming the file. The Worker's assembly and the
- *  guard read it through this, as the NAS's `response_headers` reads it in Rust: every name this refuses the
- *  Rust reader refuses (the token grammars are the same), and this side refuses two value shapes `http` admits —
- *  a tab, and an empty value — so a file that passes the assembly always passes the NAS's reader at start. The
- *  one-host-down release (passed the assembly, stopped the NAS) cannot arise, and the build writes neither.
+/** `dist/headers.json` read back: an array of at least one `[string, string]` pair — each name a token of at
+ *  most 65,535 bytes, each value non-empty and free of control characters, every string well-formed — or a throw
+ *  naming the file. The Worker's assembly and the guard read it through this, as the NAS's `response_headers`
+ *  reads it in Rust (`serde_json`, then `http::HeaderName::from_bytes` and `HeaderValue::from_str`), and this
+ *  side refuses EVERYTHING that side refuses — the same name grammar and its length bound; a lone surrogate,
+ *  whose escape `JSON.parse` admits and `serde_json` does not; a pair of any other arity — and two value shapes
+ *  `http` admits besides, a tab and an empty value: so a file that passes the assembly always passes the NAS's
+ *  reader at start, and the one-host-down release (passed the assembly, stopped the NAS) cannot arise. Measured
+ *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes.
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -154,7 +161,8 @@ export function parseHeadersJson(text) {
   const pair = (p) =>
     Array.isArray(p) &&
     p.length === 2 &&
-    p.every((s) => typeof s === "string" && s !== "") &&
+    p.every((s) => typeof s === "string" && s !== "" && s.isWellFormed()) &&
+    p[0].length <= HEADER_NAME_MAX &&
     HEADER_NAME.test(p[0]) &&
     !CONTROL.test(p[1]);
   if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(pair)) {

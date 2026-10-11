@@ -281,12 +281,14 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
       const stamp = JSON.parse(readFileSync(join(out, "build-values.json"), "utf8")) as Record<string, unknown>;
       expect(Object.keys(stamp), "the six keys, in order").toEqual(STAMP_KEYS);
       // The build's header set, read off the SAME build: the served 404 page's style, hashed into it (after the
-      // parser's newline normalization, as the generator hashes).
+      // parser's newline normalization, as the generator hashes) — style-src EXACTLY `'self'` and that hash, and
+      // no `'unsafe-…'` anywhere in the BUILT policy: a source appended in `vite.config.ts`'s call would pass a
+      // `toContain` (Task 1's review, mutant M7e).
       const csp = parseHeadersJson(readFileSync(join(out, "headers.json"), "utf8"))[0]![1];
       const served = /<style\b[^>]*>([\s\S]*?)<\/style>/.exec(readFileSync(join(out, "404.html"), "utf8"))![1]!;
-      expect(csp, "the served 404 page's style, hashed").toContain(
-        `'sha256-${createHash("sha256").update(served.replace(/\r\n?/g, "\n"), "utf8").digest("base64")}'`,
-      );
+      const servedHash = `'sha256-${createHash("sha256").update(served.replace(/\r\n?/g, "\n"), "utf8").digest("base64")}'`;
+      expect(/style-src ([^;]*)/.exec(csp)![1]!.split(" "), "the served 404 page's style, hashed, and nothing else").toEqual(["'self'", servedHash]);
+      expect(csp, "the built policy carries no unsafe keyword").not.toMatch(/'unsafe-(?:inline|eval)'/);
       lastCsp = csp;
       return stamp;
     };

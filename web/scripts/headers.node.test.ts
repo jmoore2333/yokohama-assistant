@@ -157,6 +157,11 @@ describe("the set, its block and its file", () => {
       // would render as a second `_headers` rule.
       '[["X Frame", "DENY"]]', '[["Bad Name:", "v"]]', '[["X-Frame-Options", "DE\\u0000NY"]]',
       '[["X-Note", "ok\\n  X-Frame-Options: ALLOWALL"]]',
+      // Three more the Rust reader refuses — a pair of three; a lone surrogate (`JSON.parse` admits the escape,
+      // `serde_json` does not); a name past `http`'s 65,535-byte bound — and the two this side alone refuses, a
+      // tab in a value and an empty value (Task 1's review, measured against http 1.5.0 and serde_json 1.0.150).
+      '[["X-A", "B", "C"]]', '[["X-A", "\\ud800"]]', `[["${"a".repeat(65_536)}", "v"]]`,
+      '[["X-A", "a\\tb"]]', '[["X-A", ""]]',
     ]) {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
