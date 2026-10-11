@@ -613,13 +613,17 @@ mod tests {
         // `é` are plain text and pass, to `parse_filter`'s own sentence, so the
         // sentence's last word is pinned by `cafe` + U+0301 against `caf` +
         // U+00E9. The mutant that keeps only the length half of the guard fails
-        // the refused rows.
+        // the refused rows. The one that keeps only the echo half (ML) fails
+        // the `x`×64+`…` row: a term whose 65th character is `…` echoes as
+        // itself, so only the count refuses it.
         let guard = "a filter is at most 64 characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character";
+        let ellipsis_at_65 = format!("{}%E2%80%A6", "x".repeat(64));
         let terms = [
             ("%22silk%22", true),
             ("si%5Clk", true),
             ("si%E2%80%AElk", true),
             ("cafe%CC%81", true),
+            (ellipsis_at_65.as_str(), true),
             ("caf%C3%A9", false),
             ("o'brien", false),
         ];
@@ -845,7 +849,9 @@ literally — `Forbidden`, `Conflict`, `ForeignBot` — pass their sentence thro
 `Conflict` sentences carry ids. Left alone, by inspection: `api.rs:470` (`key_of`'s serde value), `:1438`'s
 `{actual:?}` (a prompt kind), `tables.rs:239`, `:387` (a sort key, a status), `store.rs:245`'s and `:461`'s
 `{:?}` beside the echoed id (the house constant, the `Doc` enum), the two environment-variable sentences
-(`identity.rs:112`, `lib.rs:330`). The after review greps the seven files and accounts for exactly those hits. The filter term (`api.rs:1759`): before `parse_filter`,
+(`identity.rs:112`, `lib.rs:330`). The after review
+greps the seven files and accounts for exactly those hits — eight since the wave's O1 wrapped `backup.rs`'s four
+restore-path ids (`:436`, `:440`, `:445`, `:566` at 680737e5), reached by the wasm `restore_read` alone. The filter term (`api.rs:1759`): before `parse_filter`,
 
 ```rust
         // **What `echo` would change is refused, not echoed**: the CLI's
@@ -1061,6 +1067,19 @@ D29)"`.
         assert_eq!(holders(), 3, "the entry is alive, one lock, while the waiter waits on it");
         assert!(!waiter.is_finished(), "the body ran while another holder had the lock");
         release_tx.send(()).expect("the first holder listens");
+        // Bounded, so a lock that is never let go FAILS here, naming the
+        // thread, rather than hanging the joins below.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(first.is_finished() && waiter.is_finished()) {
+            if Instant::now() >= deadline {
+                let unfinished: Vec<&str> = [("the first holder", first.is_finished()), ("the waiter", waiter.is_finished())]
+                    .into_iter()
+                    .filter_map(|(name, done)| (!done).then_some(name))
+                    .collect();
+                panic!("not finished within 5 s of the release: {}", unfinished.join(" and "));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(first.join().expect("the first holder"), 1);
         assert_eq!(waiter.join().expect("the waiter"), 7);
         assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned it");
@@ -1081,7 +1100,8 @@ binds `{id}` first (the `bound[0]` premise):
     /// boundary is `is_safe_id`'s — 64 safe bytes reach the handler and a 65th
     /// does not — and the check reads `bound[0]` because every pattern that
     /// carries `{id}` binds it FIRST, which the last loop pins. A HEAD of an
-    /// unsafe id leaves with no body, as every refused HEAD does.
+    /// unsafe id leaves with no body, as every refused HEAD does — an unknown
+    /// path's 404 included.
     #[test]
     fn an_unsafe_id_is_dispatchs_own_404_before_any_handler() {
         fn ask(games: &Games, method: &str, path: &str, identity: Identity<'_>) -> ApiResponse {
@@ -1114,6 +1134,13 @@ binds `{id}` first (the `bound[0]` premise):
 
         let res = ask(&games, "HEAD", &format!("/api/games/{unsafe_}"), Ok(&red));
         assert_eq!((res.status, res.body.as_str()), (404, ""), "a refused HEAD carries no body");
+        // The unknown path's 404 too: an arm of `out`, so the HEAD strip reads
+        // it (the GET beside it carries the sentence, so the strip is the
+        // difference).
+        let res = ask(&games, "GET", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body), (404, error_body(&ApiError::not_found("no such endpoint: /api/nope"))));
+        let res = ask(&games, "HEAD", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "an unknown path's HEAD carries no body");
 
         for r in routes(true).iter().filter(|r| r.pattern.contains("{id}")) {
             assert_eq!(r.pattern.find('{'), r.pattern.find("{id}"), "{} binds {{id}} first", r.pattern);
@@ -1225,18 +1252,25 @@ never prunes); (d) RED at the 65-byte row (a 401: the identity is asked first); 
     /// map without bound with refused writes at fabricated ids — `lock_for`
     /// inserts on first use and only `delete` pruned — so now every writer
     /// READS the table before calling this (an absent table is a 404 that never
-    /// touches the map) and every exit prunes. A second writer in flight holds
+    /// touches the map) and every exit prunes — a body that PANICS too, since
+    /// the prune is a drop guard declared before the clone and so dropped after
+    /// it (security S1c's final wave; until then a `delete` that panicked after
+    /// its unlink left its entry behind). A second writer in flight holds
     /// its own clone, so the entry stays and the two serialize on one lock
     /// (`prune_lock`'s argument).
     pub(crate) fn with_table_lock<T>(&self, id: &str, body: impl FnOnce() -> T) -> T {
+        struct PruneOnExit<'a>(&'a Games, &'a str);
+        impl Drop for PruneOnExit<'_> {
+            fn drop(&mut self) {
+                self.0.prune_lock(self.1);
+            }
+        }
+        // Locals drop in reverse order, on a return and on an unwind alike: the
+        // guard, then this clone, then the prune.
+        let _prune = PruneOnExit(self, id);
         let lock = self.lock_for(id);
-        let out = {
-            let _serialized = enter(&lock);
-            body()
-        };
-        drop(lock);
-        self.prune_lock(id);
-        out
+        let _serialized = enter(&lock);
+        body()
     }
 ```
 
@@ -1254,7 +1288,7 @@ In `tables.rs`, each writer: the table read FIRST, outside any lock, as the abse
         // Absent before locked (security S1c, finding B8): a fabricated id is a
         // 404 that never creates a lock entry. The read under the lock below is
         // the one the write is checked against; this one only says "there".
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             let (mut doc, version) = self
                 .read_table(id)?
@@ -1278,17 +1312,17 @@ In `api.rs`, `dispatch` (:2503), after the match:
 
 ```rust
     // **An `{id}` the store would refuse is a 404 here, before any handler**
-    // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
-    // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
-    // nothing this refuses could have been a table. An arm of `out` and not an
-    // early return, so the HEAD below leaves this refusal bodiless too.
-    let out = if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
-        error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
-    } else {
-        match answer(games, host, identity, req, pattern, &bound) {
+        // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
+        // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
+        // nothing this refuses could have been a table. An arm of `out` and not
+        // an early return, so the HEAD below leaves this refusal bodiless too.
+        Matched::Route(pattern, bound) if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) => {
+            error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
+        }
+        Matched::Route(pattern, bound) => match answer(games, host, identity, req, pattern, &bound) {
             Ok(r) => r,
             Err(e) => error_response(e),
-        }
+        },
     };
 ```
 
@@ -1415,7 +1449,7 @@ yields a header would hang it; the pre-flight measures the cell's wall. `assets:
     /// this cycle under `old.js` still loads, plays and deletes — so the fence
     /// is the create's alone. Every id the corpus and the client use is dotless.
     #[test]
-    fn a_dotted_id_is_refused_at_create_and_a_stored_one_still_plays() {
+    fn a_dotted_id_is_refused_at_create_and_a_stored_one_still_reads_and_deletes() {
         let games = games();
         let red = who("red@t.test");
         for id in ["x.js", "x.css", "x.png", "x.bin", "evening.2", "a.b.c"] {
@@ -1745,8 +1779,10 @@ implementer on this tree's router, 2026-10-10).** `find` folds HEAD onto GET (`a
 HEAD falls into the OTHER arm at the four paths that carry two methods: the creator's `HEAD /api/games/{id}` runs
 DELETE (204, the table gone), `HEAD /api/games` with a create body runs POST (201), `HEAD …/{id}/chat` and
 `HEAD /api/chat` with a text body POST. The fix, in `answer`: ONE binding at its head — `let method = if req.method
-== "HEAD" { "GET" } else { req.method };` — and every `if req.method == "GET"` arm guard reads `method`, so a HEAD
-takes the GET arm and leaves bodiless through the strip, as before. The cell, in `lib.rs`'s `mod tests` after
+== "HEAD" { "GET" } else { req.method };` — under the wave's comment (// A HEAD once took a write arm because the guards read the literal method (S1c Task 3's finding); every arm guard below reads `method`, never `req.method`.) — and every `if req.method == "GET"` arm guard reads `method`, so a HEAD
+takes the GET arm and leaves bodiless through the strip, as before; the cell's rows are DERIVED from
+`api::routes(true)` (every path with a GET row and a write row — four today) with the four per-path write-nothing
+assertions kept (the wave's W5). The cell, in `lib.rs`'s `mod tests` after
 `const WHO`:
 
 ```rust
@@ -1754,10 +1790,14 @@ takes the GET arm and leaves bodiless through the strip, as before. The cell, in
     /// existing): `find` folds HEAD onto GET, and `answer` must pick its arm by
     /// the SAME folded method, else a HEAD of a two-method path takes the other
     /// arm — the creator's HEAD of a game deleted it, a HEAD of `/api/games`
-    /// with a create body created one. Four paths, each HEAD answers 200 with
-    /// an empty body and writes nothing: the table remains, the list does not
-    /// grow, no chat message lands. The mutant that drops the fold reads a 204
-    /// at the first row and the table gone.
+    /// with a create body created one. The rows are DERIVED from
+    /// `api::routes(true)`: every path with a GET row and a write row (POST or
+    /// DELETE) — four today, the list, a game, a game's chat and the house
+    /// chat — so a fifth two-method path is a row the day it lands. Each HEAD
+    /// answers 200 with an empty body and writes nothing: the path's GET reads
+    /// the same after it as before (the table remains, the list does not grow,
+    /// no chat message lands). The mutant that drops the fold reads a 201 at
+    /// the first row, the list's: the HEAD created a table.
     #[tokio::test]
     async fn a_head_never_runs_a_write_arm() {
         let state = Arc::new(AppState::in_memory());
@@ -1776,23 +1816,37 @@ takes the GET arm and leaves bodiless through the strip, as before. The cell, in
                 (status, bytes.len())
             }
         };
+        let table = api::routes(true);
+        let two_method: Vec<&str> = table
+            .iter()
+            .filter(|r| r.method == "GET")
+            .filter(|r| table.iter().any(|w| w.pattern == r.pattern && matches!(w.method, "POST" | "DELETE")))
+            .map(|r| r.pattern)
+            .collect();
+        for known in ["/api/games", "/api/games/{id}", "/api/games/{id}/chat", "/api/chat"] {
+            assert!(two_method.contains(&known), "{known} is a two-method path; the derivation found {two_method:?}");
+        }
         let create = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
             "seats": [{ "user": WHO }, { "user": WHO }], "id": "headmade", "name": "headmade" });
-        assert_eq!(head("/api/games/headed", None).await, (StatusCode::OK, 0), "the creator's HEAD of a game");
-        let (status, _) = get_as(&state, WHO, "/api/games/headed").await;
-        assert_eq!(status, StatusCode::OK, "the table remains");
-        let (_, before) = get_as(&state, WHO, "/api/games").await;
-        assert_eq!(head("/api/games", Some(create)).await, (StatusCode::OK, 0), "a HEAD of the list with a create body");
-        let (_, after) = get_as(&state, WHO, "/api/games").await;
-        assert_eq!(before["games"].as_array().map(Vec::len), after["games"].as_array().map(Vec::len), "nothing created: {after}");
+        for pattern in &two_method {
+            let uri = pattern.replace("{id}", "headed");
+            // The write arm's own body where the cell knows it, so a HEAD that
+            // took the arm would land its write rather than be refused for the
+            // body; a path the cell does not know is sent none.
+            let body = match *pattern {
+                "/api/games" => Some(create.clone()),
+                "/api/games/{id}/chat" | "/api/chat" => Some(serde_json::json!({ "text": "hi" })),
+                _ => None,
+            };
+            let (_, before) = get_as(&state, WHO, &uri).await;
+            assert_eq!(head(&uri, body).await, (StatusCode::OK, 0), "a HEAD of {uri}");
+            let (status, after) = get_as(&state, WHO, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri} still reads: {after}");
+            assert_eq!(before, after, "{uri}: the HEAD wrote");
+        }
+        // What the derived loop cannot know: the create body's own id.
         let (status, _) = get_as(&state, WHO, "/api/games/headmade").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "nothing created");
-        for uri in ["/api/games/headed/chat", "/api/chat"] {
-            let (_, before) = get_as(&state, WHO, uri).await;
-            assert_eq!(head(uri, Some(serde_json::json!({ "text": "hi" }))).await, (StatusCode::OK, 0), "{uri}");
-            let (_, after) = get_as(&state, WHO, uri).await;
-            assert_eq!(before, after, "{uri}: a HEAD posted a message");
-        }
     }
 ```
 
