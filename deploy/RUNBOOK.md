@@ -236,7 +236,8 @@ deployment never matched it, and the file has been corrected.)
 ```
 POST /containers/create?name=yokohama-web
 { "Image": "yokohama-web:<tag>",
-  "Env": ["YOKOHAMA_WEB_IDENTITY=cf-access", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive"],
+  "Env": ["YOKOHAMA_WEB_IDENTITY=cf-access", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive",
+          "YOKOHAMA_WEB_TABLE_TTL_DAYS=90", "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS=7"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
                   "Mounts": [{ "Type": "volume", "Source": "yokohama-web-data",
@@ -249,6 +250,11 @@ image started without it **exits 1** naming the three accepted values. A deploy
 from this recipe with the line dropped does not come up. The mode belongs to
 the container because it is a statement about what is in FRONT of the container,
 which the image cannot know.
+
+**The two TTL entries are the sweep's** (R-OWN-F1; §3.20, the seventeenth deployment): without
+them the health route reads `table_ttl_days: null` and no table is ever swept. The S1 stack review
+(2026-10-11, AH-F5) found this body without them while the running container had them; a container
+made from this body now carries all four. *(Added 2026-10-11, security S1c.)*
 
 **The second `Env` entry is the archive (M6.5a, umbrella R-6.5.4), and it is
 on the SAME named volume as the store**: a finished game is written under
@@ -2420,7 +2426,7 @@ sender the files never name — are closed by steps 1 to 4 as written here.) The
 together (`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
 NAS lines are the ones run.
 
-1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list and over every `.test` identity whose folders exist under R2's `test/browser/` (the live replay's `red@wire.test` among them — list that prefix to find them)
+1. **Before the window: the listing, then the table.** List every first-level folder on both hosts first — on the NAS `ls -A /data/archive/browser` (while the old container still runs, `docker exec yokohama-web ls -A /data/archive/browser` through Portainer; `-A`, since a local part may begin with a dot), in R2 the `browser/` and `test/browser/` prefixes — and give EVERY folder a row or a recorded ruling before the window: a folder whose name holds `_at_` is an address's legacy segment; a folder with no `_at_` is a bare claimed name from the dev or the open door (the NAS ran that door until 2026-09-28), whose address is the folder's own text; a folder nobody can name is left in place and recorded. Then run the `segment` subcommand over the WHOLE Access allow-list, over every `.test` identity whose folders exist under R2's `test/browser/` (the live replay's `red@wire.test` among them) and over every bare name found
    (`cargo run -p yokohama-web -- segment <every address>…`) and keep the three-column table. A legacy column two
    addresses SHARE is a collision, and the files inside name no sender — every browser-played table's
    `created_by` and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the
@@ -2431,10 +2437,10 @@ NAS lines are the ones run.
    `[ ! -e browser/<current> ] && mv browser/<legacy> browser/<current>` — a GUARDED move, never a bare `mv`,
    which exits 0 and nests the old folder under a new one that already exists (a `<current>` folder can exist only where an S1c build already served on this volume — a re-run of the window, a test deploy — since the old build files under legacy segments alone) — and if `<current>` exists, merge FILE BY FILE — `cd browser/<legacy> && find . -type f | while read -r f; do mkdir -p "../<current>/$(dirname "$f")"; mv -n "$f" "../<current>/$f"; done` — then `find browser/<legacy> -type f` lists exactly the files `-n` refused, each compared by hand (a directory-level `mv -n` nests one level deeper than a second-level reading and is never used); read every file `-n` refused (it
    refuses without a word, and its exit code is no signal across `mv` versions, so the refused files are the
-   ones still under `<legacy>` afterwards). Then start the new build.
+   ones still under `<legacy>` afterwards). When `find browser/<legacy> -type f` lists nothing more — every refused file ruled on and moved or removed by hand — remove the emptied skeleton, `find browser/<legacy> -depth -type d -exec rmdir {} +` (BusyBox's `rmdir` is native; the merge leaves the directories behind, and an empty legacy tree prints at step 4 exactly as an unmoved one does). Then start the new build.
 
    **How the lines reach the volume with the container stopped:** `docker exec` needs a running container, so
-   each line (and the listing, `ls browser/`) runs in a one-shot container on the store's volume, made like §3's
+   each line (and the listing, `ls -A browser/`) runs in a one-shot container on the store's volume, made like §3's
    but from the NEW image and with no network: `POST /containers/create?name=yokohama-web-rename` with
    `"Image": "yokohama-web:<new tag>"`, `"Entrypoint": ["sh", "-c"]`, `"Cmd": ["<the line>"]`,
    `"WorkingDir": "/data/archive"` and `"HostConfig": { "NetworkMode": "none", "Mounts": [{ "Type": "volume",
@@ -2444,7 +2450,7 @@ NAS lines are the ones run.
    store, so a moved file keeps its owner.
 3. **Worker — after the deploy.** The Worker's deploy is one atomic switch, so the rename follows it. For each
    key under `browser/<legacy>/` AND `test/browser/<legacy>/` (spec §2.6's root for a `.test` address — the live
-   replay's own) in `yokohama-archive` (the dashboard's object listing, or the API's
+   replay's own — EXCEPT the replay's own four keys under `test/browser/red_at_wire.test/`: the `wire` record the replay sends carries the stack's `engine_version` 0.6.1 where those saves carry 0.6.0, so a moved save would meet the first replay's first sends as the 409 that stops a run (`worker/RUNBOOK.md` §7, "The replay's reset"); DELETE those four legacy keys instead, `npx wrangler r2 object delete yokohama-archive/test/browser/red_at_wire.test/rev7/<over|abandoned>/wire[.table].json --remote`, the reset in its legacy spelling, and the first replay's two first sends then land 201 and re-create them under the digested key) in `yokohama-archive` (the dashboard's object listing, or the API's
    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`):
    `npx wrangler r2 object get yokohama-archive/<new key> --remote --file <tmp-new>` FIRST — if the new key
    exists (an upload that landed after the deploy), compare the bytes: identical is the once-rule's retry, so
@@ -2454,7 +2460,7 @@ NAS lines are the ones run.
    `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`, wrangler acts on local
    storage and the bucket never moves. Run in `worker/` with wrangler's own login (the owner's R2 key is
    read-only); the archive writes no object metadata, so the copy loses nothing.
-4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; on the NAS the whole shape reads clean — `find /data/archive/browser -mindepth 1 -type d | grep -vE '^/data/archive/browser/[a-z0-9._-]+-[0-9a-f]{12}(/rev[0-9]+(/(over|abandoned))?)?$'` prints NOTHING (a legacy folder at the first level, a nest at the second, or a merge's nest at the fourth all print); in R2 the same shape over `browser/` AND `test/browser/` (a key listing, each key's second and fourth components read); the address's record count matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
+4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; on the NAS the whole shape reads clean — `find /data/archive/browser -mindepth 1 -type d | grep -vE '^/data/archive/browser/[a-z0-9._-]+-[0-9a-f]{12}(/rev[0-9]+(/(over|abandoned))?)?$'` prints NOTHING (a legacy folder at the first level, a nest at the second, or a merge's nest at the fourth all print, and a legacy skeleton of empty directories prints too — it means step 2's merge was not finished); in R2 the same shape over `browser/` AND `test/browser/` (a key listing, each key's second and fourth components read); the address's record count matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
 
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 
@@ -2504,7 +2510,7 @@ The files' last versions are in history: `git show 87d30a14:deploy/worker/src/in
   hostname until the ingress is pointed back.
 - **The previous build:** every earlier tag is still an image on the NAS (§3.9
   counts twelve). Stop and remove the running container and recreate it from
-  the tag you want with §3's body — the volume is the same, so the records
+  the tag you want with §3's body (the four `Env` entries, the TTLs included) — the volume is the same, so the records
   carry over.
 - **Across M6.1 that is a WHOLE-IMAGE rollback, not a partial one.** Before
   M6.1 a rollback moved only the client and the help pictures. A pre-M6.1
@@ -2567,6 +2573,13 @@ The files' last versions are in history: `git show 87d30a14:deploy/worker/src/in
   reads 0 and moves from there (`#[serde(default)]`). Measured on the layer at
   `014433df` over documents the cycle D layer wrote. *(Added 2026-09-29, M6.5c2
   cycle D.)*
+- **Across security S1c the archive's rename is ONE-WAY.** The window moved every `browser/<legacy>/`
+  folder under its digested segment (the rename section above) and nothing in the S1c build reads a
+  legacy folder, while a build from before S1c reads and files under the legacy segment alone. A
+  rollback across S1c therefore loses no file but SPLITS an address's saves: new saves land under the
+  legacy folder again, beside the renamed one, until the roll forward's window runs the recipe once
+  more — step 2's merge branch (and step 3's new-key-first read) is written for exactly that second
+  run. *(Added 2026-10-11, security S1c.)*
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.

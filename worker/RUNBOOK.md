@@ -181,7 +181,7 @@ sender the files never name — are closed by steps 1 to 4 as written here.) The
 together (`deploy/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
 R2 lines are the ones run.
 
-1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list and over every `.test` identity whose folders exist under R2's `test/browser/` (the live replay's `red@wire.test` among them — list that prefix to find them)
+1. **Before the window: the listing, then the table.** List every first-level folder on both hosts first — on the NAS `ls -A /data/archive/browser` (while the old container still runs, `docker exec yokohama-web ls -A /data/archive/browser` through Portainer; `-A`, since a local part may begin with a dot), in R2 the `browser/` and `test/browser/` prefixes — and give EVERY folder a row or a recorded ruling before the window: a folder whose name holds `_at_` is an address's legacy segment; a folder with no `_at_` is a bare claimed name from the dev or the open door (the NAS ran that door until 2026-09-28), whose address is the folder's own text; a folder nobody can name is left in place and recorded. Then run the `segment` subcommand over the WHOLE Access allow-list, over every `.test` identity whose folders exist under R2's `test/browser/` (the live replay's `red@wire.test` among them) and over every bare name found
    (`cargo run -p yokohama-web -- segment <every address>…`) and keep the three-column table. A legacy column two
    addresses SHARE is a collision, and the files inside name no sender — every browser-played table's
    `created_by` and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the
@@ -192,13 +192,13 @@ R2 lines are the ones run.
    `[ ! -e browser/<current> ] && mv browser/<legacy> browser/<current>` — a GUARDED move, never a bare `mv`,
    which exits 0 and nests the old folder under a new one that already exists (a `<current>` folder can exist only where an S1c build already served on this volume — a re-run of the window, a test deploy — since the old build files under legacy segments alone) — and if `<current>` exists, merge FILE BY FILE — `cd browser/<legacy> && find . -type f | while read -r f; do mkdir -p "../<current>/$(dirname "$f")"; mv -n "$f" "../<current>/$f"; done` — then `find browser/<legacy> -type f` lists exactly the files `-n` refused, each compared by hand (a directory-level `mv -n` nests one level deeper than a second-level reading and is never used); read every file `-n` refused (it
    refuses without a word, and its exit code is no signal across `mv` versions, so the refused files are the
-   ones still under `<legacy>` afterwards). Then start the new build.
+   ones still under `<legacy>` afterwards). When `find browser/<legacy> -type f` lists nothing more — every refused file ruled on and moved or removed by hand — remove the emptied skeleton, `find browser/<legacy> -depth -type d -exec rmdir {} +` (BusyBox's `rmdir` is native; the merge leaves the directories behind, and an empty legacy tree prints at step 4 exactly as an unmoved one does). Then start the new build.
 
    (`deploy/RUNBOOK.md`'s section of this name says how the lines reach the volume while the container is
    stopped.)
 3. **Worker — after the deploy.** The Worker's deploy is one atomic switch, so the rename follows it. For each
    key under `browser/<legacy>/` AND `test/browser/<legacy>/` (spec §2.6's root for a `.test` address — the live
-   replay's own) in `yokohama-archive` (the dashboard's object listing, or the API's
+   replay's own — EXCEPT the replay's own four keys under `test/browser/red_at_wire.test/`: the `wire` record the replay sends carries the stack's `engine_version` 0.6.1 where those saves carry 0.6.0, so a moved save would meet the first replay's first sends as the 409 that stops a run (`worker/RUNBOOK.md` §7, "The replay's reset"); DELETE those four legacy keys instead, `npx wrangler r2 object delete yokohama-archive/test/browser/red_at_wire.test/rev7/<over|abandoned>/wire[.table].json --remote`, the reset in its legacy spelling, and the first replay's two first sends then land 201 and re-create them under the digested key) in `yokohama-archive` (the dashboard's object listing, or the API's
    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`):
    `npx wrangler r2 object get yokohama-archive/<new key> --remote --file <tmp-new>` FIRST — if the new key
    exists (an upload that landed after the deploy), compare the bytes: identical is the once-rule's retry, so
@@ -208,7 +208,7 @@ R2 lines are the ones run.
    `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`, wrangler acts on local
    storage and the bucket never moves. Run in `worker/` with wrangler's own login (the owner's R2 key is
    read-only); the archive writes no object metadata, so the copy loses nothing.
-4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; on the NAS the whole shape reads clean — `find /data/archive/browser -mindepth 1 -type d | grep -vE '^/data/archive/browser/[a-z0-9._-]+-[0-9a-f]{12}(/rev[0-9]+(/(over|abandoned))?)?$'` prints NOTHING (a legacy folder at the first level, a nest at the second, or a merge's nest at the fourth all print); in R2 the same shape over `browser/` AND `test/browser/` (a key listing, each key's second and fourth components read); the address's record count matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
+4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; on the NAS the whole shape reads clean — `find /data/archive/browser -mindepth 1 -type d | grep -vE '^/data/archive/browser/[a-z0-9._-]+-[0-9a-f]{12}(/rev[0-9]+(/(over|abandoned))?)?$'` prints NOTHING (a legacy folder at the first level, a nest at the second, or a merge's nest at the fourth all print, and a legacy skeleton of empty directories prints too — it means step 2's merge was not finished); in R2 the same shape over `browser/` AND `test/browser/` (a key listing, each key's second and fourth components read); the address's record count matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
 
 ## 3. The variables — every one, and what its absence means
 
@@ -712,6 +712,13 @@ expires in 2031 (spec §0.5).
 
 *(Added 2026-09-30, cycle E — §19.)*
 - **A rollback across cycle E is a MARKER rollback too:** the twenty-fifth deployment (E) writes the `waited` marker reason (Task 6) and `TurnMirror.has_events` (Task 5). A version before it (`974e0a93…`, D, or earlier) renders a `waited` marker's head as `undefined — …` for as long as the marker lives (up to 90 days) and ignores `has_events` (a table's abandon then asks as before). The chat-tombstone caveat of cycle D stands beside it.
+- **Across security S1c the archive's rename is ONE-WAY.** The window moved every `browser/<legacy>/`
+  folder under its digested segment (the rename section above) and nothing in the S1c build reads a
+  legacy folder, while a build from before S1c reads and files under the legacy segment alone. A
+  rollback across S1c therefore loses no file but SPLITS an address's saves: new saves land under the
+  legacy folder again, beside the renamed one, until the roll forward's window runs the recipe once
+  more — step 2's merge branch (and step 3's new-key-first read) is written for exactly that second
+  run. *(Added 2026-10-11, security S1c.)*
 
 ## 7. The live tiers and the quota guard
 
@@ -874,7 +881,9 @@ fields under the event's `source` and its `$metadata.type` `cf-worker`, where th
   — kept for good, by the owner's direction — and the walk's own game-over pair under
   `test/rev7/over/`. *(Since security S1c the segment carries a digest of the address (finding D26);
   before S1c's deploy window these keys sat under `test/browser/red_at_wire.test/`, which the
-  window's rename moves.)*
+  window DELETES rather than moves — the stack's version bump makes them the reset's case (step 3 of
+  the rename, above) — so the first replay after S1c's deploy re-creates them under the digested
+  key, and "kept for good" holds of the keys.)*
 - **A PERMANENT house-chat post per replay run**: Red (`red@wire.test`), "anyone up for a second
   table?", which real people see in the lobby until 500 newer messages trim it. *(Corrected 2026-09-29,
   M6.5c2 cycle D: since cycle D the walk's `house_chat_delete` row DELETES that post in the same run —
