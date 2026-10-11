@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, isReleaseFeedError, tally } from "./harness";
+import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, isReleaseFeedError, isReportOnlyDetectionLine, tally } from "./harness";
 import {
   EXIT_LAUNCH_ARGS,
   LIVE_ORIGIN,
@@ -1275,5 +1275,77 @@ describe("tally — one line per request a browser makes", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+// ---- the Report-Only lines, as Chromium 143–153 words and levels them (MEASURED, the S2a plan review) ---------
+
+/** A page whose console emits a line of the type the cell chooses — `watchForBreakage` reads the type, so the
+ *  `fakePage` above, which emits `error` alone, cannot drive the Report-Only arm. */
+function consolePage() {
+  const handlers = new Map<string, Handler[]>();
+  const page = {
+    on(event: string, handler: Handler) {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+      return page;
+    },
+  };
+  const emit = (event: string, arg: unknown) => (handlers.get(event) ?? []).forEach((h) => h(arg));
+  return {
+    page: page as unknown as Page,
+    line: (type: string, text: string, url: string) =>
+      emit("console", { type: () => type, text: () => text, location: () => ({ url, lineNumber: 0, columnNumber: 0 }) } as unknown as ConsoleMessage),
+  };
+}
+
+/** Chromium's Report-Only refusal of an inline script under the shipped `script-src`, word for word (the hash is
+ *  the injected script's own, and varies). */
+const RO_INLINE =
+  "Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com https://static.cloudflareinsights.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-aBV9DC+smatNUlnkSmZOl+jfLQV1VY8nHmiO1eoMzIU='), or a nonce ('nonce-...') is required to enable inline execution. The policy is report-only, so the violation has been logged but no further action has been taken.";
+/** The same refusal of an inline STYLE — another directive's line. */
+const RO_STYLE = RO_INLINE.replace("Executing inline script", "Applying inline style").replace("'script-src ", "'style-src ");
+/** The ENFORCED refusal: Chromium's last sentence changes, and the line is an `error`. */
+const ENFORCED_INLINE = RO_INLINE.replace(
+  "The policy is report-only, so the violation has been logged but no further action has been taken.",
+  "The action has been blocked.",
+);
+
+describe("the Report-Only lines (type info) are read, and the live tier forgives exactly one (security S2a, decision D-9)", () => {
+  afterEach(() => {
+    vi.doUnmock("./live");
+    vi.resetModules();
+  });
+  it("locally every CSP line is breakage, whatever its console type", async () => {
+    const { watchForBreakage } = await harnessAt(false);
+    const fake = consolePage();
+    const watch = watchForBreakage(fake.page);
+    const local = baseUrlFor(false);
+    fake.line("info", RO_INLINE, `${local}/`);
+    fake.line("info", RO_STYLE, `${local}/`);
+    expect(watch.failures).toHaveLength(2);
+    expect(watch.reportOnlyForgiven).toBe(0);
+  });
+  it("live forgives the Report-Only inline-script line at a page of the deployment, counted apart, and nothing beside it", async () => {
+    const { watchForBreakage } = await harnessAt(true);
+    const fake = consolePage();
+    const watch = watchForBreakage(fake.page);
+    fake.line("info", RO_INLINE, `${LIVE_ORIGIN}/`);
+    expect([watch.failures, watch.reportOnlyForgiven, watch.forgiven]).toEqual([[], 1, 0]);
+    fake.line("info", RO_STYLE, `${LIVE_ORIGIN}/`);
+    fake.line("error", ENFORCED_INLINE, `${LIVE_ORIGIN}/`);
+    fake.line("info", RO_INLINE, "https://elsewhere.test/");
+    fake.line("info", "an ordinary info line", `${LIVE_ORIGIN}/`);
+    expect(watch.failures).toHaveLength(3);
+    expect(watch.reportOnlyForgiven).toBe(1);
+  });
+  it("isReportOnlyDetectionLine: the measured line at the deployment's ORIGIN, and nothing that merely starts with it", () => {
+    expect(isReportOnlyDetectionLine(RO_INLINE, `${LIVE_ORIGIN}/`, LIVE_ORIGIN)).toBe(true);
+    expect(isReportOnlyDetectionLine(RO_INLINE, `${LIVE_ORIGIN}.evil.test/`, LIVE_ORIGIN), "a longer host is another origin").toBe(false);
+    expect(isReportOnlyDetectionLine(RO_INLINE, "not a url", LIVE_ORIGIN)).toBe(false);
+    expect(isReportOnlyDetectionLine(ENFORCED_INLINE, `${LIVE_ORIGIN}/`, LIVE_ORIGIN), "an ENFORCED refusal is breakage").toBe(false);
+    expect(
+      isReportOnlyDetectionLine(RO_INLINE.replace("inline script", "script from 'https://evil.test/x.js'"), `${LIVE_ORIGIN}/`, LIVE_ORIGIN),
+      "a refused external script is breakage",
+    ).toBe(false);
   });
 });

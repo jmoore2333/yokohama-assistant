@@ -53,6 +53,8 @@
 //   cannot answer falls through to the network;
 // - a navigation answered from `/shell.bin`'s cached bytes with the HTML type
 //   set here, asking the network nothing (R-6.5c2.41);
+// - a navigation carries the stored shell's headers but the type and the two
+//   encoding headers (finding D13, security S2a; decision D-5);
 // - R-F2's order for a path this release does not list: a retained generation
 //   before the network, one `try` per generation, nothing written;
 // - `fromRetained` never serves the stamp (`META_PATH`).
@@ -382,7 +384,7 @@ self.addEventListener("fetch", (event) => {
   // stored entry is typed as the server served it, `application/octet-stream`,
   // which a browser would download rather than render.
   if (route === "cache") event.respondWith(fromCache(url.pathname, request));
-  else if (route === "navigate") event.respondWith(fromCache(SHELL_PATH, request, (hit) => shellResponse(hit.body)));
+  else if (route === "navigate") event.respondWith(fromCache(SHELL_PATH, request, (hit) => shellResponse(hit)));
   else if (route === "network") event.respondWith(fromRetained(url.pathname, request));
 });
 
@@ -411,11 +413,26 @@ async function fromCache(
   return fetch(request);
 }
 
-/** The shell's cached bytes as the page a navigation asked for: a 200 with the
- *  HTML type the hosts serve `/index.html` with, set HERE — the stored entry
- *  carries `/shell.bin`'s `application/octet-stream` (R-6.5c2.41). */
-function shellResponse(body: BodyInit | null): Response {
-  return new Response(body, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+/** Headers the stored entry carries that the navigation's answer must NOT (security S2a, decision D-5): the type,
+ *  which is set to HTML below (R-6.5c2.41) — listed for the reader: the `set` below is what replaces it — and the
+ *  two that describe the ENCODED bytes the server sent, where the stored body is the decoded bytes the install
+ *  digested. Everything else is carried, `Cache-Control: no-store` among it, so a header the hosts gain later
+ *  reaches a returning visitor without an edit here. */
+const NOT_CARRIED: ReadonlySet<string> = new Set(["content-type", "content-length", "content-encoding"]);
+
+/** The shell's cached bytes as the page a navigation asked for: a 200 with the HTML type the hosts serve
+ *  `/index.html` with, set HERE — the stored entry carries `/shell.bin`'s `application/octet-stream`
+ *  (R-6.5c2.41) — and EVERY OTHER header the host set on `/shell.bin` (finding D13, security S2a): the policy,
+ *  `X-Frame-Options`, the rest. Before this the synthesized page carried the type alone, so every header the
+ *  host sent protected a first visit only. (`forEach`, not `for…of`: the worker's `tsconfig` gives `Headers` no
+ *  iterator.) */
+function shellResponse(hit: Response): Response {
+  const headers = new Headers();
+  hit.headers.forEach((value, name) => {
+    if (!NOT_CARRIED.has(name.toLowerCase())) headers.append(name, value);
+  });
+  headers.set("content-type", "text/html; charset=utf-8");
+  return new Response(hit.body, { status: 200, headers });
 }
 
 /** A path this release does not list: from a RETAINED generation of ours that

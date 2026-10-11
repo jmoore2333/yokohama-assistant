@@ -35,7 +35,11 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  *
  * Console ERRORS and uncaught exceptions only. Warnings are not collected: a
  * warning that is not a defect would make this a list nobody reads, and React's
- * own development warnings do not reach a production build anyway.
+ * own development warnings do not reach a production build anyway. **The one
+ * line read at ANY console type is a CSP violation** (security S2a, decision
+ * D-9): Chromium logs a Report-Only violation at `info` and an enforced one at
+ * `error`, so a gate on the type alone would read nothing of a Report-Only
+ * release.
  *
  * **Failed responses are filtered to THIS ORIGIN.** The reason this was written
  * has since been REMOVED — `index.html` pulled two font families from
@@ -66,13 +70,17 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
  *
- * **Under `LIVE`, and only there, TWO more errors are forgiven**, each COUNTED
+ * **Under `LIVE`, and only there, THREE more lines are forgiven**, each COUNTED
  * apart so a live run says which allow-list it spent: the Web Analytics
- * beacon's CORS block ([`isBeaconCorsError`]) in `forgiven`, and, since cycle
- * F, the release feed's failure while the repository is private
+ * beacon's CORS block ([`isBeaconCorsError`]) in `forgiven`; since cycle F,
+ * the release feed's failure while the repository is private
  * ([`isReleaseFeedError`]) in `feedForgiven` — its own counter, because the live
- * specs print `forgiven` as the beacon's (Task 8's review, Important 1).
- * Locally the switch is off and the lines below it never run.
+ * specs print `forgiven` as the beacon's (Task 8's review, Important 1); and,
+ * since security S2a, the Report-Only refusal of the inline detection script
+ * Cloudflare's edge injects ([`isReportOnlyDetectionLine`]) in
+ * `reportOnlyForgiven` — a CSP line, read at `info` as every CSP line is read
+ * at any type. Locally the switch is off and the lines below it never run, so
+ * every CSP line is breakage there.
  *
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
@@ -83,9 +91,9 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
 export function watchForBreakage(
   page: Page,
   expected: { status: number; urlIncludes: string }[] = [],
-): { failures: string[]; forgiven: number; feedForgiven: number; dealAnswers: number } {
+): { failures: string[]; forgiven: number; feedForgiven: number; reportOnlyForgiven: number; dealAnswers: number } {
   const failures: string[] = [];
-  const watch = { failures, forgiven: 0, feedForgiven: 0, dealAnswers: 0 };
+  const watch = { failures, forgiven: 0, feedForgiven: 0, reportOnlyForgiven: 0, dealAnswers: 0 };
   /** The deal's designed 409s this page has spent, arm by arm. */
   const dealt = { response: 0, console: 0 };
   const allowed = (status: number, url: string) =>
@@ -94,8 +102,8 @@ export function watchForBreakage(
     // Chromium logs its own `Failed to load resource … (409 Conflict)` for the
     // same response, so an allowed status has to be forgiven in both channels
     // or the allowlist only half works.
-    if (m.type() !== "error") return;
     const text = m.text();
+    if (m.type() !== "error" && !CSP_VIOLATION.test(text)) return;
     if (expected.some((e) => text.includes(String(e.status)))) return;
     // The CONSOLE arm is the only one the beacon reaches: its load fails
     // cross-origin, so nothing under `BASE_URL` answers it and the response
@@ -106,6 +114,10 @@ export function watchForBreakage(
     }
     if (LIVE && isReleaseFeedError(text, m.location().url)) {
       watch.feedForgiven += 1;
+      return;
+    }
+    if (LIVE && isReportOnlyDetectionLine(text, m.location().url, BASE_URL)) {
+      watch.reportOnlyForgiven += 1;
       return;
     }
     if (isDealAnswerLine(text, m.location().url, BASE_URL) && dealt.console < DEAL_ANSWERS_PER_PAGE) {
@@ -219,6 +231,38 @@ export function isBeaconCorsError(text: string, url: string): boolean {
 
 function fromTheBeacon(url: string): boolean {
   return url === BEACON_PREFIX || url.startsWith(`${BEACON_PREFIX}/`) || url.startsWith(`${BEACON_PREFIX}?`);
+}
+
+/** Any CSP violation line, enforced or Report-Only, as Chromium 143–153 words it (MEASURED, the S2a plan review):
+ *  "… violates the following [report-only ]Content Security Policy directive …". Report-Only logs at `info`
+ *  (`frame-src`'s and `frame-ancestors`' at `error`), enforced at `error` — so the console handler reads a CSP
+ *  line at ANY type: the type gate alone would read nothing of a Report-Only release. */
+const CSP_VIOLATION = /\bviolates the following (?:report-only )?Content Security Policy directive\b/;
+
+/** The ONE Report-Only line the live tier forgives: an INLINE script refused by `script-src` — Cloudflare's
+ *  injected detection script — exactly as Chromium words it, its hash free (MEASURED on an emulated injection; the
+ *  real script's line is read in the window, Task 9 Step 9(c)). */
+const REPORT_ONLY_INLINE_SCRIPT =
+  /^Executing inline script violates the following Content Security Policy directive 'script-src [^\n]*'\. Either the 'unsafe-inline' keyword, a hash \('sha256-[A-Za-z0-9+/]+=*'\), or a nonce \('nonce-\.\.\.'\) is required to enable inline execution\. The policy is report-only, so the violation has been logged but no further action has been taken\.$/;
+
+/**
+ * **Whether a console line is the live tier's third known line** (security S2a, decision D-9): the policy ships
+ * Report-Only in this release, and Bot Fight Mode's JavaScript Detections inject an INLINE script into every HTML
+ * answer the edge serves — a first load — which no static policy can name (Cloudflare copies a nonce onto it only
+ * from a header a static shell cannot vary). Chromium logs the refusal at `info`, located at the page. Forgiven
+ * ONLY in that shape and at a page of the deployment's own ORIGIN (`new URL(pageUrl).origin`, never a prefix test,
+ * which `https://yokohama.moore.nyc.evil.test/` would pass): an enforced refusal, a refused external script or
+ * any other directive's line is breakage, as the local tier reads every CSP line (there is no edge locally, so no
+ * inline script, so no line — and the local tier is served the policy ENFORCED).
+ */
+export function isReportOnlyDetectionLine(text: string, pageUrl: string, base: string): boolean {
+  let same = false;
+  try {
+    same = new URL(pageUrl).origin === new URL(base).origin;
+  } catch {
+    same = false;
+  }
+  return same && REPORT_ONLY_INLINE_SCRIPT.test(text);
 }
 
 /**
