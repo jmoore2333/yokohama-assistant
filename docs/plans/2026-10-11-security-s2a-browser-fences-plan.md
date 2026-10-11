@@ -780,14 +780,17 @@ export function headersJson(set) {
 /** A header name: RFC 9110's token grammar, which is what `http::HeaderName` accepts on the NAS. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
-/** A control character in a value (`\u0000`–`\u001f`, `\u007f`): what `http::HeaderValue` refuses — and what
- *  would let one pair render as two `_headers` lines. */
+/** A control character in a value (`\u0000`–`\u001f`, `\u007f`): what would let one pair render as two
+ *  `_headers` lines. Stricter than `http::HeaderValue`, which admits a tab (`http` 1.5.0's `is_valid`:
+ *  `b >= 32 && b != 127 || b == b'\t'`) — the strict side is this one, deliberately (see `parseHeadersJson`). */
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
 /** `dist/headers.json` read back: an array of at least one `[string, string]` pair — each name a token, each
- *  value free of control characters — or a throw naming the file. The Worker's assembly and the guard read it
- *  through this, as the NAS's `response_headers` reads it in Rust, and the two refuse the SAME shapes: a file
- *  that passed the assembly and stopped the NAS at start would be a release with one host down.
+ *  value non-empty and free of control characters — or a throw naming the file. The Worker's assembly and the
+ *  guard read it through this, as the NAS's `response_headers` reads it in Rust: every name this refuses the
+ *  Rust reader refuses (the token grammars are the same), and this side refuses two value shapes `http` admits —
+ *  a tab, and an empty value — so a file that passes the assembly always passes the NAS's reader at start. The
+ *  one-host-down release (passed the assembly, stopped the NAS) cannot arise, and the build writes neither.
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
