@@ -650,18 +650,25 @@ impl Games {
     /// map without bound with refused writes at fabricated ids — `lock_for`
     /// inserts on first use and only `delete` pruned — so now every writer
     /// READS the table before calling this (an absent table is a 404 that never
-    /// touches the map) and every exit prunes. A second writer in flight holds
+    /// touches the map) and every exit prunes — a body that PANICS too, since
+    /// the prune is a drop guard declared before the clone and so dropped after
+    /// it (security S1c's final wave; until then a `delete` that panicked after
+    /// its unlink left its entry behind). A second writer in flight holds
     /// its own clone, so the entry stays and the two serialize on one lock
     /// (`prune_lock`'s argument).
     pub(crate) fn with_table_lock<T>(&self, id: &str, body: impl FnOnce() -> T) -> T {
+        struct PruneOnExit<'a>(&'a Games, &'a str);
+        impl Drop for PruneOnExit<'_> {
+            fn drop(&mut self) {
+                self.0.prune_lock(self.1);
+            }
+        }
+        // Locals drop in reverse order, on a return and on an unwind alike: the
+        // guard, then this clone, then the prune.
+        let _prune = PruneOnExit(self, id);
         let lock = self.lock_for(id);
-        let out = {
-            let _serialized = enter(&lock);
-            body()
-        };
-        drop(lock);
-        self.prune_lock(id);
-        out
+        let _serialized = enter(&lock);
+        body()
     }
 
     /// **Take a game's own lock — the ONE way this layer does** (M6.5c2 cycle
@@ -3229,9 +3236,38 @@ mod tests {
         assert_eq!(holders(), 3, "the entry is alive, one lock, while the waiter waits on it");
         assert!(!waiter.is_finished(), "the body ran while another holder had the lock");
         release_tx.send(()).expect("the first holder listens");
+        // Bounded, so a lock that is never let go FAILS here, naming the
+        // thread, rather than hanging the joins below.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(first.is_finished() && waiter.is_finished()) {
+            if Instant::now() >= deadline {
+                let unfinished: Vec<&str> = [("the first holder", first.is_finished()), ("the waiter", waiter.is_finished())]
+                    .into_iter()
+                    .filter_map(|(name, done)| (!done).then_some(name))
+                    .collect();
+                panic!("not finished within 5 s of the release: {}", unfinished.join(" and "));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(first.join().expect("the first holder"), 1);
         assert_eq!(waiter.join().expect("the waiter"), 7);
         assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned it");
+    }
+
+    /// **A body that panics is pruned too** (security S1c's final wave): the
+    /// prune is a drop guard, so an unwind out of the body leaves no entry,
+    /// where before a `delete` that panicked after its unlink left one. The
+    /// mutant that prunes only after the body returns, as the helper did
+    /// before, reads one entry here.
+    #[test]
+    fn with_table_lock_prunes_when_the_body_panics() {
+        let games = games();
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            games.with_table_lock("t", || -> u8 { panic!("the body fails") })
+        }));
+        assert!(out.is_err(), "the body's panic reaches the caller");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the unwind pruned the entry");
+        assert_eq!(games.with_table_lock("t", || 7u8), 7, "the next writer at the id takes a lock and runs");
     }
 }
 

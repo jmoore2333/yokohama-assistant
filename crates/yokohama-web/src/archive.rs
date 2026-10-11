@@ -195,8 +195,15 @@ pub const SEGMENT_READABLE: usize = 48;
 
 /// The digest's length in hex characters: twelve, forty-eight bits. The
 /// collision left is two addresses whose readable halves AND forty-eight
-/// digest bits agree — not a thing a person can arrange — while the folder
-/// still reads as who sent it.
+/// digest bits agree, while the folder still reads as who sent it. **Cost is
+/// not what keeps it out**: a readable half is easy to match (the rendering
+/// folds every character outside `[a-z0-9._-]` but `@` to `_`, and cuts at
+/// forty-eight), and a second preimage on forty-eight bits is about 2^48
+/// hashes, which can be bought. The door is: behind Cloudflare Access a
+/// person's address is the one Access vouched for, off the owner's
+/// allow-list, so no one picks it; and a door that lets a caller claim an
+/// address — the open door, the Worker's dev door — lets them claim the
+/// target's outright, so a collision buys nothing there.
 pub const SEGMENT_DIGEST: usize = 12;
 
 /// The directory a browser's saves are filed under: the address made readable

@@ -945,6 +945,17 @@ impl Games {
         Ok(Some((doc, version)))
     }
 
+    /// **Absent before locked** (security S1c, finding B8): the one pre-read the
+    /// six writers that always lock make before [`Games::with_table_lock`] —
+    /// `join`, `keep`, `unlock`, `delete` and the chat's append and delete — so
+    /// a fabricated id is a 404 that never creates a lock entry. The read under
+    /// the lock is the one a write is checked against; this one only says
+    /// "there". `settle` reads for itself and locks only to repair.
+    fn require_table(&self, id: &str) -> Result<(), GameError> {
+        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        Ok(())
+    }
+
     pub(crate) fn write_table(&self, doc: &TableDoc, expected: Option<Version>) -> Result<Version, WriteError> {
         let json = serde_json::to_string_pretty(doc)
             .map_err(|e| WriteError::Io(format!("the table document does not serialize: {e}")))?;
@@ -1077,8 +1088,7 @@ impl Games {
         text: &str,
     ) -> Result<Message, GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
-        // Absent before locked (security S1c, finding B8): `join`'s comment.
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             let (table, _) = self
                 .read_table(id)?
@@ -1147,8 +1157,7 @@ impl Games {
     /// The caller has ADMITTED the user (`api::chat_delete`, as `chat_post`
     /// admits a poster), so a stranger never reaches the document.
     pub fn delete_chat(&self, id: &str, seq: u64, user: &User) -> Result<(), GameError> {
-        // Absent before locked (security S1c, finding B8): `join`'s comment.
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             let (table, _) = self
                 .read_table(id)?
@@ -1366,8 +1375,7 @@ impl Games {
     /// any other screen shows. The unlocking caller is answered with the view
     /// in this very reply.
     pub fn unlock(&self, id: &str, user: &User, password: &str) -> Result<TableView, GameError> {
-        // Absent before locked (security S1c, finding B8): `join`'s comment.
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             let (mut doc, version) = self
                 .read_table(id)?
@@ -1595,10 +1603,7 @@ impl Games {
         name: Option<&str>,
         password: Option<&str>,
     ) -> Result<TableView, GameError> {
-        // Absent before locked (security S1c, finding B8): a fabricated id is a
-        // 404 that never creates a lock entry. The read under the lock below is
-        // the one the write is checked against; this one only says "there".
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             let (mut doc, version) = self
                 .read_table(id)?
@@ -1685,8 +1690,7 @@ impl Games {
         card: u8,
         name: Option<&str>,
     ) -> Result<TableView, GameError> {
-        // Absent before locked (security S1c, finding B8): `join`'s comment.
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || {
             // Settled first, so a table left mid-finalize by a crash is repaired by
             // the same call that would otherwise refuse a keep it has already taken.
@@ -1930,8 +1934,7 @@ impl Games {
     /// succeeded; since security S1c, finding B8, a refused delete prunes too,
     /// and one at an absent id never makes an entry.
     pub fn delete(&self, id: &str, user: &User) -> Result<(), GameError> {
-        // Absent before locked (security S1c, finding B8): `join`'s comment.
-        self.read_table(id)?.ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+        self.require_table(id)?;
         self.with_table_lock(id, || self.delete_locked(id, user))
     }
 
@@ -3487,12 +3490,13 @@ mod tests {
     /// **Every writer holds a table's lock through `with_table_lock`** (finding
     /// B8, decision D-3): the helper is where "drop, then prune" lives, so this
     /// file must not take a lock by hand. The one site allowed to call
-    /// `lock_for` is the helper itself, in `games.rs`.
+    /// `lock_for` is the helper itself, in `games.rs`. The six pre-reads are
+    /// `require_table`'s, counted the same way.
     ///
     /// The scan reads the CODE, cut at the file's first column-0
     /// `#[cfg(test)]` (the layer's scan convention): uncut, this cell's own
-    /// two literals match, so the first assertion could never pass and the
-    /// count would carry one helper call too many.
+    /// literals match, so the first assertion could never pass and each count
+    /// would carry one call too many.
     #[test]
     fn no_writer_in_this_file_takes_a_lock_by_hand() {
         let whole = include_str!("tables.rs");
@@ -3500,6 +3504,7 @@ mod tests {
         assert!(source.len() < whole.len(), "the cut found the test module");
         assert!(!source.contains("lock_for("), "a writer calls lock_for directly — use with_table_lock");
         assert!(source.matches("with_table_lock(").count() >= 7, "the seven writers go through the helper");
+        assert!(source.matches(".require_table(").count() >= 6, "the six pre-reads go through require_table");
     }
 
     /// A [`MemStore`] that parks the FIRST table read after it is armed, so a
@@ -3703,7 +3708,7 @@ mod tests {
     fn a_delete_cannot_interleave_with_the_keep_that_finalizes() {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::mpsc::{channel, RecvTimeoutError};
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         let (at_record_tx, at_record_rx) = channel();
         let (go_record_tx, go_record_rx) = channel();
@@ -3768,6 +3773,19 @@ mod tests {
         // still waiting for the table's lock.
         go_delete_tx.send(()).expect("the parked delete is still listening");
         go_record_tx.send(()).expect("a buffered release");
+        // Bounded, so a lock that is never let go FAILS here, naming the
+        // thread, rather than hanging the joins below.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(deleter.is_finished() && keeper.is_finished()) {
+            if Instant::now() >= deadline {
+                let unfinished: Vec<&str> = [("the delete thread", deleter.is_finished()), ("the keep thread", keeper.is_finished())]
+                    .into_iter()
+                    .filter_map(|(name, done)| (!done).then_some(name))
+                    .collect();
+                panic!("not finished within 5 s of the release: {}", unfinished.join(" and "));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
         deleter.join().expect("the delete thread").expect("the delete");
         // The keep's own outcome is NOT asserted: with the lock taken it finds
         // the table gone and refuses in conflict, which is the honest answer to
@@ -4056,7 +4074,7 @@ mod tests {
     /// this cycle under `old.js` still loads, plays and deletes — so the fence
     /// is the create's alone. Every id the corpus and the client use is dotless.
     #[test]
-    fn a_dotted_id_is_refused_at_create_and_a_stored_one_still_plays() {
+    fn a_dotted_id_is_refused_at_create_and_a_stored_one_still_reads_and_deletes() {
         let games = games();
         let red = who("red@t.test");
         for id in ["x.js", "x.css", "x.png", "x.bin", "evening.2", "a.b.c"] {

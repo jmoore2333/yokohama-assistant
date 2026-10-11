@@ -781,7 +781,7 @@ async fn events(
 /// D1). `tokio-stream`'s `take_while` stops BEFORE the failing item, and the
 /// `gone` frame must be written and then the body closed — the refusal was
 /// written on every later bump before this, an activity oracle on a table the
-/// caller was refused. Fifteen lines over a pinned box, rather than a
+/// caller was refused. A few lines over a pinned box, rather than a
 /// dependency on `futures-util` for `scan`.
 #[cfg(feature = "server")]
 struct UntilLast<S> {
@@ -1247,10 +1247,14 @@ mod tests {
     /// existing): `find` folds HEAD onto GET, and `answer` must pick its arm by
     /// the SAME folded method, else a HEAD of a two-method path takes the other
     /// arm — the creator's HEAD of a game deleted it, a HEAD of `/api/games`
-    /// with a create body created one. Four paths, each HEAD answers 200 with
-    /// an empty body and writes nothing: the table remains, the list does not
-    /// grow, no chat message lands. The mutant that drops the fold reads a 204
-    /// at the first row and the table gone.
+    /// with a create body created one. The rows are DERIVED from
+    /// `api::routes(true)`: every path with a GET row and a write row (POST or
+    /// DELETE) — four today, the list, a game, a game's chat and the house
+    /// chat — so a fifth two-method path is a row the day it lands. Each HEAD
+    /// answers 200 with an empty body and writes nothing: the path's GET reads
+    /// the same after it as before (the table remains, the list does not grow,
+    /// no chat message lands). The mutant that drops the fold reads a 201 at
+    /// the first row, the list's: the HEAD created a table.
     #[tokio::test]
     async fn a_head_never_runs_a_write_arm() {
         let state = Arc::new(AppState::in_memory());
@@ -1269,23 +1273,37 @@ mod tests {
                 (status, bytes.len())
             }
         };
+        let table = api::routes(true);
+        let two_method: Vec<&str> = table
+            .iter()
+            .filter(|r| r.method == "GET")
+            .filter(|r| table.iter().any(|w| w.pattern == r.pattern && matches!(w.method, "POST" | "DELETE")))
+            .map(|r| r.pattern)
+            .collect();
+        for known in ["/api/games", "/api/games/{id}", "/api/games/{id}/chat", "/api/chat"] {
+            assert!(two_method.contains(&known), "{known} is a two-method path; the derivation found {two_method:?}");
+        }
         let create = serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
             "seats": [{ "user": WHO }, { "user": WHO }], "id": "headmade", "name": "headmade" });
-        assert_eq!(head("/api/games/headed", None).await, (StatusCode::OK, 0), "the creator's HEAD of a game");
-        let (status, _) = get_as(&state, WHO, "/api/games/headed").await;
-        assert_eq!(status, StatusCode::OK, "the table remains");
-        let (_, before) = get_as(&state, WHO, "/api/games").await;
-        assert_eq!(head("/api/games", Some(create)).await, (StatusCode::OK, 0), "a HEAD of the list with a create body");
-        let (_, after) = get_as(&state, WHO, "/api/games").await;
-        assert_eq!(before["games"].as_array().map(Vec::len), after["games"].as_array().map(Vec::len), "nothing created: {after}");
+        for pattern in &two_method {
+            let uri = pattern.replace("{id}", "headed");
+            // The write arm's own body where the cell knows it, so a HEAD that
+            // took the arm would land its write rather than be refused for the
+            // body; a path the cell does not know is sent none.
+            let body = match *pattern {
+                "/api/games" => Some(create.clone()),
+                "/api/games/{id}/chat" | "/api/chat" => Some(serde_json::json!({ "text": "hi" })),
+                _ => None,
+            };
+            let (_, before) = get_as(&state, WHO, &uri).await;
+            assert_eq!(head(&uri, body).await, (StatusCode::OK, 0), "a HEAD of {uri}");
+            let (status, after) = get_as(&state, WHO, &uri).await;
+            assert_eq!(status, StatusCode::OK, "{uri} still reads: {after}");
+            assert_eq!(before, after, "{uri}: the HEAD wrote");
+        }
+        // What the derived loop cannot know: the create body's own id.
         let (status, _) = get_as(&state, WHO, "/api/games/headmade").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "nothing created");
-        for uri in ["/api/games/headed/chat", "/api/chat"] {
-            let (_, before) = get_as(&state, WHO, uri).await;
-            assert_eq!(head(uri, Some(serde_json::json!({ "text": "hi" }))).await, (StatusCode::OK, 0), "{uri}");
-            let (_, after) = get_as(&state, WHO, uri).await;
-            assert_eq!(before, after, "{uri}: a HEAD posted a message");
-        }
     }
 
     /// **A table stored before the dot rule still loads, plays, streams and
@@ -1499,13 +1517,17 @@ mod tests {
         // `é` are plain text and pass, to `parse_filter`'s own sentence, so the
         // sentence's last word is pinned by `cafe` + U+0301 against `caf` +
         // U+00E9. The mutant that keeps only the length half of the guard fails
-        // the refused rows.
+        // the refused rows. The one that keeps only the echo half (ML) fails
+        // the `x`×64+`…` row: a term whose 65th character is `…` echoes as
+        // itself, so only the count refuses it.
         let guard = "a filter is at most 64 characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character";
+        let ellipsis_at_65 = format!("{}%E2%80%A6", "x".repeat(64));
         let terms = [
             ("%22silk%22", true),
             ("si%5Clk", true),
             ("si%E2%80%AElk", true),
             ("cafe%CC%81", true),
+            (ellipsis_at_65.as_str(), true),
             ("caf%C3%A9", false),
             ("o'brien", false),
         ];
@@ -8661,7 +8683,8 @@ mod tests {
     /// before it stayed open and wrote one `gone` per later bump: an activity
     /// oracle on a table the caller was refused. A delete still ends with
     /// `deleted` (the earlier cell), and a transient store failure still writes
-    /// a comment and stays open (the next cell). The mutant that never marks
+    /// a comment and stays open
+    /// (`a_failed_reading_writes_a_comment_and_the_stream_stays_open_for_the_next_bump`). The mutant that never marks
     /// the frame last reads `ended == false` and a second `gone` after the
     /// second bump.
     #[tokio::test]

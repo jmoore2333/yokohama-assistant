@@ -181,7 +181,7 @@ sender the files never name — are closed by steps 1 to 4 as written here.) The
 together (`deploy/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
 R2 lines are the ones run.
 
-1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list
+1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list and over every `.test` identity whose folders exist under R2's `test/browser/` (the live replay's `red@wire.test` among them — list that prefix to find them)
    (`cargo run -p yokohama-web -- segment <every address>…`) and keep the three-column table. A legacy column two
    addresses SHARE is a collision, and the files inside name no sender — every browser-played table's
    `created_by` and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the
@@ -190,8 +190,7 @@ R2 lines are the ones run.
 2. **NAS — between the swap's stop and start.** Stop the old container. With nothing serving, for each legacy
    folder present under `/data/archive/browser/`:
    `[ ! -e browser/<current> ] && mv browser/<legacy> browser/<current>` — a GUARDED move, never a bare `mv`,
-   which exits 0 and nests the old folder under a new one that already exists (an upload that landed before the
-   stop) — and if `<current>` exists, merge file by file with `mv -n` and read every file `-n` refused (it
+   which exits 0 and nests the old folder under a new one that already exists (a `<current>` folder can exist only where an S1c build already served on this volume — a re-run of the window, a test deploy — since the old build files under legacy segments alone) — and if `<current>` exists, merge FILE BY FILE — `cd browser/<legacy> && find . -type f | while read -r f; do mkdir -p "../<current>/$(dirname "$f")"; mv -n "$f" "../<current>/$f"; done` — then `find browser/<legacy> -type f` lists exactly the files `-n` refused, each compared by hand (a directory-level `mv -n` nests one level deeper than a second-level reading and is never used); read every file `-n` refused (it
    refuses without a word, and its exit code is no signal across `mv` versions, so the refused files are the
    ones still under `<legacy>` afterwards). Then start the new build.
 
@@ -209,10 +208,7 @@ R2 lines are the ones run.
    `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`, wrangler acts on local
    storage and the bucket never moves. Run in `worker/` with wrangler's own login (the owner's R2 key is
    read-only); the archive writes no object metadata, so the copy loses nothing.
-4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; `browser/` holds
-   no folder whose name lacks a `-<12 hex>` tail at the FIRST level and no `<current>/<legacy>` at the SECOND
-   (the nesting a bare `mv` would leave — the quota's walk counts at any depth); the address's record count
-   matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
+4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; on the NAS the whole shape reads clean — `find /data/archive/browser -mindepth 1 -type d | grep -vE '^/data/archive/browser/[a-z0-9._-]+-[0-9a-f]{12}(/rev[0-9]+(/(over|abandoned))?)?$'` prints NOTHING (a legacy folder at the first level, a nest at the second, or a merge's nest at the fourth all print); in R2 the same shape over `browser/` AND `test/browser/` (a key listing, each key's second and fourth components read); the address's record count matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
 
 ## 3. The variables — every one, and what its absence means
 

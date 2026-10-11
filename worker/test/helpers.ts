@@ -198,10 +198,13 @@ export const OWED = "local-242a5429453c593c";
  * off a reply, because the reply is what the cells test; workerd's own
  * WebCrypto digests it, since this project's types declare no node module.
  * The digest is over the layer's KEY, so the address must already be one:
- * lowercase and trimmed, as every address these cells pass is.
+ * lowercase and trimmed, as every address these cells pass is. The guard
+ * checks those two and no more — not the grammar's collapse of space runs,
+ * and JS's `toLowerCase` is wider than the grammar's ASCII lowering — so its
+ * message names only what it checks.
  */
 export async function segmentOf(address: string): Promise<string> {
-  if (address !== address.trim().toLowerCase()) throw new Error(`segmentOf(${JSON.stringify(address)}): not a normalized key`);
+  if (address !== address.trim().toLowerCase()) throw new Error(`segmentOf(${JSON.stringify(address)}): not trimmed and lowercase`);
   const readable = [...address]
     .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
     .join("")

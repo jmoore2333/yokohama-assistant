@@ -430,19 +430,30 @@ struct RecordRev {
 /// namespace and passes `is_safe_id`, it matches the id INSIDE the table
 /// document, and the game admits `local@browser`. Without all three an accepted
 /// import can be missing from "your games" or route its moves to the server.
+///
+/// **Its sentences repeat the backup's ids through [`crate::echo::echo`]**, as
+/// [`restore_read`]'s duplicate-id refusal does (security S1c's final wave).
+/// No route reaches this path: its one way in is the wasm module's
+/// `restore_read`, which reads the browser's own backup file for the user who
+/// chose it.
 fn check_addressable(id: &str, table: &str) -> Result<(), String> {
     if !id.starts_with(LOCAL_PREFIX) {
         return Err(format!(
-            "{id:?} is not a game this device plays — a local game's name begins {LOCAL_PREFIX:?}"
+            "\"{id}\" is not a game this device plays — a local game's name begins {LOCAL_PREFIX:?}",
+            id = crate::echo::echo(id)
         ));
     }
     if !crate::store::is_safe_id(id) {
-        return Err(format!("{id:?} is not a safe name"));
+        return Err(format!("\"{id}\" is not a safe name", id = crate::echo::echo(id)));
     }
     let doc: Addressable = serde_json::from_str(table)
         .map_err(|e| format!("the table document does not parse: {e}"))?;
     if doc.id != id {
-        return Err(format!("the backup calls this game {id:?} and its table document {:?}", doc.id));
+        return Err(format!(
+            "the backup calls this game \"{id}\" and its table document \"{doc_id}\"",
+            id = crate::echo::echo(id),
+            doc_id = crate::echo::echo(&doc.id)
+        ));
     }
     if !doc.seats.iter().any(
         |s| matches!(s, crate::table::SeatDoc::Human { user, .. } if user == LOCAL_USER),
@@ -563,7 +574,7 @@ pub fn restore_read(envelope: &str) -> Result<Vec<(String, Verdict)>, String> {
     let mut seen = std::collections::BTreeSet::new();
     for g in &env.games {
         if !seen.insert(g.id.as_str()) {
-            return Err(format!("duplicate game {:?} in one backup", g.id));
+            return Err(format!("duplicate game \"{id}\" in one backup", id = crate::echo::echo(&g.id)));
         }
     }
     // **ONE `Rules` for the whole file** (review M-4), not one per game.

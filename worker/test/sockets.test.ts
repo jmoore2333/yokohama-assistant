@@ -396,6 +396,11 @@ describe("the table's sockets (spec §2.4)", () => {
   // spec §2.7's probe does. Mutant: every refusal accepted and closed. (Its
   // second case was an id the store will not use, the store's 500 until
   // security S1c made it the layer's 404 — refused, above, as an unknown id.)
+  // The 500 is back as a row (security S1c, Task 4's Minor 4): the live
+  // module's `events` answers 500 ONCE, the seam "a failure other than
+  // 403/404 sends nothing" uses, and the upgrade it answers is refused
+  // unupgraded. Mutant: `admit` passing only a 401 through, which upgrades the
+  // 500 and closes it 4404.
   it("an upgrade the layer answers otherwise is answered unupgraded, as the layer answered it", async () => {
     const id = "unupgraded";
     const stub = await seedPlaying(id);
@@ -403,6 +408,17 @@ describe("the table's sockets (spec §2.4)", () => {
     const noCaller = readReply(referenceModule().events(id, undefined, ""));
     expect(noCaller.status, "premise: the layer's 401").toBe(401);
     expect([anonymous.status, anonymous.webSocket, await anonymous.text()]).toEqual([401, null, noCaller.body]);
+    const failed = '{"error":"the store could not be read"}';
+    await runInDurableObject(stub, (table: Table) => {
+      const { mod } = table["instance"]!.get();
+      const events = mod.events;
+      mod.events = () => {
+        mod.events = events;
+        return { status: 500, body: failed, bumps: "[]", logs: "[]", free() {} } as unknown as Reply;
+      };
+    });
+    const broken = await upgrade(stub, RED, id);
+    expect([broken.status, broken.webSocket, await broken.text()], "a 500 passes through unupgraded").toEqual([500, null, failed]);
   });
 
   // Mutants: the `end` never read, so nothing is sent and no close comes; no

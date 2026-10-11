@@ -1777,8 +1777,10 @@ pub fn card_index(
         // quotes, so a term `{:?}` would escape — a double quote, a backslash,
         // a control, a format character such as U+202E, a combining mark —
         // never reaches it. An apostrophe is plain text to `{:?}`, and passes.
-        // (The length half is subsumed — an echo cut at `ECHO_MAX` ends in `…`
-        // and never equals the term — and kept so the bound reads here.)
+        // (The length half is LOAD-BEARING, not subsumed: a term whose 65th
+        // character is `…` echoes as itself — `x`×64+`…` — so without the
+        // count a 129-character `\`×128+`…` would reach `parse_filter` raw.
+        // The cell's terms carry one such term; mutant ML reads it.)
         Some(term) if term.chars().count() > crate::echo::ECHO_MAX || crate::echo::echo(term) != term => {
             return Err(ApiError::bad_request(format!(
                 "a filter is at most {} characters of plain text — nothing a quoted string would escape: no quote, backslash, control, format or combining character",
@@ -2538,30 +2540,31 @@ pub(crate) fn archive_would_accept(record: &str, table: &str) -> bool {
 /// that matches nothing is the JSON 404 the server's `fallback` writes; and an
 /// `{id}` the store would refuse is the JSON 404 `no game named "<echo>"`
 /// (security S1c, finding B8). All three come before `answer`, so before its
-/// 401 and its 400.
+/// 401 and its 400. Under HEAD both 404s leave with no body.
 pub fn dispatch(games: &Games, host: &Host, identity: Identity<'_>, req: &ApiRequest<'_>) -> ApiResponse {
-    let (pattern, bound) = match find(req.method, req.path, host.serves_games) {
-        Matched::Route(p, b) => (p, b),
+    let out = match find(req.method, req.path, host.serves_games) {
         Matched::WrongMethod => return ApiResponse { status: 405, body: String::new() },
+        // An arm of `out` and not an early return (security S1c's final wave),
+        // so the HEAD below leaves this refusal bodiless too.
         Matched::NoRoute => {
-            return error_response(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path))))
+            error_response(ApiError::not_found(format!("no such endpoint: {}", crate::echo::echo(req.path))))
         }
-    };
-    // **An `{id}` the store would refuse is a 404 here, before any handler**
-    // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
-    // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
-    // nothing this refuses could have been a table. An arm of `out` and not an
-    // early return, so the HEAD below leaves this refusal bodiless too.
-    let out = if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) {
-        error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
-    } else {
-        match answer(games, host, identity, req, pattern, &bound) {
+        // **An `{id}` the store would refuse is a 404 here, before any handler**
+        // (security S1c, finding B8): the id is the raw segment, and a 16 KB one
+        // reached `lock_for` as a key. `is_safe_id` is the store's own rule, so
+        // nothing this refuses could have been a table. An arm of `out` and not
+        // an early return, so the HEAD below leaves this refusal bodiless too.
+        Matched::Route(pattern, bound) if pattern.contains("{id}") && !crate::store::is_safe_id(bound[0]) => {
+            error_response(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(bound[0]))))
+        }
+        Matched::Route(pattern, bound) => match answer(games, host, identity, req, pattern, &bound) {
             Ok(r) => r,
             Err(e) => error_response(e),
-        }
+        },
     };
-    // HEAD leaves with an empty body on BOTH arms — a refused HEAD too — so a
-    // non-HTTP host never emits a body a HEAD did not ask for.
+    // HEAD leaves with an empty body on every arm of `out` — a refused HEAD too,
+    // an unknown path's included — so a non-HTTP host never emits a body a
+    // HEAD did not ask for.
     if req.method == "HEAD" {
         ApiResponse { status: out.status, body: String::new() }
     } else {
@@ -2581,6 +2584,7 @@ fn answer(
     pattern: &'static str,
     b: &[&str],
 ) -> Result<ApiResponse, ApiError> {
+    // A HEAD once took a write arm because the guards read the literal method (S1c Task 3's finding); every arm guard below reads `method`, never `req.method`.
     let method = if req.method == "HEAD" { "GET" } else { req.method };
     match pattern {
         "/api/health" => Ok(ok_json(200, &health(games, host))),
@@ -2827,7 +2831,8 @@ mod tests {
     /// boundary is `is_safe_id`'s — 64 safe bytes reach the handler and a 65th
     /// does not — and the check reads `bound[0]` because every pattern that
     /// carries `{id}` binds it FIRST, which the last loop pins. A HEAD of an
-    /// unsafe id leaves with no body, as every refused HEAD does.
+    /// unsafe id leaves with no body, as every refused HEAD does — an unknown
+    /// path's 404 included.
     #[test]
     fn an_unsafe_id_is_dispatchs_own_404_before_any_handler() {
         fn ask(games: &Games, method: &str, path: &str, identity: Identity<'_>) -> ApiResponse {
@@ -2860,6 +2865,13 @@ mod tests {
 
         let res = ask(&games, "HEAD", &format!("/api/games/{unsafe_}"), Ok(&red));
         assert_eq!((res.status, res.body.as_str()), (404, ""), "a refused HEAD carries no body");
+        // The unknown path's 404 too: an arm of `out`, so the HEAD strip reads
+        // it (the GET beside it carries the sentence, so the strip is the
+        // difference).
+        let res = ask(&games, "GET", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body), (404, error_body(&ApiError::not_found("no such endpoint: /api/nope"))));
+        let res = ask(&games, "HEAD", "/api/nope", Ok(&red));
+        assert_eq!((res.status, res.body.as_str()), (404, ""), "an unknown path's HEAD carries no body");
 
         for r in routes(true).iter().filter(|r| r.pattern.contains("{id}")) {
             assert_eq!(r.pattern.find('{'), r.pattern.find("{id}"), "{} binds {{id}} first", r.pattern);

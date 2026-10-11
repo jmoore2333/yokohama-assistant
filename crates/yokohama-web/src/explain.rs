@@ -19,10 +19,12 @@
 //! > second, and it must not reimplement the first half: the refusals ARE the
 //! > honesty gate.
 //!
-//! **The one exception is a `mismatch` served while the mover's account is
-//! withheld** ([`Why::refused_at`], S1a's residual M-3): it carries this
-//! layer's [`MISMATCH_WITHHELD`], naming neither move nor version, because the
-//! reconstructed move was chosen over the bot's hidden hand.
+//! **The one exception among `why`'s twelve is a `mismatch` served while the
+//! mover's account is withheld** ([`Why::refused_at`], S1a's residual M-3): it
+//! carries this layer's [`MISMATCH_WITHHELD`], naming neither move nor version,
+//! because the reconstructed move was chosen over the bot's hidden hand. (The
+//! same refusal type carries `locked`, `foreign_bot` and `suggest`'s two
+//! layer-authored sentences, none of them among the twelve.)
 
 use serde::Serialize;
 use yokohama_cli::bot::DecisionExplanation;
@@ -593,7 +595,8 @@ impl Why {
     /// resumed as a HUMAN seat" — a CLI fact that is false on the web, where
     /// nothing converts a bot's seat. A deliberate exception of `suggest`'s
     /// kind: the twelve `Refusal`s stay `account_parts`' own strings, carried
-    /// verbatim.
+    /// verbatim, save the withheld mismatch, which `refused_at` words
+    /// ([`MISMATCH_WITHHELD`]).
     pub fn foreign(played: &str, why: &str) -> Self {
         Self {
             ok: None,
@@ -668,10 +671,10 @@ impl Provenance {
 /// **`message` is the CLI's own `Display` for the variant, never re-authored.**
 /// `guide_sync` pins the tester guide to those strings, so a second wording here
 /// would drift from the screen the guide documents — and the two frontends would
-/// be refusing the same thing in different words. **The one exception is
-/// [`Why::refused_at`]'s** (S1a's residual M-3): a `mismatch` served while the
-/// mover's account is withheld carries [`MISMATCH_WITHHELD`], naming neither
-/// move nor version.
+/// be refusing the same thing in different words. **The one exception among
+/// `why`'s twelve is [`Why::refused_at`]'s** (S1a's residual M-3): a
+/// `mismatch` served while the mover's account is withheld carries
+/// [`MISMATCH_WITHHELD`], naming neither move nor version.
 ///
 /// `kind` is a stable snake_case tag, and `RefusalKind` below is what makes it
 /// impossible to add a variant and forget one.
@@ -851,7 +854,9 @@ impl SuggestRefusal {
     /// **These four are the one place M3 re-words at all**, and the licence is
     /// specific: they live inside `repl::suggest_cmd`'s rendered output and no
     /// `guide_sync` cell pins them. `Refusal`'s twelve are carried verbatim,
-    /// because those strings ARE pinned to the tester guide.
+    /// save the withheld mismatch, which `refused_at` words
+    /// ([`MISMATCH_WITHHELD`]), because those strings ARE pinned to the tester
+    /// guide.
     pub fn message(self) -> &'static str {
         match self {
             Self::LiveMode => {
