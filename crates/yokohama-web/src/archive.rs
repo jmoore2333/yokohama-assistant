@@ -329,7 +329,10 @@ mod dir {
             let dir = PathBuf::from(raw);
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{ENV_VAR}={} cannot be created: {e}", dir.display()))?;
-            Ok(Some(Self { dir, quota: Quota::PRODUCTION, puts: std::sync::Mutex::new(()) }))
+            // Through `new`, so the share the NAS runs under is the one
+            // `the_production_share_refuses_the_two_hundred_and_fifty_seventh_record`
+            // reads (the S1 stack review's CB-F3).
+            Ok(Some(Self::new(dir)))
         }
 
         /// This archive under a share of the caller's — the builder a cell takes
@@ -983,7 +986,34 @@ mod tests {
         assert!(matches!(b.put("browser/e_at_f/", Why::Over, "local-1", &forty, &forty), Ok(PutOutcome::Landed)), "eighty bytes under a hundred");
         let over = b.put("browser/e_at_f/", Why::Over, "local-2", &forty, &forty);
         assert!(matches!(over, Err(PutError::Quota { records: 100, bytes: 100 })), "a hundred and sixty over a hundred: {over:?}");
-        assert_eq!(Quota::PRODUCTION, Quota { records: QUOTA_RECORDS, bytes: QUOTA_BYTES });
+        // The figures at their literals (the S1 stack review's CB-F3): the
+        // line this replaces compared the constants with themselves.
+        assert_eq!((QUOTA_RECORDS, QUOTA_BYTES), (256, 128 << 20), "a caller's share is 256 records and 128 MiB");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The production share binds at 256 records through the constructor
+    /// every server's archive is built by** (finding B12; the S1 stack
+    /// review's CB-F3). `DirArchive::new` — which `from_env` builds through,
+    /// so the archive the NAS runs is this one — files 256 small pairs under
+    /// one caller and refuses the 257th as `Quota`, naming both figures. The
+    /// byte edge is pinned by the literal alone: reaching it would take
+    /// 128 MiB of files. `from_env` is not asked here, since setting its
+    /// variable would race the other threads of this binary (the rule
+    /// `identity::from_env_value`'s doc states).
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_production_share_refuses_the_two_hundred_and_fifty_seventh_record() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_production_share_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        let prefix = "browser/p_at_q/";
+        for i in 0..256 {
+            let out = a.put(prefix, Why::Over, &format!("local-{i}"), &format!("{{\"r\":{i}}}"), "{\"t\":1}");
+            assert!(matches!(out, Ok(PutOutcome::Landed)), "pair {i}: {out:?}");
+        }
+        let over = a.put(prefix, Why::Over, "local-256", "{\"r\":256}", "{\"t\":1}");
+        assert!(matches!(over, Err(PutError::Quota { records: 256, bytes: 134_217_728 })), "{over:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

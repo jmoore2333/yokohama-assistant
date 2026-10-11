@@ -637,8 +637,13 @@ impl Games {
     /// one is a writer that took the lock before the delete finished — blocked
     /// on it, or about to be — and the entry stays, so that writer and the next
     /// one serialize on the SAME lock.
+    ///
+    /// **A poisoned map is read through, never `expect`ed** (the S1 stack
+    /// review's P1): this runs inside `with_table_lock`'s drop guard, where a
+    /// panic during an unwind is a second panic and aborts the process. Pinned
+    /// by `prune_lock_returns_on_a_poisoned_map_and_still_prunes`.
     pub(crate) fn prune_lock(&self, id: &str) {
-        let mut locks = self.locks.lock().expect("games lock");
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
         if locks.get(id).is_some_and(|lock| Arc::strong_count(lock) == 1) {
             locks.remove(id);
         }
@@ -3268,6 +3273,30 @@ mod tests {
         assert!(out.is_err(), "the body's panic reaches the caller");
         assert_eq!(games.locks.lock().expect("the map").len(), 0, "the unwind pruned the entry");
         assert_eq!(games.with_table_lock("t", || 7u8), 7, "the next writer at the id takes a lock and runs");
+    }
+
+    /// **`prune_lock` returns on a poisoned map, and still prunes** (the S1
+    /// stack review's parked item P1): it runs inside `with_table_lock`'s drop
+    /// guard, so a panic there during an unwind is a second panic, and a
+    /// second panic aborts the process. The map guards no data a panic can
+    /// leave half made — an entry goes in or comes out whole — so the prune
+    /// reads through the poison, as [`enter`] reads a table's own lock. The
+    /// map is poisoned by hand: a thread panics while it holds it. The mutant
+    /// that restores `expect` panics at the prune.
+    #[test]
+    fn prune_lock_returns_on_a_poisoned_map_and_still_prunes() {
+        let games = Arc::new(games());
+        drop(games.lock_for("t"));
+        let g = Arc::clone(&games);
+        let poisoner = std::thread::spawn(move || {
+            let _held = g.locks.lock().expect("the map");
+            panic!("a panic while the map is held");
+        });
+        assert!(poisoner.join().is_err(), "the poisoning thread panicked");
+        assert!(games.locks.is_poisoned(), "premise: the map is poisoned");
+        games.prune_lock("t");
+        let map = games.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(!map.contains_key("t"), "the unshared entry is pruned through the poison");
     }
 }
 

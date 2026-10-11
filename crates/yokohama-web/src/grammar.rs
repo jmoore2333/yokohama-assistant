@@ -231,6 +231,10 @@ mod tests {
     /// LENGTH and never the text — a 940 KB line of soft hyphens once came
     /// back as a 3.3 MB body. `1\nsave x` is refused here too (finding D29's
     /// note: `split_whitespace` read it as three tokens), by the control rule.
+    /// **The bound is pinned at both of its edges and at its figure** (the S1
+    /// stack review's CB-F4): a line of exactly `LINE_MAX` bytes passes and
+    /// one more byte is refused, and `LINE_MAX` is 256 — so `>=` at the check
+    /// fails the exact-length line, and a moved literal fails the figure.
     #[test]
     fn the_line_bound_admits_the_longest_legal_line_and_refuses_a_long_or_control_one() {
         // The longest line the GRAMMAR admits with meaning — the CLI's retreat
@@ -242,6 +246,8 @@ mod tests {
         assert!(check_line(&longest).is_ok() && is_gameplay_line(&longest));
         assert!(check_line("").is_ok(), "the empty line applies the sole option");
 
+        assert_eq!(LINE_MAX, 256, "the line bound is 256 bytes (finding D28)");
+        assert!(check_line(&"1".repeat(LINE_MAX)).is_ok(), "a line of exactly LINE_MAX bytes passes");
         let long = "1".repeat(LINE_MAX + 1);
         let err = check_line(&long).expect_err("over the bound");
         assert!(err.contains(&format!("{} bytes", LINE_MAX + 1)), "{err}");

@@ -1248,9 +1248,12 @@ mod tests {
     /// the SAME folded method, else a HEAD of a two-method path takes the other
     /// arm — the creator's HEAD of a game deleted it, a HEAD of `/api/games`
     /// with a create body created one. The rows are DERIVED from
-    /// `api::routes(true)`: every path with a GET row and a write row (POST or
-    /// DELETE) — four today, the list, a game, a game's chat and the house
-    /// chat — so a fifth two-method path is a row the day it lands. Each HEAD
+    /// `api::routes(true)`: every path with a GET row and a row of any other
+    /// method — four today, the list, a game, a game's chat and the house
+    /// chat, since the table's other methods are POST and DELETE — so a fifth
+    /// two-method path is a row the day it lands, whatever its write method
+    /// (the S1 stack review's P2: a future `PUT` or `PATCH` row was outside
+    /// the old `POST | DELETE` set). Each HEAD
     /// answers 200 with an empty body and writes nothing: the path's GET reads
     /// the same after it as before (the table remains, the list does not grow,
     /// no chat message lands). The mutant that drops the fold reads a 201 at
@@ -1277,7 +1280,7 @@ mod tests {
         let two_method: Vec<&str> = table
             .iter()
             .filter(|r| r.method == "GET")
-            .filter(|r| table.iter().any(|w| w.pattern == r.pattern && matches!(w.method, "POST" | "DELETE")))
+            .filter(|r| table.iter().any(|w| w.pattern == r.pattern && w.method != "GET"))
             .map(|r| r.pattern)
             .collect();
         for known in ["/api/games", "/api/games/{id}", "/api/games/{id}/chat", "/api/chat"] {
@@ -1350,8 +1353,12 @@ mod tests {
     /// the boundary, `api::error_value`, which caps whatever built the error —
     /// a handler's own struct literal (`busy`, `unauthorized`, `api.rs`'s own)
     /// included — and is pinned by `a_literal_api_error_is_capped_at_the_boundary`.
+    /// The figure itself is pinned at its literal (the S1 stack review's
+    /// CB-F5): every other line here is relative to `MESSAGE_MAX`, so a moved
+    /// constant passed them all.
     #[test]
     fn every_api_error_message_is_capped_at_construction() {
+        assert_eq!(MESSAGE_MAX, 1_024, "the message cap is 1,024 characters (finding D12, decision D-2)");
         let long = "m".repeat(MESSAGE_MAX * 3);
         let built: Vec<ApiError> = vec![
             ApiError::bad_request(long.clone()),
@@ -1428,7 +1435,7 @@ mod tests {
     /// whatever the echo does, so the absence line is the one that tells the
     /// echo from the cap. The mutant that restores the `{x:?}` (or unwraps the
     /// plain `{x}`) at one of THESE sites fails its row: `dispatch`'s
-    /// unmatched path, `MemStore::read`'s id, the index kind, the filter guard
+    /// unmatched path and its unsafe-id 404, the index kind, the filter guard
     /// (dropped whole, `parse_filter` repeats the term raw),
     /// `parse_path_usize`, `parse_path_u64`, the input's `expect`, `create`'s
     /// id and its seed (`WireSeed`, through `parse_json`), the four sentences
@@ -1439,6 +1446,13 @@ mod tests {
     /// route's `check_line` call and the filter guard's `echo` half are pinned
     /// by the lines after the loop. The inventory's other sites carry no row:
     /// each is wrapped by the same rule, and bounded by the cap besides.
+    /// **`MemStore::read`'s id is not one of the sites above** (the S1 stack
+    /// review's P4, the mutant battery's survivor T1-M15): since `dispatch`
+    /// refuses an id the store would refuse as its own 404 (finding B8), no
+    /// route reaches the store with one, so the 16 KB game id's row reads
+    /// `dispatch`'s sentence and its mutant there stays green. The store's
+    /// sentence is pinned directly, by `store.rs`'s
+    /// `a_refused_ids_sentence_is_bounded_and_escaped`.
     #[tokio::test]
     async fn every_echo_site_answers_a_bounded_body() {
         let state = Arc::new(AppState::in_memory());
@@ -1456,8 +1470,8 @@ mod tests {
         // (method, uri, body, the identity header, a fragment of the sentence the row reaches)
         let rows: Vec<(&str, String, Option<serde_json::Value>, String, &str)> = vec![
             ("GET", format!("/api/{big}"), None, WHO.into(), "no such endpoint"),
-            // The store's 500 until Task 2's `dispatch` check makes it a 404;
-            // "game name" reads in both sentences.
+            // `dispatch`'s unsafe-id 404 (finding B8), before any handler
+            // reaches the store: "no game named" holds the fragment.
             ("GET", format!("/api/games/{big}"), None, WHO.into(), "game name"),
             ("GET", format!("/api/games/echoed/index/{big}"), None, WHO.into(), "no card index named"),
             ("GET", format!("/api/games/echoed/index/orders?filter={big}"), None, WHO.into(), "nothing a quoted string would escape"),
@@ -1496,8 +1510,8 @@ mod tests {
             let text = String::from_utf8_lossy(&bytes);
             let row = format!("{method} {} ({reaches})", uri.chars().take(60).collect::<String>());
             // Every row is a refusal; WHICH refusal is each route's own cell's
-            // claim — the 16 KB game id is the store's 500 until Task 2's
-            // `dispatch` check makes it the 404 that cell pins (finding B8).
+            // claim — the 16 KB game id is `dispatch`'s 404, which that cell
+            // pins (finding B8).
             assert!(status.is_client_error() || status.is_server_error(), "{row}: {status}");
             assert!(bytes.len() <= 2_048, "{row}: a {} byte body", bytes.len());
             assert!(!text.contains(&"z".repeat(65)) && !text.contains(&" ".repeat(65)), "{row}: the raw value came back");
@@ -2794,6 +2808,29 @@ mod tests {
         assert_eq!(AppState::in_memory().games.seed_policy(), games::SeedPolicy::Diagnostic);
     }
 
+    /// **The production state's replay gate is two permits and a two-second
+    /// wait** (security S1b, findings A2 and D6; the S1 stack review's CB-F2).
+    /// Every gate cell builds its own gate through `with_replay_gate`, so the
+    /// figures the NAS runs under were pinned by nothing — a gate of a million
+    /// permits passed the whole suite. This cell reads the gate
+    /// `AppState::production` builds, and the two literals beside it.
+    #[tokio::test]
+    async fn the_production_state_builds_a_two_permit_gate_with_a_two_second_wait() {
+        assert_eq!(REPLAY_PERMITS, 2, "two replays at once, from the NAS's four cores");
+        assert_eq!(REPLAY_WAIT, std::time::Duration::from_secs(2), "two seconds' wait for a permit, then the 503");
+        let state = AppState::production(
+            Arc::new(MemStore::default()),
+            identity::IdentityMode::Open,
+            chat::ChatConfig::default(),
+            Arc::new(archive::NoArchive),
+            Multiplayer(true),
+            sweep::Ttls::none(),
+        )
+        .expect("a production state over memory");
+        assert_eq!(state.replay_gate.available_permits(), 2, "the gate the production state builds");
+        assert_eq!(state.replay_wait, std::time::Duration::from_secs(2), "the wait the production state builds");
+    }
+
     /// **A `deal` this server cannot BUILD is a 500; a request it will not
     /// ACCEPT is still a 400 — and neither takes the server down.**
     ///
@@ -3868,11 +3905,16 @@ mod tests {
     /// signed-in attacker, `HIT` after `HIT`). Every row of the layer's table
     /// with every method it takes and HEAD beside GET, the three transport
     /// routes, the art manifest, a 404 under `/api`, a 405 — all read the
-    /// header; the static release outside `/api` does not read it from this
-    /// layer (`/shell.bin` reads it from `assets.rs`'s own rule and is not
-    /// asked here). The mutant that drops the layer fails the first row; the
-    /// one that tests `starts_with("/api/")` alone fails `/api`, the one path
-    /// that test changes. `/api/` and `/api` are the two rows the FALLBACK
+    /// header, whatever each answers. The table's own `DELETE /api/games/x` is
+    /// its eighth row and answers 204, so the two GAME transport routes
+    /// (`events` and `stream`), like every game row after that one, read the
+    /// deleted table's 404, and the house stream (`/api/stream`) reads its
+    /// 200 (the S1 stack review's P3, measured row by row). The static
+    /// release outside `/api` does not read it from this layer (`/shell.bin`
+    /// reads it from `assets.rs`'s own rule and is not asked here). The
+    /// mutant that drops the layer fails the first row; the one that tests
+    /// `starts_with("/api/")` alone fails `/api`, the one path that test
+    /// changes. `/api/` and `/api` are the two rows the FALLBACK
     /// answers — every other path under `/api/` is the adapter's catch-all,
     /// `/api/nothing` included — so they are what fails `route_layer`, which
     /// wraps the routes and not the fallback; and `/apix` fails a bare

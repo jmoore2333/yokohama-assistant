@@ -6512,12 +6512,22 @@ mod tests {
 
     /// The 257th watcher is a typed 409 rather than a silent eviction of the
     /// oldest — which would re-lock somebody mid-game.
+    ///
+    /// **Both sides of the cap** (the S1 stack review's CB-F8): the list is
+    /// filled to ONE under the cap by hand, the 256th unlock is ADMITTED, and
+    /// only then is the 257th refused — so a roster that refuses at 256 fails
+    /// the admit line, as one that admits a 257th fails the refusal; and the
+    /// figure is pinned at its literal (finding D7, accepted).
     #[test]
     fn the_two_hundred_and_fifty_seventh_watcher_is_refused() {
+        assert_eq!(UNLOCKED_CAP, 256, "a table remembers 256 watchers (finding D7)");
         let games = a_locked_game("locked");
         let (mut doc, version) = games.read_table("locked").unwrap().unwrap();
-        doc.unlocked = (0..UNLOCKED_CAP).map(|i| format!("w{i}@t.test")).collect();
-        games.write_table(&doc, Some(version)).expect("a full list");
+        doc.unlocked = (0..UNLOCKED_CAP - 1).map(|i| format!("w{i}@t.test")).collect();
+        games.write_table(&doc, Some(version)).expect("a list one under the cap");
+
+        games.unlock("locked", &who("ada@t.test"), "sesame").expect("the 256th watcher is admitted");
+        assert_eq!(games.read_table("locked").unwrap().unwrap().0.unlocked.len(), UNLOCKED_CAP, "the list is full");
 
         let refused = games
             .unlock("locked", &who("grey@t.test"), "sesame")

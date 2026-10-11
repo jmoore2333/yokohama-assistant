@@ -964,6 +964,24 @@ mod tests {
         assert!(store.delete("../../etc/passwd").is_err());
     }
 
+    /// **The store's refusal of an unusable id is bounded and escaped** (the
+    /// S1 stack review's P4, the mutant battery's survivor T1-M15; finding
+    /// D12's echo rule). No route reaches the store with such an id, since
+    /// `dispatch` refuses one as its own 404 first (finding B8), so the echo
+    /// cell's row cannot pin this sentence; this cell asks `MemStore::read`
+    /// directly, with a 16 KB id that holds an escape character. The mutant
+    /// that restores `{id:?}` answers a 16 KB sentence.
+    #[test]
+    fn a_refused_ids_sentence_is_bounded_and_escaped() {
+        let store = MemStore::default();
+        let id = format!("zz\u{1b}[31m{}", "z".repeat(16 * 1024));
+        let err = store.read(Doc::Record, &id).expect_err("an unusable id");
+        assert!(err.contains("is not a usable game name"), "{err}");
+        assert!(err.len() < 200, "a {} byte sentence", err.len());
+        assert!(!err.contains(&"z".repeat(65)), "the raw run came back: {}", err.chars().take(120).collect::<String>());
+        assert!(!err.chars().any(char::is_control), "a raw control character came back: {err:?}");
+    }
+
     #[test]
     fn an_absent_directory_is_an_empty_store_rather_than_an_error() {
         let store = FsStore::new(std::env::temp_dir().join("yokohama-web-test-absent-dir"));

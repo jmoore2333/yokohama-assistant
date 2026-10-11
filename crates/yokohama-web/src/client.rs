@@ -1451,9 +1451,12 @@ mod tests {
     /// builders apply: the cap's count rides the deciding viewer's frame
     /// alone): at the Placement the fold is zero and the cap's count is the
     /// rest; at the spread fixture's decision, a cap of seventeen cuts one
-    /// beside the fold's 442,367.
+    /// beside the fold's 442,367. **The production cap is pinned at its
+    /// literal** (the S1 stack review's CB-F7): no built position reaches it,
+    /// so a moved constant passed every cell.
     #[test]
     fn folded_legal_capped_counts_what_the_cap_cuts() {
+        assert_eq!(OPTIONS_CAP, 4_096, "a frame lists at most 4,096 moves (finding A3)");
         let rules = Rules::standard();
         let config = GameConfig::for_player_count(2);
         let pending = new_game(config, &rules, 20260831).expect("new_game");
