@@ -3297,7 +3297,10 @@ mod tests {
     /// 16–36 inside the whole lib (three runs each); smaller shapes read red
     /// alone too (3 × 100: 23–39) but kept single-digit margins inside the
     /// lib (4 × 200: 3–7). Pristine, it reads zero, in about 25 ms alone and
-    /// 0.6–1.4 s inside the whole lib.
+    /// 0.6–1.4 s inside the whole lib. These are observations, never a bound:
+    /// every run of the committed cell under the mutant since has read nonzero,
+    /// 2,738–2,935 alone and 12–164 inside the whole lib (the fix wave's runs
+    /// and the re-review's).
     #[test]
     fn many_writers_at_one_id_never_run_two_bodies_at_once() {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

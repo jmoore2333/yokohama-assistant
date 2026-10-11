@@ -127,6 +127,22 @@ pub(crate) fn error_value(e: &ApiError) -> serde_json::Value {
     body
 }
 
+/// The `why` answer as it leaves the layer — the ONE site it is serialized,
+/// [`dispatch`]'s arm, which every host answers through: a refusal's
+/// `message` cut to [`crate::MESSAGE_MAX`] characters and the ellipsis, as
+/// [`error_value`] cuts an error's (the S1 stack review's re-review, Finding
+/// 2). A `why` refusal is a 200, not an `ApiError`, so no cap saw it, and the
+/// echo bounds each value a label repeats but not how many: a record whose
+/// bot ties production's label renders every key of its map, and 30,000 keys
+/// read a 270,350-character message. Every refusal the CLI or the layer words
+/// is far under the cap, and is written as it always was.
+fn why_response(mut w: crate::explain::Why) -> ApiResponse {
+    if let Some(refusal) = w.refusal.as_mut() {
+        refusal.message = ApiError::capped(std::mem::take(&mut refusal.message));
+    }
+    ok_json(200, &w)
+}
+
 /// The body `IntoResponse for ApiError` writes, byte for byte.
 pub(crate) fn error_response(e: ApiError) -> ApiResponse {
     ApiResponse { status: e.status.as_u16(), body: error_body(&e) }
@@ -2261,13 +2277,17 @@ pub(crate) const RECORD_UNSAVED: &str =
 /// it: this is projection, not computation (the M3 lockdown rule).
 ///
 /// **The last move is final only at a SHARED table** (the S1 stack review's
-/// HI-F2). At a table of one person, with or without a bot, `undo_allowed`
-/// answers `Ok` before its finished-game arm (the refinish rule, R-6.5c2.11),
-/// so that person may read this record, seed included, and then undo the game
-/// back to running. It gains them nothing: a solo creator's seed is theirs to
-/// choose (security S1a, finding B3), and no other person holds a seat to read
-/// it against. Where two people sit, nobody rewinds a finished game (R-5.2),
-/// and the fence holds as written.
+/// HI-F2). At a table of one person whose bot, if any, this build runs,
+/// `undo_allowed` answers `Ok` before its finished-game arm (the refinish
+/// rule, R-6.5c2.11), so that person may read this record, seed included, and
+/// then undo the game back to running. That undo gains them nothing: a solo
+/// creator's seed is theirs to choose (security S1a, finding B3), and no other
+/// person holds a seat to read it against. `undo_allowed`'s FIRST arm refuses
+/// an undo of a game played against a bot this build does not run, at any
+/// table, so a lone person who played a foreign bot cannot undo at all (the
+/// re-review's Finding 5 corrected "with or without a bot"). Where two people
+/// sit, nobody rewinds a finished game (R-5.2), and the fence holds as
+/// written.
 ///
 /// Since security S1a the store is read UNDER the handle's lock and its record
 /// held to the handle by its event count AND its terminal digest — a stored
@@ -2687,9 +2707,7 @@ fn answer(
                     at_k(games, u, b[0], k).map(|v| ok_json(200, &v))
                 }
                 "/api/games/{id}/suggest" => suggest(games, u, b[0]).map(|v| ok_json(200, &v)),
-                "/api/games/{id}/why" => {
-                    why(games, u, b[0], &parse_query(req.query)?).map(|v| ok_json(200, &v))
-                }
+                "/api/games/{id}/why" => why(games, u, b[0], &parse_query(req.query)?).map(why_response),
                 "/api/games/{id}/index/{kind}" => {
                     card_index(games, u, b[0], b[1], &parse_query(req.query)?).map(|v| ok_json(200, &v))
                 }
@@ -3224,6 +3242,105 @@ mod tests {
         assert!(text.len() < 2_048, "the finished game's why: a {} byte body", text.len());
         assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
         clean("the finished game's why", v["refusal"]["message"].as_str().expect("a message"));
+    }
+
+    /// A `Games` holding the committed pair as [`holding_foreign`] does, with
+    /// seat 1's parameters — in the record's run provenance AND the table
+    /// mirror's descriptor, so the two say one bot — replaced by `params`.
+    fn holding_foreign_with_params(controller: &str, cut: Option<usize>, params: serde_json::Value) -> Games {
+        let (record, table) = crate::games::test_support::foreign_pair(controller, cut);
+        let mut record: serde_json::Value = serde_json::from_str(&record).expect("the pair's record");
+        let mut table: serde_json::Value = serde_json::from_str(&table).expect("the pair's table");
+        record["run"]["seats"][1]["params"] = params.clone();
+        table["turn"]["bot"]["params"] = params;
+        let games = games_with(std::sync::Arc::new(crate::archive::NoArchive));
+        games.load_document(crate::store::Doc::Record, PLAYED_ID, &record.to_string()).unwrap();
+        games.load_document(crate::store::Doc::Table, PLAYED_ID, &table.to_string()).unwrap();
+        games
+    }
+
+    /// One call through `dispatch` as `local@browser`, answering the status,
+    /// the body's bytes as written and the body parsed.
+    fn dispatch_raw(games: &Games, method: &str, path: &str) -> (u16, String, serde_json::Value) {
+        let user = User::parse("local@browser").expect("an address");
+        let res = dispatch(
+            games,
+            &LOCAL_HOST,
+            Ok(&user),
+            &ApiRequest { method, path, query: "", content_type: None, body: b"" },
+        );
+        let v = serde_json::from_str(&res.body).unwrap_or(serde_json::Value::Null);
+        (res.status, res.body, v)
+    }
+
+    /// **A hostile parameter KEY on a controller this build KNOWS is cut and
+    /// escaped too** (the S1 stack review's re-review, Finding 1). The CLI
+    /// parses `lookahead-v1`'s name, refuses the key in `from_parts`' own words
+    /// — `unknown param {key:?} for lookahead-v1 (…)`, escaped by `{:?}` but
+    /// whole — and the web repeats that clause in the unfinished game's 409
+    /// and the finished game's `why` 200. `echo_record_values` echoes every key
+    /// of the record's map; the mutant that echoes the controller alone left
+    /// all 492 lib cells green, and this cell's key reached the `why` 200 whole
+    /// (the re-reviewer read 20,208 characters against 266). The key is 20,000
+    /// characters holding a bidi override and an escape; the controller and
+    /// every other knob are the pair's own, so the clause is the key's alone.
+    #[test]
+    fn a_hostile_parameter_key_on_a_known_controller_is_cut_and_escaped() {
+        use crate::games::test_support::BOT_TO_MOVE_AT;
+        let key = format!("\u{202e}{}\u{1b}[31m", "q".repeat(20_000));
+        let params = || {
+            let mut map = serde_json::to_value(&crate::bots::production().params).expect("production's params");
+            map[key.as_str()] = serde_json::json!(1);
+            map
+        };
+        let clean = |what: &str, s: &str| {
+            assert!(s.len() < 2_048, "{what}: {} bytes", s.len());
+            assert!(!s.chars().any(|c| c.is_control() || c == '\u{202e}'), "{what}: a raw control or override character");
+            assert!(!s.contains(&"q".repeat(65)), "{what}: the raw run came back ({} bytes)", s.len());
+        };
+        let base = format!("/api/games/{PLAYED_ID}");
+        let unfinished = holding_foreign_with_params("lookahead-v1", Some(BOT_TO_MOVE_AT), params());
+        let (status, text, v) = dispatch_raw(&unfinished, "GET", &base);
+        assert_eq!(status, 409, "{}", text.chars().take(200).collect::<String>());
+        assert!(text.len() < 2_048, "the 409: a {} byte body", text.len());
+        let said = v["error"].as_str().expect("a sentence");
+        // The probe's own reading: the clause is `from_parts`' refusal of the key.
+        assert!(said.contains("unknown param \""), "the clause is the key's: {}", said.chars().take(300).collect::<String>());
+        for (part, s) in [("error", &v["error"]), ("played", &v["foreign_bot"]["played"]), ("runs", &v["foreign_bot"]["runs"])] {
+            clean(&format!("the 409's {part}"), s.as_str().unwrap_or_else(|| panic!("no {part}")));
+        }
+
+        let finished = holding_foreign_with_params("lookahead-v1", None, params());
+        let (status, text, v) = dispatch_raw(&finished, "GET", &format!("{base}/why"));
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        clean("the finished game's why", v["refusal"]["message"].as_str().expect("a message"));
+    }
+
+    /// **The `why` 200's refusal message is capped at the boundary, as an
+    /// error's is** (the S1 stack review's re-review, Finding 2). The echo
+    /// bounds each value a label repeats, not how MANY: a record whose
+    /// controller is spelled as production's label at production's version
+    /// ties both labels, so the knobbed arm renders every key of the record's
+    /// map — 30,000 here, `k00001…k30000`. The 409 was capped already
+    /// (`api::error_value`); the finished game's `why` is a 200 no cap saw, and
+    /// read 270,427 bytes with a 270,350-character message. Now the message is
+    /// cut at the one site the answer is serialized, to `MESSAGE_MAX`
+    /// characters and the ellipsis. The mutant that drops the cap fails the
+    /// count.
+    #[test]
+    fn the_why_refusal_message_is_capped_at_the_boundary() {
+        let keys: serde_json::Map<String, serde_json::Value> =
+            (1..=30_000).map(|i| (format!("k{i:05}"), serde_json::json!(1))).collect();
+        let finished = holding_foreign_with_params("V4", None, serde_json::Value::Object(keys));
+        let (status, text, v) = dispatch_raw(&finished, "GET", &format!("/api/games/{PLAYED_ID}/why"));
+        assert_eq!(status, 200, "{}", text.chars().take(200).collect::<String>());
+        assert_eq!(v["refusal"]["kind"], "foreign_bot", "{}", text.chars().take(200).collect::<String>());
+        let said = v["refusal"]["message"].as_str().expect("a message");
+        assert!(said.starts_with("This move was made by V4 (V4 k00001=1,k00002=1,"), "the knobbed arm: {}", said.chars().take(120).collect::<String>());
+        assert_eq!(said.chars().count(), crate::MESSAGE_MAX + 1, "the message is cut to MESSAGE_MAX and the ellipsis");
+        assert!(said.ends_with('…'));
+        assert!(text.len() < 4_096, "a {} byte body", text.len());
     }
 
     /// **`why` reconstructs a move by a runnable bot that is not the production

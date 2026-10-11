@@ -312,11 +312,13 @@ pub enum Visibility {
 /// view that shows nothing: withheld.
 ///
 /// **Game over is final only at a SHARED table** (the S1 stack review's
-/// HI-F2): at a table of one person, with or without a bot, `undo` may return
-/// a finished game to running after its account and its record were served.
-/// That person gains nothing by it — a solo creator's seed is theirs to
-/// choose (security S1a, finding B3) — and where two people sit nobody
-/// rewinds a finished game (R-5.2), so this rule is the fence there.
+/// HI-F2): at a table of one person whose bot, if any, this build runs, `undo`
+/// may return a finished game to running after its account and its record
+/// were served. The undo gains that person nothing — a solo creator's seed is
+/// theirs to choose (security S1a, finding B3). `undo_allowed` refuses first
+/// any undo of a game played against a bot this build does not run, at any
+/// table (the re-review's Finding 5), and where two people sit nobody rewinds
+/// a finished game (R-5.2), so this rule is the fence there.
 pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Visibility {
     if yokohama_core::is_game_over(now) && !held.is_empty() {
         return Visibility::Public;

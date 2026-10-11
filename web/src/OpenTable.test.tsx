@@ -769,7 +769,10 @@ describe("the open table's chat", () => {
     expect(link.closest(".invite")!.compareDocumentPosition(panel)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
-    expect(stub.matching("GET", "/chat").length).toBeGreaterThan(0);
+    // The panel's first GET is an effect that runs AFTER the panel mounts, so
+    // it is waited for as the neighbours wait (the S1 stack review's
+    // re-review: read in the same breath as the link, it raced the effect).
+    await waitFor(() => expect(stub.matching("GET", "/chat").length).toBeGreaterThan(0));
     cleanup();
 
     const stranger = show(tableIs(wire.tableOpen));
