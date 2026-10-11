@@ -1930,7 +1930,17 @@ describe("the Report-Only lines (type info) are read, and the live tier forgives
     fake.line("info", RO_INLINE, `${local}/`);
     fake.line("info", RO_STYLE, `${local}/`);
     expect(watch.failures).toHaveLength(2);
+    // The wording with `report-only` before the policy's name (the regex's optional clause), at `info`: read too.
+    fake.line("info", RO_INLINE.replace("following Content Security Policy", "following report-only Content Security Policy"), `${local}/`);
+    expect(watch.failures, "the report-only wording, read at info").toHaveLength(3);
     expect(watch.reportOnlyForgiven).toBe(0);
+  });
+  it("locally a CSP line is breakage even when a cell's expected status digits appear in its hash — the status filter never swallows it", async () => {
+    const { watchForBreakage } = await harnessAt(false);
+    const fake = consolePage();
+    const watch = watchForBreakage(fake.page, [{ status: 409, urlIncludes: "/result" }]);
+    fake.line("error", ENFORCED_INLINE.replace("aBV9DC+", "a409DC+"), `${baseUrlFor(false)}/`);
+    expect(watch.failures, "an enforced refusal whose hash spells 409").toHaveLength(1);
   });
   it("live forgives the Report-Only inline-script line at a page of the deployment, counted apart, and nothing beside it", async () => {
     const { watchForBreakage } = await harnessAt(true);
@@ -2032,9 +2042,11 @@ if (framed(window)) {
 `process.exit(run.status ?? 1)`:
 
 ```js
-// **The e2e build serves the policy ENFORCED** (security S2a, decision D-9): Chromium logs a Report-Only violation
-// at console type `info`, which `watchForBreakage` does not read, and a violation inside the module Worker prints
-// nowhere in either mode — so the local walk is the enforcement reading only under `Content-Security-Policy`. An
+// **The e2e build serves the policy ENFORCED** (security S2a, decision D-9): a Report-Only violation is a LINE and
+// not a block — Chromium logs it at console type `info`, which the harness reads (Task 4) but which stops nothing —
+// and a violation inside the module Worker prints nowhere in either mode, so only an ENFORCED walk, where a
+// violation is an `error` the harness fails on and a Worker-internal one fails the walk itself, is the enforcement
+// reading: the local walk is served `Content-Security-Policy`. An
 // override that can only strengthen: the shipped `CSP_MODE` stays the constant, with its cell, and this rewrites
 // the e2e build's `dist/headers.json` alone. (A post-e2e `dist` carries the enforced set: the Worker's assembly
 // already refuses a post-e2e dist for its debug module, and the NAS recipe rebuilds.)
@@ -2088,8 +2100,10 @@ export function isReportOnlyDetectionLine(text: string, pageUrl: string, base: s
 
 and in `watchForBreakage`: the declared return type (:86) gains `reportOnlyForgiven: number` and the record
 `reportOnlyForgiven: 0`; the handler's first two lines `if (m.type() !== "error") return; const text = m.text();`
-become `const text = m.text(); if (m.type() !== "error" && !CSP_VIOLATION.test(text)) return;`; after the feed's
-arm, `if (LIVE && isReportOnlyDetectionLine(text, m.location().url, BASE_URL)) { watch.reportOnlyForgiven += 1;
+become `const text = m.text(); if (m.type() !== "error" && !CSP_VIOLATION.test(text)) return;`, and the `expected`
+status filter on the next line never swallows a CSP line — `if (!CSP_VIOLATION.test(text) && expected.some((e) =>
+text.includes(String(e.status)))) return;` — since a hash's base64 can spell a status's digits (Task 4's implementer);
+after the feed's arm, `if (LIVE && isReportOnlyDetectionLine(text, m.location().url, BASE_URL)) { watch.reportOnlyForgiven += 1;
 return; }`; the doc comment's "TWO more errors are forgiven" becomes THREE, naming this one and saying a CSP line is
 read at any type; the three live specs that print `forgiven` — `two_browsers.spec.ts:463–470`,
 `joins_by_link.spec.ts:541–545`, `exit_game.spec.ts:649–652` — print this counter too.
@@ -2112,7 +2126,9 @@ at the extra header; **M23** `framed` always false — (b) red; **M23b** the `if
 `report-only` clause dropped — (d)'s live cell red at the enforced row (forgiven, not failed); **M25** the origin
 check dropped — (d)'s live cell red at the other-page row, and the pure cell at the longer host; **M24b** the
 handler's type gate restored (`if (m.type() !== "error") return;`) — (d)'s local cell red (0 failures); **M24c** the
-`LIVE &&` dropped from the arm — (d)'s local cell red (forgiven locally); **M24d** `e2e-build.mjs` writing no
+`LIVE &&` dropped from the arm — (d)'s local cell red (forgiven locally); **M24e** the regex's `(?:report-only )?` clause
+dropped — (d)'s local cell red at its third line; **M24f** the CSP exemption dropped from the `expected` status filter —
+(d)'s status-filter cell red (Task 4's implementer); **M24d** `e2e-build.mjs` writing no
 override — (c)'s first cell red at the policy assertion; **M26** Task 3's layer dropped in the export — (c)'s first
 cell red on `x-frame-options` (the e2e cell reads the host; the reviewer runs it once against a binary with the
 layer removed).
