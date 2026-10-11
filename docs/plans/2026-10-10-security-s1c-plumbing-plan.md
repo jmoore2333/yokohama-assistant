@@ -2630,7 +2630,9 @@ ledger against the route table: run both.
 beyond the draft:** §4 — the cap's SECOND layer, `api::error_value`, the one serializer behind `error_body`,
 `error_response` and `IntoResponse` (a handler's literal `ApiError` is bounded all the same; within the Rust crates the one refusal written by
 hand outside both layers is the Worker's `identity_inner` 401, whose one value the echo rule bounds — the TS shell
-writes its own refusals, all constants with no caller value);
+writes its own refusals, none of which composes a caller's value itself — a marker's refusal carries its stored date,
+`table.ts` a stored kind, three sites the module's init sentence, which under `r2` can carry `User::parse`'s echoed
+caller);
 the filter guard refuses any term `echo` would change (nothing a quoted string would escape reaches the CLI's
 `parse_filter`); `api::events_at` refuses an unsafe `{id}` with the layer's 404 before any store read (the two
 axum-native transport routes bypass `dispatch`); `answer` folds HEAD onto GET for its arm guards, so a HEAD never
