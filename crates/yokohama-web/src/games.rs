@@ -3197,7 +3197,11 @@ mod tests {
     /// `with_table_lock` serializes two bodies at one id, lets a body's early
     /// return through, and leaves no entry behind — while a SECOND holder keeps
     /// the entry alive until it too is done, so two writers in flight
-    /// serialize on the SAME lock (the property `prune_lock`'s doc promises).
+    /// serialize on the SAME lock. **It does not pin `prune_lock`'s count**
+    /// (the S1 stack review's CB-F9): with two writers nobody prunes while
+    /// both are inside, so the mutant that prunes whatever the count leaves
+    /// this cell green. Its catchers are `a_deleted_tables_lock_is_pruned` and
+    /// `many_writers_at_one_id_never_run_two_bodies_at_once`.
     ///
     /// **Both holders are the helper, so the end holds by construction**
     /// (the Task 2 review's I-2): each prunes after dropping its own clone, so
@@ -3273,6 +3277,60 @@ mod tests {
         assert!(out.is_err(), "the body's panic reaches the caller");
         assert_eq!(games.locks.lock().expect("the map").len(), 0, "the unwind pruned the entry");
         assert_eq!(games.with_table_lock("t", || 7u8), 7, "the next writer at the id takes a lock and runs");
+    }
+
+    /// **Many writers at one id never run two bodies at once** (security S1c,
+    /// finding B8; the S1 stack review's CB-F9). The property `prune_lock`'s
+    /// count protects: an entry is pruned only when the map holds its last
+    /// reference, so a writer blocked on a clone and the next writer to arrive
+    /// serialize on the SAME lock. The mutant that prunes whatever the count
+    /// lets a third writer build a fresh lock beside a waiter's old one, and
+    /// two bodies run together. Eight writers behind one barrier, a thousand
+    /// bodies each at one id, a flag set on entry and cleared on exit, the
+    /// body yielding between the two so a second body has the window to
+    /// arrive: no entry ever finds the flag set, and the map is empty after.
+    ///
+    /// **The shape was measured under that mutant before it was chosen.**
+    /// Without the yield, 8 × 1,000 read 45–61 overlaps alone but ZERO inside
+    /// the whole lib run, where competing tests leave the writers little
+    /// concurrency. With it, 8 × 1,000 read about 2,500 overlaps alone and
+    /// 16–36 inside the whole lib (three runs each); smaller shapes read red
+    /// alone too (3 × 100: 23–39) but kept single-digit margins inside the
+    /// lib (4 × 200: 3–7). Pristine, it reads zero, in about 25 ms alone and
+    /// 0.6–1.4 s inside the whole lib.
+    #[test]
+    fn many_writers_at_one_id_never_run_two_bodies_at_once() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Barrier;
+        const WRITERS: usize = 8;
+        const BODIES: usize = 1_000;
+        let games = Arc::new(games());
+        let inside = Arc::new(AtomicBool::new(false));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|_| {
+                let (g, inside, overlaps, barrier) =
+                    (Arc::clone(&games), Arc::clone(&inside), Arc::clone(&overlaps), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..BODIES {
+                        g.with_table_lock("t", || {
+                            if inside.swap(true, Ordering::SeqCst) {
+                                overlaps.fetch_add(1, Ordering::SeqCst);
+                            }
+                            std::thread::yield_now();
+                            inside.store(false, Ordering::SeqCst);
+                        });
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("a writer");
+        }
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0, "two bodies ran at once at one id");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned the entry");
     }
 
     /// **`prune_lock` returns on a poisoned map, and still prunes** (the S1

@@ -539,9 +539,11 @@ pub fn envelope_version_of(text: &str) -> Result<u32, String> {
     let head: Head = serde_json::from_str(text)
         .map_err(|e| format!("this is not a backup envelope this build reads: {e}"))?;
     if head.kind != ENVELOPE_KIND {
+        // The file's own value, so through the echo rule (DC-F6): the same
+        // sentence as `{:?}` for any kind of at most sixty-four characters.
         return Err(format!(
-            "this file says it is {:?}; a backup envelope says {ENVELOPE_KIND:?}",
-            head.kind
+            "this file says it is \"{}\"; a backup envelope says {ENVELOPE_KIND:?}",
+            crate::echo::echo(&head.kind)
         ));
     }
     Ok(head.envelope)
@@ -1040,6 +1042,23 @@ pub(crate) mod tests {
         assert_ne!(doubled, v1, "the mutation must actually change the envelope");
         let err = envelope_version_of(&doubled).expect_err("two kinds in one file");
         assert!(err.contains("duplicate field"), "{err}");
+    }
+
+    /// **A file's own `kind` is repeated through the echo rule** (the S1 stack
+    /// review's DC-F6; finding D12): the restore path's refusal of another
+    /// file's kind repeated it whole with `{:?}`, and the sentence is a plain
+    /// `String`, which no `ApiError` cap ever sees — a 50,000-character kind
+    /// answered a 350 KB refusal. The person's own file, read in their own
+    /// browser, hence Minor; bounded all the same. The mutant that restores
+    /// `{:?}` answers 50 KB here.
+    #[test]
+    fn another_files_kind_is_repeated_cut_and_escaped() {
+        let kind = format!("\u{1b}[31m{}", "k".repeat(50_000));
+        let text = serde_json::json!({ "kind": kind, "envelope": 1 }).to_string();
+        let err = envelope_version_of(&text).expect_err("another file's kind");
+        assert!(err.starts_with("this file says it is \"\\u{1b}[31mkkk"), "{}", err.chars().take(120).collect::<String>());
+        assert!(err.len() < 200, "a {} byte refusal", err.len());
+        assert!(!err.contains(&"k".repeat(65)) && !err.chars().any(char::is_control), "the raw kind came back");
     }
 
     /// The other two whole-file refusals, and the one that is not about a
