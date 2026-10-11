@@ -494,30 +494,33 @@ function staleAssets(root, repo, tree, shown, failures) {
       failures.push(`worker/${shown} was assembled from a web/dist that has since changed — ${names}: ${REBUILD}`);
     }
   }
+  // Check 9's `_headers` arm, OUTSIDE the loop over the static files (Task 2's review, I-1: inside it, a tree whose
+  // `worker/static` had no `_headers` was never held, and a missing `headers.json` never named): the assembled
+  // `_headers` is held to `assembledHeaders(the static text — "" when the static file is absent, as the assembly
+  // reads it —, web/dist/headers.json's text)` whether or not the static file exists.
   const generated = join(repo, "web", "dist", "headers.json");
   const statics = join(root, "static");
+  const staticHeaders = join(statics, "_headers");
+  const headersCopy = join(tree, "_headers");
+  if (!existsSync(generated)) {
+    failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
+  } else {
+    // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
+    // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
+    let want = null;
+    try {
+      want = assembledHeaders(existsSync(staticHeaders) ? readFileSync(staticHeaders, "utf8") : "", readHeadersText(generated));
+    } catch (e) {
+      failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
+    }
+    if (want !== null && (!existsSync(headersCopy) || readFileSync(headersCopy, "utf8") !== want)) {
+      failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
+    }
+  }
   for (const file of existsSync(statics) ? readdirSync(statics).sort() : []) {
+    if (file === "_headers") continue;
     const copy = join(tree, file);
     const source = readFileSync(join(statics, file));
-    if (file === "_headers") {
-      if (!existsSync(generated)) {
-        failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
-        continue;
-      }
-      // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
-      // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
-      let want;
-      try {
-        want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
-      } catch (e) {
-        failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
-        continue;
-      }
-      if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
-        failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
-      }
-      continue;
-    }
     if (!existsSync(copy) || !readFileSync(copy).equals(source)) {
       failures.push(`worker/${shown}/${file} is not worker/static/${file} — assemble the assets again: npm run build`);
     }

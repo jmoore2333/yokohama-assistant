@@ -502,29 +502,43 @@ describe("the deploy guard", () => {
   it("holds the assembled _headers to worker/static/_headers plus the current web/dist/headers.json's block (security S2a)", () => {
     // The block missing: the static text copied as it was, as the assembly did before this cycle.
     const stale = worker({}, { "assets/_headers": "/sw.js\n  Cache-Control: no-store\n" });
-    expect(deployGuard(stale, join(stale, ".."))).toEqual(
-      naming(/_headers is not worker\/static\/_headers with the current web\/dist\/headers\.json/),
-    );
+    // EXACTLY one sentence (the reviewer's m-1): `naming` is `arrayContaining`, which a second sentence would pass.
+    expect(deployGuard(stale, join(stale, ".."))).toEqual([
+      expect.stringMatching(/_headers is not worker\/static\/_headers with the current web\/dist\/headers\.json/),
+    ]);
     // The build moved: web/dist/headers.json now names a socket host the assembled block does not.
     const moved = worker({}, {
       "../web/dist/headers.json": headersJson(headerSet({ siteUrl: "https://moved.test", releaseFeed: null, styleHashes: [] })),
     });
-    expect(deployGuard(moved, join(moved, ".."))).toEqual(naming(/_headers is not worker\/static\/_headers with the current/));
+    expect(deployGuard(moved, join(moved, ".."))).toEqual([expect.stringMatching(/_headers is not worker\/static\/_headers with the current/)]);
   });
 
   it("refuses when web/dist/headers.json is absent, naming it", () => {
     const root = worker({}, { "../web/dist/headers.json": null });
-    expect(deployGuard(root, join(root, ".."))).toEqual(naming(/web\/dist\/headers\.json is absent/));
+    expect(deployGuard(root, join(root, ".."))).toEqual([expect.stringMatching(/web\/dist\/headers\.json is absent/)]);
   });
 
   it("refuses a web/dist/headers.json the reader refuses — not JSON, a BOM, not UTF-8 — naming it in the list, never a throw", () => {
     // `lay` writes a string or a Buffer; the third row is `[["X-A","<0xff>"]]`, one byte no UTF-8 sequence admits.
     for (const bad of ["nonsense", "\ufeff[]", Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')])]) {
       const root = worker({}, { "../web/dist/headers.json": bad });
-      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual(
-        naming(/web\/dist\/headers\.json is not the client build's header set/),
-      );
+      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual([
+        expect.stringMatching(/web\/dist\/headers\.json is not the client build's header set/),
+      ]);
     }
+  });
+
+  it("holds the assembled _headers to the block alone when worker/static has no _headers — the assembly writes one anyway (Task 2's review, I-1)", () => {
+    const json = headersJson(headerSet({ siteUrl: null, releaseFeed: null, styleHashes: [] }));
+    // The static file gone and the tree's _headers the block over "", which is what the assembly writes: passes.
+    const bare = worker({ "static/_headers": null, "assets/_headers": assembledHeaders("", json) });
+    expect(deployGuard(bare, join(bare, ".."))).toEqual([]);
+    // The static file gone and the tree's _headers anything else: the same one sentence as with the file present.
+    const stale = worker({ "static/_headers": null, "assets/_headers": "nothing at all\n" });
+    expect(deployGuard(stale, join(stale, ".."))).toEqual([expect.stringMatching(/_headers is not worker\/static\/_headers with the current/)]);
+    // And no headers.json either: named, never silent.
+    const none = worker({ "static/_headers": null, "assets/_headers": "nothing at all\n", "../web/dist/headers.json": null });
+    expect(deployGuard(none, join(none, ".."))).toEqual([expect.stringMatching(/web\/dist\/headers\.json is absent/)]);
   });
 
   // Check 3, per door (M6.5c2, spec §2.1; review R2.2-m5). The door has no

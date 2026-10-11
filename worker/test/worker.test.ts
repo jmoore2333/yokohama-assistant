@@ -818,6 +818,8 @@ describe("every answer under /api carries no-store and nosniff (security S2a, B9
   // a JSON body needs on the way out — the shell's own answers and the objects' alike (decision D-3).
   it("on the shell's own answers and the house's; never on /enter or a path outside /api", async () => {
     const rows: [string, Sent][] = [
+      // `/api` exactly — the path a `startsWith("/api/")` alone would miss (the wrapper's own first arm).
+      ["/api", {}],
       ["/api/health", {}],
       ["/api/me", {}],
       ["/api/art", {}],
