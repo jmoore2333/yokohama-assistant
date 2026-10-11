@@ -1661,7 +1661,12 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
 /// reimplement the first half: the refusals ARE the honesty gate."* A
 /// reconstruction that does not equal the recorded move refuses, naming both
 /// moves and both versions — and that refusal reaches the browser as data,
-/// because a branch nobody has ever seen is where defects live.
+/// because a branch nobody has ever seen is where defects live. **The one
+/// exception is served at the requester's visibility**
+/// ([`explain::Why::refused_at`], S1a's residual M-3): a `mismatch` served
+/// while the mover's account is withheld carries the layer's
+/// [`explain::MISMATCH_WITHHELD`], naming neither move nor version, since the
+/// reconstructed move was chosen over the bot's hidden hand.
 ///
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.

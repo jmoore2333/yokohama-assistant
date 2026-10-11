@@ -891,7 +891,10 @@ export interface Provenance {
   current_version: number;
 }
 
-/** A typed refusal. `message` is the CLI's own sentence, never re-authored.
+/** A typed refusal. `message` is the CLI's own sentence, never re-authored,
+ *  with ONE exception (security S1c, M-3): a `mismatch` served while the
+ *  mover's account is withheld carries the server's `MISMATCH_WITHHELD`,
+ *  naming neither move nor version.
  *  `kind` is one of the twelve `why` tags, or one of `suggest`'s four
  *  (`live_mode`, `game_over`, `bot_seat`, `locked`, plus `search` for an agent
  *  error surfaced verbatim). */

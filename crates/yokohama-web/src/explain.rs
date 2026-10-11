@@ -18,6 +18,11 @@
 //! > A consumer that draws its own table wants the first half and none of the
 //! > second, and it must not reimplement the first half: the refusals ARE the
 //! > honesty gate.
+//!
+//! **The one exception is a `mismatch` served while the mover's account is
+//! withheld** ([`Why::refused_at`], S1a's residual M-3): it carries this
+//! layer's [`MISMATCH_WITHHELD`], naming neither move nor version, because the
+//! reconstructed move was chosen over the bot's hidden hand.
 
 use serde::Serialize;
 use yokohama_cli::bot::DecisionExplanation;
@@ -536,6 +541,9 @@ impl Why {
         }
     }
 
+    /// The CLI's refusal, blind to visibility: a SERVED answer goes through
+    /// [`Self::refused_at`], and this is the form `refused_at` falls back to and
+    /// the corpus's `why_refused` fixture is built with.
     pub fn refused(r: &Refusal) -> Self {
         Self { ok: None, withheld: None, refusal: Some(RefusalDto::of(r)) }
     }
@@ -660,7 +668,10 @@ impl Provenance {
 /// **`message` is the CLI's own `Display` for the variant, never re-authored.**
 /// `guide_sync` pins the tester guide to those strings, so a second wording here
 /// would drift from the screen the guide documents — and the two frontends would
-/// be refusing the same thing in different words.
+/// be refusing the same thing in different words. **The one exception is
+/// [`Why::refused_at`]'s** (S1a's residual M-3): a `mismatch` served while the
+/// mover's account is withheld carries [`MISMATCH_WITHHELD`], naming neither
+/// move nor version.
 ///
 /// `kind` is a stable snake_case tag, and `RefusalKind` below is what makes it
 /// impossible to add a variant and forget one.
@@ -1240,12 +1251,23 @@ mod tests {
         let public = Why::refused_at(&m, &now, &[bot]);
         assert_eq!(public.refusal.as_ref().expect("a refusal").message, m.to_string());
         assert!(public.refusal.as_ref().unwrap().message.contains("PlaceAssistants"));
-        // Every other refusal is the same bytes at either visibility.
-        let other = Refusal::HumanSeat { index: 3, seat: human };
-        assert_eq!(
-            serde_json::to_string(&Why::refused_at(&other, &now, &[human])).unwrap(),
-            serde_json::to_string(&Why::refused(&other)).unwrap()
-        );
+        // Every other refusal is the same bytes at either visibility: the
+        // eleven samples besides the mismatch, each at the withheld reading
+        // (the human's) and the public one (the bot seat's holder).
+        let others: Vec<Refusal> =
+            refusal_samples().into_iter().filter(|r| !matches!(r, Refusal::Mismatch(_))).collect();
+        assert_eq!(others.len(), 11, "premise: the twelve refusals less the mismatch");
+        for other in &others {
+            for held in [human, bot] {
+                assert_eq!(
+                    serde_json::to_string(&Why::refused_at(other, &now, &[held])).unwrap(),
+                    serde_json::to_string(&Why::refused(other)).unwrap(),
+                    "{} read by seat {}'s holder",
+                    kind_of(other),
+                    held.0
+                );
+            }
+        }
     }
 
     /// **The served continuation masks its fulfil lines as the ranking masks
