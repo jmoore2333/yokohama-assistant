@@ -381,7 +381,7 @@ S1b's execution found what the plan did not know, and the controller ruled on ea
 
 ### 9.5 — 2026-10-10, S1c's plan: the plumbing's rulings and eight corrections
 
-S1c's plan (`docs/plans/2026-10-10-security-s1c-plumbing-plan.md`) transcribes the owner's seven rulings for the cycle, takes ten decisions of its own and corrects eight statements of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at Task 7's dispatch (`05334847`): the rulings as the brainstorm of 2026-10-10 settled them, and the decisions and corrections with the plan's amendments in place — D-1 and D-2 from Task 1's run, D-7 from Task 6's, D-8 and the eighth correction on the pre-flight's reading — so what follows is what the cycle executed, not its first draft. The run's rulings are the close's paragraph after them, as §9.4's 2026-10-10 paragraph was S1b's.
+S1c's plan (`docs/plans/2026-10-10-security-s1c-plumbing-plan.md`) transcribes the owner's seven rulings for the cycle, takes ten decisions of its own and makes eight corrections, recorded forward: seven of this specification and one of the board's residual list. The three sections follow VERBATIM, as the plan reads at `b58026d7` (D-6 re-copied there in Task 7's fix round; the rest as transcribed at `05334847`, unchanged since): the rulings as the brainstorm of 2026-10-10 settled them, and the decisions and corrections with the plan's amendments in place — D-1 and D-2 from Task 1's run, D-6 from Task 7's, D-7 from Task 6's, D-8 and the eighth correction on the pre-flight's reading — so what follows is what the cycle executed, not its first draft. The run's rulings are the close's paragraph after them, as §9.4's 2026-10-10 paragraph was S1b's.
 
 **The owner's rulings for this cycle (2026-10-10), and what each binds**
 
@@ -460,7 +460,9 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 - **D-6 — the legacy segment is kept as a named function, in the layer, for the rename and for a cell.**
   `archive::legacy_caller_segment` is the pre-S1c mapping verbatim; `caller_segment` differs from it for EVERY
   address (a cell), so an unmigrated folder is detectable; the server binary's `segment <address>…` subcommand
-  prints both for the window's recipe. No code reads a legacy prefix.
+  prints both for the window's recipe. No code FILES under a legacy segment or READS one — `caller_segment` itself
+  calls `legacy_caller_segment` for its readable half, so "read by nothing" (the draft's words) was false of the
+  function and true of the prefix (Task 7's implementer, 2026-10-11).
 - **D-7 — the drifted record for M-3's route cell is built inside the cell**, from a vs-bot game the cell plays:
   the bot's last recorded move is swapped for another member of the legal list at that position, the record
   written back through the store, and a fresh `AppState` built over the same store (the restart that evicts the
