@@ -16,6 +16,7 @@
 // is the door's one cross-origin fetch; the 404 page's inline style is admitted by its hash (D-4), so the page
 // stays self-contained and the policy strict.
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 /** The policy's mode, a CONSTANT and not a build value (decision D-1): `report-only` ships
  *  `Content-Security-Policy-Report-Only` — this release, 0.6.2, one release in the wild whose violations are read
@@ -148,7 +149,9 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  whose escape `JSON.parse` admits and `serde_json` does not; a pair of any other arity — and two value shapes
  *  `http` admits besides, a tab and an empty value: so a file that passes the assembly always passes the NAS's
  *  reader at start, and the one-host-down release (passed the assembly, stopped the NAS) cannot arise. Measured
- *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes.
+ *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes. A FILE
+ *  reaches this through [`readHeadersText`], never `readFileSync(.., "utf8")`, which would put U+FFFD where
+ *  `serde_json`'s `read_to_string` refuses the byte (Task 1's fix round, C-2).
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -171,4 +174,22 @@ export function parseHeadersJson(text) {
     );
   }
   return parsed.map(([name, value]) => [name, value]);
+}
+
+/** `dist/headers.json`'s TEXT, read from `file` with its bytes decoded STRICTLY — a `TextDecoder` with `fatal`, the
+ *  BOM kept — so an invalid UTF-8 byte is a throw naming the file, and a BOM reaches `parseHeadersJson`, which
+ *  refuses it: both are what `serde_json`'s `read_to_string` refuses on the NAS, and what `readFileSync(.., "utf8")`
+ *  would have hidden (U+FFFD substituted; the BOM dropped). Every read of the file goes through this — the Worker's
+ *  assembly, the deploy guard, the e2e build's override — so the "passes the assembly, passes the NAS" sentence
+ *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync`
+ *  does; the callers test for the file first.
+ *  @param {string | URL} file
+ *  @returns {string} */
+export function readHeadersText(file) {
+  const bytes = readFileSync(file);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`headers.json is not valid UTF-8 — ${file}`);
+  }
 }

@@ -3,7 +3,9 @@
 // order, every directive and its sources, what the build values add, what the 404 page's style hashes to — so a
 // directive loosened by hand, or a host added without its reason, fails here before either host serves it.
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLOUDFLARE,
@@ -14,6 +16,7 @@ import {
   headersBlock,
   headersJson,
   parseHeadersJson,
+  readHeadersText,
   styleHashesOf,
 } from "./headers.mjs";
 
@@ -165,5 +168,18 @@ describe("the set, its block and its file", () => {
     ]) {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
+  });
+
+  it("reads a file's BYTES strictly: an invalid UTF-8 byte and a BOM are refused, where readFileSync(.., 'utf8') would substitute U+FFFD or drop the BOM — what serde_json's read_to_string refuses on the NAS", () => {
+    const dir = mkdtempSync(join(tmpdir(), "yokohama-headers-"));
+    const file = join(dir, "headers.json");
+    writeFileSync(file, headersJson(headerSet(NONE)));
+    expect(parseHeadersJson(readHeadersText(file))).toEqual(headerSet(NONE));
+    // `[["X-A","<0xff>"]]`: one byte no UTF-8 sequence admits, inside a value.
+    writeFileSync(file, Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')]));
+    expect(() => readHeadersText(file)).toThrow(/headers\.json is not valid UTF-8/);
+    // A BOM before a valid set: kept, so the parse refuses it as the NAS's would.
+    writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(headersJson(headerSet(NONE)))]));
+    expect(() => parseHeadersJson(readHeadersText(file))).toThrow(/headers\.json does not parse/);
   });
 });

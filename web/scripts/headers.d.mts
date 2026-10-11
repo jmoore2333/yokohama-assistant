@@ -12,3 +12,4 @@ export declare function headerSet(values: HeaderValues & { mode?: "report-only" 
 export declare function headersBlock(set: readonly (readonly [string, string])[]): string;
 export declare function headersJson(set: readonly (readonly [string, string])[]): string;
 export declare function parseHeadersJson(text: string): [string, string][];
+export declare function readHeadersText(file: string | URL): string;
