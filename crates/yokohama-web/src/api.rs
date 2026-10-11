@@ -2260,6 +2260,15 @@ pub(crate) const RECORD_UNSAVED: &str =
 /// seed — hidden-set member #1 — until the last move. Lockdown does not fence
 /// it: this is projection, not computation (the M3 lockdown rule).
 ///
+/// **The last move is final only at a SHARED table** (the S1 stack review's
+/// HI-F2). At a table of one person, with or without a bot, `undo_allowed`
+/// answers `Ok` before its finished-game arm (the refinish rule, R-6.5c2.11),
+/// so that person may read this record, seed included, and then undo the game
+/// back to running. It gains them nothing: a solo creator's seed is theirs to
+/// choose (security S1a, finding B3), and no other person holds a seat to read
+/// it against. Where two people sit, nobody rewinds a finished game (R-5.2),
+/// and the fence holds as written.
+///
 /// Since security S1a the store is read UNDER the handle's lock and its record
 /// held to the handle by its event count AND its terminal digest — a stored
 /// record of the same length that is not the finished game (undone and

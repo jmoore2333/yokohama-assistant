@@ -1,6 +1,9 @@
 //! The browser host (M6.5b, R-6.5b.9): ONE `Games` over `MemStore`, `NoSignal`,
 //! `NoArchive`, a settable clock and the console for the layer's log, behind
-//! six `wasm-bindgen` exports.
+//! seven `wasm-bindgen` function exports — `init`, `init_diagnostic` (security
+//! S1a), `dispatch`, `load`, `read`, `set_clock` and `restore_read` — and an
+//! eighth, `debug_trap`, in a build with the `debug` feature
+//! (`npm run build:wasm:debug`; the S1 stack review's DC-F8 corrected "six").
 //!
 //! This is HOST code. Its platform calls are the clock, the console and the
 //! bindgen glue, and nothing else —
@@ -14,9 +17,11 @@
 //! top-level `#[cfg(test)]` and reads what is above it. The clock is the
 //! layer's `HostClock` too; the live reading is this host's own.
 //! It is the only caller of the layer in the browser, and its own only caller
-//! is the dedicated Web Worker the client half starts
+//! there is the dedicated Web Worker the client half starts
 //! (`web/src/local/worker.ts`, which lands with that half) — nothing on the
-//! page reaches this module.
+//! page reaches this module. `init_diagnostic` is the one export the Worker
+//! never calls: its callers are the node corpus replay's harness
+//! (`web/src/local/corpus.node.test.ts`), which seeds the walk.
 //!
 //! **Every export is a thin wrapper over a pure-Rust `_inner` function** (spec
 //! §2.1). The cells below call the inner ones, because `wasm-bindgen`'s

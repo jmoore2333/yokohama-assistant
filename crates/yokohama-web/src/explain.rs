@@ -310,6 +310,13 @@ pub enum Visibility {
 /// record, seed included, from there, and refuses a spectator, so a watcher
 /// reads the engine's view at game over too. A view the engine refuses is a
 /// view that shows nothing: withheld.
+///
+/// **Game over is final only at a SHARED table** (the S1 stack review's
+/// HI-F2): at a table of one person, with or without a bot, `undo` may return
+/// a finished game to running after its account and its record were served.
+/// That person gains nothing by it — a solo creator's seed is theirs to
+/// choose (security S1a, finding B3) — and where two people sit nobody
+/// rewinds a finished game (R-5.2), so this rule is the fence there.
 pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Visibility {
     if yokohama_core::is_game_over(now) && !held.is_empty() {
         return Visibility::Public;

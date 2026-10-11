@@ -142,8 +142,11 @@ pub struct ApiError {
     pub foreign_bot: Option<bots::ForeignBot>,
 }
 
-/// The most characters any error body's `message` carries (security S1c,
-/// finding D12, decision D-2). Sixteen echoes of `echo::ECHO_MAX` — no sentence
+/// How much of its SENTENCE an error body's `message` carries: 1,024
+/// characters of it, then the ellipsis `…` after a cut, so a cut message is
+/// 1,025 characters (security S1c, finding D12, decision D-2; the S1 stack
+/// review's CB-F6 corrected "the most characters" here, which the ellipsis
+/// passes by one). Sixteen echoes of `echo::ECHO_MAX` — no sentence
 /// in this crate repeats more than two values — and a fence under every
 /// sentence a site composes from a library's own words: serde names an unknown
 /// field verbatim, axum names a path segment. Applied twice: at
@@ -854,9 +857,12 @@ where
 ///
 /// **The `Err` arm is not that, and it SPLITS** (final review M-5). An
 /// admission that changed underneath a live connection — a 403 or a 404 — is
-/// an answer about this table that will read the same way next time, so it
-/// writes the `gone` frame and the client leaves; the reachable case is the
-/// stranger holding an open table's stream while a join fills the last seat.
+/// final for THIS connection: it writes the `gone` frame and the client
+/// leaves. It is not an answer that will read the same way next time (the S1
+/// stack review's CB-F13): a stranger refused at a `dealing` table is admitted
+/// as a spectator once the unlocked table is `playing`, on a new connection.
+/// The reachable case is the stranger holding an open table's stream while a
+/// join fills the last seat.
 /// Anything else is a server that failed, not a table that went: a store that
 /// stopped answering writes a COMMENT — indistinguishable to the client's
 /// parser from a heartbeat — and the connection stays open, because telling
@@ -1344,8 +1350,10 @@ mod tests {
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     }
 
-    /// **No error body carries more than `MESSAGE_MAX` characters of message**
-    /// (finding D12, decision D-2), by two layers. The FIRST is pinned here:
+    /// **No error body carries more than `MESSAGE_MAX` characters of the
+    /// sentence, then the ellipsis** — 1,024 and `…`, so 1,025 characters at
+    /// most (finding D12, decision D-2; the S1 stack review's CB-F6), by two
+    /// layers. The FIRST is pinned here:
     /// the cap at construction, in the constructors and in the
     /// `From<GameError>` arms that build the struct literally, so the in-memory
     /// sentence is bounded too. Every constructor that takes a message is
