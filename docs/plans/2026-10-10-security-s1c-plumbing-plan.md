@@ -2607,12 +2607,15 @@ visibility and names no move while the account is withheld (S1c Task 6)"`.
   `cargo test -p yokohama-cli` (862, 2 ignored)
 
 - [ ] **Step 1: The lane document.** §4's standing rules gain four sentences, each in the register of the rows
-around it: every caller-supplied value an error sentence repeats goes through `echo::echo` (64 characters,
-escaped) and every `ApiError` message is capped at 1,024 (S1c, D12/D28); every answer under `/api` is
+around it: every caller-supplied value a sentence the LAYER composes repeats goes through `echo::echo` (64
+characters, escaped) — a library's own sentence (serde's unknown field or mistyped value, axum's query sentence)
+repeats the caller's value as the library wrote it, and the cap bounds it — and every `ApiError` message is capped
+at 1,024 at construction and at the boundary (S1c, D12/D28); a gameplay line over 256 bytes is refused by a
+sentence naming its LENGTH, or the control character's escape, never its text; every answer under `/api` is
 `Cache-Control: no-store` from one layer, and a creator-chosen id carries no dot (B9); a table's per-id lock entry
 lives only while a writer is inside `with_table_lock`, and an `{id}` the store would refuse is `dispatch`'s 404
 (B8); a table stream ends after a refusal's `gone` frame, and a replay-route request with no identity takes no
-permit (D1, S1b's residual). §13's rows: `GET …/stream` ("a 403 or 404 ends the stream" is now TRUE — the row
+permit — the layer answers its 401, or B8's 404 for an unsafe `{id}`, having replayed nothing (D1, S1b's residual). §13's rows: `GET …/stream` ("a 403 or 404 ends the stream" is now TRUE — the row
 says so with the finding's id); `POST /api/games` (the dotted id's 400); `POST …/input` (the 256-byte bound and
 the control rule, with the sentence shape); the `{id}` 404 noted at the top of the game rows. §15 gains three
 rows: D7 accepted (the owner's sentence: the cap is the design; the identity floods that could fill it are the
@@ -2625,13 +2628,17 @@ ledger against the route table: run both.
 
 **The run's additions (2026-10-10/11), each a row or a sentence in the same register — what Tasks 1–6 landed
 beyond the draft:** §4 — the cap's SECOND layer, `api::error_value`, the one serializer behind `error_body`,
-`error_response` and `IntoResponse` (a handler's literal `ApiError` is bounded all the same; the one refusal
-written by hand outside both layers is the Worker's `identity_inner` 401, whose one value the echo rule bounds);
+`error_response` and `IntoResponse` (a handler's literal `ApiError` is bounded all the same; within the Rust crates the one refusal written by
+hand outside both layers is the Worker's `identity_inner` 401, whose one value the echo rule bounds — the TS shell
+writes its own refusals, all constants with no caller value);
 the filter guard refuses any term `echo` would change (nothing a quoted string would escape reaches the CLI's
 `parse_filter`); `api::events_at` refuses an unsafe `{id}` with the layer's 404 before any store read (the two
 axum-native transport routes bypass `dispatch`); `answer` folds HEAD onto GET for its arm guards, so a HEAD never
-runs a write arm (pre-existing, found by Task 3's implementer: the creator's HEAD of a game deleted it); the Worker
-refuses an unsafe id's socket upgrade as an unknown id's (accepted, the layer's sentence, closed 4404). §13 —
+runs a write arm (pre-existing, found by Task 3's implementer: the creator's HEAD of a game deleted it); the Worker's
+TABLE OBJECT refuses an unsafe id's socket upgrade as an unknown id's (accepted, the layer's sentence, closed
+4404) — for an id of at most 64 bytes, which is what reaches a table object; a longer name is routed to the HOUSE
+(`route.ts`), whose `dispatch` has no transport row and answers its `no such endpoint` 404 unupgraded, never
+reaching `events_at` (the reviewer's reading, 2026-10-11). §13 —
 `GET …/events` and `…/stream`: an unsafe id is the layer's 404, not the store's 500; the four two-method paths
 (`/api/games`, `…/{id}`, `…/{id}/chat`, `/api/chat`): a HEAD takes the GET arm, bodiless; `GET …/index/{kind}?filter=`:
 the guard's sentence ("a filter is at most 64 characters of plain text — nothing a quoted string would escape:
