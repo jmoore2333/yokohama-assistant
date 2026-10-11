@@ -2567,8 +2567,12 @@ the draft scoped `api.rs` to the one `Err` line and named no doc): the `why` rou
 refusal names both moves and versions and reaches the browser"), `RefusalDto`'s doc (`explain.rs`, "`message` is
 the CLI's own `Display`, never re-authored"), `explain.rs`'s module doc ("the wording of refusals is not
 restated") and the client's `RefusalRow` doc (`web/src/types.ts`, "the message is never re-authored") each gain
-`refused_at`'s ONE exception in a sentence: a `mismatch` served while the mover's account is withheld carries
-the layer's `MISMATCH_WITHHELD`, naming neither move nor version. `Why::refused` gains one doc line: the
+`refused_at`'s exception in a sentence SCOPED to `why`'s twelve — "the one exception among the twelve", never a
+bare count, since the same `RefusalRow` carries `locked`, `foreign_bot` and `suggest`'s two layer-authored
+sentences already (the re-reviewer's Minor, 2026-10-11): a `mismatch` served while the mover's account is
+withheld carries the layer's `MISMATCH_WITHHELD`, naming neither move nor version. Two more sentences of the same
+class (`Why::foreign`'s doc and `SuggestRefusal::message`'s, "the twelve are carried verbatim") take the same
+clause in the final wave. `Why::refused` gains one doc line: the
 visibility-blind form `refused_at` falls back to and the corpus's `why_refused` fixture is built with (the samples
 reach the corpus through `RefusalDto::of`, not through it); a served answer goes through `refused_at`. Cell (a) pins all eleven other refusals byte-identical at either visibility by a
 loop over `refusal_samples()`, not `HumanSeat` alone; cell (b)'s comments say the bot's game is OS-entropy seeded
