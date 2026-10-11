@@ -131,7 +131,9 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
 - **D-6 — the legacy segment is kept as a named function, in the layer, for the rename and for a cell.**
   `archive::legacy_caller_segment` is the pre-S1c mapping verbatim; `caller_segment` differs from it for EVERY
   address (a cell), so an unmigrated folder is detectable; the server binary's `segment <address>…` subcommand
-  prints both for the window's recipe. No code reads a legacy prefix.
+  prints both for the window's recipe. No code FILES under a legacy segment or READS one — `caller_segment` itself
+  calls `legacy_caller_segment` for its readable half, so "read by nothing" (the draft's words) was false of the
+  function and true of the prefix (Task 7's implementer, 2026-10-11).
 - **D-7 — the drifted record for M-3's route cell is built inside the cell**, from a vs-bot game the cell plays:
   the bot's last recorded move is swapped for another member of the legal list at that position, the record
   written back through the store, and a fresh `AppState` built over the same store (the restart that evicts the
@@ -2615,7 +2617,8 @@ says so with the finding's id); `POST /api/games` (the dotted id's 400); `POST �
 the control rule, with the sentence shape); the `{id}` 404 noted at the top of the game rows. §15 gains three
 rows: D7 accepted (the owner's sentence: the cap is the design; the identity floods that could fill it are the
 door's rows B6, C1, C2 — S2); the segment (readable plus a digest; the rename at S1's deploy; `legacy_caller_segment`
-kept for it and read by nothing); the served `why` chart's real-browser pin, recorded. §2's counts re-read at
+kept for it — no code files under a legacy segment or reads one, though `caller_segment` calls the function for
+its readable half); the served `why` chart's real-browser pin, recorded. §2's counts re-read at
 Task 6's head (the lib count moved by this cycle's cells; the implementer re-counts and writes the figure and
 the head it was read at). `lane_document`'s six cells and `lane-variables.test.mjs` hold the map and the
 ledger against the route table: run both.
@@ -2642,10 +2645,15 @@ head, re-read by the implementer at its own: web 517 (lib 482; `start_refusal` 5
 pool 224.
 
 - [ ] **Step 2: The spec's §9.5**, appended under §9 after §9.4, dated 2026-10-10, titled "S1c's plan: the
-plumbing's rulings and seven corrections": the owner's seven rulings verbatim from this plan's section, the
+plumbing's rulings and eight corrections": the owner's seven rulings verbatim from this plan's section, the
 decisions D-1–D-10 verbatim (D-7 and D-8 as the run corrected them), the spec corrections 1–8 verbatim; the run's
 rulings paragraph is the close's (Task 9 Step 6), as §9.4's 2026-10-10 paragraph was S1b's. Nothing above §9.5 is
 edited.
+
+**Four neighbouring sentences false at `8db7cc5c`, corrected by Task 7's implementer** (2026-10-11): §4's "the
+permit is taken before the identity check" (false since Task 4), §4's "`suggest`'s four are the one place the layer
+words anything" (false since Task 6's `MISMATCH_WITHHELD`), §4's "hold `lock_for(id)`" (false since Task 2's
+`with_table_lock`), §2's "the public build runs 2 cells" (3, verified by running it).
 
 - [ ] **Step 3: The CLI's two comments** (`screen_model.rs`; the fenced crate; doc only). :2463–2464:
 
