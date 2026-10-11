@@ -575,31 +575,42 @@ mod tests {
     /// The segment is READABLE still — the owner reviews saves by who sent them
     /// — and injective in practice (security S1c, finding D26): the readable
     /// part is the legacy mapping cut at 48, then `-` and twelve hex characters
-    /// of a SHA-256 over the whole normalized address. Every pair the review
-    /// named as colliding gets two folders; the alphabet stays `[a-z0-9._-]`,
-    /// a plain name's first character `[a-z0-9]` (an email's may be a `.`, as
-    /// it always could: `../../x@y` renders `.._.._x_at_y-…`), no segment
-    /// empty, `.` or `..`, the length at most 61; the names that WOULD break
-    /// the layout are refused by the grammar.
+    /// of a SHA-256 over the whole normalized address. The review named one
+    /// pair, `alice+x@corp.test` and `alice_x@corp.test`, and the truncation at
+    /// 64; with three more pairs the legacy mapping rendered alike (a space, a
+    /// slash, and an email against the plain name its `@` rendered as) and the
+    /// two long addresses one 64-prefix held, each gets two folders, and each
+    /// row asserts that the legacy folders WERE one, so no row is inert. The
+    /// cut's value is pinned by the long address, whose readable half IS
+    /// forty-eight `a`s: a cut at 40 — the constant or the `truncate` — is red
+    /// here, not only in the Worker's premise cell. The alphabet stays
+    /// `[a-z0-9._-]`, a plain name's first character `[a-z0-9]` (an email's
+    /// may be a `.`, as it always could: `../../x@y` renders `.._.._x_at_y-…`),
+    /// no segment empty, `.` or `..`, the length at most 61; the names that
+    /// WOULD break the layout are refused by the grammar.
     #[test]
     fn a_caller_segment_is_path_safe_readable_and_injective() {
         use crate::identity::User;
         let seg = |s: &str| caller_segment(&User::parse(s).unwrap());
+        let old = |s: &str| legacy_caller_segment(&User::parse(s).unwrap());
         assert!(seg("red@example.test").starts_with("red_at_example.test-"), "{}", seg("red@example.test"));
         assert_eq!(seg("red@example.test").len(), "red_at_example.test".len() + 1 + SEGMENT_DIGEST);
         for (a, b) in [
             ("alice+x@corp.test", "alice_x@corp.test"),
             ("a b", "a_b"),
             ("a/b@c", "a_b@c"),
-            ("a.b@c", "a_b@c"),
+            ("a@b", "a_at_b"),
         ] {
+            assert_eq!(old(a), old(b), "premise: {a:?} and {b:?} shared one legacy folder");
             assert_ne!(seg(a), seg(b), "{a:?} and {b:?} share a folder");
             assert_eq!(seg(a).split('-').next_back().map(str::len), Some(SEGMENT_DIGEST));
         }
         let long_a = format!("{}@{}", "a".repeat(200), "b".repeat(50));
         let long_b = format!("{}@{}", "a".repeat(200), "c".repeat(50));
+        assert_eq!(old(&long_a), old(&long_b), "premise: the two long addresses shared one legacy folder");
         assert_ne!(seg(&long_a), seg(&long_b), "two long addresses with one 48-prefix");
-        assert!(seg(&long_a).len() <= SEGMENT_READABLE + 1 + SEGMENT_DIGEST);
+        assert_eq!(seg(&long_a).len(), 48 + 1 + 12, "the cut's value: {}", seg(&long_a));
+        assert!(seg(&long_a).starts_with(&format!("{}-", "a".repeat(48))), "the cut's value: {}", seg(&long_a));
         for name in [".", "..", ". .", "-", ".x"] {
             assert!(User::parse(name).is_err(), "{name:?} must never be a key");
         }

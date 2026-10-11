@@ -2412,40 +2412,53 @@ The same code as the Worker's twenty-ninth deployment (`worker/RUNBOOK.md` §20)
 
 ## The archive's rename, S1c — once, in the deploy window (a plan, not a record)
 
-**The archive's rename (security S1c, finding D26) — once, in the deploy window, after the new build is
-serving.** A browser's saves are filed under `browser/<segment>/`, and the segment changed: the readable half
-cut at 48, then `-` and a twelve-character digest. Every folder written before this release sits under the
-legacy segment and nothing reads it until it is moved. The window renames both hosts together
-(`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
+**The archive's rename (security S1c, finding D26) — once, in the deploy window.** A browser's saves are filed
+under `browser/<segment>/`, and the segment changed: the readable half cut at 48, then `-` and a twelve-character
+digest. Every folder written before this release sits under the legacy segment and nothing reads it until it is
+moved. (The recipe's two holes the reviewer measured on 2026-10-10 — a bare `mv` nesting silently, a split by a
+sender the files never name — are closed by steps 1 to 4 as written here.) The window renames both hosts
+together (`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
 NAS lines are the ones run.
 
-1. List the addresses that have uploaded: the Access allow-list (every player is on it), or on the NAS
-   `ls /data/archive/browser/` (inside the container: `docker exec <container> ls /data/archive/browser/`)
-   and match each folder to the address whose legacy segment it is. In R2 the live replay's own test
-   identities sit under `test/browser/<legacy>/` as well (spec §2.6's root for a `.test` address): list that
-   prefix too, so no legacy key is left anywhere — the replay's first sends land at the new key either way,
-   but an orphan under the old one is a key nothing reads.
-2. For each address: `docker exec <container> yokohama-web segment <address>` (NAS) or the same binary
-   locally (`cargo run -p yokohama-web -- segment <address>`) prints `address  legacy  current`,
-   tab-separated, one line per address; a value the key grammar refuses is a line on stderr naming it, and
-   the exit code is 1.
-3. NAS: `docker exec <container> mv /data/archive/browser/<legacy> /data/archive/browser/<current>` for each
-   folder present; a folder whose legacy segment matches two addresses (the collision) is split by the
-   `created_by` of each table document inside it, by hand, and the record of that split goes in the deploy
-   entry. Worker: for each key under `browser/<legacy>/` in `yokohama-archive`, and under
-   `test/browser/<legacy>/` for a `.test` address (the dashboard's object listing, or the API's
-   `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`), copy, verify the
-   new key answers, then delete — run in `worker/` with wrangler's own login, since the owner's R2 key is
-   read-only, and every command with `--remote`: without it wrangler acts on its LOCAL storage and the real
-   bucket does not move. The archive writes no object metadata, so the copy loses nothing.
+1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list
+   (`cargo run -p yokohama-web -- segment <every address>…`) and keep the three-column table. A legacy column two
+   addresses SHARE is a collision, and the files inside name no sender — every browser-played table's
+   `created_by` and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the
+   players' word, or by filing a copy under each address); the steps below assume no shared legacy column and
+   STOP if one appears.
+2. **NAS — between the swap's stop and start.** Stop the old container. With nothing serving, for each legacy
+   folder present under `/data/archive/browser/`:
+   `[ ! -e browser/<current> ] && mv browser/<legacy> browser/<current>` — a GUARDED move, never a bare `mv`,
+   which exits 0 and nests the old folder under a new one that already exists (an upload that landed before the
+   stop) — and if `<current>` exists, merge file by file with `mv -n` and read every file `-n` refused (it
+   refuses without a word, and its exit code is no signal across `mv` versions, so the refused files are the
+   ones still under `<legacy>` afterwards). Then start the new build.
 
-   ```sh
-   npx wrangler r2 object get "yokohama-archive/<key>" --file <tmp> --remote
-   npx wrangler r2 object put "yokohama-archive/<new key>" --file <tmp> --remote
-   npx wrangler r2 object delete "yokohama-archive/<key>" --remote
-   ```
-4. Verify: a fresh upload from that address lands under `browser/<current>/`, and `browser/` (and, in R2,
-   `test/browser/`) holds no folder whose name has no `-<12 hex>` tail. Record the moves in the deploy entry.
+   **How the lines reach the volume with the container stopped:** `docker exec` needs a running container, so
+   each line (and the listing, `ls browser/`) runs in a one-shot container on the store's volume, made like §3's
+   but from the NEW image and with no network: `POST /containers/create?name=yokohama-web-rename` with
+   `"Image": "yokohama-web:<new tag>"`, `"Entrypoint": ["sh", "-c"]`, `"Cmd": ["<the line>"]`,
+   `"WorkingDir": "/data/archive"` and `"HostConfig": { "NetworkMode": "none", "Mounts": [{ "Type": "volume",
+   "Source": "yokohama-web-data", "Target": "/data" }] }`; start it, `POST /containers/yokohama-web-rename/wait`,
+   read its log and its exit code (the guard's `&&` exits 1 when `<current>` exists — the branch to the
+   `mv -n` merge), then `DELETE /containers/yokohama-web-rename`. The image's own user is the one that owns the
+   store, so a moved file keeps its owner.
+3. **Worker — after the deploy.** The Worker's deploy is one atomic switch, so the rename follows it. For each
+   key under `browser/<legacy>/` AND `test/browser/<legacy>/` (spec §2.6's root for a `.test` address — the live
+   replay's own) in `yokohama-archive` (the dashboard's object listing, or the API's
+   `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`):
+   `npx wrangler r2 object get yokohama-archive/<new key> --remote --file <tmp-new>` FIRST — if the new key
+   exists (an upload that landed after the deploy), compare the bytes: identical is the once-rule's retry, so
+   delete the old key; different is a conflict the owner rules on — otherwise
+   `npx wrangler r2 object get yokohama-archive/<key> --remote --file <tmp>`,
+   `npx wrangler r2 object put yokohama-archive/<new key> --remote --file <tmp>`, read the new key back, then
+   `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`, wrangler acts on local
+   storage and the bucket never moves. Run in `worker/` with wrangler's own login (the owner's R2 key is
+   read-only); the archive writes no object metadata, so the copy loses nothing.
+4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; `browser/` holds
+   no folder whose name lacks a `-<12 hex>` tail at the FIRST level and no `<current>/<legacy>` at the SECOND
+   (the nesting a bare `mv` would leave — the quota's walk counts at any depth); the address's record count
+   matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
 
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 

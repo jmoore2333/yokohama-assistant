@@ -23,6 +23,13 @@
 //! and the same body unseeded a 201 — `main` → `AppState::new` → `production`,
 //! the NAS's own constructor path, which no in-process cell runs.
 //!
+//! And since security S1c (finding D26; the fix round's Minor 3), the
+//! `segment` subcommand the deploy window's rename reads its table from: the
+//! binary run as `yokohama-web segment <address>…`, which prints and exits
+//! before any start, so it takes no door and no scratch root. A dropped column
+//! or two swapped ones would rename every folder wrongly, and nothing else
+//! runs the subcommand.
+//!
 //! **Every wait is bounded.** Both pipes are read on their own threads into
 //! channels; a start is polled every 50 ms for its listening line or its exit,
 //! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
@@ -48,8 +55,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use yokohama_web::archive::{caller_segment, legacy_caller_segment};
 use yokohama_web::assets::{keyed_build_refusal, Stamp, BUILD_STAMP};
-use yokohama_web::identity::{IdentityMode, ENV_VAR as IDENTITY_VAR};
+use yokohama_web::identity::{IdentityMode, User, ENV_VAR as IDENTITY_VAR};
 
 /// How long a start may take to show what it does: exit, or listen.
 const BOUND: Duration = Duration::from_secs(20);
@@ -157,6 +165,18 @@ enum Start {
     Silent,
 }
 
+/// The built binary with every inherited `YOKOHAMA_` variable removed, so a
+/// developer's shell cannot change what it reads.
+fn binary() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_yokohama-web"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("YOKOHAMA_") {
+            command.env_remove(&key);
+        }
+    }
+    command
+}
+
 /// The built server, spawned over a scratch root behind one door; killed and
 /// reaped when dropped.
 struct Server {
@@ -176,17 +196,27 @@ impl Server {
     /// listening line then reads `:0`, which is all a cell that never reaches
     /// the server needs.
     fn spawn_on(door: &str, scratch: &Scratch, port: u16) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_yokohama-web"));
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("YOKOHAMA_") {
-                command.env_remove(&key);
-            }
-        }
-        let mut child = command
+        let mut command = binary();
+        command
             .env(IDENTITY_VAR, door)
             .env("YOKOHAMA_WEB_DIST", scratch.dist())
             .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
-            .env("YOKOHAMA_WEB_PORT", port.to_string())
+            .env("YOKOHAMA_WEB_PORT", port.to_string());
+        Self::piped(command)
+    }
+
+    /// The binary as `yokohama-web segment <addresses>…` (security S1c,
+    /// finding D26): a one-shot that prints and exits, so no door is set.
+    fn segment(addresses: &[&str]) -> Self {
+        let mut command = binary();
+        command.arg("segment").args(addresses);
+        Self::piped(command)
+    }
+
+    /// `command` spawned with stdin closed and both pipes read on their own
+    /// threads.
+    fn piped(mut command: Command) -> Self {
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -231,6 +261,22 @@ impl Server {
         let mut stdout = std::mem::take(&mut self.printed);
         stdout.push_str(&drain(&self.stdout, deadline));
         (status, stdout, drain(&self.stderr, deadline))
+    }
+
+    /// The status and both pipes of a process that exits by itself within
+    /// [`BOUND`], or a failure naming what it did instead.
+    fn exited(&mut self, what: &str) -> (ExitStatus, String, String) {
+        match self.start() {
+            Start::Exited(_) => self.finish(),
+            Start::Listening(line) => {
+                let (_, stdout, stderr) = self.finish();
+                panic!("{what}: the binary listened ({line}) instead of exiting; stdout {stdout:?}, stderr {stderr:?}")
+            }
+            Start::Silent => {
+                let (_, stdout, stderr) = self.finish();
+                panic!("{what}: the binary did not exit within {BOUND:?}; stdout {stdout:?}, stderr {stderr:?}")
+            }
+        }
     }
 
     /// The listening line, or a failure naming what the process did instead.
@@ -445,4 +491,40 @@ fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseed
     assert!(server.running(), "still serving after both requests");
     let (status, _, stderr) = server.finish();
     assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+}
+
+/// **The rename's table, read off the binary** (security S1c, finding D26;
+/// the fix round's Minor 3). The deploy window renames every legacy folder from
+/// what `yokohama-web segment` prints, so the line is pinned whole: one line
+/// per address, three tab-separated columns in the order address, legacy,
+/// current, the two segments equal to the library's own for that address. A
+/// dropped column (M24) or the two segments swapped — which would rename every
+/// folder backwards — is red at the first assertion. A value the grammar
+/// refuses prints nothing on stdout, names itself on stderr and makes the exit
+/// code 1, beside an address that prints; no address at all is no output and
+/// exit 0.
+#[test]
+fn the_segment_subcommand_prints_address_legacy_and_current_and_exits_1_when_a_value_is_refused() {
+    let user = User::parse("red@example.test").expect("a key");
+    let (legacy, current) = (legacy_caller_segment(&user), caller_segment(&user));
+    assert_ne!(legacy, current, "premise: the two columns differ, so a swap is visible");
+    let line = format!("red@example.test\t{legacy}\t{current}\n");
+
+    let (status, stdout, stderr) = Server::segment(&["red@example.test"]).exited("one address");
+    assert_eq!(stdout, line, "address, legacy, current: {stderr:?}");
+    assert_eq!((status.code(), stderr.as_str()), (Some(0), ""));
+
+    let (status, stdout, stderr) = Server::segment(&[".."]).exited("a refused value alone");
+    assert_eq!(stdout, "", "a refused value prints nothing on stdout");
+    assert!(stderr.starts_with("..\t") && stderr.contains("is neither an email nor a name"), "{stderr:?}");
+    assert_eq!(status.code(), Some(1), "a refused value is exit 1");
+
+    let (status, stdout, stderr) = Server::segment(&["red@example.test", ".."]).exited("a refused value");
+    assert_eq!(stdout, line, "the address the grammar admits still prints");
+    assert!(stderr.starts_with("..\t") && stderr.contains("is neither an email nor a name"), "{stderr:?}");
+    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+    assert_eq!(status.code(), Some(1), "any refused value is exit 1");
+
+    let (status, stdout, stderr) = Server::segment(&[]).exited("no address");
+    assert_eq!((status.code(), stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
 }
