@@ -1304,8 +1304,8 @@ the guard; every answer under /api carries no-store and nosniff from handle, a 1
     /// because a build that wrote the wrong thing must not be served without its policy in silence.
     #[test]
     fn response_headers_reads_the_pairs_in_order_and_refuses_any_other_shape() {
-        // The file's own scratch idiom (:419, :518, :667): `tempfile` is not a dependency, and the owner's
-        // dependency fence keeps it so.
+        // The file's own scratch idiom (the cache, assets and stamp cells' `temp_dir()` roots): `tempfile` is not a
+        // dependency, and the owner's dependency fence keeps it so.
         let dir = std::env::temp_dir().join(format!("yokohama-headers-{}-a", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a scratch dist");
@@ -1397,6 +1397,17 @@ the guard; every answer under /api carries no-store and nosniff from handle, a 1
                 assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "{method} {path}");
             }
         }
+        // The 401 the doc names — `GET /api/games` with NO identity header, which the rows above all send — carries
+        // the set and `no-store` too: the layer wraps a refusal as it wraps an answer (Task 3's C-2).
+        let res = router
+            .clone()
+            .oneshot(Request::builder().uri("/api/games").body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers");
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no identity header at the open door is a 401");
+        let h = res.headers();
+        assert_eq!(h.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"), "the 401 carries the set");
+        assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "and no-store");
     }
 
     /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it
@@ -1481,7 +1492,9 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
 ```
 
 (The harness's own names, as the plan review ran them — the block as first written compiled with five errors, and a
-`get` straight after `spawn_on` raced the bind, hence `listening` before each request. The keyed-build cell
+`get` straight after `spawn_on` raced the bind, hence `listening` before each request. The harness's module doc's "the
+one cell that sends the server a request" reads "two", with an S2a paragraph — Task 3's implementer corrected the
+sentence the cell made false. The keyed-build cell
 `a_keyed_build_behind_cf_access_exits_1_before_it_listens_saying_the_rule_s_own_sentence` is the exit's shape,
 `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded` the start's.)
 
@@ -1489,7 +1502,9 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
 -D - -o /dev/null "${base}${path}" | tr -d '\r' | awk -v n="$2" -F': ' 'tolower($1)==tolower(n){print $2}'`) and
 four reads — three `expect`s: `/`'s `x-frame-options` is `DENY`, `/api/health`'s `cache-control` is `no-store` and
 its `x-content-type-options` is `nosniff`; and a `test -n` on `/`'s `content-security-policy-report-only` (printed,
-not compared: the build's values are the image's). `bash -n deploy/smoke-image.sh` clean. CI's `docker.yml` runs
+not compared: the build's values are the image's); `header()` ends `|| true`, so a missing header reaches `expect` as an
+empty value and is NAMED, where `set -e` would end the script on the pipeline's failure (Task 3's implementer). `bash -n
+deploy/smoke-image.sh` clean. CI's `docker.yml` runs
 the smoke against the self-host image; the NAS's runtime image is assembled by Portainer, so no local image exists
 to smoke, and the NAS's reading is the window's (Task 9 Step 9(a)).
 
