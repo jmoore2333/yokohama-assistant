@@ -332,6 +332,16 @@ pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Vis
 pub const WITHHELD_REASON: &str = "the bot's account is withheld while its starting order is hidden from you — \
                                    it is served once that card is public, or to a seat holder once the game is over";
 
+/// The mismatch refusal's sentence while the account is withheld (S1a's
+/// residual M-3): the kind stays `mismatch`, the index and the seat are named,
+/// and NO move is — the reconstructed one was chosen over the bot's hidden
+/// hand, and the recorded one is withheld with it so the sentence is one
+/// sentence. `{index}` and `{seat}` are filled by [`Why::refused_at`].
+pub const MISMATCH_WITHHELD: &str = "`why` cannot account for event {index} honestly: replaying seat {seat}'s \
+    decision did not reproduce the move the record says was played, and both moves are withheld while the bot's \
+    starting order is hidden from you — they are served once that card is public, or to a seat holder once the \
+    game is over. The game is untouched.";
+
 /// The fifteen search counters, named exactly as every other instrument names
 /// them.
 ///
@@ -528,6 +538,25 @@ impl Why {
 
     pub fn refused(r: &Refusal) -> Self {
         Self { ok: None, withheld: None, refusal: Some(RefusalDto::of(r)) }
+    }
+
+    /// [`Self::refused`] at the requester's visibility: a `Mismatch` whose seat's
+    /// account [`visibility_of`] withholds carries [`MISMATCH_WITHHELD`]; every
+    /// other refusal, and a mismatch at a public visibility, is `refused`'s own.
+    pub fn refused_at(r: &Refusal, now: &GameState, held: &[PlayerId]) -> Self {
+        if let Refusal::Mismatch(m) = r {
+            if visibility_of(now, m.seat, held) == Visibility::Withheld {
+                return Self {
+                    ok: None,
+                    withheld: None,
+                    refusal: Some(RefusalDto {
+                        kind: kind_of(r),
+                        message: MISMATCH_WITHHELD.replace("{index}", &m.index.to_string()).replace("{seat}", &m.seat.0.to_string()),
+                    }),
+                };
+            }
+        }
+        Self::refused(r)
     }
 
     /// A locked session. Not one of `why`'s twelve — the lockdown is the
@@ -1172,6 +1201,51 @@ mod tests {
         for key in ["decision_seed", "forced"] {
             assert!(withheld["withheld"]["provenance"].get(key).is_none(), "{key} rides the claim: {withheld}");
         }
+    }
+
+    /// **A mismatch refusal is served at the requester's visibility** (S1a's
+    /// residual M-3): the `Mismatch` arm names the RECONSTRUCTED move, which
+    /// the search chose over the bot's hidden hand — the B1 channel in one
+    /// sentence — so while the account is withheld the refusal keeps its kind
+    /// and carries `MISMATCH_WITHHELD`, naming no move; at a public visibility
+    /// it is the CLI's own sentence, both moves named. Every other refusal is
+    /// served as it is at either visibility, since none carries what a search
+    /// found. The mutant that serves `refused` regardless fails the withheld
+    /// line.
+    #[test]
+    fn a_mismatch_refusal_names_no_move_while_the_account_is_withheld() {
+        use yokohama_cli::why::{Mismatch, Refusal};
+        let (repl, _) = vs_bot(1);
+        let now = repl.session.state().clone();
+        let bot = yokohama_core::PlayerId(0);
+        let human = yokohama_core::PlayerId(1);
+        let m = Refusal::Mismatch(Box::new(Mismatch {
+            index: 0,
+            seat: bot,
+            controller: "v4-step9-draft1@v4".to_string(),
+            reconstructed: "PlaceAssistants { areas: [3, 7] }".to_string(),
+            recorded: "Place assistants in areas 2 and 5".to_string(),
+            recorded_version: Some(4),
+            current_version: 4,
+        }));
+        // Mid-game, the bot's starting order hidden from the human (vs_bot(1)
+        // pumps one bot move): withheld.
+        assert_eq!(visibility_of(&now, bot, &[human]), Visibility::Withheld, "premise");
+        let withheld = Why::refused_at(&m, &now, &[human]);
+        let r = withheld.refusal.as_ref().expect("a refusal");
+        assert_eq!(r.kind, "mismatch");
+        assert_eq!(r.message, MISMATCH_WITHHELD.replace("{index}", "0").replace("{seat}", "0"));
+        assert!(!r.message.contains("PlaceAssistants") && !r.message.contains("areas 2 and 5"), "{}", r.message);
+        // The holder of the bot's seat reads everything: the CLI's sentence.
+        let public = Why::refused_at(&m, &now, &[bot]);
+        assert_eq!(public.refusal.as_ref().expect("a refusal").message, m.to_string());
+        assert!(public.refusal.as_ref().unwrap().message.contains("PlaceAssistants"));
+        // Every other refusal is the same bytes at either visibility.
+        let other = Refusal::HumanSeat { index: 3, seat: human };
+        assert_eq!(
+            serde_json::to_string(&Why::refused_at(&other, &now, &[human])).unwrap(),
+            serde_json::to_string(&Why::refused(&other)).unwrap()
+        );
     }
 
     /// **The served continuation masks its fulfil lines as the ranking masks

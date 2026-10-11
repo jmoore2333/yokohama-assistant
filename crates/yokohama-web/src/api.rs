@@ -1713,7 +1713,7 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
                 let visibility = explain::visibility_of(&now, account.reconstruction.seat, &held);
                 explain::Why::account(&account, games.rules(), visibility)
             }
-            Err(refusal) => explain::Why::refused(&refusal),
+            Err(refusal) => explain::Why::refused_at(&refusal, &now, &held),
         },
     )
 }
