@@ -1332,6 +1332,8 @@ the guard; every answer under /api carries no-store and nosniff from handle, a 1
             let err = response_headers(&dir).expect_err(why);
             assert!(err.contains("headers.json"), "{why}: the refusal names the file: {err}");
         }
+        // The scratch tree removed, as the file's other cells remove theirs (Task 3's review, m-3).
+        let _ = std::fs::remove_dir_all(&dir);
     }
 ```
 
@@ -1408,6 +1410,8 @@ the guard; every answer under /api carries no-store and nosniff from handle, a 1
         let h = res.headers();
         assert_eq!(h.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"), "the 401 carries the set");
         assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "and no-store");
+        // The scratch dist removed (Task 3's review, m-3).
+        let _ = std::fs::remove_dir_all(&dist);
     }
 
     /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it
@@ -1468,7 +1472,15 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     let (status, headers) = get(port, "/api/health");
     assert_eq!(status, 200);
     assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(
+        headers.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'")
+    );
     assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"));
+    // With the file present the start says NOTHING of it: a `main` that printed the no-set line at every start
+    // would pass the absent arm alone (Task 3's review, I-1).
+    let (_, _, stderr) = server.finish();
+    assert!(!stderr.contains("headers.json"), "a present file is not announced: {stderr}");
     drop(server);
     // (2) No file: the binary starts, says so once on stderr, serves without the set.
     let scratch = Scratch::new("headers-absent");
@@ -1479,7 +1491,7 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     assert_eq!(status, 200);
     assert!(headers.get("x-frame-options").is_none(), "no file, no set");
     let (_, _, stderr) = server.finish();
-    assert!(stderr.contains("headers.json"), "the start says once what it could not read: {stderr}");
+    assert_eq!(stderr.matches("headers.json").count(), 1, "the start says ONCE what it could not read: {stderr}");
     drop(server);
     // (3) A malformed file: exit 1 before the listening line, the file named — read as the keyed-build cell
     // reads its exit.
@@ -1656,7 +1668,9 @@ fixture carries a response header); and `cargo clippy -p yokohama-web --no-defau
 **M15** the old `from_fn(no_store)` left in `app()` — the same; **M16** `with_dist` not reading the file — (b)'s
 first cell red (`app_with` builds through it); **M17** `response_headers` answering `Ok(Vec::new())` on a
 malformed file — (a) red and (c)'s malformed arm red; **M18** the production constructor not reading the file —
-(c)'s first arm red (the one catcher of the production path, as `start_refusal.rs` is for the seed rule);
+(c)'s first arm red (the one catcher of the production path, as `start_refusal.rs` is for the seed rule); **M18b** `main`
+printing the no-set line at EVERY start — (c)'s first arm red at its stderr read; **M18c** the line printed twice — (c)'s
+absent arm red at the count (Task 3's review, I-1);
 **M19** `route_layer` in place of `layer` — (b) red first at `GET /` (the fallback's static rows: `/`, `/shell.bin`,
 the assets, `/t/anything`), and the S1c cell at `/api/`; `/enter` is a route and stays green (measured — the reviewer
 re-reads which rows the fallback answers, as S1c's M12b did).
