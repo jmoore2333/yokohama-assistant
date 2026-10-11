@@ -601,6 +601,11 @@ describe("the set, its block and its file", () => {
       // would render as a second `_headers` rule.
       '[["X Frame", "DENY"]]', '[["Bad Name:", "v"]]', '[["X-Frame-Options", "DE\\u0000NY"]]',
       '[["X-Note", "ok\\n  X-Frame-Options: ALLOWALL"]]',
+      // Three more the Rust reader refuses — a pair of three; a lone surrogate (`JSON.parse` admits the escape,
+      // `serde_json` does not); a name past `http`'s 65,535-byte bound — and the two this side alone refuses, a
+      // tab in a value and an empty value (Task 1's review, measured against http 1.5.0 and serde_json 1.0.150).
+      '[["X-A", "B", "C"]]', '[["X-A", "\\ud800"]]', `[["${"a".repeat(65_536)}", "v"]]`,
+      '[["X-A", "a\\tb"]]', '[["X-A", ""]]',
     ]) {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
@@ -627,12 +632,14 @@ inside `stampOf`, after the stamp is read:
 
 ```ts
       // The build's header set, read off the SAME build: the served 404 page's style, hashed into it (after the
-      // parser's newline normalization, as the generator hashes).
+      // parser's newline normalization, as the generator hashes) — style-src EXACTLY `'self'` and that hash, and
+      // no `'unsafe-…'` anywhere in the BUILT policy: a source appended in `vite.config.ts`'s call would pass a
+      // `toContain` (Task 1's review, mutant M7e).
       const csp = parseHeadersJson(readFileSync(join(out, "headers.json"), "utf8"))[0]![1];
       const served = /<style\b[^>]*>([\s\S]*?)<\/style>/.exec(readFileSync(join(out, "404.html"), "utf8"))![1]!;
-      expect(csp, "the served 404 page's style, hashed").toContain(
-        `'sha256-${createHash("sha256").update(served.replace(/\r\n?/g, "\n"), "utf8").digest("base64")}'`,
-      );
+      const servedHash = `'sha256-${createHash("sha256").update(served.replace(/\r\n?/g, "\n"), "utf8").digest("base64")}'`;
+      expect(/style-src ([^;]*)/.exec(csp)![1]!.split(" "), "the served 404 page's style, hashed, and nothing else").toEqual(["'self'", servedHash]);
+      expect(csp, "the built policy carries no unsafe keyword").not.toMatch(/'unsafe-(?:inline|eval)'/);
       lastCsp = csp;
 ```
 
@@ -780,17 +787,24 @@ export function headersJson(set) {
 /** A header name: RFC 9110's token grammar, which is what `http::HeaderName` accepts on the NAS. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
+/** `http::HeaderName`'s length bound (`MAX_HEADER_NAME_LEN`, 65,535 bytes — a token is ASCII, so characters):
+ *  a longer name would pass the assembly and stop the NAS at start. */
+const HEADER_NAME_MAX = 65_535;
+
 /** A control character in a value (`\u0000`–`\u001f`, `\u007f`): what would let one pair render as two
  *  `_headers` lines. Stricter than `http::HeaderValue`, which admits a tab (`http` 1.5.0's `is_valid`:
  *  `b >= 32 && b != 127 || b == b'\t'`) — the strict side is this one, deliberately (see `parseHeadersJson`). */
 const CONTROL = /[\u0000-\u001f\u007f]/;
 
-/** `dist/headers.json` read back: an array of at least one `[string, string]` pair — each name a token, each
- *  value non-empty and free of control characters — or a throw naming the file. The Worker's assembly and the
- *  guard read it through this, as the NAS's `response_headers` reads it in Rust: every name this refuses the
- *  Rust reader refuses (the token grammars are the same), and this side refuses two value shapes `http` admits —
- *  a tab, and an empty value — so a file that passes the assembly always passes the NAS's reader at start. The
- *  one-host-down release (passed the assembly, stopped the NAS) cannot arise, and the build writes neither.
+/** `dist/headers.json` read back: an array of at least one `[string, string]` pair — each name a token of at
+ *  most 65,535 bytes, each value non-empty and free of control characters, every string well-formed — or a throw
+ *  naming the file. The Worker's assembly and the guard read it through this, as the NAS's `response_headers`
+ *  reads it in Rust (`serde_json`, then `http::HeaderName::from_bytes` and `HeaderValue::from_str`), and this
+ *  side refuses EVERYTHING that side refuses — the same name grammar and its length bound; a lone surrogate,
+ *  whose escape `JSON.parse` admits and `serde_json` does not; a pair of any other arity — and two value shapes
+ *  `http` admits besides, a tab and an empty value: so a file that passes the assembly always passes the NAS's
+ *  reader at start, and the one-host-down release (passed the assembly, stopped the NAS) cannot arise. Measured
+ *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes.
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -803,7 +817,8 @@ export function parseHeadersJson(text) {
   const pair = (p) =>
     Array.isArray(p) &&
     p.length === 2 &&
-    p.every((s) => typeof s === "string" && s !== "") &&
+    p.every((s) => typeof s === "string" && s !== "" && s.isWellFormed()) &&
+    p[0].length <= HEADER_NAME_MAX &&
     HEADER_NAME.test(p[0]) &&
     !CONTROL.test(p[1]);
   if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(pair)) {
@@ -869,11 +884,14 @@ in `connect-src` instead of its origin — the derivation cell red; **M3b** `.ho
 source — the derivation cell's port row red; **M4** `styleHashesOf` hashing the whole element, tags included — the
 hash cell red; **M4b** the CR normalization dropped — the hash cell's CRLF row red; **M5** `headersJson` writing an
 object keyed by name — the round-trip cell red (and the order lost); **M5b** `parseHeadersJson` accepting a name
-with a space, or a value with a newline — the round-trip cell's bad rows red; **M6** `headers.json` dropped from
+with a space, or a value with a newline — the round-trip cell's bad rows red; **M5c** `p.length >= 2`, `isWellFormed`
+dropped, or the name bound dropped — the round-trip cell's three Rust-refused rows red, one each; **M5d** a tab or an empty
+value admitted — its two rows red; **M6** `headers.json` dropped from
 `NOT_PRECACHED` in the generator — the real-build cell red at `toEqual(entries)` (the list names it); **M7**
 `writeBundle` not writing `headers.json` — the real-build cell red ("the build emits the header set"); **M7b**
 `styleHashes: []`, **M7c** `siteUrl: null`, **M7d** `releaseFeed: null` in `vite.config.ts`'s call — the stamp
-cell red at each (the 404 hash; the socket host; the feed origin).
+cell red at each (the 404 hash; the socket host; the feed origin); **M7e** `"'unsafe-inline'"` appended to `styleHashes` in
+that call — the stamp cell red at the built policy (Task 1's review: a `toContain` passed it).
 
 - [ ] **Step 6: Commit.** `git add web/scripts/headers.mjs web/scripts/headers.d.mts web/scripts/headers.node.test.ts
 web/vite.config.ts web/scripts/precache.mjs web/src/precache.node.test.ts` · `git commit -m "web: the header set
