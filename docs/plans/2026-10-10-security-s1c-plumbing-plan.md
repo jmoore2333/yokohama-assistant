@@ -2543,6 +2543,19 @@ and beside `refused` (:529):
 In `api.rs`, `why` (:1706): `Err(refusal) => explain::Why::refused(&refusal)` → `Err(refusal) =>
 explain::Why::refused_at(&refusal, &now, &held)`. (`now` and `held` are in scope: :1667 and :1672–1685.)
 
+**Four doc sentences that would otherwise state the leak this task closes** (the reviewer's I-1, 2026-10-11 —
+the draft scoped `api.rs` to the one `Err` line and named no doc): the `why` route's own doc (`api.rs`, "the
+refusal names both moves and versions and reaches the browser"), `RefusalDto`'s doc (`explain.rs`, "`message` is
+the CLI's own `Display`, never re-authored"), `explain.rs`'s module doc ("the wording of refusals is not
+restated") and the client's `RefusalRow` doc (`web/src/types.ts`, "the message is never re-authored") each gain
+`refused_at`'s ONE exception in a sentence: a `mismatch` served while the mover's account is withheld carries
+the layer's `MISMATCH_WITHHELD`, naming neither move nor version. `Why::refused` gains one doc line: a served
+answer goes through `refused_at`. Cell (a) pins all eleven other refusals byte-identical at either visibility by a
+loop over `refusal_samples()`, not `HumanSeat` alone; cell (b)'s comments say the bot's game is OS-entropy seeded
+per table (the search for `k` is what makes the cell robust, not a fixed event) and name the swapped move for
+what it is (after the swap, `recorded` holds the RECONSTRUCTED move — the variable says so, and the dead
+`{other:?}` clause goes).
+
 - [ ] **Step 4: Run the cells, the crate and the lane's rows.** `wire_fixtures` green WITHOUT the flag is the
 claim: the corpus's `why_refusals.json` DOES carry a `mismatch` row, and it is a CONSTRUCTION —
 `wire_fixtures.rs::every_refusal_payload` builds the twelve from `explain::refusal_samples()` through
@@ -2552,8 +2565,8 @@ byte is a finding, reported, never regenerated here.
 - [ ] **Step 5: The mutants.** **M25** `refused_at` = `refused` — (a) and (b) red; **M26** the visibility read
 inverted — (a) red at the WITHHELD line (the implementer's reading; the draft said the public line), (c) red; **M27** `kind` changed — (a) red at the kind line.
 
-- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/explain.rs crates/yokohama-web/src/api.rs` (and the
-corpus files, if any moved) · `git commit -m "web: M-3 — a why mismatch refusal is served at the requester's
+- [ ] **Step 6: Commit.** `git add crates/yokohama-web/src/explain.rs crates/yokohama-web/src/api.rs
+crates/yokohama-web/src/lib.rs web/src/types.ts` (no corpus file moves) · `git commit -m "web: M-3 — a why mismatch refusal is served at the requester's
 visibility and names no move while the account is withheld (S1c Task 6)"`.
 
 ---
