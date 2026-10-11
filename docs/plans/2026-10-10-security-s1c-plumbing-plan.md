@@ -1903,31 +1903,42 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
     /// The segment is READABLE still — the owner reviews saves by who sent them
     /// — and injective in practice (security S1c, finding D26): the readable
     /// part is the legacy mapping cut at 48, then `-` and twelve hex characters
-    /// of a SHA-256 over the whole normalized address. Every pair the review
-    /// named as colliding gets two folders; the alphabet stays `[a-z0-9._-]`,
-    /// a plain name's first character `[a-z0-9]` (an email's may be a `.`, as
-    /// it always could: `../../x@y` renders `.._.._x_at_y-…`), no segment
-    /// empty, `.` or `..`, the length at most 61; the names that WOULD break
-    /// the layout are refused by the grammar.
+    /// of a SHA-256 over the whole normalized address. The review named one
+    /// pair, `alice+x@corp.test` and `alice_x@corp.test`, and the truncation at
+    /// 64; with three more pairs the legacy mapping rendered alike (a space, a
+    /// slash, and an email against the plain name its `@` rendered as) and the
+    /// two long addresses one 64-prefix held, each gets two folders, and each
+    /// row asserts that the legacy folders WERE one, so no row is inert. The
+    /// cut's value is pinned by the long address, whose readable half IS
+    /// forty-eight `a`s: a cut at 40 — the constant or the `truncate` — is red
+    /// here, not only in the Worker's premise cell. The alphabet stays
+    /// `[a-z0-9._-]`, a plain name's first character `[a-z0-9]` (an email's
+    /// may be a `.`, as it always could: `../../x@y` renders `.._.._x_at_y-…`),
+    /// no segment empty, `.` or `..`, the length at most 61; the names that
+    /// WOULD break the layout are refused by the grammar.
     #[test]
     fn a_caller_segment_is_path_safe_readable_and_injective() {
         use crate::identity::User;
         let seg = |s: &str| caller_segment(&User::parse(s).unwrap());
+        let old = |s: &str| legacy_caller_segment(&User::parse(s).unwrap());
         assert!(seg("red@example.test").starts_with("red_at_example.test-"), "{}", seg("red@example.test"));
         assert_eq!(seg("red@example.test").len(), "red_at_example.test".len() + 1 + SEGMENT_DIGEST);
         for (a, b) in [
             ("alice+x@corp.test", "alice_x@corp.test"),
             ("a b", "a_b"),
             ("a/b@c", "a_b@c"),
-            ("a.b@c", "a_b@c"),
+            ("a@b", "a_at_b"),
         ] {
+            assert_eq!(old(a), old(b), "premise: {a:?} and {b:?} shared one legacy folder");
             assert_ne!(seg(a), seg(b), "{a:?} and {b:?} share a folder");
             assert_eq!(seg(a).split('-').next_back().map(str::len), Some(SEGMENT_DIGEST));
         }
         let long_a = format!("{}@{}", "a".repeat(200), "b".repeat(50));
         let long_b = format!("{}@{}", "a".repeat(200), "c".repeat(50));
+        assert_eq!(old(&long_a), old(&long_b), "premise: the two long addresses shared one legacy folder");
         assert_ne!(seg(&long_a), seg(&long_b), "two long addresses with one 48-prefix");
-        assert!(seg(&long_a).len() <= SEGMENT_READABLE + 1 + SEGMENT_DIGEST);
+        assert_eq!(seg(&long_a).len(), 48 + 1 + 12, "the cut's value: {}", seg(&long_a));
+        assert!(seg(&long_a).starts_with(&format!("{}-", "a".repeat(48))), "the cut's value: {}", seg(&long_a));
         for name in [".", "..", ". .", "-", ".x"] {
             assert!(User::parse(name).is_err(), "{name:?} must never be a key");
         }
@@ -2006,6 +2017,43 @@ the Worker refuses an unsafe id's upgrade as an unknown id's (S1c Task 4)"`.
         assert!(matches!(a.put(&current, Why::Over, "new-2", "{\"r\":3}", "{\"t\":3}"), Err(PutError::Quota { .. })), "the share is one record");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+// --- crates/yokohama-web/tests/start_refusal.rs (fix round 1, the reviewer's Minor 3 — M24's catcher) ---
+/// **The rename's table, read off the binary** (security S1c, finding D26;
+/// the fix round's Minor 3). The deploy window renames every legacy folder from
+/// what `yokohama-web segment` prints, so the line is pinned whole: one line
+/// per address, three tab-separated columns in the order address, legacy,
+/// current, the two segments equal to the library's own for that address. A
+/// dropped column (M24) or the two segments swapped — which would rename every
+/// folder backwards — is red at the first assertion. A value the grammar
+/// refuses prints nothing on stdout, names itself on stderr and makes the exit
+/// code 1, beside an address that prints; no address at all is no output and
+/// exit 0.
+#[test]
+fn the_segment_subcommand_prints_address_legacy_and_current_and_exits_1_when_a_value_is_refused() {
+    let user = User::parse("red@example.test").expect("a key");
+    let (legacy, current) = (legacy_caller_segment(&user), caller_segment(&user));
+    assert_ne!(legacy, current, "premise: the two columns differ, so a swap is visible");
+    let line = format!("red@example.test\t{legacy}\t{current}\n");
+
+    let (status, stdout, stderr) = Server::segment(&["red@example.test"]).exited("one address");
+    assert_eq!(stdout, line, "address, legacy, current: {stderr:?}");
+    assert_eq!((status.code(), stderr.as_str()), (Some(0), ""));
+
+    let (status, stdout, stderr) = Server::segment(&[".."]).exited("a refused value alone");
+    assert_eq!(stdout, "", "a refused value prints nothing on stdout");
+    assert!(stderr.starts_with("..\t") && stderr.contains("is neither an email nor a name"), "{stderr:?}");
+    assert_eq!(status.code(), Some(1), "a refused value is exit 1");
+
+    let (status, stdout, stderr) = Server::segment(&["red@example.test", ".."]).exited("a refused value");
+    assert_eq!(stdout, line, "the address the grammar admits still prints");
+    assert!(stderr.starts_with("..\t") && stderr.contains("is neither an email nor a name"), "{stderr:?}");
+    assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+    assert_eq!(status.code(), Some(1), "any refused value is exit 1");
+
+    let (status, stdout, stderr) = Server::segment(&[]).exited("no address");
+    assert_eq!((status.code(), stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
+}
 ```
 
 (`Quota`'s field names and `with_quota` are S1b's — `archive.rs:108–131`; the implementer reads them.) The
@@ -2122,35 +2170,55 @@ arguments, are untouched.)
 The recipe, in `deploy/RUNBOOK.md` (a new section after the deploy's §3) and `worker/RUNBOOK.md` (after the
 deploy §2), the same text adapted to each host:
 
+> ## The archive's rename, S1c — once, in the deploy window (a plan, not a record)
+>
 > **The archive's rename (security S1c, finding D26) — once, in the deploy window.** A browser's saves are filed
 > under `browser/<segment>/`, and the segment changed: the readable half cut at 48, then `-` and a twelve-character
 > digest. Every folder written before this release sits under the legacy segment and nothing reads it until it is
 > moved. (The recipe's two holes the reviewer measured on 2026-10-10 — a bare `mv` nesting silently, a split by a
-> sender the files never name — are closed by steps 1 to 4 as written here.)
+> sender the files never name — are closed by steps 1 to 4 as written here.) The window renames both hosts
+> together (`worker/RUNBOOK.md`'s section of this name is the same recipe), so the steps name both; on this host the
+> NAS lines are the ones run.
+>
 > 1. **Before the window: the table.** Run the `segment` subcommand over the WHOLE Access allow-list
 >    (`cargo run -p yokohama-web -- segment <every address>…`) and keep the three-column table. A legacy column two
->    addresses SHARE is a collision, and the files inside name no sender — every browser-played table's `created_by`
->    and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the players' word, or
->    by filing a copy under each address); the steps below assume no shared legacy column and STOP if one appears.
+>    addresses SHARE is a collision, and the files inside name no sender — every browser-played table's
+>    `created_by` and seats read `local@browser` — so the owner rules on that folder BEFORE the window (by the
+>    players' word, or by filing a copy under each address); the steps below assume no shared legacy column and
+>    STOP if one appears.
 > 2. **NAS — between the swap's stop and start.** Stop the old container. With nothing serving, for each legacy
->    folder present under `/data/archive/browser/`: `[ ! -e browser/<current> ] && mv browser/<legacy>
->    browser/<current>` — a GUARDED move, never a bare `mv`, which exits 0 and nests the old folder under a new one
->    that already exists (an upload that landed before the stop) — and if `<current>` exists, merge file by file
->    with `mv -n` and read every file `-n` refused. Then start the new build.
-> 3. **Worker — after the deploy.** The Worker's deploy is one atomic switch, so the rename follows it. For each key
->    under `browser/<legacy>/` AND `test/browser/<legacy>/` (spec §2.6's root for a `.test` address — the live
+>    folder present under `/data/archive/browser/`:
+>    `[ ! -e browser/<current> ] && mv browser/<legacy> browser/<current>` — a GUARDED move, never a bare `mv`,
+>    which exits 0 and nests the old folder under a new one that already exists (an upload that landed before the
+>    stop) — and if `<current>` exists, merge file by file with `mv -n` and read every file `-n` refused (it
+>    refuses without a word, and its exit code is no signal across `mv` versions, so the refused files are the
+>    ones still under `<legacy>` afterwards). Then start the new build.
+>
+>    **How the lines reach the volume with the container stopped:** `docker exec` needs a running container, so
+>    each line (and the listing, `ls browser/`) runs in a one-shot container on the store's volume, made like §3's
+>    but from the NEW image and with no network: `POST /containers/create?name=yokohama-web-rename` with
+>    `"Image": "yokohama-web:<new tag>"`, `"Entrypoint": ["sh", "-c"]`, `"Cmd": ["<the line>"]`,
+>    `"WorkingDir": "/data/archive"` and `"HostConfig": { "NetworkMode": "none", "Mounts": [{ "Type": "volume",
+>    "Source": "yokohama-web-data", "Target": "/data" }] }`; start it, `POST /containers/yokohama-web-rename/wait`,
+>    read its log and its exit code (the guard's `&&` exits 1 when `<current>` exists — the branch to the
+>    `mv -n` merge), then `DELETE /containers/yokohama-web-rename`. The image's own user is the one that owns the
+>    store, so a moved file keeps its owner.
+> 3. **Worker — after the deploy.** The Worker's deploy is one atomic switch, so the rename follows it. For each
+>    key under `browser/<legacy>/` AND `test/browser/<legacy>/` (spec §2.6's root for a `.test` address — the live
 >    replay's own) in `yokohama-archive` (the dashboard's object listing, or the API's
->    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`): `npx wrangler r2
->    object get yokohama-archive/<new key> --remote --file <tmp-new>` FIRST — if the new key exists (an upload that
->    landed after the deploy), compare the bytes: identical is the once-rule's retry, so delete the old key;
->    different is a conflict the owner rules on — otherwise `npx wrangler r2 object get yokohama-archive/<key>
->    --remote --file <tmp>`, `npx wrangler r2 object put yokohama-archive/<new key> --remote --file <tmp>`, read the
->    new key back, then `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`,
->    wrangler acts on local storage and the bucket never moves.
-> 4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; `browser/` holds no
->    folder whose name lacks a `-<12 hex>` tail at the FIRST level and no `<current>/<legacy>` at the SECOND (the
->    nesting a bare `mv` would leave — the quota's walk counts at any depth); the address's record count matches
->    the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
+>    `GET /accounts/{account}/r2/buckets/yokohama-archive/objects?prefix=browser/<legacy>/`):
+>    `npx wrangler r2 object get yokohama-archive/<new key> --remote --file <tmp-new>` FIRST — if the new key
+>    exists (an upload that landed after the deploy), compare the bytes: identical is the once-rule's retry, so
+>    delete the old key; different is a conflict the owner rules on — otherwise
+>    `npx wrangler r2 object get yokohama-archive/<key> --remote --file <tmp>`,
+>    `npx wrangler r2 object put yokohama-archive/<new key> --remote --file <tmp>`, read the new key back, then
+>    `npx wrangler r2 object delete yokohama-archive/<key> --remote`. Without `--remote`, wrangler acts on local
+>    storage and the bucket never moves. Run in `worker/` with wrangler's own login (the owner's R2 key is
+>    read-only); the archive writes no object metadata, so the copy loses nothing.
+> 4. **Verify, both hosts.** A fresh upload from that address lands under `browser/<current>/`; `browser/` holds
+>    no folder whose name lacks a `-<12 hex>` tail at the FIRST level and no `<current>/<legacy>` at the SECOND
+>    (the nesting a bare `mv` would leave — the quota's walk counts at any depth); the address's record count
+>    matches the files moved. Record the moves, and any ruling of step 1, in the deploy entry.
 
 `deploy/README.md:192` and `:314`: `browser/<caller>/` → `browser/<segment>/` with one clause: "the segment is
 the address made readable, then `-` and a twelve-character digest (security S1c)". `receipt.rs:34`'s doc clause
@@ -2189,7 +2257,7 @@ bytes of the key — red at the long pair; **M21** "the digest over the raw spel
 `User::parse`, not a catcher here; **M21x** the digest over the RENDERING instead of the key — red at the first
 collision pair; **M22** `legacy_caller_segment` edited (`@` → `_`) — the legacy cell red at its first line and the
 segment cell too (the readable half is the legacy mapping); **M23** the quota counting the legacy prefix too — the
-share cell red; **M24** the subcommand printing only the current segment — no cell; `cargo run -p yokohama-web --
+share cell red; **M24** the subcommand printing only the current segment — `start_refusal.rs`'s spawn cell red (fix round 1; a swapped column order red there too; a cut at 40 red at the segment cell's `==` pin; the old inert pair red at its premise line); `cargo run -p yokohama-web --
 segment red@example.test` prints TWO columns under it and three at the commit:
 `red@example.test\tred_at_example.test\tred_at_example.test-f8767b24c48f`; a refused address goes to stderr with
 exit 1.
