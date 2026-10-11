@@ -35,6 +35,7 @@ import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { readPrecacheList } from "../../worker/scripts/precache-list.mjs";
+import { parseHeadersJson } from "../scripts/headers.mjs";
 import { buildPrecache } from "./precache";
 
 const web = process.cwd();
@@ -57,10 +58,11 @@ afterAll(() => {
   for (const dir of stamped.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** The `dist` files the release never lists (cycle F; spec §2.5, §2.7) — the
- *  generator's exclusion, restated here rather than imported, for the reason
- *  `walk` is: a shared constant would let both agree wrongly. */
-const NOT_PRECACHED = ["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json"];
+/** The `dist` files the release never lists (cycle F; spec §2.5, §2.7; and
+ *  security S2a's header set) — the generator's exclusion, restated here rather
+ *  than imported, for the reason `walk` is: a shared constant would let both
+ *  agree wrongly. */
+const NOT_PRECACHED = ["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json", "headers.json"];
 
 /** The stamp's six keys, in the order the build writes them (R-FP3). */
 const STAMP_KEYS = ["project_url", "blurb", "notice", "release_feed", "site_url", "turnstile_sitekey"];
@@ -120,13 +122,21 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     });
 
     const artDir = join(web, "..", "crates", "yokohama-web", "assets", "art");
-    // **The premise of the exclusion below**: the two files that exist at walk
-    // time ARE in the tree (`public/404.html`, and the stamp the build's plugin
-    // writes), so "not listed" is the generator leaving them out, not a build
-    // that never made them.
+    // **The premise of the exclusion below**: the three files that exist at walk
+    // time ARE in the tree (`public/404.html`, and the stamp and the header set
+    // the build's plugin writes), so "not listed" is the generator leaving them
+    // out, not a build that never made them.
     const emitted = walk(built);
     expect(emitted, "the build emits the 404 page").toContain("404.html");
     expect(emitted, "the build emits the stamp").toContain("build-values.json");
+    expect(emitted, "the build emits the header set").toContain("headers.json");
+    // **The header set the build wrote** (security S2a, decision D-1): the six
+    // pairs, read through the ONE reader both hosts' paths use, the policy first
+    // under its Report-Only name.
+    expect(existsSync(join(built, "headers.json")), "dist/headers.json exists").toBe(true);
+    const headerPairs = parseHeadersJson(readFileSync(join(built, "headers.json"), "utf8"));
+    expect(headerPairs, "the header set is six pairs").toHaveLength(6);
+    expect(headerPairs[0]![0]).toBe("Content-Security-Policy-Report-Only");
     const distFiles = emitted.filter((f) => f !== "sw.js" && !NOT_PRECACHED.includes(f));
     const { entries } = buildPrecache({
       distFiles,
@@ -214,14 +224,18 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     // entry each, and no more.
     expect(listed.length).toBe(distFiles.length + 1 + 131);
 
-    // **Cycle F: none of the five is an entry, and the count is what it was**
-    // (spec §2.5): the list is the tree LESS the five, so the 404 page and the
-    // stamp in the tree add nothing to an install's download or the offline
-    // count. The 404 page is HTML too, which the edge would rewrite.
+    // **Cycle F and S2a: none of the six is an entry, and the count is what it
+    // was** (spec §2.5): the list is the tree LESS the six, so the 404 page, the
+    // stamp and the header set in the tree add nothing to an install's download
+    // or the offline count. The 404 page is HTML too, which the edge would
+    // rewrite.
     for (const name of NOT_PRECACHED) {
       expect(listed.map((e) => e.path), `/${name} is not precached`).not.toContain(`/${name}`);
     }
-    expect(emitted.length - distFiles.length, "exactly the two cycle-F files the build emits are left out").toBe(2);
+    expect(
+      emitted.length - distFiles.length,
+      "exactly the three files the build emits and the release never lists are left out",
+    ).toBe(3);
 
     // **The stamp is exactly the six booleans** (R-FP3), in the build's order:
     // which values were set, never a value.
@@ -240,10 +254,19 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
   // build is under a second (measured). `site_url` (R-F12) is true exactly
   // when the site's address is set: the first build sets it, the other two do
   // not.
+  // **And the header set beside the stamp** (security S2a, decision D-1): each
+  // build's `headers.json` read off the SAME build — its policy names the served
+  // 404 page's style by hash, and its `connect-src` carries the site's socket
+  // host and the feed's origin exactly when the build values do — so the
+  // config's WIRING of `headerSet`, not only the generator, is held.
   // Mutants: `null` as the feed's project link; any boolean read off the raw
-  // environment rather than the checked value; a boolean hard-coded.
+  // environment rather than the checked value; a boolean hard-coded; and
+  // `styleHashes: []`, `siteUrl: null` or `releaseFeed: null` in the config's
+  // `headerSet` call.
   it("stamps which build values a build carries, derived as its define derives them", () => {
     const vite = join(web, "node_modules", "vite", "bin", "vite.js");
+    let lastCsp = "";
+    const connect = (): string[] => /connect-src ([^;]*)/.exec(lastCsp)![1]!.split(" ");
     const stampOf = (set: Record<string, string>): Record<string, unknown> => {
       const env: NodeJS.ProcessEnv = { ...process.env };
       for (const name of BUILD_VALUE_VARS) delete env[name];
@@ -257,6 +280,14 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
       });
       const stamp = JSON.parse(readFileSync(join(out, "build-values.json"), "utf8")) as Record<string, unknown>;
       expect(Object.keys(stamp), "the six keys, in order").toEqual(STAMP_KEYS);
+      // The build's header set, read off the SAME build: the served 404 page's style, hashed into it (after the
+      // parser's newline normalization, as the generator hashes).
+      const csp = parseHeadersJson(readFileSync(join(out, "headers.json"), "utf8"))[0]![1];
+      const served = /<style\b[^>]*>([\s\S]*?)<\/style>/.exec(readFileSync(join(out, "404.html"), "utf8"))![1]!;
+      expect(csp, "the served 404 page's style, hashed").toContain(
+        `'sha256-${createHash("sha256").update(served.replace(/\r\n?/g, "\n"), "utf8").digest("base64")}'`,
+      );
+      lastCsp = csp;
       return stamp;
     };
     const link = "https://github.com/example/yokohama";
@@ -271,10 +302,17 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
       }),
       "every value set, the feed derived from the GitHub link",
     ).toEqual({ project_url: true, blurb: true, notice: true, release_feed: true, site_url: true, turnstile_sitekey: true });
+    expect(connect(), "the site's socket host and the derived feed's origin").toEqual([
+      "'self'",
+      "wss://yokohama.example.org",
+      "https://api.github.com",
+      "https://cloudflareinsights.com",
+    ]);
     expect(
       stampOf({ YOKOHAMA_PROJECT_URL: link, YOKOHAMA_RELEASE_FEED: "off" }),
       "the same link with the feed off",
     ).toEqual({ project_url: true, blurb: false, notice: false, release_feed: false, site_url: false, turnstile_sitekey: false });
+    expect(connect(), "no site, no feed").toEqual(["'self'", "https://cloudflareinsights.com"]);
     expect(stampOf({}), "nothing set").toEqual({
       project_url: false,
       blurb: false,

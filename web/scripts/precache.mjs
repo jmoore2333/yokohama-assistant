@@ -114,7 +114,10 @@ if (existsSync(join(dist, SHELL_SOURCE))) copyFileSync(join(dist, SHELL_SOURCE),
 // page (`public/`) and the stamp (`vite.config.ts`'s plugin) exist when this
 // runs; `presence.mjs` writes the other three after it, so their names here
 // hold for a build that ran out of order, or for `offline.spec.ts`'s re-run.
-const NOT_PRECACHED = new Set(["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json"]);
+// And the header set's file (security S2a; the same plugin writes it): the
+// hosts read it, never a browser, and a browser that installed it would
+// install nothing it uses.
+const NOT_PRECACHED = new Set(["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json", "headers.json"]);
 const distFiles = walk(dist).filter((f) => f !== "sw.js" && f !== shellFile && !NOT_PRECACHED.has(f));
 const artManifest = JSON.parse(readFileSync(join(artDir, "manifest.json"), "utf8"));
 

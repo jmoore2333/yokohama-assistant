@@ -10,6 +10,7 @@ import {
   checkSiteUrl,
   checkText,
 } from "./scripts/build-values.mjs";
+import { headerSet, headersJson, styleHashesOf } from "./scripts/headers.mjs";
 import { injectMetadata } from "./scripts/presence.mjs";
 
 // The client is served from the SAME origin as the API in production (the Rust
@@ -70,7 +71,8 @@ const { version } = JSON.parse(readFileSync(new URL("./package.json", import.met
 // plain file both hosts serve: it names which values were set, which the
 // bundle shows anyway. `site_url` is true exactly when the build carries the
 // site's address (R-F12), which is what the sitemap, the canonical link and
-// `og:url` are written from.
+// `og:url` are written from. The same plugin writes `dist/headers.json` beside
+// it (security S2a; below), and `scripts/precache.mjs` leaves that out too.
 const stamp = {
   project_url: projectUrl !== null,
   blurb: siteBlurb !== null,
@@ -79,16 +81,27 @@ const stamp = {
   site_url: siteUrl !== null,
   turnstile_sitekey: siteKey !== null,
 };
+// **The header set** (security S2a, decision D-1): the policy and its five companions, from the SAME checked
+// locals the `define` block reads — the site's socket host and the feed's origin in `connect-src`, the 404
+// page's inline style hashed into `style-src` — written to `dist/headers.json` beside the stamp. The Worker's
+// assembly appends it to `_headers`; the NAS reads it at start. Neither host spells a directive of its own.
+const headers = headerSet({
+  siteUrl,
+  releaseFeed,
+  styleHashes: styleHashesOf(readFileSync(new URL("./public/404.html", import.meta.url), "utf8")),
+});
+// The one plugin writes both files after the bundle: the stamp, then the header set.
 function stampBuildValues(): Plugin {
   let outDir = "";
   return {
-    name: "yokohama-build-values-stamp",
+    name: "yokohama-build-values-stamp-and-headers",
     apply: "build",
     configResolved(config) {
       outDir = resolve(config.root, config.build.outDir);
     },
     writeBundle() {
       writeFileSync(join(outDir, "build-values.json"), `${JSON.stringify(stamp, null, 2)}\n`);
+      writeFileSync(join(outDir, "headers.json"), headersJson(headers));
     },
   };
 }
