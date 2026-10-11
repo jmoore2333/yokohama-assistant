@@ -81,7 +81,11 @@
 //    `worker/static` (R3's M-3): its `sw.js` — the copy the assembly made,
 //    which names the release it came from — is byte for byte
 //    `web/dist/sw.js`, and each file of `worker/static` is its copy in the
-//    tree. Check 2 verifies the tree against ITS OWN `sw.js`, which a tree
+//    tree. `_headers` is held instead to `assembledHeaders` of the static
+//    file and the current `web/dist/headers.json` — the static text, then
+//    the header set's `/*` block (security S2a, decision D-1) — and a
+//    `web/dist` with no `headers.json` is refused, naming it. Check 2
+//    verifies the tree against ITS OWN `sw.js`, which a tree
 //    assembled from an earlier `web/dist` passes; the bytes are compared, not
 //    the release names alone, because the name digests the precache list and
 //    a change to `web/src/sw.ts` alone keeps it.
@@ -142,7 +146,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
-import { debugModuleIn, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
+import { readHeadersText } from "../../web/scripts/headers.mjs";
+import { assembledHeaders, debugModuleIn, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
 import { sourceDigest } from "./build-module.mjs";
 
 /** Spec §2.3's handling as cycle F amends it (`not_found_handling`, spec
@@ -489,10 +494,23 @@ function staleAssets(root, repo, tree, shown, failures) {
       failures.push(`worker/${shown} was assembled from a web/dist that has since changed — ${names}: ${REBUILD}`);
     }
   }
+  const generated = join(repo, "web", "dist", "headers.json");
   const statics = join(root, "static");
   for (const file of existsSync(statics) ? readdirSync(statics).sort() : []) {
     const copy = join(tree, file);
-    if (!existsSync(copy) || !readFileSync(copy).equals(readFileSync(join(statics, file)))) {
+    const source = readFileSync(join(statics, file));
+    if (file === "_headers") {
+      if (!existsSync(generated)) {
+        failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
+        continue;
+      }
+      const want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
+      if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
+        failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
+      }
+      continue;
+    }
+    if (!existsSync(copy) || !readFileSync(copy).equals(source)) {
       failures.push(`worker/${shown}/${file} is not worker/static/${file} — assemble the assets again: npm run build`);
     }
   }

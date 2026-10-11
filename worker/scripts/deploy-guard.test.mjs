@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { headerSet, headersJson } from "../../web/scripts/headers.mjs";
+import { assembledHeaders } from "./assemble-assets.mjs";
 import { sourceDigest } from "./build-module.mjs";
 import { parse } from "jsonc-parser";
 import { cacheBlock, configFailures, configFrom, deployGuard, doorLine } from "./deploy-guard.mjs";
@@ -18,6 +20,14 @@ const swOf = (release) =>
   `// The source is web/src/sw.ts; the release is ${release}.\n` +
   `var define_PRECACHE_default = [{ path: "/index.html", digest: "${sha256(INDEX)}", type: "text/html" }];\n`;
 const SW = swOf("yokohama-release-0000000000000001");
+
+/** `worker/static/_headers` as the fixture commits it: a PATH block, the
+ *  committed file's shape — the `/*` block is the assembly's, never the
+ *  static file's (security S2a, decision D-1). */
+const STATIC_HEADERS = "/sw.js\n  Cache-Control: no-store\n";
+/** The client build's `headers.json` (security S2a, Task 1), whose pairs the
+ *  assembly appends to `_headers` as its `/*` block. */
+const HEADERS_JSON = headersJson(headerSet({ siteUrl: null, releaseFeed: null, styleHashes: [] }));
 
 /** The release factory's return, as `factory-glue.mjs` writes it: the name
  *  `debug_trap` appears, the call `debug_trap(` does not. */
@@ -170,16 +180,17 @@ function worker(changes = {}, since = {}) {
     "gen/factory.js": RELEASE_FACTORY,
     "assets/index.html": INDEX,
     "assets/sw.js": SW,
-    "assets/_headers": "/*\n  X-Content-Type-Options: nosniff\n",
+    "assets/_headers": assembledHeaders(STATIC_HEADERS, HEADERS_JSON),
     "assets/404.html": NOT_FOUND_PAGE,
     "assets/build-values.json": STAMP(false),
-    "static/_headers": "/*\n  X-Content-Type-Options: nosniff\n",
+    "static/_headers": STATIC_HEADERS,
     "wrangler.jsonc": PRODUCTION,
     "wrangler.open.jsonc": OPEN_FILE,
     "wrangler.gate.jsonc": GATE,
     "wrangler.test.jsonc": TEST_CONFIG,
     "wrangler.open.test.jsonc": OPEN_TEST_CONFIG,
     "../web/dist/sw.js": SW,
+    "../web/dist/headers.json": HEADERS_JSON,
     "../crates/yokohama-worker/src/lib.rs": "// the module\n",
   });
   if (!Object.hasOwn(changes, "gen/source.json")) {
@@ -481,11 +492,29 @@ describe("the deploy guard", () => {
   });
   it("refuses a static file that has changed since the assembly", () => {
     expect(deployGuard(worker({}, { "static/_headers": "/*\n  X-Frame-Options: DENY\n" }))).toEqual([
-      "worker/assets/_headers is not worker/static/_headers — assemble the assets again: npm run build",
+      "worker/assets/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build",
     ]);
     expect(deployGuard(worker({}, { "static/_redirects": "/old /new 301\n" }))).toEqual([
       "worker/assets/_redirects is not worker/static/_redirects — assemble the assets again: npm run build",
     ]);
+  });
+
+  it("holds the assembled _headers to worker/static/_headers plus the current web/dist/headers.json's block (security S2a)", () => {
+    // The block missing: the static text copied as it was, as the assembly did before this cycle.
+    const stale = worker({}, { "assets/_headers": "/sw.js\n  Cache-Control: no-store\n" });
+    expect(deployGuard(stale, join(stale, ".."))).toEqual(
+      naming(/_headers is not worker\/static\/_headers with the current web\/dist\/headers\.json/),
+    );
+    // The build moved: web/dist/headers.json now names a socket host the assembled block does not.
+    const moved = worker({}, {
+      "../web/dist/headers.json": headersJson(headerSet({ siteUrl: "https://moved.test", releaseFeed: null, styleHashes: [] })),
+    });
+    expect(deployGuard(moved, join(moved, ".."))).toEqual(naming(/_headers is not worker\/static\/_headers with the current/));
+  });
+
+  it("refuses when web/dist/headers.json is absent, naming it", () => {
+    const root = worker({}, { "../web/dist/headers.json": null });
+    expect(deployGuard(root, join(root, ".."))).toEqual(naming(/web\/dist\/headers\.json is absent/));
   });
 
   // Check 3, per door (M6.5c2, spec §2.1; review R2.2-m5). The door has no

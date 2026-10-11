@@ -812,3 +812,42 @@ describe("the layer's log (M6.5c2, spec §2.6)", () => {
     expect(() => readReply(fake)).toThrow(/which is no line/);
   });
 });
+
+describe("every answer under /api carries no-store and nosniff (security S2a, B9's Worker half; the S1 stack review's DC-F4)", () => {
+  // `_headers` never applies to a Worker-generated answer (Cloudflare's rule), so the shell sets the two headers
+  // a JSON body needs on the way out — the shell's own answers and the objects' alike (decision D-3).
+  it("on the shell's own answers and the house's; never on /enter or a path outside /api", async () => {
+    const rows: [string, Sent][] = [
+      ["/api/health", {}],
+      ["/api/me", {}],
+      ["/api/art", {}],
+      ["/api/art", { method: "HEAD" }],
+      ["/api/nothing", {}],
+      ["/api/admin/tables", {}],
+      ["/api/games", { method: "POST", headers: JSON_TYPE, body: new Uint8Array(BODY_LIMIT + 1).fill(97) }],
+      ["/api/games/x", { method: "DELETE" }],
+    ];
+    for (const [path, init] of rows) {
+      const res = await worker(path, init);
+      expect(
+        [res.headers.get("cache-control"), res.headers.get("x-content-type-options")],
+        `${init.method ?? "GET"} ${path} answered ${res.status}`,
+      ).toEqual(["no-store", "nosniff"]);
+    }
+    for (const path of ["/enter", "/t/some-table", "/assets/x.js", "/apiary"]) {
+      const res = await worker(path);
+      expect(res.headers.get("cache-control"), `${path} is not the API's`).toBeNull();
+    }
+  });
+
+  it("on a table object's answer through the Worker, signed in", async () => {
+    // The pool's person, as the identity cells mint one; a create, then the table's frame.
+    const token = await person(RED);
+    const created = await worker("/api/games", { method: "POST", token, headers: JSON_TYPE, body: CREATE_BODY });
+    expect(created.status).toBe(201);
+    const id = (JSON.parse(created.text) as { id: string }).id;
+    const frame = await worker(`/api/games/${id}/table`, { token });
+    expect(frame.status).toBe(200);
+    expect([frame.headers.get("cache-control"), frame.headers.get("x-content-type-options")]).toEqual(["no-store", "nosniff"]);
+  });
+});

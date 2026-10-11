@@ -45,8 +45,42 @@ export const OBJECT_FAILED = "the server could not answer — try again";
 
 const NO_ONE: Identity = { kind: "none" };
 
+/** The two headers every answer under `/api` carries (security S2a, finding B9's Worker half; the S1 stack
+ *  review's DC-F4). A `_headers` block never applies to a Worker-generated answer — Cloudflare's rule for static
+ *  assets — so the shell sets them itself, ON THE WAY OUT, for its own answers and the objects' alike:
+ *  `no-store`, because the zone caches by file extension and a table named to look like a file would be a
+ *  private frame kept at the edge (the NAS's one `Router::layer` has said the same since S1c); `nosniff`, so an
+ *  API body is never read as a script. The whole set the static release carries (`_headers`' `/*` block) buys
+ *  nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
+export const API_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ["Cache-Control", "no-store"],
+  ["X-Content-Type-Options", "nosniff"],
+];
+
+/** Whether `pathname` is the API's — `/api` exactly, or under `/api/` — and never `startsWith("/api")`, which
+ *  would claim `/apiary` (the NAS's layer and `swRoute.ts` draw the same line). */
+export function isApiPath(pathname: string): boolean {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+/** `res` with [`API_HEADERS`] set — a fresh `Response` over the same body and status, since an object's answer
+ *  may be immutable — or `res` ITSELF for a 101, which carries its socket, cannot be rebuilt (the constructor
+ *  refuses the status) and is sent nothing a cache could keep. */
+export function withApiHeaders(res: Response): Response {
+  if (res.status === 101) return res;
+  const headers = new Headers(res.headers);
+  for (const [name, value] of API_HEADERS) headers.set(name, value);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** The Worker's entry: [`answer`]'s reply, with the API's two headers on every answer under `/api`. */
+export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys: KeySource): Promise<Response> {
+  const res = await answer(req, env, ctx, keys);
+  return isApiPath(new URL(req.url).pathname) ? withApiHeaders(res) : res;
+}
+
 /**
- * **The Worker** (spec §2.3): stateless, and in this order —
+ * **The Worker** (spec §2.3): stateless, and in this order —, wrapped by [`handle`]
  *
  * 1. `route`. A path the asset layer had no file for answers 404 with an
  *    EMPTY body — never `index.html`; any method but GET or HEAD on `/enter`
@@ -106,7 +140,7 @@ const NO_ONE: Identity = { kind: "none" };
  * here outlives the reply, so nothing reads it, and it is taken so a pool cell
  * calls `handle` exactly as the runtime's `fetch` does.
  */
-export async function handle(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource): Promise<Response> {
+async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource): Promise<Response> {
   const url = new URL(req.url);
   const target = route(req.method, url.pathname);
   if (target.kind === "missing") return new Response(null, { status: 404 });

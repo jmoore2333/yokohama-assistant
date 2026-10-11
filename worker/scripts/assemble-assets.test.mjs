@@ -4,9 +4,34 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { assemble, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
+import { headerSet, headersJson } from "../../web/scripts/headers.mjs";
+import { assemble, assembledHeaders, precacheEntriesFrom, verifyTree } from "./assemble-assets.mjs";
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
+
+/** The client build's `headers.json` (security S2a, Task 1): every synthetic
+ *  `dist` an assembly is handed carries one, as every build of 0.6.2 does. */
+const HEADERS_JSON = headersJson(headerSet({ siteUrl: null, releaseFeed: null, styleHashes: [] }));
+
+/** `_headers`' rules as `path → { header name, lowercased → value }`: each
+ *  unindented line is a path, each indented `Name: value` line a header of
+ *  the path above it, and `#` lines and blank lines are skipped. */
+function rules(text) {
+  const out = new Map();
+  let current = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+    if (!/^\s/.test(line)) {
+      current = {};
+      out.set(line.trim(), current);
+      continue;
+    }
+    const m = /^\s+([A-Za-z0-9-]+):\s*(.*?)\s*$/.exec(line);
+    if (!m || current === null) throw new Error(`_headers: a line that is neither a path nor a header: ${line}`);
+    current[m[1].toLowerCase()] = m[2];
+  }
+  return out;
+}
 
 /** A built service worker's text, as esbuild prints the substituted
  *  `__PRECACHE__`: unquoted keys, and a `type` after each digest
@@ -72,7 +97,7 @@ describe("the assembly (spec §2.3)", () => {
   });
 
   it("lays out dist, the art under art/ and the two static files, then verifies them", () => {
-    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES) });
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON });
     const out = join(tree({}), "assets");
     const report = assemble({ ...sources(dist), out });
     for (const f of ["index.html", "sw.js", "art/manifest.json", "art/orders/1.webp", "_headers", "_redirects"]) {
@@ -95,7 +120,7 @@ describe("the assembly (spec §2.3)", () => {
   it("lands the 404 page and the build-values stamp, which no precache list names", () => {
     const page = "<!doctype html><title>Nothing here</title>\n";
     const stamp = '{\n  "turnstile_sitekey": false\n}\n';
-    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "404.html": page, "build-values.json": stamp });
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "404.html": page, "build-values.json": stamp, "headers.json": HEADERS_JSON });
     const out = join(tree({}), "assets");
     const report = assemble({ ...sources(dist), out });
     expect(readFileSync(join(out, "404.html"), "utf8")).toBe(page);
@@ -103,13 +128,13 @@ describe("the assembly (spec §2.3)", () => {
     expect(report.unlisted).toEqual(["404.html", "_headers", "_redirects", "art/manifest.json", "build-values.json", "sw.js"]);
   });
   it("starts from an empty directory, so nothing from an earlier assembly survives", () => {
-    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES) });
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON });
     const out = join(tree({ "assets/stale.js": "old" }), "assets");
     assemble({ ...sources(dist), out });
     expect(existsSync(join(out, "stale.js"))).toBe(false);
   });
   it("refuses a file two sources both provide, naming it", () => {
-    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), _headers: "# dist's\n" });
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON, _headers: "# dist's\n" });
     const out = join(tree({}), "assets");
     expect(() => assemble({ ...sources(dist), out })).toThrow(/_headers/);
   });
@@ -118,12 +143,12 @@ describe("the assembly (spec §2.3)", () => {
   it("refuses a browser module built for the debug walk, naming it", () => {
     const module = "\0asm...debug_trap...";
     const entries = [...ENTRIES, { path: "/assets/m.wasm", digest: sha256(module) }];
-    const dist = tree({ "index.html": "<!doctype html>", "assets/m.wasm": module, "sw.js": swWith(entries) });
+    const dist = tree({ "index.html": "<!doctype html>", "assets/m.wasm": module, "sw.js": swWith(entries), "headers.json": HEADERS_JSON });
     const out = join(tree({}), "assets");
     expect(() => assemble({ ...sources(dist), out })).toThrow(/^assets\/m\.wasm is a DEBUG browser module/);
   });
   it("refuses a tree the release does not match", () => {
-    const dist = tree({ "index.html": "<!doctype HTML>", "sw.js": swWith(ENTRIES) });
+    const dist = tree({ "index.html": "<!doctype HTML>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON });
     const out = join(tree({}), "assets");
     expect(() => assemble({ ...sources(dist), out })).toThrow(/\/index\.html differs/);
   });
@@ -135,10 +160,10 @@ describe("the assembly (spec §2.3)", () => {
   // "absent" means removed rather than never made.
   const DEBUG_MODULE = "\0asm...debug_trap...";
   it.each([
-    ["a dist with no sw.js", () => ({ "index.html": "<!doctype html>" }), /holds no sw\.js/],
+    ["a dist with no sw.js", () => ({ "index.html": "<!doctype html>", "headers.json": HEADERS_JSON }), /holds no sw\.js/],
     [
       "a file two sources both provide",
-      () => ({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), _headers: "# dist's\n" }),
+      () => ({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON, _headers: "# dist's\n" }),
       /_headers is provided by both/,
     ],
     [
@@ -147,14 +172,40 @@ describe("the assembly (spec §2.3)", () => {
         "index.html": "<!doctype html>",
         "assets/m.wasm": DEBUG_MODULE,
         "sw.js": swWith([...ENTRIES, { path: "/assets/m.wasm", digest: sha256(DEBUG_MODULE) }]),
+        "headers.json": HEADERS_JSON,
       }),
       /DEBUG browser module/,
     ],
-    ["a worker with no entries", () => ({ "index.html": "<!doctype html>", "sw.js": swWith([]) }), /no precache entries/],
-    ["a file that differs", () => ({ "index.html": "<!doctype HTML>", "sw.js": swWith(ENTRIES) }), /\/index\.html differs/],
+    ["a worker with no entries", () => ({ "index.html": "<!doctype html>", "sw.js": swWith([]), "headers.json": HEADERS_JSON }), /no precache entries/],
+    ["a file that differs", () => ({ "index.html": "<!doctype HTML>", "sw.js": swWith(ENTRIES), "headers.json": HEADERS_JSON }), /\/index\.html differs/],
   ])("refuses %s and leaves no tree behind", (_, distFiles, refusal) => {
     const out = join(tree({ "assets/stale.js": "old", "assets/sw.js": swWith(ENTRIES) }), "assets");
     expect(() => assemble({ ...sources(tree(distFiles())), out })).toThrow(refusal);
+    expect(existsSync(out)).toBe(false);
+  });
+
+  it("appends the header set's block to _headers: the static text, then /* with the pairs of web/dist/headers.json — and ships the file itself to no one", () => {
+    const out = join(tree({}), "assets");
+    const set = headerSet({ siteUrl: "https://yokohama.test", releaseFeed: null, styleHashes: [] });
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": headersJson(set) });
+    const statics = tree({ _headers: "/sw.js\n  Cache-Control: no-store\n", _redirects: "" });
+    assemble({ ...sources(dist), statics, out });
+    const text = readFileSync(join(out, "_headers"), "utf8");
+    expect(text.startsWith("/sw.js\n  Cache-Control: no-store\n"), "the static text first, byte for byte").toBe(true);
+    expect(text).toBe(assembledHeaders("/sw.js\n  Cache-Control: no-store\n", headersJson(set)));
+    const block = rules(text).get("/*");
+    expect(Object.keys(block)).toEqual(set.map(([name]) => name.toLowerCase()));
+    expect(block["x-frame-options"]).toBe("DENY");
+    expect(block["content-security-policy-report-only"]).toContain("wss://yokohama.test");
+    // An INPUT of the assembly, never an asset: the zone's WAF edge rule is derived from the tree's top level
+    // (`edge-rule.test.mjs`'s drift cell), and a browser gains nothing from the file — its pairs ride every answer.
+    expect(existsSync(join(out, "headers.json")), "headers.json is not copied into the assets tree").toBe(false);
+  });
+
+  it("refuses a dist without headers.json, naming the file, and leaves no tree behind", () => {
+    const out = join(tree({}), "assets");
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES) });
+    expect(() => assemble({ ...sources(dist), out })).toThrow(/web\/dist\/headers\.json|headers\.json is absent/);
     expect(existsSync(out)).toBe(false);
   });
 });
@@ -170,26 +221,6 @@ describe("the assembly (spec §2.3)", () => {
 // digest in that window.
 describe("the committed static headers", () => {
   const committed = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
-
-  /** `_headers`' rules as `path → { header name, lowercased → value }`: each
-   *  unindented line is a path, each indented `Name: value` line a header of
-   *  the path above it, and `#` lines and blank lines are skipped. */
-  function rules(text) {
-    const out = new Map();
-    let current = null;
-    for (const line of text.split(/\r?\n/)) {
-      if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
-      if (!/^\s/.test(line)) {
-        current = {};
-        out.set(line.trim(), current);
-        continue;
-      }
-      const m = /^\s+([A-Za-z0-9-]+):\s*(.*?)\s*$/.exec(line);
-      if (!m || current === null) throw new Error(`_headers: a line that is neither a path nor a header: ${line}`);
-      current[m[1].toLowerCase()] = m[2];
-    }
-    return out;
-  }
 
   it("serves the worker and its shell no-store, as the axum host's cache_control does", () => {
     const headers = rules(committed("../static/_headers"));
@@ -237,5 +268,13 @@ describe("the committed static headers", () => {
       ["/art/*", "/assets/*", "/llms.txt", "/robots.txt", "/shell.bin", "/sitemap.xml", "/sw.js"],
     );
     expect(headers.get("/art/*")?.["cache-control"]).toBe("public, max-age=3600");
+
+    // **No rule here names a header of the generated `/*` block** (security
+    // S2a, decision D-1): two rules naming one header send it twice (measured
+    // in workerd), and one rule naming it twice joins the values with a comma.
+    const generated = headerSet({ siteUrl: null, releaseFeed: null, styleHashes: [] }).map(([name]) => name.toLowerCase());
+    for (const [path, rule] of rules(committed("../static/_headers"))) {
+      for (const name of Object.keys(rule)) expect(generated, `${path} names ${name}, which the generated /* block carries`).not.toContain(name);
+    }
   });
 });

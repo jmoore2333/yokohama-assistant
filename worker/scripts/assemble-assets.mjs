@@ -11,7 +11,10 @@
 //    why: it is the server's asset, and a copy in the client would drift);
 //    then `worker/static/_headers` and
 //    `_redirects`. A file two sources both provide is refused, naming it,
-//    rather than one silently replacing the other.
+//    rather than one silently replacing the other. `web/dist/headers.json`
+//    is the one file of the dist NOT copied: it is read, and its pairs are
+//    appended to the copied `_headers` as the `/*` block (`assembledHeaders`;
+//    security S2a, decision D-1) — a dist without it is refused.
 // 3. A browser module built for the DEBUG walk is refused (`debugModuleIn`):
 //    `npm run e2e` in `web/` leaves one in `web/dist`, carrying `debug_trap`,
 //    with a precache list that matches it. The marker is read off the module's
@@ -20,14 +23,15 @@
 //    entry's SHA-256 is checked against the assembled file — so the tree IS the
 //    release the service worker installs, not merely a tree that has a `sw.js`.
 //
-// `precacheEntriesFrom`, `verifyTree` and `debugModuleIn` are also the deploy
-// guard's (`scripts/deploy-guard.mjs`), which re-checks the tree before a
-// deploy however the tree was made.
+// `precacheEntriesFrom`, `verifyTree`, `debugModuleIn` and `assembledHeaders`
+// are also the deploy guard's (`scripts/deploy-guard.mjs`), which re-checks
+// the tree before a deploy however the tree was made.
 
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { headersBlock, parseHeadersJson, readHeadersText } from "../../web/scripts/headers.mjs";
 import { readPrecacheList } from "./precache-list.mjs";
 
 /**
@@ -59,6 +63,22 @@ export function verifyTree(root, entries) {
     const more = wrong.length > 10 ? `\n…and ${wrong.length - 10} more` : "";
     throw new Error(`the tree is not the release its sw.js lists:\n${wrong.slice(0, 10).join("\n")}${more}`);
   }
+}
+
+/**
+ * `worker/assets/_headers` as the assembly writes it (security S2a, decision D-1): the committed static text
+ * (`worker/static/_headers`, the cache rules) followed by the header set's `/*` block, generated from
+ * `web/dist/headers.json`. ONE function, so the deploy guard's check 9 recomputes exactly what the assembly
+ * wrote. The static file must not carry a `/*` block of its own: a header applied twice has its values joined
+ * with a comma.
+ */
+export function assembledHeaders(staticText, headersJsonText) {
+  const set = parseHeadersJson(headersJsonText);
+  const base = staticText === "" || staticText.endsWith("\n") ? staticText : `${staticText}\n`;
+  return (
+    `${base}\n# The header set both hosts serve (security S2a) — GENERATED from web/dist/headers.json by\n` +
+    `# scripts/assemble-assets.mjs; the source is web/scripts/headers.mjs. Do not edit.\n${headersBlock(set)}`
+  );
 }
 
 /** Every file under `dir`, relative, POSIX-separated and sorted. */
@@ -110,6 +130,8 @@ function assembleInto({ dist, art, statics, out }) {
     ["worker/static", statics, ""],
   ]) {
     for (const file of walk(dir)) {
+      // An INPUT of the assembly, never an asset (security S2a, decision D-1): its pairs become the /* block below.
+      if (source === "web/dist" && file === "headers.json") continue;
       const target = under + file;
       if (from.has(target)) throw new Error(`${target} is provided by both ${from.get(target)} and ${source}`);
       from.set(target, source);
@@ -117,6 +139,17 @@ function assembleInto({ dist, art, statics, out }) {
       copyFileSync(join(dir, file), join(out, target));
     }
   }
+
+  // **The header set's block** (security S2a, decision D-1): appended to the copied `_headers`, from the client
+  // build's `headers.json`. A dist without the file is not a build of 0.6.2 or later, and a tree without the
+  // block would ship a release with no policy: refused, and `assemble` leaves no tree behind.
+  const generated = join(dist, "headers.json");
+  if (!existsSync(generated)) {
+    throw new Error(`${dist}/headers.json is absent — the client build is older than 0.6.2, or not a build: cd web && npm run build`);
+  }
+  const target = join(out, "_headers");
+  const statik = existsSync(target) ? readFileSync(target, "utf8") : "";
+  writeFileSync(target, assembledHeaders(statik, readHeadersText(generated)));
 
   const files = walk(out);
   const debug = debugModuleIn(out);
