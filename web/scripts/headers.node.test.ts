@@ -170,7 +170,7 @@ describe("the set, its block and its file", () => {
     }
   });
 
-  it("reads a file's BYTES strictly: an invalid UTF-8 byte and a BOM are refused, where readFileSync(.., 'utf8') would substitute U+FFFD or drop the BOM — what serde_json's read_to_string refuses on the NAS", () => {
+  it("reads a file's BYTES strictly: an invalid UTF-8 byte is refused, where readFileSync(.., 'utf8') would substitute U+FFFD, and a BOM is kept for the parse to refuse, where TextDecoder's default would strip it — what serde_json's read_to_string refuses on the NAS", () => {
     const dir = mkdtempSync(join(tmpdir(), "yokohama-headers-"));
     const file = join(dir, "headers.json");
     writeFileSync(file, headersJson(headerSet(NONE)));

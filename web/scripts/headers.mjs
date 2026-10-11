@@ -176,10 +176,11 @@ export function parseHeadersJson(text) {
   return parsed.map(([name, value]) => [name, value]);
 }
 
-/** `dist/headers.json`'s TEXT, read from `file` with its bytes decoded STRICTLY — a `TextDecoder` with `fatal`, the
- *  BOM kept — so an invalid UTF-8 byte is a throw naming the file, and a BOM reaches `parseHeadersJson`, which
- *  refuses it: both are what `serde_json`'s `read_to_string` refuses on the NAS, and what `readFileSync(.., "utf8")`
- *  would have hidden (U+FFFD substituted; the BOM dropped). Every read of the file goes through this — the Worker's
+/** `dist/headers.json`'s TEXT, read from `file` with its bytes decoded STRICTLY — a `TextDecoder` with `fatal`, and
+ *  `ignoreBOM`, since the decoder's DEFAULT strips a leading BOM — so an invalid UTF-8 byte is a throw naming the
+ *  file, and a BOM reaches `parseHeadersJson`, which refuses it: both are what `serde_json`'s `read_to_string`
+ *  refuses on the NAS. `readFileSync(.., "utf8")` keeps a BOM too, but substitutes U+FFFD for the byte, hiding
+ *  what the NAS refuses (measured on Node 26 and serde_json 1.0.150). Every read of the file goes through this — the Worker's
  *  assembly, the deploy guard, the e2e build's override — so the "passes the assembly, passes the NAS" sentence
  *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync`
  *  does; the callers test for the file first.
