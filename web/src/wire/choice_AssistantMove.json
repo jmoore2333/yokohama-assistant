@@ -1508,6 +1508,7 @@
     "Blue: placed on Church faith-4 (+3 VP)"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "options",

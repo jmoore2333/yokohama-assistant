@@ -274,3 +274,107 @@ The alternative sizing, recorded: an event cap of 24,000 with the body cap raise
 every finished game of any play style measured, at the same ≤ 55 ms — a wider notion of "a finished game" and a
 body cap moving UP, against the review's "lowered toward measured game sizes"; the choice is the owner's
 (R-SEC8(f)), to be taken at S1b's plan.
+
+### 9.4 — 2026-10-09, S1b's plan: the cost bounds' decisions and nine corrections
+
+S1b's plan (`docs/plans/2026-10-09-security-s1b-cost-bounds-plan.md`) takes eight decisions of its own and corrects nine statements of this specification, recorded forward. Both sections follow VERBATIM, as the plan wrote them on 2026-10-09; the run's later rulings are the paragraph after them.
+
+**The decisions this plan takes** (the orchestrator's, through the PR and the hand-off; the owner reads them at the plan review)
+
+- **D-1 — the predicate wiring's catcher is a cost bound, and it is the only one it can have.** The core PR proved
+  `replay_strict_with(.., Predicate)` accepts exactly what `replay_strict` accepts, so no functional cell can tell
+  a `Predicate` fold from a `Listed` one. The catcher is a DEBUG-profile ceiling over the committed cap-sized
+  spread fixture (Task 1): under the predicate the 4,096-event replay folds in under a second; under the materialized
+  list the 235 of its positions that are seat 0's Movement decisions at the 442,368-move family run to
+  minutes (198 s in debug, measured). The bound is MEASURED in the before review and set at five times the
+  predicate's reading (0.55 s → 3 s).
+- **D-2 — the cap-sized spread fixture is cut from the review's own worst-case body**, the first 4,096 events of
+  `docs/temp/security-review-2026-10-08/worst-case/spread_4p_11_body.json` re-stamped with their terminal digest
+  and paired with a four-seat hot-seat table of the browser's own player — committed under
+  `crates/yokohama-web/tests/fixtures/` (outside the corpus, as the browser-played pair is, since it carries a
+  seed) with a provenance file naming the cut. The generator the review used (its `sec_probe_cost.rs`'s p3c probe)
+  is DESCRIBED in the provenance file from the review's report — the source was the reviewer's scratch and is
+  not retained; it is not a test.
+- **D-3 — A3's CLI edit is `session.rs` alone, and it is where the fix belongs** (spec correction 2 of §9.3 left the
+  choice to this plan, "preferring the layer where a layer-side change is equal"): the record has ONE owner, the
+  `Session`, and only it can keep checkpoints consistent across `apply`, `undo` and a rebuild; a layer-side ladder
+  would be a second structure invalidated by hand. The fold on the wire is the LAYER's, built from the factored
+  action source (`families`/`iter_family`/`family_len`), and `screen_model.rs` is not touched: the frame builder
+  takes the folded list as it takes any list.
+- **D-4 — "members on demand" (spec A3) is the guided retreat the wire already serves**: `PromptState::Retreat`
+  asks per occupied area how many to recover, so the retreat family's members never need listing; no new route.
+- **D-5 — the quota's refusal is a 507 (`Insufficient Storage`)**, which the outbox retries and now shows: a full
+  archive is the server's state, not the record's, and an operator who makes room should see the row land on the
+  next drain. The outbox's contract (`web/src/outbox.ts:171–185`) ends a row on 400/409 alone; a 403 is the edge's
+  challenge and a 429 the zone's rate limit, so neither can carry the quota.
+- **D-6 — the live corpus replay narrows to the production-door walk under R-SEC8(b).** `walk.json`'s `wire` and
+  `wire2` are seeded creates beside an OPEN seat, which a production host answers 400 (`SEED_NOT_SOLO`); 2,180 of
+  the walk's 2,201 rows are at those two tables and cannot run there by the owner's own rule. The replay now
+  sends each such create and holds it to the 400 in `SEED_NOT_SOLO`'s words — the live probe of the rule — skips
+  every row at those tables and the lobby pages that name them (counted and printed), and runs the rest: health,
+  me, labels, the house chat and its delete, `wire4` (a solo hot seat, honoured), the identity refusals and the
+  eight archive rows (the once-rule's first sends included). The whole walk stays verified against the module
+  through the Worker's pool (`YOKOHAMA_DIAGNOSTIC_SEEDS`, both doors) and against the browser module through
+  `corpus.node.test.ts`; the lobby's and a two-person table's live reading is the live Playwright tier's. **The
+  alternative, recorded:** a diagnostic-seeds deploy for the window through a `--var` override, as the wake window
+  does — refused here because the owner ruled the switch off in every deployable configuration and the window
+  would honour a creator's seed at a multi-person production table for its minutes.
+- **D-7 — the Worker's double replay per upload stays** (≤ 110 ms after A2; the Worker's archive object takes its
+  quota in S2 by spec B12) and the unknown-controller-beside-a-human residual of D25 is recorded, not closed: the
+  rebuild path tolerates it the same way (`bots::seat_disagreement`), and a second rule would be a second statement.
+- **D-8 — S1a's residuals:** the `record` route's lock scope gains its parked-read pin here (Task 5, the file it
+  touches); M-3 (a `why` refusal bypasses the visibility read) and the served `why` chart's jsdom-only pin go to
+  S1c with D12, the refusal-body row.
+
+**Spec corrections** (to be recorded as §9.4 by Task 8, dated 2026-10-09)
+
+1. **§2.1 A2, the timing cell.** "A timing cell over the cap-sized worst case asserting a bound" is a DEBUG-profile
+   ceiling over a committed cap-sized spread fixture, measured first and set at five times the predicate's
+   reading (D-1) — and it is the predicate wiring's ONLY catcher, since the two replays accept the same records
+   by the core PR's proof. The release-profile reading over the review's 23,606-event body stays a measurement
+   in the review record, never a cell.
+2. **§2.1 A3's files and §6's CLI fence.** The CLI is touched in `crates/yokohama-cli/src/session.rs` alone — the
+   checkpoint ladder and the predicate fold, behaviour-preserving (the states a session reaches are the ones
+   `replay` reaches, by the core PR's proof; pinned by the CLI's suite and a new agreement cell) — and NOT in
+   `screen_model.rs`: the fold is the layer's, from the factored action source (D-3). "The CLI is touched only at
+   `suggest::stream_seed`" reads, for S1b, "…and in `session.rs`, nowhere the bot decides".
+3. **§2.1 A3, "members on demand".** Served by the wire's existing guided retreat (`PromptState::Retreat`); no new
+   route (D-4).
+4. **§2.1 B12, the quota's refusal.** A 507 the outbox shows and retries (D-5); the per-caller counting is the
+   NAS directory archive's, under `browser/<caller>/` alone — a server's own games are never counted.
+5. **§5.3, the live corpus replay.** Narrowed to the production-door walk under R-SEC8(b) (D-6); the probe "a
+   seeded create beside an open seat is a 400 on both hosts" is now the replay's own row.
+6. **§2.1 D25's scope.** `check_pair_with` gains the record mirror (`deny_unknown_fields` over the engine record's
+   eleven keys), the locked-down refusal, `validate_config` and `bots::seat_disagreement`; `archive_post` gains
+   the foreign-bot refusal; `tables::check_shape` gains the name rule on `name`. Two residuals recorded: a record
+   naming an unparseable controller beside a HUMAN seat is accepted, as the rebuild accepts it (D-7); and a
+   table document's `created_by` or seat address naming another person is accepted — the archive attributes a
+   file by the UPLOADER's folder (`browser/<caller>/`), and the names inside a document are data. (The plan's
+   draft refused such a pair as forged attribution; the pre-flight read that rule refusing the committed corpus's
+   own eight archive rows and the live replay's, which post `red@wire.test`'s hosted tables by design, so it was
+   dropped — F7.)
+7. **§2.1 A2, "every untrusted-record entry".** `check_pair_with` is the ONE entry (its two callers, the archive
+   route and a restore); the resident rebuild, `/at` and `undo` fold the server's OWN records through the same
+   predicate fold (Task 5) — not untrusted, the same cost.
+8. **§2.1 D6's "compute routes".** Every dispatch leaves the executor (the blocking pool), and the GATE is on the
+   five replay routes — `POST /api/archive`, `GET …/at`, `…/at/{k}`, `…/suggest`, `…/why` — never on `input`: a
+   move must land while a burst of replays waits, and an undo is cheap once the ladder stands.
+9. **§2.1 A2's Worker half.** The Worker's archive object still replays an upload twice (D-7): ≤ 110 ms after this
+   cycle; its quota and the receipt loop's single dispatch are S2's.
+
+#### 2026-10-10 — the run's rulings: residuals and corrections
+
+S1b's execution found what the plan did not know, and the controller ruled on each item. The lane document (`docs/web-lane.md` §2, §4, §13, §15) says the settled ones; these are the residuals and the corrections to the plan's text above, recorded forward:
+
+1. **A restore accepts a record naming a foreign bot that the archive route refuses.** Correction 6 placed the refusal after the validator, in the route (`bots::foreign`), and the game routes refuse such a game at play, so the backup envelope, which holds a device's own games, keeps it. Every sentence that calls `check_pair` "one validator, two callers" (the M6.5b2 spec's §2.5; D25) is scoped to what a VALID GAME is, not to whether this server runs its bot.
+2. **The record mirror denies unknown keys at the record's TOP level only.** `GameConfig`, `RunProvenance` and `SeatProvenance`, and the moves' bodies, stay lenient by design, so that a reader of saves tolerates a newer field there; a key beside an event's tag is refused by the event enum.
+3. **`Session::fold_event` is a hand-kept copy of core's private `fold_one_event_with(Predicate)`**, because core is frozen. Exposing the single-event fold from core would retire the copy.
+4. **The hang-up cell simulates the disconnect** under a `timeout`; the behaviour over a real TCP connection rests on the reviewer's probe, not on a cell.
+5. **`events`' hand-off to the blocking pool has no catcher**: no cell fails if the read goes back inline.
+6. **The permit is taken before the layer's identity check and before the route's refusals**, so a refused request still queues (first in, first out). Behind Access every caller is signed in, which bounds what this costs.
+7. **D27's empty-run shortcut changes cost and no byte of any answer**, so it cannot be pinned by a cell without a count of the events folded.
+8. **A sentence in the fenced CLI crate is false of the web's rows since the fold.** `build_decision`'s doc in `screen_model.rs` (:2463–2464) reads "`legal` is the ENGINE's list verbatim — this builder never generates or filters moves"; its first clause is false of the web's folded, capped list, which the layer builds from the factored action source, and true of the CLI's own callers, and its second clause is true everywhere. The field doc at :977 ("One per move in the legal list the caller supplied") holds: it is true of the list the builder is handed. The CLI's own rows are whole. Left for S1c or the CLI's next touch.
+9. **The CLI's `option_rows` enumeration at the spread decision** (debug 287 ms, 17.7 MB, as the run measured it) is the CLI's own cost and outside this cycle.
+10. **Plan gaps the run fixed in code**: the shared-table undo's `trailing_state` (the undo half of A3), the HEAD request's bypass of the gate, the permit held in the async frame instead of the pool's closure, the put's check-then-write race on the quota, the half pair's double count, the catchers for M29, M20, M21–22 and the `fold_to` insertion, and the plan's account of the corpus (correction 1 of §9.3 stands, but the regeneration did not leave every frame payload at `0`: it added `options_omitted` to 27 frame-bearing payload files, 22 reading `0` throughout, three retreat fixtures folded to their recover-nothing member and reading 2, 3 and 3, and two carrying the fold's count on a non-deciding viewer's frame, `run.json`'s frame 0 reading 3 and `spectator.json` reading 2; nothing was renumbered, because the retreat family is the list's tail).
+11. **The `CHECKPOINT_EVERY` figures in the pre-flight were wrong and are corrected in the code's comment**: a state is a few kilobytes in memory (about 15 KB serialized), and a position read or an undo folds at most sixty-three events from a complete ladder.
+12. **The plan-text corrections** (the sentences about the RED readings, M6's rows, M17's mechanism, M19's status, M31's iteration, `record.rs`'s range, the renumbering and the `git add` lines) belong to the plan's own §"Review record" at the close, not to this specification.

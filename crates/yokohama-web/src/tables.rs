@@ -425,6 +425,14 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
             }
         }
     }
+    // **The table's own name, by the same rule as a seat's** (security S1b,
+    // finding D25): `create` and `join` apply it on write, and a document that
+    // arrives through the archive route or a restore never passed through them.
+    if let Some(name) = &doc.name {
+        if let Err(why) = check_name(name) {
+            return Err(format!("the table's name: {why}"));
+        }
+    }
     // BOTH mirror fields, because both are handed to `PlayerId::new` by
     // `TableDoc::view` (`table.rs`), which asserts `id < 4` and PANICS — and
     // `view` runs under the per-table lock in `join` and `keep` (poisoning that
@@ -695,9 +703,9 @@ fn set_table(
     // is what makes the previewed table's `is_bot` true — the same one line
     // finalize runs, and the reason no second attachment step is needed here.
     session.set_run_seats(BotSeats::new(contestants_of(seats), THROWAWAY_BOT_SEED).seat_provenance());
-    let repl = Repl::new(session);
-    let mut table = HistoricalFrame::at(&repl, 0, Viewer::Seat(viewer))
-        .map_err(|e| format!("the setup position did not build: {}", e.message))?;
+    let mut repl = Repl::new(session);
+    let mut table = HistoricalFrame::at(&mut repl, 0, Viewer::Seat(viewer))
+        .map_err(|e| format!("the setup position did not build: {e}"))?;
     withhold_until_the_choice(&mut table);
     Ok(table)
 }
@@ -2153,7 +2161,7 @@ mod tests {
         // What the SAME seed puts on a real table, read from the game itself.
         let handle = playing(&g, &req_seeded("withheld-started", ARGMAX_IS_CARD_2), &["red@t.test"]);
         let started =
-            HistoricalFrame::at(&handle.lock().unwrap(), 0, Viewer::Seat(PlayerId::new(0)))
+            HistoricalFrame::at(&mut handle.lock().unwrap(), 0, Viewer::Seat(PlayerId::new(0)))
                 .unwrap();
         let titles: Vec<String> = started
             .labs
@@ -3355,6 +3363,45 @@ mod tests {
         open.status = TableStatus::Open;
         open.seats[1] = SeatDoc::Open;
         assert_eq!(check_shape(&open), Ok(()), "an open table with an open seat is fine");
+    }
+
+    /// **The table's own name is bounded on read as a seat's is** (security
+    /// S1b, finding D25): `create` and `join` apply `check_name` on write, and a
+    /// document that arrives through the archive route or a restore never
+    /// passed through them — a 900 KB `name` was filed verbatim.
+    #[test]
+    fn check_shape_bounds_the_tables_own_name() {
+        // A playing two-person table, built inline as `archive.rs`'s
+        // `locked_doc` builds one, with no lock: this module's cells keep no
+        // builder for a playing document.
+        let mut doc = TableDoc {
+            schema: 3,
+            id: "sim-2".into(),
+            name: None,
+            created_by: "a@x.test".into(),
+            created_at: 1_789_000_000,
+            players: 2,
+            colors: vec![PlayerColor::Red, PlayerColor::Blue],
+            start_seat: 0,
+            seats: vec![
+                SeatDoc::Human { user: "a@x.test".into(), name: None, bound_at_create: false },
+                SeatDoc::Human { user: "b@x.test".into(), name: None, bound_at_create: false },
+            ],
+            keeps: vec![Some(1), Some(2)],
+            seed: 7,
+            status: TableStatus::Playing,
+            turn: None,
+            lock: None,
+            unlocked: vec!["watcher@x.test".to_string()],
+            archived_at: Some(1_789_000_001),
+        };
+        doc.name = Some("x".repeat(65));
+        let said = check_shape(&doc).expect_err("65 characters");
+        assert_eq!(said, "the table's name: a name is 1 to 64 characters");
+        doc.name = Some("a\u{0007}b".to_string());
+        assert_eq!(check_shape(&doc).expect_err("a control character"), "the table's name: a name has no control characters");
+        doc.name = Some("x".repeat(64));
+        assert!(check_shape(&doc).is_ok(), "64 is the bound");
     }
 
     /// **The mirror names the winner once the game is over, and nobody before

@@ -721,8 +721,11 @@ impl Games {
         // **A pair whose table and record disagree about which seats are bots
         // is refused before anything is replayed** (M6.5c2 cycle D, Task 4
         // row of the close `2026-09-29-web-frontend-m6.5c2d-close.md` §1), on every host, for every rebuild, finished or not — a
-        // 409 naming the lowest such seat, in `check_pair`'s words for a pair
-        // that does not agree. Every pair this layer writes agrees
+        // 409 naming the lowest such seat in `bots::seat_disagreement`'s
+        // sentence — the `{why}` `check_pair_filed` gives an arriving pair, each
+        // under its own head: here "the table document does not agree with the
+        // record", there "the table's seats disagree with the record's bots".
+        // Every pair this layer writes agrees
         // (`finalize` stamps the run seats from the table's own seats, and has
         // since the first table document), so only a hand-made pair reaches
         // it. The measured shape: a record naming seat 1 `bga-human` beside a

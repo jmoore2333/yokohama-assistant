@@ -113,7 +113,10 @@ export interface Pending {
   id: string;
   reason: PendingReason;
   lastTried: number;
-  /** The SERVER's own sentence, on a `refused` row alone. */
+  /** The SERVER's own sentence on a `refused` row, and on an `offline` row
+   *  that met a 507, the caller's share of the archive full (security S1b).
+   *  On any other `offline` row it is a LOCAL failure's own sentence, where
+   *  `attempt` had one. */
   sentence?: string;
 }
 
@@ -175,11 +178,16 @@ function fingerprint(record: string): string {
  *  Cloudflare Access answers when the session in front of the server has
  *  expired — two different doors, one remedy, and one of three possible
  *  sentences. A 400 or a 409 is about THIS RECORD and will not change; a 403,
- *  a 5xx or a fetch that never arrived is about the moment, and is retried. */
+ *  a 5xx or a fetch that never arrived is about the moment, and is retried —
+ *  a 507 among them, which carries the server's sentence: the caller's share
+ *  of the archive is full. */
 function reasonFor(e: unknown): { reason: PendingReason; sentence?: string } {
   if (e instanceof ApiError) {
     if (e.status === 401) return { reason: "signed-out" };
     if (e.status === 400 || e.status === 409) return { reason: "refused", sentence: e.message };
+    // A 507 is the caller's share of the archive FULL (security S1b, finding
+    // B12): the server's state, retried like an offline row, and shown.
+    if (e.status === 507) return { reason: "offline", sentence: e.message };
   }
   return { reason: "offline" };
 }

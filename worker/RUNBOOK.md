@@ -720,6 +720,19 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
   cd worker && node scripts/live-replay.mjs   # and again, once the first has finished
   ```
 
+  **It walks the production door** (security S1b; R-SEC8(b)). A deployed Worker honours a
+  creator's seed only at a table whose every human seat is the creator's, and the walk creates
+  `wire` and `wire2` seeded beside an open seat. So the replay SENDS those two creates and holds
+  each to the production rule's 400 in the layer's own sentence (`SEED_NOT_SOLO`), counted among
+  the exemptions spent as `productionSeedRule <id>` — a 201 there is a mismatch, a diagnostic
+  configuration deployed by mistake — and it SKIPS every other row at those two tables and the
+  four lobby pages, whose committed bodies name them, counted and printed as "rows skipped under
+  the production seed rule". The rest runs and is held to its committed answer: the host's own
+  reads, the house chat's post, read and delete, the solo `wire4` table, the 404 and the archive
+  walk. The whole walk is read elsewhere: by the pool, which replays every row with
+  `YOKOHAMA_DIAGNOSTIC_SEEDS` on (§3; never set in production), and by the two-browser Playwright
+  tier, which plays an unseeded two-person table to a winner on the live host.
+
   **Twice, one after the other**: the second run is the repeatability evidence, its two first sends
   answering the once-rule's 200. **Never beside the Playwright tier**: the two share the house
   chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP

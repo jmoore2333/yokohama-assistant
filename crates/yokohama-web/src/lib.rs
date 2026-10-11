@@ -343,6 +343,29 @@ impl Multiplayer {
 }
 // ---- end server ----
 
+/// The replay gate's permits (security S1b, findings A2 and D6; R-SEC8(f)):
+/// how many of the five replay routes (`api::REPLAY_ROUTES`) the NAS runs at
+/// once. Two, from the NAS's four cores (the review's read): two blocking
+/// replays leave two cores to the runtime, and at the ≤ 55 ms an admitted
+/// replay costs under the predicate check two permits clear about
+/// thirty-six worst-case uploads a second — far above the edge's twenty per
+/// ten seconds per client. The gate bounds the server's work, never a
+/// person's: a game's moves are not behind it.
+#[cfg(feature = "server")]
+pub const REPLAY_PERMITS: usize = 2;
+
+/// How long a replay request waits for a permit before the adapter answers
+/// 503 with `Retry-After: 1` (security S1b): two seconds, so queued bodies do
+/// not pile up behind a burst — a client that meets the 503 asks again, as
+/// the outbox and the turn playback both do on their own.
+#[cfg(feature = "server")]
+pub const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The 503's sentence — the ADAPTER's own, since the gate is the NAS's and
+/// not the layer's.
+#[cfg(feature = "server")]
+pub const BUSY: &str = "the server is busy replaying — try again in a second";
+
 /// Everything a transport handler may reach: the layer's state, the identity
 /// door, the streams' cadence and the streams' channels.
 ///
@@ -396,6 +419,12 @@ pub struct AppState {
     /// [`Self::production`], which `new` hands it to; a cell sets them with
     /// [`Self::with_ttls`].
     pub ttls: sweep::Ttls,
+    /// The replay gate (security S1b, findings A2 and D6): the permits the
+    /// five replay routes share — [`REPLAY_PERMITS`] on every constructor; a
+    /// cell sets its own through [`Self::with_replay_gate`].
+    pub replay_gate: Arc<tokio::sync::Semaphore>,
+    /// How long a replay request waits for a permit — [`REPLAY_WAIT`].
+    pub replay_wait: std::time::Duration,
 }
 
 #[cfg(feature = "server")]
@@ -580,6 +609,8 @@ impl AppState {
             // No TTL, which is what an unset variable reads: only `new`,
             // given `main`'s reading, and [`Self::with_ttls`] say otherwise.
             ttls: sweep::Ttls::none(),
+            replay_gate: Arc::new(tokio::sync::Semaphore::new(REPLAY_PERMITS)),
+            replay_wait: REPLAY_WAIT,
         }
     }
 
@@ -612,6 +643,13 @@ impl AppState {
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
         self.games = self.games.with_seed_policy(policy);
         self
+    }
+
+    /// This state under its own replay gate (security S1b) — the builder a
+    /// cell takes to hold the permits and read the 503, [`Self::with_clock`]'s
+    /// shape.
+    pub fn with_replay_gate(self, permits: usize, wait: std::time::Duration) -> Self {
+        Self { replay_gate: Arc::new(tokio::sync::Semaphore::new(permits)), replay_wait: wait, ..self }
     }
 
     /// This state with a different [`games::Clock`] (M6.5b, spec §6.3).
@@ -701,7 +739,11 @@ async fn events(
     QueryArgs(q): QueryArgs<EventsQuery>,
 ) -> ApiResult<Events> {
     api::check_wait(q.wait)?;
-    Ok(Json(api::events_at(&state.games, &id, &user)?))
+    let games = Arc::clone(&state);
+    match tokio::task::spawn_blocking(move || api::events_at(&games.games, &id, &user)).await {
+        Ok(reading) => Ok(Json(reading?)),
+        Err(_) => Err(ApiError::server_error("the reading could not be taken — try again")),
+    }
 }
 
 /// `GET /api/games/{id}/stream` — the change signal, PUSHED (spec §3.1).
@@ -734,8 +776,12 @@ async fn events(
 /// frames that queue in the pool when more readings are in flight than it has
 /// threads (tokio's default cap is 512), where they used to queue on the
 /// executor. Frames stay in order: `then` awaits each before it takes the next
-/// bump. The on-connect reading above the subscribe is left where it is, as
-/// every other route's is — one per connection, not one per bump.
+/// bump. The on-connect reading above the subscribe is left where it is — one
+/// per connection, not one per bump, as before — and since security S1b
+/// (finding D6) it is the one `events_at` reading left on a runtime worker:
+/// `events`' reading and the adapter's whole dispatch run on the blocking
+/// pool. The static files — the art manifest, the art and the built client —
+/// are still read synchronously on the executor, from local disk, as before.
 ///
 /// On the table's `end` the stream writes one `end` frame and CLOSES, and the
 /// close is the CHANNEL's rather than this closure's: `Signals::end` drops the
@@ -843,13 +889,31 @@ async fn house_stream(
     Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
 }
 
-/// The art manifest, or an honest 404.
-///
 /// The ONE piece of axum between a request and the layer (R-6.5a.3). Identity
 /// is resolved here with today's extractor logic and handed to the layer as the
 /// host's sentence; the body and query reach the layer as bytes and text. The
 /// body limit is axum's own default (2 MiB), so nothing this API accepted
 /// before is refused now.
+///
+/// **Every dispatch runs on the blocking pool, never on the executor**
+/// (security S1b, finding D6): the layer's call takes a game's lock, reads a
+/// store, and may replay or search, and inline on a runtime worker a slow one
+/// stalled every other task on that worker — the review measured two uploads
+/// freezing a two-worker server for 35 s. The hand-off costs a clone of the
+/// state's `Arc`, the owned request parts, a thread wake and a join, as the
+/// stream's per-bump reading already pays.
+///
+/// **The replay gate** (findings A2 and D6): one of the five replay routes
+/// (`api::REPLAY_ROUTES`), a HEAD of a gated GET with it, takes a permit,
+/// waiting at most [`AppState::replay_wait`]. The body is read FIRST, bounded
+/// at 2 MiB by the adapter, and the permit is taken after it: a permit taken
+/// before the read would be held for the whole upload, so two slow uploaders
+/// could hold both permits for as long as they trickle. Past the wait the
+/// answer is 503 with `Retry-After: 1`, and nothing of the LAYER has run.
+/// The permit is held for the dispatch's whole run, a caller's departure
+/// included: it moves into the pool's closure, so a hang-up, which drops this
+/// future, does not free it while the replay runs on. Every other route is
+/// never behind it.
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
@@ -859,22 +923,15 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
             return ApiError::bad_request(format!("the body could not be read: {e}")).into_response()
         }
     };
+    let method = parts.method.as_str().to_string();
+    let path = parts.uri.path().to_string();
+    let query = parts.uri.query().unwrap_or("").to_string();
     let resolved = identity::resolve(state.identity, &parts.headers);
-    let identity: api::Identity<'_> = match &resolved {
-        Ok(u) => Ok(u),
-        Err(m) => Err(m.as_str()),
-    };
-    let content_type = parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
-    let request = api::ApiRequest {
-        method: parts.method.as_str(),
-        path: parts.uri.path(),
-        query: parts.uri.query().unwrap_or(""),
-        content_type,
-        body: &bytes,
-    };
+    let content_type =
+        parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
     // Art is a server route (the manifest reads the gated `art` module), listed
     // in the layer's table for the 405/404 arithmetic and answered here.
-    if request.path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
+    if path == "/api/art" && (parts.method == http::Method::GET || parts.method == http::Method::HEAD) {
         let mut response = match art_manifest().await {
             Ok(j) => j.into_response(),
             Err(e) => e.into_response(),
@@ -885,21 +942,58 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
         }
         return response;
     }
+    let permit = if api::is_replay_route(&method, &path) {
+        match tokio::time::timeout(state.replay_wait, Arc::clone(&state.replay_gate).acquire_owned()).await {
+            Ok(Ok(permit)) => Some(permit),
+            Ok(Err(_)) | Err(_) => return busy(),
+        }
+    } else {
+        None
+    };
     // On THIS host the two multiplayer facts are one answer: an axum deployment
     // that offers no multiplayer serves no game route either, because nothing
     // plays here locally (spec §3.1 — the browser host is where they differ).
     // The TTLs are the ones the sweep runs under (M6.5c2 cycle F, R-F9), so
     // `/api/health` reports what is in force — both `null` where none is set,
     // as before the sweep (R-6.5c2.42).
-    let host = api::Host {
-        identity_name: state.identity.name(),
-        signal_kind: SIGNAL_KIND,
-        serves_games: state.multiplayer.0,
-        multiplayer_offered: state.multiplayer.0,
-        table_ttl_days: state.ttls.table,
-        open_table_ttl_days: state.ttls.open,
+    let serves_games = state.multiplayer.0;
+    let joined = {
+        let state = Arc::clone(&state);
+        tokio::task::spawn_blocking(move || {
+            // Held until the dispatch ENDS, a caller's hang-up included.
+            let _permit = permit;
+            let identity: api::Identity<'_> = match &resolved {
+                Ok(u) => Ok(u),
+                Err(m) => Err(m.as_str()),
+            };
+            let request = api::ApiRequest {
+                method: &method,
+                path: &path,
+                query: &query,
+                content_type: content_type.as_deref(),
+                body: &bytes,
+            };
+            let host = api::Host {
+                identity_name: state.identity.name(),
+                signal_kind: SIGNAL_KIND,
+                serves_games,
+                multiplayer_offered: serves_games,
+                table_ttl_days: state.ttls.table,
+                open_table_ttl_days: state.ttls.open,
+            };
+            let out = api::dispatch(&state.games, &host, identity, &request);
+            let allowed = if out.status == 405 { api::allowed_methods(&path, serves_games) } else { Vec::new() };
+            (out, allowed)
+        })
+        .await
     };
-    let out = api::dispatch(&state.games, &host, identity, &request);
+    let (out, allowed) = match joined {
+        Ok(pair) => pair,
+        // A dispatch that PANICKED on the pool: the game's lock, if it held
+        // one, is poisoned and evicted on the next take (`Games::lock_game`);
+        // this request is a 500 that says so.
+        Err(_) => return ApiError::server_error("the request could not be answered — try again").into_response(),
+    };
     let mut response = Response::new(axum::body::Body::from(out.body.clone()));
     *response.status_mut() = StatusCode::from_u16(out.status).expect("a known status");
     if !out.body.is_empty() {
@@ -911,14 +1005,30 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     // `any()` skips it, so the adapter puts it back from the layer's own table
     // (R-6.5a.3: "axum's 405 shape, reproduced").
     if out.status == 405 {
-        let allow = api::allowed_methods(request.path, host.serves_games).join(",");
         response
             .headers_mut()
-            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allow).expect("ASCII method names"));
+            .insert(http::header::ALLOW, http::HeaderValue::from_str(&allowed.join(",")).expect("ASCII method names"));
     }
     response
 }
 
+/// The adapter's 503 (security S1b): the replay gate's refusal, with the
+/// header a client's retry reads.
+#[cfg(feature = "server")]
+fn busy() -> Response {
+    let mut response = ApiError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: BUSY.to_string(),
+        table_status: None,
+        foreign_bot: None,
+    }
+    .into_response();
+    response.headers_mut().insert(http::header::RETRY_AFTER, http::HeaderValue::from_static("1"));
+    response
+}
+
+/// The art manifest, or an honest 404.
+///
 /// **A checkout with no cropped art is a supported state**, not a broken one:
 /// the client falls back to drawing what it drew before there was any art. So
 /// the absence answers as a refusal with the sentence that explains it — which
@@ -1450,6 +1560,175 @@ mod tests {
         assert_eq!(status, StatusCode::CONFLICT, "the same length on another line, no digest: {body}");
         assert_eq!(body["error"], api::RECORD_UNSAVED);
         assert!(!body.to_string().contains(&ENDED_SEED.to_string()), "the seed reached the wire: {body}");
+    }
+
+    /// A finished ONE-person hot seat over `store` — `a_finished_two_person_game`'s
+    /// shape (both seats pumped as bots in process, the record installed and
+    /// re-stamped as two people), both seats [`WHO`]'s, so an undo at game over
+    /// is the CLI's own: a one-person table is outside R-P6's shared-table
+    /// refusal. Built this way because driving a hot seat to a winner over the
+    /// route with `play_turn` never ends — its last-row policy passes every turn.
+    async fn a_finished_one_person_game_over(store: Arc<dyn Store>, name: &'static str) -> Arc<AppState> {
+        use yokohama_cli::bot::{BotSeats, PROVISIONAL_DEFAULT_BOT};
+        use yokohama_cli::session::Session;
+        use yokohama_core::{GameConfig, PlayerColor, PlayerId, StartingOrderChoice};
+
+        let state = Arc::new(AppState::with_store(Arc::clone(&store), identity::IdentityMode::Open));
+        start_as(&state, name, ENDED_SEED, &[WHO, WHO]).await;
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let mut session = Session::new_sim(
+            config,
+            ENDED_SEED,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)],
+            Rules::standard(),
+        )
+        .expect("a game");
+        let bots = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), Some(PROVISIONAL_DEFAULT_BOT)], ENDED_SEED);
+        session.set_run_seats(bots.seat_provenance());
+        let mut repl = yokohama_cli::repl::Repl::new(session);
+        for _ in 0..400 {
+            if repl.session.is_over() {
+                break;
+            }
+            repl.pump_bots();
+        }
+        assert!(repl.session.is_over(), "the both-bot pump must reach a finished game");
+        repl.session.set_run_seats(BotSeats::new(vec![None, None], ENDED_SEED).seat_provenance());
+        let finished = repl.session.to_record_json().expect("a record");
+        let (_, version) = store.read(Doc::Record, name).expect("a store").expect("a record");
+        store.write_if_version(Doc::Record, name, &finished, Some(version)).expect("the finished record");
+        // A fresh state over the same store, so the game is rebuilt from the
+        // record just written rather than served from the resident handle.
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
+    /// A store that delegates everything to a `MemStore` and PARKS the
+    /// first record read after [`ParkedRead::park`] while the flag is up —
+    /// the instrument that reads a lock's scope: a request parked inside its
+    /// read holds whatever lock it took to get there, and a second request
+    /// that needs that lock waits. ONE-SHOT, because a second request may
+    /// read the record too — an `undo`'s `Games::persist` reads it before it
+    /// writes — and parking that read would hold the second request for the
+    /// double's reason rather than the lock's (S1b Task 5's fix round).
+    struct ParkedRead {
+        inner: MemStore,
+        armed: std::sync::atomic::AtomicBool,
+        parked: std::sync::Mutex<bool>,
+        wake: std::sync::Condvar,
+    }
+
+    /// How long a parked read waits before it proceeds anyway: a wait for a
+    /// fact needs a bound, so a path that never releases — a failing
+    /// assertion between `park` and `release`, should one ever stand there —
+    /// FAILS instead of hanging the runtime's shutdown on a parked
+    /// blocking-pool thread.
+    const PARK_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+    impl ParkedRead {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: MemStore::default(),
+                armed: std::sync::atomic::AtomicBool::new(false),
+                parked: std::sync::Mutex::new(false),
+                wake: std::sync::Condvar::new(),
+            })
+        }
+        fn park(&self) {
+            *self.parked.lock().expect("the flag") = true;
+            self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn release(&self) {
+            *self.parked.lock().expect("the flag") = false;
+            self.wake.notify_all();
+        }
+        /// Wait while the flag is up, at most [`PARK_BOUND`], then proceed.
+        fn wait_if_parked(&self) {
+            let parked = self.parked.lock().expect("the flag");
+            let _ = self.wake.wait_timeout_while(parked, PARK_BOUND, |parked| *parked).expect("the flag");
+        }
+    }
+
+    impl Store for ParkedRead {
+        fn read(&self, doc: Doc, id: &str) -> Result<Option<(String, store::Version)>, String> {
+            if doc == Doc::Record && self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                self.wait_if_parked();
+            }
+            self.inner.read(doc, id)
+        }
+        fn list(&self, doc: Doc) -> Result<Vec<store::GameId>, String> {
+            self.inner.list(doc)
+        }
+        fn write_if_version(
+            &self,
+            doc: Doc,
+            id: &str,
+            json: &str,
+            expected: Option<store::Version>,
+        ) -> Result<store::Version, store::WriteError> {
+            self.inner.write_if_version(doc, id, json, expected)
+        }
+        fn delete(&self, id: &str) -> Result<(), String> {
+            self.inner.delete(id)
+        }
+        fn last_written(&self, id: &str) -> Result<Option<u64>, String> {
+            self.inner.last_written(id)
+        }
+    }
+
+    /// **The record route reads the store UNDER the handle's lock** (S1a's
+    /// residual, the parked-read double; Review Focus 4). A finished
+    /// one-person game (built in process — `a_finished_one_person_game_over`)
+    /// has its record read with the store's record read PARKED;
+    /// the same person's `undo` is posted meanwhile — at a one-person table the
+    /// CLI's undo applies at game over — and the read is released. Under the
+    /// lock the undo WAITED: the record served is the finished one, its event
+    /// count the handle's at the time and its digest present, and the undo
+    /// lands after. Read outside the lock the undo lands during the park —
+    /// the park is one-shot, so the undo's own `persist` read passes — and
+    /// the premise line fails: the cell holds to the LOCK's scope there, not
+    /// to S1a's D11 comparison alone. Both ways of dropping the guard before
+    /// the store read fail at that line (measured, S1b Task 5's fix round).
+    /// Behind it, the comparison is the second catcher of the first way —
+    /// the handle's count and digest captured under the lock, then compared:
+    /// the record served after the undo is one event short, 409
+    /// `RECORD_UNSAVED` — while the second way, which re-takes the lock and
+    /// compares against the live handle, passes the comparison and serves the
+    /// undone record, which the event-count line refuses.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_record_route_holds_the_lock_across_its_store_read() {
+        let store = ParkedRead::new();
+        let id = "parked";
+        let state = a_finished_one_person_game_over(Arc::clone(&store) as Arc<dyn Store>, id).await;
+        let (status, finished) = get_as(&state, WHO, &format!("/api/games/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "{finished}");
+        assert_eq!(finished["over"], serde_json::json!(true), "the premise: the game is over");
+        let total = finished["events"].as_u64().expect("events");
+        store.park();
+        let reader = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { get_as(&s, WHO, &format!("/api/games/{id}/record")).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let undo = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, WHO, &format!("/api/games/{id}/input"), serde_json::json!({ "line": "undo" })).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Read, released, THEN asserted: a premise that fails must not leave
+        // the read parked (the bound is the second guard).
+        let undo_waited = !undo.is_finished();
+        store.release();
+        assert!(undo_waited, "the undo waits for the lock the parked read holds");
+        let (status, record) = reader.await.expect("the read");
+        assert_eq!(status, StatusCode::OK, "{record}");
+        let served: yokohama_core::GameRecord = serde_json::from_value(record).expect("the record's own JSON");
+        assert_eq!(served.events.len() as u64, total, "the finished record, not the undone one");
+        assert!(served.terminal_digest.is_some());
+        let (status, after) = undo.await.expect("the undo");
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert_eq!(after["events"].as_u64(), Some(total - 1), "and the undo landed after the read");
     }
 
     /// **What every save on this host names, carried byte for byte** (M6.5c2,
@@ -2394,6 +2673,30 @@ mod tests {
         (status, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
     }
 
+    /// `request_as` with the body returned as BYTES, for the cells whose fact
+    /// is a reply's size.
+    async fn request_raw(state: &Arc<AppState>, who: &str, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who).body(Body::empty()).expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
+    async fn request_raw_with_body(state: &Arc<AppState>, who: &str, method: &str, uri: &str, body: serde_json::Value) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(identity::CLAIMED_HEADER, who)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, bytes.to_vec())
+    }
+
     async fn post_as(
         state: &Arc<AppState>,
         who: &str,
@@ -2417,6 +2720,376 @@ mod tests {
         uri: &str,
     ) -> (StatusCode, serde_json::Value) {
         request_as(state, who, "DELETE", uri, None).await
+    }
+
+    /// A test archive whose put SLEEPS — the one honest way to make a dispatch
+    /// slow: the archive route's checks pass on the committed pair and the put
+    /// is where the time goes. `kind` reads `dir`, so `is_on` is true.
+    struct SlowArchive(std::time::Duration);
+
+    impl archive::Archive for SlowArchive {
+        fn put(
+            &self,
+            _prefix: &str,
+            _why: archive::Why,
+            _id: &str,
+            _record_json: &str,
+            _table_json: &str,
+        ) -> Result<archive::PutOutcome, archive::PutError> {
+            std::thread::sleep(self.0);
+            Ok(archive::PutOutcome::Landed)
+        }
+        fn kind(&self) -> &'static str {
+            "dir"
+        }
+    }
+
+    const PLAYED_RECORD: &str = include_str!("../tests/fixtures/browser-played-2p.json");
+    const PLAYED_TABLE: &str = include_str!("../tests/fixtures/browser-played-2p.table.json");
+
+    fn archive_body() -> serde_json::Value {
+        serde_json::json!({ "record": PLAYED_RECORD, "table": PLAYED_TABLE })
+    }
+
+    fn slow_state(delay_ms: u64, permits: usize, wait_ms: u64) -> Arc<AppState> {
+        Arc::new(
+            AppState::with_store_chat_and_archive(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(SlowArchive(std::time::Duration::from_millis(delay_ms))),
+            )
+            .with_replay_gate(permits, std::time::Duration::from_millis(wait_ms)),
+        )
+    }
+
+    /// **Two slow replays do not stall the server** (finding D6; the review's
+    /// measured stall: two uploads froze a two-worker server for 35 s). On a
+    /// runtime of TWO workers, two archive posts whose put sleeps a second are
+    /// in flight, and a pause of 150 ms followed by a health read completes in
+    /// well under that second — because every dispatch runs on the blocking
+    /// pool, never on the workers the two posts would otherwise hold. The clock
+    /// runs from before the pause, since with the dispatch inline it is the
+    /// pause's wake that waits for a worker: the mutant that dispatches inline
+    /// reads about a second.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_slow_replays_leave_the_server_answering() {
+        let state = slow_state(1_000, 2, 2_000);
+        let a = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        let b = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        // The clock runs from BEFORE the pause: with the dispatch inline, both
+        // workers sit in the two puts and the pause's own wake waits for one
+        // of them — the stall shows there as much as in the read.
+        let started = std::time::Instant::now();
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let (status, _) = get_as(&state, WHO, "/api/health").await;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK);
+        assert!(took < std::time::Duration::from_millis(400), "the pause and the health read waited {took:?} behind two replays");
+        let (sa, va) = a.await.expect("the first post");
+        let (sb, vb) = b.await.expect("the second post");
+        assert!(matches!(sa.as_u16(), 200 | 201), "{va}");
+        assert!(matches!(sb.as_u16(), 200 | 201), "{vb}");
+    }
+
+    /// **A replay past the gate's wait is a 503 with `Retry-After: 1`, and a
+    /// move is never behind the gate** (findings A2 and D6; Review Focus 3).
+    /// One permit and a fifty-millisecond wait; a post whose put sleeps a
+    /// second holds the permit; a second post reads the 503 in `BUSY`'s words
+    /// within the wait, and a HEAD of a run reads the same 503 with an empty
+    /// body, while an `input` at a game and a health read answer 200 beside
+    /// it — the permit checked held before and after the turn. The mutant that
+    /// gates nothing answers the second post 201 after the second; the one
+    /// that gates every route answers `play_turn`'s first frame read 503, so
+    /// the cell reds at its `a seat to move` before any input is posted (a
+    /// gate on the move alone reds at the input's own 200); the one that drops
+    /// the header fails the header line; the one that compares the method
+    /// beside the pattern answers the HEAD 200. `BUSY`'s words are pinned by
+    /// value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_replay_past_the_gates_wait_is_refused_busy_while_a_move_lands() {
+        let state = slow_state(1_000, 1, 50);
+        a_game(&app(Arc::clone(&state)), "gated", &[]).await;
+        let holder = {
+            let s = Arc::clone(&state);
+            tokio::spawn(async move { post_as(&s, "local@browser", "/api/archive", archive_body()).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let started = std::time::Instant::now();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/archive")
+            .header(identity::CLAIMED_HEADER, "local@browser")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&archive_body()).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(body["error"], BUSY);
+        assert_eq!(BUSY, "the server is busy replaying — try again in a second");
+        assert!(started.elapsed() < std::time::Duration::from_millis(600), "refused within the wait, not after the holder");
+        // A HEAD of a gated GET waits for the same permit (`find` folds it onto
+        // the GET row, and `dispatch` would pay the whole replay for it).
+        let head = Request::builder()
+            .method("HEAD")
+            .uri("/api/games/gated/at?from=0&to=1")
+            .header(identity::CLAIMED_HEADER, WHO)
+            .body(Body::empty())
+            .expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(head).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE, "a HEAD of a run is gated with its GET");
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        assert!(bytes.is_empty(), "a HEAD's 503 carries no body");
+        assert_eq!(state.replay_gate.available_permits(), 0, "the holder's permit is held as the turn begins");
+        play_turn(&state, "gated", WHO).await;
+        assert_eq!(state.replay_gate.available_permits(), 0, "and still held as it ends: the move landed beside it");
+        let (status, _) = get_as(&state, WHO, "/api/health").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, v) = holder.await.expect("the holder's post");
+        assert!(matches!(status.as_u16(), 200 | 201), "{v}");
+    }
+
+    /// **A caller who hangs up mid-replay leaves the permit held until the
+    /// work ends** (findings A2 and D6; the Task 4 review's Important 1).
+    /// When a client disconnects, hyper drops the handler's future while the
+    /// `spawn_blocking` dispatch runs on to its end; a permit held in the
+    /// adapter's frame went with the future, and a second replay was admitted
+    /// beside the first. One permit and a fifty-millisecond wait; a post whose
+    /// put sleeps a second is DROPPED 300 ms in — the hang-up. The running
+    /// dispatch still holds the permit, a second post reads the 503 within the
+    /// wait, and the permit is back once the put's second has passed. The
+    /// mutant that holds the permit in the adapter's frame reads it free at
+    /// the drop and admits the second post 201 after a second.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_caller_who_hangs_up_mid_replay_leaves_the_permit_held_until_the_work_ends() {
+        let state = slow_state(1_000, 1, 50);
+        let post = || {
+            Request::builder()
+                .method("POST")
+                .uri("/api/archive")
+                .header(identity::CLAIMED_HEADER, "local@browser")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&archive_body()).expect("a body")))
+                .expect("a request")
+        };
+        // The hang-up: the caller's future is dropped mid-put.
+        let hung_up =
+            tokio::time::timeout(std::time::Duration::from_millis(300), app(Arc::clone(&state)).oneshot(post())).await;
+        assert!(hung_up.is_err(), "the caller left before its put's second was out");
+        let free_after_drop = state.replay_gate.available_permits();
+        let started = std::time::Instant::now();
+        let res = app(Arc::clone(&state)).oneshot(post()).await.expect("the router answers");
+        let took = started.elapsed();
+        assert_eq!(
+            free_after_drop,
+            0,
+            "the hung-up caller's dispatch still holds the permit (a second post then read {} after {took:?})",
+            res.status()
+        );
+        assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(res.headers().get(http::header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("1"));
+        assert!(took < std::time::Duration::from_millis(600), "refused within the wait, not after the put");
+        // Past the put's second: the dispatch has ended and the permit is back.
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        assert_eq!(state.replay_gate.available_permits(), 1, "released when the work ended");
+    }
+
+    const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
+    const SPREAD_TABLE: &str = include_str!("../tests/fixtures/spread-4p-4096.table.json");
+    const SPREAD_ID: &str = "local-spread4096";
+    const SPREAD_PROVENANCE: &str = include_str!("../tests/fixtures/spread-4p-4096.provenance.json");
+
+    /// The position of the spread DECISION — seat 0 to move in Movement, the
+    /// 442,368-move family — as the pre-flight recorded it when it cut the
+    /// fixture (`spread_decision_at` in the provenance file, 4,083): the
+    /// record's END sits in seat 3's second additional-action phase, where
+    /// nothing folds.
+    fn spread_decision_at() -> usize {
+        let v: serde_json::Value = serde_json::from_str(SPREAD_PROVENANCE).expect("the provenance file");
+        v["spread_decision_at"].as_u64().expect("spread_decision_at") as usize
+    }
+
+    /// The spread fixture's pair written into a fresh store, as a hosted game
+    /// the browser's own player holds every seat of — the review's hot-seat
+    /// table, in the spread state it reached at event 419 and holds to 4,096.
+    fn a_spread_table() -> Arc<AppState> {
+        let store = Arc::new(MemStore::default());
+        store.write_if_version(Doc::Record, SPREAD_ID, SPREAD_RECORD, None).expect("the record");
+        store.write_if_version(Doc::Table, SPREAD_ID, SPREAD_TABLE, None).expect("the table");
+        Arc::new(AppState::with_store(store, identity::IdentityMode::Open))
+    }
+
+    /// The DEBUG-profile ceilings the spread table's three reads are held
+    /// under, in milliseconds — each five times the pre-flight's reading on
+    /// the Mac inside the parallel lib run (the plan's §"Review record": the
+    /// first read 62–65 ms alone and 130 ms in-suite; the run 46–48 ms; the
+    /// undo 14 ms), rounded up: the first read pays the rebuild (4,096 events
+    /// through the predicate fold), the run folds sixty-three events from the
+    /// ladder and builds sixty-four frames from the factored source, the undo
+    /// folds from the nearest kept state. What they catch is a MATERIALIZED
+    /// replay or frame — seconds, 235 positions at a six-figure family — not
+    /// the ladder, whose pin is the session cell's fold count.
+    const SPREAD_FIRST_READ_MS: u128 = 700;
+    const SPREAD_RUN_MS: u128 = 500;
+    const SPREAD_UNDO_MS: u128 = 150;
+
+    /// **A frame at the spread state is small, and says what it folded**
+    /// (finding A3; R-SEC8(e)): the review read 58,304,650 bytes here — one
+    /// worded option per legal move, 442,368 retreats among them. The frame
+    /// now carries `options_omitted` in six figures and its bytes are under
+    /// 256 KiB; the numbered rows are the REPL's grouped entries, a handful.
+    /// The first read, which rebuilds the game from its record, is under its
+    /// bound — the predicate fold's. A hot seat is viewed as the seat to move,
+    /// so the POSITION's frame lists no option rows (seat 3 is to move at the
+    /// record's end) and carries the count alone; undone to the decision, the
+    /// LIVE frame is seat 0's and lists the recover-nothing retreat alone.
+    #[tokio::test]
+    async fn a_frame_at_the_spread_state_is_small_and_counts_what_it_folded() {
+        let state = a_spread_table();
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_FIRST_READ_MS, "the first read took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the frame is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert!(frame["options_omitted"].is_u64(), "the field rides every frame: {}", frame["options_omitted"]);
+        assert_eq!(frame["prompt"]["kind"], "options");
+        assert!(frame["prompt"]["rows"].as_array().is_some_and(|r| r.len() < 40), "the REPL's grouped rows");
+        // The spread DECISION itself, at its position in the record.
+        let k = spread_decision_at();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at/{k}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the position's frame is {} bytes", raw.len());
+        let at: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert!(at["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", at["options_omitted"]);
+        assert_eq!(at["frame"]["decision"]["viewer_is_deciding"], false, "the viewer is the seat to move now, not seat 0");
+        assert_eq!(at["frame"]["decision"]["options"].as_array().map(Vec::len), Some(0), "no rows for another seat's decision");
+        // Undone to the decision: the live frame is seat 0's, and lists the fold.
+        let total = frame["events"].as_u64().expect("events") as usize;
+        for _ in k..total {
+            let (status, _) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the decision's live frame is {} bytes", raw.len());
+        let live: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((live["events"].as_u64(), live["to_move"].as_u64()), (Some(k as u64), Some(0)));
+        assert!(live["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "{}", live["options_omitted"]);
+        let retreats: Vec<&serde_json::Value> = live["frame"]["decision"]["options"].as_array().expect("options").iter().filter_map(|o| o["mv"].get("ReturnPresidentToHand")).collect();
+        assert_eq!((retreats.len(), retreats.first().map(|r| &r["recover"])), (1, Some(&serde_json::json!({}))), "the recover-nothing member alone");
+    }
+
+    /// **A run of sixty-four at the spread state is bounded** (finding A3): the
+    /// review read 234,674,680 bytes and two seconds; from the session's
+    /// ladder and the factored source it is under 8 MiB and under its bound.
+    #[tokio::test]
+    async fn a_run_at_the_spread_state_is_bounded() {
+        let state = a_spread_table();
+        let (status, _) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let started = std::time::Instant::now();
+        let k = spread_decision_at();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at?from={}&to={}", k - 63, k + 1)).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_RUN_MS, "the run took {took} ms");
+        assert!(raw.len() < 8 * 1024 * 1024, "the run is {} bytes", raw.len());
+        let run: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(run["frames"].as_array().map(Vec::len), Some(64));
+        assert!(run["frames"][63]["options_omitted"].as_u64().unwrap_or(0) >= 100_000, "the run's last frame is the spread decision: {}", run["frames"][63]["options_omitted"]);
+    }
+
+    /// **An undo at the spread table is bounded and its reply small** (finding
+    /// A3): the review read 1.9 s and 58 MB; from the ladder it is under its
+    /// bound, and the frame it answers with is the folded one.
+    #[tokio::test]
+    async fn an_undo_at_the_spread_table_is_bounded() {
+        let state = a_spread_table();
+        let (status, _) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw_with_body(&state, "local@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_UNDO_MS, "the undo took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the reply is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(frame["events"].as_u64(), Some(4095));
+    }
+
+    /// **A shared-table undo at the spread table is bounded** (finding A3, with
+    /// B2): what it pins is B2's deck-shrink guard reading the state before
+    /// the trailing event from the session's LADDER (`api::trailing_state`,
+    /// `Session::state_before`). Under the old `state_at(record, len - 1)`, a
+    /// checked replay from setup with the legal list materialized per event,
+    /// this request read 118 s on this Mac at Task 6's head (the one replay,
+    /// as a mutant inside the whole web lib run); the pre-flight read 198 s
+    /// for the `Listed` mutant's whole-lib run over the same record. The
+    /// spread table with seats 1, 2 and 3 re-seated to a second person, so
+    /// `undo_allowed` takes its shared arm; that person holds seat 3, the
+    /// seat to move, and the trailing event is seat 3's own and drew nothing,
+    /// so R-P6 and B2 both wave it through: a 200 within [`SPREAD_UNDO_MS`]
+    /// and a small reply. The first person's undo after it reads R-P6's own
+    /// refusal — the premise that the arm in force was the shared one, which
+    /// reaches the guard's read before it refuses.
+    ///
+    /// **And the historical frame's DECIDING arm** (the Task 6 review's
+    /// Important 2): every other `/at` read in these cells is built for
+    /// today's mover, who did not decide there. The first person holds seat 0
+    /// alone, so their `/at/{k}` at the spread decision is built for the seat
+    /// that decided it: its bytes under 256 KiB — `from_state` back to the
+    /// generator (M23) lists every one of the 442,385 legal moves here — then
+    /// `viewer_is_deciding`, the fold's count EXACTLY (442,367, no cap part:
+    /// the deciding arm of `Folded::for_viewer` as the historical frame calls
+    /// it), and the one listed retreat recovering nothing.
+    #[tokio::test]
+    async fn a_shared_table_undo_at_the_spread_table_is_bounded() {
+        let store = Arc::new(MemStore::default());
+        let mut table: serde_json::Value = serde_json::from_str(SPREAD_TABLE).expect("the table");
+        for seat in 1..=3 {
+            table["seats"][seat]["user"] = serde_json::json!("other@browser");
+        }
+        store.write_if_version(Doc::Record, SPREAD_ID, SPREAD_RECORD, None).expect("the record");
+        store.write_if_version(Doc::Table, SPREAD_ID, &table.to_string(), None).expect("the table");
+        let state = Arc::new(AppState::with_store(store, identity::IdentityMode::Open));
+        let (status, raw) = request_raw(&state, "other@browser", "GET", &format!("/api/games/{SPREAD_ID}")).await;
+        assert_eq!(status, StatusCode::OK, "the rebuild");
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((frame["events"].as_u64(), frame["seat"].as_u64()), (Some(4096), Some(3)), "seat 3 is to move, and the caller holds it");
+        let started = std::time::Instant::now();
+        let (status, raw) = request_raw_with_body(&state, "other@browser", "POST", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        let took = started.elapsed().as_millis();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(took < SPREAD_UNDO_MS, "the shared-table undo took {took} ms");
+        assert!(raw.len() < 256 * 1024, "the reply is {} bytes", raw.len());
+        let frame: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!(frame["events"].as_u64(), Some(4095));
+        let (status, refused) = post_as(&state, "local@browser", &format!("/api/games/{SPREAD_ID}/input"), serde_json::json!({ "line": "undo" })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+        assert_eq!(refused["error"], "undo is not offered once your turn has passed", "the shared arm is in force");
+        // The spread decision, read by the seat that decided it.
+        let k = spread_decision_at();
+        let (status, raw) = request_raw(&state, "local@browser", "GET", &format!("/api/games/{SPREAD_ID}/at/{k}")).await;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&raw[..raw.len().min(400)]));
+        assert!(raw.len() < 256 * 1024, "the deciding seat's position frame is {} bytes", raw.len());
+        let at: serde_json::Value = serde_json::from_slice(&raw).expect("JSON");
+        assert_eq!((at["seat"].as_u64(), at["to_move"].as_u64()), (Some(0), Some(0)), "built for seat 0, which decided here");
+        assert_eq!(at["frame"]["decision"]["viewer_is_deciding"], true, "the deciding arm");
+        assert_eq!(at["options_omitted"].as_u64(), Some(442_367), "the fold's count, no cap part");
+        let retreats: Vec<&serde_json::Value> = at["frame"]["decision"]["options"].as_array().expect("options").iter().filter_map(|o| o["mv"].get("ReturnPresidentToHand")).collect();
+        assert_eq!((retreats.len(), retreats.first().map(|r| &r["recover"])), (1, Some(&serde_json::json!({}))), "the recover-nothing member alone");
     }
 
     /// **A started game whose seats belong to the NAMED people, each keeping as
@@ -6257,6 +6930,37 @@ mod tests {
         );
         let (status, bad) = call(&router, "GET", "/api/games/edge/at?from=2&to=1", None).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "from > to is the same 404: {bad}");
+    }
+
+    /// **An out-of-range run is the route's own 404, and an empty run answers
+    /// without a replay** (finding D27). `from = to = total + 1` read a 500
+    /// "replaying this game failed … past the end" — the range test let it
+    /// through and the replay refused it; it reads the range's 404 now, in the
+    /// sentence `run_404_range.json` pins. `from = to ≤ total` is an empty run:
+    /// 200 and no frames — asked INSIDE a played record (`total / 2`) and at
+    /// its start. The shortcut that answers it is cost-only: without it a run
+    /// with `from == to` folds to `from` and answers no frames all the same, so
+    /// removing it changes no response, and this cell pins the answer, not the
+    /// shortcut.
+    #[tokio::test]
+    async fn an_out_of_range_run_is_a_404_and_an_empty_run_is_empty() {
+        let router = live_router();
+        a_game(&router, "ranges", &[]).await;
+        play(&router, "ranges", 4).await;
+        let total = total_events(&router, "ranges").await;
+        assert!(total >= 2, "the premise: a position strictly inside the record ({total} events)");
+        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={}&to={}", total + 1, total + 1), None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{v}");
+        assert_eq!(
+            v["error"],
+            format!("this game has {total} events, so its last position is {total} — there is no run from {} to {}", total + 1, total + 1)
+        );
+        let inside = total / 2;
+        let (status, v) = call(&router, "GET", &format!("/api/games/ranges/at?from={inside}&to={inside}"), None).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(v["frames"], serde_json::json!([]));
+        let (status, v) = call(&router, "GET", "/api/games/ranges/at?from=0&to=0", None).await;
+        assert_eq!((status, v["frames"].as_array().map(Vec::len)), (StatusCode::OK, Some(0)), "{v}");
     }
 
     /// A run over the cap is a 400 naming it — checked BEFORE the range, so a

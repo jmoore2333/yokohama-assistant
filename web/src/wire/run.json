@@ -1376,6 +1376,7 @@
         ],
         "deck_remaining": 23
       },
+      "options_omitted": 3,
       "over": false,
       "ports": {
         "boards": [
@@ -2923,6 +2924,7 @@
         ],
         "deck_remaining": 23
       },
+      "options_omitted": 0,
       "over": false,
       "ports": {
         "boards": [
@@ -4470,6 +4472,7 @@
         ],
         "deck_remaining": 23
       },
+      "options_omitted": 0,
       "over": false,
       "ports": {
         "boards": [

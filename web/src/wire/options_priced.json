@@ -1232,28 +1232,6 @@
             }
           },
           "number": 2
-        },
-        {
-          "fee": null,
-          "mv": {
-            "ReturnPresidentToHand": {
-              "recover": {
-                "9": 1
-              }
-            }
-          },
-          "number": 3
-        },
-        {
-          "fee": null,
-          "mv": {
-            "ReturnPresidentToHand": {
-              "recover": {
-                "9": 2
-              }
-            }
-          },
-          "number": 4
         }
       ],
       "phase_chain": [
@@ -1282,6 +1260,7 @@
     "Phase: Placement -> Movement"
   ],
   "mode": "sim",
+  "options_omitted": 2,
   "over": false,
   "prompt": {
     "kind": "options",

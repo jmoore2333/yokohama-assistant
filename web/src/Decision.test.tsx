@@ -29,7 +29,9 @@ function show(state: ClientState, busy = false, spectating = false) {
 
 describe("the numbered list", () => {
   // THE fact the whole client is built around. `prompt.rows` is the REPL's
-  // GROUPED list; `frame.decision.options` is one entry per legal move.
+  // GROUPED list; `frame.decision.options` is one entry per LISTED legal move
+  // (the server's folded, capped list: the retreat family at its
+  // recover-nothing member alone, the rest counted in `options_omitted`).
   // Numbering the second sends back a number naming a different move — and in
   // Movement it is usually still a LEGAL one, so the game diverges from what
   // the player clicked without anything failing.

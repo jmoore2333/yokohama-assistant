@@ -3,9 +3,20 @@
 //!
 //! **One envelope, one game or all of them**, so there is a single format
 //! rather than two, and **one function decides what a valid game is** — the
-//! archive route calls [`backup::check_pair`] and so does a restore, because a backup
+//! archive route calls its body, [`backup::check_pair_filed`], with its own
+//! hook; a restore calls the wrapper, [`backup::check_pair_with`]; and
+//! [`backup::check_pair`] is the public entry for a caller without a `Games`;
+//! all three reach that one body, because a backup
 //! and an upload that disagreed would mean a game you could send to the server
 //! but not put back on your own device.
+//!
+//! **It decides what a VALID GAME is, and no more.** Whether this server RUNS
+//! a game's bot is the archive route's own question, asked after the
+//! validator (`bots::foreign`, finding D25), and a restore does not ask it: a
+//! restored game is the device's own, and the game routes refuse to play on
+//! one whose bot this build does not run (`Games::live_handle`). So a pair
+//! naming such a bot restores and is refused by the archive — the opposite of
+//! the disagreement the paragraph above guards against.
 //!
 //! ## Why this module is not behind the `server` feature
 //!
@@ -145,6 +156,11 @@ pub struct PairFacts {
     /// convenience — a row can be reported without reaching for the constant —
     /// and is NOT the record's, which a later reader should not assume.
     pub semantics_rev: u32,
+    /// `true` where the caller's `filed` hook said the archive already holds
+    /// these very bytes under the leaf `over` names, so the replay was never
+    /// paid (security S1b, finding A2) — the archive route's 200 `identical`.
+    /// Always `false` on a restore, which holds nothing.
+    pub held: bool,
 }
 
 /// One row of a restore report, as the module hands it to the page.
@@ -154,17 +170,83 @@ pub struct RestoreRow {
     pub verdict: Verdict,
 }
 
-/// **THE function the archive route calls**, and the one a restore calls for a
-/// game that carries a record (spec §2.5: "that becomes one function two
-/// callers use, so a backup and an upload cannot disagree about what a valid
-/// game is").
+/// The most events a record may carry to be archived or restored (security
+/// S1b, finding A2; R-SEC8(f)) — a PLAUSIBILITY bound, set from real games.
+/// Every finished game people or the bot have played here is 250–600 events
+/// (the longest measured, the browser-played fixture, 595), so 4,096 is seven
+/// times that. Random play and hand-built records run to 15,000–24,000
+/// events, and the archive is a collection of played games, not an import
+/// path for worst-case records: a record over the bound is refused by its
+/// COUNT before anything is replayed, so what an upload can cost no longer
+/// follows what a record can hold.
+pub const EVENT_CAP: usize = 4_096;
+
+/// The sentence the count refuses with — the archive route's and a restore's
+/// alike, since both go through [`check_pair_filed`], the body.
+pub fn event_cap_sentence(events: usize) -> String {
+    format!("the record carries {events} events — a finished game here is at most {EVENT_CAP}")
+}
+
+/// The refusal of a record the driver locked down (security S1b, finding D25):
+/// `GameRecord.lockdown` is `Some` once the interactive driver found a desync
+/// or an invariant fault, and such a record is not a played game.
+pub const LOCKED_DOWN: &str = "the record is locked down — a game the driver declared faulty is not archived";
+
+/// The engine record's keys, and nothing else (security S1b, finding D25).
+/// `GameRecord` carries no `deny_unknown_fields` — it is the engine's type,
+/// and a reader of saves stays lenient toward a newer field — so the archive
+/// reads the text through this mirror FIRST, which refuses a key the record
+/// does not have; every field is read and ignored, the mirror says what keys
+/// may be present and the real parse says what they mean. **A field core
+/// adds to `GameRecord` is caught before it ships** — the drift a lenient
+/// mirror would hide — at COMPILE time, by the exhaustive destructure in
+/// `a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass`,
+/// and at run time, for a field a browser game writes, by `lib.rs`'s
+/// `the_archive_route_checks_and_files_a_browser_game`, which archives a
+/// freshly played record; the eleven names below are pinned by
+/// `the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth`.
+/// The mirror's claim is the record's TOP level: `GameConfig`, `RunProvenance`
+/// with its `SeatProvenance` seats, and the bodies of the events' moves are
+/// the engine's own types and stay lenient, so a key planted inside one is
+/// accepted — the design, not an oversight.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct RecordMirror {
+    engine_version: serde::de::IgnoredAny,
+    rules_hash: serde::de::IgnoredAny,
+    seed: serde::de::IgnoredAny,
+    config: serde::de::IgnoredAny,
+    choices: serde::de::IgnoredAny,
+    events: serde::de::IgnoredAny,
+    #[serde(default)]
+    setup_observations: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    semantics_rev: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    terminal_digest: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    lockdown: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    run: Option<serde::de::IgnoredAny>,
+}
+
+/// **The validator's ONE public entry**, for a caller with no `Games` to
+/// borrow rules from — the archive route calls the body, [`check_pair_filed`],
+/// and a restore the wrapper, [`check_pair_with`], and all three reach that
+/// one body (spec §2.5: "that becomes one function two callers use, so a
+/// backup and an upload cannot disagree about what a valid game is").
 ///
 /// The checks are `archive_post`'s own, in `archive_post`'s own order and its
-/// own words — a `semantics_rev` present and equal to this build's, a terminal
-/// digest present, the table document parsing, passing
-/// [`tables::check_shape`](crate::tables) and AGREEING with the record, the
-/// document's id being `is_safe_id`'s, because there it becomes a path
-/// component, and LAST `replay_strict` clean. The ORDER is pinned through the
+/// own words — the record parsing — through a mirror that refuses a key the
+/// engine's record does not have, then as the engine's own type — its event
+/// count within [`EVENT_CAP`], a `semantics_rev` present and equal to this
+/// build's, a terminal digest present, no lockdown, the table document
+/// parsing, passing [`tables::check_shape`](crate::tables) and AGREEING with
+/// the record, the document's id being `is_safe_id`'s, the configuration one
+/// `validate_config` accepts, the seats agreeing with the record's bots
+/// ([`crate::bots::seat_disagreement`]), and LAST
+/// `replay_strict_with(.., Predicate)` clean. The ORDER is pinned through the
 /// real route by
 /// `api::tests::the_archive_route_keeps_its_statuses_sentences_and_refusal_order`,
 /// which was written and run BEFORE these checks moved here.
@@ -183,24 +265,56 @@ pub struct RestoreRow {
 /// not cheap and is immutable once built, so it is constructed once per process
 /// and shared by reference" — and an earlier draft departed from it, paying one
 /// per archive POST and one per record-carrying game in a restore (review M-4).
-/// So `check_pair_with` is the body and takes the rules; this is the ONE
-/// public entry, for a caller that has no `Games` to borrow them from. The two
-/// in-crate callers pass what they already hold: `archive_post` the process's
-/// shared rules, `restore_read` one built per ENVELOPE rather than per game.
+/// So the body, `check_pair_filed`, takes the rules — a restore reaches it
+/// through the wrapper `check_pair_with`, the archive route directly with its
+/// own hook (security S1b) — and this is the ONE public entry, for a caller
+/// that has no `Games` to borrow them from. The two in-crate callers pass what
+/// they already hold: `archive_post` the process's shared rules,
+/// `restore_read` one built per ENVELOPE rather than per game.
 pub fn check_pair(record: &str, table: &str) -> Result<PairFacts, String> {
     check_pair_with(record, table, &yokohama_core::Rules::standard())
 }
 
-/// [`check_pair`]'s body, over rules the caller already holds. One function,
-/// two callers — the claim R-6.5b2.10 makes — with the construction of the
-/// rules left to whoever is in a position not to repeat it.
+/// [`check_pair`] over rules the caller already holds — the WRAPPER since
+/// security S1b (finding A2): [`check_pair_filed`] is the body, and this asks
+/// it with a `filed` hook that answers `None`, so a pair that passes the cheap
+/// checks is always replayed. A restore calls it; the archive route calls the
+/// body with its own hook. One function, two callers — the claim R-6.5b2.10
+/// makes — with the construction of the rules left to whoever is in a
+/// position not to repeat it.
 pub(crate) fn check_pair_with(
     record: &str,
     table: &str,
     rules: &yokohama_core::Rules,
 ) -> Result<PairFacts, String> {
+    check_pair_filed(record, table, rules, &|_, _| None)
+}
+
+/// [`check_pair_with`] with the archive route's one addition (security S1b,
+/// finding A2): `filed(&doc, &rec)` is asked ONCE EVERY CHEAP CHECK HAS PASSED
+/// and before the replay — `Some(over)` says the archive already holds these
+/// very bytes under the leaf `over` names, and the pair is accepted with
+/// `held: true` and no replay paid; `None` replays as always. A restore passes
+/// a hook answering `None`. Asked after the table's checks and not before
+/// them, so a table that fails its checks reads its own refusal whether or not
+/// the record is filed — which is what keeps every host answering a row
+/// alike: the NAS's archive can read its files and the Worker's cannot.
+pub(crate) fn check_pair_filed(
+    record: &str,
+    table: &str,
+    rules: &yokohama_core::Rules,
+    filed: &dyn Fn(&crate::table::TableDoc, &yokohama_core::GameRecord) -> Option<bool>,
+) -> Result<PairFacts, String> {
+    // The mirror first (finding D25): a key the engine's record does not have
+    // is a record that does not parse, naming the key.
+    serde_json::from_str::<RecordMirror>(record).map_err(|e| format!("the record does not parse: {e}"))?;
     let rec: yokohama_core::GameRecord =
         serde_json::from_str(record).map_err(|e| format!("the record does not parse: {e}"))?;
+    // **The count, before anything else reads the record** (finding A2): the
+    // cheapest fact about it and the one that bounds every later cost.
+    if rec.events.len() > EVENT_CAP {
+        return Err(event_cap_sentence(rec.events.len()));
+    }
     match rec.semantics_rev {
         Some(rev) if rev == yokohama_core::SEMANTICS_REV => {}
         // **This sentence's audience is the ARCHIVE ROUTE** (review M-8): a
@@ -227,7 +341,7 @@ pub(crate) fn check_pair_with(
         // engine that one day accepted a record with no provenance would take
         // the local host down rather than refuse the file.
         None => {
-            return Err(match yokohama_core::replay_strict(&rec, rules) {
+            return Err(match yokohama_core::replay_strict_with(&rec, rules, yokohama_core::MoveCheck::Predicate) {
                 Err(e) => e.message,
                 Ok(_) => "the record carries no semantics provenance".to_string(),
             })
@@ -235,6 +349,9 @@ pub(crate) fn check_pair_with(
     }
     if rec.terminal_digest.is_none() {
         return Err("the record carries no terminal digest".to_string());
+    }
+    if rec.lockdown.is_some() {
+        return Err(LOCKED_DOWN.to_string());
     }
     let doc: crate::table::TableDoc = serde_json::from_str(table)
         .map_err(|e| format!("the table document does not parse: {e}"))?;
@@ -245,8 +362,35 @@ pub(crate) fn check_pair_with(
     if !crate::store::is_safe_id(&doc.id) {
         return Err("the table's id is not a safe name".to_string());
     }
-    // LAST, behind a table that agrees with the record (the doc above).
-    let state = yokohama_core::replay_strict(&rec, rules).map_err(|e| {
+    // **What the engine would refuse, refused before setup** (finding D25):
+    // the configuration `Session::from_record` validates before it builds
+    // anything, and the seat agreement the resident rebuild asks of a pair
+    // already in a store (`Games::live_handle`) — asked here of one arriving.
+    yokohama_core::validate_config(&rec.config)
+        .map_err(|why| format!("the record's configuration is impossible: {why}"))?;
+    if let Some(why) = crate::bots::seat_disagreement(&doc, &rec) {
+        return Err(format!("the table's seats disagree with the record's bots: {why}"));
+    }
+    // **A record the archive already holds is not replayed** (security S1b,
+    // finding A2): asked here, LAST before the replay, so a retry of a filed
+    // record costs the cheap checks and a read.
+    if let Some(over) = filed(&doc, &rec) {
+        return Ok(PairFacts {
+            players: doc.players,
+            events: rec.events.len(),
+            over,
+            semantics_rev: yokohama_core::SEMANTICS_REV,
+            held: true,
+        });
+    }
+    // LAST, behind a table that agrees with the record (the doc above) — and
+    // through the PREDICATE check (security S1b, finding A2; R-SEC2): the same
+    // accepted set and the same states as `replay_strict`, proven by
+    // `crates/yokohama-core/tests/replay_check_equivalence.rs`, without the
+    // legal list materialized per event, so an admitted record costs tens of
+    // milliseconds whatever its families. This is the ONE replay an untrusted
+    // record gets — the archive route's and a restore's.
+    let state = yokohama_core::replay_strict_with(&rec, rules, yokohama_core::MoveCheck::Predicate).map_err(|e| {
         format!("the record does not replay: at event {}, {}", e.event_index, e.message)
     })?;
     Ok(PairFacts {
@@ -254,6 +398,7 @@ pub(crate) fn check_pair_with(
         events: rec.events.len(),
         over: yokohama_core::is_game_over(&state),
         semantics_rev: yokohama_core::SEMANTICS_REV,
+        held: false,
     })
 }
 
@@ -440,7 +585,7 @@ pub fn restore_report_json(envelope: &str) -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The finished pair a browser really played (`tests/browser_played_pin.rs`
@@ -494,9 +639,31 @@ mod tests {
         out
     }
 
+    /// One key of a JSON object replaced, everything else left exactly as it
+    /// was. The fixtures are PRETTY-PRINTED, so a textual `replace` of
+    /// `"players": 2` would be a different edit on a re-cut file; this one is
+    /// about the key.
+    pub(crate) fn keyed(text: &str, key: &str, value: serde_json::Value) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
+        v.as_object_mut().expect("an object").insert(key.to_string(), value);
+        let out = v.to_string();
+        assert_ne!(out, text, "the edit must actually change the fixture");
+        out
+    }
+
+    pub(crate) fn without(text: &str, key: &str) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(text).expect("the fixture is JSON");
+        v.as_object_mut().expect("an object").remove(key).expect("the fixture carried it");
+        v.to_string()
+    }
+
     /// R-6.5b2.10: one validator, two callers. A backup and an upload cannot
-    /// disagree about what a valid game is, and this cell is what keeps them
-    /// from drifting — it calls BOTH and compares the verdict.
+    /// disagree about what a VALID GAME is, and this cell is what keeps the
+    /// validator's two entries from drifting — it calls BOTH and compares the
+    /// verdict. It does not see the route's own foreign-bot refusal
+    /// (`bots::foreign`, finding D25), which the route asks after the
+    /// validator and a restore does not: a pair naming a bot this server does
+    /// not run is valid here and refused at the route, by design.
     ///
     /// **`archive_would_accept` is a SECOND ENTRY POINT and not evidence the
     /// route is unchanged** — it calls this very function. The route's own
@@ -547,6 +714,216 @@ mod tests {
         assert_ne!(wrong, table, "the mutation must actually change the fixture");
         let said = check_pair(&broken, &wrong).expect_err("refused");
         assert!(said.starts_with("the table document"), "the table's sentence, not the replay's: {said}");
+    }
+
+    /// The cap-sized spread record the pre-flight cut from the review's
+    /// worst-case body: 4,096 events of a four-seat hot seat, seed 11, every
+    /// seat spread across the board and never recovering, then passing turns
+    /// — seat 0's Movement decision offers 442,368 retreats from event 419 on,
+    /// at 235 of the record's positions (the last at 4,083).
+    const SPREAD_RECORD: &str = include_str!("../tests/fixtures/spread-4p-4096.json");
+    const SPREAD_TABLE: &str = include_str!("../tests/fixtures/spread-4p-4096.table.json");
+
+    /// The DEBUG-profile ceiling the predicate replay of [`SPREAD_RECORD`] is
+    /// held under, in seconds — five times the pre-flight's reading on the Mac
+    /// (0.55 s alone, 0.35 s inside the parallel lib run; the plan's §"Review
+    /// record"), rounded up. **It is the predicate wiring's only catcher**
+    /// (R-SEC2; the plan's D-1): the two strict replays accept the same records
+    /// by the core PR's proof, so no functional cell can tell them apart — but
+    /// 235 of the record's positions, seat 0's Movement decisions, each
+    /// materialize the 442,368-move family under `Listed`, which took 198 s in
+    /// debug (measured), and fold in under a second under `Predicate`.
+    const SPREAD_REPLAY_BOUND_SECS: u64 = 3;
+
+    /// **A record over the cap is refused by its COUNT, before anything is
+    /// replayed** (finding A2; R-SEC8(f)). The probe carries TWO defects — one
+    /// event over `EVENT_CAP`, and that event a placement at a phase that
+    /// cannot take one, so the record would not replay — and reads the
+    /// count's sentence: the two-defect shape that pins an ORDER (the M6.2
+    /// lesson). At the cap exactly, the same record is accepted, so the bound
+    /// is inclusive and not one below.
+    #[test]
+    fn a_record_over_the_event_cap_is_refused_by_count_before_any_replay() {
+        let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        assert_eq!(events.len(), EVENT_CAP, "the premise: the fixture sits exactly at the cap");
+        // An event legal at NO position — a President placed on an area the
+        // board does not have (the review's `PlacePresident 255` probe, which
+        // panics nothing) — so the record would also fail its replay.
+        let illegal = serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } });
+        events.push(illegal.clone());
+        let over = v.to_string();
+        let said = check_pair(&over, SPREAD_TABLE).expect_err("one over the cap");
+        assert_eq!(said, event_cap_sentence(EVENT_CAP + 1));
+        assert!(said.contains("4097") && said.contains("4096"), "{said}");
+        // The appended event really would fail a replay — in the LAST slot of
+        // a record at the cap it is refused at event 4095 — so above, the
+        // count spoke first.
+        let mut same_len: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let ev = same_len["events"].as_array_mut().expect("events");
+        *ev.last_mut().expect("an event") = illegal;
+        let said = check_pair(&same_len.to_string(), SPREAD_TABLE).expect_err("the premise: that event does not replay");
+        assert!(said.starts_with("the record does not replay: at event 4095"), "{said}");
+    }
+
+    /// **The cap-sized worst case replays under the predicate in bounded time**
+    /// (finding A2; R-SEC2) — the catcher for the layer replaying through
+    /// `replay_strict` or `MoveCheck::Listed` (the plan's D-1). The record is
+    /// read whole: 4,096 events accepted, not over, and its replayed state
+    /// really is the spread state — some seat's retreat family is six figures,
+    /// so a re-cut fixture that never spread cannot pass by being cheap.
+    #[test]
+    fn the_cap_sized_spread_record_replays_under_the_predicate_in_bounded_time() {
+        let started = std::time::Instant::now();
+        let facts = check_pair(SPREAD_RECORD, SPREAD_TABLE).expect("the fixture is a valid pair at the cap");
+        let took = started.elapsed();
+        assert_eq!((facts.players, facts.events, facts.over), (4, EVENT_CAP, false));
+        assert!(
+            took.as_secs() < SPREAD_REPLAY_BOUND_SECS,
+            "the predicate replay took {took:?} — above the bound; a materialized replay is minutes",
+        );
+        let rec: yokohama_core::GameRecord = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let rules = yokohama_core::Rules::standard();
+        let state = yokohama_core::replay_strict_with(&rec, &rules, yokohama_core::MoveCheck::Predicate)
+            .expect("the fixture replays");
+        let widest = state.players.iter().map(|p| yokohama_core::retreat_len(&p.assistants.on_board)).max().unwrap_or(0);
+        assert!(widest >= 100_000, "anti-vacuity: the fixture's end state is not the spread state (widest family {widest})");
+    }
+
+    /// A restore refuses the same record with the same sentence — the one
+    /// validator, two callers (R-6.5b2.10): a backup over the cap is REJECTED,
+    /// never written, and the row says why in the archive's own words.
+    #[test]
+    fn a_restore_refuses_a_record_over_the_event_cap_with_the_archives_sentence() {
+        let mut v: serde_json::Value = serde_json::from_str(SPREAD_RECORD).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        events.push(serde_json::json!({ "Move": { "PlacePresident": { "destination": 255 } } }));
+        let env = envelope_of(&[("local-spread4096", &v.to_string(), SPREAD_TABLE)]);
+        let report = restore_read(&env).expect("the envelope is well formed");
+        match &report[0].1 {
+            Verdict::Rejected { reason } => assert_eq!(reason, &event_cap_sentence(EVENT_CAP + 1)),
+            other => panic!("a record over the cap is rejected: {other:?}"),
+        }
+    }
+
+    /// **A key the engine's record does not have is refused** (finding D25):
+    /// `GameRecord` stays lenient — it is the engine's type, and a reader of
+    /// saves must not refuse a newer field — so the archive reads the text
+    /// through a mirror that denies unknown keys FIRST. The two committed
+    /// pairs pass it, and a planted key reads as a record that does not parse,
+    /// naming the key. **The anti-drift arm is the destructure below**: it
+    /// names every field of the engine's record with no `..`, so a field core
+    /// adds to `GameRecord` is a COMPILE error in this crate until the
+    /// destructure names it, the line that points at the mirror. At run
+    /// time, a field a browser game writes is
+    /// refused ("unknown field") by `lib.rs`'s
+    /// `the_archive_route_checks_and_files_a_browser_game`, which archives a
+    /// freshly played record — the committed fixtures here are static and
+    /// would carry no new field.
+    #[test]
+    fn a_record_with_a_key_the_engine_does_not_write_is_refused_and_the_committed_pairs_pass() {
+        assert!(check_pair(PLAYED_RECORD, PLAYED_TABLE).is_ok());
+        assert!(check_pair(SPREAD_RECORD, SPREAD_TABLE).is_ok());
+        // No `..`: a field core adds to `GameRecord` is a compile error here
+        // until this destructure names it — which is where a maintainer meets
+        // the mirror; naming it here leaves `RecordMirror` untouched, and the
+        // mirror's eleven names are pinned by
+        // `the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth`.
+        let rec: yokohama_core::GameRecord = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        let yokohama_core::GameRecord {
+            engine_version: _,
+            rules_hash: _,
+            seed: _,
+            config: _,
+            choices: _,
+            events: _,
+            setup_observations: _,
+            semantics_rev: _,
+            terminal_digest: _,
+            lockdown: _,
+            run: _,
+        } = rec;
+        let planted = PLAYED_RECORD.replacen("{", "{\"planted_by_an_uploader\": 1,", 1);
+        assert_ne!(planted, PLAYED_RECORD, "the mutation must actually change the fixture");
+        let said = check_pair(&planted, PLAYED_TABLE).expect_err("an unknown key");
+        assert!(said.starts_with("the record does not parse") && said.contains("planted_by_an_uploader"), "{said}");
+    }
+
+    /// **The mirror admits each of the engine record's eleven keys, and not a
+    /// twelfth** (finding D25). The committed fixtures carry neither
+    /// `setup_observations` nor `lockdown`, so no other cell reads the first
+    /// through the mirror: a mirror missing it passed every cell, and would
+    /// refuse a record carrying it with "unknown field". Here all eleven are
+    /// present — with any value, since the mirror reads none of them — and
+    /// the record parses; the same record with a twelfth key does not, and
+    /// the refusal names the key.
+    #[test]
+    fn the_mirror_admits_all_eleven_keys_of_the_engine_record_and_refuses_a_twelfth() {
+        let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        let o = v.as_object_mut().expect("an object");
+        o.insert("setup_observations".into(), serde_json::json!({ "any": "value" }));
+        o.insert("lockdown".into(), "any value".into());
+        let mut keys: Vec<&str> = o.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "choices", "config", "engine_version", "events", "lockdown", "rules_hash", "run", "seed",
+                "semantics_rev", "setup_observations", "terminal_digest",
+            ],
+            "anti-vacuity: every key the engine's record has is present",
+        );
+        assert!(serde_json::from_str::<RecordMirror>(&v.to_string()).is_ok(), "all eleven keys are the record's");
+        v.as_object_mut().expect("an object").insert("a_twelfth_key".into(), 1.into());
+        let said = serde_json::from_str::<RecordMirror>(&v.to_string()).err().map(|e| e.to_string());
+        assert!(said.as_deref().is_some_and(|s| s.contains("a_twelfth_key")), "{said:?}");
+    }
+
+    /// **A locked-down record is not a game** (finding D25): the driver
+    /// declared it faulty, and the archive is a collection of played games.
+    /// Two defects — the lockdown and a table that does not parse — read the
+    /// lockdown's sentence, so the refusal sits before the table's checks.
+    #[test]
+    fn a_locked_down_record_is_refused_before_the_table_is_read() {
+        let locked = keyed(PLAYED_RECORD, "lockdown", "a desync the driver found".into());
+        assert_eq!(check_pair(&locked, "not json at all").expect_err("locked down"), LOCKED_DOWN);
+        assert_eq!(check_pair(&locked, PLAYED_TABLE).expect_err("locked down"), LOCKED_DOWN);
+    }
+
+    /// **A configuration the engine would refuse is refused before setup**
+    /// (finding D25): `validate_config`'s own sentence, carried — the check
+    /// `Session::from_record` makes before it builds anything, and which the
+    /// archive never made. Two defects: the impossible config (Port B and Lab
+    /// B at two players) also moves the board, so the record would fail its
+    /// replay too (measured: at event 96, a move not in the legal list); the
+    /// config's sentence comes first.
+    #[test]
+    fn an_impossible_configuration_is_refused_before_the_replay() {
+        let mut v: serde_json::Value = serde_json::from_str(PLAYED_RECORD).expect("a record");
+        v["config"]["has_port_b"] = true.into();
+        v["config"]["has_lab_b"] = true.into();
+        let impossible = v.to_string();
+        let said = check_pair(&impossible, PLAYED_TABLE).expect_err("an impossible configuration");
+        assert!(said.starts_with("the record's configuration is impossible: "), "{said}");
+        assert!(!said.starts_with("the record does not replay"), "the config spoke before the replay: {said}");
+    }
+
+    /// **A table whose seats disagree with the record's bots is refused**
+    /// (finding D25) — `bots::seat_disagreement`, the rule the resident
+    /// rebuild applies to a pair already in a store, now applied to one
+    /// arriving. The record's provenance removed beside a table seating a
+    /// bot: "names no controller". Two defects with a record that would not
+    /// replay: the seats' sentence comes first.
+    #[test]
+    fn a_table_whose_seats_disagree_with_the_records_bots_is_refused_before_the_replay() {
+        let no_run = without(PLAYED_RECORD, "run");
+        let said = check_pair(&no_run, PLAYED_TABLE).expect_err("the table seats a bot the record does not name");
+        assert!(said.starts_with("the table's seats disagree with the record's bots: seat 1 is a bot at the table"), "{said}");
+        let mut v: serde_json::Value = serde_json::from_str(&no_run).expect("a record");
+        let events = v["events"].as_array_mut().expect("events");
+        events[0] = events[1].clone();
+        let said = check_pair(&v.to_string(), PLAYED_TABLE).expect_err("two defects");
+        assert!(said.starts_with("the table's seats disagree"), "the seats spoke before the replay: {said}");
     }
 
     /// R-6.5b2.12: REJECTED and UNPLAYABLE are different answers. Refusing a

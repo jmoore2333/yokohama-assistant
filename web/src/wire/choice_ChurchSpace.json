@@ -1276,6 +1276,7 @@
     "Phase: Area action -> 5-Power bonus"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "options",

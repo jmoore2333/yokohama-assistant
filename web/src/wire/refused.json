@@ -1242,6 +1242,7 @@
     "option 999 out of range (1)"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "options",
