@@ -2332,12 +2332,23 @@ Task 5)"`.
         let public = Why::refused_at(&m, &now, &[bot]);
         assert_eq!(public.refusal.as_ref().expect("a refusal").message, m.to_string());
         assert!(public.refusal.as_ref().unwrap().message.contains("PlaceAssistants"));
-        // Every other refusal is the same bytes at either visibility.
-        let other = Refusal::HumanSeat { index: 3, seat: human };
-        assert_eq!(
-            serde_json::to_string(&Why::refused_at(&other, &now, &[human])).unwrap(),
-            serde_json::to_string(&Why::refused(&other)).unwrap()
-        );
+        // Every other refusal is the same bytes at either visibility: the
+        // eleven samples besides the mismatch, each at the withheld reading
+        // (the human's) and the public one (the bot seat's holder).
+        let others: Vec<Refusal> =
+            refusal_samples().into_iter().filter(|r| !matches!(r, Refusal::Mismatch(_))).collect();
+        assert_eq!(others.len(), 11, "premise: the twelve refusals less the mismatch");
+        for other in &others {
+            for held in [human, bot] {
+                assert_eq!(
+                    serde_json::to_string(&Why::refused_at(other, &now, &[held])).unwrap(),
+                    serde_json::to_string(&Why::refused(other)).unwrap(),
+                    "{} read by seat {}'s holder",
+                    kind_of(other),
+                    held.0
+                );
+            }
+        }
     }
 ```
 
@@ -2356,9 +2367,12 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
     /// rebuilt from the store; `why` at that event, asked by the human while
     /// the bot's starting order is hidden, is a `mismatch` refusal naming no
     /// move. The construction is measured to reach `Refusal::Mismatch`: with
-    /// `refused_at` stubbed as `refused`, this cell read the CLI's sentence at
-    /// event 3, both moves named. The mutant that serves `refused` regardless
-    /// names the reconstructed move in `Debug` form, which the cell reads for.
+    /// `refused_at` stubbed as `refused`, this cell read the CLI's sentence,
+    /// both moves named (at one run, event 3). The table's bot stream is
+    /// OS-entropy seeded, so each run's bot decides under its own seed; the
+    /// search for the event is what keeps the cell independent of which. The
+    /// mutant that serves `refused` regardless names the reconstructed move in
+    /// `Debug` form, which the cell reads for.
     #[tokio::test]
     async fn a_why_on_a_drifted_record_names_no_reconstructed_move_to_a_withheld_requester() {
         use yokohama_core::{get_legal_moves, state_at, GameRecord, RecordedEvent};
@@ -2379,11 +2393,12 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         let mut record: GameRecord = serde_json::from_str(&json).expect("the record parses");
         let rules = Rules::standard();
         // The bot's last DECISION: the greatest k whose mover is seat 0 and
-        // whose position offers another legal move. The bot's last MOVE is
-        // forced (measured at this seed: the turn closes on three one-member
-        // lists, the skipped bonus, the skipped building and
-        // `EndAdditionalPhase`), so it has no other member to swap in, and a
-        // forced move's reconstruction could never mismatch anyway.
+        // whose position offers another legal move. The bot's last MOVE may be
+        // forced (at one run its turn closed on three one-member lists: the
+        // skipped bonus, the skipped building and `EndAdditionalPhase`), and a
+        // forced move has no other member to swap in, nor could its
+        // reconstruction mismatch. The bot's seed is drawn per table, so this
+        // search, not a fixed event, is what finds k.
         let k = (0..record.events.len()).rev().find(|&k| {
             matches!(record.events[k], RecordedEvent::Move(_)) && {
                 let at = state_at(&record, k, &rules).expect("a prefix");
@@ -2391,9 +2406,11 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
             }
         }).expect("the bot has decided");
         let before = state_at(&record, k, &rules).expect("the position");
-        let RecordedEvent::Move(recorded) = record.events[k].clone() else { unreachable!() };
-        let other = get_legal_moves(&before, &rules).into_iter().find(|m| *m != recorded).expect("another legal move");
-        record.events[k] = RecordedEvent::Move(other.clone());
+        // The move the bot DECIDED: after the swap, the one `why`'s
+        // reconstruction reproduces and the record no longer holds.
+        let RecordedEvent::Move(decided) = record.events[k].clone() else { unreachable!() };
+        let other = get_legal_moves(&before, &rules).into_iter().find(|m| *m != decided).expect("another legal move");
+        record.events[k] = RecordedEvent::Move(other);
         // The rest of the bot's turn may not be legal after the swap: the
         // record ends at the drifted move, and the rebuild's pump plays the
         // rest of the turn.
@@ -2412,7 +2429,7 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         assert_eq!(why["refusal"]["kind"], "mismatch", "{why}");
         let message = why["refusal"]["message"].as_str().expect("a sentence");
         assert_eq!(message, explain::MISMATCH_WITHHELD.replace("{index}", &k.to_string()).replace("{seat}", "0"));
-        assert!(!message.contains(&format!("{other:?}")) && !message.contains(&format!("{recorded:?}")), "{message}");
+        assert!(!message.contains(&format!("{decided:?}")), "{message}");
         assert!(why["ok"].is_null() && why["withheld"].is_null(), "{why}");
     }
 
@@ -2446,24 +2463,26 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         // Searched from the end, not assumed, so a reseed cannot skip it.
         let mut drift = None;
         'scan: for k in (0..record.events.len()).rev() {
-            let RecordedEvent::Move(recorded) = record.events[k].clone() else { continue };
+            // The move the bot DECIDED: after a swap, the one `why`'s
+            // reconstruction reproduces and the drifted record no longer holds.
+            let RecordedEvent::Move(decided) = record.events[k].clone() else { continue };
             let at = state_at(&record, k, &rules).expect("a prefix");
             if at.current_player != bot {
                 continue;
             }
-            for other in get_legal_moves(&at, &rules).into_iter().filter(|m| *m != recorded) {
+            for other in get_legal_moves(&at, &rules).into_iter().filter(|m| *m != decided) {
                 let mut drifted = record.clone();
                 drifted.events[k] = RecordedEvent::Move(other);
                 if let Ok(end) = state_at(&drifted, drifted.events.len(), &rules) {
                     if is_game_over(&end) && hidden(&end) {
                         drifted.stamp_terminal_digest(&end);
-                        drift = Some((k, recorded, drifted));
+                        drift = Some((k, decided, drifted));
                         break 'scan;
                     }
                 }
             }
         }
-        let (k, recorded, drifted) = drift.expect("a late bot decision another member can replace");
+        let (k, decided, drifted) = drift.expect("a late bot decision another member can replace");
         store
             .write_if_version(Doc::Record, "late", &serde_json::to_string(&drifted).expect("json"), Some(version))
             .expect("written back");
@@ -2481,7 +2500,7 @@ moves — the implementer reads it and adjusts the seat numbers if the fixture s
         assert_eq!(status, StatusCode::OK, "{why}");
         assert_eq!(why["refusal"]["kind"], "mismatch", "{why}");
         assert_eq!(why["refusal"]["message"], cli.to_string(), "the seat holder at game over reads the CLI's sentence");
-        assert!(why["refusal"]["message"].as_str().unwrap_or_default().contains(&format!("{recorded:?}")), "{why}");
+        assert!(why["refusal"]["message"].as_str().unwrap_or_default().contains(&format!("{decided:?}")), "{why}");
         let (status, seen) = get_as(&restarted, "watcher@wire.test", &format!("/api/games/late/why?event={k}")).await;
         assert_eq!(status, StatusCode::OK, "{seen}");
         assert_eq!(seen["refusal"]["kind"], "mismatch", "{seen}");
@@ -2549,8 +2568,9 @@ refusal names both moves and versions and reaches the browser"), `RefusalDto`'s 
 the CLI's own `Display`, never re-authored"), `explain.rs`'s module doc ("the wording of refusals is not
 restated") and the client's `RefusalRow` doc (`web/src/types.ts`, "the message is never re-authored") each gain
 `refused_at`'s ONE exception in a sentence: a `mismatch` served while the mover's account is withheld carries
-the layer's `MISMATCH_WITHHELD`, naming neither move nor version. `Why::refused` gains one doc line: a served
-answer goes through `refused_at`. Cell (a) pins all eleven other refusals byte-identical at either visibility by a
+the layer's `MISMATCH_WITHHELD`, naming neither move nor version. `Why::refused` gains one doc line: the
+visibility-blind form `refused_at` falls back to and the corpus's `why_refused` fixture is built with (the samples
+reach the corpus through `RefusalDto::of`, not through it); a served answer goes through `refused_at`. Cell (a) pins all eleven other refusals byte-identical at either visibility by a
 loop over `refusal_samples()`, not `HumanSeat` alone; cell (b)'s comments say the bot's game is OS-entropy seeded
 per table (the search for `k` is what makes the cell robust, not a fixed event) and name the swapped move for
 what it is (after the swap, `recorded` holds the RECONSTRUCTED move — the variable says so, and the dead
