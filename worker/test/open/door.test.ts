@@ -12,7 +12,7 @@ import { handle } from "../../src/index";
 import { readReply } from "../../src/module";
 import { HOUSE_NAME } from "../../src/slot";
 import { Table } from "../../src/table";
-import { bucketText, settle, tableStub } from "../helpers";
+import { bucketText, segmentOf, settle, tableStub } from "../helpers";
 import { ARCHIVE_WALK } from "../walk";
 
 // **The open door, end to end** (M6.5c2, spec §2.1; R-6.5c2.3, R-6.5c2.5) —
@@ -340,11 +340,11 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     }
     // A browser's save: its Archive object's caller's root.
     const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
-    for (const [claim, segment, root] of [
-      ["a.test", "a.test", ""],
-      ["red@t.test", "red_at_t.test", "test/"],
+    for (const [claim, root] of [
+      ["a.test", ""],
+      ["red@t.test", "test/"],
     ] as const) {
-      const path = `browser/${segment}/rev7/over/wire.json`;
+      const path = `browser/${await segmentOf(claim)}/rev7/over/wire.json`;
       const res = await through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save });
       expect([res.status, (JSON.parse(res.text) as { path: string }).path], claim).toEqual([201, path]);
       expect(await bucketText(`${root}${path}`), `${claim}: the save at ${root}${path}`).not.toBeNull();

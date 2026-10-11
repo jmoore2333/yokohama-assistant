@@ -10,17 +10,32 @@
 // structural.
 //
 // What it proves that jsdom cannot: that the chart has real geometry (bars with
-// nonzero width, on the correct side of a zero line that is actually painted),
-// that the panel takes focus and Escape leaves it, and that a page carrying two
-// hundred candidate rows does not overflow sideways.
+// nonzero width, on the correct side of a zero line that is actually painted —
+// read on the suggest panel's chart since security S1a's B1, which withholds
+// the why panel's account at this table while the bot's starting order is
+// hidden), that the panel takes focus and Escape leaves it, and that a page
+// carrying two hundred candidate rows does not overflow sideways.
 
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
 // keeps that from being a convention anybody has to remember.
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
 import { atTheGame, signIn, WALKER, watchForBreakage } from "./harness";
+
+/** The production bot's identity, read from the contract file the client
+ *  itself imports (`web/src/wire/production_bot.json`, spec §2.4): the
+ *  contestant a bot seat at a new table is, so the why panel's provenance is
+ *  checked against it rather than against a name restated here. */
+const PRODUCTION_IDENTITY = (
+  JSON.parse(
+    readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "wire", "production_bot.json"), "utf8"),
+  ) as { identity: string }
+).identity;
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly. The reporter
 // then says how many tests did not run, which is the difference between a skip
@@ -116,16 +131,52 @@ async function openPanel(page: import("@playwright/test").Page, game: string, la
   });
 }
 
-test("the why panel draws a real chart, and the numbers on it add up", async ({ page, request }) => {
+// Security S1a (B1): the bot's account is withheld from its opponent while the bot's starting order is hidden.
+test("the why panel names the bot's move and contestant, and withholds its account while its starting order is hidden", async ({
+  page,
+  request,
+}) => {
   const watch = watchForBreakage(page);
   await aGameWithABot(request, "explains");
   await openPanel(page, "explains", "Why");
+  const dialog = page.getByRole("dialog", { name: "Why" });
 
-  // A refusal is a legitimate answer here and would be a different assertion,
-  // so say which one this is rather than failing obscurely inside the chart.
+  // A refusal is a different answer from a withheld account, so say which one
+  // came rather than failing obscurely below.
+  const refusal = dialog.locator(".refusal code");
+  if (await refusal.count()) {
+    throw new Error(`why refused instead of withholding: ${await refusal.innerText()}`);
+  }
+
+  // The move played, by the seat that played it: seat 0 is the bot's.
+  await expect(dialog.getByRole("heading", { name: "Seat 0 played", exact: true })).toBeVisible();
+  await expect(dialog.locator(".headline")).toHaveText(/\S/);
+  // The reason, in the layer's own sentence.
+  await expect(dialog.locator(".withheld")).toContainText("withheld while its starting order is hidden");
+  // The contestant named: the production bot, as the contract file names it.
+  const contestant = await dialog.locator(".provenance code").innerText();
+  expect(contestant.startsWith(`${PRODUCTION_IDENTITY}@`), contestant).toBe(true);
+  // And NO chart: the account is withheld, not drawn empty.
+  await expect(dialog.locator(".bar-row")).toHaveCount(0);
+  await expect(dialog.locator(".total .num")).toHaveCount(0);
+
+  expect(watch.failures).toEqual([]);
+});
+
+// Security S1a (B1): the why panel above withholds the bot's account, so the chart is read on the suggest panel's — the same `ExplanationView`, for the person's own seat.
+test("the suggest panel draws a real chart whose rows add up, and its collapsed features come back without moving the total", async ({
+  page,
+  request,
+}) => {
+  const watch = watchForBreakage(page);
+  await aGameWithABot(request, "collapses");
+  await openPanel(page, "collapses", "Suggest");
+
+  // A refusal is the wrong answer on the human seat (the suggest cell below
+  // says why), so name it rather than failing obscurely inside the chart.
   const refusal = page.locator(".refusal code");
   if (await refusal.count()) {
-    throw new Error(`why refused instead of accounting: ${await refusal.innerText()}`);
+    throw new Error(`suggest refused on the HUMAN seat: ${await refusal.innerText()}`);
   }
 
   // **The chart has geometry.** jsdom has no layout, so "the bar element
@@ -182,16 +233,6 @@ test("the why panel draws a real chart, and the numbers on it add up", async ({ 
   const sum = geometry.bars.reduce((a, b) => a + b.value, 0);
   expect(sum, "the visible rows add up to the printed total").toBe(total);
 
-  expect(watch.failures).toEqual([]);
-});
-
-test("the collapsed features come back, and the total does not move when they do", async ({
-  page,
-  request,
-}) => {
-  await aGameWithABot(request, "collapses");
-  await openPanel(page, "collapses", "Why");
-
   const before = await page.locator(".total .num").innerText();
   const rowsBefore = await page.locator(".bar-row").count();
   const disclosure = page.getByRole("button", { name: /Show the \d+ features contributing nothing/ });
@@ -199,10 +240,12 @@ test("the collapsed features come back, and the total does not move when they do
   await disclosure.click();
 
   // Collapsing is not dropping. The identity holds over all 34 features, so the
-  // total printed under the eight visible rows is the same number printed under
-  // all 34 — which is what makes the collapse honest rather than a rounding.
+  // total printed under the visible rows is the same number printed under all
+  // 34 — which is what makes the collapse honest rather than a rounding.
   expect(await page.locator(".bar-row").count()).toBeGreaterThan(rowsBefore);
   expect(await page.locator(".total .num").innerText()).toBe(before);
+
+  expect(watch.failures).toEqual([]);
 });
 
 test("suggest answers for the human seat, and the panel is escapable", async ({ page, request }) => {

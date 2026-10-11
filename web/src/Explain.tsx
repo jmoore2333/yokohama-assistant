@@ -228,9 +228,13 @@ function RunnerUps({ ranking }: { ranking: Ranked[] }) {
   if (ranking.length <= 1) return null;
   // **NOT `slice(1)`.** The ranking is sorted best-first, but the chosen move is
   // one of the MAXIMISERS and ties are broken by a keyed draw — so row 0 is not
-  // reliably the move that was played. Measured on the committed fixture: two
-  // candidates tie at 78 and the chosen one is row 1, so dropping row 0 listed
-  // the played move as something it beat and hid a real runner-up. The server
+  // reliably the move that was played, and dropping row 0 lists the played move
+  // as something it beat and hides a real runner-up whenever the draw lands past
+  // it. Where it lands is the fixture's and moves with the stream's key: A1
+  // re-keyed the stream and the committed fixture's draw landed on the top row,
+  // so the fixture no longer separates the two readings. The cell that does is
+  // `Explain.test.tsx`'s "the runner-ups are the non-chosen rows, not the
+  // tail", which swaps two `chosen` flags of the committed payload. The server
   // marks the row, because inferring identity from a display string is a
   // display string doing a type's job.
   const rest = ranking.filter((r) => !r.chosen);
@@ -346,15 +350,30 @@ export function SuggestView({
           recorded.
         </p>
       )}
-      <p className="meta provenance">
-        Stream <code>{s.stream_seed}</code> — the key this press was made under. Nothing was
-        applied, recorded or saved.
-      </p>
+      <p className="meta provenance">Nothing was applied, recorded or saved.</p>
     </div>
   );
 }
 
 export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | null }) {
+  if (data.withheld) {
+    const w = data.withheld;
+    const p = w.provenance;
+    return (
+      <div className="explain">
+        <section>
+          <h3>Seat {p.seat} played</h3>
+          <p className="headline">{w.text}</p>
+          <p className="meta withheld">{w.reason}</p>
+        </section>
+        <p className="meta provenance">
+          Reconstructed by replay under this build: <code>{p.contestant}</code>, evaluator impl{" "}
+          {p.evaluator_version}. Event {p.index}. A reconstruction that did not equal the recorded move
+          would have refused instead of showing you this.
+        </p>
+      </div>
+    );
+  }
   if (!data.ok) {
     return data.refusal ? <Refused refusal={data.refusal} /> : null;
   }
@@ -366,7 +385,7 @@ export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | 
       <section>
         <h3>Seat {p.seat} played</h3>
         <p className="headline">{w.text}</p>
-        {p.forced && (
+        {w.forced && (
           <p className="meta">
             The engine offered exactly one move here, so this is an account of a move nothing
             else was competing with.
@@ -396,8 +415,7 @@ export function WhyView({ data, labels }: { data: WhyResponse; labels: Labels | 
       {w.counters && <Counters counters={w.counters} />}
       <p className="meta provenance">
         Reconstructed by replay under this build: <code>{p.contestant}</code>, evaluator impl{" "}
-        {p.evaluator_version}, from decision seed{" "}
-        <code>{p.decision_seed}</code> — the key the bot's own pump derived. Event {p.index}.
+        {p.evaluator_version}. Event {p.index}.
         A reconstruction that did not equal the recorded move would have refused instead of
         showing you this.
       </p>

@@ -1,0 +1,29 @@
+{
+  "all_spread_from": 419,
+  "cut": "the first 4096 of the body's 23606 events, the terminal digest re-stamped at event 4096 and verified through `replay_strict_with(.., MoveCheck::Predicate)` (the digest `replay` gives); the record written compact; the table re-seated as four `local@browser` human seats with `keeps` [1, 1, 1, 1], id `local-spread4096`, `turn` null",
+  "cut_at": "security-s1 604d7269 (S1a's close), 2026-10-09, by the S1b pre-flight (Task 9 Step 1)",
+  "end_state": {
+    "areas_occupied_per_seat": [
+      17,
+      8,
+      8,
+      8
+    ],
+    "current_player": 3,
+    "retreat_family_per_seat": [
+      442368,
+      256,
+      256,
+      256
+    ],
+    "turn_phase": "AdditionalActionSecond"
+  },
+  "events": 4096,
+  "generator": "the review's `sec_probe_cost.rs::p3c_organic_spread_then_pass_at_the_archive_cap` (release) — uniform legal play steered to occupy areas without recovering, then passes; the reviewer's scratch, not retained in the repository; its reading: `areas occupied per seat [17, 8, 8, 8], retreat products [442368, 256, 256, 256]` at turn 401 after 1,633 events. It is not a test.",
+  "origin": "the 2026-10-08 security review's worst-case archive body `docs/temp/security-review-2026-10-08/worst-case/spread_4p_11_body.json` (gitignored; reviewer r2's probe p3c): a four-player hot seat, seed 11, 23,606 events — legal play that spreads every seat's assistants across the board and never recovers them, then passing turns to the body cap",
+  "seat0_movement_positions": 254,
+  "spread_decision_at": 4083,
+  "spread_from": 419,
+  "spread_from_meaning": "the first position at which seat 0's retreat family is the end state's (442,368); `all_spread_from` the first at which every seat's is",
+  "terminal_digest": "da476c9ac52c8169"
+}

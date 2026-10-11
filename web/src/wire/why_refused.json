@@ -3,5 +3,6 @@
   "refusal": {
     "kind": "no_bot_move_yet",
     "message": "No bot move to explain yet. `why` accounts for a move a BOT seat played, and this game has recorded none — a rung seat's samples do not count, since a rung has no valuation to show. What the bot would play on YOUR seat is `suggest`'s question, asked before you move rather than after."
-  }
+  },
+  "withheld": null
 }

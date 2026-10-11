@@ -1,6 +1,9 @@
 //! The browser host (M6.5b, R-6.5b.9): ONE `Games` over `MemStore`, `NoSignal`,
 //! `NoArchive`, a settable clock and the console for the layer's log, behind
-//! six `wasm-bindgen` exports.
+//! seven `wasm-bindgen` function exports — `init`, `init_diagnostic` (security
+//! S1a), `dispatch`, `load`, `read`, `set_clock` and `restore_read` — and an
+//! eighth, `debug_trap`, in a build with the `debug` feature
+//! (`npm run build:wasm:debug`; the S1 stack review's DC-F8 corrected "six").
 //!
 //! This is HOST code. Its platform calls are the clock, the console and the
 //! bindgen glue, and nothing else —
@@ -14,9 +17,11 @@
 //! top-level `#[cfg(test)]` and reads what is above it. The clock is the
 //! layer's `HostClock` too; the live reading is this host's own.
 //! It is the only caller of the layer in the browser, and its own only caller
-//! is the dedicated Web Worker the client half starts
+//! there is the dedicated Web Worker the client half starts
 //! (`web/src/local/worker.ts`, which lands with that half) — nothing on the
-//! page reaches this module.
+//! page reaches this module. `init_diagnostic` is the one export the Worker
+//! never calls: its callers are the node corpus replay's harness
+//! (`web/src/local/corpus.node.test.ts`), which seeds the walk.
 //!
 //! **Every export is a thin wrapper over a pure-Rust `_inner` function** (spec
 //! §2.1). The cells below call the inner ones, because `wasm-bindgen`'s
@@ -117,9 +122,25 @@ const HOST: Host = Host {
 };
 
 /// Build a FRESH `Games` over a fresh `MemStore`, whose log is the console
-/// (M6.5c2), replacing any earlier one.
+/// (M6.5c2), replacing any earlier one — under the production seed rule,
+/// `SeedPolicy::SoloOnly` (R-SEC8(b)), as every host builds it: the client's
+/// form withholds the seed for an open or another person's seat anyway, so
+/// nothing a person reaches changes here.
 #[wasm_bindgen]
 pub fn init() {
+    init_with(yokohama_web::games::SeedPolicy::SoloOnly);
+}
+
+/// [`init`] under `SeedPolicy::Diagnostic` — the HARNESS's opt-in by name
+/// (security S1a, finding B3): the corpus walk opens a seeded table with an
+/// open seat, which `corpus.node.test.ts`'s replay and this crate's own seeded
+/// cells reproduce through this export; the browser client never calls it.
+#[wasm_bindgen]
+pub fn init_diagnostic() {
+    init_with(yokohama_web::games::SeedPolicy::Diagnostic);
+}
+
+fn init_with(policy: yokohama_web::games::SeedPolicy) {
     let games = Games::with_parts(
         Arc::new(yokohama_core::Rules::standard()),
         Arc::new(MemStore::default()),
@@ -129,7 +150,8 @@ pub fn init() {
         Arc::new(yokohama_web::archive::NoArchive),
         yokohama_web::games::RunHost::Browser,
     )
-    .with_log(Arc::new(ConsoleLog));
+    .with_log(Arc::new(ConsoleLog))
+    .with_seed_policy(policy);
     *GAMES.lock().expect("the host's games") = Some(games);
 }
 
@@ -388,7 +410,7 @@ mod tests {
     #[test]
     fn a_table_whose_watcher_list_holds_a_plain_name_reads() {
         let _s = serial();
-        init();
+        init_diagnostic();
         let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"named"}"#;
         let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
         assert_eq!(status, 201, "{created}");
@@ -400,12 +422,31 @@ mod tests {
         let record = read_inner("record", "named").unwrap().expect("the last keep dealt the game");
         for (watcher, want) in [("ben castle", 200), ("..", 500)] {
             doc["unlocked"] = serde_json::json!([watcher]);
-            init();
+            init_diagnostic();
             load_inner("table", "named", &doc.to_string()).unwrap();
             load_inner("record", "named", &record).unwrap();
             let (status, body) = dispatch_inner(Some("red@t.test"), "GET", "/api/games/named/table", "", None, b"");
             assert_eq!(status, want, "{watcher:?}: {body}");
         }
+    }
+
+    /// **This host builds the production seed rule** (security S1a, finding
+    /// B3; R-SEC8(b)) — the Worker switch's cell, on the browser host: under
+    /// [`init`] a seeded create that seats another person is the layer's 400 in
+    /// `SEED_NOT_SOLO`'s words and stores no table; under [`init_diagnostic`],
+    /// the harness's opt-in by name, the same body is a 201.
+    #[test]
+    fn init_refuses_a_seed_beside_another_person_and_init_diagnostic_honours_it() {
+        let _s = serial();
+        let body = br#"{"players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,"seats":[{"user":"red@t.test"},{"user":"blue@t.test"}],"id":"seeded"}"#;
+        init();
+        let (status, refused) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 400, "{refused}");
+        assert!(refused.contains(yokohama_web::tables::SEED_NOT_SOLO), "{refused}");
+        assert_eq!(read_inner("table", "seeded").unwrap(), None, "a refused create stored a table");
+        init_diagnostic();
+        let (status, created) = dispatch_inner(Some("red@t.test"), "POST", "/api/games", "", Some("application/json"), body);
+        assert_eq!(status, 201, "{created}");
     }
 
     /// **A game dealt in the browser names it** (M6.5c2, spec §2.4): the

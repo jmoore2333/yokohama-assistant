@@ -34,6 +34,7 @@ import {
   replaceOnce,
   revisionOf,
   seedPlaying,
+  segmentOf,
   settle,
   sqlOf,
   storedRows,
@@ -1176,7 +1177,7 @@ describe("the browser's save (spec §2.6)", () => {
   // installed as another; the failed receipt installed as landed.
   it("answers the layer's 201, 200 identical and 409, and its refusal when the put fails", async () => {
     const caller = "saver@t.test";
-    const path = "browser/saver_at_t.test/rev7/over/wire.json";
+    const path = `browser/${await segmentOf(caller)}/rev7/over/wire.json`;
     const recordKey = `test/${path}`;
     const { record } = ARCHIVE_WALK[0]!.body as { record: string };
     const outcomes = await logsDuring(async () => [
@@ -1204,7 +1205,7 @@ describe("the browser's save (spec §2.6)", () => {
     } finally {
       await failing.restore();
     }
-    expect(await bucketText("test/browser/failer_at_t.test/rev7/over/wire.json")).toBeNull();
+    expect(await bucketText(`test/browser/${await segmentOf(failer)}/rev7/over/wire.json`)).toBeNull();
   });
 });
 

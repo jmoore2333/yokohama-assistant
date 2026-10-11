@@ -46,7 +46,7 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
-use yokohama_web::games::{Games, HostClock};
+use yokohama_web::games::{Games, HostClock, SeedPolicy};
 use yokohama_web::identity::{admit, resolve, User};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
@@ -167,11 +167,11 @@ fn host() -> Host {
 /// stored only once `config::parse` has accepted the whole. A bad VALUE's
 /// refusal names its variable (spec §2.2); a configuration of the wrong shape
 /// names none — JSON that is not an object is refused in this crate's own
-/// sentence, which names the eight keys, and an unknown or missing key or a
+/// sentence, which names the nine keys, and an unknown or missing key or a
 /// value of the wrong JSON type in serde's words (`config.rs`) — and the shell
 /// never builds one. The clock is not reset: [`set_clock`] is its only writer.
 pub fn init_inner(config: &str) -> Result<(), String> {
-    let config::Config { door, chat, archive, ttls } = config::parse(config)?;
+    let config::Config { door, chat, archive, ttls, diagnostic_seeds } = config::parse(config)?;
     // The door before the `Games` is built: the layer is built for it.
     *DOOR.lock().expect("the host's door") = Some(door);
     *TTLS.lock().expect("the host's TTLs") = ttls;
@@ -197,7 +197,8 @@ pub fn init_inner(config: &str) -> Result<(), String> {
         layer_archive,
         yokohama_web::games::RunHost::Worker,
     )
-    .with_log(log.clone());
+    .with_log(log.clone())
+    .with_seed_policy(if diagnostic_seeds { SeedPolicy::Diagnostic } else { SeedPolicy::SoloOnly });
     *STORE.lock().expect("the host's store") = Some(store);
     *SIGNAL.lock().expect("the host's signal") = Some(signal);
     *LOG.lock().expect("the host's log") = Some(log);
@@ -654,14 +655,21 @@ mod tests {
     }
 
     pub(crate) fn config(archive: &str) -> String {
-        door_config(archive, "worker")
+        door_config_with_seeds(archive, "worker", true)
     }
 
     /// `init`'s configuration at `door` (M6.5c2, spec §2.1): the object
     /// `worker/src/config.ts`'s `moduleConfig` builds, the door first.
     pub(crate) fn door_config(archive: &str, door: &str) -> String {
+        door_config_with_seeds(archive, door, true)
+    }
+
+    /// `init`'s configuration with the diagnostic-seeds switch chosen — ON for
+    /// every cell but the one about the switch, since the cells' `CREATE` is
+    /// the corpus's seeded open-seat body.
+    pub(crate) fn door_config_with_seeds(archive: &str, door: &str, seeds: bool) -> String {
         format!(
-            r#"{{"identity":"{door}","archive":"{archive}","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}}"#
+            r#"{{"identity":"{door}","archive":"{archive}","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null,"diagnostic_seeds":{seeds}}}"#
         )
     }
 
@@ -885,7 +893,7 @@ mod tests {
             let err = init_inner(array).unwrap_err();
             assert_eq!(
                 err,
-                "the module's init configuration is the object of its eight keys — identity, archive, caller, lobby_chat, chat_keep, chat_text, table_ttl_days and open_table_ttl_days",
+                "the module's init configuration is the object of its nine keys — identity, archive, caller, lobby_chat, chat_keep, chat_text, table_ttl_days, open_table_ttl_days and diagnostic_seeds",
                 "{array}"
             );
         }
@@ -1106,6 +1114,28 @@ mod tests {
         assert_eq!(r.status, 201, "{}", r.body);
         assert_eq!(created_id(&r), "sim-00000000000000aa");
         assert!(read_inner("table", "sim-00000000000000aa").unwrap().is_some(), "stored under the object's name");
+    }
+
+    /// **The Worker honours a seed beside an open seat only under
+    /// `YOKOHAMA_DIAGNOSTIC_SEEDS`** (R-SEC8(b); the pool's test files set it,
+    /// no deployable file may — the deploy guard's rule): without the switch
+    /// — `false`, or the key OMITTED, the fail-safe for a shell that sends
+    /// none — the corpus's own create body is a 400 in the layer's sentence;
+    /// with it, a 201.
+    #[test]
+    fn a_seeded_create_beside_an_open_seat_needs_the_diagnostic_switch() {
+        let _s = serial();
+        let omitted = r#"{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null}"#;
+        for (what, configuration) in [("false", door_config_with_seeds("off", "worker", false)), ("omitted", omitted.to_string())] {
+            init_inner(&configuration).unwrap();
+            let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
+            assert_eq!(r.status, 400, "the key {what}: {}", r.body);
+            assert!(r.body.contains(yokohama_web::tables::SEED_NOT_SOLO), "the key {what}: {}", r.body);
+            assert!(stored(Doc::Table).is_empty(), "the key {what}: a refused create wrote a table");
+        }
+        init_inner(&config("off")).unwrap();
+        let r = call("red@t.test", "POST", "/api/games", Some(CREATE));
+        assert_eq!(r.status, 201, "{}", r.body);
     }
 
     /// A string `id` that IS the object's name — the arm every explicit-id

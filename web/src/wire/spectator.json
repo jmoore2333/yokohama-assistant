@@ -1199,6 +1199,7 @@
   "id": "wire",
   "messages": [],
   "mode": "sim",
+  "options_omitted": 2,
   "over": false,
   "prompt": {
     "kind": "watching",

@@ -125,8 +125,42 @@ describe("suggest shows what it would play and what it beat", () => {
     for (const step of s.continuation) {
       expect(screen.getAllByText(step).length).toBeGreaterThan(0);
     }
-    expect(screen.getByText(/Stream/)).toBeInTheDocument();
-    expect(screen.getByText(s.stream_seed)).toBeInTheDocument();
+    expect(screen.queryByText(/Stream/)).toBeNull();
+    expect(screen.getByText(/Nothing was applied, recorded or saved/)).toBeInTheDocument();
+  });
+
+  it("the runner-ups are the non-chosen rows, not the tail: a payload whose chosen row is not row 0", () => {
+    // **The committed payload cannot be relied on to say this.** Where the
+    // keyed draw lands is the fixture's, and it moves with the stream's key:
+    // when A1 re-keyed the stream it landed on the top row, and
+    // `filter(!chosen)` and `slice(1)` became the same list on the corpus's
+    // payloads. So this payload is the committed one with the `chosen` flags of
+    // its first two rows exchanged — a copy, in the server's own shape — and
+    // the two readings disagree on it by construction: the tail starts at the
+    // candidate that was played, the non-chosen rows at the one that was not.
+    // Asserted on the list alone: the headline and the line still name the
+    // committed move, which this cell does not read.
+    const s = wire.suggest.ok!;
+    const swapped = {
+      ...wire.suggest,
+      ok: {
+        ...s,
+        ranking: s.ranking.map((r, i) => (i === 0 ? { ...r, chosen: false } : i === 1 ? { ...r, chosen: true } : r)),
+      },
+    };
+    const [first, second] = swapped.ok.ranking;
+    // The premise, so a fixture that stopped carrying two distinct rows cannot
+    // turn this into a cell about nothing.
+    expect(first!.chosen).toBe(false);
+    expect(second!.chosen).toBe(true);
+    expect(first!.text).not.toBe(second!.text);
+    expect(swapped.ok.ranking.filter((r) => !r.chosen)[0]!.text).toBe(first!.text);
+    expect(swapped.ok.ranking.slice(1)[0]!.text).toBe(second!.text);
+
+    const { container } = render(<SuggestView data={swapped} labels={labels} />);
+    const list = container.querySelector<HTMLElement>("ol.runner-ups")!;
+    expect(within(list).getByText(first!.text)).toBeInTheDocument();
+    expect(within(list).queryByText(second!.text)).toBeNull();
   });
 
   it("does not offer to show all candidates until there are more than it shows", async () => {
@@ -142,13 +176,24 @@ describe("suggest shows what it would play and what it beat", () => {
 });
 
 describe("why shows the account and the claim attached to it", () => {
-  it("names the contestant, the decision seed and the event it reconstructed", () => {
+  it("names the contestant and the event it reconstructed, and no key", () => {
     const p = wire.why.ok!.provenance;
     render(<WhyView data={wire.why} labels={labels} />);
     expect(screen.getByText(p.contestant)).toBeInTheDocument();
-    expect(screen.getByText(p.decision_seed)).toBeInTheDocument();
+    expect(screen.queryByText(/decision seed/)).toBeNull();
     expect(screen.getByText(new RegExp(`Event ${p.index}`))).toBeInTheDocument();
     // The honesty gate, stated on screen rather than only in a doc comment.
+    expect(screen.getByText(/would have refused instead of showing you this/)).toBeInTheDocument();
+  });
+
+  it("shows a withheld account as the move, the reason and the claim — and no chart", () => {
+    const w = wire.whyWithheld.withheld!;
+    render(<WhyView data={wire.whyWithheld} labels={labels} />);
+    expect(screen.getByText(w.text)).toBeInTheDocument();
+    expect(screen.getByText(w.reason)).toBeInTheDocument();
+    expect(screen.getByText(w.provenance.contestant)).toBeInTheDocument();
+    expect(screen.queryByText(/^TOTAL/)).toBeNull();
+    expect(screen.queryByRole("listitem")).toBeNull();
     expect(screen.getByText(/would have refused instead of showing you this/)).toBeInTheDocument();
   });
 
@@ -195,7 +240,7 @@ describe("a refusal is shown, because a branch nobody renders is where defects l
       // branch the client renders and nobody has ever seen is exactly the shape
       // of the two defects M2 found by clicking. There is no exemption list
       // here: every variant is constructible, so every variant is rendered.
-      render(<WhyView data={{ ok: null, refusal }} labels={labels} />);
+      render(<WhyView data={{ ok: null, withheld: null, refusal }} labels={labels} />);
       expect(screen.getByText(kind)).toBeInTheDocument();
       // `getByText` normalises whitespace in the DOM but not in the expected
       // string, and the `mismatch` sentence carries a deliberate newline

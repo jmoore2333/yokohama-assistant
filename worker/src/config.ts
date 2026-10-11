@@ -26,6 +26,7 @@ export interface ShellConfig {
   admins: string[] | null;
   countWakes: boolean;
   devDoor: boolean;
+  diagnosticSeeds: boolean;
   clock: Clock;
 }
 
@@ -49,6 +50,7 @@ const ROWS: { readonly [K in Variable]: true } = {
   ACCESS_AUD: true,
   DEV_DOOR_CLIENT_ID: true,
   YOKOHAMA_DEV_DOOR: true,
+  YOKOHAMA_DIAGNOSTIC_SEEDS: true,
   YOKOHAMA_WEB_ARCHIVE: true,
   YOKOHAMA_WEB_TABLE_TTL_DAYS: true,
   YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS: true,
@@ -190,7 +192,10 @@ function admins(raw: string | null): string[] | null {
 }
 
 /** `on` | `off`, absent = off. */
-function onOff(name: "YOKOHAMA_WEB_COUNT_WAKES" | "YOKOHAMA_DEV_DOOR", raw: string | null): boolean {
+function onOff(
+  name: "YOKOHAMA_WEB_COUNT_WAKES" | "YOKOHAMA_DEV_DOOR" | "YOKOHAMA_DIAGNOSTIC_SEEDS",
+  raw: string | null,
+): boolean {
   const value = raw === null ? "off" : folded(raw);
   if (value !== "on" && value !== "off") refuse(`${name} must be on or off — got ${JSON.stringify(value)}`);
   return value === "on";
@@ -264,6 +269,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
       admins: admins(text(env, "YOKOHAMA_WEB_ADMINS")),
       countWakes: onOff("YOKOHAMA_WEB_COUNT_WAKES", text(env, "YOKOHAMA_WEB_COUNT_WAKES")),
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
+      diagnosticSeeds: onOff("YOKOHAMA_DIAGNOSTIC_SEEDS", text(env, "YOKOHAMA_DIAGNOSTIC_SEEDS")),
       clock: clock(text(env, "YOKOHAMA_WEB_TEST_CLOCK")),
     };
     openDoorRefusals(config);
@@ -282,7 +288,10 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
  * variables RAW, for the module to parse with the layer's own function — and
  * the two TTLs as NUMBERS, the shell's own reading through its readers
  * (`ttlDaysOf`, `openTtlDaysOf`), for `/api/health` to report (R-6.5c2.42):
- * both `null` while no table expires, the second being inert then.
+ * both `null` while no table expires, the second being inert then — and
+ * `diagnostic_seeds` as a BOOLEAN, the shell's reading of
+ * `YOKOHAMA_DIAGNOSTIC_SEEDS` (R-SEC8(b)): `true` in the pool's two test
+ * files alone, which the deploy guard keeps out of a deployable one.
  *
  * It throws `shellConfig`'s refusal rather than build a configuration the
  * shell refuses: the module cannot see a binding, and would parse a number
@@ -301,5 +310,6 @@ export function moduleConfig(env: Env, caller: string | null): string {
     chat_text: text(env, "YOKOHAMA_WEB_CHAT_TEXT"),
     table_ttl_days: ttl,
     open_table_ttl_days: ttl === null ? null : openTtlDaysOf(c),
+    diagnostic_seeds: c.diagnosticSeeds,
   });
 }

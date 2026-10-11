@@ -260,6 +260,31 @@ impl RunHost {
     }
 }
 
+/// Whether a creator's `seed` is honoured at a table that seats somebody else
+/// (the 2026-10-08 ruling R-SEC8(b), finding B3). **`SoloOnly` is the
+/// production rule**: a seed is honoured only when every human seat is the
+/// creator's and none is open — a creator who knows the seed knows every
+/// deal and both decks (`tables::draw_seed`'s own threat model). `Diagnostic`
+/// is the FIXTURES' opt-in, by name — the engine's `--master` convention: a
+/// diagnostic value is named as one and is never a default a person reaches.
+/// Who sets what: [`Games::with_parts`] (the hosts) builds `SoloOnly`;
+/// [`Games::with_limits`] and so [`Games::new`] — "nothing but a cell builds
+/// one this way" — build `Diagnostic`; `AppState`'s in-memory and `with_store`
+/// constructors are `Diagnostic` and `AppState::production` (the NAS binary's
+/// path) is `SoloOnly` — pinned in process by the route cell
+/// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
+/// binary, through `main` and `AppState::new`, by `start_refusal.rs`'s
+/// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`;
+/// the Worker reads `YOKOHAMA_DIAGNOSTIC_SEEDS`, `on` in its pool's test files
+/// only; and the browser host's `init()` is `SoloOnly`, its `init_diagnostic()`
+/// the harness's opt-in by name. No `Default`: every policy is named where it
+/// is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedPolicy {
+    SoloOnly,
+    Diagnostic,
+}
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -305,11 +330,14 @@ pub struct Games {
     /// The outer mutex is held only long enough to hand back the `Arc`, never
     /// across the table's own lock, so the two can never be taken in two orders.
     ///
-    /// **A delete prunes its table's entry, and only an UNSHARED one** (M6.5c2
-    /// cycle D, row 128; [`Games::prune_lock`]). The map used to grow by one
-    /// entry per table ever written and never shrink, by design, because a
-    /// delete that removed an entry while a blocked writer held a clone of it
-    /// would hand the NEXT writer a different lock for the same table. That
+    /// **Every writer prunes its table's entry on the way out, and only an
+    /// UNSHARED one** ([`Games::with_table_lock`], [`Games::prune_lock`]). A
+    /// delete alone pruned from M6.5c2 cycle D, row 128, and every writer since
+    /// security S1c, finding B8, which reads the table first so a fabricated id
+    /// never makes an entry at all. The map used to grow by one entry per table
+    /// ever written and never shrink, by design, because a prune that removed
+    /// an entry while a blocked writer held a clone of it would hand the NEXT
+    /// writer a different lock for the same table. That
     /// hazard is exactly the entry whose `Arc` someone else holds, so the prune
     /// takes an entry only when the map's reference is the last one — read
     /// under this mutex, the only place a clone is made — and leaves any other
@@ -388,6 +416,9 @@ pub struct Games {
     /// were `eprintln!`, which reaches the NAS's container log and nothing on
     /// `wasm32-unknown-unknown`.
     pub(crate) log: Arc<dyn Log>,
+    /// The seed rule `create` applies (R-SEC8(b)) — see [`SeedPolicy`] for
+    /// who sets what.
+    pub(crate) seed_policy: SeedPolicy,
 }
 
 /// How many `Repl`s stay resident.
@@ -430,6 +461,7 @@ impl Games {
             // but a cell builds one this way.
             RunHost::Server,
         )
+        .with_seed_policy(SeedPolicy::Diagnostic)
     }
 
     /// A clock that reads 1, 2, 3, … — one tick per reading, no platform call.
@@ -453,9 +485,11 @@ impl Games {
     /// other half to subscribe on, and the clock (R-6.5a.6) is the host's too.
     /// The two constructors above are this one with the chat facts, the signal
     /// or the clock chosen for them. The [`RunHost`] is the host's too (M6.5c2):
-    /// it is what every record dealt here names as where it was played. The log
-    /// is the one part defaulted — [`NoLog`] — and a host sets it with
-    /// [`Games::with_log`] (M6.5c2).
+    /// it is what every record dealt here names as where it was played. Two
+    /// parts are defaulted: the log — [`NoLog`] — which a host sets with
+    /// [`Games::with_log`] (M6.5c2), and the seed rule — [`SeedPolicy::SoloOnly`],
+    /// the production rule — which only a named opt-in changes, through
+    /// [`Games::with_seed_policy`] (R-SEC8(b)).
     pub fn with_parts(
         rules: Arc<Rules>,
         store: Arc<dyn Store>,
@@ -481,6 +515,7 @@ impl Games {
             archive,
             run_host,
             log: Arc::new(NoLog),
+            seed_policy: SeedPolicy::SoloOnly,
         }
     }
 
@@ -496,6 +531,16 @@ impl Games {
     pub fn with_archive(mut self, archive: Arc<dyn Archive>) -> Self {
         self.archive = archive;
         self
+    }
+
+    /// This `Games` under `policy` — see [`SeedPolicy`] for who sets what.
+    pub fn with_seed_policy(mut self, policy: SeedPolicy) -> Self {
+        self.seed_policy = policy;
+        self
+    }
+
+    pub fn seed_policy(&self) -> SeedPolicy {
+        self.seed_policy
     }
 
     /// This `Games` with a [`Log`] (M6.5c2, spec §2.6) — the builder step each
@@ -558,17 +603,22 @@ impl Games {
         self.chat.limits
     }
 
-    /// The table's OWN lock (R-2.9). `join`, `keep`, `delete` and a repairing
-    /// `settle` TAKE it for the whole of what they do, and `settle_locked`,
+    /// The table's OWN lock (R-2.9). `join`, `keep`, `unlock`, `delete`, the
+    /// table's chat append and chat delete, and a repairing `settle` TAKE it
+    /// for the whole of what they do, through [`Games::with_table_lock`], the
+    /// one site that calls this outside a cell; `settle_locked`,
     /// `finalize` and `flip_to_playing` are CALLED with it held — the
     /// distinction matters, because the mutex is not reentrant and a second
     /// take from inside one of those three would deadlock. `create` holds the
     /// global [`Games::table_lock`] instead, because the thing it is protecting
     /// is the id space and not one document.
     ///
-    /// The entry is created on first use, so a table nobody has written costs
-    /// nothing, and a DELETE prunes it once nobody else holds it — see
-    /// [`Games::locks`] for why only then ([`Games::prune_lock`]).
+    /// The entry is created on first use and PRUNED by every writer on its way
+    /// out ([`Games::with_table_lock`]), so a table nobody is writing costs
+    /// nothing — true since security S1c, finding B8; before it only a delete
+    /// pruned, and a refused write at a fabricated id left an entry for ever.
+    /// See [`Games::locks`] for why only an unshared entry goes
+    /// ([`Games::prune_lock`]).
     ///
     /// Taken through [`enter`], never `expect`: the mutex guards no data.
     pub(crate) fn lock_for(&self, id: &str) -> Arc<Mutex<()>> {
@@ -577,8 +627,9 @@ impl Games {
     }
 
     /// Drop `id`'s entry from [`Games::locks`] if the map's is the ONLY
-    /// reference to it (M6.5c2 cycle D, row 128) — `delete` calls it after it
-    /// has let go of its own.
+    /// reference to it (M6.5c2 cycle D, row 128) — [`Games::with_table_lock`]
+    /// calls it on every writer's way out, after it has let go of its own
+    /// clone (security S1c, finding B8; before it, `delete` alone did).
     ///
     /// Every clone of an entry is made by [`Games::lock_for`] under the map's
     /// own mutex, and this reads the count under that same mutex, so a count of
@@ -586,11 +637,43 @@ impl Games {
     /// one is a writer that took the lock before the delete finished — blocked
     /// on it, or about to be — and the entry stays, so that writer and the next
     /// one serialize on the SAME lock.
+    ///
+    /// **A poisoned map is read through, never `expect`ed** (the S1 stack
+    /// review's P1): this runs inside `with_table_lock`'s drop guard, where a
+    /// panic during an unwind is a second panic and aborts the process. Pinned
+    /// by `prune_lock_returns_on_a_poisoned_map_and_still_prunes`.
     pub(crate) fn prune_lock(&self, id: &str) {
-        let mut locks = self.locks.lock().expect("games lock");
+        let mut locks = self.locks.lock().unwrap_or_else(PoisonError::into_inner);
         if locks.get(id).is_some_and(|lock| Arc::strong_count(lock) == 1) {
             locks.remove(id);
         }
+    }
+
+    /// **The one way a writer holds a table's own lock** (security S1c, finding
+    /// B8): take it, run `body` with it held, let go of this clone, and prune
+    /// the entry if the map's is now the only reference. The review grew the
+    /// map without bound with refused writes at fabricated ids — `lock_for`
+    /// inserts on first use and only `delete` pruned — so now every writer
+    /// READS the table before calling this (an absent table is a 404 that never
+    /// touches the map) and every exit prunes — a body that PANICS too, since
+    /// the prune is a drop guard declared before the clone and so dropped after
+    /// it (security S1c's final wave; until then a `delete` that panicked after
+    /// its unlink left its entry behind). A second writer in flight holds
+    /// its own clone, so the entry stays and the two serialize on one lock
+    /// (`prune_lock`'s argument).
+    pub(crate) fn with_table_lock<T>(&self, id: &str, body: impl FnOnce() -> T) -> T {
+        struct PruneOnExit<'a>(&'a Games, &'a str);
+        impl Drop for PruneOnExit<'_> {
+            fn drop(&mut self) {
+                self.0.prune_lock(self.1);
+            }
+        }
+        // Locals drop in reverse order, on a return and on an unwind alike: the
+        // guard, then this clone, then the prune.
+        let _prune = PruneOnExit(self, id);
+        let lock = self.lock_for(id);
+        let _serialized = enter(&lock);
+        body()
     }
 
     /// **Take a game's own lock — the ONE way this layer does** (M6.5c2 cycle
@@ -642,7 +725,7 @@ impl Games {
             return Ok(Arc::clone(h));
         }
         match self.settle(id)? {
-            None => Err(GameError::NotFound(format!("no game named {id:?}"))),
+            None => Err(GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id)))),
             // **Before the dealing arm**, and the order is the claim: an open
             // table has no record either, and a client polling one must be told
             // which of the two it is looking at.
@@ -668,7 +751,7 @@ impl Games {
             .store
             .read(Doc::Record, id)
             .map_err(GameError::Server)?
-            .ok_or_else(|| GameError::NotFound(format!("no game named {id:?}")))?;
+            .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
         // The base for `persist`'s compare-and-swap: what we found in the store
         // is what we may overwrite until someone else changes it. Recorded
         // BEFORE `live` is taken — nothing may take `written` while holding
@@ -679,8 +762,11 @@ impl Games {
         // **A pair whose table and record disagree about which seats are bots
         // is refused before anything is replayed** (M6.5c2 cycle D, Task 4
         // row of the close `2026-09-29-web-frontend-m6.5c2d-close.md` §1), on every host, for every rebuild, finished or not — a
-        // 409 naming the lowest such seat, in `check_pair`'s words for a pair
-        // that does not agree. Every pair this layer writes agrees
+        // 409 naming the lowest such seat in `bots::seat_disagreement`'s
+        // sentence — the `{why}` `check_pair_filed` gives an arriving pair, each
+        // under its own head: here "the table document does not agree with the
+        // record", there "the table's seats disagree with the record's bots".
+        // Every pair this layer writes agrees
         // (`finalize` stamps the run seats from the table's own seats, and has
         // since the first table document), so only a hand-made pair reaches
         // it. The measured shape: a record naming seat 1 `bga-human` beside a
@@ -797,7 +883,7 @@ impl Games {
         // None`, and the write below CREATED a record with no table. Pinned by
         // `a_save_reads_the_tombstone_only_while_it_holds_the_save_lock`.
         if self.deleted.lock().expect("games lock").contains(id) {
-            return Err(self.conflict(id, format!("{id:?} was deleted while this move was in flight")));
+            return Err(self.conflict(id, format!("\"{id}\" was deleted while this move was in flight", id = crate::echo::echo(id))));
         }
 
         let record = repl.session.record();
@@ -863,8 +949,9 @@ impl Games {
                     return Err(self.conflict(
                         id,
                         format!(
-                            "{id:?} now holds a different game — refusing to write one game's \
-                             events over another's"
+                            "\"{id}\" now holds a different game — refusing to write one game's \
+                             events over another's",
+                            id = crate::echo::echo(id)
                         ),
                     ));
                 }
@@ -900,9 +987,10 @@ impl Games {
                         return Err(self.conflict(
                             id,
                             format!(
-                                "{id:?} changed under this handle since it last wrote ({} stored) — \
+                                "\"{id}\" changed under this handle since it last wrote ({} stored) — \
                                  refusing to overwrite another writer's record",
                                 on_disk.events.len(),
+                                id = crate::echo::echo(id)
                             ),
                         ));
                     }
@@ -914,8 +1002,9 @@ impl Games {
                             return Err(self.conflict(
                                 id,
                                 format!(
-                                    "{id:?} has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
+                                    "\"{id}\" has advanced past this handle ({} stored vs {events} here) — refusing to write backwards",
                                     on_disk.events.len(),
+                                    id = crate::echo::echo(id)
                                 ),
                             ));
                         }
@@ -964,7 +1053,7 @@ impl Games {
             Err(WriteError::Conflict { .. }) => {
                 return Err(self.conflict(
                     id,
-                    format!("{id:?} changed under this handle between the compare and the write"),
+                    format!("\"{id}\" changed under this handle between the compare and the write", id = crate::echo::echo(id)),
                 ))
             }
             Err(WriteError::Io(e)) => return Err(e),
@@ -1103,7 +1192,7 @@ impl Games {
         let handle = self.handle(id)?;
         let repl = self.lock_game(&handle, id)?;
         let Some((record_json, _)) = self.store.read(Doc::Record, id).map_err(GameError::Server)? else {
-            return Err(GameError::NotFound(format!("no game named {id:?}")));
+            return Err(GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
         };
         self.archive_if_over(id, &repl, &record_json);
         Ok(())
@@ -1249,7 +1338,8 @@ mod tests {
             Games::ticking_clock(),
             Arc::new(NoArchive),
             RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         let (red, blue) = (who("red@t.test"), who("blue@t.test"));
 
         // `create` — the bump at the end of its success arm.
@@ -1668,6 +1758,7 @@ mod tests {
         assert_eq!(is_bot, [false, true], "the panel's badge sits on the seat `bots` labels");
         let foreign_why = serde_json::json!({
             "ok": null,
+            "withheld": null,
             "refusal": { "kind": "foreign_bot", "message": format!("This move was made by {played}, which this server doesn't run: {why}") },
         });
         // Event 4 is a move seat 1 made (`a_finished_foreign_game_opens_scores_
@@ -1737,7 +1828,8 @@ mod tests {
                 Games::ticking_clock(),
                 Arc::new(NoArchive),
                 host,
-            );
+            )
+            .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
             let run_id = |games: &Games| -> Option<String> {
                 let (text, _) = games.store().read(Doc::Record, "named").unwrap().unwrap();
                 serde_json::from_str::<GameRecord>(&text).unwrap().run.expect("the seats were stamped").run_id
@@ -1778,6 +1870,7 @@ mod tests {
                 Arc::new(NoArchive),
                 run_host,
             )
+            .with_seed_policy(crate::games::SeedPolicy::Diagnostic)
         };
         let run_id = |text: &str| -> Option<String> {
             serde_json::from_str::<GameRecord>(text).unwrap().run.expect("the seats were stamped").run_id
@@ -3100,6 +3193,172 @@ mod tests {
             "a lock another writer holds is kept, so the next writer takes the same one",
         );
     }
+
+    /// `with_table_lock` serializes two bodies at one id, lets a body's early
+    /// return through, and leaves no entry behind — while a SECOND holder keeps
+    /// the entry alive until it too is done, so two writers in flight
+    /// serialize on the SAME lock. **It does not pin `prune_lock`'s count**
+    /// (the S1 stack review's CB-F9): with two writers nobody prunes while
+    /// both are inside, so the mutant that prunes whatever the count leaves
+    /// this cell green. Its catchers are `a_deleted_tables_lock_is_pruned` and
+    /// `many_writers_at_one_id_never_run_two_bodies_at_once`.
+    ///
+    /// **Both holders are the helper, so the end holds by construction**
+    /// (the Task 2 review's I-2): each prunes after dropping its own clone, so
+    /// whichever prunes LAST reads a count of one. A bare `lock_for` holder
+    /// never prunes, and the waiter's prune could then land before that
+    /// holder's drop and keep the entry — measured, 45 runs in 5,000 under
+    /// load. The waiter's clone is read off the entry's count, with a bound,
+    /// rather than assumed after a sleep: three is the map, the first holder
+    /// and the waiter, one lock.
+    #[test]
+    fn with_table_lock_runs_the_body_serialized_and_prunes_on_the_way_out() {
+        use std::sync::mpsc::channel;
+        use std::time::{Duration, Instant};
+        let games = Arc::new(games());
+        let out: Result<u8, String> = games.with_table_lock("t", || Err("early".to_string()));
+        assert_eq!(out, Err("early".to_string()));
+        assert_eq!(games.locks.lock().expect("the map").len(), 0);
+
+        let (arrived_tx, arrived_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let g1 = Arc::clone(&games);
+        let first = std::thread::spawn(move || {
+            g1.with_table_lock("t", || {
+                arrived_tx.send(()).expect("the cell listens");
+                release_rx.recv().expect("the cell releases");
+                1u8
+            })
+        });
+        arrived_rx.recv_timeout(Duration::from_secs(5)).expect("the first holder is inside its body");
+        let g2 = Arc::clone(&games);
+        let waiter = std::thread::spawn(move || g2.with_table_lock("t", || 7u8));
+        let holders = || games.locks.lock().expect("the map").get("t").map_or(0, Arc::strong_count);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while holders() < 3 {
+            assert!(Instant::now() < deadline, "the waiter took no clone of the entry within 5 s: {}", holders());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // Held a moment longer, so a waiter that runs without the lock has
+        // the time to finish; one that waits on it cannot, by construction.
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(holders(), 3, "the entry is alive, one lock, while the waiter waits on it");
+        assert!(!waiter.is_finished(), "the body ran while another holder had the lock");
+        release_tx.send(()).expect("the first holder listens");
+        // Bounded, so a lock that is never let go FAILS here, naming the
+        // thread, rather than hanging the joins below.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(first.is_finished() && waiter.is_finished()) {
+            if Instant::now() >= deadline {
+                let unfinished: Vec<&str> = [("the first holder", first.is_finished()), ("the waiter", waiter.is_finished())]
+                    .into_iter()
+                    .filter_map(|(name, done)| (!done).then_some(name))
+                    .collect();
+                panic!("not finished within 5 s of the release: {}", unfinished.join(" and "));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(first.join().expect("the first holder"), 1);
+        assert_eq!(waiter.join().expect("the waiter"), 7);
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned it");
+    }
+
+    /// **A body that panics is pruned too** (security S1c's final wave): the
+    /// prune is a drop guard, so an unwind out of the body leaves no entry,
+    /// where before a `delete` that panicked after its unlink left one. The
+    /// mutant that prunes only after the body returns, as the helper did
+    /// before, reads one entry here.
+    #[test]
+    fn with_table_lock_prunes_when_the_body_panics() {
+        let games = games();
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            games.with_table_lock("t", || -> u8 { panic!("the body fails") })
+        }));
+        assert!(out.is_err(), "the body's panic reaches the caller");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the unwind pruned the entry");
+        assert_eq!(games.with_table_lock("t", || 7u8), 7, "the next writer at the id takes a lock and runs");
+    }
+
+    /// **Many writers at one id never run two bodies at once** (security S1c,
+    /// finding B8; the S1 stack review's CB-F9). The property `prune_lock`'s
+    /// count protects: an entry is pruned only when the map holds its last
+    /// reference, so a writer blocked on a clone and the next writer to arrive
+    /// serialize on the SAME lock. The mutant that prunes whatever the count
+    /// lets a third writer build a fresh lock beside a waiter's old one, and
+    /// two bodies run together. Eight writers behind one barrier, a thousand
+    /// bodies each at one id, a flag set on entry and cleared on exit, the
+    /// body yielding between the two so a second body has the window to
+    /// arrive: no entry ever finds the flag set, and the map is empty after.
+    ///
+    /// **The shape was measured under that mutant before it was chosen.**
+    /// Without the yield, 8 × 1,000 read 45–61 overlaps alone but ZERO inside
+    /// the whole lib run, where competing tests leave the writers little
+    /// concurrency. With it, 8 × 1,000 read about 2,500 overlaps alone and
+    /// 16–36 inside the whole lib (three runs each); smaller shapes read red
+    /// alone too (3 × 100: 23–39) but kept single-digit margins inside the
+    /// lib (4 × 200: 3–7). Pristine, it reads zero, in about 25 ms alone and
+    /// 0.6–1.4 s inside the whole lib. These are observations, never a bound:
+    /// every run of the committed cell under the mutant since has read nonzero,
+    /// 2,738–2,935 alone and 12–164 inside the whole lib (the fix wave's runs
+    /// and the re-review's).
+    #[test]
+    fn many_writers_at_one_id_never_run_two_bodies_at_once() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Barrier;
+        const WRITERS: usize = 8;
+        const BODIES: usize = 1_000;
+        let games = Arc::new(games());
+        let inside = Arc::new(AtomicBool::new(false));
+        let overlaps = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(WRITERS));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|_| {
+                let (g, inside, overlaps, barrier) =
+                    (Arc::clone(&games), Arc::clone(&inside), Arc::clone(&overlaps), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..BODIES {
+                        g.with_table_lock("t", || {
+                            if inside.swap(true, Ordering::SeqCst) {
+                                overlaps.fetch_add(1, Ordering::SeqCst);
+                            }
+                            std::thread::yield_now();
+                            inside.store(false, Ordering::SeqCst);
+                        });
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("a writer");
+        }
+        assert_eq!(overlaps.load(Ordering::SeqCst), 0, "two bodies ran at once at one id");
+        assert_eq!(games.locks.lock().expect("the map").len(), 0, "the last one out pruned the entry");
+    }
+
+    /// **`prune_lock` returns on a poisoned map, and still prunes** (the S1
+    /// stack review's parked item P1): it runs inside `with_table_lock`'s drop
+    /// guard, so a panic there during an unwind is a second panic, and a
+    /// second panic aborts the process. The map guards no data a panic can
+    /// leave half made — an entry goes in or comes out whole — so the prune
+    /// reads through the poison, as [`enter`] reads a table's own lock. The
+    /// map is poisoned by hand: a thread panics while it holds it. The mutant
+    /// that restores `expect` panics at the prune.
+    #[test]
+    fn prune_lock_returns_on_a_poisoned_map_and_still_prunes() {
+        let games = Arc::new(games());
+        drop(games.lock_for("t"));
+        let g = Arc::clone(&games);
+        let poisoner = std::thread::spawn(move || {
+            let _held = g.locks.lock().expect("the map");
+            panic!("a panic while the map is held");
+        });
+        assert!(poisoner.join().is_err(), "the poisoning thread panicked");
+        assert!(games.locks.is_poisoned(), "premise: the map is poisoned");
+        games.prune_lock("t");
+        let map = games.locks.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(!map.contains_key("t"), "the unshared entry is pruned through the poison");
+    }
 }
 
 /// The helpers both halves of this crate's game tests share.
@@ -3151,7 +3410,8 @@ pub(crate) mod test_support {
             Games::ticking_clock(),
             Arc::new(crate::archive::NoArchive),
             super::RunHost::Server,
-        );
+        )
+        .with_seed_policy(crate::games::SeedPolicy::Diagnostic);
         (games, signals)
     }
 
@@ -3615,6 +3875,7 @@ pub(crate) mod test_support {
         table.seats[1] = crate::table::SeatDoc::Human {
             user: BGA_SEAT_HOLDER.to_string(),
             name: Some("Ada Bell".to_string()),
+            bound_at_create: false,
         };
         table.keeps[1] = Some(kept + 1);
         table.turn.as_mut().expect("a mirror").bot = None;

@@ -129,6 +129,8 @@ describe("YOKOHAMA_WEB_ADMINS (spec §2.9)", () => {
 describe.each([
   ["YOKOHAMA_WEB_COUNT_WAKES", "countWakes"],
   ["YOKOHAMA_DEV_DOOR", "devDoor"],
+  // Security S1a (B3; R-SEC8(b)): the seed switch, on in the pool's two files.
+  ["YOKOHAMA_DIAGNOSTIC_SEEDS", "diagnosticSeeds"],
 ] as const)("%s", (name, field) => {
   it("is off when absent", () => {
     expect(accepted(env())[field]).toBe(false);
@@ -258,8 +260,8 @@ describe("a variable that is not a string", () => {
 // in the configuration's `vars`, read by the deploy guard (check 12) and the
 // post-deploy smoke, never by the Worker. `Env` declares it and `ROWS` holds
 // it to a string (above), and that is all: `on`, `off` and absent leave the
-// shell's configuration and the module's eight keys exactly as they were.
-// Mutants: a field of `ShellConfig` read from it; a ninth key in the module's
+// shell's configuration and the module's nine keys exactly as they were.
+// Mutants: a field of `ShellConfig` read from it; a tenth key in the module's
 // configuration.
 describe("YOKOHAMA_TURNSTILE (cycle F, R-FP2): a deploy declaration the shell never reads", () => {
   const doors: Record<string, unknown>[] = [
@@ -269,7 +271,7 @@ describe("YOKOHAMA_TURNSTILE (cycle F, R-FP2): a deploy declaration the shell ne
   it.each(doors)("leaves shellConfig and moduleConfig unchanged under %j", (vars) => {
     const without = accepted(env(vars, true));
     const module = moduleConfig(env(vars, true), "Red@T.test");
-    expect(Object.keys(JSON.parse(module) as object)).toHaveLength(8);
+    expect(Object.keys(JSON.parse(module) as object)).toHaveLength(9);
     for (const declared of ["on", "off", undefined, " ON ", "anything"]) {
       const e = env({ ...vars, YOKOHAMA_TURNSTILE: declared }, true);
       expect(accepted(e), String(declared)).toEqual(without);
@@ -332,13 +334,13 @@ describe("the module's init configuration (the plan's names table)", () => {
     );
     expect(moduleConfig(e, "Red@T.test")).toBe(
       '{"identity":"worker","archive":"r2","caller":"Red@T.test","lobby_chat":" Off ","chat_keep":" All ","chat_text":" 250 ",' +
-        '"table_ttl_days":null,"open_table_ttl_days":null}',
+        '"table_ttl_days":null,"open_table_ttl_days":null,"diagnostic_seeds":false}',
     );
   });
   it("is off with no caller, no chat variable and no TTL set", () => {
     expect(moduleConfig(env(), null)).toBe(
       '{"identity":"worker","archive":"off","caller":null,"lobby_chat":null,"chat_keep":null,"chat_text":null,' +
-        '"table_ttl_days":null,"open_table_ttl_days":null}',
+        '"table_ttl_days":null,"open_table_ttl_days":null,"diagnostic_seeds":false}',
     );
   });
   // R-6.5c2.42: the two TTLs as the shell read them, for `/api/health` to

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,8 +11,12 @@ import {
   firstSendAccepts,
   freezeClock,
   houseDeleteRow,
+  isProductionSeedCreate,
   normalizeHouseChat,
+  productionSeedRule,
   resetRecipe,
+  SEED_NOT_SOLO,
+  skippedUnderProductionSeedRule,
 } from "./replay/exemptions.mjs";
 import { loadCorpus, loadScripts, urlOf } from "./replay/scripts.mjs";
 
@@ -20,8 +24,10 @@ import { loadCorpus, loadScripts, urlOf } from "./replay/scripts.mjs";
 // 15). Every reply body a cell compares is a COMMITTED payload, or one derived
 // from it the way the live Worker differs from the axum host the corpus was cut
 // from — a real clock, its own host fields, a lobby and a house chat other
-// people share. Nothing here sends a request: the driver's cells hand it a
-// fake host, and the credential's cells read a scratch file of dummy values.
+// people share — or the production seed rule's refusal, in the layer's own
+// sentence (`SEED_NOT_SOLO`, held to the Rust source below). Nothing here
+// sends a request: the driver's cells hand it a fake host, and the
+// credential's cells read a scratch file of dummy values.
 
 const CORPUS = loadCorpus();
 const SCRIPTS = loadScripts();
@@ -228,18 +234,94 @@ describe("firstSendAccepts", () => {
   });
 });
 
+describe("productionSeedRule", () => {
+  // The walk's three creates: `wire2` and `wire` seat an open seat beside a
+  // seed, `wire4` seats its creator four times — the solo shape the rule honours.
+  it("names the walk's seeded creates beside an open seat, and never the solo one", () => {
+    expect([...productionSeedRule(SCRIPTS.walk)].sort()).toEqual(["wire", "wire2"]);
+    const creates = SCRIPTS.walk.filter((r) => r.method === "POST" && r.path === "/api/games");
+    expect(creates.map((r) => r.body.id).sort(), "the premise").toEqual(["wire", "wire2", "wire4"]);
+  });
+  it("names a seeded create beside another person too, and an unseeded one never", () => {
+    const seeded = (seats) => [{ method: "POST", path: "/api/games", who: "red@wire.test", body: { id: "t", seed: "1", seats } }];
+    expect([...productionSeedRule(seeded([{ user: "red@wire.test" }, { user: "blue@wire.test" }]))]).toEqual(["t"]);
+    expect([...productionSeedRule(seeded([{ user: "red@wire.test" }, { bot: true }]))]).toEqual([]);
+    expect([...productionSeedRule(seeded([{ user: "red@wire.test" }, { user: "red@wire.test" }]))]).toEqual([]);
+    const unseeded = [{ method: "POST", path: "/api/games", who: "red@wire.test", body: { id: "t", seats: [{ user: "red@wire.test" }, { open: true }] } }];
+    expect([...productionSeedRule(unseeded)]).toEqual([]);
+    const nullSeed = [{ ...unseeded[0], body: { ...unseeded[0].body, seed: null } }];
+    expect([...productionSeedRule(nullSeed)], "a null seed is none: a server deals that create unseeded").toEqual([]);
+  });
+  it("skips every row at a skipped table and, while it names one, every lobby page, and never the create itself or a kept table's row", () => {
+    const skipped = new Set(["wire", "wire2"]);
+    const at = (path, fixture = null, method = "GET") => ({ method, path, fixture, body: null, who: "red@wire.test" });
+    expect(skippedUnderProductionSeedRule(at("/api/games/wire"), skipped)).toBe(true);
+    expect(skippedUnderProductionSeedRule(at("/api/games/wire/input", null, "POST"), skipped)).toBe(true);
+    expect(skippedUnderProductionSeedRule(at("/api/games/wire2/table"), skipped)).toBe(true);
+    expect(skippedUnderProductionSeedRule(at("/api/games", "games_open"), skipped)).toBe(true);
+    expect(skippedUnderProductionSeedRule(at("/api/games", "games_next"), skipped)).toBe(true);
+    // A rule that names no table skips no lobby page: each is sent, and judged
+    // through `filterLobby` with the re-reads. Mutant: the guard dropped.
+    expect(skippedUnderProductionSeedRule(at("/api/games", "games_open"), new Set()), "a rule naming no table skips no lobby page").toBe(false);
+    expect(skippedUnderProductionSeedRule(at("/api/games/wire4"), skipped)).toBe(false);
+    expect(skippedUnderProductionSeedRule(at("/api/health", "health"), skipped)).toBe(false);
+    expect(skippedUnderProductionSeedRule(at("/api/archive", "archive_post", "POST"), skipped)).toBe(false);
+    const create = SCRIPTS.walk.find((r) => r.method === "POST" && r.path === "/api/games" && r.body.id === "wire");
+    expect(skippedUnderProductionSeedRule(create, skipped), "the create is SENT, and held to its 400").toBe(false);
+    expect(isProductionSeedCreate(create, skipped)).toBe(true);
+    expect(isProductionSeedCreate(at("/api/games/wire"), skipped)).toBe(false);
+  });
+  // **The rows a production-door run sends, pinned** (security S1b): the fake
+  // host and the driver's first cell both plan with the functions under test,
+  // so a rule that skipped one row more passed every other cell. Computed here
+  // over the committed scripts with the three functions, in the pre-flight's
+  // line shape, and compared line by line to the list the review read
+  // (`replay/fixtures/production-door-kept-rows.txt`, its header and footer
+  // kept). Mutant: the skip rule widened to `wire4`'s four keep rows.
+  it("keeps exactly the twenty-six rows the review read, of 2,213", () => {
+    const skipped = productionSeedRule(SCRIPTS.walk);
+    const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
+    const kept = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
+    const lines = [
+      `skipped tables: ${[...skipped].sort().join(", ")}; rows ${rows.length} (walk ${SCRIPTS.walk.length}, host ${SCRIPTS.host.length}, archive ${SCRIPTS.archive.length})`,
+      ...kept.map(({ script, index, row }) => {
+        const held = isProductionSeedCreate(row, skipped) ? "  <- the create, held to its 400" : "";
+        const path = `${row.path}${row.query ? `?${row.query}` : ""}`;
+        return `${script} row ${index}: ${row.method} ${path} as ${row.who ?? "no one"} -> ${row.status} ${row.fixture ?? "(unnamed)"}${held}`;
+      }),
+      `kept ${kept.length}, skipped ${rows.length - kept.length}, total ${rows.length}`,
+    ];
+    const file = readFileSync(new URL("./replay/fixtures/production-door-kept-rows.txt", import.meta.url), "utf8");
+    expect(file.endsWith("\n"), "the list ends in one newline").toBe(true);
+    expect(lines).toEqual(file.slice(0, -1).split("\n"));
+    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([26, 2187, 2213]);
+  });
+  // The sentence is `tables::SEED_NOT_SOLO`'s, read off the Rust source so
+  // the two cannot drift (the edge rule's drift cell is the precedent).
+  it("holds SEED_NOT_SOLO to the layer's own constant", () => {
+    const source = readFileSync(new URL("../../crates/yokohama-web/src/tables.rs", import.meta.url), "utf8");
+    const m = /pub const SEED_NOT_SOLO: &str =\s*"([^"]+)";/.exec(source);
+    expect(m, "the constant is where the plan read it").not.toBeNull();
+    expect(SEED_NOT_SOLO).toBe(m[1]);
+  });
+});
+
 // R3's M-1: the replay's two first sends leave their saves in the bucket for
 // good (the owner's direction), so a `wire` record whose bytes change — a
 // version bump, a walk that applies other moves — meets the earlier save as a
 // 409 on every later run. The recipe names the four keys to delete.
 describe("resetRecipe", () => {
+  // The walk caller's segment, read off the committed reply rather than
+  // spelled: since security S1c (D26) it ends in a digest of the address.
+  const SEGMENT = committed("archive_post").path.split("/")[1];
   it("names the four keys the two first sends leave, under test/, and a delete for each", () => {
+    expect(SEGMENT, "premise: the readable half, then a twelve-character digest").toMatch(/^red_at_wire\.test-[0-9a-f]{12}$/);
     const recipe = resetRecipe(CORPUS, "red@wire.test");
     expect(recipe.keys).toEqual([
-      "test/browser/red_at_wire.test/rev7/over/wire.json",
-      "test/browser/red_at_wire.test/rev7/over/wire.table.json",
-      "test/browser/red_at_wire.test/rev7/abandoned/wire.json",
-      "test/browser/red_at_wire.test/rev7/abandoned/wire.table.json",
+      `test/browser/${SEGMENT}/rev7/over/wire.json`,
+      `test/browser/${SEGMENT}/rev7/over/wire.table.json`,
+      `test/browser/${SEGMENT}/rev7/abandoned/wire.json`,
+      `test/browser/${SEGMENT}/rev7/abandoned/wire.table.json`,
     ]);
     expect(recipe.commands).toEqual(recipe.keys.map((key) => `npx wrangler r2 object delete "yokohama-archive/${key}" --remote`));
   });
@@ -247,14 +329,14 @@ describe("resetRecipe", () => {
   // with its dot, and the bucket's top otherwise. Mutant: the root read off
   // anything but the sender's full address.
   it("keys a sender outside .test at the bucket's top", () => {
-    expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
+    expect(resetRecipe(CORPUS, "red@wire.contest").keys[0]).toBe(`browser/${SEGMENT}/rev7/over/wire.json`);
   });
   // The module's own rule (`receipt.rs`'s `is_test_identity`): a test identity
   // is an EMAIL in `.test`, so a plain name that ends `.test` — a legal name
   // under the open door — is keyed at the bucket's top, as the module keys its
   // save. Mutant: the old rule, `who.endsWith(".test")` alone.
   it("keys a plain name that ends .test at the bucket's top: no @, no test identity", () => {
-    expect(resetRecipe(CORPUS, "wire.test").keys[0]).toBe("browser/red_at_wire.test/rev7/over/wire.json");
+    expect(resetRecipe(CORPUS, "wire.test").keys[0]).toBe(`browser/${SEGMENT}/rev7/over/wire.json`);
   });
 });
 
@@ -358,18 +440,33 @@ function liveBody(fixture) {
 const json = (status, body) =>
   new Response(status === 204 ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+/** The tables a production host will not deal from the walk: its two seeded
+ *  creates beside an open seat (`productionSeedRule`'s first cell). */
+const SKIPPED = new Set(["wire", "wire2"]);
+
 /**
- * A fake Worker. Forces answer `forceStatus`; every other request takes the
- * next answer in `plan`, which is built in the replay's own order: the house
- * chat's base read, then one answer per row. `edit(plan)` perturbs it.
+ * A fake PRODUCTION Worker. Forces answer `forceStatus`; every other request
+ * takes the next answer in `plan`, which is built in the replay's own order
+ * over the rows the production seed rule SENDS: the house chat's base read,
+ * then a 400 in `SEED_NOT_SOLO`'s words for each skipped table's create and
+ * the committed answer for every kept row. A skipped row has NO answer: a
+ * request at its address is refused by name before the plan is touched, so a
+ * replay that sends one fails there. `edit(plan, rows)` perturbs it.
  */
 function fakeHost({ forceStatus = 204, edit = () => {} } = {}) {
   const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
   const houseChat = committed("house_chat");
   const plan = [() => json(200, { ...houseChat, last: BASE, rev: BASE_REV, messages: [] })];
+  const unplanned = new Set();
   for (const { row } of rows) {
-    const status = row.fixture === "archive_post_abandoned" ? 200 : row.status;
-    plan.push(() => json(status, row.fixture === null ? {} : liveBody(row.fixture)));
+    if (isProductionSeedCreate(row, SKIPPED)) {
+      plan.push(() => json(400, { error: SEED_NOT_SOLO }));
+    } else if (skippedUnderProductionSeedRule(row, SKIPPED)) {
+      unplanned.add(`${row.method} ${urlOf(row)}`);
+    } else {
+      const status = row.fixture === "archive_post_abandoned" ? 200 : row.status;
+      plan.push(() => json(status, row.fixture === null ? {} : liveBody(row.fixture)));
+    }
   }
   edit(plan, rows);
   const requests = [];
@@ -378,7 +475,7 @@ function fakeHost({ forceStatus = 204, edit = () => {} } = {}) {
     if (/\/api\/admin\/tables\/[^/]+\/expire\?force$/.test(url)) {
       return forceStatus === 204 ? json(204, null) : json(forceStatus, committed("not_seated_403"));
     }
-    const next = plan.shift();
+    const next = unplanned.has(`${init.method} ${url}`) ? undefined : plan.shift();
     if (!next) throw new Error(`the fake host has no answer planned for ${init.method} ${url}`);
     return next();
   };
@@ -399,20 +496,27 @@ async function run(host) {
   return { result, text: lines.join("\n") };
 }
 
-/** Where row `n` of `walk.json` sits in the plan: after the base read, the
- *  art row, and each host row that precedes it. */
-const planIndex = (rows, script, n) => 1 + rows.findIndex((r) => r.script === script && r.index === n);
+/** Where row `n` of `script` sits in the plan: after the base read, among the
+ *  rows the production seed rule SENDS. A row it skips has no place there, and
+ *  is refused rather than read as the base read's slot. */
+const planIndex = (rows, script, n) => {
+  const at = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, SKIPPED)).findIndex((r) => r.script === script && r.index === n);
+  if (at === -1) throw new Error(`${script} row ${n} is not a row the production seed rule sends`);
+  return 1 + at;
+};
 
 describe("replay", () => {
-  it("holds against a Worker that differs only where it may, and names every exemption it spent", async () => {
+  it("holds against a production host that refuses the two seeded creates and answers every kept row, and names every exemption it spent", async () => {
     const host = fakeHost();
     const { result, text } = await run(host);
     expect(result.mismatches).toEqual([]);
     expect(result.holds).toBe(true);
-    expect(result.run, "every row of the three scripts ran").toBe(SCRIPTS.walk.length + SCRIPTS.host.length + SCRIPTS.archive.length);
-    expect(result.named, "every named row was compared").toBe(
-      [...SCRIPTS.walk, ...SCRIPTS.host, ...SCRIPTS.archive].filter((row) => row.fixture !== null).length,
-    );
+    const skipped = new Set(["wire", "wire2"]);
+    const sent = host.rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
+    expect(result.run, "every row the rule sends ran").toBe(sent.length);
+    expect(result.skipped, "and the rest were skipped, counted").toBe(host.rows.length - sent.length);
+    expect(result.run + result.skipped).toBe(result.total);
+    expect(result.named).toBe(sent.filter(({ row }) => row.fixture !== null && !isProductionSeedCreate(row, skipped)).length);
     expect(result.spent.map((s) => s.split(":")[0]).sort()).toEqual(
       [
         "HOST_FIELDS health.archive",
@@ -422,25 +526,41 @@ describe("replay", () => {
         "HOST_FIELDS health.table_ttl_days",
         "HOST_FIELDS me.mode",
         "HOST_FIELDS me_signed_out.mode",
-        "filterLobby games",
-        "filterLobby games_next",
-        "filterLobby games_open",
-        "filterLobby games_playing",
         "firstSendAccepts archive_post",
         "firstSendAccepts archive_post_abandoned",
         "normalizeHouseChat house_chat",
         "normalizeHouseChat house_chat_post",
         "houseDeleteRow house_chat_delete",
+        "productionSeedRule wire",
+        "productionSeedRule wire2",
       ].sort(),
     );
+    expect(host.requests.filter((r) => /\/api\/games\/wire2?(\/|$)/.test(r.url) && !r.url.includes("/api/admin/"))).toEqual([]);
     // The run's own post is the one it deletes (R-D4): the fake's post was
     // given the committed number plus the base.
     const deleted = host.requests.filter((r) => r.method === "DELETE" && r.url.startsWith(`${ORIGIN}/api/chat/`));
     expect(deleted.map((r) => r.url)).toEqual([`${ORIGIN}/api/chat/${BASE + 1}`]);
     expect(result.forcedBefore.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
     expect(result.forcedAfter.map((f) => `${f.id} ${f.status}`)).toEqual(IDS.map((id) => `${id} 204`));
+    expect(text).toContain("rows skipped under the production seed rule: ");
     expect(text).toContain("live-replay: HOLDS");
     expect(text).toContain("the house chat's base: last 4321, rev 9876, read as blue@wire.test");
+  });
+
+  // A host that HONOURED a seeded create beside an open seat is not under
+  // the production rule — a diagnostic configuration deployed by mistake.
+  it("refuses a host that honours a seeded create beside an open seat", async () => {
+    const host = fakeHost({
+      edit: (plan, rows) => {
+        const i = planIndex(rows, "walk.json", 1);
+        expect(rows.find((r) => r.script === "walk.json" && r.index === 1).row.body.id, "the premise").toBe("wire");
+        plan[i] = () => json(201, { id: "wire" });
+      },
+    });
+    const { result, text } = await run(host);
+    expect(result.holds).toBe(false);
+    expect(result.mismatches.map((m) => `${m.label.split(":")[0]} ${m.path}`)).toEqual(["walk.json row 1 (production seed rule)"]);
+    expect(text).toContain("expected 400 in SEED_NOT_SOLO's words · got 201");
   });
 
   it("sends the credential to the Worker's origin alone, the forces bare, and a claimed header only for a row's who", async () => {
@@ -453,23 +573,25 @@ describe("replay", () => {
     for (const force of forces) {
       expect(Object.keys(force.headers), "a force is the owner's own assertion, over WARP").toEqual([]);
     }
+    // The base read, then each row the production seed rule sends.
+    const sentRows = host.rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, SKIPPED));
     const others = host.requests.filter((r) => !r.url.includes("/api/admin/"));
-    expect(others.length).toBeGreaterThan(2000);
+    expect(others).toHaveLength(1 + sentRows.length);
     for (const r of others) {
       expect(new URL(r.url).origin).toBe(ORIGIN);
       expect(r.headers["CF-Access-Client-Id"]).toBe("dummy-id.access");
       expect(r.headers["CF-Access-Client-Secret"]).toBe("dummy-secret-value");
       expect(r.redirect, "a redirect is answered, never followed").toBe("manual");
     }
-    // The base read, then each row: its claimed header is its `who`, and a row
-    // with no `who` sends none.
+    // The base read, then each sent row: its claimed header is its `who`, and
+    // a row with no `who` sends none.
     const [base, ...sent] = others;
     expect(base.headers["X-Yokohama-Claimed-User"]).toBe("blue@wire.test");
-    expect(sent).toHaveLength(host.rows.length);
-    host.rows.forEach(({ row }, i) => {
+    expect(sent).toHaveLength(sentRows.length);
+    sentRows.forEach(({ row }, i) => {
       expect(sent[i].headers["X-Yokohama-Claimed-User"], `${row.method} ${row.path}`).toBe(row.who ?? undefined);
     });
-    expect(host.rows.some(({ row }) => row.who === null), "the premise: a row with no who exists").toBe(true);
+    expect(sentRows.some(({ row }) => row.who === null), "the premise: a sent row with no who exists").toBe(true);
   });
 
   it("refuses to start unless all three forces answer 204, and sends no row", async () => {
@@ -485,37 +607,38 @@ describe("replay", () => {
   it("reports a field that differs by its fixture and path, runs on, and forces the ids again", async () => {
     const host = fakeHost({
       edit: (plan, rows) => {
-        const i = planIndex(rows, "walk.json", 27);
-        expect(rows[i - 1].row.fixture, "the premise").toBe("options");
-        const body = liveBody("options");
-        plan[i] = () => json(200, { ...body, over: !body.over });
+        const i = planIndex(rows, "walk.json", 28);
+        expect(rows.find((r) => r.script === "walk.json" && r.index === 28).row.fixture, "the premise").toBe("health");
+        const body = liveBody("health");
+        plan[i] = () => json(200, { ...body, semantics_rev: body.semantics_rev + 1 });
       },
     });
     const { result, text } = await run(host);
     expect(result.holds).toBe(false);
-    expect(result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toEqual(["options over"]);
-    expect(result.run, "a body that differs changes no state, so the replay runs on").toBe(host.rows.length);
+    expect(result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toEqual(["health semantics_rev"]);
+    expect(result.run, "a body that differs changes no state, so the replay runs on").toBe(result.total - result.skipped);
     expect(result.forcedAfter).toHaveLength(3);
-    expect(text).toContain("walk.json row 27: GET /api/games/wire as red@wire.test — options over: committed false · got true");
+    expect(text).toContain("walk.json row 28: GET /api/health as red@wire.test — health semantics_rev: committed 7 · got 8");
   });
 
   it("stops at a status that differs, forces the ids again, and never prints a request body", async () => {
     const host = fakeHost({
       edit: (plan, rows) => {
-        plan[planIndex(rows, "walk.json", 9)] = () => json(403, committed("not_seated_403"));
+        plan[planIndex(rows, "walk.json", 43)] = () => json(403, committed("not_seated_403"));
       },
     });
     const { result, text } = await run(host);
     // The last row sent is the one it stopped at.
     const stoppedAt = host.requests.filter((r) => !r.url.includes("/api/admin/")).at(-1);
-    expect(`${stoppedAt?.method} ${stoppedAt?.url}`).toBe(`POST ${ORIGIN}/api/games/wire/join`);
-    expect(stoppedAt?.body, "the premise: the stopped row's request carried the password").toContain("sesame");
+    expect(`${stoppedAt?.method} ${stoppedAt?.url}`).toBe(`POST ${ORIGIN}/api/chat`);
+    const said = JSON.parse(stoppedAt?.body ?? "{}").text;
+    expect(said, "the premise: the stopped row's request carried the house post's text").toBe("anyone up for a second table?");
     expect(result.holds).toBe(false);
-    expect(result.run, "the rows after it would read a state it did not make").toBe(planIndex(host.rows, "walk.json", 9));
+    expect(result.run, "the rows after it would read a state it did not make").toBe(planIndex(host.rows, "walk.json", 43));
     expect(result.forcedAfter.map((f) => f.status)).toEqual([204, 204, 204]);
-    expect(text).toContain("walk.json row 9: POST /api/games/wire/join as blue@wire.test — status: committed 200 · got 403");
+    expect(text).toContain("walk.json row 43: POST /api/chat as red@wire.test — status: committed 201 · got 403");
     expect(text).toContain("you are not seated at this table");
-    expect(text).not.toContain("sesame");
+    expect(text).not.toContain(said);
   });
 
   // R3's M-1: a first send's 409 is the bucket holding an EARLIER run's save
@@ -527,7 +650,7 @@ describe("replay", () => {
     const host = fakeHost({
       edit: (plan, rows) => {
         const i = planIndex(rows, "archive-walk.json", 0);
-        expect(rows[i - 1].row.fixture, "the premise").toBe("archive_post");
+        expect(rows.find((r) => r.script === "archive-walk.json" && r.index === 0).row.fixture, "the premise").toBe("archive_post");
         plan[i] = () => json(409, committed("archive_409"));
       },
     });
@@ -562,49 +685,17 @@ describe("replay", () => {
     ]);
   });
 
-  it("re-reads a lobby page the house has not yet received a copy for, and counts it", async () => {
-    const stale = () => {
-      const body = liveBody("games_open");
-      return json(200, { ...body, games: body.games.filter((g) => g.id !== "wire") });
-    };
-    const once = fakeHost({
-      edit: (plan, rows) => {
-        const i = planIndex(rows, "walk.json", 4);
-        plan.splice(i, 0, stale);
-      },
-    });
-    const first = await run(once);
-    expect(first.result.holds).toBe(true);
-    expect(first.result.rereads).toBe(1);
-    // The count spent, and the bound it was spent against.
-    expect(first.text).toContain("lobby re-reads: 1 spent (the bound: 5 per lobby row, 500 ms apart");
-
-    const never = fakeHost({
-      edit: (plan, rows) => {
-        const i = planIndex(rows, "walk.json", 4);
-        plan.splice(i, 1, stale, stale, stale, stale, stale, stale);
-      },
-    });
-    const second = await run(never);
-    // A page that never converges within the bound is a MISMATCH.
-    expect(second.result.holds).toBe(false);
-    expect(second.result.rereads).toBe(5);
-    expect(second.result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toContain("games_open games.0.id");
-    expect(second.text).toContain("lobby re-reads: 5 spent (the bound: 5 per lobby row, 500 ms apart");
-    expect(second.text).toContain("live-replay: DOES NOT HOLD");
-  });
-
   it("redacts a value that could be a seed or a secret when it reports one", async () => {
     const host = fakeHost({
       edit: (plan, rows) => {
-        const i = planIndex(rows, "walk.json", 18);
-        expect(rows[i - 1].row.fixture, "the premise").toBe("table");
-        plan[i] = () => json(200, { ...liveBody("table"), seed: "13377331133773311337" });
+        const i = planIndex(rows, "walk.json", 28);
+        expect(rows.find((r) => r.script === "walk.json" && r.index === 28).row.fixture, "the premise").toBe("health");
+        plan[i] = () => json(200, { ...liveBody("health"), seed: "13377331133773311337" });
       },
     });
     const { result, text } = await run(host);
-    expect(result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toEqual(["table seed"]);
-    expect(text).toContain("table seed: committed (absent) · got <redacted>");
+    expect(result.mismatches.map((m) => `${m.fixture} ${m.path}`)).toEqual(["health seed"]);
+    expect(text).toContain("health seed: committed (absent) · got <redacted>");
     expect(text).not.toContain("13377331133773311337");
   });
 

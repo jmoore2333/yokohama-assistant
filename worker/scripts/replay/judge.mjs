@@ -151,11 +151,12 @@ export function finish(result, log) {
   const forcesHeld = (forces) => forces.length > 0 && forces.every((f) => f.status === 204);
   result.holds =
     result.stopped === null &&
-    result.run === result.total &&
+    result.run === result.total - result.skipped &&
     result.mismatches.length === 0 &&
     forcesHeld(result.forcedBefore) &&
     forcesHeld(result.forcedAfter);
   log(`rows run: ${result.run} of ${result.total}`);
+  log(`rows skipped under the production seed rule: ${result.skipped}`);
   log(`named rows compared: ${result.named}`);
   log(`exemptions spent (${result.spent.length}):`);
   for (const line of result.spent) log(`  ${line}`);

@@ -42,6 +42,9 @@
     "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
     "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000",
+    // The corpus walk opens a seeded table with an open seat (R-SEC8(b)); on
+    // in the pool and nowhere else — the deploy guard refuses it.
+    "YOKOHAMA_DIAGNOSTIC_SEEDS": "on",
     "YOKOHAMA_WEB_COUNT_WAKES": "on",
     "YOKOHAMA_TURNSTILE": "off"
   }

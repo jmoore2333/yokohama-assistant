@@ -53,6 +53,20 @@ impl std::fmt::Display for ApplyError {
 
 impl std::error::Error for ApplyError {}
 
+/// How often a session keeps a state (security S1b, finding A3): every
+/// sixty-four events. A replay to any position then folds at most sixty-three
+/// events from the nearest kept state (from a complete ladder; a live-mode gap
+/// — a bound-reveal group stepping over a multiple — adds its extent once,
+/// re-cut on the way) instead of the whole record from setup
+/// — the cost `/at`, a run and an undo paid, which at a record
+/// built to a large retreat family ran to seconds per request. A rebuild
+/// (`from_record`) still folds the whole record, through the predicate,
+/// keeping the ladder as it goes. Sixty-four is
+/// a memory choice, not a measured threshold: a `GameState` is a few
+/// kilobytes in memory (about fifteen serialized), so a 4,096-event record
+/// keeps sixty-four of them.
+pub const CHECKPOINT_EVERY: usize = 64;
+
 /// The simulation/live-tracking core: `{Rules, GameRecord, GameState}` kept
 /// in lockstep. Standing invariant: `state` always equals what replaying
 /// `record` against `rules` produces FROM ITS BASE -- for every session
@@ -74,10 +88,21 @@ pub struct Session {
     /// the state `undo` bottoms out at once `record.events` is fully
     /// unwound, in place of `replay`'s normal `new_game`+`finalize_setup`
     /// base. `None` for every session built by `new_sim`/`new_live`/`load`
-    /// -- those always bottom out at a state `replay` DOES reconstruct
-    /// correctly, so `undo` uses the real `replay` function for them
-    /// unchanged.
+    /// -- those bottom out at the record's own setup, which `state_at`
+    /// reconstructs. Since security S1b `undo` folds through `fold_to` for
+    /// every session: from the nearest kept state of the ladder, or, below
+    /// the first one, from this base (the setup when `None`).
     checkpoint: Option<GameState>,
+    /// The states kept at the multiples of [`CHECKPOINT_EVERY`] (security
+    /// S1b, finding A3), ascending by index: `from_record`'s fold keeps them as
+    /// it goes, `apply` keeps one when the record LANDS on a multiple (a
+    /// live-mode bound-reveal group that steps over one keeps nothing at
+    /// apply, and a later `state_before` re-cuts it), `state_before` keeps
+    /// every multiple it folds past, and `undo` drops
+    /// every entry past the popped length — an entry is valid for any record
+    /// that shares the prefix it was cut from, so the ones at or below the
+    /// new length stay. Never serialized: a rebuild re-cuts them.
+    ladder: Vec<(usize, GameState)>,
     /// One cached plain-words description per `record.events` entry, in the
     /// same order -- ALWAYS in lockstep with `record.events` (every mutator
     /// asserts this in debug: `apply`/`apply_standalone` push alongside
@@ -142,6 +167,7 @@ impl Session {
             mode: TrackingMode::Simulation,
             save_path: None,
             checkpoint: None,
+            ladder: Vec::new(),
             event_descriptions: Vec::new(),
             load_warnings: Vec::new(),
             pending_end_trigger_banner: None,
@@ -171,6 +197,7 @@ impl Session {
             mode: TrackingMode::Live,
             save_path: None,
             checkpoint: None,
+            ladder: Vec::new(),
             event_descriptions: Vec::new(),
             load_warnings: Vec::new(),
             pending_end_trigger_banner: None,
@@ -299,7 +326,7 @@ impl Session {
         // than calling `replay` for the whole record in one shot: each
         // event needs to be described against the state AS OF THAT EVENT
         // before it folds, so the loop below interleaves
-        // `describe_recorded_event` with `replay_from` one event at a time
+        // `describe_recorded_event` with `fold_event` one event at a time
         // -- the same per-event pattern `examples/record_stats.rs` uses to
         // interleave its own `metrics.observe` call.
         // A malformed/tampered config would otherwise reach board generation,
@@ -328,18 +355,17 @@ impl Session {
             .map_err(|e| format!("this save's state is inconsistent with its config: {e}"))?;
 
         let mut event_descriptions = Vec::with_capacity(record.events.len());
+        let mut ladder = Vec::new();
         for (i, ev) in record.events.iter().enumerate() {
             event_descriptions.push(crate::describe::describe_recorded_event(ev, &state, &rules));
-            // `replay_from` is fed a FRESH 1-element slice per iteration
-            // (so `state` can advance one event at a time between
-            // description calls), so its own `ReplayError::event_index` --
-            // derived from `.enumerate()` over THAT slice -- is always 0,
-            // no matter which real event failed (Task 15 review Finding 1).
-            // Reconstruct the message with the TRUE index `i` into
-            // `record.events` instead of trusting the error's own
-            // (structurally always-0) index.
-            state = replay_from(&state, std::slice::from_ref(ev), &rules)
-                .map_err(|e| format!("replay failed at event {i}: {}", e.message))?;
+            // The predicate fold (security S1b; `fold_event`'s doc): the same
+            // states as `replay_from`'s checked apply, without the legal list
+            // materialized per event. The message carries the TRUE index `i`
+            // (Task 15 review Finding 1's lesson, kept).
+            state = Self::fold_event(&state, ev, &rules).map_err(|e| format!("replay failed at event {i}: {e}"))?;
+            if (i + 1).is_multiple_of(CHECKPOINT_EVERY) {
+                ladder.push((i + 1, state.clone()));
+            }
         }
         debug_assert_eq!(event_descriptions.len(), record.events.len());
 
@@ -384,6 +410,7 @@ impl Session {
             mode,
             save_path: None,
             checkpoint: None,
+            ladder,
             event_descriptions,
             load_warnings,
             pending_end_trigger_banner: None,
@@ -517,6 +544,61 @@ impl Session {
         is_game_over(&self.state)
     }
 
+    /// One recorded event folded as an untrusted record's strict replay folds
+    /// it (core's `replay_strict_with(.., MoveCheck::Predicate)`, R-SEC2): a
+    /// `Move` through `is_listed_move` and then the raw transition
+    /// `apply_move_unchecked`, every other event through core's `replay_from`
+    /// — the same accepted set and the same states as the checked apply
+    /// (`crates/yokohama-core/tests/replay_check_equivalence.rs`), refusing a
+    /// non-member in `apply_move`'s own words, without the legal list
+    /// materialized per event. What `from_record`'s rebuild, the ladder and
+    /// `undo` fold with since security S1b; `apply` keeps its own gate, which
+    /// materializes the list ONCE per interactive move.
+    pub fn fold_event(state: &GameState, ev: &RecordedEvent, rules: &Rules) -> Result<GameState, String> {
+        match ev {
+            RecordedEvent::Move(mv) => {
+                if !is_listed_move(state, mv, rules) {
+                    return Err(MoveError::NotLegal.to_string());
+                }
+                apply_move_unchecked(state, mv, rules).map_err(|e| e.to_string())
+            }
+            other => replay_from(state, std::slice::from_ref(other), rules).map_err(|e| e.message),
+        }
+    }
+
+    /// The state after the first `k` events (`state_at`'s domain, `0..=len`),
+    /// folded from the nearest kept state at or before `k` — a test session's
+    /// `checkpoint` base, the setup for every other — with every multiple of
+    /// [`CHECKPOINT_EVERY`] passed on the way kept (security S1b, finding A3).
+    /// `k` past the end is a refusal, never a clamp.
+    pub fn state_before(&mut self, k: usize) -> Result<GameState, String> {
+        self.state_before_counted(k).map(|(state, _)| state)
+    }
+
+    /// [`Self::state_before`] with the number of events it folded — fewer
+    /// than [`CHECKPOINT_EVERY`] whenever the ladder is used, which is the
+    /// cell's pin on the ladder (a fold from the wrong entry reaches the same
+    /// state, by the proof, and shows only here).
+    pub(crate) fn state_before_counted(&mut self, k: usize) -> Result<(GameState, usize), String> {
+        let Session { rules, record, checkpoint, ladder, .. } = self;
+        fold_to(record, rules, checkpoint.as_ref(), ladder, k)
+    }
+
+    /// The ladder's indices, for the cells that read it.
+    #[cfg(test)]
+    pub(crate) fn ladder_indices(&self) -> Vec<usize> {
+        self.ladder.iter().map(|(i, _)| *i).collect()
+    }
+
+    /// Keep the state just committed when the record's length is a multiple
+    /// of [`CHECKPOINT_EVERY`] — free, the state is in hand.
+    fn keep_checkpoint(&mut self) {
+        let len = self.record.events.len();
+        if len.is_multiple_of(CHECKPOINT_EVERY) && self.ladder.last().is_none_or(|(i, _)| *i < len) {
+            self.ladder.push((len, self.state.clone()));
+        }
+    }
+
     /// Apply reveals+move as ONE atomic group: reveals fold first, then `mv`
     /// is checked against `get_legal_moves` on the post-reveal state (the
     /// CLI never applies a move `get_legal_moves` didn't offer -- this is
@@ -618,6 +700,7 @@ impl Session {
         self.event_descriptions.push(move_description);
         debug_assert_eq!(self.event_descriptions.len(), self.record.events.len());
         self.state = next;
+        self.keep_checkpoint();
         if let Some(warning) = self.autosave() {
             delta.push(warning);
         }
@@ -672,6 +755,7 @@ impl Session {
         self.event_descriptions.push(description);
         debug_assert_eq!(self.event_descriptions.len(), self.record.events.len());
         self.state = staged;
+        self.keep_checkpoint();
         if let Some(warning) = self.autosave() {
             delta.push(warning);
         }
@@ -709,7 +793,9 @@ impl Session {
     /// truncated `record.events` over `checkpoint` for a
     /// `for_test_from_state` session (Task 13: previously a hand-kept
     /// CLI-side mirror of `replay`'s own fold loop, `replay_from_checkpoint`;
-    /// now both paths share the one fold core exposes).
+    /// now both paths share the one fold core exposes). **Since security S1b
+    /// both paths are one: `fold_to`, from the nearest kept state of the
+    /// ladder (or the test base), through the predicate fold.**
     ///
     /// Returns the same warning-line vector `apply` does (empty on success,
     /// one line when the post-undo autosave failed) so the caller can put it
@@ -729,9 +815,13 @@ impl Session {
             }
             Some(_) => {} // standalone reveal (or an orphaned bound reveal): pops alone
         }
-        let state = match &self.checkpoint {
-            Some(base) => replay_from(base, &record.events, &self.rules).map_err(|e| e.to_string())?,
-            None => replay(&record, &self.rules).map_err(|e| e.to_string())?,
+        let new_len = record.events.len();
+        // The entries past the popped length belong to the suffix that is
+        // gone; the ones at or below it are this record's (security S1b).
+        self.ladder.retain(|(i, _)| *i <= new_len);
+        let (state, _) = {
+            let Session { rules, checkpoint, ladder, .. } = self;
+            fold_to(&record, rules, checkpoint.as_ref(), ladder, new_len)?
         };
         // The cache only ever grows/shrinks in lockstep with `record.events`
         // by appending/truncating at the tail -- `event_descriptions[i]` was
@@ -787,6 +877,45 @@ impl Session {
     }
 }
 
+/// [`Session::state_before`]'s body over the parts, so `undo` can fold the
+/// record it has already popped. `ladder` is read for the nearest kept state
+/// at or before `k` and extended at every multiple of [`CHECKPOINT_EVERY`]
+/// the fold passes — inserted in order, never twice. Answers the state and
+/// the number of events folded to reach it.
+fn fold_to(
+    record: &GameRecord,
+    rules: &Rules,
+    base: Option<&GameState>,
+    ladder: &mut Vec<(usize, GameState)>,
+    k: usize,
+) -> Result<(GameState, usize), String> {
+    let available = record.events.len();
+    if k > available {
+        return Err(format!(
+            "state_before({k}) is past the end of the event log: the record carries {available} events"
+        ));
+    }
+    let (mut at, mut state) = match ladder.iter().rev().find(|(i, _)| *i <= k) {
+        Some((i, s)) => (*i, s.clone()),
+        None => (0, match base {
+            Some(b) => b.clone(),
+            None => state_at(record, 0, rules).map_err(|e| e.message)?,
+        }),
+    };
+    let from = at;
+    while at < k {
+        state = Session::fold_event(&state, &record.events[at], rules)
+            .map_err(|e| format!("replay failed at event {at}: {e}"))?;
+        at += 1;
+        if at.is_multiple_of(CHECKPOINT_EVERY) {
+            if let Err(pos) = ladder.binary_search_by_key(&at, |(i, _)| *i) {
+                ladder.insert(pos, (at, state.clone()));
+            }
+        }
+    }
+    Ok((state, k - from))
+}
+
 #[cfg(test)]
 impl Session {
     /// Test-only (Task 11 fix wave): build a `Session` whose state is
@@ -819,6 +948,7 @@ impl Session {
             rules,
             record,
             checkpoint: Some(state.clone()),
+            ladder: Vec::new(),
             state,
             mode: TrackingMode::Simulation,
             save_path: None,
@@ -1963,5 +2093,205 @@ mod tests {
         // At the top of the record, and past it: a position, not a description.
         assert_eq!(s.event_description_at(len), None, "there is no event at k == len");
         assert_eq!(s.event_description_at(len + 1), None);
+    }
+
+    /// A finished-or-long record by uniform-random legal play, the engine's own
+    /// primitives, `n` events or the game's end.
+    fn random_record(players: u8, seed: u64, n: usize) -> (GameRecord, Rules) {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(players);
+        let choices = vec![StartingOrderChoice::Keep(0); players as usize];
+        let pending = new_game(config.clone(), &rules, seed).expect("new_game");
+        let mut state = finalize_setup(pending, &choices).expect("finalize_setup");
+        let mut record = GameRecord::new(seed, config, choices, &rules);
+        let mut x = seed ^ 0x9E37_79B9_7F4A_7C15;
+        while record.events.len() < n && !is_game_over(&state) {
+            let legal = get_legal_moves(&state, &rules);
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mv = legal[(x % legal.len() as u64) as usize].clone();
+            state = apply_move_unchecked(&state, &mv, &rules).expect("a listed move applies");
+            record.push_move(mv);
+        }
+        record.stamp_terminal_digest(&state);
+        (record, rules)
+    }
+
+    /// **`state_before(k)` is `state_at(k)` at every prefix, and the ladder it
+    /// leaves is the multiples of sixty-four** (security S1b, finding A3): a
+    /// 300-event record rebuilt through `from_record` — whose fold keeps the
+    /// ladder as it goes — read at every seventh position against the engine's
+    /// own positioning primitive, and the number of events each read FOLDED
+    /// under sixty-four — the ladder's pin, since a fold from setup reaches
+    /// the same state by the proof and shows only in the count; then the
+    /// ladder's indices read back. Mutants: the ladder ignored (the count), an
+    /// entry kept at the wrong index, a `fold_event` that skips the predicate
+    /// (a different state is impossible — the proof — so the mutant for THAT
+    /// arm is cell (c)).
+    #[test]
+    fn state_before_agrees_with_state_at_at_every_prefix_and_keeps_the_ladder() {
+        let (record, rules) = random_record(3, 2026_1009, 300);
+        assert!(record.events.len() >= 260, "the premise: a long record ({} events)", record.events.len());
+        let mut session = Session::from_record(record.clone(), rules.clone()).expect("rebuilds");
+        let len = record.events.len();
+        let kept: Vec<usize> = (0..=len / CHECKPOINT_EVERY).map(|i| i * CHECKPOINT_EVERY).filter(|i| *i > 0 && *i <= len).collect();
+        assert_eq!(session.ladder_indices(), kept, "from_record keeps a state at every sixty-fourth event");
+        for k in (0..=len).step_by(7).chain([len]) {
+            let (ours, folded) = session.state_before_counted(k).expect("a position");
+            let theirs = state_at(&record, k, &rules).expect("the engine's position");
+            assert_eq!(ours, theirs, "position {k}");
+            assert!(folded < CHECKPOINT_EVERY, "position {k} folded {folded} events — the ladder was not used");
+        }
+        assert_eq!(session.ladder_indices(), kept, "reading positions adds no entry the fold already kept");
+        assert!(session.state_before(len + 1).is_err(), "past the end is a refusal, never a clamp");
+    }
+
+    /// **A fresh session keeps a state at every sixty-fourth apply, and an
+    /// undo drops every entry past the popped length and folds from the one
+    /// below it** (finding A3). Sixty-five random applies; the ladder reads
+    /// `[64]`; sixty-four undos leave the record at one event and the ladder
+    /// empty, the state equal to the engine's replay of the popped record at
+    /// every step. Mutant: `undo` not dropping the stale entry — caught by
+    /// the index assertion "no entry past the record" on the undo to 63. The
+    /// state after every undo is CORRECT under that mutant, since `fold_to`
+    /// reads only the entries at or before `k`; the stale entry's hazard is a
+    /// later read past it, which is cell (d)'s.
+    #[test]
+    fn apply_keeps_a_checkpoint_and_undo_drops_the_entries_it_pops_past() {
+        let (seed_record, rules) = random_record(2, 20260831, 0);
+        let mut session = Session::from_record(seed_record, rules.clone()).expect("an empty record rebuilds");
+        let mut x = 7u64;
+        for _ in 0..65 {
+            let legal = session.legal();
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let mv = legal[(x % legal.len() as u64) as usize].clone();
+            session.apply(mv, Vec::new()).expect("a listed move applies");
+        }
+        assert_eq!(session.record().events.len(), 65);
+        assert_eq!(session.ladder_indices(), vec![64]);
+        for expected_len in (1..65).rev() {
+            session.undo().expect("something to undo");
+            assert_eq!(session.record().events.len(), expected_len);
+            let theirs = replay(session.record(), &rules).expect("the popped record replays");
+            assert_eq!(session.state(), &theirs, "after the undo to {expected_len} events");
+            assert!(session.ladder_indices().iter().all(|i| *i <= expected_len), "no entry past the record");
+        }
+        assert!(session.ladder_indices().is_empty());
+    }
+
+    /// **An undo below a kept state drops it, and a re-grow along ANOTHER
+    /// line re-cuts it** (finding A3, the hazard cell (b)'s mutant leaves). A
+    /// hundred and twenty-nine random applies keep `[64, 128]`; two undos
+    /// leave 127 events; a re-grow to 140 events picks along a different line,
+    /// so the state at 128 is not the one first kept there (asserted). Every
+    /// position `0..=140` then reads `state_at`'s state by the ladder (each
+    /// fold under sixty-four), and the ladder reads `[64, 128]` again. The
+    /// ladder after the undos is read BEFORE the positions but asserted
+    /// AFTER them, so the mutant fails at the state it serves: with `undo`
+    /// not dropping the stale entry, `keep_checkpoint` refuses to re-cut 128
+    /// while the stale 128 is `last()`, and position 128 is served stale.
+    #[test]
+    fn an_undo_below_a_kept_state_drops_it_and_a_regrow_along_another_line_re_cuts_it() {
+        let (seed_record, rules) = random_record(2, 31, 0);
+        let mut session = Session::from_record(seed_record, rules.clone()).expect("an empty record rebuilds");
+        let mut x = 99u64;
+        for _ in 0..129 {
+            let legal = session.legal();
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            session.apply(legal[(x % legal.len() as u64) as usize].clone(), Vec::new()).expect("a listed move applies");
+        }
+        let first = session.record().clone();
+        assert_eq!(first.events.len(), 129, "the premise: the game outlives 129 events");
+        assert_eq!(session.ladder_indices(), vec![64, 128]);
+        session.undo().expect("something to undo");
+        session.undo().expect("something to undo");
+        assert_eq!(session.record().events.len(), 127);
+        let after_the_undos = session.ladder_indices();
+        let mut y = 12345u64;
+        while session.record().events.len() < 140 {
+            let legal = session.legal();
+            y ^= y << 13;
+            y ^= y >> 7;
+            y ^= y << 17;
+            session.apply(legal[(y % legal.len() as u64) as usize].clone(), Vec::new()).expect("a listed move applies");
+        }
+        let record = session.record().clone();
+        assert_ne!(
+            state_at(&record, 128, &rules).expect("the new line at 128"),
+            state_at(&first, 128, &rules).expect("the first line at 128"),
+            "the premise: the re-grown line's state at 128 is not the one first kept there"
+        );
+        for k in 0..=record.events.len() {
+            let (ours, folded) = session.state_before_counted(k).expect("a position");
+            assert_eq!(ours, state_at(&record, k, &rules).expect("the engine's position"), "position {k}");
+            assert!(folded < CHECKPOINT_EVERY, "position {k} folded {folded} events");
+        }
+        assert_eq!(after_the_undos, vec![64], "the undo to 127 drops the entry at 128");
+        assert_eq!(session.ladder_indices(), vec![64, 128], "the re-grow re-cuts 128");
+    }
+
+    /// **A read past a gap in the ladder keeps every multiple it folds past,
+    /// in order and never twice** (finding A3; `fold_to`'s insertion). A gap
+    /// is what live mode leaves: a bound-reveal group that steps over a
+    /// multiple keeps nothing at `apply` (`keep_checkpoint` keeps a landing
+    /// only), so the first read past it folds across the gap and must re-cut
+    /// what it passes. No other cell builds a gapped ladder — `from_record`
+    /// and `keep_checkpoint` keep every multiple of a simulated record — so
+    /// this one opens the gaps by hand: of cell (a)'s 300-event record's
+    /// `[64, 128, 192, 256]` it keeps `[64, 256]`. Position 200 then folds
+    /// 136 events from 64 and leaves `[64, 128, 192, 256]`; read again, it
+    /// folds 8 from 192 and leaves the ladder as it was. Mutants: the
+    /// insertion deleted (the indices; the second count reads 136), an
+    /// unguarded `push` (the order: `[64, 256, 128, 192]`).
+    #[test]
+    fn a_read_past_a_gap_in_the_ladder_keeps_every_multiple_it_passes_in_order_and_never_twice() {
+        let (record, rules) = random_record(3, 2026_1009, 300);
+        let mut session = Session::from_record(record.clone(), rules.clone()).expect("rebuilds");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "the premise: a complete ladder past 256");
+        session.ladder.retain(|(i, _)| *i == 64 || *i == 256);
+        assert_eq!(session.ladder_indices(), vec![64, 256], "the gaps opened");
+        let (state, folded) = session.state_before_counted(200).expect("a position");
+        assert_eq!(state, state_at(&record, 200, &rules).expect("the engine's position"));
+        assert_eq!(folded, 136, "folded from 64, across the gap");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "every multiple passed, kept in order");
+        let (again, folded) = session.state_before_counted(200).expect("a position");
+        assert_eq!(again, state);
+        assert_eq!(folded, 8, "folded from 192, the entry the first read kept");
+        assert_eq!(session.ladder_indices(), vec![64, 128, 192, 256], "never twice");
+    }
+
+    /// **`fold_event` refuses a non-member in `apply_move`'s own words**
+    /// (R-SEC2): a placement at a position that does not list it, through the
+    /// predicate fold and through the engine's checked `replay_from`, is the
+    /// same sentence — so a refusal a run or a rebuild reports reads as it
+    /// always did. The placement is taken from the first position that offers
+    /// one (the opening is the first additional-action phase and offers none)
+    /// and the position from the first after it that does not list it.
+    #[test]
+    fn fold_event_refuses_a_non_member_as_the_checked_fold_does() {
+        let (record, rules) = random_record(2, 4, 40);
+        let (k, placement) = (0..=record.events.len())
+            .find_map(|k| {
+                let state = state_at(&record, k, &rules).expect("a position");
+                get_legal_moves(&state, &rules)
+                    .into_iter()
+                    .find(|m| matches!(m, Move::PlaceThreeAreas { .. }))
+                    .map(|m| (k, m))
+            })
+            .expect("the record reaches a Placement decision");
+        let later = (k + 1..=record.events.len())
+            .map(|j| state_at(&record, j, &rules).expect("a position"))
+            .find(|s| !get_legal_moves(s, &rules).contains(&placement))
+            .expect("a later position where the placement is not listed");
+        let ev = RecordedEvent::Move(placement);
+        let ours = Session::fold_event(&later, &ev, &rules).expect_err("refused");
+        let theirs = replay_from(&later, std::slice::from_ref(&ev), &rules).expect_err("refused by the checked fold");
+        assert_eq!(ours, theirs.message);
+        assert_eq!(ours, MoveError::NotLegal.to_string());
     }
 }

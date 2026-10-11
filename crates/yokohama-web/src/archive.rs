@@ -50,14 +50,16 @@ pub enum PutOutcome {
     Identical,
 }
 
-/// Why a put was refused: a DIFFERENT record is already at this path, or the
-/// write itself failed.
+/// Why a put was refused: a DIFFERENT record is already at this path, the
+/// write itself failed, or the caller's share is full.
 ///
-/// Two variants rather than one string, because the caller answers them
-/// differently and must: a conflict is a 409 the client KEEPS its game on, and
-/// a failure is "the archive could not be reached — the game was kept"
-/// (R-6.5b.7). A 409 that read as a failure, or a failure that read as a 409,
-/// is the shape that deletes somebody's only complete copy.
+/// Three variants rather than one string, because the caller answers them
+/// differently and must: a conflict is a 409 the client KEEPS its game on; a
+/// failure is a 500, "the archive could not be reached — the game was kept"
+/// (R-6.5b.7), and the outbox retries it; and a full share (security S1b,
+/// finding B12) is a 507 with nothing written, which the client keeps its game
+/// on and the outbox retries. A 409 that read as a failure, or a failure that
+/// read as a 409, is the shape that deletes somebody's only complete copy.
 #[derive(Debug)]
 pub enum PutError {
     /// The path holds a different record. `key` is the path RELATIVE to the
@@ -74,6 +76,9 @@ pub enum PutError {
     /// names any path RELATIVE to the archive's root (M6.5c2 cycle D, row 56),
     /// for `key`'s reason.
     Failed(String),
+    /// The caller's share is full (security S1b, finding B12): nothing was
+    /// written. Carries the share's two bounds for the route's sentence.
+    Quota { records: usize, bytes: u64 },
 }
 
 impl std::fmt::Display for PutError {
@@ -81,8 +86,33 @@ impl std::fmt::Display for PutError {
         match self {
             Self::Conflict { key, .. } => write!(f, "{key} holds a different record — a game is archived once"),
             Self::Failed(e) => f.write_str(e),
+            Self::Quota { records, bytes } => write!(f, "the caller's archive is full ({records} records or {bytes} bytes)"),
         }
     }
+}
+
+/// A browser caller's share of this archive (security S1b, finding B12;
+/// R-SEC8(f)): 256 records and 128 MiB under `browser/<caller>/`, counted
+/// before every put. Set from real games: a finished game is 25–60 KB
+/// pretty-printed, so 256 is years of one person's play, and 128 MiB is that
+/// count at the body cap (`api::ARCHIVE_BODY_LIMIT`, 512 KiB) — so neither
+/// bound is dead. The archive is a collection of played games, not an import
+/// path for bulk uploads, and on the NAS it shares the volume every live game
+/// saves to; the review filed 19 MB in 1.3 s against it.
+pub const QUOTA_RECORDS: usize = 256;
+/// [`QUOTA_RECORDS`]'s companion in bytes: 128 MiB.
+pub const QUOTA_BYTES: u64 = 128 << 20;
+
+/// What one browser caller may hold: records and bytes under its prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Quota {
+    pub records: usize,
+    pub bytes: u64,
+}
+
+impl Quota {
+    /// The production share — every `DirArchive` a server builds.
+    pub const PRODUCTION: Quota = Quota { records: QUOTA_RECORDS, bytes: QUOTA_BYTES };
 }
 
 /// The archive seam. `put` is handed the record bytes the store holds and the
@@ -126,6 +156,15 @@ pub trait Archive: Send + Sync {
         record_json: &str,
         table_json: &str,
     ) -> Result<PutOutcome, PutError>;
+    /// Whether the record at `prefix/rev/why/id` holds exactly `record_json`
+    /// (security S1b, finding A2) — asked by the archive route BEFORE the
+    /// replay, so a retry of a filed record costs a read and no replay.
+    /// `false` by default: an implementation that cannot read its own files
+    /// synchronously (the Worker's receipt archive) replays as before and
+    /// meets the once-rule's `Identical` at the put instead.
+    fn holds(&self, _prefix: &str, _why: Why, _id: &str, _record_json: &str) -> bool {
+        false
+    }
     /// What `/api/health` reports: `"off"`, `"dir"`, or M6.5c's `"r2"`.
     fn kind(&self) -> &'static str;
 }
@@ -149,39 +188,61 @@ pub fn paths(rev: u32, prefix: &str, why: Why, id: &str) -> Result<(String, Stri
     Ok((format!("{base}.json"), format!("{base}.table.json")))
 }
 
-/// R-6.5b.15: a path-safe, READABLE rendering of a caller's key — `@` becomes
-/// `_at_`, anything outside `[a-z0-9._-]` becomes `_` (a name's space too),
-/// capped at 64 characters.
+/// How much of the readable half a segment keeps (security S1c, finding D26):
+/// 48, so that with `-` and the digest a segment is at most 61 characters —
+/// under the 64 the old cap allowed and every path rule was measured at.
+pub const SEGMENT_READABLE: usize = 48;
+
+/// The digest's length in hex characters: twelve, forty-eight bits. The
+/// collision left is two addresses whose readable halves AND forty-eight
+/// digest bits agree, while the folder still reads as who sent it. **Cost is
+/// not what keeps it out**: a readable half is easy to match (the rendering
+/// folds every character outside `[a-z0-9._-]` but `@` to `_`, and cuts at
+/// forty-eight), and a second preimage on forty-eight bits is about 2^48
+/// hashes, which can be bought. The door is: behind Cloudflare Access a
+/// person's address is the one Access vouched for, off the owner's
+/// allow-list, so no one picks it; and a door that lets a caller claim an
+/// address — the open door, the Worker's dev door — lets them claim the
+/// target's outright, so a collision buys nothing there.
+pub const SEGMENT_DIGEST: usize = 12;
+
+/// The directory a browser's saves are filed under: the address made readable
+/// and path-safe, then `-` and the leading twelve hex characters of a SHA-256
+/// over the whole normalized address (security S1c, finding D26). The
+/// readable half is [`legacy_caller_segment`]'s mapping cut at
+/// [`SEGMENT_READABLE`]; the digest is what makes `alice+x@corp.test` and
+/// `alice_x@corp.test` — one folder and one quota before this — two.
 ///
-/// **Why the segment is never empty, `.` or `..`** — restated for M6.5c2's key
-/// grammar (spec §2.1; review H1, which MEASURED the hole an unconstrained name
-/// opened: `..` rendered as the segment `..`, and a browser's save landed in
-/// this server's own `rev7/over/`). [`crate::identity::User::parse`] admits two
-/// shapes, and each closes it by its own arithmetic:
-/// - an EMAIL has a non-empty local part and domain either side of one `@`,
-///   which renders as four characters, so its segment is at least six
-///   characters of this alphabet;
-/// - a PLAIN NAME begins with a letter or a digit — the grammar's rule, which
-///   exists for exactly this — and that character is kept, so its segment
-///   begins with `[a-z0-9]`.
+/// The readable half's arguments stand: an email renders at least six
+/// characters of this alphabet, a plain name begins `[a-z0-9]`, neither holds
+/// a `/`, so no segment is empty, `.` or `..`; [`paths`] and `DirArchive::put`
+/// refuse a `.` or `..` component besides. The digest is over the KEY
+/// (`User::as_str`, already lowercased and trimmed), so two spellings of one
+/// address are one segment.
 ///
-/// Neither holds a `/`, and the cap only shortens a segment that is already
-/// non-empty. [`paths`] and `DirArchive::put` refuse a `.` or `..` component
-/// besides, so this argument is no longer the only fence between a key and a
-/// path outside its prefix.
-///
-/// **It COLLIDES, on purpose, and spec §8 records it**: `a/b@c` and `a_b@c`
-/// render alike, and two addresses longer than the cap can share a prefix — and
-/// with it each other's "already archived" refusal. Readable was the trade: the
-/// owner reviews saves by who sent them and a hash would hide that.
+/// **Every folder written before this cycle sits under the legacy segment**
+/// and is renamed once, in the deploy window, from `deploy/RUNBOOK.md`'s and
+/// `worker/RUNBOOK.md`'s recipe with the server binary's `segment` subcommand.
+/// No code reads a legacy prefix.
 pub fn caller_segment(user: &crate::identity::User) -> String {
+    use sha2::{Digest, Sha256};
+    let mut readable = legacy_caller_segment(user);
+    readable.truncate(SEGMENT_READABLE);
+    let digest = Sha256::digest(user.as_str().as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{readable}-{}", &hex[..SEGMENT_DIGEST])
+}
+
+/// The segment as it was before security S1c — kept for the one-time rename
+/// (the `segment` subcommand prints it beside the current one) and for the
+/// cell that pins the two apart. It COLLIDES: `a/b@c` and `a_b@c` render alike,
+/// and two addresses longer than the cap share a prefix. Nothing files under it.
+pub fn legacy_caller_segment(user: &crate::identity::User) -> String {
     let mut out = String::new();
     for c in user.as_str().chars() {
         match c {
             '@' => out.push_str("_at_"),
-            c if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') => {
-                out.push(c)
-            }
+            c if c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-') => out.push(c),
             // Every replacement is ASCII, so `truncate` below is always on a
             // character boundary however odd the address was.
             _ => out.push('_'),
@@ -236,7 +297,7 @@ mod dir {
     use std::path::{Component, Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{paths, Archive, PutError, PutOutcome, Why};
+    use super::{paths, Archive, PutError, PutOutcome, Quota, Why};
 
     pub const ENV_VAR: &str = "YOKOHAMA_WEB_ARCHIVE_DIR";
 
@@ -244,11 +305,20 @@ mod dir {
     /// store's own volume, so saves are collected during development.
     pub struct DirArchive {
         dir: PathBuf,
+        quota: Quota,
+        /// **One put at a time through this archive** (security S1b, finding
+        /// B12): `put` takes it at the top and holds it across the marker
+        /// read, the count and both writes. The count is a read and the writes
+        /// come after it, so without it N puts in flight from one caller could
+        /// each read the count under the bound and all land. It serializes the
+        /// puts of ONE value in ONE process, and every server builds one
+        /// `DirArchive`, through `from_env`.
+        puts: std::sync::Mutex<()>,
     }
 
     impl DirArchive {
         pub fn new(dir: impl Into<PathBuf>) -> Self {
-            Self { dir: dir.into() }
+            Self { dir: dir.into(), quota: Quota::PRODUCTION, puts: std::sync::Mutex::new(()) }
         }
 
         /// `None` when the variable is unset (the archive is off); `Err` when it
@@ -259,7 +329,59 @@ mod dir {
             let dir = PathBuf::from(raw);
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("{ENV_VAR}={} cannot be created: {e}", dir.display()))?;
-            Ok(Some(Self { dir }))
+            // Through `new`, so the share the NAS runs under is the one
+            // `the_production_share_refuses_the_two_hundred_and_fifty_seventh_record`
+            // reads (the S1 stack review's CB-F3).
+            Ok(Some(Self::new(dir)))
+        }
+
+        /// This archive under a share of the caller's — the builder a cell takes
+        /// to fill one; every server builds [`Quota::PRODUCTION`].
+        pub fn with_quota(mut self, quota: Quota) -> Self {
+            self.quota = quota;
+            self
+        }
+
+        /// What `prefix` holds, less the put's OWN two paths (`own`): records
+        /// (`.json` files that are not `.table.json`) and the bytes of every
+        /// `.json` file under it, at any depth. Zero where the prefix's
+        /// directory does not exist yet; a read that fails is a `Failed`, never
+        /// a zero.
+        ///
+        /// **A put's own paths never count against it** (security S1b, finding
+        /// B12): a crash between the two writes leaves the pair's table with no
+        /// record, and the put that repairs it would otherwise count that table
+        /// twice, on disk here and again in what it adds, so a repair at the
+        /// byte margin was refused for ever and the outbox never left its retry.
+        fn usage(&self, prefix: &str, own: &[PathBuf]) -> Result<(usize, u64), PutError> {
+            fn walk(dir: &Path, own: &[PathBuf], records: &mut usize, bytes: &mut u64) -> std::io::Result<()> {
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    let meta = entry.metadata()?;
+                    if meta.is_dir() {
+                        walk(&entry.path(), own, records, bytes)?;
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if !name.ends_with(".json") || own.contains(&entry.path()) {
+                        continue;
+                    }
+                    *bytes += meta.len();
+                    if !name.ends_with(".table.json") {
+                        *records += 1;
+                    }
+                }
+                Ok(())
+            }
+            let root = self.dir.join(prefix);
+            match root.try_exists() {
+                Ok(false) => return Ok((0, 0)),
+                Err(e) => return Err(PutError::Failed(format!("count {prefix}: {e}"))),
+                Ok(true) => {}
+            }
+            let (mut records, mut bytes) = (0usize, 0u64);
+            walk(&root, own, &mut records, &mut bytes).map_err(|e| PutError::Failed(format!("count {prefix}: {e}")))?;
+            Ok((records, bytes))
         }
 
         /// A name beside `path` that no other put is using — the pid and a
@@ -366,6 +488,10 @@ mod dir {
             record_json: &str,
             table_json: &str,
         ) -> Result<PutOutcome, PutError> {
+            // One put at a time (the `puts` field's doc). A poisoned lock is
+            // still a lock here, since nothing behind it is left half-written
+            // that the once-rule does not already handle.
+            let _serialized = self.puts.lock().unwrap_or_else(|e| e.into_inner());
             let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id).map_err(PutError::Failed)?;
             // **Contained, LEXICALLY** (M6.5c2, spec §2.1; review R2-m3): every
             // component of both RELATIVE paths is a plain name, so joining them
@@ -383,6 +509,19 @@ mod dir {
             if let Some(outcome) = self.read_marker(&record, record_json)? {
                 return Ok(outcome);
             }
+            // **A browser caller's share, counted before the writes** (security
+            // S1b, finding B12) — AFTER the marker read, so a retry of a filed
+            // record answers `Identical` once the share is full. A server's own
+            // games (the empty prefix) are never counted, and nor are this
+            // pair's own two paths (`usage`'s doc: a half pair's repair).
+            if prefix.starts_with("browser/") {
+                let own = [self.dir.join(&record), self.dir.join(&table)];
+                let (records, bytes) = self.usage(prefix, &own)?;
+                let adding = (record_json.len() + table_json.len()) as u64;
+                if records >= self.quota.records || bytes + adding > self.quota.bytes {
+                    return Err(PutError::Quota { records: self.quota.records, bytes: self.quota.bytes });
+                }
+            }
             // The table FIRST — overwriting a half pair's table is the repair —
             // and the record second, which is what makes the pair complete.
             self.write_over(&table, table_json)?;
@@ -396,6 +535,13 @@ mod dir {
             self.read_marker(&record, record_json)?.ok_or_else(|| {
                 PutError::Failed(format!("link {record}: the path is taken and reads as absent"))
             })
+        }
+        fn holds(&self, prefix: &str, why: Why, id: &str, record_json: &str) -> bool {
+            let Ok((record, _)) = paths(yokohama_core::SEMANTICS_REV, prefix, why, id) else { return false };
+            if !Path::new(&record).components().all(|c| matches!(c, Component::Normal(_))) {
+                return false;
+            }
+            matches!(self.read_marker(&record, record_json), Ok(Some(PutOutcome::Identical)))
         }
         fn kind(&self) -> &'static str {
             "dir"
@@ -423,8 +569,8 @@ mod tests {
             colors: vec![PlayerColor::Red, PlayerColor::Blue],
             start_seat: 0,
             seats: vec![
-                SeatDoc::Human { user: "a@x.test".into(), name: None },
-                SeatDoc::Human { user: "b@x.test".into(), name: None },
+                SeatDoc::Human { user: "a@x.test".into(), name: None, bound_at_create: false },
+                SeatDoc::Human { user: "b@x.test".into(), name: None, bound_at_create: false },
             ],
             keeps: vec![Some(1), Some(2)],
             seed: 7,
@@ -436,31 +582,45 @@ mod tests {
         }
     }
 
-    /// R-6.5b.15, restated for M6.5c2's key grammar (spec §2.1; review H1): a
-    /// caller's key rendered into ONE path segment that is path-safe and still
-    /// readable — the owner reviews saves by who sent them, and a hash would
-    /// hide that.
-    ///
-    /// **The containment property is arithmetic, with one arm per shape of
-    /// key.** An email's local part and domain are each non-empty and `@`
-    /// becomes four characters, so its segment is at least six characters of
-    /// `[a-z0-9._-]`. A plain name begins with a letter or a digit, which the
-    /// segment keeps, so its segment begins with `[a-z0-9]`. Neither holds a
-    /// `/`, and the cap can only shorten a segment that is already non-empty —
-    /// so no segment is empty, `.` or `..`. The names that WOULD break the
-    /// second arm (`.`, `..`, `. .`, `-`, `.x`) are fed to the grammar and
-    /// must be refused there.
+    /// The segment is READABLE still — the owner reviews saves by who sent them
+    /// — and injective in practice (security S1c, finding D26): the readable
+    /// part is the legacy mapping cut at 48, then `-` and twelve hex characters
+    /// of a SHA-256 over the whole normalized address. The review named one
+    /// pair, `alice+x@corp.test` and `alice_x@corp.test`, and the truncation at
+    /// 64; with three more pairs the legacy mapping rendered alike (a space, a
+    /// slash, and an email against the plain name its `@` rendered as) and the
+    /// two long addresses one 64-prefix held, each gets two folders, and each
+    /// row asserts that the legacy folders WERE one, so no row is inert. The
+    /// cut's value is pinned by the long address, whose readable half IS
+    /// forty-eight `a`s: a cut at 40 — the constant or the `truncate` — is red
+    /// here, not only in the Worker's premise cell. The alphabet stays
+    /// `[a-z0-9._-]`, a plain name's first character `[a-z0-9]` (an email's
+    /// may be a `.`, as it always could: `../../x@y` renders `.._.._x_at_y-…`),
+    /// no segment empty, `.` or `..`, the length at most 61; the names that
+    /// WOULD break the layout are refused by the grammar.
     #[test]
-    fn a_caller_segment_is_path_safe_and_readable() {
+    fn a_caller_segment_is_path_safe_readable_and_injective() {
         use crate::identity::User;
         let seg = |s: &str| caller_segment(&User::parse(s).unwrap());
-        assert_eq!(seg("red@example.test"), "red_at_example.test");
-        assert_eq!(seg("A/B@c"), "a_b_at_c", "a slash is replaced, the address lowercased");
-        assert_eq!(seg("../../x@y"), ".._.._x_at_y");
-        assert_eq!(seg("..@.."), ".._at_..");
-        assert_eq!(seg("  Ben   Castle "), "ben_castle", "a name's one space becomes `_`");
-        let long = format!("{}@{}", "a".repeat(200), "b".repeat(50));
-        assert_eq!(seg(&long).len(), 64, "capped");
+        let old = |s: &str| legacy_caller_segment(&User::parse(s).unwrap());
+        assert!(seg("red@example.test").starts_with("red_at_example.test-"), "{}", seg("red@example.test"));
+        assert_eq!(seg("red@example.test").len(), "red_at_example.test".len() + 1 + SEGMENT_DIGEST);
+        for (a, b) in [
+            ("alice+x@corp.test", "alice_x@corp.test"),
+            ("a b", "a_b"),
+            ("a/b@c", "a_b@c"),
+            ("a@b", "a_at_b"),
+        ] {
+            assert_eq!(old(a), old(b), "premise: {a:?} and {b:?} shared one legacy folder");
+            assert_ne!(seg(a), seg(b), "{a:?} and {b:?} share a folder");
+            assert_eq!(seg(a).split('-').next_back().map(str::len), Some(SEGMENT_DIGEST));
+        }
+        let long_a = format!("{}@{}", "a".repeat(200), "b".repeat(50));
+        let long_b = format!("{}@{}", "a".repeat(200), "c".repeat(50));
+        assert_eq!(old(&long_a), old(&long_b), "premise: the two long addresses shared one legacy folder");
+        assert_ne!(seg(&long_a), seg(&long_b), "two long addresses with one 48-prefix");
+        assert_eq!(seg(&long_a).len(), 48 + 1 + 12, "the cut's value: {}", seg(&long_a));
+        assert!(seg(&long_a).starts_with(&format!("{}-", "a".repeat(48))), "the cut's value: {}", seg(&long_a));
         for name in [".", "..", ". .", "-", ".x"] {
             assert!(User::parse(name).is_err(), "{name:?} must never be a key");
         }
@@ -469,14 +629,75 @@ mod tests {
             let v = seg(name);
             assert!(v.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()), "{name:?} → {v:?}");
         }
-        for s in ["../../x@y", "..@..", long.as_str(), "a/b@c", "ben castle", "z..", "7"] {
-            let v = seg(s);
-            assert!(!v.is_empty() && v != "." && v != ".." && !v.contains('/'), "{v:?}");
-            assert!(
-                v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')),
-                "{v:?}"
-            );
+        for name in ["ben castle", "z..", "7", n32.as_str(), "../../x@y", "..@..", "a/b@c", long_a.as_str()] {
+            let v = seg(name);
+            assert!(!v.is_empty() && v != "." && v != "..", "{name:?} → {v:?}");
+            assert!(v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')), "{v:?}");
+            assert!(!v.contains("/"), "{v:?}");
         }
+        // Determinism and normalization: the digest is over the KEY, so two
+        // spellings of one address are one segment.
+        assert_eq!(seg("Red@Example.TEST"), seg("red@example.test"));
+        // The directory half of `a_traversal_shaped_caller_writes_inside_the_root`,
+        // over the digested segment: every traversal-shaped address writes
+        // inside the root. Its own directory — the cells run in parallel in
+        // one process, so a shared name would be removed under the other.
+        #[cfg(feature = "server")]
+        {
+            let dir = std::env::temp_dir().join(format!("yokohama_archive_segment_root_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let a = DirArchive::new(&dir);
+            let root = std::fs::canonicalize(&dir).unwrap();
+            for who in ["../../x@y", "a/b@c", "..@.."] {
+                let prefix = format!("browser/{}/", seg(who));
+                a.put(&prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+                let (record, _) = paths(yokohama_core::SEMANTICS_REV, &prefix, Why::Over, "local-1").unwrap();
+                let written = std::fs::canonicalize(dir.join(&record)).unwrap();
+                assert!(written.starts_with(&root), "{who:?} wrote {written:?} outside {root:?}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// **The legacy mapping is what it was, and the new segment differs from it
+    /// for every address** — so a folder the window did not rename is
+    /// detectable, and the `segment` subcommand's two columns are never equal.
+    #[test]
+    fn the_legacy_segment_is_the_old_mapping_and_never_the_new_one() {
+        use crate::identity::User;
+        let old = |s: &str| legacy_caller_segment(&User::parse(s).unwrap());
+        assert_eq!(old("red@example.test"), "red_at_example.test");
+        assert_eq!(old("A/B@c"), "a_b_at_c");
+        assert_eq!(old("../../x@y"), ".._.._x_at_y");
+        assert_eq!(old("  Ben   Castle "), "ben_castle");
+        let long = format!("{}@{}", "a".repeat(200), "b".repeat(50));
+        assert_eq!(old(&long).len(), 64);
+        assert_eq!(old("alice+x@corp.test"), old("alice_x@corp.test"), "premise: the legacy mapping collided");
+        for s in ["red@example.test", "a b", "x", &long, "alice+x@corp.test"] {
+            let u = User::parse(s).unwrap();
+            assert_ne!(legacy_caller_segment(&u), caller_segment(&u), "{s:?}");
+        }
+    }
+
+    /// **The quota counts the NEW prefix alone**: a legacy folder left in place
+    /// for an address is not the caller's share (Review Focus 4) — the window
+    /// renames it, and until then it is nobody's.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_legacy_folder_is_not_counted_against_the_callers_share() {
+        use crate::identity::User;
+        let dir = std::env::temp_dir().join(format!("yokohama_legacy_share_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 1, bytes: 1 << 20 });
+        let u = User::parse("red@example.test").unwrap();
+        let legacy = format!("browser/{}/", legacy_caller_segment(&u));
+        a.put(&legacy, Why::Over, "old-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+        let current = format!("browser/{}/", caller_segment(&u));
+        assert!(matches!(a.put(&current, Why::Over, "new-1", "{\"r\":2}", "{\"t\":2}"), Ok(PutOutcome::Landed)), "the legacy record counted");
+        assert!(matches!(a.put(&current, Why::Over, "new-2", "{\"r\":3}", "{\"t\":3}"), Err(PutError::Quota { .. })), "the share is one record");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **The layout refuses a `.` or `..` component** (M6.5c2, spec §2.1's
@@ -676,6 +897,195 @@ mod tests {
             matches!(NoArchive.put("", Why::Over, "x", "{}", "{}"), Err(PutError::Failed(_))),
             "the guard, not a write — and a FAILURE, never a conflict"
         );
+    }
+
+    /// **`holds` reads the marker and nothing else** (finding A2): true for the
+    /// bytes a put landed at exactly that path, false for other bytes, another
+    /// id, the other leaf, and an archive that keeps nothing — the default
+    /// every implementation that cannot read its own files synchronously
+    /// inherits, the Worker's receipt archive among them.
+    #[cfg(feature = "server")]
+    #[test]
+    fn holds_is_true_for_the_landed_bytes_at_exactly_their_path() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_holds_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}"), "nothing landed yet");
+        a.put("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}").unwrap();
+        assert!(a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":1}"));
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-1", "{\"r\":2}"), "other bytes");
+        assert!(!a.holds("browser/a_at_b/", Why::Over, "local-2", "{\"r\":1}"), "another id");
+        assert!(!a.holds("browser/a_at_b/", Why::Abandoned, "local-1", "{\"r\":1}"), "the other leaf");
+        assert!(!a.holds("browser/c_at_d/", Why::Over, "local-1", "{\"r\":1}"), "another caller");
+        assert!(!NoArchive.holds("", Why::Over, "local-1", "{\"r\":1}"), "the default is false");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **`holds` never reads outside its root** (security S1b, finding A2): an
+    /// absolute prefix that points at a real file holding exactly the bytes
+    /// asked about reads `false`, and so does a `..` id. The catcher for
+    /// `DirArchive::holds` without its component check, which
+    /// `holds_is_true_for_the_landed_bytes_at_exactly_their_path` cannot see
+    /// because every path it asks about is a plain name under the root.
+    #[cfg(feature = "server")]
+    #[test]
+    fn holds_never_reads_outside_its_root() {
+        let root = std::env::temp_dir().join(format!("yokohama_archive_holds_root_{}", std::process::id()));
+        let elsewhere =
+            std::env::temp_dir().join(format!("yokohama_archive_holds_elsewhere_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        let target = elsewhere.join(format!("rev{}/over/x.json", yokohama_core::SEMANTICS_REV));
+        std::fs::create_dir_all(target.parent().expect("a parent")).unwrap();
+        std::fs::write(&target, "held-bytes").unwrap();
+        let a = DirArchive::new(&root);
+        let absolute = format!("{}/", elsewhere.display());
+        assert!(!a.holds(&absolute, Why::Over, "x", "held-bytes"), "an absolute prefix is never read");
+        assert!(!a.holds("", Why::Over, "..", "held-bytes"), "nor a `..` id");
+        std::fs::remove_dir_all(&elsewhere).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A browser caller's share is counted before a put, and the count
+    /// never touches a retry or the server's own games** (finding B12;
+    /// R-SEC8(f); Review Focus 2). Under a two-record share two pairs land, a
+    /// third is refused as `Quota` with nothing written, and the first pair's
+    /// bytes again are `Identical`. That retry does not pin the ORDER on its
+    /// own: the share is exactly full, and a put's own two paths never count
+    /// against it, so it passes the count either way. What pins it is the
+    /// same retry under a one-record share, which the two filed records put
+    /// OVER its bound, as a quota lowered after they were filed would: it is
+    /// `Identical` only because the marker read answers before the count.
+    /// Another caller's share is its own, and three server games land under
+    /// the empty prefix. Then the BYTES: a hundred-byte share takes one
+    /// eighty-byte pair and refuses the next.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_browser_callers_share_is_counted_before_a_put_and_a_retry_survives_a_full_one() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_quota_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 2, bytes: 1 << 20 });
+        let prefix = "browser/a_at_b/";
+        assert!(matches!(a.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Landed)));
+        assert!(matches!(a.put(prefix, Why::Abandoned, "local-2", "{\"r\":2}", "{\"t\":2}"), Ok(PutOutcome::Landed)));
+        let third = a.put(prefix, Why::Over, "local-3", "{\"r\":3}", "{\"t\":3}");
+        assert!(matches!(third, Err(PutError::Quota { records: 2, bytes }) if bytes == 1 << 20), "{third:?}");
+        let (record, table) = paths(yokohama_core::SEMANTICS_REV, prefix, Why::Over, "local-3").unwrap();
+        assert!(!dir.join(&record).exists() && !dir.join(&table).exists(), "nothing was written");
+        assert!(matches!(a.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}"), Ok(PutOutcome::Identical)), "a retry survives a full share");
+        let lowered = DirArchive::new(&dir).with_quota(Quota { records: 1, bytes: 1 << 20 });
+        let retry = lowered.put(prefix, Why::Over, "local-1", "{\"r\":1}", "{\"t\":1}");
+        assert!(matches!(retry, Ok(PutOutcome::Identical)), "a retry survives a share OVER its bound, the marker read first: {retry:?}");
+        assert!(matches!(a.put("browser/c_at_d/", Why::Over, "local-3", "{\"r\":3}", "{\"t\":3}"), Ok(PutOutcome::Landed)), "another caller's share");
+        for id in ["sim-1", "sim-2", "sim-3"] {
+            assert!(matches!(a.put("", Why::Over, id, "{\"r\":9}", "{\"t\":9}"), Ok(PutOutcome::Landed)), "the server's own games are never counted");
+        }
+        let b = DirArchive::new(&dir).with_quota(Quota { records: 100, bytes: 100 });
+        let forty = format!("{{\"r\":\"{}\"}}", "x".repeat(32));
+        assert_eq!(forty.len(), 40, "the premise");
+        assert!(matches!(b.put("browser/e_at_f/", Why::Over, "local-1", &forty, &forty), Ok(PutOutcome::Landed)), "eighty bytes under a hundred");
+        let over = b.put("browser/e_at_f/", Why::Over, "local-2", &forty, &forty);
+        assert!(matches!(over, Err(PutError::Quota { records: 100, bytes: 100 })), "a hundred and sixty over a hundred: {over:?}");
+        // The figures at their literals (the S1 stack review's CB-F3): the
+        // line this replaces compared the constants with themselves.
+        assert_eq!((QUOTA_RECORDS, QUOTA_BYTES), (256, 128 << 20), "a caller's share is 256 records and 128 MiB");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **The production share binds at 256 records through the constructor
+    /// every server's archive is built by** (finding B12; the S1 stack
+    /// review's CB-F3). `DirArchive::new` — which `from_env` builds through,
+    /// so the archive the NAS runs is this one — files 256 small pairs under
+    /// one caller and refuses the 257th as `Quota`, naming both figures. The
+    /// byte edge is pinned by the literal alone: reaching it would take
+    /// 128 MiB of files. `from_env` is not asked here, since setting its
+    /// variable would race the other threads of this binary (the rule
+    /// `identity::from_env_value`'s doc states).
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_production_share_refuses_the_two_hundred_and_fifty_seventh_record() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_production_share_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = DirArchive::new(&dir);
+        let prefix = "browser/p_at_q/";
+        for i in 0..256 {
+            let out = a.put(prefix, Why::Over, &format!("local-{i}"), &format!("{{\"r\":{i}}}"), "{\"t\":1}");
+            assert!(matches!(out, Ok(PutOutcome::Landed)), "pair {i}: {out:?}");
+        }
+        let over = a.put(prefix, Why::Over, "local-256", "{\"r\":256}", "{\"t\":1}");
+        assert!(matches!(over, Err(PutError::Quota { records: 256, bytes: 134_217_728 })), "{over:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// **Sixteen puts in flight from one caller land exactly the share**
+    /// (finding B12; the S1 stack review's CB-F1, AH-F2 and DC-F1, three
+    /// reviewers independently). The count is a read and the writes come
+    /// after it, so without `DirArchive::puts` held across both, puts released
+    /// together each read the count under the bound and all land — the review
+    /// read sixteen of sixteen in the first round with the lock dropped, and
+    /// 257 records under a 256-record share through the binary. Sixteen
+    /// threads behind one barrier, a four-record share, five rounds on fresh
+    /// directories: exactly four `Landed` and twelve `Quota` in every round.
+    #[cfg(feature = "server")]
+    #[test]
+    fn sixteen_puts_in_flight_land_exactly_the_share() {
+        use std::sync::{Arc, Barrier};
+        for round in 0..5 {
+            let dir = std::env::temp_dir().join(format!("yokohama_archive_race_{}_{round}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let a = Arc::new(DirArchive::new(&dir).with_quota(Quota { records: 4, bytes: 1 << 20 }));
+            let barrier = Arc::new(Barrier::new(16));
+            let puts: Vec<_> = (0..16)
+                .map(|i| {
+                    let (a, barrier) = (Arc::clone(&a), Arc::clone(&barrier));
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        a.put("browser/q_at_r/", Why::Over, &format!("local-{i}"), &format!("{{\"r\":{i}}}"), "{\"t\":1}")
+                    })
+                })
+                .collect();
+            let (mut landed, mut full) = (0, 0);
+            for put in puts {
+                match put.join().expect("a put thread") {
+                    Ok(PutOutcome::Landed) => landed += 1,
+                    Err(PutError::Quota { .. }) => full += 1,
+                    other => panic!("round {round}: {other:?}"),
+                }
+            }
+            assert_eq!((landed, full), (4, 12), "round {round}: sixteen puts in flight against a four-record share");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// **A put's own two paths never count against it** (security S1b, finding
+    /// B12). A crash between the two writes leaves a half pair, the table with
+    /// no record, and the put that repairs it counted that table twice: on
+    /// disk, and again in what it adds. At the byte margin the repair was then
+    /// refused for ever, and the outbox never left its retry. Here a 40-byte
+    /// table at the pair's OWN path under an 80-byte share takes the 80-byte
+    /// pair, since the finished pair is exactly the share. The control is the
+    /// same share with a 40-byte table of ANOTHER id, which is the caller's
+    /// and refuses the pair.
+    #[cfg(feature = "server")]
+    #[test]
+    fn a_half_pairs_repair_never_counts_its_own_table_against_the_share() {
+        let dir = std::env::temp_dir().join(format!("yokohama_archive_half_pair_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let forty = format!("{{\"r\":\"{}\"}}", "x".repeat(32));
+        assert_eq!(forty.len(), 40, "the premise");
+        let a = DirArchive::new(&dir).with_quota(Quota { records: 100, bytes: 80 });
+        let plant = |prefix: &str, id: &str| {
+            let (_, table) = paths(yokohama_core::SEMANTICS_REV, prefix, Why::Over, id).unwrap();
+            std::fs::create_dir_all(dir.join(&table).parent().expect("a parent")).unwrap();
+            std::fs::write(dir.join(&table), &forty).unwrap();
+        };
+        plant("browser/g_at_h/", "local-1");
+        let repair = a.put("browser/g_at_h/", Why::Over, "local-1", &forty, &forty);
+        assert!(matches!(repair, Ok(PutOutcome::Landed)), "the repair lands at exactly the share: {repair:?}");
+        plant("browser/i_at_j/", "local-9");
+        let control = a.put("browser/i_at_j/", Why::Over, "local-1", &forty, &forty);
+        assert!(matches!(control, Err(PutError::Quota { records: 100, bytes: 80 })), "another id's table counts: {control:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The third answer to the marker read (review fix, spec §2.4): a record

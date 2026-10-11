@@ -6,7 +6,12 @@
 // chat other people share (`filterLobby`, `normalizeHouseChat`,
 // `houseDeleteRow`), and the archive's two first sends, which land only once
 // (`firstSendAccepts`, `resetRecipe`) — and the fixtures each applies to. The
-// host fields are `HOST_FIELDS`, `../corpus-walk.mjs`'s.
+// host fields are `HOST_FIELDS`, `../corpus-walk.mjs`'s. Beside them, the
+// production seed rule (security S1b): the walk's seeded tables a deployed
+// Worker will not deal, their creates held to its 400 in `SEED_NOT_SOLO`'s
+// words and every other row at them, and — while the rule names any table —
+// every lobby page, skipped and counted (`productionSeedRule`,
+// `isProductionSeedCreate`, `skippedUnderProductionSeedRule`).
 
 import { isDeepStrictEqual } from "node:util";
 
@@ -24,6 +29,51 @@ export const LOBBY = new Set(["games", "games_next", "games_open", "games_playin
 export const HOUSE_CHAT = new Set(["house_chat_post", "house_chat"]);
 /** `archive-walk.json`'s two FIRST sends, which land only once. */
 export const FIRST_SENDS = new Set(["archive_post", "archive_post_abandoned"]);
+
+/** `tables::SEED_NOT_SOLO` (`crates/yokohama-web/src/tables.rs`): the sentence
+ *  a production host refuses a seeded create with when any human seat is not
+ *  the creator's or a seat is open (security S1a, R-SEC8(b)). Held to the Rust
+ *  source by `live-replay.test.mjs`. */
+export const SEED_NOT_SOLO = "a seed is honoured only at a table whose every human seat is yours — leave it blank and the server draws one";
+
+/**
+ * The tables a PRODUCTION host cannot deal from the walk (security S1b, the
+ * production-door walk): each create row that carries a seed and seats anyone
+ * but its creator — an open seat, or a user other than its `who`. A `null`
+ * seed is none, as the layer's `Option` reads it: a server deals that create
+ * unseeded, so it is never named here. The pool
+ * deals them under `YOKOHAMA_DIAGNOSTIC_SEEDS`; a deployed Worker answers the
+ * create 400 in `SEED_NOT_SOLO`'s words, so the create is sent and held to
+ * that answer, and every row at the table is skipped and counted.
+ */
+export function productionSeedRule(walk) {
+  const ids = walk
+    .filter((row) => row.method === "POST" && row.path === "/api/games" && row.body !== null && row.body.seed != null)
+    .filter((row) => (row.body.seats ?? []).some((s) => s.open === true || (typeof s.user === "string" && s.user !== row.who)))
+    .map((row) => row.body.id);
+  return new Set(ids);
+}
+
+/** The create of one of `skipped`'s tables: sent, and held to the 400. */
+export function isProductionSeedCreate(row, skipped) {
+  return row.method === "POST" && row.path === "/api/games" && row.body !== null && skipped.has(row.body.id);
+}
+
+/**
+ * Whether a production host cannot be asked `row` under the rule: a row at
+ * one of `skipped`'s tables (`/api/games/<id>` and everything under it), or,
+ * while the rule names any table, a lobby page, whose committed body names
+ * them. Under a rule that names none, no lobby page is skipped: each is sent
+ * and judged through `filterLobby`, with `replay`'s re-reads. A table's create
+ * is never skipped, and needs no exception here: it is `POST /api/games`, a
+ * path that names no table, and the walk names no fixture for it — so it is
+ * sent, and held to its 400 (`isProductionSeedCreate`).
+ */
+export function skippedUnderProductionSeedRule(row, skipped) {
+  const m = /^\/api\/games\/([^/?]+)/.exec(row.path);
+  if (m !== null && skipped.has(m[1])) return true;
+  return skipped.size > 0 && row.fixture !== null && LOBBY.has(row.fixture);
+}
 
 /**
  * `value` with every `created_at` and every page cursor's time read as the

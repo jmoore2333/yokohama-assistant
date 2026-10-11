@@ -159,6 +159,8 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["why.provenance", wire.why.ok!.provenance, KEYS.provenance],
     ["why_refused", wire.whyRefused, KEYS.whyResponse],
     ["why_refused.refusal", wire.whyRefused.refusal, KEYS.refusalRow],
+    ["why_withheld", wire.whyWithheld, KEYS.whyResponse],
+    ["why_withheld.withheld", wire.whyWithheld.withheld, KEYS.whyWithheld],
     // **Six of these had a compile-time list and no runtime half**, which a
     // review found by adding `__server_added_a_field` to six committed payloads
     // and watching the typecheck and all 173 cells stay green. The compile-time
@@ -824,7 +826,7 @@ describe("the explanation foots", () => {
     // reintroduce that.
     expect(wire.suggest.ok!.ranking.length).toBeGreaterThan(2);
     expect(wire.why.ok!.ranking.length).toBeGreaterThan(2);
-    expect(wire.why.ok!.provenance.forced).toBe(false);
+    expect(wire.why.ok!.forced).toBe(false);
     expect(wire.suggest.ok!.continuation.length).toBeGreaterThan(1);
     expect(wire.why.ok!.explanation.nonzero).toBeGreaterThan(1);
   });

@@ -1,0 +1,49 @@
+{
+  "archived_at": null,
+  "colors": [
+    "Red",
+    "Blue",
+    "Yellow",
+    "Green"
+  ],
+  "created_at": 1789956559,
+  "created_by": "local@browser",
+  "id": "local-spread4096",
+  "keeps": [
+    1,
+    1,
+    1,
+    1
+  ],
+  "lock": null,
+  "name": null,
+  "players": 4,
+  "schema": 3,
+  "seats": [
+    {
+      "kind": "human",
+      "name": null,
+      "user": "local@browser"
+    },
+    {
+      "kind": "human",
+      "name": null,
+      "user": "local@browser"
+    },
+    {
+      "kind": "human",
+      "name": null,
+      "user": "local@browser"
+    },
+    {
+      "kind": "human",
+      "name": null,
+      "user": "local@browser"
+    }
+  ],
+  "seed": 11,
+  "start_seat": 0,
+  "status": "playing",
+  "turn": null,
+  "unlocked": []
+}

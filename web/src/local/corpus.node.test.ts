@@ -54,6 +54,7 @@ interface Row {
  */
 interface WasmHost {
   init(): void;
+  init_diagnostic(): void;
   set_clock(seconds?: number | null): void;
   dispatch(
     user: string | null | undefined,
@@ -131,7 +132,7 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   were never route payloads: the first is the host's own art directory,
  *   the other three CONTRACTS the client holds itself to (the terminal's
  *   words, the key grammar's verdicts, a seed's verdict).
- * - `watching`, `locked`, `why`, `why_refused`, `explanation_terminal`,
+ * - `watching`, `locked`, `why`, `why_withheld`, `why_refused`, `explanation_terminal`,
  *   `why_refusals` and `house_frame` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
  *   this host — the `why` ones are what the committed pair is reconstructed
@@ -160,6 +161,7 @@ const NOT_SERVED = [
   "locked",
   "why",
   "why_refused",
+  "why_withheld",
   "explanation_terminal",
   "why_refusals",
   "house_frame",
@@ -240,7 +242,7 @@ describe("the replay's reading of a reply", () => {
 describe.skipIf(!have)("the browser host serves the corpus", () => {
   it("replays the walk through the module and every named reply is its committed file", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
-    wasm.init();
+    wasm.init_diagnostic();
     // The same reading the corpus was cut under, so the two hosts stamp the
     // same second and the lobby's `(created_at desc, id asc)` falls to the
     // same tie-break the committed pages show.
@@ -332,7 +334,7 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
 
   it("keeps no archive, so the browser sends a finished game to the server's", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
-    wasm.init();
+    wasm.init_diagnostic();
     const reply = wasm.dispatch(
       "local@browser",
       "POST",

@@ -3564,6 +3564,7 @@
     "> type an area id to toggle, 'confirm' to place, or 'cancel'"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "fee": null,

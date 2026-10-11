@@ -1518,6 +1518,7 @@
     "> pick a number, or 'cancel'"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "pick",

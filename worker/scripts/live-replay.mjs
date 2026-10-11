@@ -22,9 +22,19 @@
 //    and the run does not start.
 // 2. **The house chat's `last` and `rev`**, read as the walk's own house-chat
 //    reader: the base its payloads are taken back by (spec §9.3).
-// 3. **Every row** of `walk.json`, each `walk-host.json` row after the walk
-//    row its `after` names, then `archive-walk.json`, with the credential and
-//    `X-Yokohama-Claimed-User: <who>` — a row with no `who` sends none.
+// 3. **Every row the production seed rule lets through**, in `order`'s order:
+//    `walk.json`'s, each `walk-host.json` row after the walk row its `after`
+//    names (`-1`: before the first), then `archive-walk.json`'s — with the credential and
+//    `X-Yokohama-Claimed-User: <who>`, a row with no `who` sending the
+//    credential alone. The rule (`productionSeedRule`, security S1b): `wire`
+//    and `wire2` are seeded creates beside an open seat, which a production
+//    host answers 400 (`SEED_NOT_SOLO`) — each create is sent and held to that
+//    answer, and every row at those tables, the host script's among them, and
+//    every lobby page, whose committed bodies list them, is skipped and
+//    counted (`skippedUnderProductionSeedRule`). A walk whose rule names no
+//    table skips nothing: its lobby pages run, each judged through
+//    `filterLobby` with up to `LOBBY_REREADS` re-reads. The pool replays the
+//    whole walk under its diagnostic switch.
 // 4. **Every row's status, and every named row's body** against its committed
 //    file — the clock frozen first (`freezeClock`), then three named
 //    exemptions (`filterLobby`, `normalizeHouseChat`, `firstSendAccepts`, the
@@ -35,9 +45,15 @@
 //    cycle D, R-D4): the delete row is sent carried forward to the number
 //    that run's post was really given (`houseDeleteRow`, counted like the
 //    rest), so every run answers 204 and no run leaves a post behind.
-// 5. **The force again** once the replay has begun, however it ended; then the
-//    report: rows run, named rows compared, the exemptions spent, and every
-//    mismatch. Exit 1 on a mismatch, a refused force, or a run that stopped.
+// 5. **The force again** whenever the force before held, however the run then
+//    ended — a base that could not be read and a row that stopped the run
+//    included; then the report: rows run of the total, rows skipped under the
+//    production seed rule, named rows compared, the exemptions spent, the
+//    lobby re-reads spent, where the run stopped if it did, the reset's
+//    commands after a first send's 409, and the count of mismatches, each
+//    printed as it was found. Exit 1
+//    on a mismatch, a force that answered other than 204, a run that stopped,
+//    or a refusal before the first send.
 //
 // **The reset** (R3's M-1). The two first sends' saves stay in the bucket for
 // good, by the owner's direction, so every later run's first sends meet them:
@@ -67,7 +83,17 @@
 
 import { pathToFileURL } from "node:url";
 import { KEYS, LOBBY_PAUSE_MS, LOBBY_REREADS, ORIGIN, readCredential } from "./replay/credential.mjs";
-import { FIRST_SENDS, firstSendAccepts, houseDeleteRow, LOBBY, resetRecipe } from "./replay/exemptions.mjs";
+import {
+  FIRST_SENDS,
+  firstSendAccepts,
+  houseDeleteRow,
+  isProductionSeedCreate,
+  LOBBY,
+  productionSeedRule,
+  resetRecipe,
+  SEED_NOT_SOLO,
+  skippedUnderProductionSeedRule,
+} from "./replay/exemptions.mjs";
 import { errorText, finish, fmt, judge, parsed, said } from "./replay/judge.mjs";
 import { loadCorpus, loadScripts, order, tableIds, urlOf } from "./replay/scripts.mjs";
 import { forceAll, send } from "./replay/send.mjs";
@@ -78,7 +104,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * The live replay. `fetcher`, `log` and `pause` are the network, the report's
  * sink and the wait between a lobby page's reads — the cells hand in fakes.
  * Answers the run's result; `holds` is whether every force answered 204,
- * every row ran, and nothing differed.
+ * every row the production seed rule sends ran, and nothing differed.
  */
 export async function replay({ walk, host, archive, corpus, credential, fetcher = fetch, log = console.log, pause = sleep }) {
   const rows = order(walk, host, archive);
@@ -92,6 +118,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     holds: false,
     run: 0,
     total: rows.length,
+    skipped: 0,
     named: 0,
     spent: [],
     rereads: 0,
@@ -133,6 +160,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     }
     // `houseShift`: set once the run's own house post is answered.
     const context = { corpus, ids, base: last, baseRev, houseShift: undefined };
+    const skipped = productionSeedRule(walk);
 
     for (const { script, index, row: scripted } of result.stopped === null ? rows : []) {
       let row = scripted;
@@ -144,6 +172,10 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       }
       if (row !== scripted) result.spent.push(`houseDeleteRow ${row.fixture}: ${scripted.path} sent as ${row.path}`);
       const label = `${script} row ${index}: ${row.method} ${row.path}${row.query ? `?${row.query}` : ""} as ${row.who ?? "no one"}`;
+      if (skippedUnderProductionSeedRule(row, skipped)) {
+        result.skipped += 1;
+        continue;
+      }
       let reply;
       try {
         reply = await send(row, credential, fetcher);
@@ -154,6 +186,15 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       }
       result.run += 1;
       if (result.run % 500 === 0) log(`… ${result.run} of ${result.total} rows`);
+      if (isProductionSeedCreate(row, skipped)) {
+        const id = row.body.id;
+        if (reply.status === 400 && parsed(reply)?.error === SEED_NOT_SOLO) {
+          result.spent.push(`productionSeedRule ${id}: the seeded create beside a seat that is not its creator's answered 400 in SEED_NOT_SOLO's words`);
+        } else {
+          differs(label, null, { path: "(production seed rule)", reason: `expected 400 in SEED_NOT_SOLO's words · got ${reply.status}${said(reply)}` });
+        }
+        continue;
+      }
 
       if (row.fixture !== null && corpus[row.fixture] === undefined) throw new Error(`${row.fixture} is named by a script and not committed`);
       if (row.fixture !== null && FIRST_SENDS.has(row.fixture)) {

@@ -3556,6 +3556,7 @@
     "Phase: Additional actions (before) -> Placement"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "options",

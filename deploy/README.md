@@ -111,7 +111,7 @@ the default features, so its image includes the open door.
 From the repository root:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.0 .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.1-s1 .
 ```
 
 It compiles the server and the browser module on the pinned Rust toolchain, then builds the client. The
@@ -132,7 +132,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
   --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama \
   --build-arg YOKOHAMA_SITE_BLURB="A few words under the title." \
   --build-arg YOKOHAMA_SITE_NOTICE="Not affiliated with Asmodee" \
-  -t yokohama-web:0.6.0 .
+  -t yokohama-web:0.6.1-s1 .
 ```
 
 | Argument | Maximum | What it draws |
@@ -170,7 +170,7 @@ docker run -d --name yokohama-web \
   -v yokohama-web-data:/data \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
   --restart unless-stopped \
-  yokohama-web:0.6.0
+  yokohama-web:0.6.1-s1
 ```
 
 - **`/data` is the one thing that must outlive the container.** Every applied move is written there as the
@@ -189,7 +189,7 @@ docker run -d --name yokohama-web \
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
-| `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document |
+| `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<segment>/` (security S1b) — the segment is the address made readable, then `-` and a twelve-character digest (security S1c) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
 | `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
@@ -208,7 +208,7 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.0          # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.1-s1       # or: … <image> <port>, default 18080
 ```
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on
@@ -311,7 +311,7 @@ restarts every table's clock.
 | `/data/games/<id>.table.json` | the table: who sits where, the status, the lock, the setup seed |
 | `/data/games/<id>.chat.json` | the table's chat |
 | `/data/games/_house.chat.json` | the lobby chat — never a game; leave it |
-| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document |
+| `/data/archive/rev7/over/`, `/data/archive/rev7/abandoned/`; a browser's uploads under `/data/archive/browser/<segment>/rev7/{over,abandoned}/` | the archive, when `YOKOHAMA_WEB_ARCHIVE_DIR` is set: one copy of each finished or abandoned game, with its table document; a browser's uploads under `browser/<segment>/` (the segment is the address made readable, then `-` and a twelve-character digest, security S1c) stop at 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller (security S1b) |
 
 **The preferred way** to end one table is the creator's **Abandon** in the lobby: it files the archive copy
 (once, even for a finished game) and removes the table, as the sweep does. Everything below is for a server

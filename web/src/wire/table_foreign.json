@@ -27,7 +27,7 @@
   "saves": true,
   "seats": [
     {
-      "invited": "local@browser",
+      "invited": null,
       "kind": "human",
       "name": null,
       "you": true

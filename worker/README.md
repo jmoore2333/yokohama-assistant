@@ -1288,8 +1288,8 @@ non-200 is logged `stamp-refused` and never thrown: the save is retried after a 
 `rev7/over/<id>.json` and `rev7/abandoned/<id>.json`, each beside its `<id>.table.json`, and a
 browser's save under `browser/<the caller's segment>/`. **A plan whose game belongs to a `.test`
 address goes under `test/` instead.** That is the table creator's address for a server game, and the
-full sender's address for a browser save, never its truncated 64-character segment. *(Since M6.5c2
-the rule asks for an ADDRESS, one with an `@`: a plain name at the open door never takes the `test/`
+full sender's address for a browser save, never its segment, whose readable half is cut at 48
+characters (security S1c). *(Since M6.5c2 the rule asks for an ADDRESS, one with an `@`: a plain name at the open door never takes the `test/`
 root, even one ending `.test`.)* Every test
 identity uses the reserved `.test` domain, so the live test tiers never write into the owner's
 training data. A reply's `path` is relative to that root, as a NAS reply's is relative to its
@@ -1628,7 +1628,10 @@ twelve checks hold, and every failure is named, not only the first:
    `preview_urls` leaves the Worker's version URLs as they were. *(Corrected 2026-09-28: until
    M6.5c2 this check asked both switches `false`, with no door to read.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
-   comment can carry a frozen clock into production.
+   comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
+   R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as
+   text whichever file the deploy ships, so a creator's seed is honoured at a table that seats
+   somebody else in the pool's two files and nowhere else.
 5. **The `assets` block is exactly spec §2.3's in all five files**: production's, the open window's and
    the gate's, and the pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads
    only its own two files, so without this production's block could drift with every pool cell green,
@@ -1684,7 +1687,9 @@ chat variables keep the NAS's defaults;
 `YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `off`, a deploy declaration
 the Worker only holds to a string, which the deploy guard holds to the client build's site key and
 to the open door, and which `wrangler.open.jsonc` alone sets `on` (RUNBOOK §3); and
-`YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files. A bad value answers the API's
+`YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files, as does `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+`on` there so the corpus walk's seeded tables with an open seat are honoured, and refused by the
+deploy guard in any deployed file (check 4b). A bad value answers the API's
 requests 500, naming the variable, and leaves the static release alone; RUNBOOK §3 lists the few
 answers that come before the configuration is read, and the recipes "to deploy with no archive" and
 "to keep every table".
@@ -1824,7 +1829,8 @@ What a run leaves on the account:
 - saves under the bucket's `test/` root for every `.test` identity's finished and abandoned games,
   which the lifecycle rule `expire-test-after-30-days` removes 30 days after they were written
   (R-6.5c2.12; set at the M6.5c2 close, 2026-09-28, `RUNBOOK.md` §15);
-- the replay's own first-send saves under `test/browser/red_at_wire.test/`, which expire after 30
+- the replay's own first-send saves under `test/browser/red_at_wire.test-c91ad2a917f7/` (the
+  segment carries a digest of the address since security S1c), which expire after 30
   days like every `.test` identity's archive (the `test/` prefix's lifecycle rule,
   `RUNBOOK.md` §15);
 - no lobby chat post: each replay run deletes the house post it made ("anyone up for a second
@@ -1845,7 +1851,7 @@ archive's once-rule answers `200` with `"identical": true`, which the replay acc
 rows alone. A `wire` record whose bytes have changed since meets them as a 409 instead: a version
 bump (every record carries `engine_version`), a walk that plays other moves, or a record format
 change. The replay then STOPS, names the cause, and prints the reset: four `npx wrangler r2 object
-delete "yokohama-archive/test/browser/red_at_wire.test/…" --remote` lines, run in `worker/` with
+delete "yokohama-archive/test/browser/red_at_wire.test-c91ad2a917f7/…" --remote` lines, run in `worker/` with
 wrangler's login, since the owner's R2 key is read-only. RUNBOOK §7 ("The replay's reset") has
 them in full.
 

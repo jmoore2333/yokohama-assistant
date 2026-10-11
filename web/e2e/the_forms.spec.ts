@@ -35,7 +35,7 @@ async function fits(page: Page, what: string, width: number): Promise<void> {
 }
 
 for (const width of [1280, 390] as const) {
-  test(`the new-table form fits ${width} px at its widest, and refuses a bad seed in its fold`, async ({
+  test(`the new-table form fits ${width} px at its widest, and withholds the seed once a seat is somebody else's`, async ({
     page,
   }, info) => {
     const watch = watchForBreakage(page);
@@ -43,16 +43,50 @@ for (const width of [1280, 390] as const) {
     await atWidth(page, width);
     // **The form at its WIDEST** — four seats, one of them a specific person
     // (whose field drops under the row), four colours and Random to start, the
-    // password open and the fold open — because a width claim about the
-    // narrowest form proves nothing about this one.
+    // password open — because a width claim about the narrowest form proves
+    // nothing about this one.
     await page.getByRole("group", { name: "Players" }).getByRole("radio", { name: "4", exact: true }).check();
     await page.getByRole("combobox", { name: "Green seat", exact: true }).selectOption("person");
-    await page.getByLabel(/^Green player's (name|address)$/).fill("someone else");
+    const person = page.getByLabel(/^Green player's (name|address)$/);
+    await person.fill("someone else");
+    await page.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
+    const submit = page.getByRole("button", { name: "Open table" });
+    // Anti-vacuity: the controls this claim is about are really drawn.
+    await expect(person).toBeVisible();
+    await expect(page.getByLabel("Table password", { exact: true })).toBeVisible();
+    await expect(submit).toBeEnabled();
+    // Security S1a (B3; R-SEC8(b)): a seed is withheld — the fold is absent, not shut — once a seat is somebody else's.
+    await expect(page.getByText("Advanced", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("Seed", { exact: true })).toHaveCount(0);
+    await fits(page, "the new-table form", width);
+    if (width === 390) {
+      const box = (await submit.boundingBox())!;
+      expect(box.height, "the submit is a thumb's size on a phone").toBeGreaterThanOrEqual(44);
+      expect(box.x + box.width, "the submit's right edge is on the screen").toBeLessThanOrEqual(390);
+    }
+    await page.screenshot({ path: info.outputPath(`new-table-${width}.png`), fullPage: true });
+    expect(watch.failures).toEqual([]);
+  });
+
+  test(`the new-table form refuses a bad seed in its fold at ${width} px, at a table whose every seat is yours`, async ({
+    page,
+  }, info) => {
+    const watch = watchForBreakage(page);
+    await newGameForm(page);
+    await atWidth(page, width);
+    // Security S1a (B3; R-SEC8(b)): the fold is drawn only at a SOLO table — here four seats, every one "You".
+    // Everything else open too — the password and the fold — so the width is measured at the
+    // widest a solo form gets (the review's M-7).
+    await page.getByRole("group", { name: "Players" }).getByRole("radio", { name: "4", exact: true }).check();
+    for (const color of ["Blue", "Yellow", "Green"]) {
+      await page.getByRole("combobox", { name: `${color} seat`, exact: true }).selectOption("me");
+    }
     await page.getByLabel("Ask for a password to join or spectate", { exact: true }).check();
     await page.getByText("Advanced", { exact: true }).click();
     const seed = page.getByLabel("Seed", { exact: true });
-    const submit = page.getByRole("button", { name: "Open table" });
+    const submit = page.getByRole("button", { name: "Deal" });
     // Anti-vacuity: the controls this claim is about are really drawn.
+    await expect(page.getByLabel("Table password", { exact: true })).toBeVisible();
     await expect(seed).toBeVisible();
     await expect(submit).toBeEnabled();
 
@@ -69,13 +103,8 @@ for (const width of [1280, 390] as const) {
     const sentenceBox = (await refusal.boundingBox())!;
     expect(sentenceBox.y).toBeGreaterThanOrEqual(foldBox.y);
     expect(sentenceBox.y + sentenceBox.height).toBeLessThanOrEqual(foldBox.y + foldBox.height + 1);
-    await fits(page, "the new-table form", width);
-    if (width === 390) {
-      const box = (await submit.boundingBox())!;
-      expect(box.height, "the submit is a thumb's size on a phone").toBeGreaterThanOrEqual(44);
-      expect(box.x + box.width, "the submit's right edge is on the screen").toBeLessThanOrEqual(390);
-    }
-    await page.screenshot({ path: info.outputPath(`new-table-${width}.png`), fullPage: true });
+    await fits(page, "the new-table form with its refused seed", width);
+    await page.screenshot({ path: info.outputPath(`new-table-seed-${width}.png`), fullPage: true });
 
     // And a seed the SERVER takes — a `+`, leading zeros and a space — lets the
     // form go: the fold agrees with `WireSeed`, not with a stricter guess.

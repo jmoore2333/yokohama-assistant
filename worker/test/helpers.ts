@@ -189,6 +189,31 @@ export const LOCAL = "local@browser";
 /** The committed owed-game-over pair's own id. */
 export const OWED = "local-242a5429453c593c";
 
+/**
+ * The segment the layer files a browser's save under, `browser/<segment>/`
+ * (`crates/yokohama-web/src/archive.rs`'s `caller_segment`; security S1c,
+ * finding D26): the address made readable — `@` as `_at_`, anything outside
+ * `[a-z0-9._-]` as `_`, cut at 48 — then `-` and the first twelve hex
+ * characters of a SHA-256 over the address. Restated here rather than read
+ * off a reply, because the reply is what the cells test; workerd's own
+ * WebCrypto digests it, since this project's types declare no node module.
+ * The digest is over the layer's KEY, so the address must already be one:
+ * lowercase and trimmed, as every address these cells pass is. The guard
+ * checks those two and no more — not the grammar's collapse of space runs,
+ * and JS's `toLowerCase` is wider than the grammar's ASCII lowering — so its
+ * message names only what it checks.
+ */
+export async function segmentOf(address: string): Promise<string> {
+  if (address !== address.trim().toLowerCase()) throw new Error(`segmentOf(${JSON.stringify(address)}): not trimmed and lowercase`);
+  const readable = [...address]
+    .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
+    .join("")
+    .slice(0, 48);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(address)));
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${readable}-${hex.slice(0, 12)}`;
+}
+
 /** A record no game here makes: what another game's copy, archived under
  *  this id, holds. */
 export const ANOTHER_RECORD = '{"engine_version":"another","events":[]}';

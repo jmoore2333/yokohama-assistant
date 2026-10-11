@@ -1291,6 +1291,7 @@
     "Red: hand -O27"
   ],
   "mode": "sim",
+  "options_omitted": 0,
   "over": false,
   "prompt": {
     "kind": "options",

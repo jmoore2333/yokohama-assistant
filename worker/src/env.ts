@@ -55,6 +55,11 @@ export interface Env {
    *  credential may claim a user through `X-Yokohama-Claimed-User`
    *  (R-6.5c.3). */
   YOKOHAMA_DEV_DOOR?: string;
+  /** `on` | `off`, absent = off (R-SEC8(b)): whether a creator's seed is
+   *  honoured at a table that seats somebody else — the corpus walk's shape.
+   *  Set in the pool's two test files and nowhere else: the deploy guard
+   *  refuses it in a deployable configuration. */
+  YOKOHAMA_DIAGNOSTIC_SEEDS?: string;
   /** `r2` | `off`, absent = off (R-6.5c.14). */
   YOKOHAMA_WEB_ARCHIVE?: string;
   /** Whole days, absent = no table ever expires (R-6.5c.15). */

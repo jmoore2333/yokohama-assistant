@@ -166,10 +166,10 @@ impl User {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b' ' | b'.' | b'-' | b'_'));
         if s.len() > NAME_MAX || !alphabet || !s.as_bytes()[0].is_ascii_alphanumeric() {
-            return Err(format!("{raw:?} is neither an email nor a name: {NAME_RULE}"));
+            return Err(format!("\"{raw}\" is neither an email nor a name: {NAME_RULE}", raw = crate::echo::echo(raw)));
         }
         if s == "anonymous" {
-            return Err(format!("{raw:?} is reserved: `anonymous` is how an edge says nobody"));
+            return Err(format!("\"{raw}\" is reserved: `anonymous` is how an edge says nobody", raw = crate::echo::echo(raw)));
         }
         Ok(Self(s))
     }
@@ -181,12 +181,12 @@ impl User {
             return Err("an email is at most 254 bytes".to_string());
         }
         if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return Err(format!("{raw:?} contains whitespace or a control character"));
+            return Err(format!("\"{raw}\" contains whitespace or a control character", raw = crate::echo::echo(raw)));
         }
         let mut parts = s.split('@');
         match (parts.next(), parts.next(), parts.next()) {
             (Some(l), Some(d), None) if !l.is_empty() && !d.is_empty() => Ok(Self(s)),
-            _ => Err(format!("{raw:?} is not an email: exactly one @ with something on both sides")),
+            _ => Err(format!("\"{raw}\" is not an email: exactly one @ with something on both sides", raw = crate::echo::echo(raw))),
         }
     }
 

@@ -3,11 +3,12 @@
 //! at `init` naming its variable, the Worker's form of the NAS refusing to
 //! start. A configuration of the wrong SHAPE names no variable: JSON that is
 //! not an OBJECT is refused in this crate's own sentence, which names the
-//! eight keys ([`parse`]); text that is not JSON, an object with a key it does
+//! nine keys ([`parse`]); text that is not JSON, an object with a key it does
 //! not have or MISSING the door, and a value of the wrong JSON type, such as
 //! `{"chat_keep": 500}` for the string `"500"`, in serde's words. The shell
 //! always builds the object, with every value a string or `null` but the two
-//! TTLs, which are the shell's own reading and so NUMBERS or `null`
+//! TTLs, which are the shell's own reading and so NUMBERS or `null`, and the
+//! diagnostic-seeds switch, the shell's own reading too and so a BOOLEAN
 //! (`worker/src/config.ts`'s `moduleConfig`, whose `shellConfig` refuses a
 //! variable that is not a string, and a door that is not named, first: the
 //! orchestrator's ruling E3; M6.5c2, spec §2.1; R-6.5c2.42), so no deployment
@@ -24,7 +25,7 @@ pub(crate) const IDENTITY_VAR: &str = "YOKOHAMA_WEB_IDENTITY";
 /// The archive switch's variable (spec §3.1): `r2` or `off`.
 pub(crate) const ARCHIVE_VAR: &str = "YOKOHAMA_WEB_ARCHIVE";
 
-/// The eight keys the shell sends, and no others: an unknown key is a
+/// The nine keys the shell sends, and no others: an unknown key is a
 /// misspelling in the shell, refused rather than ignored, and a missing
 /// `identity` is refused too — the door has no default. Read ONLY from the
 /// object form ([`parse`]).
@@ -48,6 +49,10 @@ struct InitConfig {
     // report ([`Ttls`]).
     table_ttl_days: Option<u64>,
     open_table_ttl_days: Option<u64>,
+    /// `YOKOHAMA_DIAGNOSTIC_SEEDS` as the shell read it — `true` in the pool's
+    /// test configurations alone; absent or `false` is the production rule,
+    /// `SeedPolicy::SoloOnly`.
+    diagnostic_seeds: Option<bool>,
 }
 
 /// What `init` builds the layer with.
@@ -56,6 +61,7 @@ pub(crate) struct Config {
     pub(crate) chat: ChatConfig,
     pub(crate) archive: Switch,
     pub(crate) ttls: Ttls,
+    pub(crate) diagnostic_seeds: bool,
 }
 
 /// The Worker's two table TTLs in whole days (R-6.5c2.42), which the host
@@ -144,9 +150,9 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     let value: serde_json::Value = serde_json::from_str(config)
         .map_err(|e| format!("the module's init configuration does not parse: {e}"))?;
     if !value.is_object() {
-        return Err("the module's init configuration is the object of its eight keys — \
+        return Err("the module's init configuration is the object of its nine keys — \
                     identity, archive, caller, lobby_chat, chat_keep, chat_text, \
-                    table_ttl_days and open_table_ttl_days"
+                    table_ttl_days, open_table_ttl_days and diagnostic_seeds"
             .to_string());
     }
     let c: InitConfig = serde_json::from_value(value)
@@ -164,7 +170,7 @@ pub(crate) fn parse(config: &str) -> Result<Config, String> {
     let chat =
         ChatConfig::from_env_values(c.lobby_chat.as_deref(), c.chat_keep.as_deref(), c.chat_text.as_deref())?;
     let ttls = Ttls { table: c.table_ttl_days, open_table: c.open_table_ttl_days };
-    Ok(Config { door, chat, archive, ttls })
+    Ok(Config { door, chat, archive, ttls, diagnostic_seeds: c.diagnostic_seeds.unwrap_or(false) })
 }
 
 /// The archive caller as the layer normalizes an address.

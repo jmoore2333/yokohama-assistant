@@ -36,6 +36,7 @@
 //    prints the door it reads before its verdict (`doorLine`).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
+// 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
 // 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
 //    `wrangler.jsonc`, the open and gate files AND both pool configurations,
 //    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
@@ -277,19 +278,36 @@ function objectOf(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
 }
 
-/** Check 7, over the deployed configuration: every `vars` block, the top level's and
- *  each environment's, read for the secrets' KEYS. */
-function secretsInVars(name, value, failures) {
+/** Every `vars` block of a configuration that is an object, with where it
+ *  sits: the top level's (`vars`) and each environment's (`env.<name>.vars`).
+ *  Check 7 and rule 4b's key half read the same blocks. */
+function varsBlocks(value) {
   const blocks = [["vars", value.vars]];
   for (const [name, env] of Object.entries(objectOf(value.env) ?? {})) {
     if (objectOf(env)) blocks.push([`env.${name}.vars`, env.vars]);
   }
-  for (const [where, vars] of blocks) {
-    if (!objectOf(vars)) continue;
+  return blocks.filter(([, vars]) => objectOf(vars));
+}
+
+/** Check 7, over the deployed configuration: every `vars` block, the top level's and
+ *  each environment's, read for the secrets' KEYS. */
+function secretsInVars(name, value, failures) {
+  for (const [where, vars] of varsBlocks(value)) {
     for (const [key, why] of Object.entries(SECRETS)) {
       if (Object.hasOwn(vars, key)) failures.push(`${name}'s ${where} name ${key} — ${why}`);
     }
   }
+}
+
+/** Whether the judged configuration names `key` — rule 4b's question, and the
+ *  test clock's. Its TEXT, as ever, so a comment or a string naming the key is
+ *  refused too; AND its parsed `vars` blocks' keys (the S1 stack review's
+ *  HI-F3): a key spelled with a JSON `\u` escape is not in the text, and the
+ *  parser — this file's own `jsonc-parser`, as wrangler's — reads it as the
+ *  key, so the text search alone shipped `YOKOHAMA_DIAGNOSTIC_SEEDS` on with
+ *  no failure. */
+function namesVar(judged, key) {
+  return judged.text.includes(key) || varsBlocks(judged.value).some(([, vars]) => Object.hasOwn(vars, key));
 }
 
 /** The two doors (M6.5c2, spec §2.1), and what the guard says each one is. */
@@ -590,8 +608,11 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   const judged = config === PRODUCTION_FILE ? production : readConfig(root, config, failures);
   if (judged) {
     doorRules(config, judged.value, failures);
-    if (judged.text.includes("YOKOHAMA_WEB_TEST_CLOCK")) {
+    if (namesVar(judged, "YOKOHAMA_WEB_TEST_CLOCK")) {
       failures.push(`${config} names YOKOHAMA_WEB_TEST_CLOCK — the test clock is set in the pool's configurations and nowhere else`);
+    }
+    if (namesVar(judged, "YOKOHAMA_DIAGNOSTIC_SEEDS")) {
+      failures.push(`${config} names YOKOHAMA_DIAGNOSTIC_SEEDS — diagnostic seeds are set in the pool's configurations and nowhere else`);
     }
     secretsInVars(config, judged.value, failures);
     // The gate file exists to shut the dev door: anything but "off" defeats it.
@@ -712,7 +733,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
+      "at the open door no dev door; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
       "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );

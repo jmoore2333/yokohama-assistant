@@ -59,6 +59,23 @@ async fn shutdown_requested() {
 
 #[tokio::main]
 async fn main() {
+    // `yokohama-web segment <address>…` prints the archive segment of each
+    // address — the current one and the legacy one — for the one-time rename
+    // security S1c's deploy performs (`deploy/RUNBOOK.md`, `worker/RUNBOOK.md`).
+    // Three columns, tab-separated, one address per line; a value the grammar
+    // refuses is a line that says so, and the exit code is 1 if any did.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("segment") {
+        let mut failed = false;
+        for raw in &args[2..] {
+            match yokohama_web::identity::User::parse(raw) {
+                Ok(user) => println!("{raw}\t{}\t{}", yokohama_web::archive::legacy_caller_segment(&user), yokohama_web::archive::caller_segment(&user)),
+                Err(e) => { failed = true; eprintln!("{raw}\t{e}"); }
+            }
+        }
+        std::process::exit(if failed { 1 } else { 0 });
+    }
+
     let port: u16 = std::env::var("YOKOHAMA_WEB_PORT")
         .ok()
         .and_then(|s| s.parse().ok())

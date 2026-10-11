@@ -6,9 +6,16 @@
 // answer "is it still there after a reload?" the way its author expected. Every
 // cell below reopens the real database.
 //
-// **Nothing here fabricates a payload.** The archive's three answers and the
-// health read are the committed corpus's, through the real `fetch` path, so the
-// classification cells run `ApiError` exactly as a browser builds it.
+// **The `fetch` path's answers come from the corpus wherever it has a row.**
+// The archive's 201, 400 and 409 are the committed corpus's rows, and the
+// health read is its row with `archive` set for the cell — and, in the
+// keyless-build cell alone, `identity: "open"` beside it — all through the real
+// `fetch` path, so the classification cells run `ApiError` exactly as a browser
+// builds it. The `fetch` answers it carries no row for are written by hand in
+// the cells that need them, because the corpus may not move for a test: the
+// `{ error }` bodies of a 401, a 503, a 404 and a full share's 507 (security
+// S1b), and the edge's own answers, which are Access's 401, the challenge's 403
+// and an HTML 404. The local host answers through `stubWorker`, not `fetch`.
 import "fake-indexeddb/auto";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -243,6 +250,34 @@ describe("a game that finishes", () => {
     expect(await pending()).toEqual([
       expect.objectContaining({ id: GAME, reason: "refused", sentence: wire.archive409.error }),
     ]);
+  });
+
+  // A 507 says the caller's share of the archive is FULL — the server's state,
+  // not the record's (security S1b, finding B12). The row is kept and retried
+  // on the next drain, as an offline row is, and it carries the server's own
+  // sentence so the player knows why it waits.
+  it("reads a 507 as a wait that carries the server's sentence, not as a refusal", async () => {
+    const full = "your archive here is full — 256 records or 128 MiB; nothing was written, and the game is kept on this device";
+    hosts({ archive: "dir", onArchive: () => ({ status: 507, body: { error: full } }) });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "offline", sentence: full })]);
+    expect(reasonWords("offline", full)).toBe(full);
+  });
+
+  // A 413 says THIS RECORD is over the archive's body limit (the S1 stack
+  // review's CB-F12): its size, which no retry changes. It is a refusal with
+  // the server's sentence, never an offline row retried on every drain — and,
+  // as with a 400, the drain neither posts it again nor asks the server.
+  it("reads a 413 as a refusal that carries the server's sentence", async () => {
+    const tooBig = "the record is larger than 512 KiB";
+    const big = hosts({ archive: "dir", onArchive: () => ({ status: 413, body: { error: tooBig } }) });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "refused", sentence: tooBig })]);
+    const posted = big.posts.length;
+    const healths = big.healths.length;
+    await drain();
+    expect(big.posts).toHaveLength(posted);
+    expect(big.healths).toHaveLength(healths);
   });
 
   it("queues nothing where the deployment is KNOWN to keep no archive", async () => {

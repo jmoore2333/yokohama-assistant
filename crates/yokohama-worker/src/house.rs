@@ -138,7 +138,7 @@ fn scrub(doc: &mut TableDoc) {
     // `if let` is `clippy::collapsible_match`.
     for seat in seats.iter() {
         match seat {
-            SeatDoc::Human { user: _, name: _ } | SeatDoc::Bot | SeatDoc::Open => {}
+            SeatDoc::Human { user: _, name: _, bound_at_create: _ } | SeatDoc::Bot | SeatDoc::Open => {}
         }
     }
     match turn {

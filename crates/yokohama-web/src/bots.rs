@@ -21,7 +21,9 @@
 //! CLI's rule: the day the CLI admits an identity, a game played against it
 //! opens here with no web change, and until then it is refused in the CLI's
 //! own words. A seat that does not run carries that reason, cut to its clause
-//! and never reworded ([`bots::Runs::No`]).
+//! and never reworded ([`bots::Runs::No`]) — save that the record's own values
+//! in it, a controller or a key the CLI repeats whole, go through the echo
+//! rule (the S1 stack review's HI-F1; `echo_record_values`).
 //!
 //! **The labels are the layer's own words**, like `suggest`'s four authored
 //! refusals, and they are total by CONSTRUCTION: [`bots::label`] reads a
@@ -97,11 +99,16 @@ pub fn production() -> BotDescriptor {
 /// as the CLI's resume path reads them, and named by `label_of`. A
 /// descriptor this build cannot parse — a name it does not know, a knob out of
 /// range — answers its own controller name: an honest label for a bot nothing
-/// here can describe better.
+/// here can describe better. **That name is the record's, so it goes through
+/// the echo rule** ([`crate::echo::echo`]; the S1 stack review's HI-F1): a
+/// record's controller is whatever its writer put there, and this label is
+/// repeated in the lobby's row, the table, the archive's refusal and every
+/// foreign-bot sentence. Every controller this build knows is a short plain
+/// name, so the echo reads it unchanged.
 pub fn label(d: &BotDescriptor) -> String {
     match Contestant::from_parts(&d.controller, &d.params) {
         Ok(contestant) => label_of(contestant).to_string(),
-        Err(_) => d.controller.clone(),
+        Err(_) => crate::echo::echo(&d.controller),
     }
 }
 
@@ -311,7 +318,7 @@ pub(crate) fn descriptor_runs(d: &BotDescriptor) -> Runs {
         }],
     };
     let (seats, warnings) = BotSeats::from_provenance(Some(&run));
-    verdict(0, &d.controller, &seats, &warnings)
+    verdict(0, d, &seats, &warnings)
 }
 
 /// The CLI's resume, asked ONCE of `run`, and each of `bots` — seats of that
@@ -320,22 +327,24 @@ fn resumed(run: Option<&RunProvenance>, bots: Vec<(u8, BotDescriptor)>) -> Vec<(
     let (seats, warnings) = BotSeats::from_provenance(run);
     bots.into_iter()
         .map(|(seat, d)| {
-            let runs = verdict(seat, &d.controller, &seats, &warnings);
+            let runs = verdict(seat, &d, &seats, &warnings);
             (seat, d, runs)
         })
         .collect()
 }
 
-/// [`runs_here`]'s rule for one recorded bot `seat` named `controller`, over
-/// what ONE resume answered: the `seats` it built and the `warnings` it said.
-fn verdict(seat: u8, controller: &str, seats: &BotSeats, warnings: &[String]) -> Runs {
+/// [`runs_here`]'s rule for one recorded bot `seat` played by `d`, over what
+/// ONE resume answered: the `seats` it built and the `warnings` it said. Each
+/// reason is the CLI's clause with the record's own values echoed
+/// ([`echo_record_values`]).
+fn verdict(seat: u8, d: &BotDescriptor, seats: &BotSeats, warnings: &[String]) -> Runs {
     // The CLI's own prefix, space included, so seat 1 never reads seat 10's
     // lines.
     let prefix = format!("warning: seat {seat} ");
     let reasons: Vec<String> = warnings
         .iter()
         .filter_map(|w| w.strip_prefix(prefix.as_str()))
-        .map(|said| reason_of(said, controller))
+        .map(|said| echo_record_values(reason_of(said, &d.controller), d))
         .collect();
     match (seats.contestant_at(PlayerId::new(seat)), reasons.is_empty()) {
         (Some(_), true) => Runs::Yes,
@@ -376,6 +385,9 @@ const SEED_TAIL: &str = " — this driver plays every bot seat off one stream";
 ///
 /// A line in no shape it knows is answered after its prefix, whole: a CLI
 /// rewording still refuses, in the CLI's words, and the pin cell fails first.
+/// The clause this answers still carries the record's own values as the CLI
+/// wrote them, raw and whole; [`verdict`] puts it through
+/// [`echo_record_values`] before any sentence repeats it (HI-F1).
 fn reason_of(said: &str, controller: &str) -> String {
     if let Some(drift) = said.strip_suffix(DRIFT_TAIL) {
         return drift.to_string();
@@ -392,6 +404,26 @@ fn reason_of(said: &str, controller: &str) -> String {
         Some(unread) => unread.to_string(),
         None => converted,
     }
+}
+
+/// `clause` with the record's own values in it through the echo rule (the S1
+/// stack review's HI-F1; finding D12): the CLI repeats a controller it cannot
+/// parse raw (`controller "{c}"`) and again inside `from_parts`' sentence as
+/// `{c:?}`, and an unknown parameter key as `{key:?}` — whole, whatever their
+/// length, and the first raw. Each is replaced by `"{echo}"`. The echo IS
+/// `{x:?}` less its quotes for any value of at most sixty-four characters,
+/// so a clause that names only short, plain values — every controller and
+/// key this build knows, and every reason the corpus pins — reads exactly as
+/// the CLI wrote it; a long or hostile one is cut and escaped where it
+/// stands. The `{x:?}` copies go first: for a value with nothing to escape
+/// the raw quoted copy IS the `{x:?}` one, and is replaced with it.
+fn echo_record_values(clause: String, d: &BotDescriptor) -> String {
+    let echoed = |v: &str| format!("\"{}\"", crate::echo::echo(v));
+    let mut out = clause;
+    for v in std::iter::once(&d.controller).chain(d.params.keys()) {
+        out = out.replace(&format!("{v:?}"), &echoed(v));
+    }
+    out.replace(&format!("\"{}\"", d.controller), &echoed(&d.controller))
 }
 
 /// The FOREIGN bot seats of `record` (M6.5c2, R-6.5c2.10; cycle F, R-F4):
@@ -448,7 +480,12 @@ pub struct ForeignBot {
 /// production's label), so each key is one `from_parts` accepts — none holds
 /// `=` or `,` — and the parameters that differ print differently. Between two
 /// ARBITRARY descriptors that does not hold: crafted keys can render two maps
-/// alike (`{a: 1, b: 2}` and `{"a=1,b": 2}` both print `a=1,b=2`). Equal
+/// alike (`{a: 1, b: 2}` and `{"a=1,b": 2}` both print `a=1,b=2`). **The echo
+/// keeps the argument against production** (the S1 stack review's HI-F1: the
+/// unparsed label, the controller and every key are the record's, so each is
+/// echoed): production's controller and keys are short plain names, which the
+/// echo leaves exactly as they are, and a name the echo changes — cut, or
+/// escaped — is not one of them. Equal
 /// descriptors are one bot, and a refusal names production's own descriptor
 /// only for a record whose second bot seat carries another stream seed — the
 /// CLI's seed line ([`runs_here`]) — which no web table deals.
@@ -466,12 +503,14 @@ pub fn distinguishing_labels(played: &BotDescriptor, runs: &BotDescriptor) -> (S
     if played_versioned != runs_versioned {
         return (played_versioned, runs_versioned);
     }
+    // The controller and every key are the record's, so each goes through the
+    // echo rule (HI-F1); a value is an `i64`, which the record cannot make long.
     let knobbed = |l: &str, d: &BotDescriptor| {
-        let params: Vec<String> = d.params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        let params: Vec<String> = d.params.iter().map(|(k, v)| format!("{}={v}", crate::echo::echo(k))).collect();
         if params.is_empty() {
-            format!("{l} ({})", d.controller)
+            format!("{l} ({})", crate::echo::echo(&d.controller))
         } else {
-            format!("{l} ({} {})", d.controller, params.join(","))
+            format!("{l} ({} {})", crate::echo::echo(&d.controller), params.join(","))
         }
     };
     (knobbed(&played_label, played), knobbed(&runs_label, runs))
@@ -603,6 +642,41 @@ mod tests {
             distinguishing_labels(&spelled, &uniform),
             ("uniform rung (uniform rung)".to_string(), "uniform rung (uniform)".to_string()),
         );
+    }
+
+    /// **The knobbed arm echoes the record's controller and every key** (the
+    /// S1 stack review's HI-F1). A record reaches it against production when
+    /// its controller is spelled as production's label — unparsed, its label
+    /// is its own name, so "V4" ties "V4" — at production's version; its keys
+    /// are then the record's own, and a 16 KB key holding an escape character
+    /// comes back cut and escaped, the pair still telling the two bots apart.
+    /// The controller's own echo in that arm is read between two arbitrary
+    /// descriptors, since no hostile controller ties production's label: one
+    /// hostile controller at one version under two different keys. Mutants:
+    /// either echo in the knobbed arm dropped.
+    #[test]
+    fn the_knobbed_arm_echoes_a_records_controller_and_keys() {
+        let runs = production();
+        let named = label(&runs);
+        let key = format!("k\u{1b}[31m{}", "z".repeat(16 * 1024));
+        let played = BotDescriptor { controller: named.clone(), version: runs.version, params: BTreeMap::from([(key, 1)]) };
+        assert_eq!(label(&played), named, "premise: the two labels tie");
+        let (said, _) = distinguishing_labels(&played, &runs);
+        assert!(said.starts_with(&format!("{named} ({named} k\\u{{1b}}[31mzzz")), "the knobbed arm, the key escaped: {}", said.chars().take(80).collect::<String>());
+        assert!(said.len() < 200, "a {} byte label", said.len());
+        assert!(!said.contains(&"z".repeat(65)) && !said.chars().any(char::is_control), "the key came back raw");
+        assert_ne!(said, distinguishing_labels(&played, &runs).1, "the pair is distinct");
+
+        let hostile = format!("\u{202e}{}", "z".repeat(16 * 1024));
+        let one = BotDescriptor { controller: hostile.clone(), version: 1, params: BTreeMap::from([("a".to_string(), 1)]) };
+        let other = BotDescriptor { params: BTreeMap::from([("b".to_string(), 1)]), ..one.clone() };
+        assert_eq!((label(&one), one.version), (label(&other), other.version), "premise: the labels and the versions tie");
+        let pair = distinguishing_labels(&one, &other);
+        for said in [&pair.0, &pair.1] {
+            assert!(said.len() < 400, "a {} byte label", said.len());
+            assert!(!said.contains(&"z".repeat(65)) && !said.contains('\u{202e}'), "the controller came back raw");
+        }
+        assert_ne!(pair.0, pair.1, "the pair is distinct");
     }
 
     /// A descriptor this build cannot parse answers its controller name.

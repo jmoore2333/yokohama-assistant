@@ -31,8 +31,8 @@
 //! tiers never write into the owner's training data ([`is_test_identity`]).
 //! The address is read WHOLE: a server game's table's `created_by`, or the
 //! address a browser's save's Archive object was initialized with — never the
-//! path's `caller_segment`, which the 64-character cap can strip of its
-//! `.test`.
+//! path's `caller_segment`, whose readable half the 48-character cut can strip
+//! of its `.test`.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -186,9 +186,10 @@ impl ReceiptArchive {
     /// `caller` (R1's L-1): the layer names the SENDER in the path, the root is
     /// the object's, and a save rooted by one caller and filed under another's
     /// name would put a test identity's save in an address's training data, or
-    /// an address's save under `test/`. Segments collide by design
-    /// (`caller_segment`'s doc), so a match proves the path is this object's
-    /// segment, not that the sender spelled its address as the object does.
+    /// an address's save under `test/`. A segment ends in a digest of the
+    /// normalized address since security S1c (`caller_segment`'s doc), so a
+    /// match proves the path is this object's segment and, short of a
+    /// forty-eight-bit collision, that the sender's key is the object's.
     fn root(&self, prefix: &str, table_json: &str) -> Result<&'static str, PutError> {
         let test = match prefix {
             "" => is_test_identity(
@@ -529,7 +530,7 @@ mod tests {
 
     /// [`r2`] at `door` (M6.5c2, spec §2.1): `worker` or `open`.
     fn r2_at(caller: Option<&str>, door: &str) -> String {
-        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null})
+        json!({"identity": door, "archive": "r2", "caller": caller, "lobby_chat": null, "chat_keep": null, "chat_text": null, "diagnostic_seeds": true})
             .to_string()
     }
 
@@ -819,12 +820,13 @@ mod tests {
         }
 
         // A BROWSER's save reads the address its Archive object was initialized
-        // with, WHOLE — never the 64-character segment in the path, which the
-        // cap has stripped of its `.test` here.
+        // with, WHOLE — never the segment in the path, whose readable half the
+        // 48-character cut has stripped of its `.test` here (security S1c: the
+        // readable part, then `-` and a twelve-character digest).
         let long = format!("{}@t.test", "a".repeat(63));
         let truncated = caller_segment(&User::parse(&long).unwrap());
-        assert_eq!((long.len(), truncated.len()), (70, 64), "premise: the address is longer than the cap");
-        assert!(!truncated.ends_with(".test"), "premise: the segment has lost `.test` — {truncated}");
+        assert_eq!((long.len(), truncated.len()), (70, 48 + 1 + 12), "premise: the address is longer than the readable cut");
+        assert!(!truncated.contains(".test"), "premise: the segment has lost `.test` — {truncated}");
         let save = the_committed_save();
         for (caller, sender, root) in [
             (long.as_str(), long.as_str(), "test/"),
@@ -932,7 +934,8 @@ mod tests {
         init_inner(&r2(Some(RED))).unwrap();
         let r = call(RED, "POST", "/api/archive", Some(&save));
         assert_eq!(r.status, 500, "premise: the matching pair defers — {}", r.body);
-        let base = format!("test/browser/red_at_t.test/rev7/over/{OWED}");
+        let segment = caller_segment(&User::parse(RED).unwrap());
+        let base = format!("test/browser/{segment}/rev7/over/{OWED}");
         assert_plan(&plan_of(&r), &format!("{base}.json"), &format!("{base}.table.json"));
     }
 
@@ -946,7 +949,8 @@ mod tests {
         let _s = serial();
         let _p = pin(1_789_000_800);
         let save = the_committed_save();
-        let path = format!("browser/red_at_t.test/rev7/over/{OWED}.json");
+        let segment = caller_segment(&User::parse(RED).unwrap());
+        let path = format!("browser/{segment}/rev7/over/{OWED}.json");
         for (kind, detail, status, body) in [
             ("landed", "a key", 201, json!({"leaf": "over", "path": path, "identical": false})),
             ("identical", "a key", 200, json!({"leaf": "over", "path": path, "identical": true})),

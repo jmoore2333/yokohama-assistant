@@ -76,7 +76,7 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  *
  * - `site_space_words`, `identity_cases` and `seed_cases` are contracts,
  *   never a route's payload.
- * - `watching`, `locked` and the four `why`/explanation files are built in
+ * - `watching`, `locked` and the five `why`/explanation files are built in
  *   process by the emitter's `constructed()`: a deterministic bot-free walk
  *   cannot reach them.
  * - `house_chat_off_404` comes from an `Api` of the emitter's with the lobby
@@ -115,6 +115,7 @@ const THIRD_COLUMN = [
   "why_foreign",
   "why_refusals",
   "why_refused",
+  "why_withheld",
 ];
 
 describe("hostFields — the presence rule, verdict by verdict (R3's L-5)", () => {

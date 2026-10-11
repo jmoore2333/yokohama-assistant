@@ -266,7 +266,10 @@ export interface DecisionModel {
   phase_chain: TurnPhase[];
   current_phase: number;
   deciding: Deciding;
-  /** One per LEGAL MOVE — **not** the numbered list. See `PromptState`. */
+  /** One per LISTED legal move — the server's folded, capped list: the
+   *  retreat family at its recover-nothing member alone, the rest counted in
+   *  the payload's `options_omitted` — and **not** the numbered list. See
+   *  `PromptState`. */
   options: OptionModel[];
   /** Capped at three rows. */
   not_offered: { area: AreaId; reason: NotOfferedReason }[];
@@ -348,6 +351,19 @@ export interface ClientState {
   /** Every bot seat the RECORD names, labelled (M6.5c2, R-6.5c2.10) — empty
    *  for an all-human game. The record's, not the resident session's. */
   bots: SeatBot[];
+  /** The POSITION's legal moves the server folded or capped rather than
+   *  listed (security S1b): the retreat family's members beyond its
+   *  recover-nothing one — the product over the mover's occupied areas of
+   *  (assistants there + 1), less one, a function of public per-area counts;
+   *  a hot-seat table in the engine's worst-case state offered 442,368 of
+   *  them, 58 MB a frame — and, on the DECIDING viewer's frame alone,
+   *  anything past the server's cap. Counted for every viewer of the
+   *  position, so a frame for a seat that is not deciding (whose
+   *  `frame.decision.options` is empty) still says what was folded. The
+   *  numbered rows are the prompt's and were always the REPL's grouped
+   *  entries; the guided retreat (`kind: "retreat"`) is how a retreat is
+   *  chosen. `0` on every frame outside a folded Movement decision. */
+  options_omitted: number;
 }
 
 /** One bot seat of a game: which seat, and the bot's short label (`V4`). */
@@ -468,6 +484,19 @@ export interface HistoricalFrame {
    *  card leaving. */
   ports: PortsPanel;
   labs: LabsPanel;
+  /** The POSITION's legal moves the server folded or capped rather than
+   *  listed (security S1b): the retreat family's members beyond its
+   *  recover-nothing one — the product over the mover's occupied areas of
+   *  (assistants there + 1), less one, a function of public per-area counts;
+   *  a hot-seat table in the engine's worst-case state offered 442,368 of
+   *  them, 58 MB a frame — and, on the DECIDING viewer's frame alone,
+   *  anything past the server's cap. Counted for every viewer of the
+   *  position, so a frame for a seat that is not deciding (whose
+   *  `frame.decision.options` is empty) still says what was folded. The
+   *  numbered rows are the prompt's and were always the REPL's grouped
+   *  entries; the guided retreat (`kind: "retreat"`) is how a retreat is
+   *  chosen. `0` at every position outside a folded Movement decision. */
+  options_omitted: number;
 }
 
 export interface Labels {
@@ -766,9 +795,10 @@ export interface ArtManifest {
 // ---- the explanation surface (M3) ----------------------------------------
 //
 // `GET /api/games/{id}/suggest` and `GET /api/games/{id}/why`. Both answer 200
-// with exactly one of `ok` / `refusal` non-null: a refusal is the ANSWER (the
-// last move was a human's; the game is over), not a client error, and the
-// browser renders the sentence.
+// with exactly one of `ok` / `refusal` non-null (`why`: one of `ok` /
+// `withheld` / `refusal`, security S1a): a refusal is the ANSWER (the last
+// move was a human's; the game is over), not a client error, and the browser
+// renders the sentence.
 //
 // Every number here is `i64` on the server and arrives as a JSON number. That
 // is safe and the seed is not, because a contribution is bounded by the weight
@@ -857,18 +887,19 @@ export interface Provenance {
   /** The log's printed 0-based event index. */
   index: number;
   seat: PlayerId;
-  /** The key the bot's own pump decided under, hex, as a string. */
-  decision_seed: string;
-  /** The engine offered exactly one move here. */
-  forced: boolean;
   recorded_version: number | null;
   current_version: number;
 }
 
-/** A typed refusal. `message` is the CLI's own sentence, never re-authored.
- *  `kind` is one of the twelve `why` tags, or one of `suggest`'s four
- *  (`live_mode`, `game_over`, `bot_seat`, `locked`, plus `search` for an agent
- *  error surfaced verbatim). */
+/** A typed refusal. Under `why`'s twelve tags `message` is the CLI's own
+ *  sentence, never re-authored. The one exception among `why`'s twelve
+ *  (security S1c, M-3): a `mismatch` served while the mover's account is
+ *  withheld carries the server's `MISMATCH_WITHHELD`, naming neither move nor
+ *  version. The same type carries `locked`, `foreign_bot` and `suggest`'s two
+ *  layer-authored sentences (`bot_seat`, `locked`).
+ *  `kind` is one of the twelve `why` tags, `why`'s `locked` or `foreign_bot`,
+ *  or one of `suggest`'s four (`live_mode`, `game_over`, `bot_seat`, `locked`,
+ *  plus `search` for an agent error surfaced verbatim). */
 export interface RefusalRow {
   kind: string;
   message: string;
@@ -886,8 +917,6 @@ export interface SuggestOk {
    *  runner-ups is one of the things a terminal genuinely cannot do, so the
    *  presentation decision is the client's rather than the server's. */
   ranking: Ranked[];
-  /** A `u64` as a STRING, like every other seed on this wire. */
-  stream_seed: string;
   /** The ply guard stopped SOME continuation in this search — not necessarily
    *  the one in `continuation`. The counter carries no identity. */
   search_hit_ply_cap: boolean;
@@ -909,10 +938,25 @@ export interface WhyOk {
   counters: Counter[] | null;
   search_hit_ply_cap: boolean;
   ranking: Ranked[];
+  /** The engine offered exactly one move here — on the ACCOUNT, not the
+   *  claim: a fact about the mover's hand, withheld with the rest. */
+  forced: boolean;
 }
 
+/** The withheld half (finding B1): the move played, the claim, and the one
+ *  sentence — nothing the search found, which is a function of the mover's
+ *  hidden starting order until that card is public, or the game is over and
+ *  the reader holds a seat. */
+export interface WhyWithheld {
+  provenance: Provenance;
+  text: string;
+  reason: string;
+}
+
+/** Exactly one of the three is non-null; `withheld` and `refusal` are ANSWERS. */
 export interface WhyResponse {
   ok: WhyOk | null;
+  withheld: WhyWithheld | null;
   refusal: RefusalRow | null;
 }
 
