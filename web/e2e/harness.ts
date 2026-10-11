@@ -104,7 +104,7 @@ export function watchForBreakage(
     // or the allowlist only half works.
     const text = m.text();
     if (m.type() !== "error" && !CSP_VIOLATION.test(text)) return;
-    if (expected.some((e) => text.includes(String(e.status)))) return;
+    if (!CSP_VIOLATION.test(text) && expected.some((e) => text.includes(String(e.status)))) return;
     // The CONSOLE arm is the only one the beacon reaches: its load fails
     // cross-origin, so nothing under `BASE_URL` answers it and the response
     // arm below never sees it.

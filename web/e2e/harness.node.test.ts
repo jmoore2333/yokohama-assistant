@@ -1323,7 +1323,17 @@ describe("the Report-Only lines (type info) are read, and the live tier forgives
     fake.line("info", RO_INLINE, `${local}/`);
     fake.line("info", RO_STYLE, `${local}/`);
     expect(watch.failures).toHaveLength(2);
+    // The wording with `report-only` before the policy's name (the regex's optional clause), at `info`: read too.
+    fake.line("info", RO_INLINE.replace("following Content Security Policy", "following report-only Content Security Policy"), `${local}/`);
+    expect(watch.failures, "the report-only wording, read at info").toHaveLength(3);
     expect(watch.reportOnlyForgiven).toBe(0);
+  });
+  it("locally a CSP line is breakage even when a cell's expected status digits appear in its hash — the status filter never swallows it", async () => {
+    const { watchForBreakage } = await harnessAt(false);
+    const fake = consolePage();
+    const watch = watchForBreakage(fake.page, [{ status: 409, urlIncludes: "/result" }]);
+    fake.line("error", ENFORCED_INLINE.replace("aBV9DC+", "a409DC+"), `${baseUrlFor(false)}/`);
+    expect(watch.failures, "an enforced refusal whose hash spells 409").toHaveLength(1);
   });
   it("live forgives the Report-Only inline-script line at a page of the deployment, counted apart, and nothing beside it", async () => {
     const { watchForBreakage } = await harnessAt(true);

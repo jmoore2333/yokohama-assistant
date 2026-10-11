@@ -44,9 +44,11 @@ for (const [name, value] of Object.entries(DEFAULTS)) {
 }
 const run = spawnSync("npm", ["run", "build:client"], { env, stdio: "inherit" });
 if (run.error) console.error(`e2e-build: could not run npm: ${run.error.message}`);
-// **The e2e build serves the policy ENFORCED** (security S2a, decision D-9): Chromium logs a Report-Only violation
-// at console type `info`, which `watchForBreakage` does not read, and a violation inside the module Worker prints
-// nowhere in either mode — so the local walk is the enforcement reading only under `Content-Security-Policy`. An
+// **The e2e build serves the policy ENFORCED** (security S2a, decision D-9): a Report-Only violation is a LINE and
+// not a block — Chromium logs it at console type `info`, which the harness reads (Task 4) but which stops nothing —
+// and a violation inside the module Worker prints nowhere in either mode, so only an ENFORCED walk, where a
+// violation is an `error` the harness fails on and a Worker-internal one fails the walk itself, is the enforcement
+// reading: the local walk is served `Content-Security-Policy`. An
 // override that can only strengthen: the shipped `CSP_MODE` stays the constant, with its cell, and this rewrites
 // the e2e build's `dist/headers.json` alone. (A post-e2e `dist` carries the enforced set: the Worker's assembly
 // already refuses a post-e2e dist for its debug module, and the NAS recipe rebuilds.)
