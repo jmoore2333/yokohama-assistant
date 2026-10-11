@@ -80,7 +80,7 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
 }
 
 /**
- * **The Worker** (spec §2.3): stateless, and in this order —, wrapped by [`handle`]
+ * **The Worker** (spec §2.3), wrapped by [`handle`]: stateless, and in this order —
  *
  * 1. `route`. A path the asset layer had no file for answers 404 with an
  *    EMPTY body — never `index.html`; any method but GET or HEAD on `/enter`

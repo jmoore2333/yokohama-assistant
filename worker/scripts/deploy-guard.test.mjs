@@ -517,6 +517,16 @@ describe("the deploy guard", () => {
     expect(deployGuard(root, join(root, ".."))).toEqual(naming(/web\/dist\/headers\.json is absent/));
   });
 
+  it("refuses a web/dist/headers.json the reader refuses — not JSON, a BOM, not UTF-8 — naming it in the list, never a throw", () => {
+    // `lay` writes a string or a Buffer; the third row is `[["X-A","<0xff>"]]`, one byte no UTF-8 sequence admits.
+    for (const bad of ["nonsense", "\ufeff[]", Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')])]) {
+      const root = worker({}, { "../web/dist/headers.json": bad });
+      expect(deployGuard(root, join(root, "..")), String(bad).slice(0, 12)).toEqual(
+        naming(/web\/dist\/headers\.json is not the client build's header set/),
+      );
+    }
+  });
+
   // Check 3, per door (M6.5c2, spec §2.1; review R2.2-m5). The door has no
   // default: a configuration naming none is refused, rather than deployed to
   // answer every request the 500, and the value is read as the shell reads

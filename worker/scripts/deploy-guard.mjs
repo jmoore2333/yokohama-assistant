@@ -504,7 +504,15 @@ function staleAssets(root, repo, tree, shown, failures) {
         failures.push(`web/dist/headers.json is absent, so nothing says which header set worker/${shown}/_headers should carry — ${REBUILD}`);
         continue;
       }
-      const want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
+      // The reader's refusals — not JSON, not the set's shape, not UTF-8, a BOM — are FAILURES this guard names,
+      // never a throw out of `deployGuard`: the deploy stops either way, but the contract is the list (Task 2's C-1).
+      let want;
+      try {
+        want = assembledHeaders(source.toString("utf8"), readHeadersText(generated));
+      } catch (e) {
+        failures.push(`web/dist/headers.json is not the client build's header set (${e instanceof Error ? e.message : String(e)}) — ${REBUILD}`);
+        continue;
+      }
       if (!existsSync(copy) || readFileSync(copy, "utf8") !== want) {
         failures.push(`worker/${shown}/_headers is not worker/static/_headers with the current web/dist/headers.json's block — assemble the assets again: npm run build`);
       }
