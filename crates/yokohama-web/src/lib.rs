@@ -4110,6 +4110,8 @@ mod tests {
         let h = res.headers();
         assert_eq!(h.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"), "the 401 carries the set");
         assert_eq!(h.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"), "and no-store");
+        // The scratch dist removed (Task 3's review, m-3).
+        let _ = std::fs::remove_dir_all(&dist);
     }
 
     /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it

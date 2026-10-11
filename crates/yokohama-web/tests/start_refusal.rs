@@ -591,7 +591,15 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     let (status, headers) = get(port, "/api/health");
     assert_eq!(status, 200);
     assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(
+        headers.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'")
+    );
     assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"));
+    // With the file present the start says NOTHING of it: a `main` that printed the no-set line at every start
+    // would pass the absent arm alone (Task 3's review, I-1).
+    let (_, _, stderr) = server.finish();
+    assert!(!stderr.contains("headers.json"), "a present file is not announced: {stderr}");
     drop(server);
     // (2) No file: the binary starts, says so once on stderr, serves without the set.
     let scratch = Scratch::new("headers-absent");
@@ -602,7 +610,7 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     assert_eq!(status, 200);
     assert!(headers.get("x-frame-options").is_none(), "no file, no set");
     let (_, _, stderr) = server.finish();
-    assert!(stderr.contains("headers.json"), "the start says once what it could not read: {stderr}");
+    assert_eq!(stderr.matches("headers.json").count(), 1, "the start says ONCE what it could not read: {stderr}");
     drop(server);
     // (3) A malformed file: exit 1 before the listening line, the file named — read as the keyed-build cell
     // reads its exit.

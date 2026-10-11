@@ -756,5 +756,7 @@ mod tests {
             let err = response_headers(&dir).expect_err(why);
             assert!(err.contains("headers.json"), "{why}: the refusal names the file: {err}");
         }
+        // The scratch tree removed, as the file's other cells remove theirs (Task 3's review, m-3).
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
