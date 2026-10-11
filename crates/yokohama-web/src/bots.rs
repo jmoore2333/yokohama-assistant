@@ -644,6 +644,41 @@ mod tests {
         );
     }
 
+    /// **The knobbed arm echoes the record's controller and every key** (the
+    /// S1 stack review's HI-F1). A record reaches it against production when
+    /// its controller is spelled as production's label — unparsed, its label
+    /// is its own name, so "V4" ties "V4" — at production's version; its keys
+    /// are then the record's own, and a 16 KB key holding an escape character
+    /// comes back cut and escaped, the pair still telling the two bots apart.
+    /// The controller's own echo in that arm is read between two arbitrary
+    /// descriptors, since no hostile controller ties production's label: one
+    /// hostile controller at one version under two different keys. Mutants:
+    /// either echo in the knobbed arm dropped.
+    #[test]
+    fn the_knobbed_arm_echoes_a_records_controller_and_keys() {
+        let runs = production();
+        let named = label(&runs);
+        let key = format!("k\u{1b}[31m{}", "z".repeat(16 * 1024));
+        let played = BotDescriptor { controller: named.clone(), version: runs.version, params: BTreeMap::from([(key, 1)]) };
+        assert_eq!(label(&played), named, "premise: the two labels tie");
+        let (said, _) = distinguishing_labels(&played, &runs);
+        assert!(said.starts_with(&format!("{named} ({named} k\\u{{1b}}[31mzzz")), "the knobbed arm, the key escaped: {}", said.chars().take(80).collect::<String>());
+        assert!(said.len() < 200, "a {} byte label", said.len());
+        assert!(!said.contains(&"z".repeat(65)) && !said.chars().any(char::is_control), "the key came back raw");
+        assert_ne!(said, distinguishing_labels(&played, &runs).1, "the pair is distinct");
+
+        let hostile = format!("\u{202e}{}", "z".repeat(16 * 1024));
+        let one = BotDescriptor { controller: hostile.clone(), version: 1, params: BTreeMap::from([("a".to_string(), 1)]) };
+        let other = BotDescriptor { params: BTreeMap::from([("b".to_string(), 1)]), ..one.clone() };
+        assert_eq!((label(&one), one.version), (label(&other), other.version), "premise: the labels and the versions tie");
+        let pair = distinguishing_labels(&one, &other);
+        for said in [&pair.0, &pair.1] {
+            assert!(said.len() < 400, "a {} byte label", said.len());
+            assert!(!said.contains(&"z".repeat(65)) && !said.contains('\u{202e}'), "the controller came back raw");
+        }
+        assert_ne!(pair.0, pair.1, "the pair is distinct");
+    }
+
     /// A descriptor this build cannot parse answers its controller name.
     #[test]
     fn an_unparseable_descriptor_answers_its_controller() {
