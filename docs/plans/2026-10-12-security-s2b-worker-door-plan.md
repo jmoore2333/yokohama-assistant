@@ -1548,11 +1548,15 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     kept.push(other);
     const otherWs = other.webSocket!;
     otherWs.accept();
-    const listing = await new Promise<string>((resolve) => otherWs.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
-    expect(listing, "the second caller reads the lobby's listing, not an end").not.toContain('"event":"end"');
+    const listing = new Promise<string>((resolve) => otherWs.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
+    // A lobby socket is silent on connect (spec §2.5; `slot.test.ts`'s cell), so a house chat post is the positive
+    // control (ruling R-10): its frame reaches every admitted lobby socket, where a refused one's first frame is `end`.
+    const posted = await house.fetch("https://yokohama.test/api/chat", { method: "POST", headers: { "X-Yokohama-User": "lob2@t.test", "content-type": "application/json" }, body: '{"text":"hello"}' });
+    expect(posted.status, await posted.text()).toBe(201);
+    expect(await listing, "the second caller hears the lobby's frame, not an end").toContain('"event":"house"');
     expect(await heldOpen(house, await callerTag("lob2@t.test")), "one OPEN socket under the second caller's tag").toBe(1);
     expect(await held(house, await callerTag("lob@t.test"))).toBe(8);
-    expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag").toBe(8);
+    expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag: the first caller's eight and the second's one").toBe(9);
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
   });
 });
@@ -1635,7 +1639,7 @@ reached (measured); M26 the
 counts read AFTER `acceptWebSocket` → the eighth tab refused (`expected 7 to be 8`; measured) and the total cell's 56;
 M27 `4404` for `CLOSE_TOO_MANY` → `frames.unit.test.ts`'s literal pin (GREEN in `caps.test.ts` alone, whose sides are
 both the constant — measured); M28 `>` for `>=` → the ninth admitted; M29 the lobby arm dropped → the lobby cell; M28b `openCount` reading every socket (`.length`) → the total cell's
-dangling rows (`heldOpen` and the admission past them); M29b the lobby's own count over every lobby socket (a
+admission past the dangling refusals (`back` is framed `end`; the `heldOpen` row is the cell's own filter and stays green); M29b the lobby's own count over every lobby socket (a
 site-wide eight) → the lobby cell's second caller (0 OPEN under its tag — the review's R1).
 
 ### Task 4: B12's Worker half — the share counted from a live listing, the module's arithmetic — Opus (B12; decision D-5; Review Focus 3)
