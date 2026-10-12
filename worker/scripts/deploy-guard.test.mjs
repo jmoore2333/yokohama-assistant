@@ -68,7 +68,7 @@ const OBJECTS = `"durable_objects": {
 const BUCKET = `"r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }]`;
 
 /** Production's two Rate Limiting bindings at their figures (security S2b, finding C2): what check 13 holds
- *  production to, and what the open and gate files carry by the sibling rule. */
+ *  production to, and what the open and dev files carry by the sibling rule. */
 const RATE_LIMITS_BLOCK = `"ratelimits": [
     { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 10, "period": 60 } },
     { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 120, "period": 10 } }
@@ -124,11 +124,8 @@ const OPEN_FILE = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB
  *  file's `on` is held to (check 12). */
 const KEYED = { "assets/build-values.json": STAMP(true) };
 
-/** Production's configuration with the dev door shut (R-E10). */
-const GATE = PRODUCTION.replace(
-  '"ACCESS_AUD": "test-aud"',
-  '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "off"',
-);
+/** Production's configuration with the dev door open (security S2b, B6): the live tiers' file. */
+const DEV = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "on"');
 
 const TEST_CONFIG = `{
   "name": "yokohama-web-test",
@@ -202,7 +199,7 @@ function worker(changes = {}, since = {}) {
     "static/_headers": STATIC_HEADERS,
     "wrangler.jsonc": PRODUCTION,
     "wrangler.open.jsonc": OPEN_FILE,
-    "wrangler.gate.jsonc": GATE,
+    "wrangler.dev.jsonc": DEV,
     "wrangler.test.jsonc": TEST_CONFIG,
     "wrangler.open.test.jsonc": OPEN_TEST_CONFIG,
     "../web/dist/sw.js": SW,
@@ -401,12 +398,12 @@ describe("the deploy guard", () => {
     ]);
   });
   // Production's migration now differs from BOTH pool files (M6.5c2) and from
-  // the open window's and the gate's files (R-6.5c2.39, R-E10): each is named.
+  // the open window's and the dev files (R-6.5c2.39; security S2b, B6): each is named.
   it("refuses a migration the pool runs and production does not ship", () => {
     const drift = PRODUCTION.replace('["Table", "House", "Archive"]', '["Table", "House"]');
     expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([
       expect.stringMatching(/^wrangler\.open\.jsonc's migrations differs from wrangler\.jsonc's/),
-      expect.stringMatching(/^wrangler\.gate\.jsonc's migrations differs from wrangler\.jsonc's/),
+      expect.stringMatching(/^wrangler\.dev\.jsonc's migrations differs from wrangler\.jsonc's/),
       expect.stringMatching(/^wrangler\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
       expect.stringMatching(/^wrangler\.open\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
     ]);
@@ -652,14 +649,14 @@ describe("the deploy guard", () => {
     expect(configFailures(root, "wrangler.public.jsonc")).toEqual(
       naming(/wrangler\.public\.jsonc's vars\.YOKOHAMA_WEB_TABLE_TTL_DAYS differs from wrangler\.jsonc's/),
     );
-    // The pass-control: the same file undrifted passes — a WRONG `differs` map (the gate's, or an empty one) would
+    // The pass-control: the same file undrifted passes — a WRONG `differs` map (the dev file's, or an empty one) would
     // refuse it, which `arrayContaining` above cannot see.
     expect(configFailures(worker({ "wrangler.public.jsonc": OPEN_FILE }), "wrangler.public.jsonc")).toEqual([]);
   });
 
   it("every deploy command names its file to the guard, the secrets guard and wrangler alike (security S2a, D18)", () => {
     const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    for (const [name, file] of [["deploy", "wrangler.jsonc"], ["deploy:open", "wrangler.open.jsonc"], ["deploy:gate", "wrangler.gate.jsonc"]]) {
+    for (const [name, file] of [["deploy", "wrangler.jsonc"], ["deploy:open", "wrangler.open.jsonc"], ["deploy:dev", "wrangler.dev.jsonc"]]) {
       expect(scripts[name], name).toBe(
         `node scripts/deploy-guard.mjs --config ${file} && node scripts/secrets-guard.mjs --config ${file} && wrangler deploy --config ${file}`,
       );
@@ -668,7 +665,8 @@ describe("the deploy guard", () => {
   // The dev door is the worker door's test instrument; the Worker refuses the
   // pair at run time too (`shellConfig`). Read as the shell reads a switch.
   // Mutants: the check missing; the switch read raw; the check made whatever
-  // the door (production's worker door runs the dev door on).
+  // the door (the dev file's cells catch that one: its worker door runs the dev
+  // door on, and since B6 production's file is refused for it anyway).
   it("refuses the dev door on beside the open door, read as the shell reads a switch", () => {
     for (const on of ["on", " On "]) {
       const both = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "${on}"`);
@@ -679,7 +677,7 @@ describe("the deploy guard", () => {
     const off = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "off"');
     expect(deployGuard(worker({ "wrangler.jsonc": off })), "off").toEqual([]);
     const worked = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_DEV_DOOR": "on"');
-    expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door").toEqual([]);
+    expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door, in production's file").toEqual(naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone/));
   });
   // Check 7's second secret (M6.5c2, R-6.5c2.5): the dev door's client id.
   // It reads production's file alone, so the pool files keep their test value
@@ -797,33 +795,57 @@ describe("the deploy guard", () => {
     }
     expect(deployGuard(worker({ "wrangler.open.jsonc": null }))).toEqual(["wrangler.open.jsonc is absent"]);
   });
-  // R-E10: the gate file is the worker door with the dev door shut. Mutants:
-  // the "off" rule missing; the file not held to production's blocks.
-  it("judges the gate file as the worker door with the dev door off, and holds it to production's blocks", () => {
-    const at = (files) => deployGuard(worker(files), undefined, "wrangler.gate.jsonc");
+  // Security S2b, B6: the dev file is the worker door with the dev door open. Mutants:
+  // the "on" rule missing; the file not held to production's blocks.
+  it("judges the dev file as the worker door with the dev door on, and holds it to production's blocks", () => {
+    const at = (files) => deployGuard(worker(files), undefined, "wrangler.dev.jsonc");
     expect(at({})).toEqual([]);
-    expect(doorLine(worker(), "wrangler.gate.jsonc")).toBe("wrangler.gate.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
-    for (const [on, shown] of [
-      ['"on"', '"on"'],
-      ['"OFF"', '"OFF"'],
+    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    for (const [off, shown] of [
+      ['"off"', '"off"'],
+      ['"ON"', '"ON"'],
     ]) {
-      expect(at({ "wrangler.gate.jsonc": GATE.replace('"YOKOHAMA_DEV_DOOR": "off"', `"YOKOHAMA_DEV_DOOR": ${on}`) }), on).toEqual(
+      expect(at({ "wrangler.dev.jsonc": DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', `"YOKOHAMA_DEV_DOOR": ${off}`) }), off).toEqual(
         expect.arrayContaining([
-          `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${shown}`,
+          `wrangler.dev.jsonc's vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got ${shown}`,
         ]),
       );
     }
-    expect(at({ "wrangler.gate.jsonc": PRODUCTION })).toEqual(
+    expect(at({ "wrangler.dev.jsonc": PRODUCTION })).toEqual(
       expect.arrayContaining([
-        `wrangler.gate.jsonc's vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got nothing`,
+        `wrangler.dev.jsonc's vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got nothing`,
       ]),
     );
-    const drift = GATE.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
-    expect(at({ "wrangler.gate.jsonc": drift })).toEqual(naming(/^wrangler\.gate\.jsonc's durable_objects differs from wrangler\.jsonc's/));
-    expect(deployGuard(worker({ "wrangler.gate.jsonc": null }))).toEqual(["wrangler.gate.jsonc is absent"]);
+    const drift = DEV.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
+    expect(at({ "wrangler.dev.jsonc": drift })).toEqual(naming(/^wrangler\.dev\.jsonc's durable_objects differs from wrangler\.jsonc's/));
+    expect(deployGuard(worker({ "wrangler.dev.jsonc": null }))).toEqual(["wrangler.dev.jsonc is absent"]);
+  });
+  // Security S2b, B6 (decision D-1): the production file ships the dev door OFF; the dev file alone opens it.
+  it("refuses YOKOHAMA_DEV_DOOR=on in the production file and in any worker-door file but wrangler.dev.jsonc, and requires exactly on there", () => {
+    const on = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "On"');
+    expect(deployGuard(worker({ "wrangler.jsonc": on }))).toEqual(
+      naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone \(npm run deploy:dev\), around a live tier, and reverted after \(R-SEC8\(d\)\)/),
+    );
+    for (const off of ['"off"', '"ON "', "nothing"]) {
+      const file = off === "nothing" ? PRODUCTION : DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', `"YOKOHAMA_DEV_DOOR": ${off}`);
+      expect(deployGuard(worker({ "wrangler.dev.jsonc": file }), undefined, "wrangler.dev.jsonc"), off).toEqual(
+        naming(/^wrangler\.dev\.jsonc's vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got /),
+      );
+    }
+    expect(deployGuard(worker(), undefined, "wrangler.dev.jsonc")).toEqual([]);
+    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+  });
+
+  // F-40 (the S2a plan review): an unlisted worker-door file is production's sibling with NO allowed difference.
+  it("holds an unlisted worker-door --config file to production exactly, and passes one that equals it", () => {
+    const drifted = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"');
+    expect(deployGuard(worker({ "wrangler.staging.jsonc": drifted }), undefined, "wrangler.staging.jsonc")).toEqual(
+      naming(/^wrangler\.staging\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/),
+    );
+    expect(deployGuard(worker({ "wrangler.staging.jsonc": PRODUCTION }), undefined, "wrangler.staging.jsonc")).toEqual([]);
   });
   // T8-a: `wrangler deploy` REPLACES the Worker's variables wholesale, so an
-  // open or gate file that fell behind production rolls production back. Each
+  // open or dev file that fell behind production rolls production back. Each
   // deployable sibling equals production but for its one thing, and each drift
   // is named by key. Mutants: the comparison missing; `vars` compared as one
   // block (the key unnamed); an allowed difference left unpinned.
@@ -835,19 +857,19 @@ describe("the deploy guard", () => {
     );
     for (const [file, config] of [
       ["wrangler.open.jsonc", "wrangler.open.jsonc"],
-      ["wrangler.gate.jsonc", "wrangler.gate.jsonc"],
+      ["wrangler.dev.jsonc", "wrangler.dev.jsonc"],
     ]) {
       expect(deployGuard(worker({ "wrangler.jsonc": moved }), undefined, config), file).toEqual(
         naming(new RegExp(`^${file.replace(/\./g, "\\.")}'s compatibility_date differs from wrangler\\.jsonc's`), new RegExp(`^${file.replace(/\./g, "\\.")}'s vars\\.YOKOHAMA_WEB_TABLE_TTL_DAYS differs`)),
       );
     }
-    // G4: the gate file has a stale audience and another route.
-    const stale = GATE.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"').replace(
+    // G4: the dev file has a stale audience and another route.
+    const stale = DEV.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"').replace(
       '"name": "yokohama-web",',
       '"name": "yokohama-web",\n  "routes": [{ "pattern": "elsewhere.example", "custom_domain": true }],',
     );
-    expect(deployGuard(worker({ "wrangler.gate.jsonc": stale }), undefined, "wrangler.gate.jsonc")).toEqual(
-      naming(/^wrangler\.gate\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/, /^wrangler\.gate\.jsonc's routes differs from wrangler\.jsonc's/),
+    expect(deployGuard(worker({ "wrangler.dev.jsonc": stale }), undefined, "wrangler.dev.jsonc")).toEqual(
+      naming(/^wrangler\.dev\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/, /^wrangler\.dev\.jsonc's routes differs from wrangler\.jsonc's/),
     );
     // The open file: Access values must be absent, and the door must be open.
     const access = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "ACCESS_AUD": "test-aud"');
@@ -967,7 +989,7 @@ describe("the deploy guard", () => {
     );
     for (const [name, text] of [
       ["wrangler.open.jsonc", OPEN],
-      ["wrangler.gate.jsonc", GATE],
+      ["wrangler.dev.jsonc", DEV],
       ["wrangler.test.jsonc", TEST_CONFIG],
       ["wrangler.open.test.jsonc", OPEN_TEST_CONFIG],
     ]) {
@@ -1064,10 +1086,10 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"'), ...KEYED })), "on, a key, worker").toEqual([
       onUnder("wrangler.jsonc", "worker"),
     ]);
-    // The gate's file is the worker door too (its drift from production is named as well).
-    const gateOn = GATE.replace('"YOKOHAMA_DEV_DOOR": "off"', '"YOKOHAMA_DEV_DOOR": "off", "YOKOHAMA_TURNSTILE": "on"');
-    expect(deployGuard(worker({ "wrangler.gate.jsonc": gateOn, ...KEYED }), undefined, "wrangler.gate.jsonc"), "the gate").toEqual(
-      expect.arrayContaining([onUnder("wrangler.gate.jsonc", "worker")]),
+    // The dev file is the worker door too (its drift from production is named as well).
+    const devOn = DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', '"YOKOHAMA_DEV_DOOR": "on", "YOKOHAMA_TURNSTILE": "on"');
+    expect(deployGuard(worker({ "wrangler.dev.jsonc": devOn, ...KEYED }), undefined, "wrangler.dev.jsonc"), "the dev file").toEqual(
+      expect.arrayContaining([onUnder("wrangler.dev.jsonc", "worker")]),
     );
     // A keyed build under off, or absent, at the worker door.
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"off"'), ...KEYED })), "off, a key, worker").toEqual([
@@ -1120,7 +1142,7 @@ describe("the deploy guard", () => {
       for (const [config, tree] of [
         [undefined, {}],
         ["wrangler.open.jsonc", KEYED],
-        ["wrangler.gate.jsonc", {}],
+        ["wrangler.dev.jsonc", {}],
       ]) {
         expect(deployGuard(worker({ [name]: on, ...tree }), undefined, config), `${name} under ${config}`).toEqual([
           `${name}'s vars.YOKOHAMA_TURNSTILE must be "off" (absent is off) — the pool never deploys, so it never ships a keyed build; got "on"`,
@@ -1201,10 +1223,10 @@ describe("the committed configurations", () => {
       "wrangler.open.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
     );
   });
-  it("pass every check that needs no build under --config wrangler.gate.jsonc", () => {
+  it("pass every check that needs no build under --config wrangler.dev.jsonc", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
-    expect(configFailures(root, "wrangler.gate.jsonc")).toEqual([]);
-    expect(doorLine(root, "wrangler.gate.jsonc")).toBe("wrangler.gate.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(configFailures(root, "wrangler.dev.jsonc")).toEqual([]);
+    expect(doorLine(root, "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
   });
   // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the five
   // committed files are held to it here, parsed as the guard parses them.
@@ -1213,7 +1235,7 @@ describe("the committed configurations", () => {
     for (const name of [
       "wrangler.jsonc",
       "wrangler.open.jsonc",
-      "wrangler.gate.jsonc",
+      "wrangler.dev.jsonc",
       "wrangler.test.jsonc",
       "wrangler.open.test.jsonc",
     ]) {
@@ -1234,7 +1256,7 @@ describe("the committed configurations", () => {
     for (const name of [
       "wrangler.jsonc",
       "wrangler.open.jsonc",
-      "wrangler.gate.jsonc",
+      "wrangler.dev.jsonc",
       "wrangler.test.jsonc",
       "wrangler.open.test.jsonc",
     ]) {
@@ -1249,7 +1271,7 @@ describe("the committed configurations", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     for (const [name, want] of [
       ["wrangler.jsonc", "off"],
-      ["wrangler.gate.jsonc", "off"],
+      ["wrangler.dev.jsonc", "off"],
       ["wrangler.test.jsonc", "off"],
       ["wrangler.open.test.jsonc", "off"],
       ["wrangler.open.jsonc", "on"],
@@ -1260,26 +1282,26 @@ describe("the committed configurations", () => {
   });
   // The WHOLE guard over the five committed files, laid into a scratch package
   // beside a tree of each kind (the amendment's cells): production and the
-  // gate pass over a keyless build, the open file over a keyed one — and the
+  // dev file pass over a keyless build, the open file over a keyed one — and the
   // open file FAILS check 12 over a keyless tree, by design (the window builds
-  // a keyed client before `npm run deploy:open`), as production and the gate
-  // fail over a keyed one.
-  it("pass the whole guard: production and the gate over a keyless build, the open file over a keyed one", () => {
+  // a keyed client before `npm run deploy:open`), as production and the dev
+  // file fail over a keyed one.
+  it("pass the whole guard: production and the dev file over a keyless build, the open file over a keyed one", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     const committed = Object.fromEntries(
-      ["wrangler.jsonc", "wrangler.open.jsonc", "wrangler.gate.jsonc", "wrangler.test.jsonc", "wrangler.open.test.jsonc"].map((name) => [
+      ["wrangler.jsonc", "wrangler.open.jsonc", "wrangler.dev.jsonc", "wrangler.test.jsonc", "wrangler.open.test.jsonc"].map((name) => [
         name,
         readFileSync(join(root, name), "utf8"),
       ]),
     );
     expect(deployGuard(worker(committed)), "production, keyless").toEqual([]);
-    expect(deployGuard(worker(committed), undefined, "wrangler.gate.jsonc"), "the gate, keyless").toEqual([]);
+    expect(deployGuard(worker(committed), undefined, "wrangler.dev.jsonc"), "the dev file, keyless").toEqual([]);
     expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.open.jsonc"), "the open file, keyed").toEqual([]);
     expect(deployGuard(worker(committed), undefined, "wrangler.open.jsonc"), "the open file, keyless").toEqual([
       "wrangler.open.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
         "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
     ]);
-    for (const file of ["wrangler.jsonc", "wrangler.gate.jsonc"]) {
+    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
       expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([
         `${file} leaves YOKOHAMA_TURNSTILE off under identity worker but the assets tree's build carries a site key — a ` +
           "keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of " +

@@ -1,12 +1,11 @@
-// **The Worker `yokohama-web` with the dev door SHUT** (R-E10) — production's
-// configuration in every respect but one: `YOKOHAMA_DEV_DOOR` is "off", so the
-// worker door is Cloudflare Access alone and no claimed caller reaches the
-// Worker, whatever the `yokohama-worker` credential and `DEV_DOOR_CLIENT_ID`
-// hold. `npm run deploy:gate` ships it (`--var` prints the binding as
-// "(hidden)", so a deploy could not be read back; a committed file can), and
-// the plain `npm run deploy` reverts to production's. The deploy guard judges
-// it like any configuration (`--config wrangler.gate.jsonc`), holds it to
-// production's blocks, and refuses it if the dev door is not "off".
+// **The Worker `yokohama-web` with the dev door OPEN** (security S2b, finding B6; R-SEC8(d)) — production's
+// configuration in every respect but one: `YOKOHAMA_DEV_DOOR` is "on", so the `yokohama-worker` credential plus a
+// claimed `.test` address names a caller, which is how the live corpus replay and the live Playwright tier play as
+// several people. `npm run deploy:dev` ships it before a live tier, and the plain `npm run deploy` reverts to
+// production's (`worker/RUNBOOK.md` §7). The deploy guard judges it like any configuration (`--config
+// wrangler.dev.jsonc`), holds it to production in every key but this variable, and refuses it if the dev door is
+// not "on". A `--var` deploy was the alternative and is not taken: a `--var` prints the binding as "(hidden)", so
+// a deploy could not be read back; a committed file can.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yokohama-web",
@@ -101,8 +100,8 @@
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
     "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
-    // Shut: the point of this file.
-    "YOKOHAMA_DEV_DOOR": "off",
+    // Open: the point of this file.
+    "YOKOHAMA_DEV_DOOR": "on",
     // The receipt archive over the bucket above (spec §2.6). `off` deploys
     // with no archive — `worker/RUNBOOK.md` §3 says what changes — and needs no change
     // to the binding.

@@ -29,19 +29,26 @@
 //    `ACCESS_AUD` set, without which no assertion is verified and every caller
 //    is no one; under `open`, `YOKOHAMA_DEV_DOOR` is not `on`, the dev door
 //    being the worker door's test instrument (the Worker refuses the pair at
-//    run time too).
+//    run time too); and under `worker`, `YOKOHAMA_DEV_DOOR` is `on` in
+//    `wrangler.dev.jsonc` alone, which must set it to exactly `on` (security
+//    S2b, B6; R-SEC8(d); decision D-1): the dev door is the live tiers'
+//    instrument, deployed around a live tier by `npm run deploy:dev` and
+//    reverted after by the plain `npm run deploy`.
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
 //    prints the door it reads before its verdict (`doorLine`).
 // 3b. No `.wrangler/deploy/config.json` beside the package or at the repository
 //    root (`REDIRECT_FILE`, D18); every open-door file judged by `--config` is
-//    held to production as its sibling (C3).
+//    held to production as its sibling (C3); `wrangler.dev.jsonc` is held to
+//    production but for its dev door `on` (security S2b, B6); and every OTHER
+//    worker-door file judged by `--config` is held to production exactly, with
+//    no allowed difference (F-40).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
 // 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
-//    `wrangler.jsonc`, the open and gate files AND both pool configurations,
+//    `wrangler.jsonc`, the open and dev files AND both pool configurations,
 //    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
 //    `html_handling` `none`, `not_found_handling` `404-page` (cycle F, R-F5;
 //    spec §2.5), `run_worker_first` `["/api/*", "/enter"]`, the binding
@@ -141,7 +148,7 @@
 //    shell's comment defends — and each pool file binds exactly the two NAMES,
 //    at any figure: the pool's figures are lenient by design, since
 //    `test/worker.test.ts` sends more creates through `handle` than production
-//    allows. The open and gate files carry production's block by the sibling
+//    allows. The open and dev files carry production's block by the sibling
 //    rule (T8-a), judged when the file is the one deployed. Read at the TOP
 //    LEVEL: `ratelimits` is not inherited by a named environment (wrangler's
 //    schema), and the repository deploys none. The shell refuses a
@@ -260,9 +267,9 @@ export const REDIRECT_FILE = ".wrangler/deploy/config.json";
  *  `--config wrangler.open.jsonc`. */
 const OPEN_FILE = "wrangler.open.jsonc";
 
-/** The gate window's configuration (R-E10): production with the dev door
- *  "off" — held to production's blocks like the open file. */
-const GATE_FILE = "wrangler.gate.jsonc";
+/** The live tiers' configuration (security S2b, B6; decision D-1): production with the dev door `on`, held to
+ *  production's blocks like the open file. */
+const DEV_FILE = "wrangler.dev.jsonc";
 
 /** What check 6 compares, and what each block's absence leaves undeclared. */
 const OBJECT_BLOCKS = {
@@ -386,7 +393,7 @@ function known(door) {
 /** What each deployable sibling may differ in: `vars` keys, each with the
  *  value the sibling must hold (`undefined`: absent). Everything else is
  *  production's, exactly. */
-const GATE_DIFFERS = { YOKOHAMA_DEV_DOOR: "off" };
+const DEV_DIFFERS = { YOKOHAMA_DEV_DOOR: "on" };
 const OPEN_DIFFERS = {
   YOKOHAMA_WEB_IDENTITY: "open",
   ACCESS_TEAM_DOMAIN: undefined,
@@ -475,6 +482,12 @@ function doorRules(name, value, failures) {
   if (door === "open" && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
     failures.push(
       `${name}'s vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair`,
+    );
+  }
+  // The dev door is the live tiers' instrument and opens in ONE file (security S2b, B6; R-SEC8(d); decision D-1).
+  if (door === "worker" && name !== DEV_FILE && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
+    failures.push(
+      `${name}'s vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler.dev.jsonc alone (npm run deploy:dev), around a live tier, and reverted after (R-SEC8(d))`,
     );
   }
 }
@@ -692,19 +705,17 @@ export function configFailures(root, config = PRODUCTION_FILE) {
       failures.push(`${config} names YOKOHAMA_DIAGNOSTIC_SEEDS — diagnostic seeds are set in the pool's configurations and nowhere else`);
     }
     secretsInVars(config, judged.value, failures);
-    // The gate file exists to shut the dev door: anything but "off" defeats it.
-    if (config === GATE_FILE) {
-      const gate = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
-      if (gate !== "off") {
-        failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${JSON.stringify(gate) ?? "nothing"}`);
-      }
+    // The dev file exists to open the dev door: anything but "on" defeats it.
+    if (config === DEV_FILE) {
+      const dev = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
+      if (dev !== "on") failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got ${JSON.stringify(dev) ?? "nothing"}`);
     }
   }
   if (production) assetsBlock(PRODUCTION_FILE, production.value, failures);
   const others = [];
   // The named configuration is held to the same blocks even when it is none of
   // the listed ones (`configFrom` accepts any `wrangler*.jsonc`).
-  const held = [OPEN_FILE, GATE_FILE, ...POOLS];
+  const held = [OPEN_FILE, DEV_FILE, ...POOLS];
   if (config !== PRODUCTION_FILE && !held.includes(config)) held.push(config);
   for (const name of held) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
@@ -719,13 +730,20 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind
   // production would roll it back. Judged when the file is the one deployed.
-  if (production && judged && config === GATE_FILE) siblingDrift(config, production.value, judged.value, GATE_DIFFERS, failures);
+  if (production && judged && config === DEV_FILE) siblingDrift(config, production.value, judged.value, DEV_DIFFERS, failures);
   if (production && judged && config === OPEN_FILE) siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
   // **Every open-door file is production's sibling** (security S2a, C3): a public configuration written later
   // and judged by `--config` is held to production's blocks and vars as the window's file is, not only to the
   // assets and object blocks. (S4's public Worker, its own deployment, will need a rule of its own.)
-  if (production && judged && config !== PRODUCTION_FILE && config !== GATE_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
+  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
     siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
+  }
+  // **Every unlisted worker-door file is production's sibling with NO allowed difference** (the S2a plan review's
+  // F-40; security S2b): a configuration judged by `--config` whose door is `worker` and which is neither
+  // production nor the dev file is held to production exactly — a deploy of it would otherwise roll production
+  // back or open a door no committed file opens.
+  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "worker") {
+    siblingDrift(config, production.value, judged.value, {}, failures);
   }
   return failures;
 }
@@ -831,7 +849,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
-      "at the open door no dev door, every open-door file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
+      "at the open door no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and dev files and both pool files; the open and dev files equal production but for their door, and the open file's declaration; " +
       "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; " +
       "no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",

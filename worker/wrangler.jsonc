@@ -99,11 +99,12 @@
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
     "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
-    // On for this cycle (spec §3.1): the test harness's claimed callers. The
-    // `yokohama-worker` credential's client id is the secret
-    // `DEV_DOOR_CLIENT_ID`; with none set, the dev door is shut whatever this
-    // says.
-    "YOKOHAMA_DEV_DOOR": "on",
+    // OFF (security S2b, finding B6; R-SEC8(d)): the standing state is Access alone, the shape a self-hoster behind
+    // their own application runs. The dev door — the `yokohama-worker` credential naming a `.test` address — is the
+    // live tiers' instrument and opens for them alone: `npm run deploy:dev` ships `wrangler.dev.jsonc`, this file
+    // with this one variable `on`, before a live tier, and the plain `npm run deploy` reverts it after. The deploy
+    // guard refuses `on` in this file and requires it in that one.
+    "YOKOHAMA_DEV_DOOR": "off",
     // The receipt archive over the bucket above (spec §2.6). `off` deploys
     // with no archive — `worker/RUNBOOK.md` §3 says what changes — and needs no change
     // to the binding.

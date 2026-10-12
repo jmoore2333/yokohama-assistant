@@ -65,6 +65,18 @@ export function isAddress(email: string): boolean {
   return new TextEncoder().encode(email).length <= 254 && /^[^@\s\p{Cc}]+@[^@\s\p{Cc}]+$/u.test(email);
 }
 
+/** The reserved domain every test identity's address ends in — `crates/yokohama-worker/src/receipt.rs`'s
+ *  `TEST_DOMAIN`, restated. */
+const TEST_DOMAIN = ".test";
+
+/** Whether a normalized address is a TEST identity's (security S2b, finding B6; R-SEC8(d)): an `@` and the suffix
+ *  `.test` — the receipt archive's own rule for the `test/` root, so what the dev door can name is exactly what
+ *  the bucket keeps apart from the owner's training data. A plain name ending `.test` (`a.test`) is not one, as the
+ *  module reads it. */
+export function isTestAddress(email: string): boolean {
+  return email.includes("@") && email.endsWith(TEST_DOMAIN);
+}
+
 /**
  * The address a raw value names — or, at the open door, the name a caller
  * claimed (`claimedIdentity`, M6.5c2): `raw` judged by `forwardable` BEFORE
@@ -85,7 +97,8 @@ function address(raw: string): string | undefined {
  *  and, at the dev door, a claimed value that is no address (`isAddress`;
  *  R1's L-2), which would otherwise be forwarded as a caller the layer
  *  refuses, and at `POST /api/archive` name an Archive object whose `init`
- *  refuses it.
+ *  refuses it — and, at the dev door, a claimed address outside `.test` (B6): the
+ *  credential names test identities and nobody else.
  *
  *  The brief's text, with ONE change the orchestrator ruled at Task 11's
  *  review (I1 — the spec over the brief): the address, the `email` claim or
@@ -126,7 +139,7 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
   }
   if (c.devDoor && claims.common_name === c.devDoorClientId) {
     const claimed = address(h.get(CLAIMED_USER_HEADER) ?? "");
-    if (claimed !== undefined && isAddress(claimed)) return { kind: "dev", email: claimed };
+    if (claimed !== undefined && isAddress(claimed) && isTestAddress(claimed)) return { kind: "dev", email: claimed };
   }
   return { kind: "none" };
 }

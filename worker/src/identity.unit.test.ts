@@ -7,6 +7,7 @@ import {
   claimedIdentity,
   forwardable,
   identityConfig,
+  isTestAddress,
   keySource,
   refreshDue,
   resolveIdentity,
@@ -251,6 +252,24 @@ describe("resolveIdentity (R-6.5c.3)", () => {
     const claimed = `${"a".repeat(247)}@t.test`;
     expect(claimed.length, "premise").toBe(254);
     expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed })).toEqual({ kind: "dev", email: claimed });
+  });
+
+  // **The dev door names a `.test` address only** (security S2b, finding B6; R-SEC8(d)): the receipt archive's own
+  // rule for the `test/` root (`is_test_identity`: an `@` and the suffix `.test`), so the credential can reach no
+  // real seat and no training root. Mutants: the suffix test dropped (a real address named); `endsWith("test")`
+  // (`x@contest` named); the test on the raw value (` red@wire.test ` refused, which `address` trims first).
+  it("names a .test address through the dev door and nobody for any other address", async () => {
+    const token = await key.sign(credentialClaims(CLIENT, at));
+    // `a@.test` is ADMITTED: the rule is the suffix, not the domain's shape (`isAddress` and `User::email` both take
+    // any non-empty domain; probed at the plan review).
+    for (const claimed of ["red@wire.test", " Red@Wire.TEST ", "a@e2e.test", "probe@deploy.test", "a@.test"]) {
+      expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed }), claimed).toEqual({ kind: "dev", email: claimed.trim().toLowerCase() });
+    }
+    for (const claimed of ["owner@example.com", "red@wire.contest", "red@test", "red@wire.test.evil", "ben"]) {
+      expect(await resolve(token, { "X-Yokohama-Claimed-User": claimed }), claimed).toEqual({ kind: "none" });
+    }
+    expect(isTestAddress("red@wire.test")).toBe(true);
+    expect(isTestAddress("a.test")).toBe(false);
   });
 });
 
