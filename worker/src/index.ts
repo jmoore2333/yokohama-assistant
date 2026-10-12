@@ -162,8 +162,10 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    person passes with `X-Yokohama-Operator` set to their address, and the
  *    route names the object (`adminRoute`): the listing is the house's, an
  *    expire the table's, `?force` given a value the 400 `adminRoute` names
- *    (the orchestrator's ruling I-72), and any other path or query the
- *    house's — the layer's own 404.
+ *    (the orchestrator's ruling I-72), an expire whose type is not
+ *    `application/json` the 400 `ADMIN_NEEDS_JSON`, in the layer's own words
+ *    (security S2b, finding B5), and any other path or query the house's —
+ *    the layer's own 404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
  *    object's 101 is returned as it came. An object whose `fetch` REJECTS —

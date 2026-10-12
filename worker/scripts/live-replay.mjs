@@ -137,7 +137,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     log(`  MISMATCH ${label} — ${fixture === null ? "" : `${fixture} `}${diff.path}: ${what}`);
   };
 
-  log(`live-replay: ${ORIGIN} — ${KEYS.join(" and ")} to this origin only; the forces bare (over WARP, the owner's device answers Access)`);
+  log(`live-replay: ${ORIGIN} — ${KEYS.join(" and ")} to this origin only; the forces with only the JSON type (over WARP, the owner's device answers Access)`);
   result.forcedBefore = await forceAll(ids, fetcher);
   log(`force before: ${result.forcedBefore.map((f) => `${f.id} ${f.status ?? "—"}${f.status === 204 ? "" : f.said}`).join(", ")}`);
   if (!result.forcedBefore.every((f) => f.status === 204)) {
