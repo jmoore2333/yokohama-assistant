@@ -22,18 +22,22 @@
 //    exactly), and there is no default, so a configuration naming none is
 //    refused rather than deployed to answer every request the 500. Per door:
 //    `"preview_urls": false` under both, since a preview version is not the
-//    deployed code, whatever the door; under `worker`, `"workers_dev": false`
-//    — a `workers.dev` URL would go around the hostname's Access application
-//    — and `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` set, without which no
-//    assertion is verified and every caller is no one; under `open`, a
-//    `workers.dev` URL is allowed, there being no door to go around, and
-//    `YOKOHAMA_DEV_DOOR` is not `on`, the dev door being the worker door's
-//    test instrument (the Worker refuses the pair at run time too). Under a
-//    door it does not know, `"workers_dev": false` is asked as under `worker`.
+//    deployed code, whatever the door; and `"workers_dev": false` under EVERY
+//    door — under `worker` a `workers.dev` URL would go around the hostname's
+//    Access application, under `open` the edge rule, the rate limit and Bot
+//    Fight Mode (security S2a, C3); under `worker`, `ACCESS_TEAM_DOMAIN` and
+//    `ACCESS_AUD` set, without which no assertion is verified and every caller
+//    is no one; under `open`, `YOKOHAMA_DEV_DOOR` is not `on`, the dev door
+//    being the worker door's test instrument (the Worker refuses the pair at
+//    run time too). Under a door it does not know, `"workers_dev": false` is
+//    asked as under `worker`.
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
 //    prints the door it reads before its verdict (`doorLine`).
+// 3b. No `.wrangler/deploy/config.json` beside the package or at the repository
+//    root (`REDIRECT_FILE`, D18); every open-door file judged by `--config` is
+//    held to production as its sibling (C3).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
@@ -143,7 +147,7 @@
 // holds one (every URL), and would choke on a trailing comma.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, posix } from "node:path";
+import { join, posix, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse, printParseErrorCode } from "jsonc-parser";
 import { readHeadersText } from "../../web/scripts/headers.mjs";
@@ -212,7 +216,8 @@ function assetsBlock(name, value, failures) {
 
 /** Why an absent key is not `false` (check 3). */
 const ABSENT = {
-  workers_dev: "with no route, wrangler serves an absent one as a public workers.dev URL",
+  workers_dev:
+    "with no route, wrangler serves an absent one as a public workers.dev URL — where neither the edge rule, the rate limit nor Bot Fight Mode applies, so /api/games/<id>/join would take unlimited guesses (security S2a, C3)",
   preview_urls: "wrangler leaves an absent one as the Worker already has it — public, if it was ever on",
 };
 
@@ -231,6 +236,10 @@ function canonical(value) {
 
 /** Production's configuration, the reference the others are held to. */
 const PRODUCTION_FILE = "wrangler.jsonc";
+
+/** The redirect file wrangler follows when no `--config` is given — written by the Cloudflare Vite plugin, never by
+ *  this repository; named exactly, so a stray one is refused by name (security S2a, D18). */
+export const REDIRECT_FILE = ".wrangler/deploy/config.json";
 
 /** The open door's deployment configuration (R-6.5c2.39): the state-1 window,
  *  held to production's blocks like a pool file, and judged whole by
@@ -408,8 +417,6 @@ function doorRules(name, value, failures) {
     failures.push(`${name}'s YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(door)}`);
   }
   for (const [key, why] of Object.entries(ABSENT)) {
-    // An open door has no Access application for a workers.dev URL to go around.
-    if (key === "workers_dev" && door === "open") continue;
     if (value[key] !== false) {
       failures.push(`${name} must set "${key}": false — got ${JSON.stringify(value[key]) ?? "nothing"}; ${why}`);
     }
@@ -672,6 +679,12 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   // production would roll it back. Judged when the file is the one deployed.
   if (production && judged && config === GATE_FILE) siblingDrift(config, production.value, judged.value, GATE_DIFFERS, failures);
   if (production && judged && config === OPEN_FILE) siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
+  // **Every open-door file is production's sibling** (security S2a, C3): a public configuration written later
+  // and judged by `--config` is held to production's blocks and vars as the window's file is, not only to the
+  // assets and object blocks. (S4's public Worker, its own deployment, will need a rule of its own.)
+  if (production && judged && config !== PRODUCTION_FILE && config !== GATE_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
+    siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
+  }
   return failures;
 }
 
@@ -727,6 +740,20 @@ export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_F
     }
   }
 
+  // **A redirect file would send `wrangler deploy` to a configuration this guard never judged** (security S2a,
+  // finding D18). With no `--config`, wrangler looks UP the tree from the working directory for
+  // `.wrangler/deploy/config.json` — a build tool's file, which the Cloudflare Vite plugin writes — and follows its
+  // `configPath` when the file sits beside the configuration it found: a bare `wrangler deploy` in `worker/` follows
+  // `worker/.wrangler/deploy/config.json` (measured, wrangler 4.136.3). One ABOVE that configuration is wrangler's
+  // own refusal ("do not share the same base path"), and an explicit `--config` skips the lookup altogether, which
+  // is why the deploy scripts name theirs. Both places are refused here — the package's for the hand-run recipes,
+  // the repository root's for a run from a directory with no configuration of its own, where the lookup would
+  // follow it.
+  for (const dir of [root, repo]) {
+    if (existsSync(join(dir, REDIRECT_FILE))) {
+      failures.push(`${relative(repo, join(dir, REDIRECT_FILE)) || REDIRECT_FILE} exists — wrangler would follow its redirect and deploy a configuration this guard did not judge; remove it`);
+    }
+  }
   failures.push(...configFailures(root, config));
   return failures;
 }
@@ -761,8 +788,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
-      "a door named, and its rules: no preview URL, and at the worker door no workers.dev URL and both Access values, " +
-      "at the open door no dev door; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
+      "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
+      "at the open door no dev door, every open-door file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
       "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );

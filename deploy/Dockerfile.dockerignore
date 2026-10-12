@@ -44,6 +44,20 @@ docs/temp/
 .codex/
 .vscode/
 
+# **Secrets and sessions never enter a build context** (security S2a, finding D15) — under BuildKit, which reads
+# this file as `deploy/Dockerfile`'s own ignore (the legacy builder reads none; Docker 23 builds with BuildKit by
+# default). `.dev.vars` is wrangler's file of credentials (the repository root holds one) and `.env*` is Vite's;
+# either may sit in any directory of the context — web/, worker/, the root — so the patterns are `**/`: anchored
+# at the root they would exclude the root's alone (measured: `web/.env*` and `worker/.dev.vars` entered the
+# context). `web/scripts/pinned/` is the pinned-browser instrument's state, whose Chromium profiles held the
+# deployment's Access session cookie, and `COPY web/ ./` in the client stage would have carried it into the image's
+# layers. A .gitignore governs git, not a build context.
+**/.dev.vars
+**/.dev.vars.*
+**/.env
+**/.env.*
+web/scripts/pinned/
+
 # History and tooling.
 .git/
 .github/

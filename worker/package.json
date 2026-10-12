@@ -15,9 +15,9 @@
     "pretest": "node scripts/test-assets.mjs",
     "test": "vitest run",
     "test:scripts": "vitest run -c vitest.scripts.config.ts",
-    "deploy": "node scripts/deploy-guard.mjs && wrangler deploy",
-    "deploy:open": "node scripts/deploy-guard.mjs --config wrangler.open.jsonc && wrangler deploy --config wrangler.open.jsonc",
-    "deploy:gate": "node scripts/deploy-guard.mjs --config wrangler.gate.jsonc && wrangler deploy --config wrangler.gate.jsonc"
+    "deploy": "node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc",
+    "deploy:open": "node scripts/deploy-guard.mjs --config wrangler.open.jsonc && node scripts/secrets-guard.mjs --config wrangler.open.jsonc && wrangler deploy --config wrangler.open.jsonc",
+    "deploy:gate": "node scripts/deploy-guard.mjs --config wrangler.gate.jsonc && node scripts/secrets-guard.mjs --config wrangler.gate.jsonc && wrangler deploy --config wrangler.gate.jsonc"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.2.3",

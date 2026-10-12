@@ -580,13 +580,16 @@ describe("the deploy guard", () => {
     ]);
     expect(deployGuard(worker({ "wrangler.jsonc": OPEN })), "the open door: no Access values").toEqual([]);
   });
-  // A workers.dev URL goes around the hostname's Access application — the
-  // worker door's refusal; an open door has nothing to go around. Preview URLs
-  // are refused at BOTH doors: a preview version is not the deployed code,
-  // whatever the door. Mutants: workers_dev refused at both doors; preview_urls
-  // exempted at the open door.
-  it("allows a workers.dev URL at the open door only, and refuses preview URLs at both", () => {
-    expect(deployGuard(worker({ "wrangler.jsonc": OPEN.replace('"workers_dev": false', '"workers_dev": true') }))).toEqual([]);
+  // A workers.dev URL goes around the hostname's Access application at the
+  // worker door and, at the open door, around the edge rule, the rate limit and
+  // Bot Fight Mode (security S2a, C3): refused under EVERY door. Preview URLs
+  // are refused at both: a preview version is not the deployed code, whatever
+  // the door. Mutants: the open skip left in (M32); preview_urls exempted at
+  // the open door.
+  it("refuses a workers.dev URL under every door, and preview URLs at both", () => {
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN.replace('"workers_dev": false', '"workers_dev": true') })), "the open door").toEqual([
+      expect.stringMatching(/^wrangler\.jsonc must set "workers_dev": false — got true; .*neither the edge rule, the rate limit nor Bot Fight Mode applies/),
+    ]);
     for (const [door, config] of [
       ["worker", PRODUCTION],
       ["open", OPEN],
@@ -594,6 +597,37 @@ describe("the deploy guard", () => {
       expect(deployGuard(worker({ "wrangler.jsonc": config.replace('"preview_urls": false', '"preview_urls": true') })), door).toEqual([
         expect.stringMatching(/^wrangler\.jsonc must set "preview_urls": false/),
       ]);
+    }
+  });
+
+  it("refuses a redirect file beside the package or at the repository root, naming it (security S2a, D18)", () => {
+    for (const where of ["", "../"]) {
+      const root = worker({ [`${where}.wrangler/deploy/config.json`]: '{ "configPath": "../../elsewhere/wrangler.jsonc" }' });
+      expect(deployGuard(root, join(root, ".."))).toEqual(naming(/\.wrangler\/deploy\/config\.json exists .* redirect/));
+    }
+  });
+
+  it("holds an unlisted open-door --config file to production as a sibling (security S2a, C3)", () => {
+    // Production's fixture has no TTL key; an open-door file adding one has drifted from production.
+    const drifted = OPEN_FILE.replace(
+      '"YOKOHAMA_TURNSTILE": "on"',
+      '"YOKOHAMA_TURNSTILE": "on",\n    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "30"',
+    );
+    const root = worker({ "wrangler.public.jsonc": drifted });
+    expect(configFailures(root, "wrangler.public.jsonc")).toEqual(
+      naming(/wrangler\.public\.jsonc's vars\.YOKOHAMA_WEB_TABLE_TTL_DAYS differs from wrangler\.jsonc's/),
+    );
+    // The pass-control: the same file undrifted passes — a WRONG `differs` map (the gate's, or an empty one) would
+    // refuse it, which `arrayContaining` above cannot see.
+    expect(configFailures(worker({ "wrangler.public.jsonc": OPEN_FILE }), "wrangler.public.jsonc")).toEqual([]);
+  });
+
+  it("every deploy command names its file to the guard, the secrets guard and wrangler alike (security S2a, D18)", () => {
+    const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    for (const [name, file] of [["deploy", "wrangler.jsonc"], ["deploy:open", "wrangler.open.jsonc"], ["deploy:gate", "wrangler.gate.jsonc"]]) {
+      expect(scripts[name], name).toBe(
+        `node scripts/deploy-guard.mjs --config ${file} && node scripts/secrets-guard.mjs --config ${file} && wrangler deploy --config ${file}`,
+      );
     }
   });
   // The dev door is the worker door's test instrument; the Worker refuses the

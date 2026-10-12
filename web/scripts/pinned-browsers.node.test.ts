@@ -22,6 +22,7 @@ import {
   doorReadiness,
   goCheck,
   GO_WAIT_DEFAULT_MINUTES,
+  leaveNoSession,
   pin,
   PIN_CHECK,
   pinnedArgs,
@@ -312,5 +313,51 @@ describe("after the game tab's click: the same game, under the new release", () 
     ["a move that could not be made", { eventsAfterAMove: null }, "the game goes on"],
   ])("fails %s", (_what, spoil, check) => {
     expect(clickFailed({ ...GOOD_CLICK, ...spoil })).toEqual([check]);
+  });
+});
+
+describe("the profile leaves no session behind (security S2a, D15)", () => {
+  /** A context that records what is asked of it; `clearCookies` resolves, or rejects as a closed browser does. */
+  const fakeContext = (clear: "resolves" | "rejects") => {
+    const calls: string[] = [];
+    return {
+      calls,
+      context: {
+        clearCookies: async () => {
+          calls.push("clearCookies");
+          if (clear === "rejects") throw new Error("Target page, context or browser has been closed");
+        },
+        close: async () => {
+          calls.push("close");
+        },
+      },
+    };
+  };
+  it("clears the context's cookies, then closes it, and logs the line the window reads", async () => {
+    const { calls, context } = fakeContext("resolves");
+    const lines: string[] = [];
+    const checks: Check[] = [];
+    await leaveNoSession(context, (s: string) => lines.push(s), checks, "/tmp/state");
+    expect(calls).toEqual(["clearCookies", "close"]);
+    expect(lines).toEqual(["cookies: cleared before close"]);
+    expect(checks).toEqual([]);
+  });
+  it("a browser that died first cannot be cleared: one FAILED check naming the profile to delete, and the close still happens", async () => {
+    const { calls, context } = fakeContext("rejects");
+    const lines: string[] = [];
+    const checks: Check[] = [];
+    await leaveNoSession(context, (s: string) => lines.push(s), checks, "/tmp/state");
+    expect(calls).toEqual(["clearCookies", "close"]);
+    expect(checks).toEqual([{ check: "the profile's cookies were cleared", ok: false, saw: "Target page, context or browser has been closed" }]);
+    expect(lines).toEqual(["cookies: NOT cleared — delete /tmp/state/profile by hand"]);
+  });
+  it("is kept out of every image build, with the secrets files — the patterns `**/`, since the files may sit in any directory of the context", () => {
+    const ignore = readFileSync(new URL("../../deploy/Dockerfile.dockerignore", import.meta.url), "utf8").split("\n");
+    for (const line of ["**/.dev.vars", "**/.dev.vars.*", "**/.env", "**/.env.*", "web/scripts/pinned/"]) {
+      expect(ignore, `deploy/Dockerfile.dockerignore lacks ${line}`).toContain(line);
+    }
+    for (const anchored of [".dev.vars", ".dev.vars.*", ".env", ".env.*"]) {
+      expect(ignore, `${anchored} anchored at the context root excludes nothing under web/ or worker/`).not.toContain(anchored);
+    }
   });
 });
