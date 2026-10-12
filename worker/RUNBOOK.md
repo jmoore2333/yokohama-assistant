@@ -120,7 +120,10 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
 2. **`build:assets`** — `worker/assets/` from `web/dist`, `crates/yokohama-web/assets/art/` and
    `worker/static`, verified entry by entry against the release's own precache list. A debug browser
    module is refused. The `sw.js` it copies names the release it came from, and is what the deploy
-   guard compares with the current `web/dist/sw.js`.
+   guard compares with the current `web/dist/sw.js`. `web/dist/headers.json` is the one file of the
+   dist it does not copy (security S2a, decision D-1): it reads the file and appends its pairs to the
+   copied `_headers` as the `/*` block, the header set both hosts serve, and a dist without the file
+   is refused, naming it.
 3. **`smoke:release`** — the release module instantiated once, in Node: `init` with the archive off,
    then `GET /api/health` as `smoke@x.test`. It refuses unless the answer is 200, and refuses a debug
    module. Nothing else runs the release module before a deploy.
@@ -133,7 +136,10 @@ after a release build, `npm run build:module:debug` comes before `npm test` in `
 
 ```sh
 cd worker && npx wrangler whoami   # the owner's login, account BDVC
-npm run deploy                     # node scripts/deploy-guard.mjs && wrangler deploy
+npm run deploy
+#   node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc
+npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20)
+npm run deploy:gate                # the same three steps, each with --config wrangler.gate.jsonc (§19)
 ```
 
 **The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; a
@@ -161,6 +167,36 @@ configurations, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`, and each i
 production's `assets`, `durable_objects`, `migrations` and `r2_buckets` blocks. And
 `DEV_DOOR_CLIENT_ID` among `wrangler.jsonc`'s `vars` is refused beside the operator list, since it
 is a secret too (§3).
+
+*(Corrected 2026-10-11, security S2a: the clause above that allows a `workers.dev` URL under `open` no
+longer holds.)* Every deploy script names its
+configuration to the guard, to the secrets guard and to wrangler alike, `--config` explicit (finding
+D18). The guard also refuses:
+- **a redirect file**, `.wrangler/deploy/config.json`, in `worker/` or at the repository root: with no
+  `--config`, wrangler can follow one to a configuration the guard never judged;
+- **`workers_dev` not `false` under EVERY door** (finding C3): under `worker` a `workers.dev` URL goes
+  around the hostname's Access application, and under `open` around the edge rule, the rate limit and
+  Bot Fight Mode. A door the guard does not know is asked the same;
+- **an open-door file that is not production's sibling**: every configuration judged by `--config`
+  whose door is `open` is held to production exactly as `wrangler.open.jsonc` is — production but for
+  the open door's own `vars`: the door `open`, no Access pair, no dev door, `YOKOHAMA_TURNSTILE` `on`;
+- **an assets `_headers` that is not `worker/static/_headers` followed by the current
+  `web/dist/headers.json`'s `/*` block**, as the assembly writes it (§1; decision D-1), or a `web/dist`
+  with no `headers.json`, which the guard names.
+
+**Then the secrets guard** (`scripts/secrets-guard.mjs`, decision D-11) asks the account for the
+Worker's secret NAMES through `npx wrangler secret list` — never a value — and refuses a secret named
+`YOKOHAMA_DIAGNOSTIC_SEEDS` or `YOKOHAMA_WEB_TEST_CLOCK`, the two switches the guard refuses in a
+committed file, which a secret would carry past it: `secrets-guard: the Worker holds a secret named
+<name> — <why>; delete it: npx wrangler secret delete <name>`. A listing that fails or does not parse
+is a refusal, never a pass; a clean one prints `secrets-guard: <n> secrets on <file>'s Worker, none
+named like a switch`.
+
+**What the secrets guard costs.** Every deploy script is a network step from here on — `deploy:gate`,
+the safe direction, included. A logged-out clone runs `npx wrangler login` once, and one with more
+than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing).
+A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found" for a Worker that
+does not exist yet, so S4's public Worker needs its own first-deploy path.
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
   probes once and reconnects, an open picker is re-fed — or dropped, when the deploy changed the
@@ -753,6 +789,16 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
     blocked load logs TWO console lines — the CORS sentence at the page's URL, and `Failed to load
     resource: net::ERR_FAILED` at the beacon's (I-76) — and both are forgiven, each tied to the
     beacon's URL, and counted;
+  - live only, since cycle F, the release feed's failure while the repository is private: GitHub's
+    404 a real browser meets, or the CORS refusal the claimed header causes at GitHub's preflight —
+    nothing else from the feed, and nothing at any other address — counted apart from the beacon's;
+  - live only, since security S2a (decision D-9), the Report-Only refusal of the INLINE detection
+    script Bot Fight Mode's JavaScript detections inject into every HTML answer the edge serves:
+    Chromium logs it at console type `info`, and the walk reads every CSP line at ANY type, so this
+    one line is forgiven only in its measured words and only at a page of the deployment's own
+    origin, counted apart and printed with the beacon's and the feed's counts. Any other CSP line,
+    an enforced one included, is breakage. Locally there is no edge, no injected script and no
+    forgiveness: the local walk is served the policy ENFORCED (`web/scripts/e2e-build.mjs`);
   - in both modes, the deal's DESIGNED 409 on `GET …/api/games/<id>/deal` — a table that flipped to
     playing between two of the browser's requests, the refusal the dealing screen branches on — in
     both of its arms, the failed response and its console line (I-81), counted as `dealAnswers`.
@@ -787,7 +833,13 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
   decision — answer a bot-shaped request BEFORE Access sees it: 403, `cf-mitigated: challenge`, and
   a `text/html` "Just a moment…" body of about 5,259 B (§8, reading 1). Both tiers print a body
   that is not the API's JSON error by its type and size, never its text, so a 403 that reads as a
-  `text/html` body of about 5,259 B is the zone's, and the cure is to run over WARP. **The smoke's live
+  `text/html` body of about 5,259 B is the zone's, and the cure is to run over WARP. **Every `curl` at
+  either host OVER WARP carries a browser `User-Agent`** — the smoke's `BROWSER_UA`
+  (`scripts/smoke-release.mjs`) — or meets Bot Fight Mode's 403 before Access sees it (the owner,
+  2026-10-11: "when using curl to cloudflare, you need to include user agent details so it looks like
+  a normal browser when a site is access protected or cloudflare will fight it"). Off WARP a bare client
+  meets the 403 whatever its `User-Agent`: a browser `User-Agent`, the navigate headers and a fake
+  Googlebot change nothing there, the TLS fingerprint being the tell (W-1, §20). **The smoke's live
   mode (§3, the `YOKOHAMA_TURNSTILE` bullet) is read the same way:** run it over WARP, or from any client Bot
   Fight Mode trusts, because off WARP its sitemap control reads Bot Fight Mode's 403, which it cannot tell
   from the edge rule's (cycle F's window, W-1; §20).
@@ -800,13 +852,15 @@ The exit's headed game (`web/e2e/exit_game.spec.ts`, run as its header says) rea
 unset (§3), so the window is two deploys, run in `worker/`, with no file edited:
 
 ```sh
-node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on   # opens it
-npm run deploy                                                                        # closes it
+# opens it:
+node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && npx wrangler deploy --config wrangler.jsonc --var YOKOHAMA_WEB_COUNT_WAKES:on
+# closes it:
+npm run deploy
 ```
 
-- **Opening it is a deploy**, guarded like any other: the guard runs first, as `npm run deploy`
-  runs it, and `--var` deploys one more plain-text variable beside `wrangler.jsonc`'s `vars`,
-  replacing none of them (read in wrangler 4.136.3's source). Like every deploy, it restarts every
+- **Opening it is a deploy**, guarded like any other: the guard and the secrets guard run first, as
+  `npm run deploy` runs them, each told the file by `--config` as wrangler is (§2), and `--var`
+  deploys one more plain-text variable beside `wrangler.jsonc`'s `vars`, replacing none of them (read in wrangler 4.136.3's source). Like every deploy, it restarts every
   object and closes every socket (§2): open the window between games, before the exit's run.
 - **Closing it is the exit's last step.** The plain deploy replaces the Worker's variables with
   the file's again, which name no `YOKOHAMA_WEB_COUNT_WAKES`, so the switch reads off. While the

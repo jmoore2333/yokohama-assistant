@@ -510,3 +510,206 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
    reply names the caller segment in `path`, so the three `archive_post*.json` fixtures regenerate once; the
    `why_refusals.json` `mismatch` row is a construction and Task 6 moves nothing (decision D-8). Still one
    regeneration per cycle, as §9.3's correction 1 allows — a value moved, not the wire's shape.
+
+### 9.6 — 2026-10-11, S2's brainstorm and S2a's plan: the three-cycle split, the owner's twelve rulings and the four taken at the plan review, eleven decisions, six adjudications and twelve corrections
+
+S2a's plan (`docs/plans/2026-10-11-security-s2a-browser-fences-plan.md`) transcribes the brainstorm of 2026-10-11 — S2 cut into three cycles between the hosts, and the owner's twelve rulings (X1–X6 and A1–A6) — with the owner's rulings on the plan's four flagged decisions at its review (D-7 taken, D-8 done live with the owner, D-2 and D-1 standing as proposed) and the plan review's six adjudications (AD-1–AD-6); it takes eleven decisions of its own and makes twelve corrections of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at `efc3c962`, S2a's Task 6 head — byte for byte as committed at `5a03a609`, since every correction the run made at the source moved the plan's other sections and none of these three — so what follows is what the cycle executed. The run's rulings are the close's paragraph after them (the plan's Task 9 Step 6), as §9.4's 2026-10-10 paragraph was S1b's.
+
+**The owner's rulings for S2 (2026-10-11), and what each binds**
+
+The brainstorm of 2026-10-11 settled the shape of S2 and this cycle's twelve questions; the plan transcribes them
+and nothing re-opens them. The owner's words are quoted where they were given.
+
+- **S2 is THREE cycles, cut between the hosts** — S2a "the browser's fences" (this plan), S2b "the Worker's door"
+  (B5, B6, C1 with D24, C2, D3's socket cap, B12's Worker quota, D23), S2c "the NAS's identity" (B10, D3's stream
+  cap and the body read timeout, D8, the explain surface's two rules, the inherited residuals, the wrap). The owner
+  asked whether the items could be brought together under fourteen tasks a cycle; counted by shared mechanism,
+  two cycles put fifteen tasks in the second, so three: "if so, then we should go with three".
+- **X1 — the branch.** `security-s2` from master `1e9c092d`; S2a on it; `security-s2b` and `security-s2c`
+  stacked; a PR per sub-cycle against the stack; ONE merge to master at S2's wrap ("this is how I would structure
+  it — so we're not delayed if this work delays us further").
+- **X2 — two windows, two versions.** S2a ships `0.6.2` with the policy in Report-Only; the wrap ships `0.6.3`
+  enforcing ("the delay is a non issue, but it seems like a nominal amount of work to set the flag so the two
+  windows is fine").
+- **X3 — the tiers.** Opus reviewers for every task; Sonnet implementers only where the brief carries the whole
+  judgment (Tasks 5 and 6 here); the wrap's stack review as S1's ("agreed").
+- **X4 — the pre-flight.** S1c's shape: the first two tasks' cells executed and every figure measured, the rest to
+  the task reviewers ("that should work").
+- **X5 — the two live readings never taken** (D1; B1's withheld `why`) — the owner: "this is tricky, we're on a
+  warp connected endpoint … I added myfreemovies@gmail.com and I can sign that into chrome so it can be tested
+  with claude in chrome if we disable the warp-cli but moving back and forth between the two identities would be
+  complicated depending on how the task itself is structured — unless you can use a service token for one of those
+  identities." A service token names nobody on the NAS (the review's V1), so the structure is decision D-8's one
+  block, done LIVE with the owner (the owner's ruling at this plan's review, below).
+- **X6 — the service token stays long-lived.** "The service token is a dev function, it's not important to how
+  this will be released as an open project … purely there for easier testing and dev, I don't see an issue with
+  leaving it with the longer duration on this authenticated endpoint." B6's "shorten/rotate" half reads
+  `accepted` in those words (S2b's ledger row). The owner's framing of the end state, kept for S2b and S4: "this
+  project will be when hosted by me on the cloudflare worker open door without identity but we will have another
+  one using identity and the NAS version I host will always be behind access but for others that want to host it
+  internally or otherwise they can use it or not depending on how they manage their network."
+- **A1 — the header set, taken as the c1 review wrote it**, with three choices inside it: the `connect-src` hosts
+  generated from the build values; `404.html`'s inline style kept and HASHED (decision D-4); Bot Fight Mode's
+  injected detection script accepted as the one known Report-Only line, never `'unsafe-inline'`. The owner's
+  constraint, binding on every task: "we want to always make sure that our front door/landing page is always
+  static assets and we don't get to worker invocations until after the turnstile is passed for multiplayer events
+  on the cloudflare worker … If the impact of the decision in A1 will not impact user's ability to use the site on
+  a first visit, then this decision is fine. Bot Fight Mode needs to stay on." The asset layer applies `_headers`
+  with zero invocations; Report-Only blocks nothing; the enforcement question is the wrap's, from this release's
+  reading, between three shapes (accept the refusal if first visits are not challenged more; a fixed nonce, which
+  Cloudflare copies onto the script it injects by parsing the header; `'unsafe-inline'`).
+- **A2 — the Worker's `no-store` lives in `handle`**, one place on the way out, for every answer but a 101
+  ("agreed").
+- **A3 — D16 REVERSED: `accepted`.** "If a game has finished it should auto-upload, even if they pull back a game
+  and finish it, presumably they don't finish it identically, and so it's still useful to get more completed games,
+  because we're using those for training detail later on with the v5+ computer player development." No code
+  moves; the ledger row reads `accepted` with that sentence and two consequences recorded (the upload counts
+  against the restorer's share, a 507 being a wait; the once-rule is per caller segment, so a restored copy may sit
+  beside the original device's under another segment, deduplicated by digest when the archive is read).
+- **A4 — D14**: the hash router admits `is_safe_id`'s grammar, pinned to an emitted fixture ("confirmed").
+- **A5 — the service worker's pass-through and the `window.top` check** ("confirmed").
+- **A6 — the guard's three rules**: `workers_dev: false` under every door with the sibling rule for every
+  open-door file; `--config` explicit and a redirect file refused; the deploy lists the Worker's secrets and refuses
+  one named like a switch ("agreed").
+- **S2b's and S2c's values** are ruled at their planning sessions, the orchestrator's recommendations the default
+  ("my instinct is to use the suggestions you make"); the rate-limit figures derive from the measured calls per
+  move for a couple of games at once ("as long as … those values align with a user playing a couple of games at a
+  time"); **B10 under a dependency fence**: "we have a minimal set now, and when we get to running with apache
+  2.0 we want to make sure we remain compliant" — minimal, Apache-2.0-compatible crates, the `cargo tree` diff
+  recorded, nothing new in the wasm or fenced crates.
+- **The owner's rulings on the plan's four flagged decisions (2026-10-11, at the plan's review).** **D-7 taken**: "we can
+  cut the release on the branch that's fine since we're deploying it out" — the tag `v0.6.2` is cut on the deployed
+  `security-s2` commit and the release published before either deploy; `docs/web-lane.md` §7 records the exception
+  (Task 7). **D-8 is done LIVE with the owner**: "we'll have to work on this in real time for the sign ins so we'll just
+  have to note that at the start and get an idea when that gets slotted" — the two-identity block needs the owner at the
+  keyboard for the two Access sign-ins, so Task 9 Step 9 opens by naming the block and agreeing its slot in the window
+  before any deploy begins; the block's readings are taken in that slot or recorded as not taken, never improvised, by
+  the means D-8 names. **D-2 and D-1 stand as proposed** ("not sure what I can add to this", twice): Cloudflare's three
+  hosts named in the policy; a dist without `headers.json` serves no set on the NAS with one stderr line and refuses the
+  Worker's assembly (the review corrected D-1's supporting parenthetical about the smoke, not the decision).
+- **The plan review's six adjudications (the orchestrator's, 2026-10-11; the record is §"Review record")**: AD-1 the
+  local Playwright tier is served the policy ENFORCED and the live tier reads a CSP line at any console level, forgiving
+  the one measured Report-Only line (D-9 rewritten); AD-2 `headers.json` is an input of the Worker's assembly, never an
+  asset; AD-3 the fifteen-gate roster runs once at S2a's code head, after the bump (spec §5.2, as S1c's did at
+  `04713bed`); AD-4 the NAS's header reading is live, after the health read; AD-5 the block's probes run inside each
+  signed-in profile (D-8); AD-6 the pass-through carries `Cache-Control` and says so (D-5).
+
+**The decisions this plan takes** (the orchestrator's; the owner read them at the plan review, 2026-10-11)
+
+- **D-1 — the set is generated ONCE, at the client build, from the checked build values.** `web/scripts/headers.mjs`
+  is the one place a directive is spelled; `vite build` writes the set to `dist/headers.json` beside
+  `build-values.json`; the Worker's assembly appends it to `_headers` as the `/*` block and the deploy guard
+  recomputes that expectation; the NAS reads the file at start. Neither host holds a copy of the policy text, so
+  the two cannot drift, and a changed feed host or site address changes `connect-src` without an edit. A build
+  without the file is REFUSED at the Worker's assembly (the tree would ship no headers) and served WITHOUT the set
+  on the NAS with one line on stderr at start (a dev run with an older or absent client build still serves; the
+  self-host image's smoke reads the headers in CI, `docker.yml`, so that image cannot ship without them; the NAS's
+  runtime image, assembled by Portainer from the tagged commit's own `dist`, is read live in the window — Task 9 Step
+  9(a)).
+- **D-2 — Cloudflare's three hosts are always named.** `script-src` carries `https://challenges.cloudflare.com`
+  (Turnstile and the Managed Challenge) and `https://static.cloudflareinsights.com` (the Web Analytics beacon the
+  zone injects into every HTML answer), `frame-src` the first, `connect-src` `https://cloudflareinsights.com` (the
+  beacon's post). Both deployments sit behind the zone, the beacon stays on by the owner's standing rule ("known
+  errors over disabling features"), and naming the hosts is a precise allowance, not a weakening of substance. The
+  one script the policy cannot name is Bot Fight Mode's inline detection script, which carries no nonce a static
+  shell could match: it is the known Report-Only line of this release (A1), read in the window.
+- **D-3 — the Worker's API answers carry `no-store` and `nosniff`, not the whole set.** Cloudflare's rule: a
+  `_headers` block never applies to a Worker-generated answer, so `handle` wraps every answer under `/api` on the
+  way out with the two headers that matter for a JSON body (cache deception; MIME confusion) and returns a 101 as it
+  came. The whole set on JSON would buy nothing, and the shell holds no `headers.json` to read. The static release
+  — `/`, `/shell.bin`, every asset, the 404 page — carries the whole set from `_headers`.
+- **D-4 — `404.html` stays self-contained; its inline style is hashed.** The page is designed to make one request
+  (its icon). CSP admits an inline `<style>` by the SHA-256 of its exact text, so the generator hashes
+  `web/public/404.html`'s style block at build and `style-src` names it; the page's text and the hash move
+  together or the policy reports it. Moving the style to a file was the alternative, refused for the request it adds
+  and the design it undoes.
+- **D-5 — the service worker copies every stored header but three.** `shellResponse(hit)` carries the stored
+  `/shell.bin` entry's headers — the host's `/*` set among them — onto the navigation it synthesizes, except
+  `content-type` (set to HTML, as before), `content-length` and `content-encoding` (the stored body is the
+  DECODED bytes the install digested). `Cache-Control: no-store` IS carried: `/shell.bin`'s directive lands on
+  every synthesized navigation, which keeps a signed-in document out of the HTTP and back/forward caches — the
+  conservative side for B4 and D13 (the bfcache cost is unmeasured: Playwright's Chromium disables it either way).
+  A named allow-list was the alternative, refused: a header the set gains later would be dropped in silence — and
+  the cell carries a header no cell names, so an allow-list cannot pass it.
+- **D-6 — the hash router's grammar is pinned to the store's by an emitted fixture**, as the name rule is pinned
+  to `identity_cases.json`: `wire_fixtures` emits `id_cases.json` from `store::is_safe_id` over a case list, and
+  `web/src/tableId.ts` is held to its verdicts both ways. `parseRoute` stays total — an id the grammar refuses is
+  the door, never an exception and never an API path. The one existing cell this changes is `#/t/a%20b`, which read
+  as a table named `a b` and now reads as the door: a space is outside the grammar.
+- **D-7 — the tag `v0.6.2` is cut on the DEPLOYED commit of `security-s2`**, since nothing merges to master before
+  S2's wrap (X1) and the hosts deploy after S2a (X2). `docs/web-lane.md` §7's "on master" is read as "on the
+  commit the hosts run": the wrap's merge brings the tagged commit onto master, and `release.yml` runs on any `v*`
+  tag. The release is published BEFORE either deploy (the owner's standing order from S1's wrap).
+- **D-8 — the two-identity block of the window** (X5), done LIVE with the owner (the owner's ruling above): WARP
+  off for one bounded block whose slot is agreed at the window's start and recorded; two Chrome profiles signed in
+  through Access's login — the owner's and `myfreemovies@gmail.com` — on the NAS hostname (and, for the §8 rows,
+  on the Worker's); **each probe runs INSIDE the profile it speaks for**: a page-context `fetch` or `EventSource`
+  at the host from that profile's own tab (Claude in Chrome's `javascript_tool`) — Chrome's TLS and Chrome's
+  cookie, nothing extracted, nothing printed, nothing logged; nothing switches identity mid-probe. If a probe must
+  leave the browser, the owner copies that profile's `CF_Authorization` from DevTools into a `umask 077` file used
+  as `curl -H @file` and deleted after — the value never in a tool result, a shell history or `ps`. The cookie is
+  `HttpOnly`, so no page script reads it and no tool of ours returns it without logging it; and off WARP a `curl`
+  is not a transport at all, whatever its `User-Agent` (W-1, `worker/RUNBOOK.md` §21, 2026-10-01: "a browser
+  User-Agent, the navigate headers and a fake Googlebot change nothing — the TLS fingerprint is the tell"). The
+  owner's rule for every `curl` the window runs OVER WARP stands as given: it carries a browser `User-Agent` (the
+  release smoke's `BROWSER_UA`) or meets Bot Fight Mode's 403 before Access sees it (the owner, 2026-10-11: "when
+  using curl to cloudflare, you need to include user agent details so it looks like a normal browser when a site is
+  access protected or cloudflare will fight it"). The probes are Task 9 Step 9(d)'s: D1 at an open table A fills
+  itself; B1 at a bot-first table; rows 108 and 119 as the second identity on the Worker host. A service token
+  cannot stand in: Cloudflare strips the identity header on a token request, so it names nobody on the NAS (V1).
+  WARP back on at the block's end. Nothing else in this cycle depends on it.
+- **D-9 — the local Playwright tier is the enforcement reading, served the policy ENFORCED; the live tier reads
+  the Report-Only release.** Measured at the plan review (Chromium 143–153, Chrome 155): Chromium logs a
+  Report-Only violation at console type `info` — "Executing inline script violates the following Content Security
+  Policy directive 'script-src …'. … The policy is report-only, so the violation has been logged but no further
+  action has been taken." — and an enforced one at `error`; `watchForBreakage` read `error` alone; and a violation
+  raised INSIDE the module Worker (the wasm compile without `'wasm-unsafe-eval'`) prints on no console channel in
+  either mode. So the local walk is the enforcement reading only when it is served the policy ENFORCED:
+  `web/scripts/e2e-build.mjs` rewrites the e2e build's `dist/headers.json` under `Content-Security-Policy` after
+  the client build — an override that can only strengthen; the shipped `CSP_MODE` stays the constant, with its cell
+  — so an enforced violation is a console `error` the walk fails on, and a Worker-internal one fails the walk itself
+  (no game is dealt). No local forgiveness is added. The LIVE tier reads every CSP line at ANY console level and
+  gains exactly one forgiveness, counted apart as the beacon's is: the Report-Only refusal of Cloudflare's injected
+  inline script on a first load (D-2), matched on its measured text and the page's ORIGIN; a red live tier at the
+  window is a finding, never a hole. The pre-flight's enforce run (Task 9 Step 1) stays: it reads what enforcement
+  blocks before anything ships (the review's reading: 77 of 81 cells green on the real NAS binary, the other four
+  red identically with no header set).
+- **D-10 — the version bump is a task of this cycle (Task 8), on the branch, before the after review**, so the
+  review and the deploy read the head that ships (S1c's D-10).
+- **D-11 — the secrets guard runs `wrangler secret list` and judges its JSON with a pure function.** The deploy
+  guard proper stays offline; a second script in the deploy commands asks wrangler for the names and refuses
+  `YOKOHAMA_DIAGNOSTIC_SEEDS` and `YOKOHAMA_WEB_TEST_CLOCK` — the two switches the guard already refuses in a
+  committed file, which a secret would carry past it (the S1 stack review's unverified HI item).
+
+**Spec corrections** (to be recorded as §9.6 by Task 7, dated 2026-10-11)
+
+1. **S2 runs as three cycles, cut between the hosts** (the owner, 2026-10-11): S2a the browser's fences, S2b the
+   Worker's door, S2c the NAS's identity — §3.3's one plan becomes three, each written against the stack's head.
+   **Two windows and two versions** (X2): §5.3's "after each cycle's deploy" is per sub-cycle where one deploys;
+   S2a ships `0.6.2` in Report-Only and the wrap `0.6.3` enforcing.
+2. **B4's Access half (R-SEC8(g)) was done at S1's wrap** (2026-10-11: the cookie `SameSite=Lax`, the session
+   24h) — §3.3's "made before the cycle's live acceptance" was met before S2a began.
+3. **A `_headers` block never applies to a Worker-generated answer** (Cloudflare's documented rule for Workers
+   static assets), so §2.2 B4's `worker/static/_headers` is the STATIC half; the API's headers are `handle`'s
+   (D-3), and the asset layer applies `_headers` with zero Worker invocations (the owner's A1 constraint).
+4. **D16 is `accepted`** (the owner, A3): a restored finished game uploads as any finished game does, for the
+   training corpus; the attribution to the restorer is accepted, the record's own `created_by` and seat users
+   naming its players.
+5. **D24 collapses into C1** (S2b): once an email-shaped claim is refused under `open`, a claim is an ASCII name
+   and always a legal header; under `worker` and `cf-access` the identity rides the cookie, never a client header.
+6. **B6's "service token rotated to a shorter duration" is `accepted` as it stands** (the owner, X6).
+7. **The policy names Cloudflare's analytics and challenge hosts** (D-2); **the JS detections' inline script is
+   the known Report-Only line**; the enforcement shape is the wrap's decision from this release's reading (A1).
+8. **The two live readings not taken (D1; B1's withheld `why`) are read with a second Access identity by the
+   cookie block** (D-8), not a service token (V1).
+9. **The stack review's "a crafted bare name equal to another address's current segment" is closed by the rename
+   plus the digest suffix** — every segment now ends in twelve hex of its own key's digest, so no legacy folder
+   exists for a name to equal; a cell is S2b's, beside the 48-cut WASM cell.
+10. **§5.3's "from S2 on, the response headers of `/`, `/shell.bin`, an asset and `/api/health` on both hosts"**:
+    the expected reading is the set of Task 1 on `/`, `/shell.bin` and an asset on both hosts; on `/api/health`
+    the whole set plus `no-store` on the NAS, and `no-store` plus `nosniff` on the Worker (D-3).
+11. **B4 is enforced by `X-Frame-Options: DENY` alone until the wrap**: `frame-ancestors 'none'` rides the
+    Report-Only policy in 0.6.2 and is enforced in 0.6.3 (X2); §2.2 B4's "from both hosts" is met by the header
+    in this release and by both in the next.
+12. **The wire corpus moves in S2a** by one new contract file (`id_cases.json`, Task 5) and the version fields
+    (Task 8); §6's "once, in S1" was S1's.

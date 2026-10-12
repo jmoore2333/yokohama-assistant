@@ -363,10 +363,11 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
 open door and no Access values or dev door. The recipe: delete the two Worker secrets first
 (`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
 list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
---config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on) and
-then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first screen and the
-lobby with no login and a name of their own choosing, and the operator surface answers 404. The revert
-is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
+--config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on), then
+the secrets guard over the same file (`node scripts/secrets-guard.mjs --config wrangler.open.jsonc`,
+§9.3), and then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first
+screen and the lobby with no login and a name of their own choosing, and the operator surface
+answers 404. The revert is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
 the state in between come from `node scripts/access-paths.mjs`, derived from the routers.
 `wrangler.gate.jsonc` is production with the dev door shut (`npm run deploy:gate`), for a window where
 the door must be Access alone. The open door is also proven in the test pool's second project
@@ -1611,8 +1612,12 @@ in `web/dist`. And after a release build, `npm run build:module:debug` comes bef
 
 ### 9.3 The deploy guard
 
-`npm run deploy` is `node scripts/deploy-guard.mjs && wrangler deploy`, so nothing ships unless all
-twelve checks hold, and every failure is named, not only the first:
+`npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
+scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and
+`npm run deploy:open` and `npm run deploy:gate` the same three steps over `wrangler.open.jsonc` and
+`wrangler.gate.jsonc` — each step told its file, so wrangler deploys exactly what the guard judged
+(security S2a, finding D18). Nothing ships unless all twelve checks hold, and every failure is named,
+not only the first:
 
 1. **`gen/` holds the RELEASE module**, and no `gen/.unoptimized` marker: a debug or unoptimized
    module never ships.
@@ -1626,7 +1631,13 @@ twelve checks hold, and every failure is named, not only the first:
    under `open`, a `workers.dev` URL is allowed and `YOKOHAMA_DEV_DOOR=on` is refused. Absent is not
    false: with no route, an absent `workers_dev` is a public `workers.dev` URL, and an absent
    `preview_urls` leaves the Worker's version URLs as they were. *(Corrected 2026-09-28: until
-   M6.5c2 this check asked both switches `false`, with no door to read.)*
+   M6.5c2 this check asked both switches `false`, with no door to read.)* *(Corrected 2026-10-11,
+   security S2a, finding C3: `workers_dev` must be explicitly `false` under EVERY door, so the clause
+   allowing a `workers.dev` URL under `open` no longer holds — there it would go around the edge rule,
+   the rate limit and Bot Fight Mode. And every configuration judged by `--config` whose door is
+   `open` is held to production as `wrangler.open.jsonc` is.)* **And 3b** (security S2a, finding
+   D18): no redirect file, `.wrangler/deploy/config.json`, in `worker/` or at the repository root —
+   with no `--config`, wrangler can follow one to a configuration the guard never judged.
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
    R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as
@@ -1649,7 +1660,9 @@ twelve checks hold, and every failure is named, not only the first:
    find.
 9. **The assets tree was assembled from the current `web/dist` and `worker/static`**: its `sw.js`
    against `web/dist/sw.js`, byte for byte. Check 2 alone passes a stale tree, which verifies
-   against its own `sw.js`.
+   against its own `sw.js`. Since security S2a its `_headers` is held to `worker/static/_headers`
+   followed by the current `web/dist/headers.json`'s `/*` block, the header set as the assembly
+   appends it, and a `web/dist` with no `headers.json` is refused, naming it.
 10. **No `cache` block turns Workers Cache on, at any depth** (cycle F). A block whose `enabled` is
     not `false` is refused wherever it sits, found by walking the parsed configuration: with it on,
     requests served from the Worker's cache, static assets included, are billed like requests that
@@ -1667,6 +1680,14 @@ twelve checks hold, and every failure is named, not only the first:
 Checks 3 to 7 and 10 need no build, and `npm run test:scripts` runs them over the committed files,
 which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, and 11 and 12 read
 the assembled tree and its stamp, so they run only on the workstation that deploys.
+
+**Then the secrets guard** (security S2a, decision D-11) asks the account for the Worker's secret
+NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS` or
+`YOKOHAMA_WEB_TEST_CLOCK`: the guard refuses both in a committed file, and a secret would carry
+either past it. A listing that fails is a refusal, never a pass, so every deploy script is a network
+step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
+`CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
+deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2).
 
 ### 9.4 Configuration and secrets
 
@@ -1715,8 +1736,10 @@ a live Worker (ruling I-84). It is off by default, because on a turn-based table
 written on almost every move. Two deploys open and close the window, with no file edited:
 
 ```sh
-node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on   # open
-npm run deploy                                                                        # close
+# open:
+node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && npx wrangler deploy --config wrangler.jsonc --var YOKOHAMA_WEB_COUNT_WAKES:on
+# close:
+npm run deploy
 ```
 
 `--var` adds one variable beside the file's, and the plain deploy replaces the variables with the

@@ -122,7 +122,10 @@ first build takes a while; a rebuild after a source edit reuses the toolchain la
 workstation (Apple silicon, the `linux/amd64` build under emulation) one build with only the base images
 cached took 230 s, and `docker images` read the image's content as 42.4 MB (151.8 MB once unpacked),
 a reading of 2026-09-28 (M6.5c2).
-`deploy/Dockerfile.dockerignore` decides what the build sees.
+The build runs under BuildKit (Docker 23's default), which reads `deploy/Dockerfile.dockerignore` as
+this Dockerfile's own ignore file: it decides what the build sees, and keeps the secrets files
+`.dev.vars` and `.env`, with their dotted variants, out of the context wherever they sit, and the
+pinned-browser instrument's profiles with them (security S2a). The legacy builder reads no such file.
 
 **The build values** are build arguments: the door's three, and the release feed, the Turnstile site key and the
 site's own address beside them. Each is optional, and each is checked by the build:
@@ -200,6 +203,17 @@ A bad value stops the server at start-up, naming the variable, and so does a tab
 directory and a client built with `YOKOHAMA_TURNSTILE_SITEKEY` under any door but `open` (§2). `/api/health` reports the door, the transport, the archive, the chat limits and the two TTLs, so
 a client sizes itself from the server's rules; `table_ttl_days` and `open_table_ttl_days` read `null` while
 no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`worker/RUNBOOK.md` §3).
+
+**The security headers come from the client build** (security S2a). The client build writes
+`dist/headers.json` from its build values, and the server reads it from the client it serves, once
+at start, then sets that header set on every answer: the content security policy, `X-Frame-Options:
+DENY`, `X-Content-Type-Options: nosniff`, the referrer policy, a `Permissions-Policy` and
+`Cross-Origin-Opener-Policy`, with `Cache-Control: no-store` beside them on every answer under `/api`.
+In 0.6.2 the policy is sent as `Content-Security-Policy-Report-Only`: a browser logs a violation and
+blocks nothing, and a later release enforces it. A client build without the file (older than 0.6.2,
+or none) serves no header set, and the server says so once at start, on stderr. A malformed file
+stops it at start, naming the file. The smoke (§5) reads `X-Frame-Options` and the policy on `/`, and
+`no-store` and `nosniff` on `/api/health`.
 
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
