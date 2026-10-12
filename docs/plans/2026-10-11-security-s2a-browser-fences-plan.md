@@ -187,7 +187,7 @@ and nothing re-opens them. The owner's words are quoted where they were given.
   leave the browser, the owner copies that profile's `CF_Authorization` from DevTools into a `umask 077` file used
   as `curl -H @file` and deleted after — the value never in a tool result, a shell history or `ps`. The cookie is
   `HttpOnly`, so no page script reads it and no tool of ours returns it without logging it; and off WARP a `curl`
-  is not a transport at all, whatever its `User-Agent` (W-1, `worker/RUNBOOK.md` §21, 2026-10-01: "a browser
+  is not a transport at all, whatever its `User-Agent` (W-1, `worker/RUNBOOK.md` §20, 2026-10-01: "a browser
   User-Agent, the navigate headers and a fake Googlebot change nothing — the TLS fingerprint is the tell"). The
   owner's rule for every `curl` the window runs OVER WARP stands as given: it carries a browser `User-Agent` (the
   release smoke's `BROWSER_UA`) or meets Bot Fight Mode's 403 before Access sees it (the owner, 2026-10-11: "when
@@ -2825,10 +2825,11 @@ set on every answer, `no-store` under `/api` beside it; the service worker carri
 every navigation it synthesizes (the type set to HTML, the two encoding headers dropped, `Cache-Control: no-store`
 carried), so a returning visitor gets the headers the host set on `/shell.bin`; the entry point refuses to render
 inside a frame; **the policy is Report-Only in 0.6.2 and enforced at S2's wrap** — the e2e build alone serves it
-ENFORCED, so the local walk is the enforcement reading (Chromium logs a Report-Only violation at `info`, which the
-walk would not read) — and Bot Fight Mode's injected detection script is its one known line (A1: never
-`'unsafe-inline'`; the wrap decides between accepting the refusal, a fixed nonce and `no-transform` from the
-reading, and the policy carries no `report-to`, so the reading is the window's own sessions); the hash router admits
+ENFORCED, so the local walk is the enforcement reading (a Report-Only violation is a LINE and not a block — the
+harness reads it, since Task 4, and it stops nothing — and a violation inside the module Worker prints nowhere) — and Bot Fight Mode's injected detection script is its one known line (A1: never `'unsafe-inline'` as
+this release's answer; the wrap decides among A1's three shapes — accept the refusal, a fixed nonce, `'unsafe-inline'`
+— and the plan review's fourth, `Cache-Control: no-transform`, under which Cloudflare injects no script, from the
+reading; the policy carries no `report-to`, so the reading is the window's own sessions); the hash router admits
 exactly the store's id grammar, pinned to `id_cases.json` as the name rule is pinned to `identity_cases.json`. §7:
 the tag is cut on the commit the hosts run — master's, or, on a stack that merges at its wrap (security S2), the
 deployed branch commit, which the wrap's merge brings onto master (the owner, 2026-10-11: D-7); its version line
