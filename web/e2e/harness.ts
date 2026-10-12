@@ -338,8 +338,13 @@ export interface Game {
   id: string;
 }
 
+/** An identity, as the target names one: under the open door the local tier's binary is `production`, `NamesOnly`
+ *  (security S2b, C1): a caller is a plain NAME; the live tier's dev door names a `.test` ADDRESS (B6), so an
+ *  identity follows the target. */
+export const who = (name: string): string => (LIVE ? `${name}@e2e.test` : name);
+
 /** Who the walk plays as. */
-export const WALKER = "walker@e2e.test";
+export const WALKER = who("walker");
 
 /**
  * Go to the app and get through the door, exactly as a player does.
@@ -349,12 +354,15 @@ export const WALKER = "walker@e2e.test";
  * stand-in and said so. It is a form now, so the walk types into it — which is
  * the only thing that also tests the screen that puts the name there.
  *
- * The form is the NAME STEP since M6.5c2 (the open door): it takes an address
- * as well as a name, and the walk types the address it has always used.
+ * The form is the NAME STEP since M6.5c2 (the open door), and since security
+ * S2b (C1) it refuses an address: under the open door a name is a name. So the
+ * walk types an identity as [`who`] spells it for the target — a plain name on
+ * the local tier, a `.test` address live, where the dev door names the context
+ * and the step is not drawn.
  *
  * **`email` is a parameter because two browsers are two people.** Every walk but
  * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
- * signs its two contexts in under two different addresses, and the identity a
+ * signs its two contexts in under two different identities, and the identity a
  * context holds is the whole subject there.
  *
  * Idempotent, because several specs navigate more than once in a test and the

@@ -28,6 +28,7 @@ import {
   signIn,
   startGame,
   watchForBreakage,
+  who,
 } from "./harness";
 import type { Affordance } from "./harness";
 import { CAP } from "./caps";
@@ -120,11 +121,12 @@ test("a whole two-player game plays through to a winner", async ({ page }) => {
   // because "over" is not a table status; a second person finds it FOLDED
   // under Finished, closed by default, and no longer under Being played. The
   // open door's "switch player" is how one browser becomes another person,
-  // and `signIn` then types the new address into the name step.
+  // and `signIn` then types the new name into the name step (`who`: a plain
+  // name under the open door, security S2b, C1).
   await page.setViewportSize(DESKTOP);
   await page.goto("/#/lobby");
   await page.locator(".identity-corner").getByRole("button", { name: "switch player" }).click();
-  await signIn(page, "ada@e2e.test");
+  await signIn(page, who("ada"));
   const fold = page.locator(".lobby section.lobby-section.finished-tables > details.fold");
   await expect(fold).toHaveCount(1);
   expect(await fold.evaluate((d) => (d as HTMLDetailsElement).open), "Finished is folded by default").toBe(false);

@@ -79,7 +79,7 @@
 import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, deadEnd, nameThisBrowser, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
+import { act, deadEnd, nameThisBrowser, readScreen, rng, signIn, watchForBreakage, who, type Affordance } from "./harness";
 import {
   EXIT,
   LIVE,
@@ -111,10 +111,11 @@ test.skip(
 );
 
 /** The three people: `.test` identities, so the game's save files under the
- *  bucket's `test/` root. */
-const X = "x@exit.test";
-const Y = "y@exit.test";
-const W = "w@exit.test";
+ *  bucket's `test/` root — through `who`, which spells a live identity as a
+ *  `.test` address (security S2b, C1). */
+const X = who("x");
+const Y = who("y");
+const W = who("w");
 
 /** How many moves the two of them play before x abandons the table. */
 const MOVES = 40;

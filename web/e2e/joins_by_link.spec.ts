@@ -31,7 +31,7 @@
 // keeps that from being a convention anybody has to remember.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, blame, deadEnd, nameThisBrowser, readOverflow, readScreen, rng, signIn, watchForBreakage } from "./harness";
+import { act, blame, deadEnd, nameThisBrowser, readOverflow, readScreen, rng, signIn, watchForBreakage, who } from "./harness";
 import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 // Whether a screen has a move on it — read from what can actually be pressed,
 // so a walk in flight reads as "not yet" rather than as a dead end. One
@@ -77,8 +77,8 @@ test("a person holding only a link joins a locked open table and plays", async (
   const started = Date.now();
   // Live, each context is its person (`live.ts`); locally a context is the
   // plain one it always was, and the sign-in form names them.
-  const a = await (await newContextWithoutWorker(browser, await liveContextOptions("a@e2e.test"))).newPage();
-  const b = await (await newContextWithoutWorker(browser, await liveContextOptions("b@e2e.test"))).newPage();
+  const a = await (await newContextWithoutWorker(browser, await liveContextOptions(who("a")))).newPage();
+  const b = await (await newContextWithoutWorker(browser, await liveContextOptions(who("b")))).newPage();
   const watchA = watchForBreakage(a);
   // **B's wrong password is a 403 BY DESIGN**, and the watch counts every 4xx
   // from this origin as breakage — so this one refusal is opted into by name,
@@ -89,7 +89,7 @@ test("a person holding only a link joins a locked open table and plays", async (
   // A opens a table with ONE SEAT OPEN and a password on it. The submit says
   // "Open table" rather than "Deal", which is the form telling the truth about
   // what it is about to do.
-  await signIn(a, "a@e2e.test");
+  await signIn(a, who("a"));
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
 
   // **The corner is a pill on a phone, and nothing on the lobby scrolls
@@ -355,7 +355,7 @@ test("a person holding only a link joins a locked open table and plays", async (
     if ((u.pathname === "/api/games" && u.searchParams.has("scope")) || u.pathname === "/api/stream")
       lobbyReadsByB.push(`${u.pathname}${u.search}`);
   });
-  await signIn(b, "b@e2e.test", `/#/t/${id}`);
+  await signIn(b, who("b"), `/#/t/${id}`);
   // `level: 3`: the band's last crumb is the page's `<h2>` and carries the
   // table's name too.
   await expect(b.getByRole("heading", { name: "Link test", exact: true, level: 3 })).toBeVisible();

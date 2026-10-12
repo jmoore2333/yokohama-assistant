@@ -1,9 +1,11 @@
 // **The README's screenshot generator** (Task 8; R-6.5c2.44). It is not a
 // test: it plays a short table with three people and writes the TEN pictures
-// of `worker/README.md` §1.4 under their names. Alice (`alice@readme.test`)
-// opens a table named "Friday game" with a password, Ben (`ben@readme.test`)
-// joins it, Carol (`carol@readme.test`) watches; before any of that, a scratch
-// table Alice abandons under Ben's eyes gives the marker's picture.
+// of `worker/README.md` §1.4 under their names. Alice (`who("alice")`) opens a
+// table named "Friday game" with a password, Ben (`who("ben")`) joins it, Carol
+// (`who("carol")`) watches; before any of that, a scratch table Alice abandons
+// under Ben's eyes gives the marker's picture. `who` spells each for the
+// target (security S2b, C1): a plain name at the local binary's open door, a
+// `.test` address through the Worker's dev door.
 //
 // **Opt-in, like the exit's game**: collected only under
 // `YOKOHAMA_WEB_README_SHOTS=1` (`playwright.config.ts`), and it runs on
@@ -24,7 +26,7 @@
 // It is a live spec for `live.node.test.ts`'s rules: every `request.*` through
 // `liveRequest` (there are none), every create armed through `awaitCreate`, and
 // the table abandoned in `afterEach`. Live the tables land in the shared lobby
-// under the `readme.test` addresses, and are taken away.
+// under `who`'s `.test` addresses, and are taken away.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
@@ -33,7 +35,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
-import { signIn } from "./harness";
+import { signIn, who } from "./harness";
 import { abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 import { expect, newContextWithoutWorker, test } from "./sw";
 
@@ -150,13 +152,16 @@ test("the README's ten pictures", async ({ browser }) => {
 });
 
 async function play(browser: Parameters<typeof person>[0], scratch: string, written: string[]): Promise<void> {
-  const alice = await person(browser, "alice@readme.test");
-  const ben = await person(browser, "ben@readme.test");
-  const carol = await person(browser, "carol@readme.test");
+  const ALICE = who("alice");
+  const BEN = who("ben");
+  const CAROL = who("carol");
+  const alice = await person(browser, ALICE);
+  const ben = await person(browser, BEN);
+  const carol = await person(browser, CAROL);
 
   // ---- the marker: a scratch table Alice abandons under Ben's eyes ---------
-  await signIn(alice, "alice@readme.test");
-  await signIn(ben, "ben@readme.test");
+  await signIn(alice, ALICE);
+  await signIn(ben, BEN);
   const scratchId = await openTable(alice, "Scratch table", null);
   await ben.goto(`/#/t/${scratchId}`);
   await expect(ben.getByRole("heading", { name: "Scratch table", exact: true, level: 3 })).toBeVisible();
@@ -195,7 +200,7 @@ async function play(browser: Parameters<typeof person>[0], scratch: string, writ
   await ben.getByRole("button", { name: "Join as Blue" }).click();
 
   // ---- the deal: Alice chooses her card ------------------------------------
-  await expect(alice.locator('.deal-seat[data-seat="1"]')).toContainText("ben@readme.test", { timeout: 30_000 });
+  await expect(alice.locator('.deal-seat[data-seat="1"]')).toContainText(BEN, { timeout: 30_000 });
   const keepA = alice.getByRole("button", { name: /^keep O\d\d/ }).first();
   await expect(keepA).toBeVisible({ timeout: 30_000 });
   written.push(await shoot(alice, "deal-desktop.webp", scratch));
@@ -214,7 +219,7 @@ async function play(browser: Parameters<typeof person>[0], scratch: string, writ
   await alice.setViewportSize(DESKTOP);
 
   // ---- Carol watches -------------------------------------------------------
-  await signIn(carol, "carol@readme.test", `/#/t/${id}`);
+  await signIn(carol, CAROL, `/#/t/${id}`);
   await carol.getByLabel("Table password", { exact: true }).fill(PASSWORD);
   await carol.getByRole("button", { name: "Spectate" }).click();
   await expect(carol.getByText("You are spectating")).toBeVisible({ timeout: 30_000 });

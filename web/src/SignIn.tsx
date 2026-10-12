@@ -7,17 +7,20 @@
 // edge Worker the identity arrives from in front of the server and this screen
 // is never drawn (`Door.tsx`).
 //
-// **The rule is the server's, and so is the key.** `normalizeName` is pinned
-// to `User::parse` over one committed table (`nameRule.ts`), so the header this
-// browser sends is exactly the key the server writes seats under. The name as
-// TYPED is stored too, as the display name the lobby corner and every seat show.
+// **The rule is the server's, and so is the key.** `openDoorVerdict` refuses
+// any `@` first, in the open door's own words — under the open door a name is a
+// name (security S2b, C1; decision D-2) — and then gives `normalizeName`'s
+// verdict, which is pinned to `User::parse` over one committed table
+// (`nameRule.ts`), so the header this browser sends is exactly the key the
+// server writes seats under. The name as TYPED is stored too, as the display
+// name the lobby corner and every seat show.
 //
 // **Titled `<h3>`**: it is drawn under the lobby's band, whose last crumb is the
 // page's `<h2>` (`Band.tsx`).
 
 import { useId, useState } from "react";
 import { setClaimedUser, setDisplayName } from "./api";
-import { normalizeName } from "./nameRule";
+import { openDoorVerdict } from "./nameRule";
 import { Refusal } from "./Refusal";
 
 export function SignIn({
@@ -36,7 +39,7 @@ export function SignIn({
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const submit = () => {
-    const name = normalizeName(value);
+    const name = openDoorVerdict(value);
     if (!name.ok) {
       setError(name.reason);
       return;

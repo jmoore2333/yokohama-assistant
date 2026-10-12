@@ -2635,12 +2635,17 @@ describe("the route", () => {
 
 describe("the door", () => {
   it("shows the name step when the door is open and nobody has a name, then the lobby", async () => {
+    // **A NAME, because the door is open** (security S2b, C1; decision D-2):
+    // the server keys no address there, and the corpus's `me.json` holds one
+    // (`red@wire.test`). So the player types a plain name and the stub answers
+    // with the corpus's `me` under that name — the committed corpus unmoved.
+    const signedIn = { ...wire.me, user: "red" };
     const stub = stubApi((call) => {
       // Answered the way the SERVER answers it: from the header this browser
-      // is sending. A stub that returned `wire.me` regardless would model a
+      // is sending. A stub that returned `signedIn` regardless would model a
       // server that ignores its own header, and signing in would prove nothing.
       if (call.path.endsWith("/api/me"))
-        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+        return localStorage.getItem(CLAIMED_USER_KEY) ? signedIn : wire.meSignedOut;
       if (isGamesList(call, "mine")) return wire.games;
       if (isGamesList(call)) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
@@ -2661,13 +2666,13 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/games")).toHaveLength(0);
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Name"), wire.me.user!);
+    await user.type(screen.getByLabelText("Name"), signedIn.user);
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     // The band's corner names the server's answer — its key rides as the
     // corner's title (`IdentityCorner`).
     await waitFor(() =>
-      expect(document.querySelector(".identity-corner [title]")).toHaveAttribute("title", wire.me.user!),
+      expect(document.querySelector(".identity-corner [title]")).toHaveAttribute("title", signedIn.user),
     );
     // The list, and no individual game: signing in lands on the LOBBY, not
     // inside whatever game happens to be first.

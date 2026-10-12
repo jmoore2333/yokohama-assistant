@@ -115,13 +115,16 @@ const RENAMED = "worker-F2retain.js";
 const ENVELOPE = path.join(HERE, "..", "src", "wire-script", "backup-envelope.json");
 
 /**
- * A path-safe rendering of the caller's address — the server's own rule in
+ * A path-safe rendering of the caller's key — the server's own rule in
  * `archive.rs`'s `caller_segment`, restated here for `plays_locally.spec.ts`'s
  * reason: the reply is the thing under test, so a server that filed a game
  * under the wrong prefix would be believed by a walk that took the prefix from
  * it. Since security S1c (finding D26) the readable half is cut at 48 and
  * followed by `-` and the first twelve hex characters of a SHA-256 over the
- * address.
+ * key. Since security S2b (C1) the key is a plain NAME under this tier's open
+ * door (`who`), so the readable half is the name itself — `ben` reads
+ * `ben-<12 hex>` — and the `_at_` arm, the server's rule restated whole, has no
+ * `@` to rewrite here.
  */
 const SEGMENT = `${[...WALKER]
   .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))

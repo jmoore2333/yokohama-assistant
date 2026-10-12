@@ -22,7 +22,7 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { DESKTOP, look, noSidewaysScroll, noticeIsDrawn, PHONE, signIn, startGame, WALKER, watchForBreakage } from "./harness";
+import { DESKTOP, look, noSidewaysScroll, noticeIsDrawn, PHONE, signIn, startGame, WALKER, watchForBreakage, who } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -246,7 +246,7 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
     expect(res.status(), await res.text()).toBe(201);
     return String(((await res.json()) as { id: string }).id);
   };
-  const OTHER = "someone@e2e.test";
+  const OTHER = who("someone");
   const opened: [string, string][] = [];
   try {
     opened.push([
@@ -508,7 +508,7 @@ test("the open table and the device card at 390: every control a thumb presses i
   request,
 }) => {
   const watch = watchForBreakage(page);
-  const OTHER = "someone@e2e.test";
+  const OTHER = who("someone");
   const res = await request.post("/api/games", {
     headers: { "x-yokohama-claimed-user": WALKER },
     data: {

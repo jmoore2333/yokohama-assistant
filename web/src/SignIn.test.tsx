@@ -10,6 +10,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { CLAIMED_USER_KEY, DISPLAY_NAME_KEY } from "./api";
+import { ADDRESS_NOT_A_NAME_HERE } from "./nameRule";
 import { SignIn } from "./SignIn";
 
 describe("the name step", () => {
@@ -34,14 +35,34 @@ describe("the name step", () => {
     expect(seen, "the key was stored before the callback ran").toEqual(["ben castle"]);
   });
 
-  it("takes an address too, keyed exactly as the server keys it", async () => {
+  // **Under the open door a name is a name** (security S2b, C1; decision D-2):
+  // the server's `ClaimPolicy::NamesOnly` refuses an address-shaped key, so the
+  // step refuses any `@` FIRST, in its own words — `openDoorVerdict` — and the
+  // address the key grammar would accept is never stored and never handed up.
+  it("refuses an address before any request, in the open door's words, and stores nothing", async () => {
     const onSignedIn = vi.fn();
     render(<SignIn onSignedIn={onSignedIn} />);
     const user = userEvent.setup();
     await user.type(screen.getByLabelText("Name"), " Red@Wire.TEST ");
     await user.click(screen.getByRole("button", { name: "Continue" }));
-    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe("red@wire.test");
-    expect(onSignedIn).toHaveBeenCalledWith("red@wire.test");
+    expect(screen.getByRole("alert").textContent).toBe(ADDRESS_NOT_A_NAME_HERE);
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+    expect(onSignedIn).not.toHaveBeenCalled();
+  });
+
+  // ...and a plain name goes straight through: the refusal above is the `@`'s,
+  // not the step's.
+  it("takes a plain name, keyed exactly as the server keys it", async () => {
+    const onSignedIn = vi.fn();
+    render(<SignIn onSignedIn={onSignedIn} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Name"), "ben");
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBe("ben");
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBe("ben");
+    expect(onSignedIn).toHaveBeenCalledWith("ben");
   });
 
   // Refused BEFORE a request: a name the server would refuse is never stored and
