@@ -143,7 +143,7 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     expect((await more.closed()).code).toBe(CLOSE_TOO_MANY);
     // The review's Important 1: a refused socket whose client never answers the close stays CLOSING and is NOT
     // counted — counted, a stranger's unanswered refusals would lock the seated players out (measured: 60 dangling
-    // refusals, 68 held). Eight refusals left dangling (their client side never accepted), then one seat closes: the
+    // refusals, 68 held). Eight refusals left dangling (their client side never accepted), then one socket closes: the
     // next caller is admitted past them.
     const dangling: Response[] = [];
     for (let i = 0; i < 8; i += 1) dangling.push(await upgrade(stub, "dangling@t.test", id));
@@ -157,7 +157,7 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     expect(dangling.length, "held for the cell's life, like the lobby's kept").toBe(8);
   });
 
-  it("caps the lobby per caller the same way, under its own sentence", async () => {
+  it("caps the lobby per caller the same way, under its own sentence, and counts only OPEN sockets toward its total", async () => {
     const house = env.HOUSE.get(env.HOUSE.idFromName(HOUSE_NAME));
     const lobby = (who: string) => house.fetch("https://yokohama.test/api/stream", { headers: { Upgrade: "websocket", "X-Yokohama-User": who } });
     const kept: Response[] = []; // held for the cell's life: an unaccepted client socket that is dropped is garbage-collected, and its slot with it (measured: 8 held, then 0 — the cell flaked 2 of 5 runs without this)
@@ -187,6 +187,22 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     expect(await heldOpen(house, await callerTag("lob2@t.test")), "one OPEN socket under the second caller's tag").toBe(1);
     expect(await held(house, await callerTag("lob@t.test"))).toBe(8);
     expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag: the first caller's eight and the second's one").toBe(9);
+    // The lobby's TOTAL count site (the re-review's gap — a mutant per count site): the first caller leaves 1,024
+    // refusals dangling, never answering their closes, and a third caller is still admitted; a total that counted
+    // CLOSING sockets would answer the lobby's sentence (measured: one identity filled the lobby in 1.9 s; these rows
+    // cost about 2 s, hence the cell's own 15 s bound).
+    for (let i = 0; i < LOBBY_TOTAL; i += 1) kept.push(await lobby("lob@t.test"));
+    expect(await held(house), "held, CLOSING").toBeGreaterThanOrEqual(LOBBY_TOTAL);
+    expect(await heldOpen(house), "and not counted: the first caller's eight and the second's one").toBe(9);
+    const third = await lobby("lob3@t.test");
+    expect(third.status).toBe(101);
+    kept.push(third);
+    const thirdWs = third.webSocket!;
+    thirdWs.accept();
+    const heard = new Promise<string>((resolve) => thirdWs.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
+    const again = await house.fetch("https://yokohama.test/api/chat", { method: "POST", headers: { "X-Yokohama-User": "lob3@t.test", "content-type": "application/json" }, body: '{"text":"again"}' });
+    expect(again.status, await again.text()).toBe(201);
+    expect(await heard, "admitted past 1,024 dangling refusals").toContain('"event":"house"');
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
-  });
+  }, 15_000);
 });
