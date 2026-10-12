@@ -928,13 +928,15 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
   });
 
   // Mutants: the regex anchored at the start only (a `test/` root's key kept its readable half); the digest group
-  // widened (`[0-9a-f]+` swallowing a readable half that is itself hex); the replacement dropping the slash.
+  // widened (`[0-9a-f]+`: the `red-cafe` row — a four-hex tail is no digest; the hex-readable row alone does NOT
+  // catch it, since `[^/]*` backtracks to the same `-` either way, measured); the replacement dropping the slash.
   it("drops the readable half of a browser segment and leaves every other key as it is", () => {
     expect(redactKey("browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.json")).toBe("browser/c91ad2a917f7/rev7/over/wire.json");
     expect(redactKey("test/browser/red_at_wire.test-c91ad2a917f7/rev7/abandoned/wire.table.json")).toBe("test/browser/c91ad2a917f7/rev7/abandoned/wire.table.json");
     expect(redactKey("browser/deadbeef0123-456789abcdef/rev7/over/x.json"), "a readable half that is hex is still the readable half").toBe("browser/456789abcdef/rev7/over/x.json");
     expect(redactKey("rev7/over/sim-0123456789abcdef.json"), "a server game's key names no caller").toBe("rev7/over/sim-0123456789abcdef.json");
     expect(redactKey("browser/no-digest-here/rev7/over/x.json"), "a legacy folder with no digest is left whole: nothing files under one since S1c").toBe("browser/no-digest-here/rev7/over/x.json");
+    expect(redactKey("browser/red-cafe/rev7/over/x.json"), "a four-hex tail is no digest: the readable half stays").toBe("browser/red-cafe/rev7/over/x.json");
   });
 });
 ```
@@ -1184,6 +1186,14 @@ function limits(env: Env): Limits {
   ],
 ```
 
+  — the comment above is `wrangler.test.jsonc`'s; `wrangler.open.test.jsonc` carries the same block under its own first
+  sentence, since `test/worker.test.ts` runs in the OTHER project and the open project passes at production's figures
+  (measured at Task 2's run): `// The two bindings production carries (security S2b, C2), with the LENIENT figure of
+  its sibling wrangler.test.jsonc: the open project's cells pass at production's figures today, and one figure for
+  both pool files keeps them siblings. The shell's refusal path is proven through a fake limiter handed in env
+  (test/open/door.test.ts's key cell); production's figures are the deploy guard's check 13, which holds this file to
+  the two names alone.`
+
 - [ ] **Step 9: The pool cells (worker project), appended to `worker/test/door.test.ts`:**
 
 ```ts
@@ -1306,7 +1316,7 @@ function rateLimits(production, pools, failures) {
   for (const [name, pool] of pools) {
     const names = Array.isArray(pool.value.ratelimits) ? pool.value.ratelimits.map((b) => objectOf(b)?.name).sort() : [];
     if (canonical(names) !== canonical(["CREATE_LIMIT", "WRITE_LIMIT"])) {
-      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (the pool replays a corpus at machine speed) — got ${canonical(names)}`);
+      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (test/worker.test.ts sends a dozen creates a minute as one caller through handle) — got ${canonical(names)}`);
     }
   }
 }
