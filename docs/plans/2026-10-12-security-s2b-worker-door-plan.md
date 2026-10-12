@@ -1511,8 +1511,9 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
 });
 ```
 
-  (`Tab`, `openTab`, `closeReason`, `GREEN`, `BLUE`, `RED`, `CREATE_BODY`, `call`, `tableStub`, `HOUSE_NAME`,
-  `runInDurableObject`, `env` imported as `test/sockets.test.ts` imports them; `LOBBY_PER_CALLER` and `LOBBY_TOTAL`
+  (`closeReason`, `BLUE`, `RED`, `CREATE_BODY`, `call`, `tableStub`, `runInDurableObject`, `env` imported as
+  `test/sockets.test.ts` imports them; `Tab` and `GREEN` are LOCAL to that file and are copied with `openTab`;
+  `HOUSE_NAME` is `../src/slot`'s — Task 3's run; `LOBBY_PER_CALLER` and `LOBBY_TOTAL`
   imported from `../src/house` and pinned HERE, in the pool — `house.ts:1` imports `cloudflare:workers`, which node
   cannot load, so no `*.unit.test.ts` can pin them; `LOBBY_TOTAL` is not opened — 1,025 upgrades are the mechanism
   `capVerdict` already proves.) **The house rule for frames** (`sockets.test.ts:27-30`: a sent frame is compared with
@@ -1520,8 +1521,9 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
   literal `4429` and the four sentences to their literal text (measured: M27 goes red there; it stays GREEN in
   `caps.test.ts`, whose comparisons build both sides from the imported constants).
 
-- [ ] **Step 5: Run them to see the fail.** `npx vitest run test/caps.test.ts`. Expected: FAIL — the ninth is admitted
-  and framed `signal`.
+- [ ] **Step 5: Run them to see the fail.** `npx vitest run test/caps.test.ts`. Expected: FAIL — the total cell: the
+  sixty-fifth is admitted and framed `signal`; the own cell fails earlier, at its tag count (`held` reads 0 against 8:
+  no caller tag yet); the lobby cell by timeout (measured at Task 3's run).
 
 - [ ] **Step 6: The caller tag in `fetch`, and `admit`'s arm.** In `worker/src/table.ts`, `Incoming` gains
   `/** The caller's tag on an upgrade (security S2b, D3): `u:` and their digest, computed here because `admit` runs
@@ -1580,7 +1582,8 @@ git commit -m "worker: a table admits eight sockets per caller and sixty-four in
 ```
 
 **Mutants (red where named):** M23 the own arm dropped → the ninth admitted; M24 the tag omitted at
-`acceptWebSocket` → the count reads 0; M25 the refusal unupgraded (a 4xx `Response`) → the 101 assertion; M26 the
+`acceptWebSocket` → the count reads 0; M25 the refusal unupgraded (a 4xx `Response`) → `openTab`'s own unupgraded throw, before the 101 assertion is
+reached (measured); M26 the
 counts read AFTER `acceptWebSocket` → the eighth tab refused (`expected 7 to be 8`; measured) and the total cell's 56;
 M27 `4404` for `CLOSE_TOO_MANY` → `frames.unit.test.ts`'s literal pin (GREEN in `caps.test.ts` alone, whose sides are
 both the constant — measured); M28 `>` for `>=` → the ninth admitted; M29 the lobby arm dropped → the lobby cell.
