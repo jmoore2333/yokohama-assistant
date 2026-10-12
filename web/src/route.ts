@@ -50,7 +50,7 @@ export function parseRoute(hash: string): Route {
   if (path === "/new/local") return { kind: "new", local: true };
   const m = /^\/t\/([^/]+)$/.exec(path);
   // `decodeURIComponent` throws on a malformed escape (`%zz`), which is a
-  // hand-typed link and not a bug in this client — so it reads as the lobby
+  // hand-typed link and not a bug in this client — so it reads as the door
   // like every other unrecognized hash, rather than as an exception thrown
   // during a render — and an id the store's grammar refuses is the door too
   // (security S2a, D14): `..` would otherwise reach `/api/games/../chat`.
