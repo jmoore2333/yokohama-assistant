@@ -411,7 +411,7 @@ impl Api {
             return;
         }
         let user = who.map(|w| yokohama_web::identity::User::parse(w).expect("a valid identity"));
-        let sentence = yokohama_web::identity::resolve(self.state.identity, &axum::http::HeaderMap::new())
+        let sentence = yokohama_web::identity::resolve(self.state.identity, self.state.claims, &axum::http::HeaderMap::new())
             .expect_err("no header, no user");
         let identity: yokohama_web::api::Identity<'_> = match &user {
             Some(u) => Ok(u),

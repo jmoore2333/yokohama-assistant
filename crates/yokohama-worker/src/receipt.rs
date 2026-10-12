@@ -965,16 +965,18 @@ mod tests {
     /// are pruned. The test root takes an EMAIL in `.test`, whose `@` a plain
     /// name never has — at both roots: a server game's creator, and a browser
     /// save's caller. The partner at each root is an address in `.test`,
-    /// which still takes it. Mutant: the old `ends_with(".test")` alone.
+    /// which still takes it — at the worker door, since under the open door an
+    /// address is no caller (C1). Mutant: the old `ends_with(".test")` alone.
     #[test]
     fn a_plain_name_never_takes_the_test_root() {
         let _s = serial();
         let _p = pin(1_789_001_200);
         // A server game's root: its creator's. The joiner is a plain name at
-        // both rows, and the creator's root is the one read.
-        for (creator, root) in [("a.test", ""), (RED, "test/")] {
-            init_inner(&r2_at(None, "open")).unwrap();
-            playing_with_a_move("plain", creator, "joiner");
+        // the open door and BLUE at the worker door, where `joiner` is nobody;
+        // the creator's root is the one read.
+        for (creator, joiner, root, door) in [("a.test", "joiner", "", "open"), (RED, BLUE, "test/", "worker")] {
+            init_inner(&r2_at(None, door)).unwrap();
+            playing_with_a_move("plain", creator, joiner);
             let r = call(creator, "DELETE", "/api/games/plain", None);
             assert_eq!(r.status, 500, "{creator}: premise: the abandon deferred — {}", r.body);
             let base = format!("{root}rev7/abandoned/plain");
@@ -982,8 +984,8 @@ mod tests {
         }
         // A browser save's root: its Archive object's caller's.
         let save = the_committed_save();
-        for (caller, root) in [("joiner.test", ""), (RED, "test/")] {
-            init_inner(&r2_at(Some(caller), "open")).unwrap();
+        for (caller, root, door) in [("joiner.test", "", "open"), (RED, "test/", "worker")] {
+            init_inner(&r2_at(Some(caller), door)).unwrap();
             set_share_inner(&listing("", 0, false)).unwrap();
             let r = call(caller, "POST", "/api/archive", Some(&save));
             assert_eq!(

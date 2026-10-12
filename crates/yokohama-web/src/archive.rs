@@ -201,9 +201,16 @@ pub const SEGMENT_READABLE: usize = 48;
 /// forty-eight), and a second preimage on forty-eight bits is about 2^48
 /// hashes, which can be bought. The door is: behind Cloudflare Access a
 /// person's address is the one Access vouched for, off the owner's
-/// allow-list, so no one picks it; and a door that lets a caller claim an
-/// address — the open door, the Worker's dev door — lets them claim the
-/// target's outright, so a collision buys nothing there.
+/// allow-list, so no one picks it; a door that lets a caller claim an
+/// address — the Worker's dev door — lets them claim the target's outright,
+/// so a collision buys nothing there; and the open door admits no address
+/// (security S2b, C1), only a NAME, which no purchase can steer onto an
+/// address's folder: a name's readable half is the name itself with each
+/// space read as `_` (a name holds at most 32 characters and no `@`), so the
+/// names that share any one readable half differ only in which of its
+/// underscores are spaces — fewer than 2^31 of them, against forty-eight
+/// digest bits. Two names colliding buys nothing either: under the open door
+/// a name is claimed outright.
 pub const SEGMENT_DIGEST: usize = 12;
 
 /// The directory a browser's saves are filed under: the address made readable

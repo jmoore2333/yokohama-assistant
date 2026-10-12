@@ -220,24 +220,48 @@ impl fmt::Display for User {
     }
 }
 
+/// **The open door's key rule** (security S2b, finding C1; R-SEC8(c); decision D-2) — the seed rule's shape
+/// (`games::SeedPolicy`): which KEYS the open door admits as a caller. Under `cf-access` and `worker` it changes
+/// nothing, since an address is the only shape admitted there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimPolicy {
+    /// Production: under `open` a caller is a plain NAME, and a key with the email shape is refused with
+    /// [`ADDRESS_NOT_A_NAME`]. An `@` then always means a verified address, on every host, so a door flip over
+    /// shared storage can hand nobody an Access player's seats or archive folder by typing their address. It stops
+    /// no impersonation under the open door, where a name is a label and a key and never a credential.
+    NamesOnly,
+    /// The fixtures' and the corpus walk's: every key the grammar accepts is a caller, as before S2b. Built by
+    /// `AppState::with_store` and the `in_memory*` constructors; `AppState::production` never builds it, and the
+    /// Worker module has no arm for it.
+    Diagnostic,
+}
+
+/// The 401 an address-shaped claim meets under the open door with [`ClaimPolicy::NamesOnly`]. One sentence on
+/// both hosts, since the rule lives here and nowhere in a shell; the client's name step refuses the same input
+/// in its own words before any request.
+pub const ADDRESS_NOT_A_NAME: &str =
+    "under the open door a name is a name — an address is not accepted here: choose a plain name";
+
 /// The mode's ONE header, parsed by the key grammar and then held to the
-/// mode's rule ([`admit`]); absent or invalid is `Err` with the sentence the
-/// 401 carries. The Worker's `anonymous` — what it sends with no Access policy
-/// in front of it — counts as absent.
-pub fn resolve(mode: IdentityMode, headers: &HeaderMap) -> Result<User, String> {
+/// mode's rule under `policy` ([`admit`]); absent or invalid is `Err` with the
+/// sentence the 401 carries. The Worker's `anonymous` — what it sends with no
+/// Access policy in front of it — counts as absent.
+pub fn resolve(mode: IdentityMode, policy: ClaimPolicy, headers: &HeaderMap) -> Result<User, String> {
     let raw = headers
         .get(mode.header())
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .filter(|s| !s.is_empty() && !(mode == IdentityMode::Worker && *s == "anonymous"));
     match raw {
-        Some(s) => User::parse(s).and_then(|user| admit(mode, user)),
+        Some(s) => User::parse(s).and_then(|user| admit(mode, policy, user)),
         None => Err(absent(mode)),
     }
 }
 
 /// **The mode rule** (M6.5c2, spec §2.1 rule 2), in ONE place: under `open`
-/// every key the grammar accepts is a caller; under `cf-access` and `worker` a
+/// with [`ClaimPolicy::Diagnostic`] every key the grammar accepts is a caller;
+/// with [`ClaimPolicy::NamesOnly`] an address is refused with
+/// [`ADDRESS_NOT_A_NAME`] (security S2b, C1); under `cf-access` and `worker` a
 /// caller must also have the email shape, and a plain name reads as ABSENT —
 /// the sentence no header at all gets, so `/api/me` answers `user: null` (the
 /// client's state B) rather than the client drawing a refusal of the name. An
@@ -248,8 +272,9 @@ pub fn resolve(mode: IdentityMode, headers: &HeaderMap) -> Result<User, String> 
 /// words, under every mode — as it was before this rule. `pub` for the Worker
 /// module, whose `identity_of` takes these same two steps for a value no
 /// header can carry (review R2-m1).
-pub fn admit(mode: IdentityMode, user: User) -> Result<User, String> {
+pub fn admit(mode: IdentityMode, policy: ClaimPolicy, user: User) -> Result<User, String> {
     match mode {
+        IdentityMode::Open if policy == ClaimPolicy::NamesOnly && user.is_email() => Err(ADDRESS_NOT_A_NAME.to_string()),
         IdentityMode::Open => Ok(user),
         IdentityMode::CfAccess | IdentityMode::Worker if user.is_email() => Ok(user),
         IdentityMode::CfAccess | IdentityMode::Worker => Err(absent(mode)),
@@ -279,7 +304,7 @@ impl FromRequestParts<Arc<AppState>> for Identity {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &Arc<AppState>) -> Result<Self, ApiError> {
-        resolve(state.identity, &parts.headers)
+        resolve(state.identity, state.claims, &parts.headers)
             .map(Identity)
             .map_err(|message| ApiError {
                 status: StatusCode::UNAUTHORIZED,
@@ -386,19 +411,19 @@ mod tests {
             (CF_ACCESS_HEADER, "access@t.test"),
             (WORKER_HEADER, "worker@t.test"),
         ]);
-        assert_eq!(resolve(IdentityMode::Open, &all).unwrap().as_str(), "claimed@t.test");
-        assert_eq!(resolve(IdentityMode::CfAccess, &all).unwrap().as_str(), "access@t.test");
-        assert_eq!(resolve(IdentityMode::Worker, &all).unwrap().as_str(), "worker@t.test");
+        assert_eq!(resolve(IdentityMode::Open, ClaimPolicy::Diagnostic, &all).unwrap().as_str(), "claimed@t.test");
+        assert_eq!(resolve(IdentityMode::CfAccess, ClaimPolicy::Diagnostic, &all).unwrap().as_str(), "access@t.test");
+        assert_eq!(resolve(IdentityMode::Worker, ClaimPolicy::Diagnostic, &all).unwrap().as_str(), "worker@t.test");
     }
 
     #[test]
     fn a_missing_header_is_absent_and_the_workers_anonymous_counts_as_absent() {
-        assert!(resolve(IdentityMode::Open, &headers(&[])).is_err());
+        assert!(resolve(IdentityMode::Open, ClaimPolicy::Diagnostic, &headers(&[])).is_err());
         assert!(
-            resolve(IdentityMode::CfAccess, &headers(&[(CLAIMED_HEADER, "x@y.z")])).is_err(),
+            resolve(IdentityMode::CfAccess, ClaimPolicy::Diagnostic, &headers(&[(CLAIMED_HEADER, "x@y.z")])).is_err(),
             "a forged claimed header on the tunnel path changes nothing"
         );
-        assert!(resolve(IdentityMode::Worker, &headers(&[(WORKER_HEADER, "anonymous")])).is_err());
+        assert!(resolve(IdentityMode::Worker, ClaimPolicy::Diagnostic, &headers(&[(WORKER_HEADER, "anonymous")])).is_err());
     }
 
     #[test]
@@ -444,24 +469,52 @@ mod tests {
         }
     }
 
-    /// **The mode rule** (M6.5c2, spec §2.1 rule 2), at `resolve`: under `open`
-    /// every key the grammar accepts is a caller, a plain name included; under
-    /// `cf-access` and `worker` a caller must also have the email shape, and a
-    /// plain name reads as ABSENT — byte for byte the sentence no header gets,
-    /// which is what makes `/api/me` answer `user: null` (state B) rather than
-    /// the client drawing a refusal of the name. An address still resolves
-    /// under every mode, so the rule is the shape and not the header.
+    /// **The mode rule** (M6.5c2, spec §2.1 rule 2), at `resolve` under
+    /// [`ClaimPolicy::Diagnostic`] (the open door's key rule is the next
+    /// cell's): under `open` every key the grammar accepts is a caller, a plain
+    /// name included; under `cf-access` and `worker` a caller must also have
+    /// the email shape, and a plain name reads as ABSENT — byte for byte the
+    /// sentence no header gets, which is what makes `/api/me` answer `user:
+    /// null` (state B) rather than the client drawing a refusal of the name. An
+    /// address still resolves under every mode, so the rule is the shape and
+    /// not the header.
     #[test]
     fn the_mode_rule_admits_a_plain_name_only_under_open() {
-        let named = |mode: IdentityMode, value: &str| resolve(mode, &headers(&[(mode.header(), value)]));
+        let named = |mode: IdentityMode, value: &str| resolve(mode, ClaimPolicy::Diagnostic, &headers(&[(mode.header(), value)]));
         assert_eq!(named(IdentityMode::Open, "  Ben   Castle ").unwrap().as_str(), "ben castle");
         for mode in [IdentityMode::CfAccess, IdentityMode::Worker] {
-            let absent = resolve(mode, &headers(&[])).unwrap_err();
+            let absent = resolve(mode, ClaimPolicy::Diagnostic, &headers(&[])).unwrap_err();
             assert_eq!(named(mode, "ben").unwrap_err(), absent, "{}: a name is nobody here", mode.name());
             assert_eq!(named(mode, "Red@Wire.TEST").unwrap().as_str(), "red@wire.test", "{}", mode.name());
         }
         // The grammar still speaks first: what is no key at all is refused in
         // its own words under every mode, never mistaken for a name.
         assert_eq!(named(IdentityMode::CfAccess, "..").unwrap_err(), User::parse("..").unwrap_err());
+    }
+
+    /// **The open door's key rule** (security S2b, finding C1; R-SEC8(c); decision D-2): under `open` with
+    /// `NamesOnly` — every production constructor — a key with the email shape is refused with one sentence, a
+    /// `.test` address included (the `test/` root is the dev door's and a server game's, never the open door's); a
+    /// plain name is admitted; under `Diagnostic` — the fixtures and the corpus walk — every key the grammar
+    /// accepts is a caller, as before. Under `cf-access` and `worker` the policy changes nothing. Mutants: the arm
+    /// reading `Diagnostic` as `NamesOnly` (the corpus walk's `red@wire.test` refused); the sentence the absent
+    /// caller's; the `.test` suffix excepted.
+    #[test]
+    fn under_open_names_only_refuses_an_address_and_diagnostic_admits_every_key() {
+        let at = |mode: IdentityMode, policy: ClaimPolicy, value: &str| resolve(mode, policy, &headers(&[(mode.header(), value)]));
+        assert_eq!(at(IdentityMode::Open, ClaimPolicy::NamesOnly, "  Ben   Castle ").unwrap().as_str(), "ben castle");
+        for address in ["red@wire.test", "Owner@Example.com", "a+b@x.test", "someone@example.test"] {
+            assert_eq!(at(IdentityMode::Open, ClaimPolicy::NamesOnly, address).unwrap_err(), ADDRESS_NOT_A_NAME, "{address}");
+            assert_eq!(at(IdentityMode::Open, ClaimPolicy::Diagnostic, address).unwrap().as_str(), address.trim().to_ascii_lowercase());
+        }
+        for mode in [IdentityMode::CfAccess, IdentityMode::Worker] {
+            for policy in [ClaimPolicy::NamesOnly, ClaimPolicy::Diagnostic] {
+                assert_eq!(at(mode, policy, "Red@Wire.TEST").unwrap().as_str(), "red@wire.test", "{}", mode.name());
+                assert_eq!(at(mode, policy, "ben").unwrap_err(), resolve(mode, policy, &headers(&[])).unwrap_err(), "{}: a name is nobody", mode.name());
+            }
+        }
+        // The grammar still speaks first: what is no key at all is refused in its own words under every policy.
+        assert_eq!(at(IdentityMode::Open, ClaimPolicy::NamesOnly, "..").unwrap_err(), User::parse("..").unwrap_err());
+        assert_eq!(ADDRESS_NOT_A_NAME, "under the open door a name is a name — an address is not accepted here: choose a plain name");
     }
 }

@@ -14,7 +14,7 @@ import { callerTag } from "../../src/redact";
 import { readReply } from "../../src/module";
 import { HOUSE_NAME } from "../../src/slot";
 import { Table } from "../../src/table";
-import { bucketText, segmentOf, settle, tableStub } from "../helpers";
+import { bucketText, replaceOnce, segmentOf, settle, tableStub } from "../helpers";
 import { ARCHIVE_WALK } from "../walk";
 
 // **The open door, end to end** (M6.5c2, spec §2.1; R-6.5c2.3, R-6.5c2.5) —
@@ -30,6 +30,10 @@ import { ARCHIVE_WALK } from "../walk";
 const ORIGIN = "https://yokohama.test";
 const JSON_TYPE = { "content-type": "application/json" };
 const UPGRADE = { Upgrade: "websocket" };
+
+/** The layer's 401 for an address claimed under the open door (security S2b,
+ *  finding C1; `identity::ADDRESS_NOT_A_NAME`), pinned at its words. */
+const ADDRESS_NOT_A_NAME = "under the open door a name is a name — an address is not accepted here: choose a plain name";
 
 /** How long a cell waits for a message it EXPECTS (the orchestrator's ruling
  *  R-10: nothing waits out a timer to show that something did not arrive). */
@@ -180,32 +184,36 @@ describe("the open door (M6.5c2, spec §2.1)", () => {
     expect((JSON.parse((await through("/api/health")).text) as { identity: string }).identity).toBe("open");
   });
 
-  // **(Review Focus 1)** An address with a `+` and a name with a space, carried
+  // **(Review Focus 1)** A name with a space and an address with a `+`, carried
   // on the upgrade as the client carries them: `URLSearchParams` encodes the
   // parameter (`web/src/ws.ts`, whose own cell pins the client's half), and
-  // the Worker reads it back decoded. The socket's caller is exactly the
-  // fetch caller: at a PLAYING table each socket's first frame IS that
+  // the Worker reads it back decoded. The name's socket's caller is exactly
+  // the fetch caller: at a PLAYING table each socket's first frame IS that
   // caller's own `…/events` reading — seat 0 is to move and seat 1 is not, so
-  // the two readings differ and each socket is told apart by the frame it is
-  // sent. Mutants: the parameter read raw off `url.search` (`a%2Bb%40x.test`,
-  // which is no caller); decoded with `decodeURIComponent` (`ben+castle`, which
-  // the key grammar refuses); a `+` turned into a space (`a b@x.test`, no
-  // caller); the parameter never read (the upgrade answered 401).
-  it("(Review Focus 1) a + in an address and a space in a name reach a table's socket exactly as the fetch caller", async () => {
+  // the two readings differ and the socket is told apart by the frame it is
+  // sent. The address is refused at the upgrade, unupgraded, in the layer's
+  // own sentence (security S2b, C1: under the open door an address is no
+  // caller), so every misreading of it is told apart by the sentence it meets.
+  // Mutants: the parameter read raw off `url.search` (`a%2Bb%40x.test` and
+  // `ben+castle`, which the key grammar refuses); decoded with
+  // `decodeURIComponent` (`ben+castle`); a `+` turned into a space
+  // (`a b@x.test`, the grammar's refusal); the parameter never read (the
+  // absent caller's 401).
+  it("(Review Focus 1) a space in a name reaches a table's socket exactly as the fetch caller; a + in an address is refused at the upgrade", async () => {
     const id = "rf1-open";
-    const [plus, spaced] = ["a+b@x.test", "ben castle"];
+    const [partner, spaced, plus] = ["red", "ben castle", "a+b@x.test"];
     const create = {
       id,
       players: 2,
       colors: ["Red", "Blue"],
       start_seat: 0,
       seed: 20260831,
-      seats: [{ user: plus }, { user: spaced }],
+      seats: [{ user: partner }, { user: spaced }],
     };
-    const created = await through("/api/games", { method: "POST", claim: plus, headers: JSON_TYPE, body: JSON.stringify(create) });
+    const created = await through("/api/games", { method: "POST", claim: partner, headers: JSON_TYPE, body: JSON.stringify(create) });
     expect(created.status, created.text).toBe(201);
     for (const [who, seat] of [
-      [plus, 0],
+      [partner, 0],
       [spaced, 1],
     ] as const) {
       const kept = await through(`/api/games/${id}/keep`, { method: "POST", claim: who, headers: JSON_TYPE, body: JSON.stringify({ seat, card: 1 }) });
@@ -216,19 +224,22 @@ describe("the open door (M6.5c2, spec §2.1)", () => {
       expect(res.status, `${who}: ${res.text}`).toBe(200);
       return res.text;
     };
-    const readings = { [plus]: await reading(plus), [spaced]: await reading(spaced) };
-    expect(readings[plus], "premise: seat 0 is to move and seat 1 is not, so the two readings differ").not.toBe(readings[spaced]);
-    for (const [who, query] of [
-      [plus, "?claimed=a%2Bb%40x.test"],
-      [spaced, "?claimed=ben+castle"],
-    ] as const) {
-      const path = claimedAt(`/api/games/${id}/stream`, who);
-      expect(path.endsWith(query), `premise: the client's own encoding — ${path}`).toBe(true);
-      const tab = await socket(await through(path, { headers: UPGRADE }));
-      expect(await tab.until(1), who).toEqual([`{"event":"signal","data":${readings[who]}}`]);
-      tab.ws.close(1000, "done");
-    }
+    const readings = { [partner]: await reading(partner), [spaced]: await reading(spaced) };
+    expect(readings[partner], "premise: seat 0 is to move and seat 1 is not, so the two readings differ").not.toBe(readings[spaced]);
+    const path = claimedAt(`/api/games/${id}/stream`, spaced);
+    expect(path.endsWith("?claimed=ben+castle"), `premise: the client's own encoding — ${path}`).toBe(true);
+    const tab = await socket(await through(path, { headers: UPGRADE }));
+    expect(await tab.until(1), spaced).toEqual([`{"event":"signal","data":${readings[spaced]}}`]);
+    tab.ws.close(1000, "done");
     await settle(tableStub(id));
+
+    // The address: the layer's refusal, probed off a fresh module and pinned at its words.
+    const refusal = identityOf(plus);
+    expect(refusal, "premise: the layer refuses an address at the open door").toEqual({ status: 401, body: JSON.stringify({ error: ADDRESS_NOT_A_NAME }) });
+    const refusedAt = claimedAt("/api/stream", plus);
+    expect(refusedAt.endsWith("?claimed=a%2Bb%40x.test"), `premise: the client's own encoding — ${refusedAt}`).toBe(true);
+    const refused = await through(refusedAt, { headers: UPGRADE });
+    expect([refused.status, refused.webSocket, refused.text], "an address's upgrade, unupgraded").toEqual([401, null, refusal.body]);
   });
 
   // Review R2.2-m3: the parameter is percent-DECODED, so it can hold any
@@ -313,19 +324,60 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     }
   });
 
+  // **An address is no caller under the open door** (security S2b, finding
+  // C1; decision D-2): the module runs the production key rule, `NamesOnly`,
+  // so an address claimed here meets the layer's one sentence wherever it
+  // knocks — `/api/me` answers no one, a create and the archive answer the
+  // layer's 401 (the archive's from the claim's own Archive object, whose
+  // `init` takes the address as its caller and whose `dispatch` refuses it:
+  // `identity_of`, not `callerRefused`), and an upgrade is refused
+  // unupgraded — while a plain name keeps every one of those doors. A name's
+  // save files at the bucket's TOP root. Mutant: the module's `resolve`
+  // passing `Diagnostic` (M42b: every door opens to the address).
+  it("an address claimed at the open door is no caller at /api/me, a create, the archive or an upgrade; a name keeps every door", async () => {
+    const [address, name] = ["red@t.test", "ben"];
+    const refusal = JSON.stringify({ error: ADDRESS_NOT_A_NAME });
+    expect(identityOf(address), "premise: the layer's own refusal").toEqual({ status: 401, body: refusal });
+    // `/api/me` never refuses: it answers no one.
+    expect((await through("/api/me", { claim: address })).text).toBe('{"mode":"open","user":null}');
+    expect((await through("/api/me", { claim: name })).text).toBe('{"mode":"open","user":"ben"}');
+    // A create.
+    const create = (user: string, id: string) => JSON.stringify({ id, players: 2, colors: ["Red", "Blue"], start_seat: 0, seats: [{ user }, { open: true }] });
+    try {
+      const addressed = await through("/api/games", { method: "POST", claim: address, headers: JSON_TYPE, body: create(address, "c1-addressed") });
+      expect([addressed.status, addressed.text], "an address's create").toEqual([401, refusal]);
+      const named = await through("/api/games", { method: "POST", claim: name, headers: JSON_TYPE, body: create(name, "c1-named") });
+      expect(named.status, named.text).toBe(201);
+    } finally {
+      await settle(tableStub("c1-addressed"));
+      await settle(tableStub("c1-named"));
+    }
+    // The archive: the claim's own Archive object answers, and a name's save lands at the top root.
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    const archived = await reaching(() => through("/api/archive", { method: "POST", claim: address, headers: JSON_TYPE, body: save }));
+    expect([archived.result.status, archived.result.text], "an address's save").toEqual([401, refusal]);
+    expect([archived.archive.length, archived.house.length], "the claim's own archive object answered it").toEqual([1, 0]);
+    const path = `browser/${await segmentOf(name)}/rev7/over/wire.json`;
+    const saved = await through("/api/archive", { method: "POST", claim: name, headers: JSON_TYPE, body: save });
+    expect([saved.status, (JSON.parse(saved.text) as { path: string }).path], saved.text).toEqual([201, path]);
+    expect(await bucketText(path), `the name's save at ${path}`).not.toBeNull();
+    expect(await bucketText(`test/${path}`), "nothing under test/").toBeNull();
+    // An upgrade.
+    const refused = await through(claimedAt("/api/stream", address), { headers: UPGRADE });
+    expect([refused.status, refused.webSocket, refused.text], "an address's upgrade, unupgraded").toEqual([401, null, refusal]);
+    const tab = await socket(await through(claimedAt("/api/stream", name), { headers: UPGRADE }));
+    tab.ws.close(1000, "done");
+  });
+
   // Review R2.2-m4: a plain name ending in `.test` is legal under the key
   // grammar, and the `test/` prefix EXPIRES after 30 days (R-6.5c2.12): an
   // open-door player named `a.test` keeps their saves at the bucket's top, at
   // both of the archive's roots — a server game's creator's, and a browser
-  // save's caller's. An address in `.test` still takes `test/`, which shows
-  // the root is read at all. Mutant: the test root read off `.test` alone.
-  it("a plain name ending in .test files its saves outside test/; an address in .test inside it", async () => {
+  // save's caller's. Mutant: the test root read off `.test` alone.
+  it("a plain name ending in .test files its saves outside test/", async () => {
     const other = (root: string) => (root === "" ? "test/" : "");
     // A server game's abandon: its creator's root.
-    for (const [creator, id, root] of [
-      ["a.test", "plain-abandon", ""],
-      ["red@t.test", "address-abandon", "test/"],
-    ] as const) {
+    for (const [creator, id, root] of [["a.test", "plain-abandon", ""]] as const) {
       const create = { id, players: 2, colors: ["Red", "Blue"], start_seat: 0, seed: 20260831, seats: [{ user: creator }, { user: "joiner" }] };
       try {
         const created = await through("/api/games", { method: "POST", claim: creator, headers: JSON_TYPE, body: JSON.stringify(create) });
@@ -350,10 +402,7 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     }
     // A browser's save: its Archive object's caller's root.
     const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
-    for (const [claim, root] of [
-      ["a.test", ""],
-      ["red@t.test", "test/"],
-    ] as const) {
+    for (const [claim, root] of [["a.test", ""]] as const) {
       const path = `browser/${await segmentOf(claim)}/rev7/over/wire.json`;
       const res = await through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save });
       expect([res.status, (JSON.parse(res.text) as { path: string }).path], claim).toEqual([201, path]);
@@ -372,5 +421,43 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     expect((await through("/api/games/open-c2-keys/chat", { method: "POST", claim: "ben", headers: { ...JSON_TYPE, ...ip }, body: '{"text":"hi"}', env: limited })).status).toBe(201);
     expect(create.asked).toEqual(["ip:203.0.113.9"]);
     expect(write.asked).toEqual([`ip:203.0.113.9|${await callerTag("ben")}`]);
+  });
+});
+
+describe("one name, one Archive object (security S2b, AD-3)", () => {
+  // Two spellings of one open-door name — `race y` and `race   y` — are ONE
+  // key to the layer (`typed_form` collapses each run of spaces), and the
+  // shell collapses them too (`claimedIdentity`), so they name ONE Archive
+  // object: `blockConcurrencyWhile` puts the two saves in a line and the
+  // second counts the first. In a share one record short of full, one save
+  // lands and the other is refused full. Two objects counted one share at
+  // once and both landed — `[201, 201]`, 257 records in a 256-record share
+  // (measured before the collapse). That row rests on R2's listing timing, so
+  // without the collapse it is red only about half the time (measured); the
+  // one-object row — which Archive objects the two saves reached — is red
+  // every run. Mutant: `claimedIdentity` keeping space runs (M44c).
+  it("two spellings of one name, saved at once into a share one record short of full, land one save and refuse the other", async () => {
+    const prefix = `browser/${await segmentOf("race y")}/`;
+    for (let i = 0; i < 255; i += 1) {
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.json`, "{}");
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.table.json`, "{}");
+    }
+    const { record, table } = ARCHIVE_WALK[0]!.body as { record: string; table: string };
+    const first = JSON.stringify({ record, table });
+    const second = JSON.stringify({ record, table: replaceOnce(table, '"id": "wire"', '"id": "wire-2"') });
+    const fetched = vi.spyOn(Archive.prototype, "fetch");
+    let objects: (string | undefined)[] = [];
+    const [a, b] = await Promise.all([
+      through("/api/archive", { method: "POST", claim: "race y", headers: JSON_TYPE, body: first }),
+      through("/api/archive", { method: "POST", claim: "race   y", headers: JSON_TYPE, body: second }),
+    ]).finally(() => {
+      // Read before `mockRestore`, which clears what the spy recorded.
+      objects = fetched.mock.contexts.map((o) => (o as unknown as { ctx: DurableObjectState }).ctx.id.name);
+      fetched.mockRestore();
+    });
+    expect(objects, "the two saves reached ONE Archive object").toEqual(["archive:race y", "archive:race y"]);
+    const listed = await env.ARCHIVE!.list({ prefix, limit: 1000 });
+    const records = listed.objects.filter((o) => o.key.endsWith(".json") && !o.key.endsWith(".table.json")).length;
+    expect({ statuses: [a.status, b.status].sort((x, y) => x - y), records }, `${a.text} / ${b.text}`).toEqual({ statuses: [201, 507], records: 256 });
   });
 });

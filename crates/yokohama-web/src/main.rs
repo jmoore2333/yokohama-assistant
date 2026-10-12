@@ -91,9 +91,10 @@ async fn main() {
     //
     // - Under `open` the header is whatever the caller sends. It
     //   authenticates the DOOR, not the seat: two callers sending two different
-    //   emails ARE two different people to this server, seated and scoped
+    //   NAMES ARE two different people to this server, seated and scoped
     //   separately — it simply cannot verify that either is who they say, so
-    //   anyone past the door can be anyone.
+    //   anyone past the door can be any name. (An address is no caller here:
+    //   the production key rule refuses one, security S2b, C1.)
     // - Under `cf-access` and `worker` the trusted header is one only that
     //   deployment's own edge can set — which is worth exactly nothing if the
     //   port is reachable without going through the edge, since anyone who can

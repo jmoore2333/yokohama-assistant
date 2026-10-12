@@ -412,6 +412,11 @@ pub struct AppState {
     pub games: Games,
     /// Which header names the caller (R-1.2). Read once at start; no default.
     pub identity: identity::IdentityMode,
+    /// Which keys the open door admits as a caller (security S2b, finding C1; decision D-2): what the adapter and
+    /// the [`identity::Identity`] extractor resolve with. [`identity::ClaimPolicy::NamesOnly`] on
+    /// [`Self::production`], which builds it by construction; `Diagnostic` on every test constructor, through
+    /// [`Self::with_store_chat_and_archive`]'s opt-in — the seed rule's shape.
+    pub claims: identity::ClaimPolicy,
     /// How often an idle stream writes a comment line (R-3.12).
     ///
     /// **A field, and the reason is testability rather than configuration.**
@@ -497,12 +502,15 @@ impl AppState {
     /// [`Self::new`] past its two environment reads — the production state
     /// over the store and the archive it was handed: built through
     /// `with_store_chat_archive_and_log` directly (never through a test
-    /// constructor, whose `SeedPolicy` is `Diagnostic`), `SoloOnly` by
-    /// construction. Pinned in process by
-    /// `the_production_state_honours_a_seed_at_a_solo_table_only`, and on the
-    /// binary — `main` → [`Self::new`] → here, the path no in-process cell
-    /// runs — by `start_refusal.rs`'s
-    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`.
+    /// constructor, whose `SeedPolicy` and `ClaimPolicy` are `Diagnostic`),
+    /// `SoloOnly` and `NamesOnly` by construction — under the open door an
+    /// address is refused as a caller (security S2b, C1). Pinned in process by
+    /// `the_production_state_honours_a_seed_at_a_solo_table_only` and
+    /// `the_production_state_refuses_an_address_claim_under_the_open_door_and_the_fixtures_admit_one`,
+    /// and on the binary — `main` → [`Self::new`] → here, the path no
+    /// in-process cell runs — by `start_refusal.rs`'s
+    /// `the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseeded`
+    /// and `the_binary_refuses_an_address_claim_at_the_open_door_and_admits_a_name`.
     pub fn production(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -555,7 +563,8 @@ impl AppState {
     /// is [`Self::with_store_chat_and_archive`] with
     /// no archive — and that one calls `with_store_chat_archive_and_log`, the
     /// one constructor that builds anything since cycle E, with the stderr log
-    /// and opts the result into the `Diagnostic` seed rule.
+    /// and opts the result into the `Diagnostic` seed rule and the `Diagnostic`
+    /// key rule.
     ///
     /// The chat facts live on [`Games`] and nowhere here (M6.5a, R-6.5a.1): the
     /// appender enforces them and `/api/health` reports them off the same
@@ -575,12 +584,15 @@ impl AppState {
     /// for it; `in_memory*` keep no archive. It builds nothing itself: since
     /// cycle E it hands the four to `with_store_chat_archive_and_log`, the one
     /// constructor that builds anything, with the stderr log; since security
-    /// S1a it also opts the result into the `Diagnostic` seed rule.
+    /// S1a it also opts the result into the `Diagnostic` seed rule, and since
+    /// S2b into the `Diagnostic` key rule.
     ///
     /// **Diagnostic seeds** (R-SEC8(b)): a test constructor — its stores keep
     /// no person's game — honours a seed at any table; the production path is
     /// [`Self::production`], which calls `with_store_chat_archive_and_log`
-    /// directly.
+    /// directly. **Diagnostic claims** (security S2b, C1): a test constructor
+    /// admits every key the grammar accepts under the open door, an address
+    /// among them — the corpus walk's `red@wire.test`; production refuses one.
     pub fn with_store_chat_and_archive(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -589,14 +601,17 @@ impl AppState {
     ) -> Self {
         Self::with_store_chat_archive_and_log(store, identity, chat, archive, Arc::new(log::StderrLog))
             .with_seed_policy(games::SeedPolicy::Diagnostic)
+            .with_claim_policy(identity::ClaimPolicy::Diagnostic)
     }
 
     /// [`Self::with_store_chat_and_archive`] with the log chosen and without
-    /// that constructor's `Diagnostic` opt-in — so under the production seed
-    /// rule, `SoloOnly`, which [`Games::with_parts`] builds (R-SEC8(b)): the one
-    /// seam a cell needs to read what the constructor says while it seeds
-    /// (M6.5c2 cycle E). The NAS's binary reaches it through
-    /// [`Self::production`], passing [`log::StderrLog`].
+    /// that constructor's two `Diagnostic` opt-ins — so under the production
+    /// key rule, `NamesOnly`, which the literal below builds (security S2b,
+    /// C1), and the production seed rule, `SoloOnly`, which
+    /// [`Games::with_parts`] builds (R-SEC8(b)): the one seam a cell needs to
+    /// read what the constructor says while it seeds (M6.5c2 cycle E). The
+    /// NAS's binary reaches it through [`Self::production`], passing
+    /// [`log::StderrLog`].
     pub(crate) fn with_store_chat_archive_and_log(
         store: Arc<dyn Store>,
         identity: identity::IdentityMode,
@@ -641,6 +656,9 @@ impl AppState {
         Self {
             games,
             identity,
+            // The production key rule (security S2b, C1): only `with_store_chat_and_archive`'s opt-in and
+            // [`Self::with_claim_policy`] say otherwise, so [`Self::production`] is `NamesOnly` by construction.
+            claims: identity::ClaimPolicy::NamesOnly,
             heartbeat: HEARTBEAT,
             signals,
             // On, which is [`Multiplayer::from_env_value`]'s own answer to an
@@ -702,6 +720,13 @@ impl AppState {
     pub fn with_seed_policy(mut self, policy: games::SeedPolicy) -> Self {
         self.games = self.games.with_seed_policy(policy);
         self
+    }
+
+    /// This state under the open door's key rule `policy` ([`identity::ClaimPolicy`]; security S2b, C1) — the
+    /// builder step [`Self::with_store_chat_and_archive`] takes to opt every test constructor into `Diagnostic`,
+    /// and a cell takes to read `NamesOnly` over a fixture's store.
+    pub fn with_claim_policy(self, policy: identity::ClaimPolicy) -> Self {
+        Self { claims: policy, ..self }
     }
 
     /// This state under its own replay gate (security S1b) — the builder a
@@ -1029,7 +1054,7 @@ async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request
     let method = parts.method.as_str().to_string();
     let path = parts.uri.path().to_string();
     let query = parts.uri.query().unwrap_or("").to_string();
-    let resolved = identity::resolve(state.identity, &parts.headers);
+    let resolved = identity::resolve(state.identity, state.claims, &parts.headers);
     let content_type =
         parts.headers.get(http::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_string);
     // Art is a server route (the manifest reads the gated `art` module), listed
@@ -1909,7 +1934,7 @@ mod tests {
             identity::IdentityMode::CfAccess,
             identity::IdentityMode::Worker,
         ] {
-            let sentence = identity::resolve(mode, &http::HeaderMap::new()).unwrap_err();
+            let sentence = identity::resolve(mode, identity::ClaimPolicy::Diagnostic, &http::HeaderMap::new()).unwrap_err();
             let state = AppState::in_memory_with(mode);
             let host = api::Host {
                 identity_name: mode.name(),
@@ -2861,23 +2886,62 @@ mod tests {
             .expect("a production state over memory"),
         );
         assert_eq!(state.games.seed_policy(), games::SeedPolicy::SoloOnly);
+        // A NAME, not `WHO`: the production state refuses an address under the open door (security S2b, C1), as
+        // `start_refusal.rs`'s seed cell already claims `red`.
         let body = |seed: bool| {
             let mut b = serde_json::json!({
                 "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
-                "seats": [{ "user": WHO }, { "open": true }], "id": "seeded", "name": "seeded",
+                "seats": [{ "user": "red" }, { "open": true }], "id": "seeded", "name": "seeded",
             });
             if seed {
                 b["seed"] = serde_json::json!("20260831");
             }
             b
         };
-        let (status, refused) = post_as(&state, WHO, "/api/games", body(true)).await;
+        let (status, refused) = post_as(&state, "red", "/api/games", body(true)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
         assert_eq!(refused["error"], tables::SEED_NOT_SOLO);
-        let (status, opened) = post_as(&state, WHO, "/api/games", body(false)).await;
+        let (status, opened) = post_as(&state, "red", "/api/games", body(false)).await;
         assert_eq!(status, StatusCode::CREATED, "{opened}");
         // And the in-memory constructor every other cell uses is the fixtures' opt-in.
         assert_eq!(AppState::in_memory().games.seed_policy(), games::SeedPolicy::Diagnostic);
+    }
+
+    /// **Every production constructor refuses an address under the open door; the fixtures admit every key**
+    /// (security S2b, C1; decision D-2) — the seed rule's shape (B3): `production` builds `NamesOnly`,
+    /// `in_memory` builds `Diagnostic`, and the adapter (every `/api` row but three) and the extractor (the three
+    /// transport routes) resolve with the state's policy, so a route-level cell reads the refusal in the layer's
+    /// own 401 and `/api/me` answers `user: null` for the same claim.
+    #[tokio::test]
+    async fn the_production_state_refuses_an_address_claim_under_the_open_door_and_the_fixtures_admit_one() {
+        assert_eq!(AppState::in_memory().claims, identity::ClaimPolicy::Diagnostic);
+        // Built as `main` builds it — the seed-policy cell's argument list (`lib.rs:2853-2861`), the door `Open`.
+        let production = AppState::production(Arc::new(MemStore::default()), identity::IdentityMode::Open, chat::ChatConfig::default(), Arc::new(archive::NoArchive), Multiplayer(true), sweep::Ttls::none()).expect("a production state over memory");
+        assert_eq!(production.claims, identity::ClaimPolicy::NamesOnly);
+
+        let state = Arc::new(AppState::with_store(Arc::new(MemStore::default()), identity::IdentityMode::Open).with_claim_policy(identity::ClaimPolicy::NamesOnly));
+        let create = serde_json::json!({"players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": "red@wire.test"}, {"open": true}]});
+        let (status, body) = post_as(&state, "red@wire.test", "/api/games", create.clone()).await;
+        assert_eq!((status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some(identity::ADDRESS_NOT_A_NAME)));
+        let me = get_as(&state, "red@wire.test", "/api/me").await;
+        assert_eq!(me.1["user"], serde_json::Value::Null, "/api/me never refuses: it answers nobody");
+        let named = serde_json::json!({"players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": "ben"}, {"open": true}]});
+        assert_eq!(post_as(&state, "ben", "/api/games", named).await.0, StatusCode::CREATED);
+    }
+
+    /// The EXTRACTOR's three transport routes resolve with the state's policy too — the adapter serves every other
+    /// `/api` row, so a cell over `/api/games` alone would leave the extractor's call unpinned (M44 survived the whole
+    /// suite that way at the plan review; this cell is where it goes red).
+    #[tokio::test]
+    async fn the_extractors_routes_resolve_with_the_states_policy() {
+        let state = Arc::new(
+            AppState::with_store(Arc::new(MemStore::default()), identity::IdentityMode::Open)
+                .with_claim_policy(identity::ClaimPolicy::NamesOnly),
+        );
+        let (status, body) = get_as(&state, "red@wire.test", "/api/games/nobody/events").await;
+        assert_eq!((status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some(identity::ADDRESS_NOT_A_NAME)));
+        let (status, _) = get_as(&state, "ben", "/api/games/nobody/events").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "a name passes the extractor and meets the missing game");
     }
 
     /// **The production state's replay gate is two permits and a two-second

@@ -140,16 +140,13 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
  * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson).
  * The shell never judges a name beyond what a header can carry: the layer's
  * key grammar does, in the objects. A blank or absent claim is no one.
- *
- * Space runs are NOT collapsed here — that is the key grammar's, and there is
- * one. So a hand-typed `ben   castle` names the Archive object
- * `archive:ben   castle` where the client's own `ben castle` names another; the
- * two hold nothing of their own and file under one key, because the module
- * normalizes both, so the only cost is a second object.
  */
 export function claimedIdentity(raw: string | null): Identity {
-  const name = raw === null ? undefined : address(raw);
-  return name === undefined ? { kind: "none" } : { kind: "claimed", name };
+  const lowered = raw === null ? undefined : address(raw);
+  // The key grammar's own `typed_form`: each run of spaces is one, so every spelling of a key names ONE Archive object
+  // (security S2b, D-5's race) and spends ONE write-limiter key (D-3).
+  const name = lowered?.split(" ").filter((part) => part !== "").join(" ");
+  return name === undefined || name === "" ? { kind: "none" } : { kind: "claimed", name };
 }
 
 /** The value an identity is forwarded as, and names its archive object by —

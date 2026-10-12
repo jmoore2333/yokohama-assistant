@@ -445,17 +445,18 @@ describe("forwardable", () => {
 // M6.5c2, spec §2.1 (review R2.2-m3, R2.2-m6): an open-door claim — the header
 // on a fetch, the percent-DECODED `claimed` parameter on an upgrade, so any
 // character at all — judged as `address` judges an assertion's `email`: RAW by
-// `forwardable`, then trimmed and ASCII-lowercased. The shell never judges it
+// `forwardable`, then trimmed and ASCII-lowercased, each run of spaces made one
+// (security S2b, AD-3: one name, one Archive object). The shell never judges it
 // further: the layer's key grammar does, in the objects. Mutants: normalized
 // before it is judged (a Kelvin sign becomes `k`, an NBSP-led `ben` becomes
 // `ben`); a blank claim made a caller; the claim made a `person` (an
-// operator's rights).
+// operator's rights); space runs kept (M44c).
 describe("claimedIdentity (M6.5c2, spec §2.1)", () => {
   it("is a claimed name, trimmed and ASCII-lowercased, and never judged further", () => {
     expect(claimedIdentity(" Ben ")).toEqual({ kind: "claimed", name: "ben" });
-    expect(claimedIdentity(" Ben  Castle "), "space runs are the layer's to collapse").toEqual({
+    expect(claimedIdentity(" Ben  Castle "), "each run of spaces is one, as the key grammar's typed_form").toEqual({
       kind: "claimed",
-      name: "ben  castle",
+      name: "ben castle",
     });
     expect(claimedIdentity("a+b@x.test")).toEqual({ kind: "claimed", name: "a+b@x.test" });
     expect(claimedIdentity(".."), "the key grammar refuses it, in the objects").toEqual({ kind: "claimed", name: ".." });

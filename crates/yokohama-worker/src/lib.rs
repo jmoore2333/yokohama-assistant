@@ -47,7 +47,7 @@ use wasm_bindgen::prelude::*;
 use yokohama_web::api::{self, ApiRequest, Host};
 use yokohama_web::archive::{Archive, NoArchive};
 use yokohama_web::games::{Games, HostClock, SeedPolicy};
-use yokohama_web::identity::{admit, resolve, User};
+use yokohama_web::identity::{admit, resolve, ClaimPolicy, User};
 use yokohama_web::store::{Doc, MemStore};
 use yokohama_web::ApiError;
 
@@ -335,7 +335,9 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
 /// `X-Yokohama-Claimed-User` under `open` — and is read by the layer's own
 /// `identity::resolve` in that mode, with its key grammar and its mode rule:
 /// under `worker` an identity must have the email shape and a plain name
-/// reads as absent; under `open` any key the grammar accepts is a caller.
+/// reads as absent; under `open` a plain name is a caller and an address is
+/// refused (`identity::ADDRESS_NOT_A_NAME`) — the module runs the production
+/// key rule, `ClaimPolicy::NamesOnly`, and no other (security S2b, C1).
 /// `anonymous`, like an absent or blank value, is no caller, and a refusal is
 /// the layer's own sentence.
 ///
@@ -354,13 +356,15 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
 pub fn identity_of(user: Option<&str>) -> Result<User, String> {
     let mode = door().mode();
     let mut headers = http::HeaderMap::new();
+    // The production rule, and no other: the module has no diagnostic arm (security S2b, C1; decision D-2) — the
+    // pool's open project claims names.
     if let Some(raw) = user {
         let Ok(value) = http::HeaderValue::from_str(raw) else {
-            return User::parse(raw).and_then(|user| admit(mode, user));
+            return User::parse(raw).and_then(|user| admit(mode, ClaimPolicy::NamesOnly, user));
         };
         headers.insert(mode.header(), value);
     }
-    resolve(mode, &headers)
+    resolve(mode, ClaimPolicy::NamesOnly, &headers)
 }
 
 /// [`identity_of`] as a reply: 200 `{"user": <the normalized address>}`, or 401
@@ -650,7 +654,7 @@ pub fn debug_trap() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yokohama_web::identity::IdentityMode;
+    use yokohama_web::identity::{IdentityMode, ADDRESS_NOT_A_NAME};
 
     /// The cells share the global `GAMES` and the global clock; they run one at
     /// a time, as `yokohama-wasm`'s do.
@@ -745,7 +749,7 @@ mod tests {
     fn a_value_no_header_can_carry_is_held_to_the_worker_modes_rule() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
-        let absent = resolve(IdentityMode::Worker, &http::HeaderMap::new()).unwrap_err();
+        let absent = resolve(IdentityMode::Worker, ClaimPolicy::NamesOnly, &http::HeaderMap::new()).unwrap_err();
         let r = identity_inner(Some("ben\r"));
         assert_eq!((r.status, r.body.as_str()), (401, serde_json::json!({ "error": absent }).to_string().as_str()));
         let as_header = identity_inner(Some("ben"));
@@ -866,6 +870,30 @@ mod tests {
             let want = serde_json::json!({ "error": User::parse("be\rn").unwrap_err() }).to_string();
             assert_eq!((r.status, r.body.as_str()), (401, want.as_str()), "{door}");
         }
+    }
+
+    /// **The module runs the production key rule** (security S2b, finding C1;
+    /// decision D-2): under `open` an address is refused with the layer's one
+    /// sentence — at `resolve` and at the fallback's own `admit` — and a plain
+    /// name is the caller; under `worker` an address still resolves, so the
+    /// rule is the open door's and not the shape's. The module has no
+    /// diagnostic arm, so the pool's open project claims names. Mutants: either
+    /// call passing `Diagnostic` (M42a the fallback, M42b `resolve`).
+    #[test]
+    fn the_open_door_refuses_an_address_and_admits_a_name_at_both_steps() {
+        let _s = serial();
+        init_inner(&door_config("off", "open")).unwrap();
+        let want = serde_json::json!({ "error": ADDRESS_NOT_A_NAME }).to_string();
+        let r = identity_inner(Some("red@wire.test"));
+        assert_eq!((r.status, r.body.as_str()), (401, want.as_str()), "an address at the open door");
+        let r = identity_inner(Some("ben"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"ben"}"#), "a name at the open door");
+        // The fallback for a value no header can carry takes the same rule at its own `admit`.
+        let carried = identity_inner(Some("red@wire.test\r"));
+        assert_eq!((carried.status, carried.body.as_str()), (401, want.as_str()), "the fallback path");
+        init_inner(&config("off")).unwrap();
+        let r = identity_inner(Some("red@wire.test"));
+        assert_eq!((r.status, r.body.as_str()), (200, r#"{"user":"red@wire.test"}"#), "an address at the worker door");
     }
 
     /// `init` refuses a bad value NAMING the variable — the Worker's form of the

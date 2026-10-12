@@ -528,6 +528,38 @@ fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseed
     assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }
 
+/// **The binary refuses an address under the open door and admits a name**
+/// (security S2b, finding C1; decision D-2): the catcher of `main` →
+/// `AppState::new` → `production` → `NamesOnly`, which no in-process cell runs
+/// — the seed rule's binary cell's shape. An address claimed at the open door
+/// is the layer's 401 in its one sentence; a plain name creates the table.
+/// Mutants: the production literal building `Diagnostic` (the address reads
+/// 201); the adapter resolving with a literal policy.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_refuses_an_address_claim_at_the_open_door_and_admits_a_name() {
+    use yokohama_web::identity::ADDRESS_NOT_A_NAME;
+
+    let scratch = Scratch::new("claims-open");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the key rule at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let body = |user: &str, id: &str| {
+        serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": user }, { "open": true }], "id": id, "name": id,
+        })
+    };
+    let (status, refused) = post(port, "red@wire.test", "/api/games", &body("red@wire.test", "addressed"));
+    assert_eq!((status, refused), (401, serde_json::json!({ "error": ADDRESS_NOT_A_NAME })));
+    let (status, opened) = post(port, "ben", "/api/games", &body("ben", "named"));
+    assert_eq!(status, 201, "{opened}");
+    assert!(server.running(), "still serving after both requests");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+}
+
 /// **The rename's table, read off the binary** (security S1c, finding D26;
 /// the fix round's Minor 3). The deploy window renames every legacy folder from
 /// what `yokohama-web segment` prints, so the line is pinned whole: one line
