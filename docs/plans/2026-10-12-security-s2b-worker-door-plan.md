@@ -2957,7 +2957,9 @@ the guard cell; M54 check 14 dropped → the absent-key row; M54b the sampling c
     reads it in Rust —" (the splice that keeps the tail was measured green);
   - `web/scripts/headers.mjs:155-157`, `parseHeadersJson`'s doc: insert "on a release's path" after "A FILE", and after
     "never `readFileSync(.., "utf8")`" insert "— the two precache cells read their own build's file with
-    `readFileSync`; they are cells, not the release's path —" (`precache.node.test.ts:137, 287` do read the file that
+    `readFileSync`; they are cells, not the release's path —" (Task 8's run noted the old span's clause "and the build
+    writes valid UTF-8 and no BOM" is not carried by either replacement: a deferred minor for the wave, which may append
+    it to this clause) (`precache.node.test.ts:137, 287` do read the file that
     way; "hand it text of their own" was imprecise);
   - `crates/yokohama-web/src/lib.rs:449-453`, the `headers` field's doc, becomes: "Empty for a state built by the base
     constructor, which reads no header file (an in-memory state HAS a dist and serves no set), and for a dist without
@@ -2996,7 +2998,7 @@ git commit -m "tests and sentences: the fully escaped configuration key as commi
 **Mutants (red where named):** M55 the guard reading the file as text for rule 4b → the escaped rows; M56 the
 segment's digest over the readable half rather than the key → the crafted-name cell's LITERAL row (and
 `a_caller_segment_is_path_safe_readable_and_injective`) — it survives the relative assertions (measured); M56′ the
-digest suffix dropped → the crafted cell's `assert_ne!`; M57 `readable.slice(0, 40)` in the pool helper → the 48-cut
+digest suffix dropped → the crafted cell's literal row, before its `assert_ne!` is reached (Task 8's run); M57 `readable.slice(0, 40)` in the pool helper → the 48-cut
 cell; M58 the 429 arm dropped → the outbox cell reads `offline` without a sentence; M59 the harness labelling every
 line `error` → D2's cell.
 
