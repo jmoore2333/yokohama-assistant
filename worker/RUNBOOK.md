@@ -863,13 +863,18 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
 production file ships the dev door `off`, and both tiers play through it, so a run begins with
 `npm run deploy:dev` — `wrangler.dev.jsonc`, production with the dev door `on` — and ends with the
 plain `npm run deploy`, which shuts it again. Both deploy the release build (§1), and each restarts
-every object, so run them between games. Each line runs in a subshell from the repository root, so the
-block pastes whole and the closing deploy cannot miss `worker/` and leave the dev door on:
+every object, so run them between games. Every line runs in a subshell from the repository root, the two
+tiers' own lines below written the same way, so the block pastes whole: each line starts at the root
+whatever the one before it did, and the closing deploy runs and shuts the dev door even when a tier fails.
+The burst below stays outside this block, since its first line keeps the shell in `worker/` to set a
+variable:
 
 ```sh
-(cd worker && npm run deploy:dev)   # before: the dev door on
-# … the live Playwright tier, then the live replay, one at a time (below) …
-(cd worker && npm run deploy)       # after: the dev door off again
+(cd worker && npm run deploy:dev)                                                         # before: the dev door on
+(cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link)   # the live Playwright tier (below)
+(cd worker && node scripts/live-replay.mjs)                                               # the live replay (below) …
+(cd worker && node scripts/live-replay.mjs)                                               # … and again, once the first has finished
+(cd worker && npm run deploy)                                                             # after: the dev door off again
 ```
 
 The dev door is not exempt from the rate limits (decision D-3), and neither tier comes near them: the
@@ -881,7 +886,7 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   `https://yokohama.moore.nyc` (`web/e2e/live.ts` holds its rules):
 
   ```sh
-  cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link
+  (cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link)
   ```
 
   One Playwright run at a time. **How a live context is somebody** (the orchestrator's rulings I-75
@@ -923,7 +928,7 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   status and every named body compared with `web/src/wire/`:
 
   ```sh
-  cd worker && node scripts/live-replay.mjs   # and again, once the first has finished
+  (cd worker && node scripts/live-replay.mjs)   # and again, once the first has finished
   ```
 
   **It walks the production door** (security S1b; R-SEC8(b)). A deployed Worker honours a
