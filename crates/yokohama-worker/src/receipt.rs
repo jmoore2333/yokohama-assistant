@@ -120,7 +120,7 @@ struct Listing {
 impl Listing {
     /// `DirArchive::usage`'s arithmetic over a listing: records are `.json` keys that are not `.table.json`,
     /// bytes every `.json` key's size, and the put's own two keys never count (a half pair's repair). A
-    /// truncated listing counts as `usize::MAX` records.
+    /// truncated listing counts as `usize::MAX` records and `u64::MAX` bytes.
     fn usage(&self, own: [&str; 2]) -> (usize, u64) {
         if self.truncated {
             return (usize::MAX, u64::MAX);
@@ -1196,13 +1196,23 @@ mod tests {
         assert!(third.body.contains(SHARE_UNCOUNTED), "{}", third.body);
     }
 
-    /// `set_share` refuses what the shell never writes — an array, an unknown key, a missing field, a negative
-    /// size — in a sentence, and refuses everything with the archive off.
+    /// `set_share` refuses what the shell never writes — an array, an unknown key in the listing or in one of its
+    /// objects, a missing field, a negative size — in a sentence, and refuses everything with the archive off. The
+    /// array row is one serde alone would READ (a struct from a positional array: `parse_outcome`'s trap), so only
+    /// the object test refuses it; the object row's `etag` only `ListedObject`'s `deny_unknown_fields`. Each reads
+    /// red with its guard removed (measured; Task 4's review, Minor 1 — the `[]` row it replaces was refused by
+    /// serde for its length, the object test or not).
     #[test]
     fn set_share_refuses_a_listing_of_the_wrong_shape_and_the_archive_off() {
         let _s = serial();
         init_inner(&r2(Some(RED))).unwrap();
-        for bad in [r#"[]"#, r#"{"truncated": false}"#, r#"{"truncated": false, "objects": [], "cursor": "x"}"#, r#"{"truncated": false, "objects": [{"key": "k", "size": -1}]}"#] {
+        for bad in [
+            r#"[false, []]"#,
+            r#"{"truncated": false}"#,
+            r#"{"truncated": false, "objects": [], "cursor": "x"}"#,
+            r#"{"truncated": false, "objects": [{"key": "k", "size": 1, "etag": "x"}]}"#,
+            r#"{"truncated": false, "objects": [{"key": "k", "size": -1}]}"#,
+        ] {
             assert!(set_share_inner(bad).is_err(), "{bad}");
         }
         init_inner(&json!({"identity": "worker", "archive": "off", "caller": null, "lobby_chat": null, "chat_keep": null, "chat_text": null, "diagnostic_seeds": true}).to_string()).unwrap();
