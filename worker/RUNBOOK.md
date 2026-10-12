@@ -155,7 +155,7 @@ after a release build, `npm run build:module:debug` comes before `npm test` in `
 cd worker && npx wrangler whoami   # the owner's login, account BDVC
 npm run deploy
 #   node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc
-npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20)
+npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20) — never on THIS Worker unless the owner amends R-SEC6 (§3's C1 rule)
 npm run deploy:dev                 # the same three steps, each with --config wrangler.dev.jsonc: the dev door on, around a live tier (§7)
 ```
 
@@ -308,7 +308,7 @@ the whole list; it leaves secrets alone.
 
 | Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
-| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it outside a door WINDOW (`wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
+| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it, and since security S2b no door window may open it on THIS Worker unless the owner amends R-SEC6 (the C1 rule below; `wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour, before the rule) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
@@ -866,15 +866,23 @@ plain `npm run deploy`, which shuts it again. Both deploy the release build (§1
 every object, so run them between games. Every line runs in a subshell from the repository root, the two
 tiers' own lines below written the same way, so the block pastes whole: each line starts at the root
 whatever the one before it did, and the closing deploy runs and shuts the dev door even when a tier fails.
-The burst below stays outside this block, since its first line keeps the shell in `worker/` to set a
-variable:
+Each comment stands on a line of its own: an interactive zsh reads `#` as a comment only with
+`interactivecomments` set, which is off by default, and there a trailing `#` is a parse error that runs
+nothing, while a comment line prints `command not found: #` and the next line runs (measured with stub
+commands). The burst below stays outside this block, since its first line keeps the shell in `worker/` to
+set a variable:
 
 ```sh
-(cd worker && npm run deploy:dev)                                                         # before: the dev door on
-(cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link)   # the live Playwright tier (below)
-(cd worker && node scripts/live-replay.mjs)                                               # the live replay (below) …
-(cd worker && node scripts/live-replay.mjs)                                               # … and again, once the first has finished
-(cd worker && npm run deploy)                                                             # after: the dev door off again
+# before: the dev door on
+(cd worker && npm run deploy:dev)
+# the live Playwright tier, below
+(cd web && YOKOHAMA_WEB_E2E_TARGET=live npx playwright test two_browsers joins_by_link)
+# the live replay, below …
+(cd worker && node scripts/live-replay.mjs)
+# … and again, once the first has finished
+(cd worker && node scripts/live-replay.mjs)
+# after: the dev door off again
+(cd worker && npm run deploy)
 ```
 
 The dev door is not exempt from the rate limits (decision D-3), and neither tier comes near them: the
@@ -928,7 +936,8 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   status and every named body compared with `web/src/wire/`:
 
   ```sh
-  (cd worker && node scripts/live-replay.mjs)   # and again, once the first has finished
+  # run it twice, the second once the first has finished
+  (cd worker && node scripts/live-replay.mjs)
   ```
 
   **It walks the production door** (security S1b; R-SEC8(b)). A deployed Worker honours a

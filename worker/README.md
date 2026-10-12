@@ -1992,9 +1992,11 @@ the credential, which is never an operator.
   security S2b, opened by `wrangler.dev.jsonc` around a live tier; the public door's preconditions
   are recorded in the M6.5c2 cycle C close (§6). *(Corrected 2026-09-28: `DEV_DOOR_CLIENT_ID` is a
   secret since M6.5c2, where this said it was committed.)*
-  Going public is meant to be a configuration change — since security S2b, of a NEW Worker that
-  starts empty, since the door of this private Worker never flips (R-SEC6; RUNBOOK §3); on a public
-  door, a scanner's misses would each be a Worker invocation.
+  Going public is meant to be a NEW Worker that starts empty — since security S2b the door of this
+  private Worker never flips (R-SEC6; RUNBOOK §3) — and a change to the deploy guard, which holds this
+  repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity (D-7 as
+  corrected at S2b Task 9's review); on a public door, a scanner's misses would each be a Worker
+  invocation.
 - **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
   remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
   documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three
