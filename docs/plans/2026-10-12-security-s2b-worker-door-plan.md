@@ -2146,7 +2146,7 @@ M37e the shell forwarding `size: 0` → the sized-listing pool cell (the review'
 - Modify: `crates/yokohama-worker/src/lib.rs` (`identity_of`, the `:736` call; cells), `crates/yokohama-worker/src/receipt.rs`
   (the test rows that send an ADDRESS through the open door move to the worker door)
 - Modify: `worker/src/identity.ts` (`claimedIdentity` collapses space runs, AD-3), `worker/src/identity.unit.test.ts`
-  (one expectation)
+  (one expectation), `worker/src/index.ts` (the `case "archive"` comment's two lines, Step 7b)
 - Modify: `worker/test/open/door.test.ts` (the rows that claim an address: moved or inverted; C1's own cells; the
   spelling-race cell)
 - The CLIENT (`web/src/nameRule.ts`, `SignIn.tsx`, `nameRule.test.ts`, `NewGame.tsx`, the two web cells C1 inverts and
@@ -2380,7 +2380,11 @@ export function claimedIdentity(raw: string | null): Identity {
 }
 ```
 
-  Its doc paragraph "Space runs are NOT collapsed here … the only cost is a second object" is deleted;
+  Its doc paragraph "Space runs are NOT collapsed here … the only cost is a second object" is deleted; `worker/src/index.ts`'s
+  `case "archive"` comment (the two lines reading "under `open` a claim's space runs are left for the key grammar, so two
+  spellings of one key name two objects (`claimedIdentity`'s doc, `identity.ts`)") reads "under `open` a claim's space
+  runs are collapsed (`claimedIdentity`), so every spelling of one key names ONE object" (Task 5's run: the comment
+  went false with the collapse);
   `identity.unit.test.ts:456` expects `name: "ben castle"` (the only cell in the node, pool and open suites that
   moves — measured). `test/open/door.test.ts` gains the race cell: 255 records pre-filled under `race y`'s share, then
   `Promise.all` of `through("/api/archive", { claim: "race y" })` and `{ claim: "race   y" }`, the second with its
@@ -2399,7 +2403,7 @@ export function claimedIdentity(raw: string | null): Identity {
 - [ ] **Step 10: Commit.**
 
 ```bash
-git add crates/yokohama-web/src/identity.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/src/main.rs crates/yokohama-web/src/archive.rs crates/yokohama-web/tests/wire_fixtures.rs crates/yokohama-web/tests/start_refusal.rs crates/yokohama-worker/src/lib.rs crates/yokohama-worker/src/receipt.rs worker/src/identity.ts worker/src/identity.unit.test.ts worker/test/open/door.test.ts
+git add crates/yokohama-web/src/identity.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/src/main.rs crates/yokohama-web/src/archive.rs crates/yokohama-web/tests/wire_fixtures.rs crates/yokohama-web/tests/start_refusal.rs crates/yokohama-worker/src/lib.rs crates/yokohama-worker/src/receipt.rs worker/src/identity.ts worker/src/identity.unit.test.ts worker/src/index.ts worker/test/open/door.test.ts
 git commit -m "layer: under the open door a name is a name — ClaimPolicy::NamesOnly in every production constructor refuses an address-shaped key with one sentence, Diagnostic keeps the fixtures; the Worker shell collapses a claim's space runs so one name is one Archive object (C1, D24) (S2b Task 5)"
 ```
 
