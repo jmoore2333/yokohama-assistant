@@ -2301,7 +2301,9 @@ const RESERVED_SUFFIXES = [".table", ".chat"];
 
 /** `is_safe_id`, arm by arm: not empty, at most 64 bytes, a letter or digit first, then letters, digits, `.`, `_`
  *  and `-` only, and not spelling another document's suffix. The alphabet test comes before the suffix test and
- *  makes the ASCII fold below exact: nothing outside ASCII survives it. */
+ *  makes the ASCII fold below exact: nothing outside ASCII survives it. The store's sixth arm, `is_the_house` (the
+ *  house's own id, `_house`), is not restated: its leading `_` already fails the first-character test here, and
+ *  `id_cases.json` carries the row, so a house stem that moved would show on the Rust side first. */
 export function isSafeId(id: string): boolean {
   if (id === "" || id.length > ID_MAX) return false;
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return false;
@@ -2313,7 +2315,9 @@ export function isSafeId(id: string): boolean {
 `web/src/route.ts`, `parseRoute`'s table arm: after decoding, `const id = decodeURIComponent(m[1]!); return
 isSafeId(id) ? { kind: "table", id } : { kind: "door" };` — with the comment above it gaining: "and an id the
 store's grammar refuses is the door too (security S2a, D14): `..` would otherwise reach `/api/games/../chat`".
-(`isLocal`'s `local-` ids and the server's `sim-` ids pass the grammar; `id_cases.json` carries one of each.)
+— and the sentence that comment extends says "door" where it said "lobby" (a 2026-09-15 leftover the code and
+`route.test.ts` never matched; Task 5's review). (`isLocal`'s `local-` ids and the server's `sim-` ids pass the grammar;
+`id_cases.json` carries one of each.)
 
 - [ ] **Step 4: Run the cells, `wire_fixtures` without the flag, the lane's rows** — `npm run test:wasm` (the node
 replay's `NOT_SERVED`) and the pool (`THIRD_COLUMN`) among them.
