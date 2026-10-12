@@ -314,7 +314,7 @@ function rateLimits(production, pools, failures) {
   for (const [name, pool] of pools) {
     const names = Array.isArray(pool.value.ratelimits) ? pool.value.ratelimits.map((b) => objectOf(b)?.name).sort() : [];
     if (canonical(names) !== canonical(["CREATE_LIMIT", "WRITE_LIMIT"])) {
-      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (the pool replays a corpus at machine speed) — got ${canonical(names)}`);
+      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (test/worker.test.ts sends a dozen creates a minute as one caller through handle) — got ${canonical(names)}`);
     }
   }
 }

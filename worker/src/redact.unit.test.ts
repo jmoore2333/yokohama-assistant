@@ -16,12 +16,14 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
   });
 
   // Mutants: the regex anchored at the start only (a `test/` root's key kept its readable half); the digest group
-  // widened (`[0-9a-f]+` swallowing a readable half that is itself hex); the replacement dropping the slash.
+  // widened (`[0-9a-f]+`: the `red-cafe` row — a four-hex tail is no digest; the hex-readable row alone does NOT
+  // catch it, since `[^/]*` backtracks to the same `-` either way, measured); the replacement dropping the slash.
   it("drops the readable half of a browser segment and leaves every other key as it is", () => {
     expect(redactKey("browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.json")).toBe("browser/c91ad2a917f7/rev7/over/wire.json");
     expect(redactKey("test/browser/red_at_wire.test-c91ad2a917f7/rev7/abandoned/wire.table.json")).toBe("test/browser/c91ad2a917f7/rev7/abandoned/wire.table.json");
     expect(redactKey("browser/deadbeef0123-456789abcdef/rev7/over/x.json"), "a readable half that is hex is still the readable half").toBe("browser/456789abcdef/rev7/over/x.json");
     expect(redactKey("rev7/over/sim-0123456789abcdef.json"), "a server game's key names no caller").toBe("rev7/over/sim-0123456789abcdef.json");
     expect(redactKey("browser/no-digest-here/rev7/over/x.json"), "a legacy folder with no digest is left whole: nothing files under one since S1c").toBe("browser/no-digest-here/rev7/over/x.json");
+    expect(redactKey("browser/red-cafe/rev7/over/x.json"), "a four-hex tail is no digest: the readable half stays").toBe("browser/red-cafe/rev7/over/x.json");
   });
 });

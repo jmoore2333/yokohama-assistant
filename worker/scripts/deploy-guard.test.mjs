@@ -450,7 +450,7 @@ describe("the deploy guard", () => {
     const drift = TEST_CONFIG.replace(',\n    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 1000000, "period": 60 } }', "");
     expect(drift, "premise: the write binding is gone").not.toBe(TEST_CONFIG);
     expect(deployGuard(worker({ "wrangler.test.jsonc": drift }))).toEqual([
-      'wrangler.test.jsonc must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (the pool replays a corpus at machine speed) — got ["CREATE_LIMIT"]',
+      'wrangler.test.jsonc must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (test/worker.test.ts sends a dozen creates a minute as one caller through handle) — got ["CREATE_LIMIT"]',
     ]);
   });
   it("refuses a configuration with no object bindings or no migrations", () => {
