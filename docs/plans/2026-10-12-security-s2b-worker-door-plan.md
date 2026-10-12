@@ -2795,7 +2795,8 @@ which is `archive:<address>` (`index.ts:368`), logged by `init-refused` (`:84, :
   `redactKey(…)`. `r2.ts`'s `logOutcome` logs `record_key: redactKey(plan.record_key)` **and**
   `detail: redactKey(outcome.detail)`: a landed, identical or conflicting outcome's detail IS the record's key
   (`executePlan`'s `at()` and `against()`), and the one failed case's begins with it; `SEGMENT` reads both because
-  `browser/` follows a `/`; R2's own failure message (`e.message`) is logged as it is. A doc sentence at `logOutcome`:
+  `browser/` follows a `/`; R2's own failure message (`e.message`) passes through the same `redactKey`, which leaves
+  it whole unless it spells a browser segment (Task 7's run: the first draft said "as it is"). A doc sentence at `logOutcome`:
   "The key is logged REDACTED in both fields (security S2b, D23): the segment's readable half dropped, its digest kept,
   so a line names the folder and not the address it spells." `worker/src/archive.ts`: `fetch` keeps the object's whole
   name for the module and logs a digest —
@@ -2832,11 +2833,23 @@ which is `archive:<address>` (`index.ts:368`), logged by `init-refused` (`:84, :
   if (production && observed?.head_sampling_rate !== undefined && observed.head_sampling_rate !== 1) {
     failures.push("wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
   }
+  // wrangler 4.136.3 also reads `observability.logs.head_sampling_rate` and `observability.logs.invocation_logs`
+  // (Task 7's run): a rate set there samples the same logs, and `invocation_logs: false` drops the lines the
+  // readings count — both held, so the top-level clause cannot be sidestepped by the nested key.
+  const logs = production ? objectOf(observed?.logs) : undefined;
+  if (production && logs?.head_sampling_rate !== undefined && logs.head_sampling_rate !== 1) {
+    failures.push("wrangler.jsonc's observability.logs must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.invocation_logs === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
 ```
 
   with its header paragraph, the success sentence's clause, and "all thirteen" → "all fourteen" at
   `deploy-guard.mjs:4` and `:692`; `deploy-guard.test.mjs`: `PRODUCTION` gains the key (and so do the dev and open
-  fixtures); three rows: the key absent, `false`, and `head_sampling_rate: 0.1`, each refused in its sentence.
+  fixtures); five rows: the key absent, `false`, `head_sampling_rate: 0.1`, `logs: { head_sampling_rate: 0.1 }` and
+  `logs: { invocation_logs: false }`, each refused in its sentence (the last two: Task 7's run — the nested keys passed
+  the three-row form).
 
 - [ ] **Step 6: Run the script suite and the guard.** `npm run test:scripts && node scripts/deploy-guard.mjs --config wrangler.jsonc`.
   Expected: PASS for the script suite; the guard prints the door line, and a tree prepared for the pool also prints
@@ -2852,7 +2865,8 @@ git commit -m "worker: the operator lines carry a digest, every record key its f
 **Mutants (red where named):** M51 `address` kept on the listing's line → the operator cell; M52 `redactKey`
 dropped at `logOutcome`'s `record_key` → the r2 cell; M52b `detail` unredacted → the r2 cell; M52c the Archive
 object logging its name → the archive cell's no-address assertion; M53 `redact_query_string: false` in production →
-the guard cell; M54 check 14 dropped → the absent-key row; M54b the sampling clause dropped → the `0.1` row.
+the guard cell; M54 check 14 dropped → the absent-key row; M54b the sampling clause dropped → the `0.1` row; M54c the nested `observability.logs` clauses dropped → the two
+`logs:` rows (Task 7's run).
 
 ### Task 8: The owed cells and sentences — the fully escaped key, the crafted name, the 48-cut in WASM, S2a's parked sentences, D2's label, the outbox's 429 — Sonnet (decision D-13; §9.6 correction 9)
 
