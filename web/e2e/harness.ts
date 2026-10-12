@@ -125,7 +125,7 @@ export function watchForBreakage(
       watch.dealAnswers += 1;
       return;
     }
-    failures.push(`console.error: ${text}`);
+    failures.push(`console.${m.type()}: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
@@ -235,8 +235,10 @@ function fromTheBeacon(url: string): boolean {
 
 /** Any CSP violation line, enforced or Report-Only, as Chromium 143–153 words it (MEASURED, the S2a plan review):
  *  "… violates the following [report-only ]Content Security Policy directive …". Report-Only logs at `info`
- *  (`frame-src`'s and `frame-ancestors`' at `error`), enforced at `error` — so the console handler reads a CSP
- *  line at ANY type: the type gate alone would read nothing of a Report-Only release. */
+ *  (`frame-src`'s and `frame-ancestors`' at `error`), an enforced INLINE or SOURCE refusal at `error` (an enforced
+ *  `eval` refusal prints no console line, only an EvalError — the built client has neither `eval(` nor
+ *  `new Function(`) — so the console handler reads a CSP line at ANY type: the type gate alone would read nothing
+ *  of a Report-Only release. */
 const CSP_VIOLATION = /\bviolates the following (?:report-only )?Content Security Policy directive\b/;
 
 /** The ONE Report-Only line the live tier forgives: an INLINE script refused by `script-src` — Cloudflare's

@@ -51,7 +51,11 @@ test("a page on another origin that frames the lobby gets a refused frame: X-Fra
   await page.goto(framerUrl);
   const answer = await shell;
   expect(answer.headers()["x-frame-options"], "the host's fence").toBe("DENY");
-  expect(answer.headers()["content-security-policy"], "the e2e build serves the policy ENFORCED (decision D-9)").toBeDefined();
+  // The policy's VALUE, not its name alone (Task 4's review, M1): the walk is the enforcement reading only while it
+  // is served the release's policy, so the two sources that reading rests on are read off the answer itself.
+  const policy = answer.headers()["content-security-policy"];
+  expect(policy, "the e2e build serves the policy ENFORCED (decision D-9)").toContain("script-src 'self' 'wasm-unsafe-eval'");
+  expect(policy, "and its own frame fence beside the header").toContain("frame-ancestors 'none'");
   await page.waitForTimeout(SETTLE_MS);
   expect(asked.filter((p) => p.startsWith("/assets/")), "a refused frame parses nothing, so it asks for no script").toEqual([]);
   expect(asked.filter((p) => p === "/api" || p.startsWith("/api/")), "and touches the API not at all").toEqual([]);
