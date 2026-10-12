@@ -18,9 +18,9 @@ import type { TableParts } from "../table";
 const DELETED_REASON = "this table was deleted";
 
 /** How many sockets one caller may hold on one table (security S2b, finding D3; decision D-4): the client holds
- *  one per VISIBLE tab and none in a background tab (R-P8), and a socket in CLOSING may still be counted (the
- *  platform's documented behaviour; in the pool only within the closing turn), so eight is tabs plus headroom,
- *  never a budget a feature may lean on. */
+ *  one per VISIBLE tab and none in a background tab (R-P8), and only OPEN sockets count (`openCount`: a socket in
+ *  CLOSING stays there as long as its client declines to answer the close), so eight is tabs plus a reconnect's
+ *  overlap, never a budget a feature may lean on. */
 export const SOCKETS_PER_CALLER = 8;
 /** How many sockets one table object holds in all: four seats and their spectators at eight each. The review's
  *  reproduction held 300 and paid 301 module calls per bump; the platform's own ceiling is 32,768. */
@@ -32,6 +32,15 @@ export function capVerdict(own: number, total: number, caps: { perCaller: number
   if (total >= caps.total) return "total";
   if (own >= caps.perCaller) return "own";
   return undefined;
+}
+
+/** How many of `sockets` are OPEN — the count both caps read (Task 3's review). A refused or ended socket stays
+ *  CLOSING for as long as its client declines to answer the close (an unaccepted pool client never does; a hostile
+ *  one need not), and a count that included it would let a stranger's refusals lock a table's seated players out and
+ *  one identity fill the lobby (measured). The CLOSING sockets still occupy the object until the platform tears them
+ *  down: the pre-S2b shape, under the platform's 32,768. */
+export function openCount(sockets: WebSocket[]): number {
+  return sockets.filter((ws) => ws.readyState === WebSocket.OPEN).length;
 }
 
 /** The two transport routes this object answers itself rather than through
@@ -90,9 +99,10 @@ export function withSockets<T extends TableParts>(Base: T) {
         // object's in all. A refused socket is ACCEPTED all the same, sent `end` with the sentence and closed
         // 4429 — the shape `signal.ts` reads as `ended`; the game screen draws it, the lobby does not (`Lobby.tsx`
         // passes no `onEnd`; recorded, AD-4). Answered unupgraded, the client's ladder would reconnect and hammer. A
-        // tag outlives hibernation, so the count does too.
-        const own = callerTag === undefined ? 0 : this.ctx.getWebSockets(callerTag).length;
-        const over = capVerdict(own, this.ctx.getWebSockets().length, { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
+        // tag outlives hibernation, so the count does too; OPEN sockets alone are counted (`openCount`: a dangling
+        // close must not lock anyone out).
+        const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
+        const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
         this.ctx.acceptWebSocket(server, callerTag === undefined ? [id] : [id, callerTag]);
         if (over !== undefined) {
           const sentence = over === "own" ? TOO_MANY_OWN_TABLE : TOO_MANY_TABLE;

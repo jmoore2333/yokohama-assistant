@@ -101,6 +101,11 @@ function held(stub: DurableObjectStub<Table> | DurableObjectStub<House>, tag?: s
   return runInDurableObject(stub as DurableObjectStub, (_o, state) => state.storage.sql !== undefined ? (tag === undefined ? state.getWebSockets().length : state.getWebSockets(tag).length) : -1);
 }
 
+/** How many OPEN sockets the object holds under `tag` — the count the caps read (`openCount`). */
+function heldOpen(stub: DurableObjectStub<Table> | DurableObjectStub<House>, tag?: string): Promise<number> {
+  return runInDurableObject(stub as DurableObjectStub, (_o, state) => (tag === undefined ? state.getWebSockets() : state.getWebSockets(tag)).filter((ws) => ws.readyState === WebSocket.OPEN).length);
+}
+
 describe("D3 — the socket caps (security S2b, decision D-4)", () => {
   // Mutants: the per-caller arm dropped (the ninth admitted); the tag omitted from `acceptWebSocket` (the count
   // reads 0 and the ninth is admitted); the refusal answered unupgraded (no 101: the client's ladder would hammer);
@@ -130,11 +135,26 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     const id = "caps-total";
     const stub = await openTable(id);
     const callers = Array.from({ length: SOCKETS_PER_TABLE / SOCKETS_PER_CALLER }, (_, i) => `c${i}@t.test`);
-    for (const who of callers) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) await openTab(stub, who, id);
+    const tabs: Tab[] = [];
+    for (const who of callers) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, who, id));
     expect(await held(stub)).toBe(SOCKETS_PER_TABLE);
     const more = await openTab(stub, "late@t.test", id);
     expect(await more.until(1)).toEqual([endWith(TOO_MANY_TABLE)]);
     expect((await more.closed()).code).toBe(CLOSE_TOO_MANY);
+    // The review's Important 1: a refused socket whose client never answers the close stays CLOSING and is NOT
+    // counted — counted, a stranger's unanswered refusals would lock the seated players out (measured: 60 dangling
+    // refusals, 68 held). Eight refusals left dangling (their client side never accepted), then one seat closes: the
+    // next caller is admitted past them.
+    const dangling: Response[] = [];
+    for (let i = 0; i < 8; i += 1) dangling.push(await upgrade(stub, "dangling@t.test", id));
+    expect(dangling.map((r) => r.status), "accepted, closing").toEqual(Array(8).fill(101));
+    expect(await held(stub), "the dangling refusals are held, CLOSING").toBeGreaterThan(SOCKETS_PER_TABLE);
+    expect(await heldOpen(stub), "and not counted").toBe(SOCKETS_PER_TABLE);
+    tabs[0]!.ws.close(1000);
+    for (let i = 0; i < 20 && (await heldOpen(stub)) >= SOCKETS_PER_TABLE; i += 1) await new Promise((r) => setTimeout(r, 50));
+    const back = await openTab(stub, "late@t.test", id);
+    expect((await back.until(1))[0], "admitted past the dangling refusals").toContain('"event":"signal"');
+    expect(dangling.length, "held for the cell's life, like the lobby's kept").toBe(8);
   });
 
   it("caps the lobby per caller the same way, under its own sentence", async () => {
@@ -149,8 +169,24 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     ws.accept();
     const first = await new Promise<string>((resolve) => ws.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
     expect(first).toBe(endWith(TOO_MANY_OWN_LOBBY));
+    const closed = await new Promise<{ code: number; reason: string }>((resolve) => ws.addEventListener("close", (e) => resolve({ code: e.code, reason: e.reason }), { once: true }));
+    expect(closed, "the same close as a table's").toEqual({ code: CLOSE_TOO_MANY, reason: closeReason(TOO_MANY_OWN_LOBBY) });
+    // The review's Important 2: the cap is PER CALLER — a second caller is admitted while the first is full (under a
+    // site-wide lobby of eight this reads 0 OPEN under the second caller's tag; measured at the review).
+    const other = await lobby("lob2@t.test");
+    expect(other.status).toBe(101);
+    kept.push(other);
+    const otherWs = other.webSocket!;
+    otherWs.accept();
+    const listing = new Promise<string>((resolve) => otherWs.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
+    // A lobby socket is silent on connect (spec §2.5; `slot.test.ts`'s cell), so a house chat post is the positive
+    // control (ruling R-10): its frame reaches every admitted lobby socket, where a refused one's first frame is `end`.
+    const posted = await house.fetch("https://yokohama.test/api/chat", { method: "POST", headers: { "X-Yokohama-User": "lob2@t.test", "content-type": "application/json" }, body: '{"text":"hello"}' });
+    expect(posted.status, await posted.text()).toBe(201);
+    expect(await listing, "the second caller hears the lobby's frame, not an end").toContain('"event":"house"');
+    expect(await heldOpen(house, await callerTag("lob2@t.test")), "one OPEN socket under the second caller's tag").toBe(1);
     expect(await held(house, await callerTag("lob@t.test"))).toBe(8);
-    expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag").toBe(8);
+    expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag: the first caller's eight and the second's one").toBe(9);
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
   });
 });
