@@ -1218,7 +1218,7 @@ describe("B12's Worker half — the share counted from a live listing (security 
   const archiveStub = (who: string) => env.ARCHIVER.get(env.ARCHIVER.idFromName(`archive:${who}`));
 
   // Mutants: the listing not handed to the module (every save SHARE_UNCOUNTED); the prefix wrong (an empty count
-  // under 256 fakes); `truncated` not forwarded.
+  // under 256 fakes); `truncated` not forwarded (the truncated-listing cell below).
   it("refuses a 257th record with the NAS's 507 and uploads nothing, and lands the 256th", async () => {
     const who = "quota@t.test";
     const prefix = `test/browser/${await segmentOf(who)}/`;
@@ -1252,6 +1252,22 @@ describe("B12's Worker half — the share counted from a live listing (security 
       expect(result.status).toBe(500);
       expect(await result.text()).toContain("the caller's share was not counted before this save");
       expect(lines.some((l) => (l as { event: string }).event === "archive-count-failed")).toBe(true);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
+
+  // The SHELL forwarding `truncated` (M32 covers the module ignoring it): no pool listing exceeds 1,000 objects, so
+  // a bucket whose `list` answers truncated is swapped in through `swapBucket`'s list parameter (Task 4's run: the
+  // comment's mutant survived 242/242 without this cell; measured red under it — `expected 201 to be 507`).
+  it("a listing R2 reports truncated is a full share: the 507, nothing uploaded", async () => {
+    const who = "truncated@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), truncated: true, cursor: "more" }) as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
     } finally {
       await swapped.restore();
     }
