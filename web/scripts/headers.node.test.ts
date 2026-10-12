@@ -3,7 +3,7 @@
 // order, every directive and its sources, what the build values add, what the 404 page's style hashes to — so a
 // directive loosened by hand, or a host added without its reason, fails here before either host serves it.
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -33,6 +33,13 @@ const directives = (csp: string): Map<string, string[]> =>
   );
 
 describe("the policy", () => {
+  /** Every build value set, and a style hash: the other end of the values from `NONE`. */
+  const full = {
+    siteUrl: "https://yokohama.moore.nyc",
+    releaseFeed: "https://api.github.com/repos/o/r/releases/latest",
+    styleHashes: ["'sha256-abc='"],
+  };
+
   it("ships Report-Only in this release, under the mode's own header name (X2: the wrap flips it)", () => {
     expect(CSP_MODE).toBe("report-only");
     expect(headerSet(NONE)[0]![0]).toBe("Content-Security-Policy-Report-Only");
@@ -42,33 +49,34 @@ describe("the policy", () => {
   });
 
   it("names every directive once, in one order, with the sources the c1 review derived from the built bundle", () => {
+    // Every directive but the two the build values move is compared at BOTH ends of the values, so a directive
+    // loosened only when a value is set fails here too (Task 1's review, M-1).
+    for (const [at, values] of [["no value set", NONE], ["every value set", full]] as const) {
+      const d = directives(cspOf(values));
+      expect([...d.keys()], at).toEqual([
+        "default-src", "script-src", "style-src", "img-src", "font-src", "connect-src", "frame-src",
+        "worker-src", "manifest-src", "object-src", "base-uri", "form-action", "frame-ancestors",
+      ]);
+      expect(d.get("default-src"), at).toEqual(["'self'"]);
+      // `'wasm-unsafe-eval'`: the module Worker compiles the engine (`assets/worker-*.js`).
+      expect(d.get("script-src"), at).toEqual(["'self'", "'wasm-unsafe-eval'", ...CLOUDFLARE.script]);
+      expect(d.get("img-src"), at).toEqual(["'self'"]);
+      expect(d.get("font-src"), at).toEqual(["'self'"]);
+      expect(d.get("frame-src"), at).toEqual([...CLOUDFLARE.frame]);
+      expect(d.get("worker-src"), at).toEqual(["'self'"]);
+      expect(d.get("manifest-src"), at).toEqual(["'self'"]);
+      expect(d.get("object-src"), at).toEqual(["'none'"]);
+      expect(d.get("base-uri"), at).toEqual(["'none'"]);
+      expect(d.get("form-action"), at).toEqual(["'self'"]);
+      expect(d.get("frame-ancestors"), at).toEqual(["'none'"]);
+    }
+    // The two the values move, at none: the connect-src cell below and the 404 page's cell read them with values.
     const d = directives(cspOf(NONE));
-    expect([...d.keys()]).toEqual([
-      "default-src", "script-src", "style-src", "img-src", "font-src", "connect-src", "frame-src",
-      "worker-src", "manifest-src", "object-src", "base-uri", "form-action", "frame-ancestors",
-    ]);
-    expect(d.get("default-src")).toEqual(["'self'"]);
-    // `'wasm-unsafe-eval'`: the module Worker compiles the engine (`assets/worker-*.js`).
-    expect(d.get("script-src")).toEqual(["'self'", "'wasm-unsafe-eval'", ...CLOUDFLARE.script]);
     expect(d.get("style-src")).toEqual(["'self'"]);
-    expect(d.get("img-src")).toEqual(["'self'"]);
-    expect(d.get("font-src")).toEqual(["'self'"]);
     expect(d.get("connect-src")).toEqual(["'self'", ...CLOUDFLARE.connect]);
-    expect(d.get("frame-src")).toEqual([...CLOUDFLARE.frame]);
-    expect(d.get("worker-src")).toEqual(["'self'"]);
-    expect(d.get("manifest-src")).toEqual(["'self'"]);
-    expect(d.get("object-src")).toEqual(["'none'"]);
-    expect(d.get("base-uri")).toEqual(["'none'"]);
-    expect(d.get("form-action")).toEqual(["'self'"]);
-    expect(d.get("frame-ancestors")).toEqual(["'none'"]);
   });
 
   it("never carries 'unsafe-inline' or 'unsafe-eval', whatever the values", () => {
-    const full = {
-      siteUrl: "https://yokohama.moore.nyc",
-      releaseFeed: "https://api.github.com/repos/o/r/releases/latest",
-      styleHashes: ["'sha256-abc='"],
-    };
     // A QUOTED keyword: `'wasm-unsafe-eval'` is another keyword, and required — a bare substring test is red
     // against this very policy.
     for (const values of [NONE, full]) expect(cspOf(values)).not.toMatch(/'unsafe-(?:inline|eval)'/);
@@ -165,12 +173,16 @@ describe("the set, its block and its file", () => {
       // tab in a value and an empty value (Task 1's review, measured against http 1.5.0 and serde_json 1.0.150).
       '[["X-A", "B", "C"]]', '[["X-A", "\\ud800"]]', `[["${"a".repeat(65_536)}", "v"]]`,
       '[["X-A", "a\\tb"]]', '[["X-A", ""]]',
+      // A name the file repeats, compared case-insensitively (S2a's after review): the NAS's `insert` would keep the
+      // last and the Worker's `_headers` would join the two, so the hosts would send different values. Both refuse.
+      '[["X-A","1"],["x-a","2"]]',
     ]) {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
+    expect(() => parseHeadersJson('[["X-A","1"],["x-a","2"]]')).toThrow("headers.json names x-a twice");
   });
 
-  it("reads a file's BYTES strictly: an invalid UTF-8 byte is refused, where readFileSync(.., 'utf8') would substitute U+FFFD, and a BOM is kept for the parse to refuse, where TextDecoder's default would strip it — what serde_json's read_to_string refuses on the NAS", () => {
+  it("reads a file's BYTES strictly: an invalid UTF-8 byte is refused, where readFileSync(.., 'utf8') would substitute U+FFFD, and a BOM is kept for the parse to refuse, where TextDecoder's default would strip it — what the NAS refuses, the byte at std::fs::read_to_string and the BOM at serde_json's parse", () => {
     const dir = mkdtempSync(join(tmpdir(), "yokohama-headers-"));
     const file = join(dir, "headers.json");
     writeFileSync(file, headersJson(headerSet(NONE)));
@@ -181,5 +193,6 @@ describe("the set, its block and its file", () => {
     // A BOM before a valid set: kept, so the parse refuses it as the NAS's would.
     writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(headersJson(headerSet(NONE)))]));
     expect(() => parseHeadersJson(readHeadersText(file))).toThrow(/headers\.json does not parse/);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

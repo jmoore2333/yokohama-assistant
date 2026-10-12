@@ -3992,7 +3992,9 @@ mod tests {
     /// wraps the routes and not the fallback; and `/apix` fails a bare
     /// `starts_with("/api")`, which would mark a path that is not the API.
     /// Since security S2a the layer is `response_headers`, which sets the
-    /// dist's header set beside `no-store`; this state has no dist, so no set.
+    /// dist's header set beside `no-store`; this state is `in_memory()`'s,
+    /// which has a dist (`assets::dist_dir()`) but reads no `headers.json`
+    /// from it — only `production` and `with_dist` do — so its set is empty.
     #[tokio::test]
     async fn every_answer_under_api_is_no_store_and_the_static_release_is_not() {
         let state = Arc::new(AppState::in_memory());
@@ -4114,8 +4116,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dist);
     }
 
-    /// **A state built without a dist serves no security header, and `with_headers` is how a cell gives it
-    /// one** — the mutant that reads a set from anywhere but the state fails the second half.
+    /// **A state built without `with_dist` serves no security header, and `with_headers` is how a cell gives it
+    /// one** — the mutant that reads a set from anywhere but the state fails the second half. The third is the
+    /// layer's `insert` (Task 3's review, m-2): `/shell.bin` is a row whose HANDLER sets `Cache-Control` —
+    /// `assets.rs`'s `cache_control` marks it `no-store`, hit or miss, and the bare state reads that first — and a
+    /// set naming `Cache-Control: private` leaves it with ONE value, the set's; `append` would send both.
     #[tokio::test]
     async fn an_in_memory_state_serves_no_header_set_and_with_headers_gives_it_one() {
         let bare = app(Arc::new(AppState::in_memory()));
@@ -4127,6 +4132,22 @@ mod tests {
         )])));
         let res = given.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.headers().get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+        let cache_control = |res: &Response| -> Vec<String> {
+            res.headers()
+                .get_all(http::header::CACHE_CONTROL)
+                .iter()
+                .map(|v| v.to_str().expect("an ASCII value").to_owned())
+                .collect()
+        };
+        let shell = || Request::builder().uri("/shell.bin").body(Body::empty()).unwrap();
+        let handler_set = app(Arc::new(AppState::in_memory())).oneshot(shell()).await.unwrap();
+        assert_eq!(cache_control(&handler_set), ["no-store"], "the handler's own header, with no set");
+        let private = app(Arc::new(AppState::in_memory().with_headers(vec![(
+            http::header::CACHE_CONTROL,
+            http::HeaderValue::from_static("private"),
+        )])));
+        let res = private.oneshot(shell()).await.unwrap();
+        assert_eq!(cache_control(&res), ["private"], "the set's value REPLACES the handler's: one value, never two");
     }
 
     /// **Every route that needs a session refuses a signed-in stranger at an

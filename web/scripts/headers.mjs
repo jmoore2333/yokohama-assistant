@@ -149,9 +149,12 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  whose escape `JSON.parse` admits and `serde_json` does not; a pair of any other arity — and two value shapes
  *  `http` admits besides, a tab and an empty value: so a file that passes the assembly always passes the NAS's
  *  reader at start, and the one-host-down release (passed the assembly, stopped the NAS) cannot arise. Measured
- *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes. A FILE
+ *  by Task 1's review against `http` 1.5.0 and `serde_json` 1.0.150; the build writes none of these shapes. And a
+ *  name the file repeats, compared case-insensitively, is refused on BOTH sides (S2a's after review): the NAS's
+ *  layer `insert`s, so it would send the last pair, and the Worker's `_headers` would send the values joined with
+ *  a comma (Cloudflare's documented rule for a header applied twice), so one file would read two ways. A FILE
  *  reaches this through [`readHeadersText`], never `readFileSync(.., "utf8")`, which would put U+FFFD where
- *  `serde_json`'s `read_to_string` refuses the byte (Task 1's fix round, C-2).
+ *  the NAS's `std::fs::read_to_string` refuses the byte (Task 1's fix round, C-2).
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -170,20 +173,28 @@ export function parseHeadersJson(text) {
     !CONTROL.test(p[1]);
   if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(pair)) {
     throw new Error(
-      "headers.json is not the client build's header set — an array of [name, value] pairs, each name a token, each value free of control characters",
+      "headers.json is not the client build's header set — an array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
     );
+  }
+  const seen = new Set();
+  for (const [name] of parsed) {
+    const key = name.toLowerCase();
+    if (seen.has(key)) throw new Error(`headers.json names ${name} twice`);
+    seen.add(key);
   }
   return parsed.map(([name, value]) => [name, value]);
 }
 
 /** `dist/headers.json`'s TEXT, read from `file` with its bytes decoded STRICTLY — a `TextDecoder` with `fatal`, and
  *  `ignoreBOM`, since the decoder's DEFAULT strips a leading BOM — so an invalid UTF-8 byte is a throw naming the
- *  file, and a BOM reaches `parseHeadersJson`, which refuses it: both are what `serde_json`'s `read_to_string`
- *  refuses on the NAS. `readFileSync(.., "utf8")` keeps a BOM too, but substitutes U+FFFD for the byte, hiding
- *  what the NAS refuses (measured on Node 26 and serde_json 1.0.150). Every read of the file goes through this — the Worker's
- *  assembly, the deploy guard, the e2e build's override — so the "passes the assembly, passes the NAS" sentence
- *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync`
- *  does; the callers test for the file first.
+ *  file, and a BOM reaches `parseHeadersJson`, which refuses it: both are what the NAS refuses, the byte at its
+ *  `std::fs::read_to_string` and the BOM at `serde_json`'s parse. `readFileSync(.., "utf8")` keeps a BOM too, but
+ *  substitutes U+FFFD for the byte, hiding what the NAS refuses (measured on Node 26 and serde_json 1.0.150). Every
+ *  read of the file by a HOST or the deploy tooling goes through this — the Worker's assembly, the deploy guard,
+ *  the e2e build's override; the two precache cells read their own build's file with `readFileSync`, and the build
+ *  writes valid UTF-8 and no BOM — so the "passes the assembly, passes the NAS" sentence above holds at the file,
+ *  not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync` does; the callers test
+ *  for the file first.
  *  @param {string | URL} file
  *  @returns {string} */
 export function readHeadersText(file) {
