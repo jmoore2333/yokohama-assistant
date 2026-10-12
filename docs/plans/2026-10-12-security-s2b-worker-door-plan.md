@@ -1559,8 +1559,8 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag: the first caller's eight and the second's one").toBe(9);
     // The lobby's TOTAL count site (the re-review's gap — a mutant per count site): the first caller leaves 1,024
     // refusals dangling, never answering their closes, and a third caller is still admitted; a total that counted
-    // CLOSING sockets would answer the lobby's sentence (measured: one identity filled the lobby in 1.9 s; these rows
-    // cost about 2 s, hence the cell's own 15 s bound).
+    // CLOSING sockets would answer the lobby's sentence (measured: one identity filled the lobby in 1.9 s in the
+    // review's probe; the whole cell takes about 0.4 s here and under 3 s there — hence its own 15 s bound).
     for (let i = 0; i < LOBBY_TOTAL; i += 1) kept.push(await lobby("lob@t.test"));
     expect(await held(house), "held, CLOSING").toBeGreaterThanOrEqual(LOBBY_TOTAL);
     expect(await heldOpen(house), "and not counted: the first caller's eight and the second's one").toBe(9);
@@ -1574,7 +1574,7 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     expect(again.status, await again.text()).toBe(201);
     expect(await heard, "admitted past 1,024 dangling refusals").toContain('"event":"house"');
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
-  });
+  }, 15_000);
 });
 ```
 
