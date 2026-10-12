@@ -153,9 +153,10 @@ const CONTROL = /[\u0000-\u001f\u007f]/;
  *  name the file repeats, compared case-insensitively, is refused on BOTH sides (S2a's after review): the NAS's
  *  layer `insert`s, so it would send the last pair, and the Worker's `_headers` would send the values joined with
  *  a comma (Cloudflare's documented rule for a header applied twice), so one file would read two ways. A FILE
- *  on a release's path reaches this through [`readHeadersText`], never `readFileSync(.., "utf8")` — the two
- *  precache cells read their own build's file with `readFileSync`; they are cells, not the release's path —, which
- *  would put U+FFFD where the NAS's `std::fs::read_to_string` refuses the byte (Task 1's fix round, C-2).
+ *  on a release's path reaches this through [`readHeadersText`], never `readFileSync(.., "utf8")`, which would put
+ *  U+FFFD where the NAS's `std::fs::read_to_string` refuses the byte (Task 1's fix round, C-2). The two precache
+ *  cells read their own build's file with `readFileSync`: they are cells, not the release's path, and the build
+ *  writes valid UTF-8 and no BOM.
  *  @param {string} text
  *  @returns {[string, string][]} */
 export function parseHeadersJson(text) {
@@ -193,8 +194,8 @@ export function parseHeadersJson(text) {
  *  substitutes U+FFFD for the byte, hiding what the NAS refuses (measured on Node 26 and serde_json 1.0.150). Every
  *  JavaScript read of the file on a release's path — the Worker's assembly, the deploy guard, the e2e build's
  *  override — goes through this; the NAS reads it in Rust — so the "passes the assembly, passes the NAS" sentence
- *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as `readFileSync` does; the callers test
- *  for the file first.
+ *  above holds at the file, not only at its text (Task 1's fix round, C-2). A missing file throws as
+ *  `readFileSync` does; the callers test for the file first.
  *  @param {string | URL} file
  *  @returns {string} */
 export function readHeadersText(file) {

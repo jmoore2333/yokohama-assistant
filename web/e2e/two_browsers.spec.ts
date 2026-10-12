@@ -39,7 +39,7 @@ import { type Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, tally, TALLY_VAR, watchForBreakage, who } from "./harness";
+import { act, capReached, deadEnd, escaped, openFromList, readScreen, rng, signIn, tally, TALLY_VAR, watchForBreakage, who } from "./harness";
 import type { Affordance, Screen } from "./harness";
 import { CAP } from "./caps";
 import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
@@ -167,7 +167,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // A chooses, and is then waiting: the table does not start until B has
   // chosen too, and A's screen says whom it is waiting on by name.
   await a.getByRole("button", { name: /^keep O\d\d/ }).first().click();
-  await expect(a.getByText(new RegExp(`waiting on ${B.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`))).toBeVisible();
+  await expect(a.getByText(new RegExp(`waiting on ${escaped(B)}\\b`))).toBeVisible();
 
   // B finds the table in its OWN saved list — the only way into a table this
   // browser did not open — chooses, and the last keep starts the game.

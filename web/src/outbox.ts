@@ -183,7 +183,7 @@ function fingerprint(record: string): string {
  *  sentence, and was sent again on every drain for ever); a 403, a 5xx or a
  *  fetch that never arrived is about the moment, and is retried — a 507 and
  *  a 429 among them, which carry the server's sentence: the caller's share of
- *  the archive is full, or the server's rate limit. */
+ *  the archive is full, or the server's rate limit is reached. */
 function reasonFor(e: unknown): { reason: PendingReason; sentence?: string } {
   if (e instanceof ApiError) {
     if (e.status === 401) return { reason: "signed-out" };

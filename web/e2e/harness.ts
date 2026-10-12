@@ -347,6 +347,12 @@ export const who = (name: string, domain = "e2e"): string => (LIVE ? `${name}@${
 /** Who the walk plays as. */
 export const WALKER = who("walker");
 
+/** `text` with every regular-expression metacharacter escaped, for a pattern that must match it literally: a name,
+ *  or a `.test` address and its dots, inside a sentence the page draws. */
+export function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Go to the app and get through the door, exactly as a player does.
  *
@@ -361,7 +367,8 @@ export const WALKER = who("walker");
  * the local tier, a `.test` address live, where the dev door names the context
  * and the step is not drawn.
  *
- * **`email` is a parameter because two browsers are two people.** Every walk but
+ * **`name` is a parameter because two browsers are two people** — a plain name
+ * on the local tier, a `.test` address live. Every walk but
  * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
  * signs its two contexts in under two different identities, and the identity a
  * context holds is the whole subject there.
@@ -379,19 +386,18 @@ export const WALKER = who("walker");
  * own door stands on the lobby, which is where every caller of this helper is
  * headed anyway.
  */
-export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby"): Promise<void> {
+export async function signIn(page: Page, name: string = WALKER, url = "/#/lobby"): Promise<void> {
   await page.goto(url);
   const step = page.getByRole("heading", { name: "Choose a name" });
   // Signed in reads two ways: the lobby's corner, whose title is the identity
   // (M6.5c2), and the "You are …" strip every other screen still draws.
-  const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const signedIn = page
     .locator(".identity-corner")
-    .getByTitle(email, { exact: true })
-    .or(page.getByText(new RegExp(`^You are ${escaped}$`)));
+    .getByTitle(name, { exact: true })
+    .or(page.getByText(new RegExp(`^You are ${escaped(name)}$`)));
   await expect(step.or(signedIn).first()).toBeVisible();
   if (await step.count()) {
-    await page.getByLabel("Name", { exact: true }).fill(email);
+    await page.getByLabel("Name", { exact: true }).fill(name);
     await page.getByRole("button", { name: "Continue" }).click();
   }
   await expect(signedIn.first()).toBeVisible();

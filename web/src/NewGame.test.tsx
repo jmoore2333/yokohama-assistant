@@ -144,7 +144,10 @@ describe("the table form's seats", () => {
     await user.type(field, "Blue@Wire.test");
     expect(field).toHaveAttribute("aria-invalid", "true");
     expect(field.closest(".form-seat")!.querySelector(".field-error")?.textContent).toBe(ADDRESS_NOT_A_NAME_HERE);
-    expect(screen.getByRole("button", { name: "Deal" })).toBeDisabled();
+    const deal = screen.getByRole("button", { name: "Deal" });
+    expect(deal).toBeDisabled();
+    // The attempt, so "posts nothing" is measured rather than true by construction (Task 5b's review, Minor 1).
+    await user.click(deal);
     expect(creates(stub)).toHaveLength(0);
   });
 
