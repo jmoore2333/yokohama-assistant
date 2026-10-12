@@ -2609,9 +2609,10 @@ export function isTestAddress(email: string): boolean {
   credential names test identities and nobody else".
 
 - [ ] **Step 4: Run the identity cells.** Expected: PASS. Then the pool's `worker.test.ts` and `operator.test.ts`
-  dev-door cells, which claim `.test` addresses throughout (PROBE: `grep -h "Claimed-User" test/*.ts | grep -o '"[^"]*@[^"]*"' | grep -v '\.test"'`
+  dev-door cells, which claim `.test` addresses throughout (PROBE: `grep -hi "claimed-user" test/*.ts | grep -o '"[^"]*@[^"]*"' | grep -vi '\.test"'`
   prints nothing — the first draft's `grep -v "\.test"` over whole lines was vacuous, every pool FILENAME containing
-  `.test`; Task 6's run checked the claim by hand).
+  `.test`, and the second form was case-sensitive (it printed `Probe@Deploy.Test` and missed a lowercase header — Task
+  6's review); the claim itself was checked by hand at Task 6's run).
 
 - [ ] **Step 5: The configurations.** `wrangler.jsonc`'s dev-door entry becomes:
 
