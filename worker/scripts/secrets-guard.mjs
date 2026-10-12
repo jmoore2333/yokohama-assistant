@@ -6,7 +6,9 @@
 // alone makes; the cells drive `judgeSecrets` over captured listings and the command over a fake `npx`.
 //
 // The listing asks the ACCOUNT: every deploy script — `deploy:gate`, the safe direction, included — is a network
-// step from here on, a fresh clone needs `npx wrangler whoami` once (or `CLOUDFLARE_ACCOUNT_ID`), and a NEW Worker's
+// step from here on — a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
+// `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing; wrangler 4.136.3's source, Task 6's
+// review) — and a NEW Worker's
 // first deploy cannot pass it (wrangler answers "Worker not found") — S4's public Worker needs its own first-deploy
 // path. A failed listing is a refusal, never a pass.
 import { execFileSync } from "node:child_process";
@@ -46,7 +48,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     listing = execFileSync("npx", ["wrangler", "secret", "list", "--config", args[1]], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   } catch {
     // No cached account, no network, or wrangler's own refusal: a deploy does not proceed on an unread listing.
-    console.error("secrets-guard: `wrangler secret list` failed — run `npx wrangler whoami` once, or set CLOUDFLARE_ACCOUNT_ID; nothing was judged");
+    console.error("secrets-guard: `wrangler secret list` failed — `npx wrangler login` if logged out; with more than one account set CLOUDFLARE_ACCOUNT_ID (`npx wrangler whoami` lists them); nothing was judged");
     process.exit(1);
   }
   const failures = judgeSecrets(listing);

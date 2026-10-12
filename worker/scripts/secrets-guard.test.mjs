@@ -4,11 +4,11 @@
 // list`'s JSON and refuses the two by name; the command runs it before `wrangler deploy`. The command cells run
 // the script as the deploy does, with a fake `npx` first on `PATH` — no account is asked.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { FORBIDDEN_SECRETS, judgeSecrets } from "./secrets-guard.mjs";
 
 /** `wrangler secret list`'s shape: a pretty-printed array of `{name, type}`, never a value. */
@@ -41,9 +41,15 @@ describe("judgeSecrets", () => {
 
 describe("as a command — the deploy's step, with a fake npx first on PATH, so no account is asked", () => {
   const SCRIPT = fileURLToPath(new URL("./secrets-guard.mjs", import.meta.url));
+  /** The shim directories, removed after each cell (the deploy guard's cells remove theirs the same way). */
+  const dirs = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
   /** The script run as `npm run deploy` runs it; `npx` is a shell shim that does what the cell says. */
   const run = (shim, args = ["--config", "wrangler.jsonc"]) => {
     const dir = mkdtempSync(join(tmpdir(), "secrets-guard-shim-"));
+    dirs.push(dir);
     const npx = join(dir, "npx");
     writeFileSync(npx, `#!/bin/sh\n${shim}\n`);
     chmodSync(npx, 0o755);

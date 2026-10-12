@@ -325,7 +325,11 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
       context: {
         clearCookies: async () => {
           calls.push("clearCookies");
+          // A real clear takes a round trip: yield once, so a clear fired UNAWAITED would record `close` before
+          // `cleared` (Task 6's review, X3) — the cell pins that the clear FINISHES before the close begins.
+          await new Promise((r) => setTimeout(r, 0));
           if (clear === "rejects") throw new Error("Target page, context or browser has been closed");
+          calls.push("cleared");
         },
         close: async () => {
           calls.push("close");
@@ -338,7 +342,7 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
     const lines: string[] = [];
     const checks: Check[] = [];
     await leaveNoSession(context, (s: string) => lines.push(s), checks, "/tmp/state");
-    expect(calls).toEqual(["clearCookies", "close"]);
+    expect(calls).toEqual(["clearCookies", "cleared", "close"]);
     expect(lines).toEqual(["cookies: cleared before close"]);
     expect(checks).toEqual([]);
   });
@@ -359,5 +363,7 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
     for (const anchored of [".dev.vars", ".dev.vars.*", ".env", ".env.*"]) {
       expect(ignore, `${anchored} anchored at the context root excludes nothing under web/ or worker/`).not.toContain(anchored);
     }
+    // The one re-inclusion is the README's: a `!web/scripts/pinned/` line would put the profiles back (the reviewer's X4).
+    expect(ignore.filter((l) => l.startsWith("!")), "the one re-inclusion").toEqual(["!README.md"]);
   });
 });
