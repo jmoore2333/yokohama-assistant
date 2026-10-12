@@ -448,7 +448,7 @@ named:
   `frames.ts` (+ `frames.unit.test.ts`), `r2.ts` (+ `r2.unit.test.ts`), `table/lifecycle.ts`, `table/archiving.ts`
   (Task 7); `worker/wrangler.jsonc`, `wrangler.open.jsonc`, `wrangler.test.jsonc`, `wrangler.open.test.jsonc`,
   `worker/package.json`; `worker/scripts/deploy-guard.mjs` (+ `.test.mjs`), `secrets-guard.mjs`, `factory-glue.mjs`,
-  `factory.d.ts.template`, `live-replay.test.mjs` (Task 1; `live-replay.mjs` itself is UNCHANGED, D-8 withdrawn),
+  `factory.d.ts.template`, `live-replay.test.mjs`, `live-replay.mjs` (Task 1: one log sentence; its logic UNCHANGED, D-8 withdrawn), `worker/test/worker.test.ts` (Task 1: two sentences),
   `replay/send.mjs`; `worker/test/sockets.test.ts`, `archive.test.ts`, `operator.test.ts` (Tasks 1 and 7),
   `gates.ts` (Task 4), `open/door.test.ts`; `crates/yokohama-worker/src/receipt.rs`, `lib.rs`;
   `crates/yokohama-web/src/identity.rs`, `lib.rs`, `archive.rs`, `main.rs` (its doc, Task 5),
@@ -493,7 +493,8 @@ named:
 - Modify: `worker/src/route.ts` (`isSafeId` replaces `routableName`; `LONE_SURROGATE` and `TABLE_NAME_MAX_BYTES` go)
 - Modify: `worker/scripts/replay/send.mjs` (`forceAll`'s header)
 - Test: `worker/src/route.unit.test.ts`, `worker/src/admin.unit.test.ts`, `worker/scripts/live-replay.test.mjs`,
-  `worker/test/operator.test.ts` (its POSTs gain the JSON type, Step 10b)
+  `worker/test/operator.test.ts` (its POSTs gain the JSON type, Step 10b), `worker/test/worker.test.ts` (two sentences, Step 10c)
+- Modify: `worker/scripts/live-replay.mjs` (one log sentence, Step 10)
 - Create: `worker/test/door.test.ts` (the Worker's door through `handle`: B5 here, the limiter in Task 2)
 
 **Interfaces:**
@@ -809,7 +810,10 @@ export function crossSite(method: string, headers: Headers, origin: string): boo
 ```
 
   and in `answer`, directly after the upgrade's refusal: `if (crossSite(req.method, req.headers, url.origin)) return respond(403, errorBody(CROSS_SITE));`.
-  Add a step "1b" to `answer`'s doc list between 1a and 2, in the doc's own voice, saying what the function's doc says.
+  Add a step "1b" to `answer`'s doc list between 1a and 2, in the doc's own voice, saying what the function's doc says;
+  and the list's step 6a, which says a listed person's route is "an expire the table's", gains, after "(the
+  orchestrator's ruling I-72),": "an expire whose type is not `application/json` the 400 `ADMIN_NEEDS_JSON`, in the
+  layer's own words (security S2b, finding B5)," (the implementer's probe, Task 1's run: the doc was incomplete).
 
 - [ ] **Step 8: The operator POST's type.** In `worker/src/admin.ts`:
 
@@ -851,7 +855,14 @@ export function isJsonEssence(contentType: string | null): boolean {
   `expect(force.headers, "a force is the owner's own assertion, over WARP: no credential, only the JSON type since B5").toEqual({ "content-type": "application/json" })`
   (the key set AND the value), and "the forces bare" in its title reads "the forces with only the JSON type"; every
   other request's `content-type` is `application/json` exactly when the row has a body (the existing contract, already
-  asserted). Run `npm run test:scripts`. Expected: PASS.
+  asserted). `worker/scripts/live-replay.mjs`'s run log line (`:140`, "the forces bare (over WARP, …)") reads "the
+  forces with only the JSON type (over WARP, …)" — one sentence, pinned by no cell; D-8's withdrawal left the file's
+  LOGIC unchanged, not a false log line. Run `npm run test:scripts`. Expected: PASS.
+
+- [ ] **Step 10c: The sentence the Origin cells now contradict.** `worker/test/worker.test.ts:606-607`'s comment "A plain
+  request is not an upgrade and is never refused for its `Origin`" and the cell title at `:630` ("…a plain request is
+  never refused for its Origin") are false for an unsafe method since B5; the cell stays green (it sends a GET). Both
+  read "a plain READ is never refused for its `Origin` (an unsafe method from another site is B5's, `door.test.ts`)".
 
 - [ ] **Step 10b: The operator cells send the type.** The JSON gate turns 14 cells of `worker/test/operator.test.ts`
   red as it stands (measured: `14 failed | 210 passed` in the worker project, all in that file): the helper `expire` (`:97-99`) and the
@@ -866,7 +877,7 @@ export function isJsonEssence(contentType: string | null): boolean {
 - [ ] **Step 12: Commit.**
 
 ```bash
-git add worker/src/index.ts worker/src/admin.ts worker/src/route.ts worker/src/route.unit.test.ts worker/src/admin.unit.test.ts worker/test/door.test.ts worker/test/operator.test.ts worker/scripts/replay/send.mjs worker/scripts/live-replay.test.mjs
+git add worker/src/index.ts worker/src/admin.ts worker/src/route.ts worker/src/route.unit.test.ts worker/src/admin.unit.test.ts worker/test/door.test.ts worker/test/operator.test.ts worker/test/worker.test.ts worker/scripts/replay/send.mjs worker/scripts/live-replay.mjs worker/scripts/live-replay.test.mjs
 git commit -m "worker: an unsafe method from another site is refused before identity and the operator's POST needs application/json (B5); the route's name grammar is the store's, pinned to id_cases.json (C2's name rule) (S2b Task 1)"
 ```
 
