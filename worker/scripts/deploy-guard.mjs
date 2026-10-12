@@ -1,7 +1,7 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
 // scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `npm run
 // deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
-// 6 hold it to production's blocks), so nothing ships unless all twelve hold. Every check that
+// 6 hold it to production's blocks), so nothing ships unless all thirteen hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -134,12 +134,25 @@
 //    `on` is one of its allowed differences from production (T8-a), and a POOL
 //    file's `on` is refused whichever file is judged: the pool never deploys,
 //    so never a keyed build.
+// 13. Production's two Rate Limiting bindings (security S2b, finding C2;
+//    decision D-3): `wrangler.jsonc`'s `ratelimits` block is EXACTLY
+//    `RATE_LIMITS`, read as values — `CREATE_LIMIT` 10 per 60 s and
+//    `WRITE_LIMIT` 120 per 10 s, namespaces `7301` and `7302`, the literals the
+//    shell's comment defends — and each pool file binds exactly the two NAMES,
+//    at any figure: the pool's figures are lenient by design, since
+//    `test/worker.test.ts` sends more creates through `handle` than production
+//    allows. The open and gate files carry production's block by the sibling
+//    rule (T8-a), judged when the file is the one deployed. Read at the TOP
+//    LEVEL: `ratelimits` is not inherited by a named environment (wrangler's
+//    schema), and the repository deploys none. The shell refuses a
+//    configuration lacking either binding at run time too (`config.ts`'s
+//    `limits`).
 //
 // Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
 // and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
 // a tree without one, and its sentence is the one to act on.
 //
-// Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
+// Checks 3–7 and 13 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
 // is the second.
 //
@@ -277,6 +290,31 @@ function objectBlocks(production, pools, failures) {
       if (p !== t) {
         failures.push(`${name}'s ${key} differs from wrangler.jsonc's — it would ship or test what production does not ship: ${t} against ${p}`);
       }
+    }
+  }
+}
+
+/** Production's two Rate Limiting bindings as values (security S2b, finding C2; decision D-3), the literals the
+ *  shell's comment defends. The dev and open files carry the same block by the sibling rule; a pool file is held
+ *  to the two NAMES alone, its figures being lenient by design (`test/worker.test.ts`'s creates through `handle`).
+ *  Read at the top level: `ratelimits` is not inherited by a named environment (wrangler's schema), and the
+ *  repository deploys none. */
+export const RATE_LIMITS = [
+  { name: "CREATE_LIMIT", namespace_id: "7301", simple: { limit: 10, period: 60 } },
+  { name: "WRITE_LIMIT", namespace_id: "7302", simple: { limit: 120, period: 10 } },
+];
+
+/** Check 13: production's block at its literals; each pool file naming exactly the two bindings. */
+function rateLimits(production, pools, failures) {
+  if (canonical(production.value.ratelimits) !== canonical(RATE_LIMITS)) {
+    failures.push(
+      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
+    );
+  }
+  for (const [name, pool] of pools) {
+    const names = Array.isArray(pool.value.ratelimits) ? pool.value.ratelimits.map((b) => objectOf(b)?.name).sort() : [];
+    if (canonical(names) !== canonical(["CREATE_LIMIT", "WRITE_LIMIT"])) {
+      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (the pool replays a corpus at machine speed) — got ${canonical(names)}`);
     }
   }
 }
@@ -638,7 +676,9 @@ function poolDeclaration(name, value, failures) {
  *  judge it alone; check 5 holds production, the open file and each pool to
  *  spec §2.3's assets block, and check 6 holds the open file and each pool
  *  to production's object blocks, whichever file is named. Check 12's pool
- *  half rides here too (cycle F): neither pool file declares `on`. */
+ *  half rides here too (cycle F): neither pool file declares `on`; and check
+ *  13 (security S2b, C2): production's rate limits at their figures, and each
+ *  pool file binding the two. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -675,6 +715,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     }
   }
   if (production) objectBlocks(production, others, failures);
+  if (production) rateLimits(production, others.filter(([n]) => POOLS.includes(n)), failures);
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind
   // production would roll it back. Judged when the file is the one deployed.
@@ -689,7 +730,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   return failures;
 }
 
-/** All twelve checks over the worker package at `root`, inside the repository
+/** All thirteen checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
 export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
@@ -791,7 +832,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
       "at the open door no dev door, every open-door file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
-      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
+      "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; " +
+      "no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );
 }

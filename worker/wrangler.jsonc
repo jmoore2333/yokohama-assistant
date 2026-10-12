@@ -67,6 +67,19 @@
   // 2026-09-23. `YOKOHAMA_WEB_ARCHIVE` below decides whether anything is
   // saved to it. The deploy guard holds the pool's binding equal to this one.
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  // Two Rate Limiting bindings (security S2b, finding C2; decision D-3), counted per Cloudflare location by the
+  // key `src/limits.ts` derives: a caller's digest under `worker`; under `open` the connecting IP for a create and
+  // IP plus claim for a write. The figures: ten creates a minute is a person opening tables as fast as a form
+  // allows; a hundred and twenty writes per ten seconds is twelve a second, thirty times a fast player's four — the
+  // local two-browser walk's pages peak at 71 unsafe requests in 10 s at machine speed (measured at S2b's pre-flight;
+  // the live tier is slower, never faster), and the live replay, which sends 26 rows at the production door since
+  // S1b, never reaches it. A `namespace_id` is a string here and unique to the ACCOUNT,
+  // and a shared id shares counters across Workers. The deploy guard's check 13 holds this block to these literals,
+  // and the pool's two files to the two NAMES, with a lenient figure of their own.
+  "ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 10, "period": 60 } },
+    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 120, "period": 10 } }
+  ],
   // The variables (spec §3.1), none of them a secret; `worker/RUNBOOK.md` §3 says what
   // each one's absence means. `wrangler deploy` REPLACES the Worker's
   // variables with these, so this file is the whole list. Four that `Env`

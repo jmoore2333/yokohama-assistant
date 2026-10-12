@@ -8,7 +8,11 @@ import { House } from "../src/house";
 import type { KeySource } from "../src/identity";
 import { CROSS_SITE, handle } from "../src/index";
 import { Table } from "../src/table";
-import { RED, seedPlaying } from "./helpers";
+import { callerTag } from "../src/redact";
+import { RETRY_AFTER_CREATE, RETRY_AFTER_WRITE, TOO_MANY } from "../src/limits";
+import type { Limiter } from "../src/limits";
+import { shellConfig } from "../src/config";
+import { logsDuring, RED, seedPlaying } from "./helpers";
 import { personClaims, signer, type Signer } from "./tokens";
 
 // **The Worker's door** (security S2b): what `handle` refuses before any object is reached — a cross-site
@@ -161,5 +165,73 @@ describe("C2's name rule — a name the store refuses never makes a Table object
       400,
       JSON.stringify({ error: '"x.table" is not a usable game id' }),
     ]);
+  });
+});
+
+/** A fake binding that records every key and answers as told. */
+function limiter(answer: (key: string) => boolean): Limiter & { asked: string[] } {
+  const asked: string[] = [];
+  return { asked, limit: async ({ key }) => { asked.push(key); return { success: answer(key) }; } };
+}
+
+describe("C2 — the rate limit, before any object", () => {
+  // Mutants: `limiterFor` spending the write limiter on a create; `limited` ignoring `success`; the 429 without
+  // `Retry-After`; the call placed after `object.fetch` returns (a refused request still reaches the house or a table —
+  // after `objectFor` alone is an equivalent mutant: it builds a stub); a GET asking the limiter.
+  it("spends the create limiter on a create and the write limiter on a write, keyed by the caller's digest, and asks nothing for a read", async () => {
+    const create = limiter(() => true);
+    const write = limiter(() => true);
+    const limited: Env = { ...env, CREATE_LIMIT: create as unknown as RateLimit, WRITE_LIMIT: write as unknown as RateLimit };
+    const red = await person(RED);
+    const body = { players: 2, colors: ["Red", "Blue"], start_seat: 0, id: "door-c2-keys", seats: [{ user: RED }, { open: true }] };
+    expect((await worker("/api/games", { method: "POST", headers: JSON_TYPE, body: JSON.stringify(body), token: red, env: limited })).status).toBe(201);
+    expect((await worker("/api/games/door-c2-keys/chat", { method: "POST", headers: JSON_TYPE, body: '{"text":"hi"}', token: red, env: limited })).status).toBe(201);
+    expect((await worker("/api/games/door-c2-keys/table", { token: red, env: limited })).status).toBe(200);
+    expect(create.asked).toEqual([await callerTag(RED)]);
+    expect(write.asked).toEqual([await callerTag(RED)]);
+  });
+
+  it("answers a refused request 429 with the kind's own Retry-After and the sentence, under the API's two headers, reaching no object", async () => {
+    const limited: Env = { ...env, CREATE_LIMIT: limiter(() => false) as unknown as RateLimit, WRITE_LIMIT: limiter(() => false) as unknown as RateLimit };
+    const red = await person(RED);
+    const id = "door-c2-refused";
+    await seedPlaying(id);
+    const { result, reached } = await reaching(() => worker(`/api/games/${id}/input`, { method: "POST", headers: JSON_TYPE, body: '{"line":"1"}', token: red, env: limited }));
+    expect([result.status, result.text]).toEqual([429, JSON.stringify({ error: TOO_MANY })]);
+    expect(result.headers.get("Retry-After"), "a write's window").toBe(RETRY_AFTER_WRITE);
+    expect(result.headers.get("Cache-Control")).toBe("no-store");
+    expect(result.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(reached, "no object reached").toBe(0);
+    const create = await reaching(() => worker("/api/games", { method: "POST", headers: JSON_TYPE, body: '{"players":2,"colors":["Red","Blue"],"start_seat":0,"seats":[{"user":"red@t.test"},{"open":true}]}', token: red, env: limited }));
+    expect([create.result.status, create.reached]).toEqual([429, 0]);
+    expect(create.result.headers.get("Retry-After"), "a create's window").toBe(RETRY_AFTER_CREATE);
+  });
+
+  // AD-6 (b): a limiter that throws is logged and the request proceeds — the limit bounds cost, never access.
+  it("logs a limiter that throws once and lets the request through", async () => {
+    const broken = { asked: [] as string[], limit: async () => { throw new Error("binding unavailable"); } };
+    const limited: Env = { ...env, WRITE_LIMIT: broken as unknown as RateLimit };
+    const id = "door-c2-broken";
+    await seedPlaying(id);
+    const { result, lines } = await logsDuring(() => reaching(async () => worker(`/api/games/${id}/input`, { method: "POST", headers: JSON_TYPE, body: '{"line":"1"}', token: await person(RED), env: limited })));
+    expect([result.result.status, result.reached], "the request reached its object").toEqual([200, 1]);
+    expect(lines.filter((l) => (l as { event: string }).event === "limiter-failed"), "exactly one line").toHaveLength(1);
+  });
+
+  it("keys a request with no caller by the connecting IP, and by `unknown` without one", async () => {
+    const write = limiter(() => true);
+    const limited: Env = { ...env, WRITE_LIMIT: write as unknown as RateLimit };
+    await worker("/api/chat", { method: "POST", headers: { ...JSON_TYPE, "cf-connecting-ip": "203.0.113.9" }, body: '{"text":"hi"}', env: limited });
+    await worker("/api/chat", { method: "POST", headers: JSON_TYPE, body: '{"text":"hi"}', env: limited });
+    expect(write.asked).toEqual(["ip:203.0.113.9", "ip:unknown"]);
+  });
+
+  it("binds both limiters in the pool, a lenient one answers success, and shellConfig hands the bindings through by identity", async () => {
+    expect(typeof env.CREATE_LIMIT!.limit).toBe("function");
+    expect(await env.WRITE_LIMIT!.limit({ key: "door-c2-smoke" })).toEqual({ success: true });
+    const c = shellConfig(env);
+    if ("error" in c) throw new Error(c.error); // the narrowing `tsc` needs: `shellConfig` answers `ShellConfig | { error }`
+    expect(c.limits.create).toBe(env.CREATE_LIMIT);
+    expect(c.limits.write).toBe(env.WRITE_LIMIT);
   });
 });

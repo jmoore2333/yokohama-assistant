@@ -36,6 +36,15 @@
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
   "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }],
+  // The two bindings production carries (security S2b, C2), with a LENIENT figure: `test/worker.test.ts` sends more
+  // than ten creates a minute as one caller through `handle`, and miniflare's ratelimit plugin counts for real (the
+  // corpus replay reaches `handle` for `/api/art` alone and spends nothing). The shell's refusal path is proven
+  // through a fake limiter handed in `env` (`test/door.test.ts`); production's figures are the deploy guard's
+  // check 13, which holds this file to the two names alone.
+  "ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 1000000, "period": 60 } },
+    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 1000000, "period": 60 } }
+  ],
   "vars": {
     "YOKOHAMA_WEB_IDENTITY": "open",
     "YOKOHAMA_WEB_ARCHIVE": "r2",

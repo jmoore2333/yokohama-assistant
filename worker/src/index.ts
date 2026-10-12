@@ -15,6 +15,7 @@ import {
   type IdentityConfig,
   type KeySource,
 } from "./identity";
+import { limited } from "./limits";
 import { errorBody, log, respond } from "./respond";
 import { isSafeId, route, type Target } from "./route";
 import { HOUSE_NAME } from "./slot";
@@ -149,6 +150,16 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    `X-Yokohama-Claimed-User` on a `fetch`, the `claimed` query parameter on
  *    an upgrade, where a browser can put no header, and never the other
  *    carrier — held to what a header can carry (`claimedIdentity`).
+ * 5a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
+ *    any method but GET or HEAD spends a Rate Limiting binding — the
+ *    creates' for `POST /api/games`, the writes' for every other — counted
+ *    under the caller's digest at the `worker` door, and at the `open` door
+ *    under the connecting IP for a create and IP plus claim for a write; a
+ *    request with no caller under its IP at either. Past the limit it is 429
+ *    `too many requests from you just now — wait a moment and try again`,
+ *    with `Retry-After` the refused kind's own window, and no object is
+ *    reached. A limiter that throws is logged `limiter-failed` and the
+ *    request proceeds: the limit bounds cost, never access (AD-6).
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
@@ -215,6 +226,17 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   }
   const who = callerName(identity);
   if (who !== undefined) headers.set(identity.kind === "claimed" ? CLAIMED_USER_HEADER : USER_HEADER, who);
+
+  // The rate limit (security S2b, finding C2; decision D-3): after the caller is known, before any object. A
+  // limiter that throws is logged and the request proceeds: the limit bounds cost, never access (AD-6) — a binding
+  // that rejected would otherwise reject `handle`, the platform's own error page, and nothing logged (measured).
+  let refused: Response | undefined;
+  try {
+    refused = await limited(req, target, identity, config.door, config.limits);
+  } catch (e) {
+    log("limiter-failed", { error: String(e) });
+  }
+  if (refused !== undefined) return refused;
 
   let forwarded: Forwarded;
   if (target.kind === "admin") {

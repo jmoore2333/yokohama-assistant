@@ -67,6 +67,19 @@ const OBJECTS = `"durable_objects": {
 /** The archive's bucket, bound as spec §3.1 has it. */
 const BUCKET = `"r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive" }]`;
 
+/** Production's two Rate Limiting bindings at their figures (security S2b, finding C2): what check 13 holds
+ *  production to, and what the open and gate files carry by the sibling rule. */
+const RATE_LIMITS_BLOCK = `"ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 10, "period": 60 } },
+    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 120, "period": 10 } }
+  ]`;
+
+/** The pool's two bindings, at a LENIENT figure: check 13 holds a pool file to the two names alone. */
+const POOL_RATE_LIMITS = `"ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 1000000, "period": 60 } },
+    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 1000000, "period": 60 } }
+  ]`;
+
 /** Production's door (M6.5c2, spec §2.1): the worker door, and the Access
  *  values it needs. Last in the file, so a cell that writes a `vars` block of
  *  its own before `"main"` is read OVER by this one — duplicate keys, the last
@@ -87,6 +100,7 @@ const PRODUCTION = `// production
   ${ASSETS_BLOCK("./assets")},
   ${OBJECTS},
   ${BUCKET},
+  ${RATE_LIMITS_BLOCK},
   ${DOOR_VARS},
 }
 `;
@@ -121,6 +135,7 @@ const TEST_CONFIG = `{
   ${ASSETS_BLOCK("./.test-assets")},
   ${OBJECTS},
   ${BUCKET},
+  ${POOL_RATE_LIMITS},
   "vars": { "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
 }
 `;
@@ -132,6 +147,7 @@ const OPEN_TEST_CONFIG = `{
   ${ASSETS_BLOCK("./.test-assets")},
   ${OBJECTS},
   ${BUCKET},
+  ${POOL_RATE_LIMITS},
   "vars": { "YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_WEB_TEST_CLOCK": "frozen:1789000000" }
 }
 `;
@@ -416,6 +432,25 @@ describe("the deploy guard", () => {
     const bare = PRODUCTION.replace(`${BUCKET},\n`, "");
     expect(deployGuard(worker({ "wrangler.jsonc": bare }))).toEqual([
       "wrangler.jsonc has no r2_buckets block — spec §3.1 binds the bucket yokohama-archive as ARCHIVE",
+    ]);
+  });
+  // Check 13 (security S2b, finding C2; decision D-3): production's two Rate Limiting bindings at their literals,
+  // read as values. Mutant: `RATE_LIMITS`' write limit 121 (this production would pass, and the fixture's refused).
+  it("refuses production's rate limits at any figure but their literals, naming the block (security S2b, C2)", () => {
+    const drift = PRODUCTION.replace('"limit": 120, "period": 10', '"limit": 121, "period": 10');
+    expect(drift, "premise: the write limit moved").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([
+      "wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got " +
+        '[{"name":"CREATE_LIMIT","namespace_id":"7301","simple":{"limit":10,"period":60}},{"name":"WRITE_LIMIT","namespace_id":"7302","simple":{"limit":121,"period":10}}]',
+    ]);
+  });
+  // Check 13's pool half: each pool file binds exactly the two NAMES, at any figure (the fixture's are lenient).
+  // Mutant: the pool-names check dropped.
+  it("refuses a pool file that does not bind both rate limits, naming the file (security S2b, C2)", () => {
+    const drift = TEST_CONFIG.replace(',\n    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 1000000, "period": 60 } }', "");
+    expect(drift, "premise: the write binding is gone").not.toBe(TEST_CONFIG);
+    expect(deployGuard(worker({ "wrangler.test.jsonc": drift }))).toEqual([
+      'wrangler.test.jsonc must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (the pool replays a corpus at machine speed) — got ["CREATE_LIMIT"]',
     ]);
   });
   it("refuses a configuration with no object bindings or no migrations", () => {

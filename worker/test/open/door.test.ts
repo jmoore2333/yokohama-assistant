@@ -9,6 +9,8 @@ import type { Env } from "../../src/env";
 import { House } from "../../src/house";
 import type { KeySource } from "../../src/identity";
 import { handle } from "../../src/index";
+import type { Limiter } from "../../src/limits";
+import { callerTag } from "../../src/redact";
 import { readReply } from "../../src/module";
 import { HOUSE_NAME } from "../../src/slot";
 import { Table } from "../../src/table";
@@ -144,6 +146,14 @@ function identityOf(claim: string | undefined): { status: number; body: string }
   mod.init(configModule.moduleConfig(env, null));
   const { status, body } = readReply(mod.identity(claim));
   return { status, body };
+}
+
+/** A fake binding that records every key and answers as told — this
+ *  project's own copy of `test/door.test.ts`'s: the pool's projects share no
+ *  file (security S2b, C2). */
+function limiter(answer: (key: string) => boolean): Limiter & { asked: string[] } {
+  const asked: string[] = [];
+  return { asked, limit: async ({ key }) => { asked.push(key); return { success: answer(key) }; } };
 }
 
 describe("the open door (M6.5c2, spec §2.1)", () => {
@@ -350,5 +360,17 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
       expect(await bucketText(`${root}${path}`), `${claim}: the save at ${root}${path}`).not.toBeNull();
       expect(await bucketText(`${other(root)}${path}`), `${claim}: nothing at ${other(root)}${path}`).toBeNull();
     }
+  });
+
+  it("keys an open-door create by the connecting IP alone, and a write by IP and the claim's digest", async () => {
+    const create = limiter(() => true);
+    const write = limiter(() => true);
+    const limited: Env = { ...env, CREATE_LIMIT: create as unknown as RateLimit, WRITE_LIMIT: write as unknown as RateLimit };
+    const ip = { "cf-connecting-ip": "203.0.113.9" };
+    const body = { players: 2, colors: ["Red", "Blue"], start_seat: 0, id: "open-c2-keys", seats: [{ user: "ben" }, { open: true }] };
+    expect((await through("/api/games", { method: "POST", claim: "ben", headers: { ...JSON_TYPE, ...ip }, body: JSON.stringify(body), env: limited })).status).toBe(201);
+    expect((await through("/api/games/open-c2-keys/chat", { method: "POST", claim: "ben", headers: { ...JSON_TYPE, ...ip }, body: '{"text":"hi"}', env: limited })).status).toBe(201);
+    expect(create.asked).toEqual(["ip:203.0.113.9"]);
+    expect(write.asked).toEqual([`ip:203.0.113.9|${await callerTag("ben")}`]);
   });
 });
