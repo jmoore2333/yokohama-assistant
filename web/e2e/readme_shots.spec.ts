@@ -1,11 +1,12 @@
 // **The README's screenshot generator** (Task 8; R-6.5c2.44). It is not a
 // test: it plays a short table with three people and writes the TEN pictures
-// of `worker/README.md` §1.4 under their names. Alice (`who("alice")`) opens a
-// table named "Friday game" with a password, Ben (`who("ben")`) joins it, Carol
-// (`who("carol")`) watches; before any of that, a scratch table Alice abandons
-// under Ben's eyes gives the marker's picture. `who` spells each for the
-// target (security S2b, C1): a plain name at the local binary's open door, a
-// `.test` address through the Worker's dev door.
+// of `worker/README.md` §1.4 under their names. Alice (`alice@readme.test`)
+// opens a table named "Friday game" with a password, Ben (`ben@readme.test`)
+// joins it, Carol (`carol@readme.test`) watches; before any of that, a scratch
+// table Alice abandons under Ben's eyes gives the marker's picture. Those are
+// the LIVE identities, through the Worker's dev door; `who` spells each for the
+// target (security S2b, C1), so at the local binary's open door they are the
+// plain names `alice`, `ben` and `carol`.
 //
 // **Opt-in, like the exit's game**: collected only under
 // `YOKOHAMA_WEB_README_SHOTS=1` (`playwright.config.ts`), and it runs on
@@ -26,7 +27,7 @@
 // It is a live spec for `live.node.test.ts`'s rules: every `request.*` through
 // `liveRequest` (there are none), every create armed through `awaitCreate`, and
 // the table abandoned in `afterEach`. Live the tables land in the shared lobby
-// under `who`'s `.test` addresses, and are taken away.
+// under the `readme.test` addresses, and are taken away.
 
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
@@ -152,9 +153,9 @@ test("the README's ten pictures", async ({ browser }) => {
 });
 
 async function play(browser: Parameters<typeof person>[0], scratch: string, written: string[]): Promise<void> {
-  const ALICE = who("alice");
-  const BEN = who("ben");
-  const CAROL = who("carol");
+  const ALICE = who("alice", "readme");
+  const BEN = who("ben", "readme");
+  const CAROL = who("carol", "readme");
   const alice = await person(browser, ALICE);
   const ben = await person(browser, BEN);
   const carol = await person(browser, CAROL);

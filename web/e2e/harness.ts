@@ -340,8 +340,9 @@ export interface Game {
 
 /** An identity, as the target names one: under the open door the local tier's binary is `production`, `NamesOnly`
  *  (security S2b, C1): a caller is a plain NAME; the live tier's dev door names a `.test` ADDRESS (B6), so an
- *  identity follows the target. */
-export const who = (name: string): string => (LIVE ? `${name}@e2e.test` : name);
+ *  identity follows the target. `domain` keeps a spec's own live domain — `exit_game`'s `x@exit.test`,
+ *  `readme_shots`' `ben@readme.test`, whose README alt text a live re-shot must still match. */
+export const who = (name: string, domain = "e2e"): string => (LIVE ? `${name}@${domain}.test` : name);
 
 /** Who the walk plays as. */
 export const WALKER = who("walker");

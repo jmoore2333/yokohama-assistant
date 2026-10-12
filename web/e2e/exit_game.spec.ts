@@ -112,10 +112,11 @@ test.skip(
 
 /** The three people: `.test` identities, so the game's save files under the
  *  bucket's `test/` root — through `who`, which spells a live identity as a
- *  `.test` address (security S2b, C1). */
-const X = who("x");
-const Y = who("y");
-const W = who("w");
+ *  `.test` address under this spec's own domain, `x@exit.test` (security S2b,
+ *  C1). */
+const X = who("x", "exit");
+const Y = who("y", "exit");
+const W = who("w", "exit");
 
 /** How many moves the two of them play before x abandons the table. */
 const MOVES = 40;
