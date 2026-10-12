@@ -3339,6 +3339,73 @@ call sites; loops untraced) and the Rust suites (no crate byte moved).
 files / 237 (worker 11 / 229, open 1 / 8); `test:scripts` 28 files / 571 passed, 1 skipped. Not comparable to the
 lens's 238 / 574, which carried Task 3.
 
-### The run and the after review
+### The run and the after review (2026-10-12, the tenth and eleventh security sessions)
 
-(to be written at the close)
+**The shape.** `security-s2b` cut from `security-s2`'s head `85c8dd02`; the plan and the board `faba814e`; the
+pre-flight's corrections `6e23702c`; Tasks 1–5, 5b, 6–9 in order, each an Opus implementer (Task 8 Sonnet) and an Opus
+reviewer on a `git archive` export, with the orchestrator's correction of this plan AT THE SOURCE committed between
+them whenever an implementer's probe or a review found a sentence false (19 such docs commits); the after review
+— the orchestrator's re-derivation of every row from the code (`rederivation.txt`), one Opus battery over every named
+mutant on an export, one wave of the deferred minors (six commits) and its scoped re-review; head **b9cc0875**. The SDD
+ledger `docs/temp/security-review-2026-10-08/s2b-sdd/progress.md` holds every ruling with its cost; the briefs,
+reports, reviews and review packages sit beside it.
+
+**What the run found that the plan did not know — every task reported `DONE_WITH_CONCERNS`.** Task 1: three
+sentences the change made false outside the brief's files (`answer`'s doc step 6a, the replay's log line, the Origin
+cells' titles). Task 2: a cell comment naming a widened-digest mutant no row caught (the `red-cafe` row), the guard's
+pool sentence giving the corpus replay as a reason it is not, the open pool file borrowing the worker project's reason;
+the review's nine minors. Task 3: THE CYCLE'S MECHANISM FINDING — the review measured that a refused or ended socket
+stays CLOSING for as long as its client declines to answer the close (60 unanswered refusals held 1.5 s later and
+beyond; one identity filled the lobby in 1.9 s; a stranger's 64 unanswered 403s locked a seated player out), so D-4's
+"may still be counted … headroom" was false and the cap as drafted was a lockout a stranger could trigger — the counts
+take OPEN sockets only (`openCount`) now, with a dangling-refusal row per count site (M28b, M29b, M29c: "a mutant per
+value class"), the lobby cell's second and third callers proven by a chat post's frame (a lobby socket is silent on
+connect), and the cell's own 15 s bound; two fix rounds. Task 4: the comment's "`truncated` not forwarded" had no
+catcher (the truncated-listing cell, M37d), and the review found `size` had none either (the sized-listing cell, M37e);
+one fix round. Task 5: the `index.ts` archive-case comment went false with the collapse; the race cell's `[201, 507]`
+row caught the collapse's loss only about half the time (two objects race on R2 listing timing) — the deterministic
+one-object row through a spy on `Archive.prototype.fetch`. Task 5b: `NewGame.test.tsx:129` was the Access cell (an
+open-door cell added, M43d's catcher); `who` gained its `domain` argument so `exit_game`'s and `readme_shots`' live
+identities keep their own domains and the README's alt text stays true, with a node cell pinning `who` both ways (M43f).
+Task 6: the probe grep was vacuous over filenames (twice corrected; the review's case-insensitive form stands). Task 7:
+a third persisted line (`init-refused` echoing a refused open-door claim — parked for the task, closed by the wave's
+digest), and check 14 held only the top-level sampling rate while wrangler also reads `observability.logs` (the nested
+clauses, M54c); one fix round. Task 8: M56′'s red site; the recorded true form of one parked sentence drops a clause
+(the wave appended it). Task 9: five Importants — the create's 400, eighteen exports, three pre-configuration answers,
+D-7's first-deploy recipe that could not pass the deploy guard (the guard holds this repository's Worker by name and
+bucket: restated — `wrangler deploy` with neither guard, S4 to give the guard the new identity), and the C1 rule against
+the live door-window recipes (pointers at six sites; a window on this Worker needs R-SEC6 amended); two fix rounds
+(the §7 block root-independent on every line).
+
+**The pre-flight's figure moved the plan:** the local two-browser walk's per-page peak of 71 unsafe requests in a
+sliding 10 s window (69 on the other page; the median fixed bucket 56 and 52), so `WRITE_LIMIT` is 120 per 10 s.
+
+**The harness's background commit scanner** flagged three commits during the run — a rate-limit bypass in `limits.ts`
+(AD-6's fail-open and D-3's open-door key, both recorded decisions), a lockout in `sockets.ts` (D-4's object-wide cap,
+recorded in §15), PII in `archive.ts`'s logs (the `init-refused` echo, closed by the wave) — each ledgered against its
+decision and surfaced to the owner.
+
+**The battery** (`battery-report.md`, an export of the code head `ea889f17` at `8ded960b`): 84 named mutants, 84 RED
+in their named cells, the four GREEN claims held (M14's equivalent form, M27 in `caps.test.ts`, M4b's both-defects row,
+M28b's `heldOpen` row), none unrun, no survivor; about 24 minutes. Its readings of the plan's own notes: under M48 the
+"off" row is caught by the sibling rule's sentence and the masked "nothing" row is the one that passes; M44c's status
+row is never reached (the one-object row goes red first); M52c and M42b go red one row before the named row;
+`identity.unit.test.ts:456` is line 476 now.
+
+**The wave** (`wave-report.md`; `wave-rereview.md`): 25 of 26 items in six commits — the force's JSON gate, a foreign
+DELETE and the admin grammar rows (Task 1's surviving mutants), the per-caller count rows, the guard's F-40 and staging
+rows and its end-anchored regexes, the quoted R2 key redacted (`redactKey`'s boundary `(^|[^A-Za-z0-9._-])`),
+`logOutcome`'s fields beyond `extra`, check 14's logs-never-off clauses, the `init-refused` claim by digest with its
+open-project cell, `set_share`'s two guards pinned, the NewGame click attempt, the e2e helpers' names and escape,
+`NamesOnly`'s two served hosts, the documents' six sentences; item 24 parked (`escapedKey` already names the file's
+helper). The re-review: 25 addressed, item 24 parked, no new Critical or Important breakage; one new Minor parked for S2c — `claimRedacted` rewrites the FIRST quoted span whatever it is, so a configuration refusal's value (`LOBBY_CHAT "maybe"`) persists as the caller's digest, misleading and not a leak.
+
+**The readings at `b9cc0875`** (`suites/`): web 539 (lib 501; `wire_fixtures` 18 clean without the flag), wasm 10, worker 81, the server-feature `identity::` slice 9, the wasm32 check clean; web typecheck clean, vitest 1,515/73, `test:wasm` 374/16, `npm run e2e` 81 passed (6.8 min); worker typecheck clean, `test:scripts` 587/29, the pool 248/13 (worker 237, open 11); the seven fenced crates and the wire corpus byte-identical
+to `85c8dd02`, `SEMANTICS_REV` 7, the workspace 0.6.2; no roster (D-12).
+
+**Parked with rulings (the ledger):** AD-6's `catch` breadth; D-3's open-door write key per (IP, claim) (S4's);
+`limiter-failed`'s `String(e)` (unverified); the lobby's TOTAL arm; the copied pool helpers; Task 5's one-row loops;
+the seat-key rule (D-2, S4's); the operator playbook's `BROWSER_UA`; lane §1/§14's deployed-state sentences; item 24.
+**Owed to the owner:** D-4's and D-7's restatements to read; AD-6 to overrule or keep; the C1 rule's tension with the
+door-window instrument (R-SEC6); the lobby's silent cap refusal (AD-4) before any open door; the first window (`v0.6.2`,
+from the tag's tree).

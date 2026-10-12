@@ -212,7 +212,7 @@ D18). The guard also refuses:
   first deploy that binds them;
 - **production's logs keeping query strings, or sampled** (check 14; finding D23):
   `observability.redact_query_string` must be `true`, and `head_sampling_rate` absent or `1` — at the
-  top level and under `observability.logs`, whose `invocation_logs` must not be `false`;
+  top level and under `observability.logs`, whose `invocation_logs` must not be `false`, and the logs never switched off (`enabled`, `logs.enabled`, `logs.persist` never `false`);
 - **the dev door open anywhere but `wrangler.dev.jsonc`** (finding B6; decision D-1): `YOKOHAMA_DEV_DOOR`
   `on` in production's file or in any other worker-door file is refused, the dev file must set it to
   exactly `"on"`, and the dev file is held to production but for that one variable;

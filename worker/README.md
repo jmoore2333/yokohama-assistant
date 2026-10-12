@@ -1756,8 +1756,9 @@ named, not only the first:
 14. **Production's logs redact query strings and are not sampled** (security S2b, finding D23):
     `observability.redact_query_string` is `true`, since an open-door socket's `claimed=` rides the
     upgrade's URL and an invocation log keeps the URL, and `head_sampling_rate` is absent or `1`, at
-    the top level and under `observability.logs`, whose `invocation_logs` is never `false`: the live
-    readings count invocations through these logs.
+    the top level and under `observability.logs`, whose `invocation_logs` is never `false`, and the logs
+    are never switched off (`enabled`, `logs.enabled`, `logs.persist`): the live readings count
+    invocations through these logs.
 
 Checks 3 to 7, 10, 13 and 14 need no build, and `npm run test:scripts` runs them over the committed
 files, which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, and 11 and
