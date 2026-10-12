@@ -478,6 +478,22 @@ describe("the deploy guard", () => {
     ]);
     expect(deployGuard(worker({ "wrangler.jsonc": at(1) })), "the default, written out, passes").toEqual([]);
   });
+  // The nested `observability.logs` keys wrangler also reads (Task 7's run): the top-level clause cannot be
+  // sidestepped by them. Mutant: the nested clauses dropped (M54c).
+  it("refuses production's observability.logs sampled at any rate but 1, naming the nested key (security S2b, D-6)", () => {
+    const nested = PRODUCTION.replace(OBSERVABILITY, `"observability": { "enabled": true, "redact_query_string": true, "logs": { "head_sampling_rate": 0.1 } }`);
+    expect(nested, "premise: the nested rate is set").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": nested }))).toEqual([
+      "wrangler.jsonc's observability.logs must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)",
+    ]);
+  });
+  it("refuses production's observability.logs with invocation_logs false, naming the nested key (security S2b, D-6)", () => {
+    const nested = PRODUCTION.replace(OBSERVABILITY, `"observability": { "enabled": true, "redact_query_string": true, "logs": { "invocation_logs": false } }`);
+    expect(nested, "premise: the invocation logs are off").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": nested }))).toEqual([
+      "wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)",
+    ]);
+  });
   it("refuses a configuration with no object bindings or no migrations", () => {
     const bare = PRODUCTION.replace(`${OBJECTS},\n`, "");
     expect(deployGuard(worker({ "wrangler.jsonc": bare }))).toEqual([

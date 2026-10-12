@@ -159,7 +159,10 @@
 //    an open-door socket's `claimed=` rides the upgrade's URL, and an
 //    invocation log keeps the URL — and leaves `head_sampling_rate` absent or
 //    `1`, since the live readings count invocations through these logs (AD-10
-//    (a): before this check nothing held the rate, and `0.1` passed). The open
+//    (a): before this check nothing held the rate, and `0.1` passed). The
+//    nested `observability.logs` keys wrangler also reads are held the same
+//    way: its `head_sampling_rate` absent or `1`, and its `invocation_logs`
+//    never `false` (Task 7's run: both passed the first form). The open
 //    and dev files carry production's block by the sibling rule (T8-a), judged
 //    when the file is the one deployed.
 //
@@ -743,6 +746,16 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   }
   if (production && observed?.head_sampling_rate !== undefined && observed.head_sampling_rate !== 1) {
     failures.push("wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  // wrangler 4.136.3 also reads `observability.logs.head_sampling_rate` and `observability.logs.invocation_logs`
+  // (Task 7's run): a rate set there samples the same logs, and `invocation_logs: false` drops the lines the
+  // readings count — both held, so the top-level clause cannot be sidestepped by the nested key.
+  const logs = production ? objectOf(observed?.logs) : undefined;
+  if (production && logs?.head_sampling_rate !== undefined && logs.head_sampling_rate !== 1) {
+    failures.push("wrangler.jsonc's observability.logs must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.invocation_logs === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)");
   }
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind
