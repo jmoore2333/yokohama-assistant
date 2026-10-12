@@ -96,7 +96,12 @@ async function worker(path: string, sent: Sent = {}): Promise<{ status: number; 
 
 /** An operator's expire of `id` through the Worker, as BOSS. */
 async function expire(id: string, force = false): Promise<{ status: number; text: string }> {
-  return worker(`/api/admin/tables/${id}/expire${force ? "?force" : ""}`, { method: "POST", token: await person(BOSS), env: OPS });
+  return worker(`/api/admin/tables/${id}/expire${force ? "?force" : ""}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    token: await person(BOSS),
+    env: OPS,
+  });
 }
 
 /** Which objects `f`'s requests reached: a spy on each class's `fetch`, on the
@@ -504,7 +509,7 @@ describe("the operator's force (spec §2.9)", () => {
     expect(await markerOf(stub), "the table untouched: no marker").toBeUndefined();
     expect((await call(stub, RED, "GET", `/api/games/${id}`)).status, "and it still answers").toBe(200);
     const forced = await logsDuring(async () => {
-      const res = await worker(`${path}?force=`, { method: "POST", token, env: OPS });
+      const res = await worker(`${path}?force=`, { method: "POST", headers: { "content-type": "application/json" }, token, env: OPS });
       await settle(stub);
       return res;
     });

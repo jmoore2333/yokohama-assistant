@@ -563,7 +563,7 @@ describe("replay", () => {
     expect(text).toContain("expected 400 in SEED_NOT_SOLO's words · got 201");
   });
 
-  it("sends the credential to the Worker's origin alone, the forces bare, and a claimed header only for a row's who", async () => {
+  it("sends the credential to the Worker's origin alone, the forces with only the JSON type, and a claimed header only for a row's who", async () => {
     const host = fakeHost();
     await run(host);
     const forces = host.requests.filter((r) => r.url.includes("/api/admin/"));
@@ -571,7 +571,7 @@ describe("replay", () => {
       [...IDS, ...IDS].map((id) => `POST ${ORIGIN}/api/admin/tables/${id}/expire?force`),
     );
     for (const force of forces) {
-      expect(Object.keys(force.headers), "a force is the owner's own assertion, over WARP").toEqual([]);
+      expect(force.headers, "a force is the owner's own assertion, over WARP: no credential, only the JSON type since B5").toEqual({ "content-type": "application/json" });
     }
     // The base read, then each row the production seed rule sends.
     const sentRows = host.rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, SKIPPED));

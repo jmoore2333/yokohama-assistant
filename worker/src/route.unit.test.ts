@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { abandons, routableName, route, TABLE_NAME_MAX_BYTES } from "./route";
+import { abandons } from "./route";
 
 // Spec §2.3's routing table, row by row. What each target then does is
 // `handle`'s, and `test/worker.test.ts` holds it.
@@ -41,7 +41,7 @@ describe("route (spec §2.3)", () => {
     expect(route("GET", "/api/games/wire/events")).toEqual({ kind: "table", name: "wire" });
     expect(route("GET", "/api/games/wire/stream")).toEqual({ kind: "table", name: "wire" });
     expect(route("GET", "/api/games/wire/at/3")).toEqual({ kind: "table", name: "wire" });
-    expect(route("GET", "/api/games/caf%C3%A9/table")).toEqual({ kind: "table", name: "caf%C3%A9" });
+    expect(route("GET", "/api/games/caf%C3%A9/table")).toEqual({ kind: "house" });
   });
 
   // Mutants: an empty name routed to a table object; the bound off by one.
@@ -95,24 +95,39 @@ describe("route (spec §2.3)", () => {
   });
 });
 
-describe("routableName", () => {
-  // Mutant: the bound read in characters rather than bytes — a path segment is
-  // percent-encoded ASCII, but a create body's `id` may be anything.
-  it("is a non-empty name of at most 64 UTF-8 bytes", () => {
-    expect(TABLE_NAME_MAX_BYTES).toBe(64);
-    expect(routableName("wire")).toBe(true);
-    expect(routableName("a".repeat(64))).toBe(true);
-    expect(routableName("")).toBe(false);
-    expect(routableName("a".repeat(65))).toBe(false);
-    // 33 characters, 66 bytes: the bound is in bytes, as the layer's is.
-    expect(routableName("é".repeat(32))).toBe(true);
-    expect(routableName("é".repeat(33))).toBe(false);
+import { isSafeId, ID_MAX, route } from "./route";
+
+// The project's types are workerd's: no node module and no `import.meta.url` (`fence.unit.test.ts` says why), so `node:fs`
+// is imported through a variable specifier and typed here; the file runs in node (`npm run test:scripts`).
+const FS = "node:fs";
+const fs = (await import(/* @vite-ignore */ FS)) as { readFileSync(path: URL, encoding: "utf8"): string };
+
+/** The store's verdicts, emitted by `wire_fixtures` (security S2a, D14): `[{ raw, safe }]`. */
+const ID_CASES = JSON.parse(
+  fs.readFileSync(new URL("../../web/src/wire/id_cases.json", (import.meta as unknown as { url: string }).url), "utf8"),
+) as Array<{ raw: string; safe: boolean }>;
+
+describe("isSafeId (security S2b, C2's name rule; decision D-11)", () => {
+  it("agrees with the store's verdict on every committed row, both ways", () => {
+    expect(ID_CASES.length).toBeGreaterThanOrEqual(39);
+    for (const { raw, safe } of ID_CASES) expect(isSafeId(raw), JSON.stringify(raw)).toBe(safe);
+    expect(ID_CASES.some((c) => c.safe) && ID_CASES.some((c) => !c.safe), "both verdicts are represented").toBe(true);
   });
-  // A lone surrogate can arrive in a create body's `id` (`"\ud800"`), and no
-  // percent-encoding or UTF-8 can carry it; the layer refuses the body anyway.
-  it("refuses a name holding a lone surrogate", () => {
-    expect(routableName("a\ud800")).toBe(false);
-    expect(routableName("\udc00a")).toBe(false);
-    expect(routableName("a😀")).toBe(true);
+
+  // Mutants: the leading-character test dropped (`_x` admitted); the suffix test case-sensitive (`x.TABLE`
+  // admitted); the bound off by one (65 admitted); the alphabet widened to `%` (a percent-encoded segment admitted).
+  it("refuses what the old routableName admitted and the store refuses: a space, a leading underscore, a reserved suffix, a percent escape, a dot segment", () => {
+    for (const bad of ["a%20b", "_x", "x.table", "x.TABLE", "x.chat", "%C3%BC", "..", ".", "", "a".repeat(ID_MAX + 1)]) {
+      expect(isSafeId(bad), JSON.stringify(bad)).toBe(false);
+    }
+    for (const good of ["sim-0123456789abcdef", "x", "evening.2", "x.tablet", "a".repeat(ID_MAX)]) expect(isSafeId(good), good).toBe(true);
+    expect(ID_MAX).toBe(64);
+  });
+
+  it("routes a segment the store refuses to the house, raw and never decoded", () => {
+    for (const bad of ["a%20b", "_x", "x.table", "%C3%BC", "..", "a".repeat(65)]) {
+      expect(route("GET", `/api/games/${bad}/table`), bad).toEqual({ kind: "house" });
+    }
+    expect(route("GET", "/api/games/sim-0123456789abcdef/table")).toEqual({ kind: "table", name: "sim-0123456789abcdef" });
   });
 });

@@ -34,27 +34,35 @@ export type Target =
   /** Everything else under `/api/`: the house, whose `dispatch` answers. */
   | { kind: "house" };
 
-/** The longest name a table object is ever reached by, in UTF-8 bytes: the
- *  layer's `is_safe_id` bound. */
-export const TABLE_NAME_MAX_BYTES = 64;
+/** The longest id, in bytes — every accepted id is ASCII, so in characters too (`store::is_safe_id`'s
+ *  `id.len() <= 64`). */
+export const ID_MAX = 64;
 
 const GAMES = "/api/games/";
 const ADMIN = "/api/admin";
 
-/** A UTF-16 surrogate with no partner: no UTF-8, and no percent-encoding,
- *  can carry it. */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+/** The suffixes the store keeps for its own documents (`RESERVED_ID_SUFFIXES`), refused in any case. */
+const RESERVED_SUFFIXES = [".table", ".chat"];
 
 /**
- * Whether `name` may name a table object: not empty, no lone surrogate, and
- * at most 64 UTF-8 bytes (the orchestrator's ruling, Task 9's review).
- * Anything else goes to the house, whose `dispatch` answers the layer's OWN
- * refusal for an id it cannot use — no name over 64 bytes is one the layer
- * uses — so no request makes a table object for such a name, and none over
- * 1,024 bytes can reach an object the platform gives no name (pool fact 8).
+ * **The store's id grammar, restated** (security S2b, finding C2; decision D-11): `store::is_safe_id`
+ * (`crates/yokohama-web/src/store.rs`) is the authority, `web/src/tableId.ts` restates it for the hash router, and
+ * this restates it for the shell's routing, held both ways to `web/src/wire/id_cases.json` by
+ * `route.unit.test.ts`. Arm by arm: not empty, at most 64 bytes, a letter or digit first, then letters, digits,
+ * `.`, `_` and `-` only, and not spelling another document's suffix. The alphabet test comes before the suffix
+ * test and makes the ASCII fold exact. The store's sixth arm, `is_the_house` (`_house`), is not restated: its
+ * leading `_` fails the first-character test, and the fixture carries the row.
+ *
+ * Before this a segment of any text up to 64 bytes named a Table object (`routableName`), so `a%20b`, `_x`,
+ * `x.table` and `%C3%BC` each instantiated an object and a module, then stored nothing (the review's W1-4). A name
+ * the store refuses is the house's now, whose `dispatch` answers the layer's own 404 for an unusable id (security
+ * S1c, B8), and no object is made for it.
  */
-export function routableName(name: string): boolean {
-  return name !== "" && !LONE_SURROGATE.test(name) && new TextEncoder().encode(name).length <= TABLE_NAME_MAX_BYTES;
+export function isSafeId(id: string): boolean {
+  if (id === "" || id.length > ID_MAX) return false;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) return false;
+  const lower = id.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return !RESERVED_SUFFIXES.some((suffix) => lower.endsWith(suffix));
 }
 
 /**
@@ -81,7 +89,7 @@ export function route(method: string, pathname: string): Target {
     // The segment exactly as the layer binds it: raw, never percent-decoded
     // (spec §0.2).
     const name = pathname.slice(GAMES.length).split("/", 1)[0] ?? "";
-    return routableName(name) ? { kind: "table", name } : { kind: "house" };
+    return isSafeId(name) ? { kind: "table", name } : { kind: "house" };
   }
   if (pathname === "/api/archive" && method === "POST") return { kind: "archive" };
   if (pathname === ADMIN || pathname.startsWith(`${ADMIN}/`)) return { kind: "admin", rest: pathname.slice(ADMIN.length) };

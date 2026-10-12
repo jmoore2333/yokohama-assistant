@@ -7,7 +7,7 @@
  */
 import type { Door } from "./config";
 import type { Identity } from "./identity";
-import { routableName } from "./route";
+import { isSafeId } from "./route";
 
 /**
  * The operator's address, on a request the gate passed (the plan's internal
@@ -27,6 +27,22 @@ export const UNCONFIRMED = "the lobby has not confirmed the removal — the alar
 /** The 400 for `?force` given a value (the orchestrator's ruling I-72;
  *  host-written). */
 export const FORCE_TAKES_NO_VALUE = "?force takes no value — send ?force alone, or no query for an expire that saves first";
+
+/** The 400 the operator's POST answers without `application/json` (security S2b, finding B5; decision D-9): the
+ *  layer's own sentence for the same gate (`api::parse_json`, axum's words), so an operator reads one refusal
+ *  whichever host they hit. */
+export const ADMIN_NEEDS_JSON = "Expected request with `Content-Type: application/json`";
+
+/** Whether `contentType`'s MIME essence — the part before any `;`, trimmed, ASCII-folded — is `application/json`:
+ *  the layer's gate (`api::parse_json`) also takes any `application/*+json`; the shell's is narrower on purpose —
+ *  `application/json` alone, which is all an operator sends and all B5 needs, since a CORS-simple request carries
+ *  neither. A form (`application/x-www-form-urlencoded`), `text/plain` and no type at all are refused, which is what
+ *  makes the expire need a preflight no one answers. */
+export function isJsonEssence(contentType: string | null): boolean {
+  if (contentType === null) return false;
+  const essence = contentType.split(";", 1)[0]!.trim();
+  return essence.replace(/[A-Z]/g, (c) => c.toLowerCase()) === "application/json";
+}
 
 /**
  * The gate's verdict on a request to `/api/admin` or below (spec §2.9):
@@ -59,7 +75,7 @@ export function operatorGate(door: Door, admins: string[] | null, identity: Iden
  *
  * - `GET /api/admin/tables` with no query: the listing;
  * - `POST /api/admin/tables/{id}/expire`, where `id` is a name a table object
- *   can have (`routableName`, the path's segment as the layer binds it: raw):
+ *   can have (`isSafeId`, the path's segment as the layer binds it: raw):
  *   with no query, a plain expire; with the BARE key `force` — `?force`, or
  *   `?force=` — a force; with `force` given a value, `refused` with its 400
  *   (the orchestrator's ruling I-72: `?force=false` forcing would drop a save
@@ -80,7 +96,7 @@ export function adminRoute(method: string, pathname: string, query: string): Adm
   const keys = [...new URLSearchParams(query)];
   if (pathname === "/api/admin/tables") return method === "GET" && keys.length === 0 ? { kind: "listing" } : { kind: "unrouted" };
   const name = EXPIRE.exec(pathname)?.[1];
-  if (name === undefined || method !== "POST" || !routableName(name)) return { kind: "unrouted" };
+  if (name === undefined || method !== "POST" || !isSafeId(name)) return { kind: "unrouted" };
   const [first, ...more] = keys;
   if (first === undefined) return { kind: "expire", name, force: false };
   const [key, value] = first;

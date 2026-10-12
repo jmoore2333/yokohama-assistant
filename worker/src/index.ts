@@ -1,4 +1,4 @@
-import { adminRoute, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
+import { ADMIN_NEEDS_JSON, adminRoute, isJsonEssence, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
 import { shellConfig } from "./config";
 import type { Env } from "./env";
@@ -16,7 +16,7 @@ import {
   type KeySource,
 } from "./identity";
 import { errorBody, log, respond } from "./respond";
-import { routableName, route, type Target } from "./route";
+import { isSafeId, route, type Target } from "./route";
 import { HOUSE_NAME } from "./slot";
 import { isUpgrade, Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
 
@@ -38,6 +38,33 @@ const STRIPPED = "x-yokohama-";
 /** The 403 an upgrade from another site's page answers (host-written; the
  *  orchestrator's ruling on Task 11's review, escalation 1). */
 const FOREIGN_SOCKET = "this socket is for the site's own pages";
+
+/** The methods a browser sends without a preflight that only READ: `crossSite` never refuses one. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
+/** The 403 an unsafe method from another site answers (security S2b, finding B5; host-written). */
+export const CROSS_SITE = "this request is for the site's own pages";
+
+/**
+ * **Whether an unsafe request is another site's** (security S2b, finding B5; decision D-9). Every layer POST
+ * parses `application/json` by MIME essence, so a cross-site page cannot reach one without a preflight nobody
+ * answers; the operator's expire and force were the shell's own, answered on method, path and query alone, and
+ * a bodyless, form or text/plain POST is a CORS simple request a page sends with ambient authentication — the
+ * `CF_Authorization` cookie, or the owner's WARP identity, which no cookie attribute touches. So, for every method
+ * but GET and HEAD: an `Origin` present and not this origin — `null` included, a sandboxed frame's or a
+ * redirected sender's — or a `Sec-Fetch-Site` of `cross-site` or `same-site` (a sibling `*.moore.nyc` host) is
+ * refused. A request with no `Origin` and no `Sec-Fetch-Site` is not a page's — curl, Node's `fetch`, the live
+ * replay, Playwright's request context — and passes; a page's own `fetch` carries this origin and `same-origin`.
+ * Read BEFORE identity, like the upgrade's own `Origin` check above it: a refused sender learns nothing of who the
+ * cookie names, and a sender that is both another site's and nobody reads this sentence (the order pin).
+ */
+export function crossSite(method: string, headers: Headers, origin: string): boolean {
+  if (SAFE_METHODS.has(method)) return false;
+  const sent = headers.get("Origin");
+  if (sent !== null && sent !== origin) return true;
+  const site = headers.get("Sec-Fetch-Site");
+  return site === "cross-site" || site === "same-site";
+}
 
 /** The 500 of an object whose `fetch` rejected — ONE host-written sentence for
  *  the table, the house and the archive alike (the orchestrator's F-1). */
@@ -96,6 +123,16 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    browser could open an authenticated socket and read its frames. A
  *    request with no `Origin` — curl, the deploy readings — is not a page's,
  *    and passes.
+ * 1b. Any method but GET or HEAD from another site's page is 403 `this
+ *    request is for the site's own pages`, read BEFORE identity (security
+ *    S2b, finding B5; `crossSite`): an `Origin` present and not this site's
+ *    own — `null` included — or a `Sec-Fetch-Site` of `cross-site` or
+ *    `same-site`. A bodyless, form or text/plain POST is a CORS simple
+ *    request a hostile page could send with a player's ambient
+ *    authentication, and the operator's expire was answered on method, path
+ *    and query alone. A request with neither header — curl, the live replay —
+ *    is not a page's, and passes; a refused sender's assertion is never
+ *    verified.
  * 2. `shellConfig`: a configuration it refuses answers every remaining
  *    request — every `/api/*` — 500 naming the variable (spec §2.6).
  * 3. The body, read ONCE for a method that carries one, under a streaming
@@ -153,6 +190,7 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   if (isUpgrade(req.headers) && origin !== null && origin !== url.origin) {
     return respond(403, errorBody(FOREIGN_SOCKET));
   }
+  if (crossSite(req.method, req.headers, url.origin)) return respond(403, errorBody(CROSS_SITE));
 
   const config = shellConfig(env);
   if ("error" in config) return respond(500, errorBody(config.error));
@@ -185,6 +223,7 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
       headers.set(OPERATOR_HEADER, gate.email);
       const admin = adminRoute(req.method, url.pathname, url.search.slice(1));
       if (admin.kind === "refused") return respond(400, errorBody(admin.sentence));
+      if (admin.kind === "expire" && !isJsonEssence(req.headers.get("content-type"))) return respond(400, errorBody(ADMIN_NEEDS_JSON));
       if (admin.kind === "expire") forwarded = { kind: "table", name: admin.name };
     }
   } else {
@@ -338,7 +377,7 @@ function objectFor(
       // refuses it as the layer does (the orchestrator's ruling, Task 9's
       // review): the name never makes a table object.
       const named = createId(body);
-      if (named !== undefined && !routableName(named)) return house();
+      if (named !== undefined && !isSafeId(named)) return house();
       const name = named ?? drawName();
       // Percent-encoded (spec §2.3), so the name travels as ASCII whatever
       // it holds; the table object decodes it.

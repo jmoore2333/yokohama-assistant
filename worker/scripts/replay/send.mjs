@@ -1,7 +1,7 @@
 // **The live replay's sends and forces** (M6.5c2 cycle D, Task 9): one of the
 // five parts of `live-replay.mjs`, which alone imports it. A row sent with the
 // credential to the one origin, its answer read whole, and the operator's
-// force, sent bare.
+// force, sent with only the JSON type.
 
 import { KEYS, ORIGIN, REQUEST_TIMEOUT_MS } from "./credential.mjs";
 import { errorText, said } from "./judge.mjs";
@@ -23,15 +23,16 @@ export async function send(row, credential, fetcher) {
   return { status: res.status, text: new TextDecoder().decode(bytes), bytes: bytes.length, contentType: res.headers.get("content-type") };
 }
 
-/** The operator's force on each id, bare: no credential and no claimed
- *  header. */
+/** The operator's force on each id, with only the JSON type: no credential
+ *  and no claimed header. */
 export async function forceAll(ids, fetcher) {
   const forced = [];
   for (const id of ids) {
     try {
       const res = await fetcher(`${ORIGIN}/api/admin/tables/${encodeURIComponent(id)}/expire?force`, {
         method: "POST",
-        headers: {},
+        // The operator's POST needs application/json since security S2b (B5): a bare POST is a 400.
+        headers: { "content-type": "application/json" },
         redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });

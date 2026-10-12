@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adminRoute, FORCE_TAKES_NO_VALUE, operatorGate } from "./admin";
+import { ADMIN_NEEDS_JSON, adminRoute, FORCE_TAKES_NO_VALUE, isJsonEssence, operatorGate } from "./admin";
 
 /** Two operators, as `shellConfig` hands them over: trimmed and lowercased. */
 const ADMINS = ["chief@t.test", "boss@t.test"];
@@ -105,5 +105,22 @@ describe("the operator's routes (spec §2.9; ruling I-72)", () => {
     ] as const) {
       expect(adminRoute(method, path, ""), `${method} ${path}`).toEqual({ kind: "unrouted" });
     }
+  });
+});
+
+// Security S2b, finding B5 (decision D-9): the operator's POST needs `application/json`, read by its MIME essence —
+// parameters dropped, trimmed, ASCII case folded — and nothing wider: the layer's `api::parse_json` also takes any
+// `application/*+json`, the shell does not. `test/door.test.ts` runs the gate through `handle`. Mutants: the whole
+// string compared (the charset row refused); the case not folded (`Application/JSON` refused); the essence
+// untrimmed (the padded row refused); a prefix compare (`application/json-patch+json` taken).
+describe("the operator POST's type (security S2b, B5)", () => {
+  it("is application/json by its essence, parameters dropped and case folded, and nothing else", () => {
+    for (const type of ["application/json", "Application/JSON", "application/json; charset=utf-8", " application/json "]) {
+      expect(isJsonEssence(type), JSON.stringify(type)).toBe(true);
+    }
+    for (const type of ["text/plain", "application/x-www-form-urlencoded", "application/json-patch+json", null]) {
+      expect(isJsonEssence(type), JSON.stringify(type)).toBe(false);
+    }
+    expect(ADMIN_NEEDS_JSON, "the layer's own sentence (`api::parse_json`)").toBe("Expected request with `Content-Type: application/json`");
   });
 });
