@@ -226,9 +226,10 @@ impl fmt::Display for User {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimPolicy {
     /// Production: under `open` a caller is a plain NAME, and a key with the email shape is refused with
-    /// [`ADDRESS_NOT_A_NAME`]. An `@` then always means a verified address, on every host, so a door flip over
-    /// shared storage can hand nobody an Access player's seats or archive folder by typing their address. It stops
-    /// no impersonation under the open door, where a name is a label and a key and never a credential.
+    /// [`ADDRESS_NOT_A_NAME`]. An `@` then always means a verified address on the two served hosts, the NAS and
+    /// the Worker (the browser host's one caller is `local@browser`, over storage no one else shares), so a door
+    /// flip over shared storage can hand nobody an Access player's seats or archive folder by typing their address.
+    /// It stops no impersonation under the open door, where a name is a label and a key and never a credential.
     NamesOnly,
     /// The fixtures' and the corpus walk's: every key the grammar accepts is a caller, as before S2b. Built by
     /// `AppState::with_store` and the `in_memory*` constructors; `AppState::production` never builds it, and the
