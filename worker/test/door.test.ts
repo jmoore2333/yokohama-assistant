@@ -64,7 +64,8 @@ async function reaching<T>(f: () => Promise<T>): Promise<{ result: T; reached: n
 describe("B5 — an unsafe method from another site is refused before identity", () => {
   // Mutants: the `Sec-Fetch-Site` arm dropped (the no-Origin cross-site row passes); `startsWith` for the origin
   // compare (`https://yokohama.test.evil` passes); the safe-method set emptied (the GET row is refused); the check
-  // placed after the operator gate (cell 1's operator rows read the gate's 403) or after identity (the key-source cell).
+  // placed after the operator gate (cell 1's operator rows read the gate's 403) or after identity (the key-source cell);
+  // the check limited to POST (the DELETE row reaches the table).
   it("refuses a bodyless, a form and a text/plain POST from a foreign origin, and a cross-site or same-site sender with no Origin, reaching no object", async () => {
     const id = "door-b5-foreign";
     await seedPlaying(id);
@@ -86,6 +87,10 @@ describe("B5 — an unsafe method from another site is refused before identity",
       expect([result.status, result.text], label).toEqual([403, JSON.stringify({ error: CROSS_SITE })]);
       expect(reached, `${label}: no object reached`).toBe(0);
     }
+    // Every unsafe method, not POST alone: a DELETE (the abandon) from a foreign origin is refused the same way.
+    const { result: deleted, reached: deleteReached } = await reaching(() => worker(`/api/games/${id}`, { method: "DELETE", headers: { Origin: FOREIGN } }));
+    expect([deleted.status, deleted.text], "a DELETE").toEqual([403, JSON.stringify({ error: CROSS_SITE })]);
+    expect(deleteReached, "a DELETE: no object reached").toBe(0);
     // Order, pinned two ways: a cross-site sender who is also nobody reads CROSS_SITE (never the object's 401), and a
     // refused sender's assertion is never verified (the key source is not asked — the next cell).
     const both = await worker(`/api/games/${id}/input`, { method: "POST", headers: { Origin: FOREIGN, ...JSON_TYPE }, body: '{"line":"1"}' });
@@ -131,15 +136,18 @@ describe("B5 — an unsafe method from another site is refused before identity",
 
 describe("B5 — the operator's POST needs application/json", () => {
   // Mutants: the essence compared whole (`application/json; charset=utf-8` refused); the gate dropped (a bare POST
-  // expires); the gate placed before the operator gate (a stranger's bare POST reads this 400, not the gate's 403).
+  // expires); the gate placed before the operator gate (a stranger's bare POST reads this 400, not the gate's 403);
+  // the gate exempting the force (`?force` is the expire that drops a save: its rows read 204).
   it("refuses the expire without the type, in the layer's own words, and takes it with the type, parameters and case folded", async () => {
     const id = "door-b5-json";
     await seedPlaying(id);
     const boss = await person(BOSS);
-    for (const [label, headers] of [["no type", {}], ["text/plain", { "content-type": "text/plain" }], ["a form", { "content-type": "application/x-www-form-urlencoded" }]] as Array<[string, Record<string, string>]>) {
-      const { result, reached } = await reaching(() => worker(`/api/admin/tables/${id}/expire`, { method: "POST", headers, token: boss, env: OPS }));
-      expect([result.status, result.text], label).toEqual([400, JSON.stringify({ error: ADMIN_NEEDS_JSON })]);
-      expect(reached, `${label}: no object reached`).toBe(0);
+    for (const query of ["", "?force"]) {
+      for (const [label, headers] of [["no type", {}], ["text/plain", { "content-type": "text/plain" }], ["a form", { "content-type": "application/x-www-form-urlencoded" }]] as Array<[string, Record<string, string>]>) {
+        const { result, reached } = await reaching(() => worker(`/api/admin/tables/${id}/expire${query}`, { method: "POST", headers, token: boss, env: OPS }));
+        expect([result.status, result.text], `${label}${query}`).toEqual([400, JSON.stringify({ error: ADMIN_NEEDS_JSON })]);
+        expect(reached, `${label}${query}: no object reached`).toBe(0);
+      }
     }
     // A stranger meets the gate first: the type is asked of an operator.
     const stranger = await worker(`/api/admin/tables/${id}/expire`, { method: "POST", token: await person(RED), env: OPS });

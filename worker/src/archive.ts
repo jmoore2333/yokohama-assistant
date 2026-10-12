@@ -58,9 +58,9 @@ interface Incoming {
  *    off — the first answer is the answer.
  *
  * A browser's save costs its strict replay twice (spec §2.6). A throw inside
- * the loop — a listing `set_share` refused or a receipt the module refused,
- * thrown on (`dispatch`), or a plan `parsePlan` refuses — or a loop running
- * past 30 seconds RESETS this object
+ * the loop — a listing `set_share` refused (thrown by `save`'s own `guarded`
+ * call), a receipt the module refused (thrown on by `dispatch`), or a plan
+ * `parsePlan` refuses — or a loop running past 30 seconds RESETS this object
  * (Cloudflare's State API, for `blockConcurrencyWhile`). It holds nothing of
  * its own, so nothing is lost: the save is the caller's to send again.
  */

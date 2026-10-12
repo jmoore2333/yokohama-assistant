@@ -76,6 +76,10 @@ describe("the operator's routes (spec §2.9; ruling I-72)", () => {
     expect(adminRoute("POST", `/api/admin/tables/${"a".repeat(65)}/expire`, ""), "65 bytes: no table object's name").toEqual({
       kind: "unrouted",
     });
+    // The store's grammar, not a length: a leading `_` and a reserved suffix are short names no table object can have.
+    for (const name of ["_x", "x.table"]) {
+      expect(adminRoute("POST", `/api/admin/tables/${name}/expire`, ""), name).toEqual({ kind: "unrouted" });
+    }
   });
 
   it("forces on the bare key, written with or without its =", () => {

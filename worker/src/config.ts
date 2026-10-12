@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { isAddress } from "./identity";
+import type { Limiter } from "./limits";
 import { openTtlDaysOf, ttlDaysOf } from "./marker";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
@@ -9,9 +10,9 @@ export type Clock = { kind: "wall" } | { kind: "frozen"; at: number } | { kind: 
 /** The Worker's door (M6.5c2, spec §2.1; R-6.5c2.5). */
 export type Door = "worker" | "open";
 
-/** The two Rate Limiting bindings as the shell uses them (security S2b, finding C2; decision D-3): `limit` and
- *  nothing else, so a cell hands in a fake. */
-export interface Limits { create: Pick<RateLimit, "limit">; write: Pick<RateLimit, "limit"> }
+/** The two Rate Limiting bindings as the shell uses them (security S2b, finding C2; decision D-3): each a
+ *  `Limiter` — `limit` and nothing else, so a cell hands in a fake. */
+export interface Limits { create: Limiter; write: Limiter }
 
 /** The Worker's variables as the shell uses them (spec §3.1). */
 export interface ShellConfig {

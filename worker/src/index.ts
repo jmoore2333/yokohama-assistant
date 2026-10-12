@@ -135,7 +135,9 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    is not a page's, and passes; a refused sender's assertion is never
  *    verified.
  * 2. `shellConfig`: a configuration it refuses answers every remaining
- *    request — every `/api/*` — 500 naming the variable (spec §2.6).
+ *    request — every `/api/*` — 500 with its refusal sentence, which names
+ *    the variable, the open door's pair of variables or the Rate Limiting
+ *    binding refused (spec §2.6).
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
@@ -150,7 +152,11 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    `X-Yokohama-Claimed-User` on a `fetch`, the `claimed` query parameter on
  *    an upgrade, where a browser can put no header, and never the other
  *    carrier — held to what a header can carry (`claimedIdentity`).
- * 5a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
+ * 6. The strip rule: a fresh `Headers` without any header named
+ *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
+ *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
+ *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
+ * 6a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
  *    any method but GET or HEAD spends a Rate Limiting binding — the
  *    creates' for `POST /api/games`, the writes' for every other — counted
  *    under the caller's digest at the `worker` door, and at the `open` door
@@ -160,11 +166,7 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    with `Retry-After` the refused kind's own window, and no object is
  *    reached. A limiter that throws is logged `limiter-failed` and the
  *    request proceeds: the limit bounds cost, never access (AD-6).
- * 6. The strip rule: a fresh `Headers` without any header named
- *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
- *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
- *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
- * 6a. `/api/admin` and below — the operator surface (spec §2.9) — pass the
+ * 6b. `/api/admin` and below — the operator surface (spec §2.9) — pass the
  *    gate (`operatorGate`): under the open door, or with
  *    `YOKOHAMA_WEB_ADMINS` absent, they are unrouted `/api/*`, the house's
  *    (M6.5c2: a claimed name is never an operator's rights); a caller who is

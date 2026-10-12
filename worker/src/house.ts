@@ -25,8 +25,8 @@ export const LOBBY_TAG = "lobby";
  *  counted (`openCount`). */
 export const LOBBY_PER_CALLER = 8;
 /** How many lobby sockets the house holds in all: ONE house serves every caller's lobby, so its ceiling is a
- *  table's sixteen times over; every applied push frames each of them, which this bounds, and the platform's own
- *  ceiling is 32,768. */
+ *  population — 128 callers, each at their eight (`LOBBY_PER_CALLER`); every applied push frames each of them,
+ *  which this bounds, and the platform's own ceiling is 32,768. */
 export const LOBBY_TOTAL = 1024;
 
 /** The house's trap 500, host-written in the table's shape (spec §2.4,
@@ -395,7 +395,7 @@ export class House extends DurableObject<Env> {
   /** The lobby socket's admission (spec §2.5): the module's `identity`, then the caps (security S2b, D3) — a
    *  table's arm (`table/sockets.ts`) under the lobby's figures and sentences, the OPEN counts (`openCount`) read
    *  BEFORE the accept so the new socket does not count itself. */
-  private admit(instance: Instance, user: string | undefined, callerTag: string | undefined): Response {
+  private admit(instance: Instance, user: string | undefined, tag: string | undefined): Response {
     const done = instance.guarded((mod) => readReply(mod.identity(user)));
     if ("trapped" in done) {
       log("trap", { id: HOUSE, call: "identity", error: done.trapped });
@@ -405,9 +405,9 @@ export class House extends DurableObject<Env> {
     if (status !== 200) return respond(status, body);
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
+    const own = tag === undefined ? 0 : openCount(this.ctx.getWebSockets(tag));
     const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: LOBBY_PER_CALLER, total: LOBBY_TOTAL });
-    this.ctx.acceptWebSocket(server, callerTag === undefined ? [LOBBY_TAG] : [LOBBY_TAG, callerTag]);
+    this.ctx.acceptWebSocket(server, tag === undefined ? [LOBBY_TAG] : [LOBBY_TAG, tag]);
     if (over !== undefined) {
       const sentence = over === "own" ? TOO_MANY_OWN_LOBBY : TOO_MANY_LOBBY;
       server.send(frame("end", endAtAdmission(sentence)));

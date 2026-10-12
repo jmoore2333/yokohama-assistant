@@ -8,9 +8,11 @@
 // The listing asks the ACCOUNT: every deploy script — the plain `deploy`, the safe direction, included — is a network
 // step from here on — a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 // `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing; wrangler 4.136.3's source, Task 6's
-// review) — and a NEW Worker's first deploy cannot pass it (wrangler answers "Worker not found"): that deploy runs the
-// deploy guard and `wrangler deploy --config <file>` by hand, and this guard from the second deploy on (D-7;
-// `worker/RUNBOOK.md` §2). A failed listing is a refusal, never a pass.
+// review) — and a NEW Worker's first deploy cannot pass it (wrangler answers "Worker not found"): that deploy runs
+// `wrangler deploy --config <file>` by hand with neither guard — a Worker that does not exist holds no secret, and
+// the deploy guard holds this repository's Worker alone, its name and bucket, until S4 gives it the new Worker's
+// identity — and this guard from the second deploy on (D-7 as corrected at S2b Task 9's review; `worker/RUNBOOK.md`
+// §2). A failed listing is a refusal, never a pass.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 

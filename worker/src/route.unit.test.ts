@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { abandons } from "./route";
+import { abandons, isSafeId, ID_MAX, route } from "./route";
 
 // Spec §2.3's routing table, row by row. What each target then does is
 // `handle`'s, and `test/worker.test.ts` holds it.
@@ -94,8 +94,6 @@ describe("route (spec §2.3)", () => {
     expect(route(method, path)).toEqual({ kind: "house" });
   });
 });
-
-import { isSafeId, ID_MAX, route } from "./route";
 
 // The project's types are workerd's: no node module and no `import.meta.url` (`fence.unit.test.ts` says why), so `node:fs`
 // is imported through a variable specifier and typed here; the file runs in node (`npm run test:scripts`).

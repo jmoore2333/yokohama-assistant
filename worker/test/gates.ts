@@ -197,7 +197,7 @@ export async function swapBucket(
 
 /** The message a `failingPuts` put (and a `failingList` list) rejects with —
  *  what R2's own failure carries into the outcome's `detail`. */
-export const R2_UNREACHABLE = "R2 is unreachable (failingPuts)";
+export const R2_UNREACHABLE = "R2 is unreachable (failingPuts or failingList)";
 
 /** The next `times` puts whose key `only` accepts REJECT, as an unreachable
  *  R2 answers; every other put reaches the real bucket. */

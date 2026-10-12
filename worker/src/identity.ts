@@ -70,9 +70,10 @@ export function isAddress(email: string): boolean {
 const TEST_DOMAIN = ".test";
 
 /** Whether a normalized address is a TEST identity's (security S2b, finding B6; R-SEC8(d)): an `@` and the suffix
- *  `.test` — the receipt archive's own rule for the `test/` root, so what the dev door can name is exactly what
- *  the bucket keeps apart from the owner's training data. A plain name ending `.test` (`a.test`) is not one, as the
- *  module reads it. */
+ *  `.test` — the rule is exactly the bucket's, the receipt archive's own rule for the `test/` root; what the dev
+ *  door can name is narrower still (`isAddress` judges it first), so every name it can produce lands in the root
+ *  the bucket keeps apart from the owner's training data. A plain name ending `.test` (`a.test`) is not one, as
+ *  the module reads it. */
 export function isTestAddress(email: string): boolean {
   return email.includes("@") && email.endsWith(TEST_DOMAIN);
 }
@@ -150,9 +151,11 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
  * parameter on an upgrade — judged by `address`: RAW by `forwardable` first,
  * so a percent-decoded parameter holding a character no header can carry is
  * no caller, rather than a `headers.set` that throws into the platform's plain
- * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson).
- * The shell never judges a name beyond what a header can carry: the layer's
- * key grammar does, in the objects. A blank or absent claim is no one.
+ * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson),
+ * and each run of spaces collapsed to one — the key grammar's `typed_form`, so
+ * every spelling of a key names ONE Archive object (security S2b). The shell
+ * never judges a name beyond what a header can carry: the layer's key grammar
+ * does, in the objects. A blank or absent claim is no one.
  */
 export function claimedIdentity(raw: string | null): Identity {
   const lowered = raw === null ? undefined : address(raw);

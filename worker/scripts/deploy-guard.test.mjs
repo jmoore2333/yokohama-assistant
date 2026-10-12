@@ -735,7 +735,7 @@ describe("the deploy guard", () => {
     const off = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": "off"');
     expect(deployGuard(worker({ "wrangler.jsonc": off })), "off").toEqual([]);
     const worked = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_DEV_DOOR": "on"');
-    expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door, in production's file").toEqual(naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone/));
+    expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door, in production's file").toEqual(naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone \(npm run deploy:dev\), around a live tier, and reverted after \(R-SEC8\(d\)\)$/));
   });
   // Check 7's second secret (M6.5c2, R-6.5c2.5): the dev door's client id.
   // It reads production's file alone, so the pool files keep their test value
@@ -879,10 +879,14 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.dev.jsonc": null }))).toEqual(["wrangler.dev.jsonc is absent"]);
   });
   // Security S2b, B6 (decision D-1): the production file ships the dev door OFF; the dev file alone opens it.
+  // Mutant: the rule limited to production's file (a third worker-door file's row reads only F-40's drift sentence).
   it("refuses YOKOHAMA_DEV_DOOR=on in the production file and in any worker-door file but wrangler.dev.jsonc, and requires exactly on there", () => {
     const on = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "On"');
     expect(deployGuard(worker({ "wrangler.jsonc": on }))).toEqual(
-      naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone \(npm run deploy:dev\), around a live tier, and reverted after \(R-SEC8\(d\)\)/),
+      naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone \(npm run deploy:dev\), around a live tier, and reverted after \(R-SEC8\(d\)\)$/),
+    );
+    expect(deployGuard(worker({ "wrangler.staging.jsonc": DEV }), undefined, "wrangler.staging.jsonc"), "a third worker-door file").toEqual(
+      naming(/^wrangler\.staging\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone \(npm run deploy:dev\), around a live tier, and reverted after \(R-SEC8\(d\)\)$/),
     );
     for (const off of ['"off"', '"ON "', "nothing"]) {
       const file = off === "nothing" ? PRODUCTION : DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', `"YOKOHAMA_DEV_DOOR": ${off}`);
@@ -895,12 +899,17 @@ describe("the deploy guard", () => {
   });
 
   // F-40 (the S2a plan review): an unlisted worker-door file is production's sibling with NO allowed difference.
+  // Mutant: the dev file's allowed difference (`DEV_DIFFERS`) in place of none — a copy of production carrying the
+  // dev door "off", as the real file does, is then refused for not being "on" (Task 6's review, X6).
   it("holds an unlisted worker-door --config file to production exactly, and passes one that equals it", () => {
     const drifted = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"');
     expect(deployGuard(worker({ "wrangler.staging.jsonc": drifted }), undefined, "wrangler.staging.jsonc")).toEqual(
       naming(/^wrangler\.staging\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/),
     );
     expect(deployGuard(worker({ "wrangler.staging.jsonc": PRODUCTION }), undefined, "wrangler.staging.jsonc")).toEqual([]);
+    const off = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "off"');
+    expect(off).toContain('"YOKOHAMA_DEV_DOOR": "off"');
+    expect(deployGuard(worker({ "wrangler.jsonc": off, "wrangler.staging.jsonc": off }), undefined, "wrangler.staging.jsonc"), "both off: equal").toEqual([]);
   });
   // T8-a: `wrangler deploy` REPLACES the Worker's variables wholesale, so an
   // open or dev file that fell behind production rolls production back. Each
