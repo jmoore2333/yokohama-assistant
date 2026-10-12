@@ -208,6 +208,16 @@ describe("the assembly (spec §2.3)", () => {
     expect(() => assemble({ ...sources(dist), out })).toThrow(/web\/dist\/headers\.json|headers\.json is absent/);
     expect(existsSync(out)).toBe(false);
   });
+
+  it("reads headers.json's BYTES strictly: an invalid UTF-8 byte is refused, naming the file, where readFileSync(.., 'utf8') would carry U+FFFD into the block — and leaves no tree behind", () => {
+    const out = join(tree({}), "assets");
+    // `[["X-A","<0xff>"]]`: one byte no UTF-8 sequence admits, inside a value — what the NAS refuses at start, so
+    // an assembly that passed it would ship a file the other host refuses (Task 2's review, m-3).
+    const bad = Buffer.concat([Buffer.from('[["X-A","'), Buffer.from([0xff]), Buffer.from('"]]')]);
+    const dist = tree({ "index.html": "<!doctype html>", "sw.js": swWith(ENTRIES), "headers.json": bad });
+    expect(() => assemble({ ...sources(dist), out })).toThrow(/headers\.json is not valid UTF-8/);
+    expect(existsSync(out)).toBe(false);
+  });
 });
 
 // **The committed `worker/static/_headers`, read** (M6.5c2 cycle E, Task 1's

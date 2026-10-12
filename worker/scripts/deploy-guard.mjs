@@ -29,8 +29,7 @@
 //    `ACCESS_AUD` set, without which no assertion is verified and every caller
 //    is no one; under `open`, `YOKOHAMA_DEV_DOOR` is not `on`, the dev door
 //    being the worker door's test instrument (the Worker refuses the pair at
-//    run time too). Under a door it does not know, `"workers_dev": false` is
-//    asked as under `worker`.
+//    run time too).
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
@@ -87,8 +86,10 @@
 //    `web/dist/sw.js`, and each file of `worker/static` is its copy in the
 //    tree. `_headers` is held instead to `assembledHeaders` of the static
 //    file and the current `web/dist/headers.json` — the static text, then
-//    the header set's `/*` block (security S2a, decision D-1) — and a
-//    `web/dist` with no `headers.json` is refused, naming it. Check 2
+//    the header set's `/*` block (security S2a, decision D-1), the static
+//    text read as empty when `worker/static` has no `_headers`, so the
+//    tree's is held all the same — and a `web/dist` with no `headers.json`
+//    is refused, naming it. Check 2
 //    verifies the tree against ITS OWN `sw.js`, which a tree
 //    assembled from an earlier `web/dist` passes; the bytes are compared, not
 //    the release names alone, because the name digests the precache list and

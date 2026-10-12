@@ -50,8 +50,8 @@ const NO_ONE: Identity = { kind: "none" };
  *  assets — so the shell sets them itself, ON THE WAY OUT, for its own answers and the objects' alike:
  *  `no-store`, so no cache in reach keeps an API answer — the browser's, a proxy's, the back/forward cache: a
  *  routed request reaches this Worker BEFORE the zone's cache, which applies to the Worker's own `fetch`
- *  subrequests and never to the answer it returns (Cloudflare's rule; the Workers Cache for static-asset requests
- *  is the one setting that could keep a frame, and the guard's check 10 refuses it), while the NAS's one
+ *  subrequests and never to the answer it returns (Cloudflare's rule; the Workers Cache (static-asset requests
+ *  included) is the one setting that could keep a frame, and the guard's check 10 refuses it), while the NAS's one
  *  `Router::layer` says the same for the host where the zone's extension rule DID keep a private frame at the
  *  edge (S1c, B9); `nosniff`, so an API body is never read as a script. The whole set the static release carries (`_headers`' `/*` block) buys
  *  nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
