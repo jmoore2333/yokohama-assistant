@@ -262,9 +262,15 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   `head_sampling_rate` stays at its default of 1: the live readings count invocations through these logs (the
   Observability query API), and sampling would be privacy by volume at the instrument's cost.
 - **D-7 — S4's first-deploy path is a recipe.** A Worker that does not exist holds no secret, so a new Worker's first
-  deploy runs the deploy guard and `wrangler deploy --config <file>` by hand, and the secrets guard from the second
+  deploy runs `wrangler deploy --config <file>` by hand with NEITHER guard, and the secrets guard from the second
   deploy on; the recipe is written where the guard's cost is recorded (`worker/RUNBOOK.md` §2, `worker/README.md`
-  §9.3). No code: wrangler's "Worker not found" is a sentence, not a contract.
+  §9.3). No code: wrangler's "Worker not found" is a sentence, not a contract. **Corrected at Task 9's review
+  (2026-10-12):** the deploy guard holds THIS repository's Worker — its `name`, its object classes and its bucket, by
+  C3's sibling rule and this cycle's F-40 — so a NEW Worker's file (its own name, its own bucket, R-SEC6) is refused by
+  the guard on its name and its bucket whatever its door (measured: a renamed open file and a renamed production file
+  both refused); the guard judges another Worker's file only once S4 gives it that Worker's identity — S4's change,
+  no guard code in S2b (R-6 stands). The first draft's "runs the deploy guard and `wrangler deploy` by hand" could
+  not pass its own first step.
 - **D-8 — withdrawn at the plan review (2026-10-12).** As drafted, the live replay paced itself at a `PACE_MS` of 150.
   The premise was stale: the replay sends 26 of 2,213 rows at the production door since S1b (17 writes, one
   identity, about 4 s), so the write limit never binds it and no pacing is owed; the arithmetic was wrong on its own
@@ -334,7 +340,9 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
 8. **S4's identity input, recorded on the owner's words (R-3)**: the public Worker at `yokohama.moore.nyc` runs the
    open door behind the Turnstile, controls to be minted later; a second private Worker and the NAS stay behind
    Access; Access is not the public deployment's model.
-9. **The first-deploy path of a new Worker is a recipe** (D-7; the owner's R-6), not a guard rule.
+9. **The first-deploy path of a new Worker is a recipe** (D-7; the owner's R-6), not a guard rule — `wrangler deploy
+   --config <file>` by hand with neither guard, the secrets guard from the second deploy on; the deploy guard holds
+   this repository's Worker alone (its name and bucket) until S4 gives it the new Worker's identity.
 10. **D24 collapses by the grammar**: a plain name's alphabet is ASCII, so once an address is refused under `open`
     every claim is a legal header; the client's name step refuses the rest before any request (D-2).
 11. **D3's Worker half is the socket cap** (D-4); the stream cap and the body-read timeout are the NAS's, S2c's.
@@ -3074,9 +3082,11 @@ line `error` → D2's cell.
 
 - [ ] **Step 4: The runbooks and the README.** `worker/RUNBOOK.md` §2: the command block reads `deploy`,
   `deploy:dev`, `deploy:open` as `package.json` spells them; the guard's list gains checks 13 and 14, the dev-door rule
-  and F-40's sentence; the secrets guard's cost paragraph gains D-7's recipe ("a NEW Worker's first deploy runs the
-  deploy guard and `wrangler deploy --config <file>` by hand — a Worker that does not exist holds no secret — and the
-  secrets guard from the second deploy on"), and its first-deploy sentence at `:195-199` ("S4's public Worker needs
+  and F-40's sentence; the secrets guard's cost paragraph gains D-7's recipe ("a NEW Worker's first deploy runs `wrangler deploy
+  --config <file>` by hand with neither guard — a Worker that does not exist holds no secret, and the deploy guard
+  holds this repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity — and the
+  secrets guard from the second deploy on"; Task 9's review measured the first draft's "runs the deploy guard" refused
+  on the name and the bucket), and its first-deploy sentence at `:195-199` ("S4's public Worker needs
   its own first-deploy path") says the same. §3's variables table: `YOKOHAMA_DEV_DOOR` `off`, with `wrangler.dev.jsonc`
   named; C1's runbook rule (a populated deployment never changes its door; a public deployment starts empty); the
   operator playbook's two POST lines gain `-H 'content-type: application/json'` with one sentence saying why (B5).
