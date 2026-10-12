@@ -2442,11 +2442,11 @@ drift — measured.) New cells:
 // list`'s JSON and refuses the two by name; the command runs it before `wrangler deploy`. The command cells run
 // the script as the deploy does, with a fake `npx` first on `PATH` — no account is asked.
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { FORBIDDEN_SECRETS, judgeSecrets } from "./secrets-guard.mjs";
 
 /** `wrangler secret list`'s shape: a pretty-printed array of `{name, type}`, never a value. */
@@ -2479,9 +2479,15 @@ describe("judgeSecrets", () => {
 
 describe("as a command — the deploy's step, with a fake npx first on PATH, so no account is asked", () => {
   const SCRIPT = fileURLToPath(new URL("./secrets-guard.mjs", import.meta.url));
+  /** The shim directories, removed after each cell (the deploy guard's cells remove theirs the same way). */
+  const dirs = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
   /** The script run as `npm run deploy` runs it; `npx` is a shell shim that does what the cell says. */
   const run = (shim, args = ["--config", "wrangler.jsonc"]) => {
     const dir = mkdtempSync(join(tmpdir(), "secrets-guard-shim-"));
+    dirs.push(dir);
     const npx = join(dir, "npx");
     writeFileSync(npx, `#!/bin/sh\n${shim}\n`);
     chmodSync(npx, 0o755);
@@ -2527,7 +2533,11 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
       context: {
         clearCookies: async () => {
           calls.push("clearCookies");
+          // A real clear takes a round trip: yield once, so a clear fired UNAWAITED would record `close` before
+          // `cleared` (Task 6's review, X3) — the cell pins that the clear FINISHES before the close begins.
+          await new Promise((r) => setTimeout(r, 0));
           if (clear === "rejects") throw new Error("Target page, context or browser has been closed");
+          calls.push("cleared");
         },
         close: async () => {
           calls.push("close");
@@ -2540,7 +2550,7 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
     const lines: string[] = [];
     const checks: Check[] = [];
     await leaveNoSession(context, (s: string) => lines.push(s), checks, "/tmp/state");
-    expect(calls).toEqual(["clearCookies", "close"]);
+    expect(calls).toEqual(["clearCookies", "cleared", "close"]);
     expect(lines).toEqual(["cookies: cleared before close"]);
     expect(checks).toEqual([]);
   });
@@ -2561,6 +2571,8 @@ describe("the profile leaves no session behind (security S2a, D15)", () => {
     for (const anchored of [".dev.vars", ".dev.vars.*", ".env", ".env.*"]) {
       expect(ignore, `${anchored} anchored at the context root excludes nothing under web/ or worker/`).not.toContain(anchored);
     }
+    // The one re-inclusion is the README's: a `!web/scripts/pinned/` line would put the profiles back (the reviewer's X4).
+    expect(ignore.filter((l) => l.startsWith("!")), "the one re-inclusion").toEqual(["!README.md"]);
   });
 });
 ```
@@ -2651,7 +2663,9 @@ and `relative` from `node:path`.
 // alone makes; the cells drive `judgeSecrets` over captured listings and the command over a fake `npx`.
 //
 // The listing asks the ACCOUNT: every deploy script — `deploy:gate`, the safe direction, included — is a network
-// step from here on, a fresh clone needs `npx wrangler whoami` once (or `CLOUDFLARE_ACCOUNT_ID`), and a NEW Worker's
+// step from here on — a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
+// `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing; wrangler 4.136.3's source, Task 6's
+// review) — and a NEW Worker's
 // first deploy cannot pass it (wrangler answers "Worker not found") — S4's public Worker needs its own first-deploy
 // path. A failed listing is a refusal, never a pass.
 import { execFileSync } from "node:child_process";
@@ -2691,7 +2705,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     listing = execFileSync("npx", ["wrangler", "secret", "list", "--config", args[1]], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   } catch {
     // No cached account, no network, or wrangler's own refusal: a deploy does not proceed on an unread listing.
-    console.error("secrets-guard: `wrangler secret list` failed — run `npx wrangler whoami` once, or set CLOUDFLARE_ACCOUNT_ID; nothing was judged");
+    console.error("secrets-guard: `wrangler secret list` failed — `npx wrangler login` if logged out; with more than one account set CLOUDFLARE_ACCOUNT_ID (`npx wrangler whoami` lists them); nothing was judged");
     process.exit(1);
   }
   const failures = judgeSecrets(listing);
@@ -2771,8 +2785,10 @@ sibling cell's pass-control red; **M35** `judgeSecrets` passing a listing that d
 red; **M35b** `process.exit(1)` dropped after the failures print — (b)'s command cells' forbidden-name row red;
 **M36** `FORBIDDEN_SECRETS` without the test clock — (b)'s second cell red; **M37** `clearCookies()` moved after
 `close()` — (c)'s first cell red (the call order); **M37b** the clear commented out — (c)'s first cell red; **M37c**
-the `try` dropped — (c)'s second cell red (a throw, no close); **M38** `web/scripts/pinned/` dropped from the ignore
-file — (c)'s third cell red; **M38b** the patterns anchored (`.env` for `**/.env`) — (c)'s third cell red.
+the `try` dropped — (c)'s second cell red (a throw, no close); **M37d** the clear fired UNAWAITED before the close — (c)'s
+first cell red at the call order (Task 6's review, X3); **M38** `web/scripts/pinned/` dropped from the ignore
+file — (c)'s third cell red; **M38b** the patterns anchored (`.env` for `**/.env`) — (c)'s third cell red; **M38c** a `!web/scripts/pinned/` line appended —
+(c)'s third cell red at the re-inclusion pin.
 
 - [ ] **Step 6: Commit.** `git add worker/scripts/deploy-guard.mjs worker/scripts/deploy-guard.test.mjs
 worker/scripts/secrets-guard.mjs worker/scripts/secrets-guard.test.mjs worker/package.json
@@ -2818,8 +2834,8 @@ the tag is cut on the commit the hosts run — master's, or, on a stack that mer
 deployed branch commit, which the wrap's merge brings onto master (the owner, 2026-10-11: D-7); its version line
 reads 0.6.2. §10's operating facts: the deploy commands name their file to the guard, the secrets guard and wrangler
 alike, the guard refuses a redirect file and a `workers.dev` URL under every door, and every deploy script asks the
-account for the Worker's secret NAMES before it ships (a network step; a fresh clone runs `npx wrangler whoami`
-once); the pinned instrument clears its cookies at `done`; a `curl` at an Access-protected host OVER WARP carries a
+account for the Worker's secret NAMES before it ships (a network step; a logged-out clone runs `npx wrangler login`
+once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID`); the pinned instrument clears its cookies at `done`; a `curl` at an Access-protected host OVER WARP carries a
 browser `User-Agent` or meets Bot Fight Mode's 403 (the owner, 2026-10-11), and off WARP is not a transport at all
 (W-1). §13's rows: the Worker's `/api` answers carry `no-store` and `nosniff` (B9's Worker half, DC-F4), the NAS's
 the whole set; the static release's headers on both hosts. §15 gains four rows: **D16 `accepted`** with the owner's
@@ -2841,8 +2857,9 @@ paragraph is the close's (Task 9 Step 6), as §9.5's was S1c's. Nothing above §
 scripts as `package.json` spells them (today it holds `npm run deploy` with its one-line gloss); the guard's list
 gains the redirect file, `workers_dev` under every door, the sibling rule for every open-door file, the `_headers`
 expectation (static plus the current build's block) and the secrets guard's step with its sentence — and ONE
-paragraph on what the secrets guard costs: every deploy script is a network step from here on, a fresh clone runs
-`npx wrangler whoami` once (or sets `CLOUDFLARE_ACCOUNT_ID`), and a NEW Worker's first deploy cannot pass it
+paragraph on what the secrets guard costs: every deploy script is a network step from here on, a logged-out clone runs
+`npx wrangler login` once and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`whoami` lists them and caches
+nothing), and a NEW Worker's first deploy cannot pass it
 ("Worker not found"), so S4's public Worker needs its own first-deploy path; the hand-run recipe of §7's wake window
 (:803–804) names `--config wrangler.jsonc` to the guard, the secrets guard and wrangler, as the lane document's does
 (the dated deploy records that spell the old command are records, and stay). §7 gains, beside Bot Fight Mode's 403:
