@@ -481,6 +481,18 @@ pub fn receipt(plan_key: &str, outcome: &str) -> Result<(), JsValue> {
     receipt_inner(plan_key, outcome).map_err(|e| JsValue::from_str(&e))
 }
 
+/// [`receipt::share_prefix_inner`] for the shell.
+#[wasm_bindgen]
+pub fn share_prefix() -> Option<String> {
+    receipt::share_prefix_inner()
+}
+
+/// [`receipt::set_share_inner`] for the shell: a refusal is thrown as its sentence.
+#[wasm_bindgen]
+pub fn set_share(listing: &str) -> Result<(), JsValue> {
+    receipt::set_share_inner(listing).map_err(|e| JsValue::from_str(&e))
+}
+
 /// [`stamp_archive_inner`] for the shell.
 #[wasm_bindgen]
 pub fn stamp_archive(id: &str) -> Reply {

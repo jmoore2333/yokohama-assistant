@@ -33,6 +33,8 @@ export interface Exports {
   receipt: typeof G.receipt;
   stamp_archive: typeof G.stamp_archive;
   expire: typeof G.expire;
+  share_prefix: typeof G.share_prefix;
+  set_share: typeof G.set_share;
   /** The battery's trap (spec §2.2): present only in a module built with
    *  `--features debug` (`npm run build:module:debug`). It never returns — it
    *  traps, and the instance it trapped is gone. */

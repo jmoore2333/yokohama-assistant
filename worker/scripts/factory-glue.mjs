@@ -46,6 +46,8 @@ export const EXPECTED = [
   "receipt",
   "stamp_archive",
   "expire",
+  "share_prefix",
+  "set_share",
 ];
 
 /** The glue's own closing line, which the factory's single export replaces. */

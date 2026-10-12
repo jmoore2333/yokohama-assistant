@@ -95,6 +95,48 @@ const ANOTHER_CALLER: &str =
 /// premise and no layer route reaches it.
 const SECOND_PLAN: &str = "a second deferred put in one call — this host carries one plan per call";
 
+/// A browser save with no count before it (security S2b, B12's Worker half): the shell lists the share before
+/// every save and hands the listing to `set_share`; a put that finds none refuses rather than upload uncounted,
+/// and the route's 500 carries this, which the outbox retries.
+pub(crate) const SHARE_UNCOUNTED: &str = "the caller's share was not counted before this save";
+
+/// One object of the shell's listing: its key and size, as R2's `list` reports them.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListedObject {
+    key: String,
+    size: u64,
+}
+
+/// The shell's listing of the share prefix (decision D-5): `truncated` as R2 reported it — a listing of more
+/// than 1,000 objects is over the quota by construction — and every object's key and size.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Listing {
+    truncated: bool,
+    objects: Vec<ListedObject>,
+}
+
+impl Listing {
+    /// `DirArchive::usage`'s arithmetic over a listing: records are `.json` keys that are not `.table.json`,
+    /// bytes every `.json` key's size, and the put's own two keys never count (a half pair's repair). A
+    /// truncated listing counts as `usize::MAX` records.
+    fn usage(&self, own: [&str; 2]) -> (usize, u64) {
+        if self.truncated {
+            return (usize::MAX, u64::MAX);
+        }
+        let mut records = 0usize;
+        let mut bytes = 0u64;
+        for object in self.objects.iter().filter(|o| o.key.ends_with(".json") && !own.contains(&o.key.as_str())) {
+            bytes = bytes.saturating_add(object.size);
+            if !object.key.ends_with(".table.json") {
+                records += 1;
+            }
+        }
+        (records, bytes)
+    }
+}
+
 /// This instance's receipt archive — the SAME `Arc` its `Games` puts through —
 /// or `None` with the archive `off`. [`crate::init_inner`] replaces it each
 /// time it rebuilds the `Games`, so a new instance holds no receipt and no
@@ -114,6 +156,10 @@ pub struct ReceiptArchive {
     /// The Archive object's address, as `init` normalized it; `None` on every
     /// other object.
     caller: Option<String>,
+    /// The shell's listing of this caller's share (security S2b, B12's Worker
+    /// half), installed by [`set_share_inner`] before a browser's save and
+    /// TAKEN by the put that reads it; cleared by [`share_prefix_inner`].
+    share: Mutex<Option<Listing>>,
 }
 
 /// A deferred put, as `Reply.archive` carries it (§"Names shared across
@@ -165,10 +211,10 @@ pub enum Kind {
 }
 
 impl ReceiptArchive {
-    /// An archive with no receipt and no pending plan, filing a browser's save
-    /// by `caller` — already normalized by `init`.
+    /// An archive with no receipt, no pending plan and no share listing,
+    /// filing a browser's save by `caller` — already normalized by `init`.
     pub(crate) fn new(caller: Option<String>) -> Self {
-        Self { receipts: Mutex::new(HashMap::new()), pending: Mutex::new(None), caller }
+        Self { receipts: Mutex::new(HashMap::new()), pending: Mutex::new(None), caller, share: Mutex::new(None) }
     }
 
     /// `"test/"` for a test identity's plan ([`is_test_identity`]), else `""`
@@ -221,9 +267,11 @@ impl Archive for ReceiptArchive {
     /// 3. a receipt for that key, REMOVED and answered: `landed` and
     ///    `identical` as themselves, `conflict` as a conflict at the record
     ///    key carrying the record it held, `failed` as its detail;
-    /// 4. with no receipt, the plan recorded and the put deferred — unless
-    ///    another plan is already pending in this call, which refuses this one
-    ///    (`SECOND_PLAN`) and keeps the first.
+    /// 4. with no receipt, a browser's save held to its share first — the
+    ///    shell's listing, taken, under the production quota (security S2b) —
+    ///    then the plan recorded and the put deferred — unless another plan is
+    ///    already pending in this call, which refuses this one (`SECOND_PLAN`)
+    ///    and keeps the first.
     fn put(
         &self,
         prefix: &str,
@@ -245,6 +293,19 @@ impl Archive for ReceiptArchive {
                 Kind::Conflict => Err(PutError::Conflict { key: record_key, held: receipt.held }),
                 Kind::Failed => Err(PutError::Failed(receipt.detail)),
             };
+        }
+        // **The share** (security S2b, B12's Worker half; decision D-5): for a browser's save, the listing the
+        // shell handed in, TAKEN — one count serves one put — and judged by the production quota's arithmetic
+        // before any plan is deferred. None means the shell did not count (its list failed, or a defect): refused,
+        // never uploaded uncounted. A server's own save (the empty prefix) is never counted, as on the NAS.
+        if prefix.starts_with("browser/") {
+            let listing = self.share.lock().expect("the share").take().ok_or_else(|| PutError::Failed(SHARE_UNCOUNTED.to_string()))?;
+            let (records, bytes) = listing.usage([record_key.as_str(), table_key.as_str()]);
+            let quota = yokohama_web::archive::Quota::PRODUCTION;
+            let adding = (record_json.len() + table_json.len()) as u64;
+            if records >= quota.records || bytes.saturating_add(adding) > quota.bytes {
+                return Err(PutError::Quota { records: quota.records, bytes: quota.bytes });
+            }
         }
         let mut pending = self.pending.lock().expect("the pending plan");
         if pending.as_ref().is_some_and(|held| held.key != key) {
@@ -305,6 +366,38 @@ pub fn receipt_inner(plan_key: &str, outcome: &str) -> Result<(), String> {
         .ok_or_else(|| format!("{ARCHIVE_VAR} is off, so no put is deferred and no receipt is taken"))?;
     let outcome = parse_outcome(outcome)?;
     archive.receipts.lock().expect("the receipts").insert(plan_key.to_string(), outcome);
+    Ok(())
+}
+
+/// `share_prefix()`: the prefix the shell lists before a browser's save — the root for this object's caller
+/// (`test/` for a `.test` address, as `root` reads it) then `browser/<segment>/` — or `None` with no caller or the
+/// archive off, when nothing is counted; and it clears any listing an earlier request left.
+pub fn share_prefix_inner() -> Option<String> {
+    let guard = RECEIPTS.lock().expect("the host's receipts");
+    let archive = guard.as_ref()?;
+    // A save begins with NO count: a listing an earlier request set and the layer refused before any put must not be
+    // spent by this one if its own listing fails (fail closed).
+    *archive.share.lock().expect("the share") = None;
+    let caller = archive.caller.as_deref()?;
+    let user = User::parse(caller).ok()?;
+    let root = if is_test_identity(caller) { TEST_ROOT } else { "" };
+    Some(format!("{root}browser/{}/", caller_segment(&user)))
+}
+
+/// `set_share(listing)`: the shell's listing of the share, installed for the next put to spend. Refused, with a
+/// sentence: a listing that is not the object `{"truncated", "objects": [{"key", "size"}]}` — an array, an
+/// unknown key, a missing field, a size that is no `u64` — and any listing with the archive off.
+pub fn set_share_inner(listing: &str) -> Result<(), String> {
+    let guard = RECEIPTS.lock().expect("the host's receipts");
+    let archive = guard
+        .as_ref()
+        .ok_or_else(|| format!("{ARCHIVE_VAR} is off, so no share is counted and no listing is taken"))?;
+    let value: Value = serde_json::from_str(listing).map_err(|e| format!("a share listing is not JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("a share listing is the object {\"truncated\", \"objects\"}".to_string());
+    }
+    let parsed: Listing = serde_json::from_value(value).map_err(|e| format!("a share listing does not parse: {e}"))?;
+    *archive.share.lock().expect("the share") = Some(parsed);
     Ok(())
 }
 
@@ -506,7 +599,7 @@ mod tests {
     use yokohama_web::table::TableDoc;
     use yokohama_web::ApiError;
 
-    use super::ReceiptArchive;
+    use super::{set_share_inner, share_prefix_inner, ReceiptArchive, SHARE_UNCOUNTED};
     use crate::tests::{call, config, serial, tagged};
     use crate::{
         create_inner, error_body, events_inner, expire_inner, init_inner, load_inner, read_inner, receipt_inner,
@@ -837,6 +930,7 @@ mod tests {
             ("red@example.com", "red@example.com", ""),
         ] {
             init_inner(&r2(Some(caller))).unwrap();
+            set_share_inner(&listing("", 0, false)).unwrap();
             let r = call(sender, "POST", "/api/archive", Some(&save));
             assert_eq!(
                 (r.status, r.body.as_str()),
@@ -890,6 +984,7 @@ mod tests {
         let save = the_committed_save();
         for (caller, root) in [("joiner.test", ""), (RED, "test/")] {
             init_inner(&r2_at(Some(caller), "open")).unwrap();
+            set_share_inner(&listing("", 0, false)).unwrap();
             let r = call(caller, "POST", "/api/archive", Some(&save));
             assert_eq!(
                 (r.status, r.body.as_str()),
@@ -932,6 +1027,7 @@ mod tests {
             );
         }
         init_inner(&r2(Some(RED))).unwrap();
+        set_share_inner(&listing("", 0, false)).unwrap();
         let r = call(RED, "POST", "/api/archive", Some(&save));
         assert_eq!(r.status, 500, "premise: the matching pair defers — {}", r.body);
         let segment = caller_segment(&User::parse(RED).unwrap());
@@ -958,6 +1054,7 @@ mod tests {
             ("failed", "R2 is unreachable", 500, json!({"error": "the archive could not be written: R2 is unreachable"})),
         ] {
             init_inner(&r2(Some(RED))).unwrap();
+            set_share_inner(&listing("", 0, false)).unwrap();
             let plan = plan_of(&call(RED, "POST", "/api/archive", Some(&save)));
             assert_eq!(plan["record_key"], format!("test/{path}"), "{kind}: premise: the KEY is under the root");
             receipt_inner(key(&plan), &outcome(kind, detail)).unwrap();
@@ -965,6 +1062,7 @@ mod tests {
             let answered: Value = serde_json::from_str(&r.body).unwrap();
             assert_eq!((r.status, answered), (status, body), "{kind}");
             assert_eq!(r.archive, None, "{kind}: the receipt answered the put");
+            set_share_inner(&listing("", 0, false)).unwrap();
             let again = call(RED, "POST", "/api/archive", Some(&save));
             assert_eq!(
                 (again.status, again.archive.as_deref().map(|_| key(&plan_of(&again)).to_string())),
@@ -972,6 +1070,142 @@ mod tests {
                 "{kind}: the receipt is spent, so the same plan is deferred again",
             );
         }
+    }
+
+    /// The shell's listing of a share prefix, as `set_share` takes it: `records` pairs, each a record and its
+    /// table, under `prefix`; the shell's own `truncated`.
+    fn listing(prefix: &str, records: usize, truncated: bool) -> String {
+        let objects: Vec<Value> = (0..records)
+            .flat_map(|i| {
+                [
+                    json!({"key": format!("{prefix}rev7/over/g{i}.json"), "size": 1_000}),
+                    json!({"key": format!("{prefix}rev7/over/g{i}.table.json"), "size": 100}),
+                ]
+            })
+            .collect();
+        json!({"truncated": truncated, "objects": objects}).to_string()
+    }
+
+    /// **A browser caller's share, counted over the listing the shell handed in** (security S2b, B12's Worker
+    /// half; decision D-5): the production quota's own arithmetic — `DirArchive::usage`'s rule, records being
+    /// `.json` keys that are not `.table.json`, bytes every `.json` key's size, the put's OWN two keys excluded —
+    /// applied BEFORE a plan is deferred, so a full share uploads nothing, and the route's 507 is the NAS's own
+    /// sentence. Mutants: the own-keys exclusion dropped (the half pair's repair refused); `>` for `>=` on the
+    /// record count; `truncated` ignored; the arm placed after the deferral (a plan rides out beside the 507).
+    #[test]
+    fn a_browser_save_is_held_to_the_production_quota_over_the_shells_listing() {
+        let _s = serial();
+        init_inner(&r2(Some(RED))).unwrap();
+        let save = the_committed_save();
+        let prefix = format!("test/browser/{}/", caller_segment(&User::parse(RED).unwrap()));
+        assert_eq!(share_prefix_inner(), Some(prefix.clone()), "the prefix the shell lists is the object's own share");
+
+        set_share_inner(&listing(&prefix, 256, false)).unwrap();
+        let full = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(full.status, 507, "{}", full.body);
+        assert_eq!(full.body, json!({"error": yokohama_web::api::archive_full_sentence(256, 128 << 20)}).to_string());
+        assert!(full.archive.is_none(), "a full share defers no plan");
+
+        set_share_inner(&listing(&prefix, 255, false)).unwrap();
+        let open = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(open.status, 500, "{}", open.body);
+        assert!(open.archive.is_some(), "under the quota the plan rides out");
+
+        // The put's own two keys never count against it. A retry of a record ALREADY FILED, in a share of exactly
+        // 256: its own pair is among the listing and never counts. (A lone table beside 255 records moves neither
+        // bound — a table is never a record and 60,000 bytes is far from 128 MiB — so that row pins nothing.)
+        let mut filed: Value = serde_json::from_str(&listing(&prefix, 255, false)).unwrap();
+        filed["objects"].as_array_mut().unwrap().extend([
+            json!({"key": format!("{prefix}rev7/over/{OWED}.json"), "size": 1_000}),
+            json!({"key": format!("{prefix}rev7/over/{OWED}.table.json"), "size": 100}),
+        ]);
+        set_share_inner(&filed.to_string()).unwrap();
+        assert!(call(RED, "POST", "/api/archive", Some(&save)).archive.is_some(), "a retry of a filed record is not a 257th");
+
+        // The half pair's repair AT THE BYTE MARGIN: the table alone is on the share and the share is at its bound
+        // less this save, so only the exclusion lets the repair through.
+        let sent: Value = serde_json::from_str(&save).unwrap();
+        let adding = (sent["record"].as_str().unwrap().len() + sent["table"].as_str().unwrap().len()) as u64;
+        let margin = json!({"truncated": false, "objects": [
+            {"key": format!("{prefix}rev7/over/margin.json"), "size": (128u64 << 20) - adding},
+            {"key": format!("{prefix}rev7/over/{OWED}.table.json"), "size": 60_000}]})
+        .to_string();
+        set_share_inner(&margin).unwrap();
+        assert!(call(RED, "POST", "/api/archive", Some(&save)).archive.is_some(), "the repair at the margin is not refused");
+
+        // The bytes bound: one object whose size reaches the share's bytes less this save.
+        let big = json!({"truncated": false, "objects": [{"key": format!("{prefix}rev7/over/big.json"), "size": (128u64 << 20) - 1}]}).to_string();
+        set_share_inner(&big).unwrap();
+        assert_eq!(call(RED, "POST", "/api/archive", Some(&save)).status, 507, "the bytes bound");
+
+        // Truncated: over by construction; exactly 1,000 objects untruncated: 500 records and their tables, over.
+        set_share_inner(&listing(&prefix, 3, true)).unwrap();
+        assert_eq!(call(RED, "POST", "/api/archive", Some(&save)).status, 507, "a truncated listing is a full share");
+        set_share_inner(&listing(&prefix, 500, false)).unwrap();
+        assert_eq!(call(RED, "POST", "/api/archive", Some(&save)).status, 507, "1,000 objects");
+
+        // No listing: fail closed, in the layer's 500 with the module's sentence inside it.
+        let uncounted = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(uncounted.status, 500, "{}", uncounted.body);
+        assert!(uncounted.body.contains(SHARE_UNCOUNTED), "{}", uncounted.body);
+        assert!(uncounted.archive.is_none(), "nothing deferred without a count");
+
+        // A listing a request left behind when the layer refused it before any put is never spent by the next save:
+        // `share_prefix` opens every save with no count (fail closed). Without the clear, the next save read
+        // `status=500 … deferred_plan=true` against the stale listing (measured).
+        let _ = share_prefix_inner();
+        set_share_inner(&listing(&prefix, 0, false)).unwrap();
+        assert_eq!(call(RED, "POST", "/api/archive", Some("{}")).status, 400, "premise: refused before any put");
+        let _ = share_prefix_inner();
+        let stale = call(RED, "POST", "/api/archive", Some(&save));
+        assert!(stale.body.contains(SHARE_UNCOUNTED), "fail closed: {} {}", stale.status, stale.body);
+    }
+
+    /// A server's own save (the empty prefix) is never counted (the NAS's rule), and a browser's listing is spent by
+    /// the put that read it: the SAME request dispatched again meets the receipt BEFORE the share arm and needs no
+    /// count; a third finds neither. (`r2(None)` is the WORKER door, where a plain name is nobody, so the server
+    /// half plays as addresses; the browser half pins its plan key with `pin`, or the second call would get a new
+    /// plan key and read 500, not the receipt.)
+    #[test]
+    fn a_server_games_save_is_never_counted_and_a_listing_is_spent_by_one_put() {
+        let _s = serial();
+        let _p = pin(1_789_001_300);
+        init_inner(&r2(None)).unwrap();
+        playing_with_a_move("own", RED, BLUE);
+        assert_eq!(share_prefix_inner(), None, "no caller, no share");
+        let r = call(RED, "DELETE", "/api/games/own", None);
+        assert_eq!(r.status, 500, "premise: the abandon deferred — {}", r.body);
+        let plan = plan_of(&r);
+        receipt_inner(key(&plan), &outcome("landed", plan["record_key"].as_str().unwrap())).unwrap();
+        assert_eq!(call(RED, "DELETE", "/api/games/own", None).status, 204);
+
+        // A browser's save spends its listing in the put that read it; the SAME request dispatched again meets the
+        // receipt BEFORE the share arm and needs no count; a third finds neither.
+        init_inner(&r2(Some(RED))).unwrap();
+        let save = the_committed_save();
+        set_share_inner(&listing("", 0, false)).unwrap();
+        let first = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(first.status, 500, "premise: the counted save defers its plan — {}", first.body);
+        let plan = plan_of(&first);
+        receipt_inner(key(&plan), &outcome("landed", plan["record_key"].as_str().unwrap())).unwrap();
+        let again = call(RED, "POST", "/api/archive", Some(&save));
+        assert_eq!(again.status, 201, "the receipt is met first and asks for no listing — {}", again.body);
+        let third = call(RED, "POST", "/api/archive", Some(&save));
+        assert!(third.body.contains(SHARE_UNCOUNTED), "{}", third.body);
+    }
+
+    /// `set_share` refuses what the shell never writes — an array, an unknown key, a missing field, a negative
+    /// size — in a sentence, and refuses everything with the archive off.
+    #[test]
+    fn set_share_refuses_a_listing_of_the_wrong_shape_and_the_archive_off() {
+        let _s = serial();
+        init_inner(&r2(Some(RED))).unwrap();
+        for bad in [r#"[]"#, r#"{"truncated": false}"#, r#"{"truncated": false, "objects": [], "cursor": "x"}"#, r#"{"truncated": false, "objects": [{"key": "k", "size": -1}]}"#] {
+            assert!(set_share_inner(bad).is_err(), "{bad}");
+        }
+        init_inner(&json!({"identity": "worker", "archive": "off", "caller": null, "lobby_chat": null, "chat_keep": null, "chat_text": null, "diagnostic_seeds": true}).to_string()).unwrap();
+        assert!(set_share_inner(&listing("browser/x-000000000000/", 0, false)).unwrap_err().contains("is off"));
+        assert_eq!(share_prefix_inner(), None);
     }
 
     /// **The owed-game-over FIXTURE** (plan review M3): the committed finished pair,

@@ -40,6 +40,12 @@ interface Incoming {
  * one caller's saves go one at a time and no other event reaches the module
  * across the upload's await:
  *
+ * 0. the caller's share counted (security S2b, B12's Worker half): the
+ *    module's `share_prefix`, one R2 listing of it, and the listing handed to
+ *    the module's `set_share`, whose put holds the save to the production
+ *    quota before any plan is deferred. A listing that fails is logged
+ *    (`archive-count-failed`) and not handed over, so the put refuses the
+ *    save uncounted;
  * 1. the save dispatched, pinned to P-2's reading, taken ONCE — the layer's
  *    strict replay and checks, then its put, deferred as a plan;
  * 2. with a plan, the upload (`executePlan`) and its outcome logged, then
@@ -51,8 +57,9 @@ interface Incoming {
  *    off — the first answer is the answer.
  *
  * A browser's save costs its strict replay twice (spec §2.6). A throw inside
- * the loop — a receipt the module refused, thrown on (`dispatch`), or a plan
- * `parsePlan` refuses — or a loop running past 30 seconds RESETS this object
+ * the loop — a listing `set_share` refused or a receipt the module refused,
+ * thrown on (`dispatch`), or a plan `parsePlan` refuses — or a loop running
+ * past 30 seconds RESETS this object
  * (Cloudflare's State API, for `blockConcurrencyWhile`). It holds nothing of
  * its own, so nothing is lost: the save is the caller's to send again.
  */
@@ -91,6 +98,41 @@ export class Archive extends DurableObject<Env> {
   private async save(id: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(id))));
     const at = nextReading(config.clock);
+    // **The share, counted live** (security S2b, B12's Worker half; decision D-5): the object's share prefix from
+    // the module, one R2 listing (a Class A operation), and the listing handed to the module, whose put applies
+    // the production quota's own arithmetic before any plan is deferred. A listing that fails is logged and NOT
+    // handed over: the put then refuses the save uncounted (`SHARE_UNCOUNTED`), the layer's 500, which the outbox
+    // retries. A `test/` address lists under `test/`; a server game's own save is never counted (its prefix is
+    // empty, and `share_prefix` answers `undefined` for every object but an Archive object's).
+    let prefix: { ok: string | undefined } | { trapped: string };
+    try {
+      prefix = instance.guarded((mod) => mod.share_prefix());
+    } catch (e) {
+      // `init` refused this object's caller (the key grammar's): nothing to count, and `dispatch` below refuses it
+      // exactly as it always did — the layer's 401 through `callerRefused`, never a thrown string.
+      if (typeof e !== "string") throw e;
+      prefix = { ok: undefined };
+    }
+    if ("trapped" in prefix) {
+      log("trap", { id, call: "share_prefix", error: prefix.trapped });
+      return respond(500, errorBody(TRAP));
+    }
+    if (prefix.ok !== undefined) {
+      let listed: R2Objects | undefined;
+      try {
+        listed = await (this.env.ARCHIVE as R2Bucket).list({ prefix: prefix.ok, limit: 1000 });
+      } catch (e) {
+        log("archive-count-failed", { id, error: String(e) });
+      }
+      if (listed !== undefined) {
+        const listing = JSON.stringify({ truncated: listed.truncated, objects: listed.objects.map((o) => ({ key: o.key, size: o.size })) });
+        const set = instance.guarded((mod) => mod.set_share(listing));
+        if ("trapped" in set) {
+          log("trap", { id, call: "set_share", error: set.trapped });
+          return respond(500, errorBody(TRAP));
+        }
+      }
+    }
     const first = this.dispatch(id, instance, incoming, at);
     if (first instanceof Response) return first;
     if (first.archive === undefined) return respond(first.status, first.body);

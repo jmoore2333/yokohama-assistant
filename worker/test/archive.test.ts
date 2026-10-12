@@ -9,7 +9,7 @@ import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
 import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
 import { upsertDoc } from "../src/storage";
-import { failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
+import { failingList, failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
 import {
   ANOTHER_RECORD,
   BLUE,
@@ -1206,6 +1206,56 @@ describe("the browser's save (spec §2.6)", () => {
       await failing.restore();
     }
     expect(await bucketText(`test/browser/${await segmentOf(failer)}/rev7/over/wire.json`)).toBeNull();
+  });
+});
+
+describe("B12's Worker half — the share counted from a live listing (security S2b, decision D-5)", () => {
+  /** A browser's save of the walk's finished pair, through red's archive object, as the Worker forwards it. */
+  function browserSave(stub: DurableObjectStub<Archive>, who: string): Promise<Response> {
+    const body = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    return stub.fetch("https://yokohama.test/api/archive", { method: "POST", headers: { "X-Yokohama-User": who, "content-type": "application/json" }, body });
+  }
+  const archiveStub = (who: string) => env.ARCHIVER.get(env.ARCHIVER.idFromName(`archive:${who}`));
+
+  // Mutants: the listing not handed to the module (every save SHARE_UNCOUNTED); the prefix wrong (an empty count
+  // under 256 fakes); `truncated` not forwarded.
+  it("refuses a 257th record with the NAS's 507 and uploads nothing, and lands the 256th", async () => {
+    const who = "quota@t.test";
+    const prefix = `test/browser/${await segmentOf(who)}/`;
+    for (let i = 0; i < 255; i += 1) {
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.json`, "{}");
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.table.json`, "{}");
+    }
+    const landed = await browserSave(archiveStub(who), who);
+    expect(landed.status, await landed.clone().text()).toBe(201);
+    const key = `${prefix}rev7/over/${(ARCHIVE_WALK[0]!.body as { table: string }).table.match(/"id": "([^"]+)"/)![1]}.json`;
+    expect(await bucketText(key)).not.toBeNull();
+    // Now 256 records. A 257th is a second save at another id: the walk's first send names the table `wire` in its
+    // TABLE text alone (the record carries no id — `replaceOnce` over it would throw), so rewrite the table only.
+    const second = JSON.stringify({
+      record: (ARCHIVE_WALK[0]!.body as { record: string }).record,
+      table: replaceOnce((ARCHIVE_WALK[0]!.body as { table: string }).table, '"id": "wire"', '"id": "wire-257"'),
+    });
+    const refused = await archiveStub(who).fetch("https://yokohama.test/api/archive", { method: "POST", headers: { "X-Yokohama-User": who, "content-type": "application/json" }, body: second });
+    expect(refused.status).toBe(507);
+    expect(JSON.parse(await refused.text())).toEqual({ error: "your archive here is full — 256 records or 128 MiB; nothing was written, and the game is kept on this device" });
+    expect(await bucketText(`${prefix}rev7/over/wire-257.json`), "nothing uploaded").toBeNull();
+    expect(await bucketText(`${prefix}rev7/over/wire-257.table.json`), "not even the table").toBeNull();
+  });
+
+  it("refuses a save whose share could not be listed, in the layer's 500 with the module's sentence, uploading nothing", async () => {
+    const who = "unlisted@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), failingList());
+    try {
+      const { result, lines } = await logsDuring(() => browserSave(stub, who));
+      expect(result.status).toBe(500);
+      expect(await result.text()).toContain("the caller's share was not counted before this save");
+      expect(lines.some((l) => (l as { event: string }).event === "archive-count-failed")).toBe(true);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
   });
 });
 
