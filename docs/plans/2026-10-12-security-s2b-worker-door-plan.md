@@ -2491,8 +2491,10 @@ export function openDoorVerdict(raw: string): NameVerdict {
   `SignIn.tsx`'s `submit` calls `openDoorVerdict(value)`, and its comment at `:10-13` names `openDoorVerdict`.
   `NewGame.tsx`: when `byName`, `personError` (`:208`) and the request body (`:236`) go through `openDoorVerdict`
   (AD-8 (a): the "their name" seat field keyed any address `normalizeName` accepts, and after C1 a seat bound to an
-  address at an open table could never be taken); `NewGame.test.tsx:129` types a plain name. Run the two files'
-  cells. Expected: PASS.
+  address at an open table could never be taken); `NewGame.test.tsx` GAINS an open-door cell (Task 5b's run: its `:129` cell is the Access one — `cf-access`, an
+  email field, `Blue@Wire.test` — where `byName` is false and an address is right, so it is UNCHANGED): under the
+  open door, typing `Blue@Wire.test` into "Blue player's name" shows `ADDRESS_NOT_A_NAME_HERE` in place, marks the
+  field invalid, holds Deal and posts nothing — M43d's catcher. Run the two files' cells. Expected: PASS.
 
 - [ ] **Step 3: The two cells C1 inverts.** `SignIn.test.tsx:37` becomes "refuses an address before any request, in
   the open door's words, and stores nothing": type `" Red@Wire.TEST "`; the alert reads `ADDRESS_NOT_A_NAME_HERE`;
@@ -2503,11 +2505,14 @@ export function openDoorVerdict(raw: string): NameVerdict {
   `npx vitest run`. Expected: PASS (1,511 plus this task's cells; record the count).
 
 - [ ] **Step 4: The Playwright identities follow the target.** In `web/e2e/harness.ts`:
-  `export const who = (name: string): string => (LIVE ? \`${name}@e2e.test\` : name);` and
+  `export const who = (name: string, domain = "e2e"): string => (LIVE ? \`${name}@${domain}.test\` : name);` and
   `export const WALKER = who("walker");` with the doc "under the open door the local tier's binary is `production`,
   `NamesOnly` (security S2b, C1): a caller is a plain NAME; the live tier's dev door names a `.test` ADDRESS (B6), so
   an identity follows the target". Every address literal in the twelve specs goes through `who` — so does every
-  `CLAIMED_USER_KEY` a spec seeds and every `x-yokohama-claimed-user` a `request.*` sends. `state1_game.spec.ts`, the
+  `CLAIMED_USER_KEY` a spec seeds and every `x-yokohama-claimed-user` a `request.*` sends; a spec whose live
+  identities carry their own domain keeps it through the second argument (`exit_game`'s `who("x", "exit")` for
+  `x@exit.test`, `readme_shots`'s `who("ben", "readme")` for `ben@readme.test` — the README's alt text names
+  `ben@readme.test`, and a live re-shot must still draw it; Task 5b's run). `state1_game.spec.ts`, the
   open door's own window instrument, takes plain names on every target and loses its header sentence "the name step
   takes an address as well as a plain name". The archive-segment restatements (`offline.spec.ts:126-129`,
   `plays_locally.spec.ts:68`) follow the key (`ben` → `ben-<12 hex>`; the readable half has no `_at_`).
