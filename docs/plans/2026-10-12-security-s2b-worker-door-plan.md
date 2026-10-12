@@ -2201,7 +2201,7 @@ M37e the shell forwarding `size: 0` → the sized-listing pool cell (the review'
     #[tokio::test]
     async fn the_production_state_refuses_an_address_claim_under_the_open_door_and_the_fixtures_admit_one() {
         assert_eq!(AppState::in_memory().claims, identity::ClaimPolicy::Diagnostic);
-        // Built as `main` builds it — the seed-policy cell's argument list (`lib.rs:2853-2861`), the door `Open`.
+        // Built as `main` builds it — the seed-policy cell's argument list (`the_production_state_honours_a_seed_at_a_solo_table_only`), the door `Open`.
         let production = AppState::production(Arc::new(MemStore::default()), identity::IdentityMode::Open, chat::ChatConfig::default(), Arc::new(archive::NoArchive), Multiplayer(true), sweep::Ttls::none()).expect("a production state over memory");
         assert_eq!(production.claims, identity::ClaimPolicy::NamesOnly);
 
@@ -2288,8 +2288,8 @@ pub const ADDRESS_NOT_A_NAME: &str =
   a commit that does not compile otherwise); the cells in `identity.rs` pass `ClaimPolicy::Diagnostic` where they test
   the grammar and the mode and `NamesOnly` where they test this rule; and the seed cell
   `the_production_state_honours_a_seed_at_a_solo_table_only` (`lib.rs:2851`), which builds `production` at the OPEN
-  door and posts as `WHO = "red@wire.test"` (`:1283`), claims `"red"` instead — its seat user and its three `post_as`
-  callers — as `start_refusal.rs`'s seed cell already does (it read 401 where it expected 400 otherwise; measured).
+  door and posts as `WHO = "red@wire.test"` (`:1283`), claims `"red"` instead — its seat user and its two `post_as`
+  callers (three sites) — as `start_refusal.rs`'s seed cell already does (it read 401 where it expected 400 otherwise; measured).
   Four docs become true in the same commit: `identity.rs:240` ("under `open` with `Diagnostic` every key the grammar
   accepts is a caller; with `NamesOnly` an address is refused"), `main.rs:92-97` ("two different emails ARE two
   different people" — under the open door, two different NAMES), `archive.rs:202-206` (`SEGMENT_DIGEST`'s open-door
