@@ -667,6 +667,33 @@ mod tests {
         }
     }
 
+    /// **A crafted bare name equal to another key's segment names its own folder** (the S1 stack review's
+    /// archive lens; spec §9.6 correction 9): since S1c every segment ends in twelve hex of its OWN key's digest, so
+    /// a name spelled like another key's whole segment gets a segment of its own — the readable half, `-`, its
+    /// own digest — and no legacy folder exists for a name to equal (the window renamed every one). A segment too
+    /// long to be a name (a cut address's, over 32) is no key at all.
+    #[test]
+    fn a_name_spelled_like_another_keys_segment_files_under_its_own_segment() {
+        use crate::identity::User; // the test module does not import it (E0433 ×4–6 without this; measured)
+        // The digest is over the whole KEY, not its readable half: a literal three independent computations agree
+        // on (native, Python, the WASM module). For a crafted NAME the key IS the readable half, so a mutant
+        // digesting the readable half survives the relative assertions below; this literal row is where it dies.
+        assert_eq!(
+            caller_segment(&User::parse("alice@corp.test").unwrap()),
+            "alice_at_corp.test-dde4a5b96f79",
+            "the digest is over the whole KEY (native, Python and the WASM module agree)"
+        );
+        for key in ["ben castle", "alice@corp.test"] {
+            let target = caller_segment(&User::parse(key).unwrap());
+            let crafted = User::parse(&target).unwrap_or_else(|e| panic!("{target} is a legal name: {e}"));
+            let own = caller_segment(&crafted);
+            assert_ne!(own, target, "{key}: the crafted name's folder is not the target's");
+            assert!(own.starts_with(&format!("{target}-")), "{key}: the target is the crafted name's readable half");
+        }
+        let long = caller_segment(&User::parse("a-very-long-local-part-for-the-forty-eight-cut@wire.test").unwrap());
+        assert!(User::parse(&long).is_err(), "a cut address's segment is longer than a name may be: no key at all");
+    }
+
     /// **The legacy mapping is what it was, and the new segment differs from it
     /// for every address** — so a folder the window did not rename is
     /// detectable, and the `segment` subcommand's two columns are never equal.

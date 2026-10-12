@@ -1219,6 +1219,26 @@ describe("the browser's save (spec §2.6)", () => {
     }
     expect(await bucketText(`test/browser/${await segmentOf(failer)}/rev7/over/wire.json`)).toBeNull();
   });
+
+  // The 48-cut in the WASM module against the NATIVE `caller_segment` (S2b Task 8; spec §9.6 correction 9). The
+  // address is 56 characters; its readable half, `…cut_at_wire.test`, is cut at 48. The segment below was
+  // confirmed three ways at the plan review (native, Python, the WASM module in the pool), and the key is READ BACK
+  // by listing the bucket, so the helper is not the only witness. Mutant M57: the module's cut or digest diverging
+  // from native (`readable.truncate(40)`) lands elsewhere and reds the literal; the pool helper's `.slice(0, 40)`
+  // reds the last line.
+  it("lands a 56-character address under the native segment: the readable half cut at 48, then the digest of the whole address", async () => {
+    const address = "a-very-long-local-part-for-the-forty-eight-cut@wire.test";
+    expect(address.length).toBe(56);
+    const res = await save(address, ARCHIVE_WALK[0]!.body);
+    expect([res.status, res.text]).toEqual([201, expect.stringContaining('"leaf":"over"')]);
+    const listed = await env.ARCHIVE!.list({ prefix: "test/browser/" });
+    // The bucket is shared with the file's earlier cells: read this caller's folder by its readable stem.
+    const segments = [...new Set(listed.objects.map((o) => o.key.split("/")[2]!))].filter((g) => g.startsWith("a-very-long-local-part"));
+    expect(segments, "the one folder the save landed under, read from the bucket").toEqual([
+      "a-very-long-local-part-for-the-forty-eight-cut_a-2e9a7b138059",
+    ]);
+    expect(segments[0], "and the pool helper's restatement agrees").toBe(await segmentOf(address));
+  });
 });
 
 describe("B12's Worker half — the share counted from a live listing (security S2b, decision D-5)", () => {

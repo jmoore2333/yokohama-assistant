@@ -336,6 +336,20 @@ describe("the deploy guard", () => {
     );
   });
 
+  // The fully escaped spelling (S2b Task 8; the S1 stack review's re-review probed it as a temporary copy, committed
+  // here): HI-F3 above escapes the LAST letter alone; a file may escape EVERY character, and the `env` and `vars`
+  // keys themselves. Mutant M55: rule 4b reading the file as text with a literal search — red here.
+  /** `name` with EVERY character as a `\uXXXX` escape, as a JSON key may be spelled. */
+  const escaped = (name) => [...name].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
+
+  it("refuses the diagnostic seeds and the test clock spelled with every letter escaped, at the top level, in an environment, and with the env and vars keys themselves escaped", () => {
+    for (const [key, sentence] of [["YOKOHAMA_DIAGNOSTIC_SEEDS", /names YOKOHAMA_DIAGNOSTIC_SEEDS/], ["YOKOHAMA_WEB_TEST_CLOCK", /names YOKOHAMA_WEB_TEST_CLOCK/]]) {
+      const top = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "${escaped(key)}": "on"`);
+      const env = PRODUCTION.replace('"main"', `"${escaped("env")}": { "production": { "${escaped("vars")}": { "${escaped(key)}": "on" } } },\n  "main"`);
+      for (const file of [top, env]) expect(deployGuard(worker({ "wrangler.jsonc": file })), key).toEqual(naming(sentence));
+    }
+  });
+
   // Check 7 (the plan's ruling P-1, made mechanical): the operator list is a
   // SECRET, set with `wrangler secret put`. In `vars` it would be committed —
   // an address in a repository headed for open source. It is read as a KEY,

@@ -1356,6 +1356,7 @@ describe("the Report-Only lines (type info) are read, and the live tier forgives
     const watch = watchForBreakage(fake.page);
     const local = baseUrlFor(false);
     fake.line("info", RO_INLINE, `${local}/`);
+    expect(watch.failures[0], "the label is the message's own type").toBe(`console.info: ${RO_INLINE}`);
     fake.line("info", RO_STYLE, `${local}/`);
     expect(watch.failures).toHaveLength(2);
     // The wording with `report-only` before the policy's name (the regex's optional clause), at `info`: read too.

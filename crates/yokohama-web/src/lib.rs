@@ -453,7 +453,8 @@ pub struct AppState {
     pub dist: std::path::PathBuf,
     /// The header set every answer carries (security S2a, decision D-1): `dist/headers.json`'s pairs, read once
     /// where `dist` is resolved — the production constructor and [`Self::with_dist`] — and set by [`app`]'s
-    /// one response layer. Empty for a state with no dist, and for a dist without the file (the client build is
+    /// one response layer. Empty for a state built by the base constructor, which reads no header file (an
+    /// in-memory state HAS a dist and serves no set), and for a dist without the file (the client build is
     /// older than 0.6.2, or absent — `main` says so once); a cell gives a state a set with [`Self::with_headers`].
     pub headers: Arc<Vec<(http::HeaderName, http::HeaderValue)>>,
     /// The two table TTLs (M6.5c2 cycle F, R-F9): what `main` hands the sweep
@@ -4189,7 +4190,7 @@ mod tests {
     async fn an_in_memory_state_serves_no_header_set_and_with_headers_gives_it_one() {
         let bare = app(Arc::new(AppState::in_memory()));
         let res = bare.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
-        assert!(res.headers().get("x-frame-options").is_none(), "no dist, no set");
+        assert!(res.headers().get("x-frame-options").is_none(), "the base constructor reads no header file, so no set");
         let given = app(Arc::new(AppState::in_memory().with_headers(vec![(
             http::HeaderName::from_static("x-frame-options"),
             http::HeaderValue::from_static("DENY"),
