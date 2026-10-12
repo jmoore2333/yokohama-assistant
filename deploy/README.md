@@ -81,7 +81,7 @@ network, a LAN, or a VPN. Never put an open door on the public internet.
 
 **Names:**
 - 1–32 characters of ASCII letters, digits, spaces, `.`, `-` and `_`, beginning with a letter or a digit;
-- an email address is also a name;
+- an address is refused here: under the open door a name is a name, and an `@` always means a verified address on every other door (security S2b, C1);
 - case and extra spaces do not count: `"  Ben   Castle "` and `ben castle` are one player, keyed
   `ben castle`; each browser shows the name as its player typed it, spaces tidied, so the first reads
   `Ben Castle`;

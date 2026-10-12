@@ -47,6 +47,15 @@ What answers what:
     WebSocket is outside CORS, so without it a hostile page in a signed-in player's browser could
     read a table's turn and timing frames (Task 11's review, escalation 1). A request with no
     `Origin` — curl, the deploy readings — passes;
+  - **any method but GET or HEAD from another site's page — an `Origin` present and not
+    `https://yokohama.moore.nyc`, `null` included, or a `Sec-Fetch-Site` of `cross-site` or
+    `same-site`: 403 `this request is for the site's own pages`** (security S2b, finding B5), read
+    before the caller is: the operator's expire was a CORS simple request a hostile page could send
+    with ambient authentication — the `CF_Authorization` cookie, or the owner's WARP identity. A
+    request with neither header — curl, Node's `fetch`, the live replay — passes;
+  - **past a rate limit, any method but GET or HEAD: 429 `too many requests from you just now — wait a
+    moment and try again`**, with `Retry-After: 60` for a create and `Retry-After: 10` for any other
+    write (security S2b, finding C2; §2, §7), answered before any object;
   - any method but GET on `…/events`, `…/stream` or `/api/stream`: **405**, empty; a GET of
     `…/stream` or `/api/stream` that is not an upgrade: **426** `this host streams over
     WebSocket`;
@@ -76,8 +85,10 @@ What answers what:
     game named …`;
   - the operator surface (spec §2.9; §3 below): **403** `this address is not an operator here`;
     **400** `?force takes no value — send ?force alone, or no query for an expire that saves first`
-    for a force given any value, `?force=false` among them (the orchestrator's ruling I-72); and a
-    force's **503** `the lobby has not confirmed the removal — the alarm will finish it`;
+    for a force given any value, `?force=false` among them (the orchestrator's ruling I-72); **400**
+    `` Expected request with `Content-Type: application/json` ``, the layer's own words, for an expire
+    or a force whose type is not `application/json` (security S2b, finding B5); and a force's **503**
+    `the lobby has not confirmed the removal — the alarm will finish it`;
   - a trapped engine: **500** `the table's engine stopped — try again`, `the lobby's engine stopped
     — try again` or `the archive's engine stopped — try again`; a table whose stored document traps
     twice: **500** `this table's stored <kind> cannot be loaded`;
@@ -87,7 +98,13 @@ What answers what:
     alike, logged `object-failed` (the orchestrator's F-1). Before it, the platform's own plain 500
     answered, which the client cannot read as `{"error": …}`;
   - a deleted table's sockets: `end {"reason":"deleted"}`, then a **4404** close whose reason is
-    `this table was deleted`.
+    `this table was deleted`;
+  - a socket past a cap (security S2b, finding D3): accepted, sent `end` with the cap's sentence and
+    closed **4429** — `you have too many connections open to this table — close another tab and try
+    again` past 8 of the caller's at a table, `this table has as many connections as it can take — try
+    again later` past 64 in all, and in the lobby `you have too many connections open to the lobby —
+    close another tab and try again` past 8 and `the lobby has as many connections as it can take — try
+    again later` past 1,024.
 
 ## 1. Build
 
@@ -139,7 +156,7 @@ cd worker && npx wrangler whoami   # the owner's login, account BDVC
 npm run deploy
 #   node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc
 npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20)
-npm run deploy:gate                # the same three steps, each with --config wrangler.gate.jsonc (§19)
+npm run deploy:dev                 # the same three steps, each with --config wrangler.dev.jsonc: the dev door on, around a live tier (§7)
 ```
 
 **The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; a
@@ -184,6 +201,31 @@ D18). The guard also refuses:
   `web/dist/headers.json`'s `/*` block**, as the assembly writes it (§1; decision D-1), or a `web/dist`
   with no `headers.json`, which the guard names.
 
+*(Since security S2b, 2026-10-12.)* The guard also refuses:
+- **production's Rate Limiting bindings at any figure but their literals** (check 13; finding C2):
+  `wrangler.jsonc`'s `ratelimits` block must be exactly `CREATE_LIMIT` 10 per 60 s and `WRITE_LIMIT` 120
+  per 10 s, namespaces `7301` and `7302` (`RATE_LIMITS`), read as values, and each pool file must bind
+  exactly those two names, at any figure — the pool's are lenient, since `test/worker.test.ts` sends
+  more creates through `handle` than production allows; the open and dev files carry production's block
+  by the sibling rule. A `namespace_id` is a string, unique to the account, and a shared id shares
+  counters across Workers: confirm no other Worker on the account uses `7301` or `7302` before the
+  first deploy that binds them;
+- **production's logs keeping query strings, or sampled** (check 14; finding D23):
+  `observability.redact_query_string` must be `true`, and `head_sampling_rate` absent or `1` — at the
+  top level and under `observability.logs`, whose `invocation_logs` must not be `false`;
+- **the dev door open anywhere but `wrangler.dev.jsonc`** (finding B6; decision D-1): `YOKOHAMA_DEV_DOOR`
+  `on` in production's file or in any other worker-door file is refused, the dev file must set it to
+  exactly `"on"`, and the dev file is held to production but for that one variable;
+- **an unlisted worker-door file that is not production exactly** (the S2a plan review's F-40): every
+  configuration judged by `--config` whose door is `worker` and which is neither production nor the dev
+  file is held to production with no allowed difference — a deploy of it would otherwise roll production
+  back, or open a door no committed file opens.
+
+A clean run prints its door line, then one sentence summing up what it held, these clauses among them:
+`… at the open door no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file
+production's sibling; … production's two rate limits at their figures, and both bound in each pool
+file; production's logs redacting query strings, unsampled; …`.
+
 **Then the secrets guard** (`scripts/secrets-guard.mjs`, decision D-11) asks the account for the
 Worker's secret NAMES through `npx wrangler secret list` — never a value — and refuses a secret named
 `YOKOHAMA_DIAGNOSTIC_SEEDS` or `YOKOHAMA_WEB_TEST_CLOCK`, the two switches the guard refuses in a
@@ -192,11 +234,18 @@ committed file, which a secret would carry past it: `secrets-guard: the Worker h
 is a refusal, never a pass; a clean one prints `secrets-guard: <n> secrets on <file>'s Worker, none
 named like a switch`.
 
-**What the secrets guard costs.** Every deploy script is a network step from here on — `deploy:gate`,
-the safe direction, included. A logged-out clone runs `npx wrangler login` once, and one with more
-than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing).
-A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found" for a Worker that
-does not exist yet, so S4's public Worker needs its own first-deploy path.
+**What the secrets guard costs.** Every deploy script is a network step from here on — the plain
+`deploy`, the safe direction since security S2b, included. A logged-out clone runs `npx wrangler login`
+once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them
+and caches nothing). A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found"
+for a Worker that does not exist yet. **So a NEW Worker's first deploy runs the deploy guard and
+`wrangler deploy --config <file>` by hand — a Worker that does not exist holds no secret — and the
+secrets guard from the second deploy on** (security S2b, decision D-7; the owner's R-6). S4's public
+Worker's first-deploy path is this recipe, and no guard code:
+
+```sh
+node scripts/deploy-guard.mjs --config <file> && npx wrangler deploy --config <file>   # a NEW Worker's FIRST deploy only
+```
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
   probes once and reconnects, an open picker is re-fed — or dropped, when the deploy changed the
@@ -257,7 +306,7 @@ the whole list; it leaves secrets alone.
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
-| `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests | off: an assertion naming only the credential is no one |
+| `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests. *(Corrected 2026-10-12, security S2b, finding B6: `off` in `wrangler.jsonc` — the standing state is Access alone, the shape a self-hoster copies; `wrangler.dev.jsonc`, production with this one variable `on`, opens it around a live tier — `npm run deploy:dev` before it, the plain `npm run deploy` after it (§7) — and the deploy guard refuses `on` in any other worker-door file. The dev door names a `.test` address only.)* | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
 | `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | *not a variable at the seventeenth; added 2026-09-30 (M6.5c2 cycle E, R-6.5c2.42):* `7` in `wrangler.jsonc` — how long a table still waiting for players stands (below) | 7 days; and with `YOKOHAMA_WEB_TABLE_TTL_DAYS` absent it is inert, since no table expires |
@@ -266,7 +315,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
 | `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
-| `YOKOHAMA_TURNSTILE` | *not a variable at the seventeenth; added 2026-10-01 (M6.5c2 cycle F, R-FP2, R-FP4):* a DEPLOY DECLARATION, `off` in `wrangler.jsonc`, the gate's file and the pool's two, `on` in `wrangler.open.jsonc` alone. It rides into the Worker's variables like every `vars` entry, and nothing in the Worker reads it but the check that every variable is a string. The deploy guard's check 12 and the smoke's live mode read it (the bullet below) | off: the guard refuses a keyed build beside it, and the smoke's live mode owes no edge line |
+| `YOKOHAMA_TURNSTILE` | *not a variable at the seventeenth; added 2026-10-01 (M6.5c2 cycle F, R-FP2, R-FP4):* a DEPLOY DECLARATION, `off` in `wrangler.jsonc`, the dev file (the gate's until security S2b) and the pool's two, `on` in `wrangler.open.jsonc` alone. It rides into the Worker's variables like every `vars` entry, and nothing in the Worker reads it but the check that every variable is a string. The deploy guard's check 12 and the smoke's live mode read it (the bullet below) | off: the guard refuses a keyed build beside it, and the smoke's live mode owes no edge line |
 | `YOKOHAMA_WEB_TEST_CLOCK` | **never set in production** — the pool's files only, `wrangler.test.jsonc` and, since M6.5c2, `wrangler.open.test.jsonc` *(corrected 2026-09-28)*; the deploy guard refuses `wrangler.jsonc` if it names it | the wall clock |
 | `YOKOHAMA_DIAGNOSTIC_SEEDS` | *not a variable at the seventeenth; added 2026-10-09 (security S1a, finding B3; R-SEC8(b)):* **never set in production** — `on` in the pool's two files only, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`, so the corpus walk's seeded tables with an open seat are honoured there; the deploy guard refuses any deployed configuration that names it (rule 4b, beside the clock's check 4) | off, the production rule: a creator's seed is honoured only at a table whose every human seat is the creator's, and refused otherwise in the layer's sentence ("a seed is honoured only at a table whose every human seat is yours — leave it blank and the server draws one") |
 
@@ -292,9 +341,20 @@ the whole list; it leaves secrets alone.
   turn into another user's `k` — meets the layer's 401, and the Worker forwards no identity header
   for them at all. The layer's own `resolve` reads such a header value as absent, as the NAS
   does. **And a dev-door claimed value must be an ADDRESS** by `User::parse`'s rule — one `@` with
-  something on both sides, no spaces or control characters, at most 254 bytes — or it is no one,
-  and the layer's 401 answers (R1's L-2). A claimed `not-an-email` once named an Archive object
-  whose `init` refused it, a 500 no spec lists.
+  something on both sides, no spaces or control characters, at most 254 bytes — and since security
+  S2b a `.test` one (`isTestAddress`: an `@` and the suffix `.test`, the receipt archive's own rule
+  for the `test/` root; finding B6), or it is no one, and the layer's 401 answers (R1's L-2). A
+  claimed `not-an-email` once named an Archive object whose `init` refused it, a 500 no spec lists.
+- **A populated deployment never changes its door, and a public deployment starts empty** (security
+  S2b, finding C1; spec §2.2's C1 row). The two doors key their callers in two spaces — a typed NAME
+  under `open`, a verified ADDRESS under `worker` — and since S2b the layer keeps them apart
+  (`ClaimPolicy::NamesOnly` refuses an address claim under `open`, so an `@` always means a verified
+  address). A deployment flipped from one door to the other keeps every table, seat and archive folder
+  keyed under the first door's space, which nobody under the second reaches as their own. So a
+  deployment that holds tables or saves keeps its door, and a public open-door deployment is a NEW
+  Worker with its own objects and its own bucket (R-SEC6), starting empty. The door windows of cycles
+  E and F (§19, §20) flipped this Worker for minutes before the rule was written; their recipes stand
+  as records, and a later window is the owner's call against this rule.
 - **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
   and deploy (§2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
   two files — and nothing is removed from the bucket. With the switch off:
@@ -425,9 +485,14 @@ corrected.
 ```sh
 B=https://yokohama.moore.nyc
 curl -s "$B/api/admin/tables" | jq                                              # the listing
-curl -s -o /dev/null -w '%{http_code}\n' -X POST "$B/api/admin/tables/<id>/expire"         # expire: 204
-curl -s -w '\n%{http_code}\n' -X POST "$B/api/admin/tables/<id>/expire?force"            # force: 204 or 503
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire"        # expire: 204
+curl -s -w '\n%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire?force"   # force: 204 or 503
 ```
+
+**The two POSTs carry `content-type: application/json`** (security S2b, finding B5): without it the
+shell answers the layer's own 400, `` Expected request with `Content-Type: application/json` ``, so a
+hostile page's form or text POST — which a browser sends without a preflight, with a signed-in
+operator's cookie — can never reach an expire; curl sends no type unless told.
 
 - **The listing** is every table the lobby holds a copy of, whatever its status — dealing ones
   included, which the lobby's own pages never show a stranger — each with `id`, `name`, `status`,
@@ -468,9 +533,9 @@ expires in 2031 (spec §0.5).
   printed, committed or pasted.
 - **What it does.** A request presenting both headers gets an assertion whose `common_name` is the
   client id and which names no `email`, and Service Auth outranks a WARP identity (spec §0.3 row 1).
-  With `YOKOHAMA_DEV_DOOR` on, such a request names its caller in `X-Yokohama-Claimed-User`; without
-  that header it is no one. Access also sets a `CF_Authorization` cookie, which carries the
-  credential on later requests from the same browser.
+  With `YOKOHAMA_DEV_DOOR` on, such a request names its caller in `X-Yokohama-Claimed-User` — a
+  `.test` address only, since security S2b; without that header it is no one. Access also sets a
+  `CF_Authorization` cookie, which carries the credential on later requests from the same browser.
 - **The header-file recipe** — the secret never on argv, never on screen. From the repository root:
 
   ```sh
@@ -605,7 +670,8 @@ expires in 2031 (spec §0.5).
     `{id, site, record_key, detail, attempt?}`: one upload's outcome. `site` is `abandon` (a
     creator's DELETE), `expiry` (an idle table's expiry), `operator` (an operator's plain expire),
     `game-over` (a save a game over owes, uploaded after the move's reply) or `browser`
-    (`POST /api/archive`, where `id` is the archive object's name, `archive:<address>`).
+    (`POST /api/archive`, where `id` is `archive:<12 hex>` — the first twelve hex of SHA-256 over the
+    caller's address — never the object's name, `archive:<address>`).
     `detail` is the record's key, or for `failed` R2's message — or the host's own sentence
     `<record_key> refused a create as present, then read as absent`, when the record's
     create-if-absent put was refused and the record then read as absent. `attempt`, at the
@@ -615,7 +681,12 @@ expires in 2031 (spec §0.5).
     by the table's first request once the rung has passed: a request inside the rung uploads
     nothing, so an R2 outage costs a request a read of the owed row and no attempt. *(Corrected
     2026-09-29, M6.5c2 cycle D, R-D6: until then every request re-attempted it, and each failure
-    climbed the ladder.)*
+    climbed the ladder.)* **`record_key` and `detail` are logged through `redactKey` since security
+    S2b** (finding D23), as is every `record_key` below — `archive-stamped`'s, `archive-owed-kept`'s,
+    `archive-owed-dropped`'s and `held`'s: a browser save's `browser/<readable>-<12 hex>/` segment
+    reads `browser/<12 hex>/`, so a line names the caller's folder and never the address it spells;
+    a server game's key carries no such segment and is logged as it is. *(Corrected 2026-10-12: until
+    S2b `id` was `archive:<address>` and both fields carried the readable segment.)*
   - **`archive-stamped`** `{id, record_key, reading, stamped, over}`: a game-over save that landed
     (or was already there), stamped by the layer's own `stamp_archive` at the plan's recorded
     `reading`. `stamped: true` completes the save; `stamped: false, over: false` — an undo at a
@@ -647,7 +718,8 @@ expires in 2031 (spec §0.5).
     an expiry its creator),
     `events` (the reading that decides the marker's tail), `dispatch` or `expire`, or `read`; in its
     second dispatch, `receipt`, `dispatch` or `expire`, or `read`; in a game-over save's stamp,
-    `receipt`, `stamp_archive` or `read`; in an archive object, `receipt` or `dispatch`.
+    `receipt`, `stamp_archive` or `read`; in an archive object, `share_prefix` or `set_share` (the
+    share's count, security S2b), `receipt` or `dispatch`.
 
   Expiry, the marker and the operator (spec §2.4, §2.9; Task 14) add these:
   - **`expired`** `{id, reason, kept}`: the layer deleted a table as its creator — its expiry
@@ -679,8 +751,24 @@ expires in 2031 (spec §0.5).
     the lobby acknowledged it: one the code before the marker wrote (the fifteenth and sixteenth
     deployments), or one a force made before M6.5c2 flagged its own. No code since leaves one.
     *(Added 2026-09-28, M6.5c2.)*
-  - **`operator`** `{id?, action, address}`: every operator action — `list`, logged by the house
-    with no `id`, `expire` and `force`, logged by the table — with the operator's address.
+  - **`operator`** `{id?, action, operator}`: every operator action — `list`, logged by the house
+    with no `id`, `expire` and `force`, logged by the table — with `operator` the first twelve hex of
+    SHA-256 over the operator's address (`callerDigest`), never the address (security S2b, finding
+    D23). *(Corrected 2026-10-12: until S2b the field was `address`, the address itself.)*
+
+  Security S2b (the Worker's door) adds these:
+  - **`limiter-failed`** `{error}`, logged by the WORKER: a Rate Limiting binding's `limit` threw,
+    and the request went on unlimited — the limit bounds cost, never access (AD-6). `error` is the
+    platform's own text, which may carry the limit key — an IP under `open` — if it echoes it
+    (unverified offline; a residual owed to S2b's after review).
+  - **`archive-count-failed`** `{id, error}`: the Archive object's R2 listing of the caller's share
+    failed. No listing reaches the module, so the save is refused uncounted: the layer's 500 with
+    `the caller's share was not counted before this save` inside it, which the outbox retries.
+  - an Archive object's **`init-refused`** `{id, error}` (one of the shell's own lines, above): `init`
+    refused the object's caller — a claim the key grammar refuses, such as `..` — and the request is
+    the layer's 401. `error` is the grammar's sentence, which repeats the claim, at most 64
+    characters; never a well-formed address, which `init` admits (a residual owed to S2b's after
+    review).
 - **The bucket**, through wrangler's own login: `npx wrangler r2 object get
   "yokohama-archive/<key>" --remote --file <path>`. A pair is `rev7/{over,abandoned}/<id>.json` and
   `.table.json`, and a browser's save sits under `browser/<caller_segment>/`. A game whose table's
@@ -763,6 +851,23 @@ owner's account, spends its quota, and leaves rows and saves behind. They are th
 the orchestrator's this cycle (Task 15) — from the owner's workstation, over WARP, with the
 credential in the repository root's `.dev.vars` (§4), whose values neither prints.
 
+**A live run opens and closes with a deploy since security S2b** (finding B6; decision D-1): the
+production file ships the dev door `off`, and both tiers play through it, so a run begins with
+`npm run deploy:dev` — `wrangler.dev.jsonc`, production with the dev door `on` — and ends with the
+plain `npm run deploy`, which shuts it again. Both deploy the release build (§1), and each restarts
+every object, so run them between games:
+
+```sh
+cd worker && npm run deploy:dev   # before: the dev door on
+# … the live Playwright tier, then the live replay, one at a time (below) …
+cd worker && npm run deploy       # after: the dev door off again
+```
+
+The dev door is not exempt from the rate limits (decision D-3), and neither tier comes near them: the
+local two-browser walk's busiest page peaks at 71 unsafe requests in 10 s, under `WRITE_LIMIT`'s 120
+(`docs/web-lane.md` §16), and the live replay is not paced — since security S1b it runs 26 of the
+corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, withdrawn).
+
 - **The live Playwright tier** — two specs, `two_browsers` and `joins_by_link`, played at
   `https://yokohama.moore.nyc` (`web/e2e/live.ts` holds its rules):
 
@@ -829,6 +934,22 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
   answering the once-rule's 200. **Never beside the Playwright tier**: the two share the house
   chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP
   the owner's own login is the operator (§3).
+- **The rate limit's live reading — the burst** (security S2b, finding C2; AD-7), over WARP as the
+  owner, with the smoke's browser `User-Agent` (the next bullet):
+
+  ```sh
+  cd worker && BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
+  B=https://yokohama.moore.nyc; for i in $(seq 140); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}'; done | sort | uniq -c
+  curl -s -i -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}' | grep -i -e '^HTTP' -e '^retry-after' -e '"error"'
+  ```
+
+  It reads 400s, then 429s from about the 121st inside one 10-second window: the limiter counts
+  before the layer's 400, and `{}` posts nothing. The last line, sent at once inside the same window,
+  shows one refusal whole — `429`, `Retry-After: 10` and `too many requests from you just now — wait a
+  moment and try again`. Counting is per Cloudflare location and best effort, so a burst may need a
+  second run to read its 429. `scripts/probe-burst.mjs` sends GETs alone and can read no 429. The
+  burst spends the owner's own write budget, so for ten seconds the owner's writes are refused: run
+  it between games.
 - **Bot Fight Mode's 403.** The zone's Bot Fight Mode and JavaScript detections — ON, by the owner's
   decision — answer a bot-shaped request BEFORE Access sees it: 403, `cf-mitigated: challenge`, and
   a `text/html` "Just a moment…" body of about 5,259 B (§8, reading 1). Both tiers print a body
@@ -2086,7 +2207,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 - **State 2 — the door on the API paths alone (12:24–12:31Z):** `npm run deploy:gate` FIRST (`wrangler.gate.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("off")`; version `d95668f0`), THEN the secret put back from `git config user.email` through stdin; the PUT with the two hostnames + the NINE paths (`yokohama.moore.nyc/api/admin`, `/api/archive`, `/api/art`, `/api/chat`, `/api/games`, `/api/labels`, `/api/me`, `/api/stream`, `/enter`). Read over WARP from a clean context: `/` 200 with zero `/api/` calls; **a local bot game of five acts with ZERO Worker invocations** (the query API); the owner's "Go to the lobby" → `/enter` → the lobby with no login page, a table created, both sockets opened, `/api/me` naming the owner, the operator listing 200. Read from a HEADED browser WITHOUT WARP: `/` 200 and `/shell.bin` 200 (public), an `X-Requested-With` fetch of `/api/me` and `/api/games` → **401 `WWW-Authenticate: Cloudflare-Access resource_metadata="https://yokohama.moore.nyc/.well-known/cloudflare-access-protected-resource/api/me"`**, a navigation to `/enter`, `/api/games` or `/api/admin/tables` → Access's login page. (curl from a bare client meets Bot Fight Mode's 403 before Access; a browser is the instrument.)
 - **The revert (12:31:37–12:32:32Z):** `npm run deploy` (`wrangler.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("on")`; version `eb8c7839`, the twenty-eighth deployment — 26 and 27 were the window's); the PUT back to the three hostnames (`yokohama`, `yokohama-cli`, `yokohama-nas`), the `aud` unchanged; `wrangler secret list` names both secrets. After-check: `/api/me` over WARP names the owner; **a clean headed browser without WARP at `/` meets Access's login** (12:43Z; the door not drawn); the credential + a claimed header names its caller; a claimed header WITHOUT the credential names the owner, not the claim; the live replay ONCE HOLDS; the quota above.
 - **The three PUT bodies** (`PUT /accounts/{account}/access/apps/11cbcf68-96cd-4310-baee-f2ade812155d`; the MCP or `curl` with an API token that manages Access) carry the application's read-back fields unchanged — `name: yokohama`, `type: self_hosted`, `session_duration: 730h`, `app_launcher_visible: true`, `allowed_idps` (the one identity provider's id), `auto_redirect_to_identity: true`, `http_only_cookie_attribute: true`, `policies` as `[{id, precedence}]` for the three (`sbaitso-friendly` 1, `yokohama-players` 2, `yokohama ST bypass` 3) — and differ ONLY in `domain`, `self_hosted_domains` and `destinations` (`[{type: "public", uri}]`, one per entry): the REVERT lists the three hostnames with `domain: yokohama.moore.nyc`; STATE 1 lists `yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` with `domain: yokohama-nas.moore.nyc`; STATE 2 adds the nine `yokohama.moore.nyc/<path>` entries to state 1's list. Read the application back after every PUT: the `aud` must not change (it did not, three times), and a changed `aud` would orphan every `ACCESS_AUD` the Workers carry.
-- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games.
+- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7.)*
 
 ### What this deployment does NOT claim
 - The live half of RF1 (the update path) on each host was read ONCE, in a headless persistent context on the workstation — not on the owner's Edge, whose pinned state is the one that failed on 2026-09-29; the owner's own browser is the last reading.

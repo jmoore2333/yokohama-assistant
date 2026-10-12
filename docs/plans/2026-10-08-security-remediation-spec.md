@@ -713,3 +713,277 @@ and nothing re-opens them. The owner's words are quoted where they were given.
     in this release and by both in the next.
 12. **The wire corpus moves in S2a** by one new contract file (`id_cases.json`, Task 5) and the version fields
     (Task 8); §6's "once, in S1" was S1's.
+
+### 9.7 — 2026-10-12, S2b's brainstorm and plan: the owner's rulings R-1–R-6, thirteen decisions and twelve corrections
+
+S2b's plan (`docs/plans/2026-10-12-security-s2b-worker-door-plan.md`) transcribes the brainstorm of 2026-10-12 — the owner's six rulings for the cycle, R-1–R-6, with X1, X3, X4 and X6 standing from 2026-10-11 — takes thirteen decisions of its own (D-8 withdrawn at the plan review and kept by its number, so D-9–D-13 keep theirs) and makes twelve corrections of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at `f1854941` — unchanged since `226e50e9`, the second of the two corrections the run made inside them at the source: `6e23702c` set the write limit at 120 per 10 s on the pre-flight's reading (the first text's 60 did not stand; the burst recipe's 75 POSTs and "the 61st" moved with it), and `226e50e9` corrected D-4 at Task 3's review (the socket caps count OPEN sockets only) — so what follows is what the cycle executed, not its first draft. The plan's three headings are set as this section's bold lines, as §9.5 and §9.6 set theirs; every other line is the plan's byte for byte. The run's rulings are the close's paragraph after them (the plan's Task 10 Step 6), as §9.4's 2026-10-10 paragraph was S1b's.
+
+**The owner's rulings for S2b (2026-10-12), and what each binds**
+
+The brainstorm of 2026-10-12 opened with the board's "NEXT" still the first S2 window, un-run; the owner opened S2b's
+brainstorm instead and ruled on seven decisions and the method. Every word below is the owner's, quoted as given,
+and nothing re-opens them. X1 (one stack, `security-s2b` stacked on `security-s2`, a PR against the stack, ONE merge
+at S2's wrap), X3 (Opus reviewers; Sonnet implementers only where the brief carries the whole judgment), X4 (the
+pre-flight executes the first two tasks' cells and measures every figure) and X6 (the service token stays
+long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 unchanged.
+
+- **R-1 — the method and the hand-off.** "Once you're ready with the plan, please run the plan through a four sonnet
+  agent ultracode review, with an opus agent for collating and deduplicating the results and verifying for you - so
+  you get a list of items to review and update the plan to. Afterwards, with the plan presented and memory updated -
+  we can take it from there. If the plan is dependent on the deploy being done to the updated version - let me know
+  and I'll run that with another agent before runnign this plan through. If it doesn't make a difference, then we
+  can just run through this plan and run the deploy afterwards - either way let me know in the handover. I'll review
+  before beginning the next session." **The answer, recorded:** this plan does not depend on the 0.6.2 deploy. S2b
+  has no window and no version (X2); its code goes live at the wrap in 0.6.3; the first window still tags and
+  deploys S2a's commit `af7f30d5`, whenever it is slotted, and S2b's branch is untouched by it. The window is OWED,
+  any slot, and the board says so. **It is run from the `v0.6.2` tag's tree** — a `git archive v0.6.2` export, or a
+  clean checkout of `af7f30d5` — never from a `security-s2b` checkout: S2b's tree has no `deploy:gate`, ships the dev
+  door OFF (the live replay and the live Playwright tier would find it shut) and binds the rate limits before the
+  owner has confirmed that namespaces 7301 and 7302 are free. The board's "or the head after the parked sentences,
+  if you take them" falls away: S2b's Task 8 takes them, on `security-s2b`. So the deploy does not have to run
+  before this plan, and this plan does not have to wait for it (verified at the plan review, PF-09).
+- **R-2 — D-1, the dev door's standing state: option (b).** "Understood - agreed B on D-1." The owner's framing,
+  which (b) is built to honour: "I don't think of the gate as a dev function entirely, the dev door is different from
+  having the access gate - people that use this may just want to have access in their environment - that's different
+  from wanting it online or even on a LAN with no identity layer." So the Access-alone shape IS the production file,
+  `wrangler.jsonc`, with the dev door OFF; the one file that opens the dev door is `wrangler.dev.jsonc`, deployed
+  around a live tier and reverted by the plain deploy; `wrangler.gate.jsonc` goes, its content now production's.
+- **R-3 — D-2, the open door's key rule: R-SEC8(c) stands, and the public identity model is out of scope.** The
+  owner's questions, answered in the brainstorm and recorded in decision D-2: "For D-2, my understanding is even if
+  we remove the access layer, we still request an identity from a user, and even though we don't verify it through a
+  layer like access - we can have players come on and put in their email and play. If this produces an architectural
+  dilemma, we may need to consider how to handle this - but the ideal was just to have the game be playable by anyone,
+  and at first we would launch this where the public deployment was behind access for multiplayer but the home page
+  was open but ideally we open a lobby to anyone that wants to play. This could create a problem where people can put
+  in other people's email addresses, how would we handle that today with the codebase as it stands now?" Then, on a
+  second person typing the same name at a full open deployment, the answer that under the open door the second
+  person IS the first (the key is the typed name, normalized; nothing else is bound to anything). Then the ruling:
+  "Access would not be used for when this is public it's not the right auth model at all - I don't think it is
+  scalable to pay $7/month for an auth identity. auth0 allows 25,000 monthly active users on their free tier, we
+  would have other options here. I don't think we need to get into that identity model yet for outside access that
+  would be out of scope for now - we can keep it with the current design, so when we open things up, we have the home
+  page wide open, but then the multiplayer gets access gated post turnstile and we can consider a middle ground like
+  layering in auth0 or some other solution that fits to track users that won't carry a cost or affect our security
+  posture", clarified: "let me be more clear, access would not be used by us specfically on the yokohama.moore.nyc -
+  but we'll have another private deployment worker, and the NAS which is access, and others can deploy it however
+  they want once its open sourced - but we will have a deployment for anyone to use, and that we will probably want
+  to mint some kind of controls for - but that's not something we have to be making decisions on right now unless you
+  feel that's important for this phase." **Recorded for S4, not decided here:** the public Worker at
+  `yokohama.moore.nyc` runs the OPEN door behind the Turnstile with controls to be minted later; a second private
+  Worker and the NAS stay behind Access; a self-hoster deploys as they like. Nothing in S2b presumes otherwise, and
+  C1's name rule is exactly what that public open door runs.
+- **R-4 — D-3, the rate-limit binding on Workers Free.** "D-3, I'm not sure if this rate limit mechanic works the same
+  way on the cloudflare workers free tier - if it does than this is fine." The documentation gates the binding by no
+  plan (the pricing page lists Free-plan limits for Workers, KV, D1, Durable Objects and R2 and none for rate
+  limiting; the binding is GA since 2025-09-19), so this plan takes it; the live proof of plan availability is the
+  wrap's deploy, which refuses a binding the plan does not allow before anything else runs, and the fallback if it
+  ever refused is the review's Durable Object token bucket, NOT built ahead of the refusal (decision D-3).
+- **R-5 — D-4, D-5, D-6 as proposed.** "the other items you note here I take no issue with" — the socket caps and
+  their refusal shape, the live-count quota, the log digests with query-string redaction and the sampling rate kept.
+- **R-6 — D-7, S4's first-deploy path: a documented recipe, and no guard code.** "noting D-7 is not really a call that
+  is open to make hnless I'm misunderstanding - I agree building a guard that way before the worker exists doesn't
+  make much sense and wouldn't fit the flow of how someone would set this up anyway unless we were getting into
+  scripting the setup, which is a feature that isn't being considered/we probably aren't going to need that."
+- **The values are the orchestrator's recommendations by the owner's standing ruling of 2026-10-11** ("my instinct is
+  to use the suggestions you make"), with the rate-limit figures held to the owner's bound ("as long as … those
+  values align with a user playing a couple of games at a time").
+
+**The decisions this plan takes** (the orchestrator's; the owner read D-1–D-7 at the brainstorm, 2026-10-12)
+
+- **D-1 — the dev door is OFF in the production file, and ONE file opens it.** `wrangler.jsonc` sets
+  `YOKOHAMA_DEV_DOOR` to `off`; `wrangler.dev.jsonc` is production with that one variable `on`, deployed by
+  `npm run deploy:dev` before a live tier and reverted by the plain `npm run deploy` after it, as `deploy`/`deploy:gate`
+  were before with the directions swapped so the safe direction is the plain command; `wrangler.gate.jsonc` is deleted,
+  its content being production's now; `npm run deploy:gate` goes with it (the dated deploy records that spell it are
+  records, and stay). The guard (D-10) holds the dev file to production with exactly `DEV_DIFFERS`
+  (`YOKOHAMA_DEV_DOOR: "on"`), refuses `on` in any OTHER worker-door file, requires exactly `"on"` in the dev file,
+  and holds every unlisted worker-door `--config` file to production exactly (F-40). A self-hoster copying the
+  production file now copies Access alone. The pool's `wrangler.test.jsonc` keeps its dev door `on`: the dev-door
+  cells need it, and the pool never deploys.
+- **D-2 — the open door's key rule lives in the layer's mode rule, as a named policy; the Worker shell judges no
+  claim — its one change collapses a claim's space runs, so a key names one Archive object (D-5).**
+  `identity::ClaimPolicy { NamesOnly, Diagnostic }`, the seed rule's own shape (`SeedPolicy`, security S1a): under
+  `IdentityMode::Open` with `NamesOnly`, a key with the email shape is refused by `admit` with ONE sentence,
+  `identity::ADDRESS_NOT_A_NAME`; under `cf-access` and `worker` the policy changes nothing, since an address is the
+  only admitted shape there. Every production constructor builds `NamesOnly` — `AppState::production` (the NAS's
+  `main`), and the Worker module's `identity_of`, which has no diagnostic arm at all; `AppState::with_store` and the
+  `in_memory*` builders build `Diagnostic`, so the corpus walk (`wire_fixtures`, the open door as `red@wire.test`) and
+  the layer's cells stand and the corpus does not move. The Worker shell forwards an address-shaped claim as it does
+  today, and the layer refuses it inside the objects — so the NAS and the Worker answer the SAME sentence (the
+  review's second refusal in `claimedIdentity` would make the Worker answer the absent-caller sentence instead). The
+  client's name step, which exists under the open door alone, refuses any input containing an `@` before the key
+  grammar runs and before any request (`nameRule::openDoorVerdict`), so every `@` is answered in the door's own words
+  and never with the grammar's sentence about writing an address; pinned over `identity_cases.json`'s `@` rows; the
+  key grammar and that fixture are unchanged. Two consequences recorded: under the open door no claim is ever a test
+  identity, so an open deployment's browser saves file at its bucket's TOP root — the public Worker's own bucket, by
+  R-SEC6; and D24 collapses, since a plain name is ASCII by the grammar and always a legal header (§9.7 correction
+  10). What this rule does NOT do, said once: it stops no impersonation under the open door, where a name is a label
+  and a key and never a credential; it keeps the two key spaces disjoint, an `@` always meaning a verified address,
+  so a door flip over shared storage can never hand an Access player's seats and archive folder to whoever types
+  their address. Under the open door the local Playwright tier — the release binary, `production`, `NamesOnly` —
+  plays by NAMES, and the live tier by `.test` addresses through the dev door: the harness's identity follows the
+  target (Task 5b). A seat is a reservation, not a caller: the layer does not judge a seat's user by the door, and
+  the new-table form's "their name" field refuses an `@` under the open door as the name step does (Task 5b); a
+  layer rule for seats belongs to S4, with the public open door.
+- **D-3 — two Rate Limiting bindings, keyed by caller or by IP, with the figures from the measured calls per move.**
+  `CREATE_LIMIT` (namespace 7301) 10 per 60 s on `POST /api/games`; `WRITE_LIMIT` (namespace 7302) 120 per 10 s on
+  every other unsafe method, `/api/archive` and the operator's POST included. The key: under `worker` a caller's
+  digest (`u:` and SHA-256 of the address in hex), under `open` the connecting IP for creates (`ip:<cf-connecting-ip>`)
+  and the IP plus the claim's digest for writes; a request with no caller is keyed by IP under either door; an absent
+  `cf-connecting-ip` reads `unknown` (the pool). A refusal is 429 with `Retry-After: 10` and the host-written sentence
+  `TOO_MANY`, answered before any object is reached, under `handle`'s two API headers; reads and upgrades are never
+  limited (D3 caps sockets). The basis is `docs/web-lane.md` §16's reading of cycle F's live tier — 7.30 `/api`
+  requests a move over 1,741 moves in 470 s, `/input` 1.13 a move, so a seat at machine speed writes about 21 per
+  10 s ON AVERAGE (the tier's peak of 338 `/api` requests in 10 s holds about 52 unsafe ones, so the pre-flight's
+  per-page peak decides whether 60 stands, Task 10 Step 1(a) — MEASURED 2026-10-12 at the pre-flight: the local
+  two-browser walk's pages peak at 71 and 69 unsafe requests in a sliding 10 s window, almost all `POST …/input`, with
+  a median fixed bucket of 56 and 52, so 60 would trip on ordinary buckets and does NOT stand; the write limit is **120
+  per 10 s**, 1.7× the measured peak, the live tier being slower than the local walk, never faster); a person with two games is ESTIMATED, not measured,
+  at about 4. The live replay needs no pacing: since S1b it sends 26 of the corpus's 2,213 rows at the production
+  door — 17 writes, all as one identity, in about 4 s (`worker/RUNBOOK.md` §21; `docs/web-lane.md` §2) — so the
+  write limit never binds it (D-8, withdrawn). The dev door is NOT exempt: the instruments play under the limit,
+  which is what bounds a stolen credential too. The pool carries both bindings with a LENIENT figure (1,000,000 per
+  60 s), because `test/worker.test.ts` sends more than ten creates a minute as one caller through `handle`
+  (measured: at production's 10 per 60 s two of its cells answer 429) and miniflare's ratelimit plugin counts for
+  real; the corpus replay is not the reason — `test/walk.ts` drives the objects directly and reaches `handle` for
+  `/api/art` alone, so it never spends a limiter; the guard pins production's block to its literals and the pool's
+  to the two names (D-10); the shell's logic is proven in the pool through a fake limiter handed in `env`, and the
+  live refusal is read at the wrap's window by `worker/RUNBOOK.md` §7's burst recipe (140 credentialed POSTs as the
+  owner over WARP, reading 429 and `Retry-After` from about the 121st inside one window; `probe-burst.mjs` sends GETs
+  alone and can read no 429). Platform facts recorded: the binding is GA; `period` is 10 or 60 only; counters are
+  per Cloudflare location and best effort; a `namespace_id` is a STRING in the configuration (wrangler 4.136.3
+  refuses an integer by name), unique to the account, and a shared id shares counters across Workers — the owner
+  confirms no other Worker on the account uses 7301 or 7302 before the wrap's deploy. A refused create answers
+  `Retry-After: 60`, a refused write `10` — each its own window. A limiter that throws is logged `limiter-failed`
+  and the request proceeds: the limit bounds cost, never access, and a platform fault must not take the game down.
+  Under `open` the write key is (IP, claim) and a claim is free, so the write limit is per name, not an IP ceiling;
+  creates are IP-only — the spec's own key. If the wrap's deploy ever refused the binding, the fallback is the
+  review's Durable Object token bucket, not built ahead of the refusal (R-4).
+- **D-4 — the socket caps, and a refusal the client already reads.** A table object admits at most
+  `SOCKETS_PER_CALLER` (8) sockets per caller and `SOCKETS_PER_TABLE` (64) in all; the house `LOBBY_PER_CALLER` (8)
+  and `LOBBY_TOTAL` (1,024); the platform's own ceiling is 32,768 per object and the client holds one socket per
+  visible tab. Every socket is tagged with the table's id (as today) AND a caller tag, `u:` and SHA-256 of the
+  caller in hex — computed in `fetch`, which is async, and carried in `Incoming` — so the count is
+  `getWebSockets(tag).length`; a tag is at most 256 characters and keeps the address off the platform's tag store. A
+  refused upgrade is ACCEPTED, sent `end` carrying the sentence (`endAtAdmission`), and closed `4429` — the shape
+  `signal.ts` reads as `ended`: the game screen draws it (`useSignal`'s `onEnd` navigates with the sentence); the
+  lobby does not — `Lobby.tsx` passes no `onEnd`, so a refused lobby socket leaves the word `live` and the last
+  listing until reload, recorded and parked (AD-4: a client design question, owed before any open door is deployed);
+  answered unupgraded, the client's ladder would reconnect and hammer. **The counts take OPEN sockets only**
+  (`readyState === WebSocket.OPEN`, the `openCount` helper): a refused or ended socket stays `CLOSING` for as long as
+  its client declines to answer the close — an unaccepted pool client never does, and a hostile one need not — so a
+  count that included it would let a stranger's unanswered 403s lock a table's seated players out and one identity
+  fill the lobby in two seconds (measured at Task 3's review: 60 dangling refusals, 68 held; 1,032 held in the lobby;
+  a seated player refused after a stranger's 64). The CLOSING sockets still occupy the object until the platform
+  tears them down — the pre-S2b shape, under the platform's 32,768 — recorded in §15. (As first drafted D-4 said a
+  CLOSING socket "may still be counted" and "the caps carry that headroom": false for a client that never answers.)
+- **D-5 — the Worker's quota is a live count, not a counter.** Before each save the archive object lists the caller's
+  share prefix in R2 (`list({ prefix, limit: 1000 })`, one Class A operation) and hands the listing — `truncated` and
+  every object's `key` and `size` — to the module through a new export, `set_share`; the receipt archive's `put`, for a
+  `browser/` prefix, counts records and bytes over that listing LESS the plan's own two keys (the NAS's `usage` rule:
+  a half pair's repair never counts its own table twice) and applies `Quota::PRODUCTION`'s arithmetic — the NAS's
+  figures (256 records, 128 MiB), the NAS's sentence through the route's 507 — BEFORE deferring a plan, so a full share
+  uploads nothing. A truncated listing is over the quota by construction (1,000 objects). No listing set is
+  `Failed(SHARE_UNCOUNTED)`, the layer's 500 "the archive could not be written", which the outbox retries: fail
+  closed — and every save begins with none, `share_prefix` clearing whatever an earlier request left (a request the
+  layer refused before the put never spends its listing, so the next save must not). The prefix comes from a second
+  new export, `share_prefix`, since the root (`test/` for a `.test` address) and the segment are the module's to
+  compute. The object keeps no storage; the `test/` lifecycle's deletes correct the count by themselves; the
+  object's serialized request path under `blockConcurrencyWhile` closes the check-then-write race the NAS needed a
+  mutex for, PER OBJECT, and one key is one object: under `worker` an address is canonical, and under `open` the
+  shell collapses a claim's space runs (`claimedIdentity`, Task 5), so two spellings of one name never race over one
+  share (measured at the plan review: without the collapse, 257 records in a 256-record share). A server game's own
+  save (the empty prefix) is never counted, as on the NAS. The 507 and its figures equal the NAS's; the ORDER does
+  not: the NAS reads the once-marker before it counts, and the module, which cannot read R2, judges first and
+  excludes only the put's own two keys — so a retry of a record already filed passes at an exactly full share and
+  meets the 507 in a share already over its bound. Every POST to `/api/archive` lists once before the layer reads
+  the body, so a save the layer refuses cheaply still costs one Class A operation; the write limit bounds it.
+- **D-6 — what the shell logs, and the query string.** The two `operator` lines carry `operator: <12 hex>` — the
+  first twelve of SHA-256 over the address — and no address; every line that carries a record key — the
+  `record_key` field, and `logOutcome`'s `detail`, which IS the key for a landed, identical or conflicting outcome
+  and begins with it in one failed sentence — carries it through `redactKey`, which replaces the
+  `browser/<readable>-<12hex>/` component with `browser/<12hex>/`, so a caller's folder is still named and its
+  address is not; and the Archive object names itself in every line by `archive:<12 hex>`, never by its object name
+  `archive:<address>`. Every deployable configuration sets `observability.redact_query_string` to `true` — the
+  installed wrangler schema has the key at that level — so an open-door socket's `claimed=` never persists in an
+  invocation log; the guard holds both (check 14: `redact_query_string` true, and `head_sampling_rate` absent or 1).
+  `head_sampling_rate` stays at its default of 1: the live readings count invocations through these logs (the
+  Observability query API), and sampling would be privacy by volume at the instrument's cost.
+- **D-7 — S4's first-deploy path is a recipe.** A Worker that does not exist holds no secret, so a new Worker's first
+  deploy runs the deploy guard and `wrangler deploy --config <file>` by hand, and the secrets guard from the second
+  deploy on; the recipe is written where the guard's cost is recorded (`worker/RUNBOOK.md` §2, `worker/README.md`
+  §9.3). No code: wrangler's "Worker not found" is a sentence, not a contract.
+- **D-8 — withdrawn at the plan review (2026-10-12).** As drafted, the live replay paced itself at a `PACE_MS` of 150.
+  The premise was stale: the replay sends 26 of 2,213 rows at the production door since S1b (17 writes, one
+  identity, about 4 s), so the write limit never binds it and no pacing is owed; the arithmetic was wrong on its own
+  premise too (about 7.8 minutes, a 1.1–1.3× margin, not 5.5 and 2×). No task implements it; the number stays so
+  D-9–D-13 keep theirs.
+- **D-9 — B5 takes both of the spec's rules, before identity.** In `answer`, after the route and the upgrade's own
+  `Origin` check and before `shellConfig`: an unsafe method (anything but GET and HEAD) with an `Origin` present and
+  not `url.origin`, or with `Sec-Fetch-Site` of `cross-site` or `same-site`, is 403 `CROSS_SITE`; `null`, `none` and
+  `same-origin` pass, since `Origin: null` is a sandboxed or redirected sender and is not this origin, while a
+  user-initiated navigation (`none`) is not a page's. The operator's POST additionally requires `application/json` by
+  MIME essence, the layer's own gate, or is 400 in the layer's own words (`Expected request with \`Content-Type:
+  application/json\``), so a form can never reach it. The operator's curl playbook and the live replay's `forceAll`
+  gain the header. The upgrade's existing check stays where it is; a `fetch` from the site's own pages carries
+  `Origin: <own>` and `Sec-Fetch-Site: same-origin` and passes; curl, Node's `fetch` and Playwright's request context
+  send neither and pass.
+- **D-10 — the guard's new rules, one check each.** Check 13: production's `ratelimits` block equals `RATE_LIMITS`
+  (the two bindings, their namespace ids and figures) as values, and each pool file's `ratelimits` names exactly
+  `CREATE_LIMIT` and `WRITE_LIMIT`, in any order, with any figures; check 14: production's
+  `observability.redact_query_string` is `true` and its `head_sampling_rate` absent or 1; the dev-door rules of D-1
+  inside check 3; and F-40's sibling rule: an unlisted `--config` file whose door is `worker` is held to production
+  with NO allowed difference. The dev and open files inherit `ratelimits` and `observability` from production by the
+  existing sibling comparison, which covers every top-level key but `vars`. Check 13 reads the top level:
+  `ratelimits` is not inherited by a named environment (wrangler's schema), and the repository deploys none; a named
+  environment would need its own block, and the check would walk it.
+- **D-11 — the route's name grammar is the store's, pinned to the emitted fixture.** `routableName` becomes
+  `isSafeId` restated in `worker/src/route.ts` exactly as `web/src/tableId.ts` restates it (the same six arms less the
+  house's, for the same reason), held both ways to `web/src/wire/id_cases.json` by a node cell; a name the store would
+  refuse is the house's, whose `dispatch` answers the layer's own 404 (security S1c, B8), and never a Table object.
+  The create's body `id` and the operator's `{id}` go through the same function, as today. A dotted id the store
+  admits (`x.js`) still names a Table object before the layer's `DOTTED_ID` refuses the create — one stateless object
+  per refused create, inside `CREATE_LIMIT` (recorded, not closed).
+- **D-12 — no version, no window, no roster; the suites and the lane's rows.** Spec §5.2 asks the fifteen-gate
+  roster "when core or the workspace version moved"; S2b moves neither, so the roster is not owed. The per-edit
+  suites and the web lane's rows (`docs/web-lane.md` §2) run at the final head; `cargo test -p yokohama-web` and
+  `-p yokohama-worker` carry the Rust cells; `npm run build:module:debug` precedes every pool run after Task 4
+  moves the module. The fences: no byte under `crates/yokohama-core`, `-cli`, `-oracle`, `-difftest`, `-bridge`,
+  `-wasm` or `gen-data`; `SEMANTICS_REV` 7; the wire corpus unmoved (no new file, no regenerated payload) — pinned
+  by `wire_fixtures` running clean without `UPDATE_WIRE_FIXTURES`.
+- **D-13 — the inherited residuals this cycle takes.** S2a's four parked sentences (`web/scripts/headers.mjs` ×2,
+  `crates/yokohama-web/src/lib.rs` ×2) and the `with_headers` cell's "no dist, no set" message, with their true
+  forms as the S2a SDD ledger recorded them; D2's `console.<type>` label pinned by a `fakePage` cell; the fully
+  escaped configuration key as committed rows (the S1 stack review's HI-F3 probe, which ran as a temporary copy and
+  was deleted); the crafted-name cell (§9.6 correction 9) and the 48-cut WASM cell; and a new pin that the outbox
+  shows a 429's sentence — it already read a 429 as a wait (`reasonFor` falls through to `offline`), and the arm adds
+  the server's words — because D-3 makes a 429 reachable on `/api/archive` for the first time from the Worker's own
+  shell (the zone rule's 1015 answered it before, as a `text/html` page).
+
+**Spec corrections** (to be recorded as §9.7 by Task 9, dated 2026-10-12)
+
+1. **B6's "production runs from `wrangler.gate.jsonc` (dev door off)"** is met by the production file ITSELF
+   shipping the dev door off; the gate file is retired and `wrangler.dev.jsonc` opens the door around a live tier
+   (D-1; the owner's R-2).
+2. **C2's "by claim plus IP under `open`"** reads: by IP for creates and by IP plus claim for writes; by a
+   digest of the caller under `worker`; by IP with no caller (D-3).
+3. **B12's "a counter in the Archive object on the Worker"** is a live count by an R2 listing before each save, fed
+   to the module, with the NAS's figures and arithmetic (the arithmetic and the sentence; the order differs, D-5).
+4. **D23's fix** is the shell's digests and key redaction plus `observability.redact_query_string: true`; the
+   sampling rate stays 1 (D-6).
+5. **B5's JSON requirement changes two recipes**: the operator's curl playbook and the live replay's force gain
+   `content-type: application/json` (D-9).
+6. **The live replay needs no pacing** (D-8, withdrawn): it sends 26 rows at the production door since S1b; §5.3's
+   live acceptance for S2b is read at the wrap's window, there being no S2b window (X2).
+7. **The open door's key rule is a named `ClaimPolicy`** in the layer, `NamesOnly` in production and `Diagnostic`
+   in the fixtures — the seed rule's shape — and the Worker shell is not a second place for it (D-2); the shell's one
+   change is collapsing a claim's space runs, so one name is one Archive object (D-5) — spec §2.2's C1 row names
+   `claimedIdentity`.
+8. **S4's identity input, recorded on the owner's words (R-3)**: the public Worker at `yokohama.moore.nyc` runs the
+   open door behind the Turnstile, controls to be minted later; a second private Worker and the NAS stay behind
+   Access; Access is not the public deployment's model.
+9. **The first-deploy path of a new Worker is a recipe** (D-7; the owner's R-6), not a guard rule.
+10. **D24 collapses by the grammar**: a plain name's alphabet is ASCII, so once an address is refused under `open`
+    every claim is a legal header; the client's name step refuses the rest before any request (D-2).
+11. **D3's Worker half is the socket cap** (D-4); the stream cap and the body-read timeout are the NAS's, S2c's.
+12. **The fifteen-gate roster is not owed by S2b** (D-12): core and the workspace version do not move.
