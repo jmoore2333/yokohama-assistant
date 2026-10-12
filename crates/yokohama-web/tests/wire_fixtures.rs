@@ -2473,6 +2473,7 @@ async fn corpus() -> Corpus {
     all.push(("site_space_words".to_string(), site_space_words()));
     all.push(("production_bot".to_string(), production_bot()));
     all.push(("identity_cases".to_string(), identity_cases()));
+    all.push(("id_cases".to_string(), id_cases()));
     all.push(("seed_cases".to_string(), seed_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
@@ -2820,6 +2821,42 @@ fn the_identity_cases_carry_the_key_grammar_s_verdicts() {
     }
 }
 
+/// **The store's id grammar, as verdicts over a case list** (security S2a, finding D14; decision D-6): the hash
+/// router's `#/t/<id>` admits exactly what `store::is_safe_id` admits, and this file is how the client's copy
+/// (`web/src/tableId.ts`) is held to the server's both ways, as the name step is held by `identity_cases`. Not a
+/// payload any route serves — a CONTRACT. The rows the rule turns on: the two id shapes the client itself draws
+/// (`sim-` and `local-` with hex), the length bound at 64 and 65, the reserved suffixes in both cases, the leading
+/// character, every traversal spelling, a space (what `#/t/a%20b` decodes to) and a non-ASCII letter.
+fn id_cases() -> Value {
+    use yokohama_web::store::is_safe_id;
+    let (a64, a65) = ("a".repeat(64), "a".repeat(65));
+    let inputs = [
+        "sim-0123456789abcdef", "local-1e205cc2c8b9f836", "x", "7", "evening-2", "evening_2", "evening.2", "x.tablet",
+        a64.as_str(), a65.as_str(),
+        "x.table", "X.TABLE", "x.chat", "x.Chat",
+        "_house", "house", "-x", ".x", "_x", "x-", "x.", "x_",
+        ".", "..", "../x", "x/..", "a/b", "x/", "/x",
+        "a b", " x", "x ", "", "a@b", "a%20b", "B\u{e9}n", "\u{212a}elvin", "a\u{200b}b", "x\n",
+    ];
+    Value::Array(inputs.iter().map(|raw| json!({ "raw": raw, "safe": is_safe_id(raw) })).collect())
+}
+
+/// **What the rows say, where a person would check first** — the premises the client's pin rests on: the two
+/// drawn shapes pass, the bound is 64, a reserved suffix is refused in any case, every traversal spelling and the
+/// space are refused.
+#[test]
+fn the_id_cases_carry_the_store_s_verdicts() {
+    let rows = id_cases();
+    let rows = rows.as_array().expect("a list");
+    let safe = |raw: &str| rows.iter().find(|r| r["raw"] == raw).unwrap_or_else(|| panic!("no row for {raw:?}"))["safe"] == true;
+    for ok in ["sim-0123456789abcdef", "local-1e205cc2c8b9f836", "x", "evening.2", "x.tablet", &"a".repeat(64)] {
+        assert!(safe(ok), "{ok:?} is a usable id");
+    }
+    for bad in [&"a".repeat(65), "x.table", "X.TABLE", "x.chat", "_house", "-x", ".", "..", "../x", "a/b", "a b", "", "a@b", "a%20b", "B\u{e9}n"] {
+        assert!(!safe(bad), "{bad:?} is refused");
+    }
+}
+
 /// **The bot this build deals, for the screens that must name it without
 /// asking** (M6.5c2, spec §2.4; review M1, R2-m6).
 ///
@@ -2962,6 +2999,7 @@ fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
 /// before this cycle, and neither names a person.
 const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
     ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
+    ("id_cases", None, "the id grammar's contract: its one @ is a refused input, and no route serves the file"),
     ("why", Some("ok.provenance.contestant"), "a contestant's identity spells `name@v<version>{params}`: a bot, not a person"),
     ("why_withheld", Some("withheld.provenance.contestant"), "the same contestant identity, on the withheld half"),
 ];

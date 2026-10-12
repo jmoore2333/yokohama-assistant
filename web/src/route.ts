@@ -17,6 +17,7 @@
 
 import { useEffect, useState } from "react";
 import { isLocal } from "./local/ids";
+import { isSafeId } from "./tableId";
 
 export type Route =
   /** The front door at `#/` (R-6.5b2.1): play on this device, or play with
@@ -51,10 +52,12 @@ export function parseRoute(hash: string): Route {
   // `decodeURIComponent` throws on a malformed escape (`%zz`), which is a
   // hand-typed link and not a bug in this client — so it reads as the lobby
   // like every other unrecognized hash, rather than as an exception thrown
-  // during a render.
+  // during a render — and an id the store's grammar refuses is the door too
+  // (security S2a, D14): `..` would otherwise reach `/api/games/../chat`.
   if (m) {
     try {
-      return { kind: "table", id: decodeURIComponent(m[1]!) };
+      const id = decodeURIComponent(m[1]!);
+      return isSafeId(id) ? { kind: "table", id } : { kind: "door" };
     } catch {
       return { kind: "door" };
     }

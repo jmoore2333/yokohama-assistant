@@ -32,11 +32,24 @@ describe("the hash routes", () => {
     expect(parseRoute("#/t/sim-0123")).toEqual({ kind: "table", id: "sim-0123" });
     expect(parseRoute("#/t/")).toEqual({ kind: "door" });
     expect(parseRoute("#/nope")).toEqual({ kind: "door" });
-    // **Decoded, because `hashOf` encodes.** A table id is server-drawn and
-    // today never holds a space; a hand-typed link is not bound by that, and a
-    // route that handed the encoded form to `GET …/table` would ask for a table
-    // whose id contains a literal `%20`.
-    expect(parseRoute("#/t/a%20b")).toEqual({ kind: "table", id: "a b" });
+    // **Decoded, because `hashOf` encodes — and then judged.** A route that
+    // handed the encoded form to `GET …/table` would ask for a table whose id
+    // contains a literal `%20`; so the id is decoded, and the DECODED id is
+    // held to the store's grammar (security S2a, D14): a space is outside it,
+    // so a hand-typed link to an id no table can have lands on the door.
+    expect(parseRoute("#/t/a%20b")).toEqual({ kind: "door" });
+    // The grammar's refusals are the door, never an API path: `..` would
+    // otherwise reach `/api/games/../chat`, and `%2E%2E` decodes to it.
+    expect(parseRoute("#/t/..")).toEqual({ kind: "door" });
+    expect(parseRoute("#/t/%2E%2E")).toEqual({ kind: "door" });
+    expect(parseRoute("#/t/x.table")).toEqual({ kind: "door" });
+    // A reserved suffix after a long head: a rule that judged a prefix alone
+    // would admit it.
+    expect(parseRoute("#/t/aaaaaaaaaa.table")).toEqual({ kind: "door" });
+    // The two shapes the client itself draws pass, and the DECODED id is what
+    // is judged: the encoded segment holds a `%` the grammar refuses.
+    expect(parseRoute("#/t/local-1e205cc2c8b9f836")).toEqual({ kind: "table", id: "local-1e205cc2c8b9f836" });
+    expect(parseRoute("#/t/sim%2D0123")).toEqual({ kind: "table", id: "sim-0123" });
     // And a malformed escape reads as the door, like every other unrecognized
     // hash, rather than throwing during a render.
     expect(parseRoute("#/t/%zz")).toEqual({ kind: "door" });

@@ -1,0 +1,158 @@
+[
+  {
+    "raw": "sim-0123456789abcdef",
+    "safe": true
+  },
+  {
+    "raw": "local-1e205cc2c8b9f836",
+    "safe": true
+  },
+  {
+    "raw": "x",
+    "safe": true
+  },
+  {
+    "raw": "7",
+    "safe": true
+  },
+  {
+    "raw": "evening-2",
+    "safe": true
+  },
+  {
+    "raw": "evening_2",
+    "safe": true
+  },
+  {
+    "raw": "evening.2",
+    "safe": true
+  },
+  {
+    "raw": "x.tablet",
+    "safe": true
+  },
+  {
+    "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "safe": true
+  },
+  {
+    "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "safe": false
+  },
+  {
+    "raw": "x.table",
+    "safe": false
+  },
+  {
+    "raw": "X.TABLE",
+    "safe": false
+  },
+  {
+    "raw": "x.chat",
+    "safe": false
+  },
+  {
+    "raw": "x.Chat",
+    "safe": false
+  },
+  {
+    "raw": "_house",
+    "safe": false
+  },
+  {
+    "raw": "house",
+    "safe": true
+  },
+  {
+    "raw": "-x",
+    "safe": false
+  },
+  {
+    "raw": ".x",
+    "safe": false
+  },
+  {
+    "raw": "_x",
+    "safe": false
+  },
+  {
+    "raw": "x-",
+    "safe": true
+  },
+  {
+    "raw": "x.",
+    "safe": true
+  },
+  {
+    "raw": "x_",
+    "safe": true
+  },
+  {
+    "raw": ".",
+    "safe": false
+  },
+  {
+    "raw": "..",
+    "safe": false
+  },
+  {
+    "raw": "../x",
+    "safe": false
+  },
+  {
+    "raw": "x/..",
+    "safe": false
+  },
+  {
+    "raw": "a/b",
+    "safe": false
+  },
+  {
+    "raw": "x/",
+    "safe": false
+  },
+  {
+    "raw": "/x",
+    "safe": false
+  },
+  {
+    "raw": "a b",
+    "safe": false
+  },
+  {
+    "raw": " x",
+    "safe": false
+  },
+  {
+    "raw": "x ",
+    "safe": false
+  },
+  {
+    "raw": "",
+    "safe": false
+  },
+  {
+    "raw": "a@b",
+    "safe": false
+  },
+  {
+    "raw": "a%20b",
+    "safe": false
+  },
+  {
+    "raw": "Bén",
+    "safe": false
+  },
+  {
+    "raw": "Kelvin",
+    "safe": false
+  },
+  {
+    "raw": "a​b",
+    "safe": false
+  },
+  {
+    "raw": "x\n",
+    "safe": false
+  }
+]

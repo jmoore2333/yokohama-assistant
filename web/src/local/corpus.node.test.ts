@@ -128,10 +128,11 @@ const HOST_FIELDS: Record<string, string[]> = {
  * that quietly stopped being routed appears here by name and a new one cannot
  * join the corpus without landing in a column. Several reasons, not one:
  *
- * - `art_manifest`, `site_space_words`, `identity_cases` and `seed_cases`
- *   were never route payloads: the first is the host's own art directory,
- *   the other three CONTRACTS the client holds itself to (the terminal's
- *   words, the key grammar's verdicts, a seed's verdict).
+ * - `art_manifest`, `site_space_words`, `identity_cases`, `id_cases` and
+ *   `seed_cases` were never route payloads: the first is the host's own art
+ *   directory, the other four CONTRACTS the client holds itself to (the
+ *   terminal's words, the key grammar's verdicts, the id grammar's verdicts, a
+ *   seed's verdict).
  * - `watching`, `locked`, `why`, `why_withheld`, `why_refused`, `explanation_terminal`,
  *   `why_refusals` and `house_frame` are built in process by `constructed()`, because a router
  *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
@@ -156,6 +157,7 @@ const NOT_SERVED = [
   "art_manifest",
   "site_space_words",
   "identity_cases",
+  "id_cases",
   "seed_cases",
   "watching",
   "locked",

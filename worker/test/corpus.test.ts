@@ -74,8 +74,8 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  * own, and stated back here, so a fixture that stopped being routed appears by
  * name and a new one cannot join the corpus without landing in a column.
  *
- * - `site_space_words`, `identity_cases` and `seed_cases` are contracts,
- *   never a route's payload.
+ * - `site_space_words`, `identity_cases`, `id_cases` and `seed_cases` are
+ *   contracts, never a route's payload.
  * - `watching`, `locked` and the five `why`/explanation files are built in
  *   process by the emitter's `constructed()`: a deterministic bot-free walk
  *   cannot reach them.
@@ -102,6 +102,7 @@ const THIRD_COLUMN = [
   "foreign_bot_409",
   "house_chat_off_404",
   "house_frame",
+  "id_cases",
   "identity_cases",
   "locked",
   "production_bot",
