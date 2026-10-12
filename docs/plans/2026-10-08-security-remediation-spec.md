@@ -649,7 +649,7 @@ and nothing re-opens them. The owner's words are quoted where they were given.
   leave the browser, the owner copies that profile's `CF_Authorization` from DevTools into a `umask 077` file used
   as `curl -H @file` and deleted after — the value never in a tool result, a shell history or `ps`. The cookie is
   `HttpOnly`, so no page script reads it and no tool of ours returns it without logging it; and off WARP a `curl`
-  is not a transport at all, whatever its `User-Agent` (W-1, `worker/RUNBOOK.md` §21, 2026-10-01: "a browser
+  is not a transport at all, whatever its `User-Agent` (W-1, `worker/RUNBOOK.md` §20, 2026-10-01: "a browser
   User-Agent, the navigate headers and a fake Googlebot change nothing — the TLS fingerprint is the tell"). The
   owner's rule for every `curl` the window runs OVER WARP stands as given: it carries a browser `User-Agent` (the
   release smoke's `BROWSER_UA`) or meets Bot Fight Mode's 403 before Access sees it (the owner, 2026-10-11: "when
