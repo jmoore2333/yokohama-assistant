@@ -221,9 +221,14 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   `signal.ts` reads as `ended`: the game screen draws it (`useSignal`'s `onEnd` navigates with the sentence); the
   lobby does not — `Lobby.tsx` passes no `onEnd`, so a refused lobby socket leaves the word `live` and the last
   listing until reload, recorded and parked (AD-4: a client design question, owed before any open door is deployed);
-  answered unupgraded, the client's ladder would reconnect and hammer. A socket in `CLOSING` may still be counted
-  (the platform's documented behaviour; in the pool a socket the object closed is listed only within its closing
-  turn, and a client-initiated close drops the count within one RPC), so the caps carry that headroom.
+  answered unupgraded, the client's ladder would reconnect and hammer. **The counts take OPEN sockets only**
+  (`readyState === WebSocket.OPEN`, the `openCount` helper): a refused or ended socket stays `CLOSING` for as long as
+  its client declines to answer the close — an unaccepted pool client never does, and a hostile one need not — so a
+  count that included it would let a stranger's unanswered 403s lock a table's seated players out and one identity
+  fill the lobby in two seconds (measured at Task 3's review: 60 dangling refusals, 68 held; 1,032 held in the lobby;
+  a seated player refused after a stranger's 64). The CLOSING sockets still occupy the object until the platform
+  tears them down — the pre-S2b shape, under the platform's 32,768 — recorded in §15. (As first drafted D-4 said a
+  CLOSING socket "may still be counted" and "the caps carry that headroom": false for a client that never answers.)
 - **D-5 — the Worker's quota is a live count, not a counter.** Before each save the archive object lists the caller's
   share prefix in R2 (`list({ prefix, limit: 1000 })`, one Class A operation) and hands the listing — `truncated` and
   every object's `key` and `size` — to the module through a new export, `set_share`; the receipt archive's `put`, for a
@@ -378,8 +383,9 @@ named:
    `close()` (readyState 2) and is gone by the next request in the pool (measured); a client-initiated `close` drops
    the count within one RPC and delivers no `close` event to the client. So the cap cell closes a socket from the
    client side and POLLS, bounded, until the count falls, then opens again: it asserts the slot frees, never an order
-   against the close's completion, which no pool event marks. Production's headroom for a close awaiting its peer is
-   the platform's documented behaviour and is not measured here — Task 3's cap cell carries the row.
+   against the close's completion, which no pool event marks. A close awaiting a peer that never answers stays CLOSING for
+   as long as the peer likes (measured at Task 3's review), so the caps count OPEN sockets only (D-4, corrected) —
+   Task 3's cap cells carry both rows.
 5. **An address claim with a `.test` suffix under the OPEN door** must be refused like any address (the `test/` root
    is the dev door's and a server game's, never the open door's) — Task 5's layer cell carries the row.
 
@@ -1412,9 +1418,9 @@ export const TOO_MANY_LOBBY = "the lobby has as many connections as it can take 
 
 ```ts
 /** How many sockets one caller may hold on one table (security S2b, finding D3; decision D-4): the client holds
- *  one per VISIBLE tab and none in a background tab (R-P8), and a socket in CLOSING may still be counted (the
- *  platform's documented behaviour; in the pool only within the closing turn), so eight is tabs plus headroom,
- *  never a budget a feature may lean on. */
+ *  one per VISIBLE tab and none in a background tab (R-P8), and only OPEN sockets count (`openCount`: a socket in
+ *  CLOSING stays there as long as its client declines to answer the close), so eight is tabs plus a reconnect's
+ *  overlap, never a budget a feature may lean on. */
 export const SOCKETS_PER_CALLER = 8;
 /** How many sockets one table object holds in all: four seats and their spectators at eight each. The review's
  *  reproduction held 300 and paid 301 module calls per bump; the platform's own ceiling is 32,768. */
@@ -1426,6 +1432,15 @@ export function capVerdict(own: number, total: number, caps: { perCaller: number
   if (total >= caps.total) return "total";
   if (own >= caps.perCaller) return "own";
   return undefined;
+}
+
+/** How many of `sockets` are OPEN — the count both caps read (Task 3's review). A refused or ended socket stays
+ *  CLOSING for as long as its client declines to answer the close (an unaccepted pool client never does; a hostile
+ *  one need not), and a count that included it would let a stranger's refusals lock a table's seated players out and
+ *  one identity fill the lobby (measured). The CLOSING sockets still occupy the object until the platform tears them
+ *  down: the pre-S2b shape, under the platform's 32,768. */
+export function openCount(sockets: WebSocket[]): number {
+  return sockets.filter((ws) => ws.readyState === WebSocket.OPEN).length;
 }
 ```
 
@@ -1454,6 +1469,11 @@ async function openTable(name: string): Promise<DurableObjectStub<Table>> {
 /** How many sockets the object holds under `tag` — or in all with none — read inside it. */
 function held(stub: DurableObjectStub<Table> | DurableObjectStub<House>, tag?: string): Promise<number> {
   return runInDurableObject(stub as DurableObjectStub, (_o, state) => state.storage.sql !== undefined ? (tag === undefined ? state.getWebSockets().length : state.getWebSockets(tag).length) : -1);
+}
+
+/** How many OPEN sockets the object holds under `tag` — the count the caps read (`openCount`). */
+function heldOpen(stub: DurableObjectStub<Table> | DurableObjectStub<House>, tag?: string): Promise<number> {
+  return runInDurableObject(stub as DurableObjectStub, (_o, state) => (tag === undefined ? state.getWebSockets() : state.getWebSockets(tag)).filter((ws) => ws.readyState === WebSocket.OPEN).length);
 }
 
 describe("D3 — the socket caps (security S2b, decision D-4)", () => {
@@ -1485,11 +1505,26 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     const id = "caps-total";
     const stub = await openTable(id);
     const callers = Array.from({ length: SOCKETS_PER_TABLE / SOCKETS_PER_CALLER }, (_, i) => `c${i}@t.test`);
-    for (const who of callers) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) await openTab(stub, who, id);
+    const tabs: Tab[] = [];
+    for (const who of callers) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, who, id));
     expect(await held(stub)).toBe(SOCKETS_PER_TABLE);
     const more = await openTab(stub, "late@t.test", id);
     expect(await more.until(1)).toEqual([endWith(TOO_MANY_TABLE)]);
     expect((await more.closed()).code).toBe(CLOSE_TOO_MANY);
+    // The review's Important 1: a refused socket whose client never answers the close stays CLOSING and is NOT
+    // counted — counted, a stranger's unanswered refusals would lock the seated players out (measured: 60 dangling
+    // refusals, 68 held). Eight refusals left dangling (their client side never accepted), then one seat closes: the
+    // next caller is admitted past them.
+    const dangling: Response[] = [];
+    for (let i = 0; i < 8; i += 1) dangling.push(await upgrade(stub, "dangling@t.test", id));
+    expect(dangling.map((r) => r.status), "accepted, closing").toEqual(Array(8).fill(101));
+    expect(await held(stub), "the dangling refusals are held, CLOSING").toBeGreaterThan(SOCKETS_PER_TABLE);
+    expect(await heldOpen(stub), "and not counted").toBe(SOCKETS_PER_TABLE);
+    tabs[0]!.ws.close(1000);
+    for (let i = 0; i < 20 && (await heldOpen(stub)) >= SOCKETS_PER_TABLE; i += 1) await new Promise((r) => setTimeout(r, 50));
+    const back = await openTab(stub, "late@t.test", id);
+    expect((await back.until(1))[0], "admitted past the dangling refusals").toContain('"event":"signal"');
+    expect(dangling.length, "held for the cell's life, like the lobby's kept").toBe(8);
   });
 
   it("caps the lobby per caller the same way, under its own sentence", async () => {
@@ -1504,6 +1539,18 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     ws.accept();
     const first = await new Promise<string>((resolve) => ws.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
     expect(first).toBe(endWith(TOO_MANY_OWN_LOBBY));
+    const closed = await new Promise<{ code: number; reason: string }>((resolve) => ws.addEventListener("close", (e) => resolve({ code: e.code, reason: e.reason }), { once: true }));
+    expect(closed, "the same close as a table's").toEqual({ code: CLOSE_TOO_MANY, reason: closeReason(TOO_MANY_OWN_LOBBY) });
+    // The review's Important 2: the cap is PER CALLER — a second caller is admitted while the first is full (under a
+    // site-wide lobby of eight this reads 0 OPEN under the second caller's tag; measured at the review).
+    const other = await lobby("lob2@t.test");
+    expect(other.status).toBe(101);
+    kept.push(other);
+    const otherWs = other.webSocket!;
+    otherWs.accept();
+    const listing = await new Promise<string>((resolve) => otherWs.addEventListener("message", (e) => resolve(String(e.data)), { once: true }));
+    expect(listing, "the second caller reads the lobby's listing, not an end").not.toContain('"event":"end"');
+    expect(await heldOpen(house, await callerTag("lob2@t.test")), "one OPEN socket under the second caller's tag").toBe(1);
     expect(await held(house, await callerTag("lob@t.test"))).toBe(8);
     expect(await held(house, LOBBY_TAG), "every lobby socket still carries the lobby tag").toBe(8);
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
@@ -1539,9 +1586,10 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
         // object's in all. A refused socket is ACCEPTED all the same, sent `end` with the sentence and closed
         // 4429 — the shape `signal.ts` reads as `ended`; the game screen draws it, the lobby does not (`Lobby.tsx`
         // passes no `onEnd`; recorded, AD-4). Answered unupgraded, the client's ladder would reconnect and hammer. A
-        // tag outlives hibernation, so the count does too.
-        const own = callerTag === undefined ? 0 : this.ctx.getWebSockets(callerTag).length;
-        const over = capVerdict(own, this.ctx.getWebSockets().length, { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
+        // tag outlives hibernation, so the count does too; OPEN sockets alone are counted (`openCount`: a dangling
+        // close must not lock anyone out).
+        const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
+        const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
         this.ctx.acceptWebSocket(server, callerTag === undefined ? [id] : [id, callerTag]);
         if (over !== undefined) {
           const sentence = over === "own" ? TOO_MANY_OWN_TABLE : TOO_MANY_TABLE;
@@ -1563,7 +1611,7 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
   "not kept" assertion:** the counts are read BEFORE `acceptWebSocket`, so the refused socket does not count itself;
   it is accepted (the frame needs a live socket) and closed, and `getWebSockets` drops it by the next request. The
   house's `admit(instance, user, callerTag)` is the same arm with `LOBBY_TAG`, `LOBBY_PER_CALLER`, `LOBBY_TOTAL`,
-  `TOO_MANY_OWN_LOBBY`, `TOO_MANY_LOBBY`, and `house.ts`'s `fetch` computes `callerTag` for an upgrade as the
+  `TOO_MANY_OWN_LOBBY`, `TOO_MANY_LOBBY` and `openCount` (imported from `./table/sockets`), and `house.ts`'s `fetch` computes `callerTag` for an upgrade as the
   table's does. `sockets.ts:50-52`'s doc, "nothing in this object reads the tag, since `sendFrames` frames every
   socket the object holds", becomes "the cap reads the caller's tag (`getWebSockets(callerTag)`); `sendFrames` still
   frames every socket the object holds".
@@ -1586,7 +1634,9 @@ git commit -m "worker: a table admits eight sockets per caller and sixty-four in
 reached (measured); M26 the
 counts read AFTER `acceptWebSocket` → the eighth tab refused (`expected 7 to be 8`; measured) and the total cell's 56;
 M27 `4404` for `CLOSE_TOO_MANY` → `frames.unit.test.ts`'s literal pin (GREEN in `caps.test.ts` alone, whose sides are
-both the constant — measured); M28 `>` for `>=` → the ninth admitted; M29 the lobby arm dropped → the lobby cell.
+both the constant — measured); M28 `>` for `>=` → the ninth admitted; M29 the lobby arm dropped → the lobby cell; M28b `openCount` reading every socket (`.length`) → the total cell's
+dangling rows (`heldOpen` and the admission past them); M29b the lobby's own count over every lobby socket (a
+site-wide eight) → the lobby cell's second caller (0 OPEN under its tag — the review's R1).
 
 ### Task 4: B12's Worker half — the share counted from a live listing, the module's arithmetic — Opus (B12; decision D-5; Review Focus 3)
 
@@ -2915,9 +2965,10 @@ line `error` → D2's cell.
   the 257th record too; the 64-byte routing sentence at `:159` follows. §15: the quota entry (`:901`) is now the
   Worker's too, and the section gains the by-design entries — the per-location best-effort limit; the sampling rate
   kept at 1 and held by the guard; names only under the open door, with the owner's S4 shape recorded (R-3); the
-  socket caps' headroom for a CLOSING socket; the open-door write key is per (IP, name) and not an IP ceiling; the
+  socket caps count OPEN sockets only, so a dangling refusal cannot lock anyone out, while the CLOSING sockets occupy
+  the object until the platform's teardown (its 32,768); the open-door write key is per (IP, name) and not an IP ceiling; the
   object-wide caps can be filled under `open` by the very caller they bound (8 claims × 8 sockets fill a table;
-  128 × 8 the lobby); a refused socket counts while it closes; the lobby refusal is silent until reload (AD-4); the
+  128 × 8 the lobby); a refused socket is held, uncounted, while it closes; the lobby refusal is silent until reload (AD-4); the
   R2 list runs before the layer's cheap refusals (AD-9). §16 gains one sentence under the columns: the two limits sit
   above the tier's per-page peaks (the figures from Task 10 Step 1); nothing about a paced replay (D-8 withdrawn).
 
