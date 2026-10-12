@@ -470,8 +470,9 @@ describe("the deploy guard", () => {
     ]);
   });
   // Check 14 (security S2b, finding D23; decision D-6): production's logs redact query strings and are not sampled.
-  // Mutants: `redact_query_string: false` in production (the `false` row); check 14 dropped (the absent-key row);
-  // the sampling clause dropped (the `0.1` row).
+  // Mutants: `redact_query_string: false` in the committed `wrangler.jsonc` (M53: the committed-configuration cells
+  // below — these rows read fixtures); the redaction clause reading absence only, `=== undefined` (the `false` row);
+  // check 14 dropped (the absent-key row); the sampling clause dropped (the `0.1` row).
   const REDACT_REFUSED =
     "wrangler.jsonc's observability must set redact_query_string to true — an open-door socket's claimed= would persist in the invocation logs otherwise (security S2b, D23)";
   it("refuses production's observability without redact_query_string, naming the key (security S2b, D23)", () => {
@@ -507,6 +508,28 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.jsonc": nested }))).toEqual([
       "wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)",
     ]);
+  });
+  // Logs switched OFF drop every line the readings count, whatever the rate (Task 7's review, Minor 3): the block's
+  // `enabled` and the nested `logs.enabled` and `logs.persist` wrangler reads. Mutant: each clause dropped (its row).
+  it("refuses production's logs switched off — observability.enabled, observability.logs.enabled or observability.logs.persist false — naming the key (security S2b, D-6)", () => {
+    for (const [block, sentence] of [
+      [
+        `"observability": { "enabled": false, "redact_query_string": true }`,
+        "wrangler.jsonc's observability must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)",
+      ],
+      [
+        `"observability": { "enabled": true, "redact_query_string": true, "logs": { "enabled": false } }`,
+        "wrangler.jsonc's observability.logs must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)",
+      ],
+      [
+        `"observability": { "enabled": true, "redact_query_string": true, "logs": { "persist": false } }`,
+        "wrangler.jsonc's observability.logs must not set persist to false — the live readings count invocations through these logs (security S2b, D-6)",
+      ],
+    ]) {
+      const off = PRODUCTION.replace(OBSERVABILITY, block);
+      expect(off, "premise: the logs are off").not.toBe(PRODUCTION);
+      expect(deployGuard(worker({ "wrangler.jsonc": off })), block).toEqual([sentence]);
+    }
   });
   it("refuses a configuration with no object bindings or no migrations", () => {
     const bare = PRODUCTION.replace(`${OBJECTS},\n`, "");

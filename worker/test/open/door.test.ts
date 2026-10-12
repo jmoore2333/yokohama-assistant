@@ -3,18 +3,18 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 import compiled from "../../gen/yokohama_worker_bg.wasm";
 import { createModule } from "../../gen/factory.js";
-import { Archive } from "../../src/archive";
+import { Archive, ARCHIVE_PREFIX } from "../../src/archive";
 import * as configModule from "../../src/config";
 import type { Env } from "../../src/env";
 import { House } from "../../src/house";
 import type { KeySource } from "../../src/identity";
 import { handle } from "../../src/index";
 import type { Limiter } from "../../src/limits";
-import { callerTag } from "../../src/redact";
+import { callerDigest, callerTag } from "../../src/redact";
 import { readReply } from "../../src/module";
 import { HOUSE_NAME } from "../../src/slot";
 import { Table } from "../../src/table";
-import { bucketText, replaceOnce, segmentOf, settle, tableStub } from "../helpers";
+import { bucketText, logsDuring, replaceOnce, segmentOf, settle, tableStub } from "../helpers";
 import { ARCHIVE_WALK } from "../walk";
 
 // **The open door, end to end** (M6.5c2, spec §2.1; R-6.5c2.3, R-6.5c2.5) —
@@ -322,6 +322,22 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
       expect([res.result.status, res.result.text], claim.slice(0, 8)).toEqual([401, layer.body]);
       expect([res.archive.length, res.house.length], "the claim's own archive object answered it").toEqual([1, 0]);
     }
+  });
+
+  // Security S2b, D23 (Task 7's concern 1, promoted to the after review's wave): `init`'s refusal of a claim the key
+  // grammar refuses repeats the claim, echoed and quoted, and the `init-refused` line persists — so the line names
+  // the claim by its digest in the quoted span's place, and no persisted line spells it. Mutant: the refusal logged
+  // whole (`error: e`).
+  it("logs a claim the key grammar refuses by its digest, and no line spells the claim", async () => {
+    const claim = "a@b@c";
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    const { result, lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
+    expect(result.status, result.text).toBe(401);
+    expect(JSON.stringify(lines), "no line spells the claim").not.toContain(claim);
+    const digest = await callerDigest(claim);
+    const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ id: string; error: string }>;
+    expect(refused.map((l) => l.id), "one init-refused line, naming the object by the digest").toEqual([ARCHIVE_PREFIX + digest]);
+    expect(refused[0]!.error, "the refusal names the claim by its digest").toContain(`"${digest}"`);
   });
 
   // **An address is no caller under the open door** (security S2b, finding

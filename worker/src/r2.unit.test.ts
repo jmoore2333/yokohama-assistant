@@ -305,4 +305,20 @@ describe("logOutcome", () => {
     expect(parsed.detail).toBe(`${REDACTED} refused a create as present, then read as absent`);
     expect(raw, "no readable half").not.toContain("red_at_wire");
   });
+
+  // `extra` rides beside the line's own fields and replaces none of them: every caller passes `{ attempt }` alone
+  // today, and one that carried `record_key` or `detail` must still log the key redacted (Task 7's review, Minor 5).
+  // Mutant: `extra` spread AFTER the redacted fields.
+  it("keeps the redacted record_key and detail whatever extra carries", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const whole = BROWSER_PLAN.record_key;
+      logOutcome("t", "browser", BROWSER_PLAN, { outcome: "landed", detail: whole }, { record_key: whole, detail: whole, attempt: 1 });
+      const raw = String(spy.mock.calls[0]?.[0]);
+      expect(JSON.parse(raw)).toEqual({ event: "archive-landed", id: "t", site: "browser", record_key: REDACTED, detail: REDACTED, attempt: 1 });
+      expect(raw, "no readable half").not.toContain("red_at_wire");
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

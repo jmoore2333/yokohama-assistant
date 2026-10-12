@@ -163,9 +163,11 @@
 //    (a): before this check nothing held the rate, and `0.1` passed). The
 //    nested `observability.logs` keys wrangler also reads are held the same
 //    way: its `head_sampling_rate` absent or `1`, and its `invocation_logs`
-//    never `false` (Task 7's run: both passed the first form). The open
-//    and dev files carry production's block by the sibling rule (T8-a), judged
-//    when the file is the one deployed.
+//    never `false` (Task 7's run: both passed the first form). Nor are the
+//    logs switched off: `observability.enabled`, `observability.logs.enabled`
+//    and `observability.logs.persist` are never `false` (Task 7's review). The
+//    open and dev files carry production's block by the sibling rule (T8-a),
+//    judged when the file is the one deployed.
 //
 // Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
 // and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
@@ -748,6 +750,11 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   if (production && observed?.head_sampling_rate !== undefined && observed.head_sampling_rate !== 1) {
     failures.push("wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
   }
+  // Logs switched OFF drop every line the readings count, whatever the rate (Task 7's review): the block's
+  // `enabled` here, the nested `logs.enabled` and `logs.persist` below — none of the three ever `false`.
+  if (production && observed?.enabled === false) {
+    failures.push("wrangler.jsonc's observability must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
   // wrangler 4.136.3 also reads `observability.logs.head_sampling_rate` and `observability.logs.invocation_logs`
   // (Task 7's run): a rate set there samples the same logs, and `invocation_logs: false` drops the lines the
   // readings count — both held, so the top-level clause cannot be sidestepped by the nested key.
@@ -757,6 +764,12 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   }
   if (production && logs?.invocation_logs === false) {
     failures.push("wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.enabled === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.persist === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set persist to false — the live readings count invocations through these logs (security S2b, D-6)");
   }
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind

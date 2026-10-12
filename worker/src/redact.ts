@@ -1,10 +1,14 @@
 /**
  * **What the shell says about a caller, and what it never says** (security S2b, finding D23; decisions D-3, D-4,
- * D-6). The shell's own lines persist in Workers Observability, and three of them carried an address or a folder
- * that spells one: the two `operator` lines and every `archive-*` line's `record_key`. A digest names the caller
- * well enough to follow a session through the logs and ties to nothing outside them; the same digest is the
- * sockets' per-caller tag (D-4) and the rate limit's caller half (D-3), so a caller's address reaches no platform
- * store but the identity header the objects read. Pure but for `crypto.subtle`, which is why two of these are async.
+ * D-6). The shell's own lines persist in Workers Observability, and fifteen of them carried an address, a folder
+ * that spells one, or a refused claim, as Task 7's inventory found them: the two `operator` lines; the seven that
+ * log a record key — `logOutcome`'s `archive-*` line, in its `record_key` and its `detail`, `archive-owed-kept`,
+ * `archive-stamped`, `held` and the three `archive-owed-dropped`; and the Archive object's own six — two
+ * `init-refused`, three `trap` and `archive-count-failed` — whose `id` was the object's name, `archive:<address>`,
+ * one `init-refused` also repeating in its `error` a claim the key grammar refused. A digest names the caller well
+ * enough to follow a session through the logs and ties to nothing outside them; the same digest is the sockets'
+ * per-caller tag (D-4) and the rate limit's caller half (D-3). Pure but for `crypto.subtle`, which is why two of
+ * these are async.
  */
 
 /** How many hex characters of the digest name a caller in a log line: 48 bits, the archive segment's own suffix
@@ -29,8 +33,9 @@ export async function callerDigest(address: string): Promise<string> {
 }
 
 /** A browser save's segment, as `archive::caller_segment` writes it since security S1c: the readable half, `-`,
- *  twelve hex. Matched after `browser/` at the key's start or after a root (`test/`). */
-const SEGMENT = /(^|\/)browser\/[^/]*-([0-9a-f]{12})\//;
+ *  twelve hex. Matched where `browser/` starts the key, follows a root (`test/`), or follows any character no key
+ *  segment holds — a quote or a space, where R2's message spells the key inside a sentence. */
+const SEGMENT = /(^|[^A-Za-z0-9._-])browser\/[^/]*-([0-9a-f]{12})\//;
 
 /** `key` with the segment's readable half dropped — `browser/<12 hex>/…` — so a line still names the folder and
  *  not the address it spells. A key with no such segment (a server game's; a legacy folder) is returned as it is. */

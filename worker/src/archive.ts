@@ -90,18 +90,20 @@ export class Archive extends DurableObject<Env> {
     // (security S2b, D23). The module still reads the whole name's caller.
     const name = this.ctx.id.name;
     const caller = callerOf(name);
-    const id = caller === null ? name : ARCHIVE_PREFIX + (await callerDigest(caller));
+    const digest = caller === null ? undefined : await callerDigest(caller);
+    const id = digest === undefined ? name : ARCHIVE_PREFIX + digest;
     const config = this.config;
     if ("error" in config) {
       log("init-refused", { id, error: config.error });
       return respond(500, errorBody(config.error));
     }
-    return this.ctx.blockConcurrencyWhile(() => this.save(name, id, incoming, config));
+    return this.ctx.blockConcurrencyWhile(() => this.save(name, id, digest, incoming, config));
   }
 
   /** The receipt loop (the class's doc), under `blockConcurrencyWhile`: `name` is the object's own, which the
-   *  module's configuration reads its caller from; `id` is what every line logs it as. */
-  private async save(name: string | undefined, id: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
+   *  module's configuration reads its caller from; `id` is what every line logs it as; `digest` is its caller's,
+   *  which a refusal that repeats the caller is logged with in the caller's place (`dispatch`). */
+  private async save(name: string | undefined, id: string | undefined, digest: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(name))));
     const at = nextReading(config.clock);
     // **The share, counted live** (security S2b, B12's Worker half; decision D-5): the object's share prefix from
@@ -139,7 +141,7 @@ export class Archive extends DurableObject<Env> {
         }
       }
     }
-    const first = this.dispatch(id, instance, incoming, at);
+    const first = this.dispatch(id, digest, instance, incoming, at);
     if (first instanceof Response) return first;
     if (first.archive === undefined) return respond(first.status, first.body);
     const plan = parsePlan(first.archive);
@@ -153,7 +155,7 @@ export class Archive extends DurableObject<Env> {
     // measured equivalent by the whole-branch review's battery (r17b). Were
     // the layer ever to stamp a browser's save, the browser-save cell would
     // have to run on a ticking clock to see it.
-    const again = this.dispatch(id, instance, incoming, at, { plan, outcome });
+    const again = this.dispatch(id, digest, instance, incoming, at, { plan, outcome });
     return again instanceof Response ? again : respond(again.status, again.body);
   }
 
@@ -166,10 +168,13 @@ export class Archive extends DurableObject<Env> {
    * that `init` refused (`callerRefused`), which is the layer's 401: only the
    * first dispatch can meet it, since the second runs on the module the first
    * built, so a string the second throws — a receipt the module refused — is
-   * thrown on.
+   * thrown on. The refusal is logged `init-refused` with the caller it repeats
+   * replaced by `digest` (`claimRedacted`): under `open` that caller is a
+   * claim, and a log persists (security S2b, D23).
    */
   private dispatch(
     id: string | undefined,
+    digest: string | undefined,
     instance: Instance,
     incoming: Incoming,
     at: number,
@@ -190,7 +195,7 @@ export class Archive extends DurableObject<Env> {
       });
     } catch (e) {
       if (typeof e !== "string" || receipt !== undefined) throw e;
-      log("init-refused", { id, error: e });
+      log("init-refused", { id, error: digest === undefined ? e : claimRedacted(e, digest) });
       return this.callerRefused(incoming.user) ?? respond(500, errorBody(e));
     }
     if ("trapped" in done) {
@@ -225,6 +230,19 @@ export class Archive extends DurableObject<Env> {
       return undefined;
     }
   }
+}
+
+/** A quoted span as the echo rule writes one — escapes `\"` and `\\` inside — of at most 1,024 characters: the
+ *  layer's echo repeats at most 64 characters (`echo::ECHO_MAX`), each escaped as `{:?}` escapes it to at most ten,
+ *  `\u{10ffff}`, and `…` after a cut. */
+const QUOTED = /"(?:[^"\\]|\\.){0,1024}"/;
+
+/** `sentence` with its FIRST quoted span replaced by `digest`, quoted: a layer sentence repeats the caller it refused
+ *  through the echo rule, which the site writes inside `"…"`, so the first span is that caller (Task 7's concern 1,
+ *  promoted at S2b's after review: an `init-refused` line spelled a refused open-door claim). One replacement of a
+ *  bounded span; a sentence with no quoted span is returned as it is. */
+function claimRedacted(sentence: string, digest: string): string {
+  return sentence.replace(QUOTED, `"${digest}"`);
 }
 
 /** The caller an archive object serves: its name less the prefix, or `null`
