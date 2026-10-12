@@ -347,6 +347,41 @@ describe("identityHeaders and liveContextOptions", () => {
   });
 });
 
+// **`who`: an identity follows the target** (security S2b, C1; Task 5b). The
+// local tier's binary is `production`, `NamesOnly`, so a caller there is a plain
+// NAME; the live tier's dev door names a `.test` ADDRESS, and a spec whose live
+// identities carry their own domain keeps it — `readme_shots`' `ben@readme.test`
+// is what the README's alt text names. Through the ENV, as a run sets it: `LIVE`
+// is read once, when `live.ts` is, so each cell loads a fresh `harness.ts` (and
+// with it a fresh `live.ts`) after stubbing the variable.
+describe("who — an identity follows the target", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** `harness.ts` as a run whose target is `target` loads it. */
+  async function harnessUnder(target: string) {
+    vi.stubEnv("YOKOHAMA_WEB_E2E_TARGET", target);
+    vi.resetModules();
+    return import("./harness");
+  }
+
+  it("live, a `.test` address: the default domain, or the spec's own", async () => {
+    const h = await harnessUnder("live");
+    expect(h.who("x")).toBe("x@e2e.test");
+    expect(h.who("ben", "readme")).toBe("ben@readme.test");
+    expect(h.WALKER).toBe("walker@e2e.test");
+  });
+
+  it("locally, the bare name, whatever the domain", async () => {
+    const h = await harnessUnder("");
+    expect(h.who("x")).toBe("x");
+    expect(h.who("ben", "readme")).toBe("ben");
+    expect(h.WALKER).toBe("walker");
+  });
+});
+
 describe("cookiesFrom", () => {
   const AT = Date.UTC(2026, 8, 24, 12, 0, 0);
   const HEALTH = `${LIVE_ORIGIN}/api/health`;
