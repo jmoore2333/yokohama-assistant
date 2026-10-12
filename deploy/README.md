@@ -111,7 +111,7 @@ the default features, so its image includes the open door.
 From the repository root:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.1-s1 .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.2-s2a .
 ```
 
 It compiles the server and the browser module on the pinned Rust toolchain, then builds the client. The
@@ -135,7 +135,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
   --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama \
   --build-arg YOKOHAMA_SITE_BLURB="A few words under the title." \
   --build-arg YOKOHAMA_SITE_NOTICE="Not affiliated with Asmodee" \
-  -t yokohama-web:0.6.1-s1 .
+  -t yokohama-web:0.6.2-s2a .
 ```
 
 | Argument | Maximum | What it draws |
@@ -173,7 +173,7 @@ docker run -d --name yokohama-web \
   -v yokohama-web-data:/data \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
   --restart unless-stopped \
-  yokohama-web:0.6.1-s1
+  yokohama-web:0.6.2-s2a
 ```
 
 - **`/data` is the one thing that must outlive the container.** Every applied move is written there as the
@@ -222,7 +222,7 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.1-s1       # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.2-s2a      # or: … <image> <port>, default 18080
 ```
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on

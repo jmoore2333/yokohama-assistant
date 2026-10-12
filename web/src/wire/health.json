@@ -8,7 +8,7 @@
   "open_table_ttl_days": null,
   "rules_hash": "d85445c479cb1ead",
   "semantics_rev": 7,
-  "server_version": "0.6.1",
+  "server_version": "0.6.2",
   "signal": "sse",
   "table_ttl_days": null
 }
