@@ -155,7 +155,7 @@ after a release build, `npm run build:module:debug` comes before `npm test` in `
 cd worker && npx wrangler whoami   # the owner's login, account BDVC
 npm run deploy
 #   node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc
-npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20) — never on THIS Worker unless the owner amends R-SEC6 (§3's C1 rule)
+npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20) — on THIS Worker only as a known exercise of the review; steady after it (§3's C1 rule)
 npm run deploy:dev                 # the same three steps, each with --config wrangler.dev.jsonc: the dev door on, around a live tier (§7)
 ```
 
@@ -308,7 +308,7 @@ the whole list; it leaves secrets alone.
 
 | Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
-| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it, and since security S2b no door window may open it on THIS Worker unless the owner amends R-SEC6 (the C1 rule below; `wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour, before the rule) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
+| `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it, and a door window opens it on THIS Worker only as one of the review's known exercises — operationally the door stays steady after the security process (the C1 rule below; `wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour, before the rule) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
@@ -361,8 +361,10 @@ the whole list; it leaves secrets alone.
   deployment that holds tables or saves keeps its door, and a public open-door deployment is a NEW
   Worker with its own objects and its own bucket (R-SEC6), starting empty. The specification's words:
   "The door of the private Worker never flips; the public deployment starts empty (R-SEC6)." The door
-  windows of cycles E and F (§19, §20) flipped this Worker for minutes before the rule was written, and
-  their recipes stand as records; a window on THIS Worker needs the owner to amend R-SEC6 first.
+  windows of cycles E and F (§19, §20) flipped this Worker for minutes, as the review's windows may still: the
+  owner's clarification (2026-10-12) — a flip is fine in development and inside the known exercises (the
+  remediation's instruments and their windows); operationally, once the security process is through and the
+  repository is public, the doors stay steady, and a flip after that is an owner decision, not an operating step.
 - **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
   and deploy (§2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
   two files — and nothing is removed from the bucket. With the switch off:

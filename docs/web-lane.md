@@ -413,7 +413,7 @@ IP and the name, and a name is free, so the write limit and the archive's share 
 zone's rate-limit rule and the edge rule stay the deployer's tools for that, and S4's controls (the owner's R-3) its
 answer; and the opening itself in
 §10's order, the rule ENABLED by its id before the hostname leaves Access — on a public Worker that starts empty, since
-the door of the private Worker never flips unless the owner amends R-SEC6 (security S2b, C1; `worker/RUNBOOK.md` §3).
+the door of the private Worker flips only inside the review's known exercises and stays steady operationally after the security process (security S2b, C1; the owner's clarification of 2026-10-12; `worker/RUNBOOK.md` §3).
 
 ## 9. How the documents are built
 
@@ -516,8 +516,8 @@ the door of the private Worker never flips unless the owner amends R-SEC6 (secur
   for the edge rule (trap 42).
 - **The public window — the no-Access door, vetted and reverted** (cycle F, R-F7; F spec §2.6). The readings are §8's
   and the record is `worker/RUNBOOK.md` §20. Orchestrator-only, through `wrangler` and the Cloudflare API, each step a
-  dated line in the cycle's ledger, in this order. **Since security S2b it runs on THIS Worker only once the owner
-  amends R-SEC6** — "the door of the private Worker never flips" (C1; `worker/RUNBOOK.md` §3):
+  dated line in the cycle's ledger, in this order. **Since security S2b it runs on THIS Worker as one of the review's known
+  exercises, and not operationally after the security process** — the owner's clarification of 2026-10-12 (C1; `worker/RUNBOOK.md` §3):
   1. **Before.** The quota guard; the widget read (mode `managed`, pre-clearance `managed`, the zone's domain among
      its hostnames); the zone's Challenge Passage, Bot Fight Mode and managed `robots.txt` read. The custom-rules
      phase holds five rules on Free, so the window needs a free slot: F freed one by merging two skip rules that

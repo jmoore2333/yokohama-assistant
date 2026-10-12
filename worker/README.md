@@ -380,8 +380,8 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   The client's name step never sends such a claim.
 
 **The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
-`RUNBOOK.md` §19). **Since security S2b a window on THIS Worker needs the owner to amend R-SEC6 first**:
-"the door of the private Worker never flips" (C1; `RUNBOOK.md` §3). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
+`RUNBOOK.md` §19). **Since security S2b a window on THIS Worker is one of the review's known exercises, and after the security
+process the door stays steady** (the owner's clarification of 2026-10-12; C1; `RUNBOOK.md` §3). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
 open door and no Access values or dev door. The recipe: delete the two Worker secrets first
 (`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
 list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
@@ -1993,8 +1993,8 @@ the credential, which is never an operator.
   security S2b, opened by `wrangler.dev.jsonc` around a live tier; the public door's preconditions
   are recorded in the M6.5c2 cycle C close (§6). *(Corrected 2026-09-28: `DEV_DOOR_CLIENT_ID` is a
   secret since M6.5c2, where this said it was committed.)*
-  Going public is meant to be a NEW Worker that starts empty — since security S2b the door of this
-  private Worker never flips (R-SEC6; RUNBOOK §3) — and a change to the deploy guard, which holds this
+  Going public is meant to be a NEW Worker that starts empty — after the security process the door of this
+  private Worker stays steady (R-SEC6 as the owner read it on 2026-10-12; RUNBOOK §3) — and a change to the deploy guard, which holds this
   repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity (D-7 as
   corrected at S2b Task 9's review); on a public door, a scanner's misses would each be a Worker
   invocation.
