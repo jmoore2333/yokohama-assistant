@@ -2576,7 +2576,11 @@ workers.dev URL to go around.` and `if (key === "workers_dev" && door === "open"
 `ABSENT.workers_dev`'s reason (:210) becomes `"with no route, wrangler serves an absent one as a public workers.dev
 URL — where neither the edge rule, the rate limit nor Bot Fight Mode applies, so /api/games/<id>/join would take
 unlimited guesses (security S2a, C3)"` (the sentence the cell matches: `${name} must set "workers_dev": false — got
-true; <the reason>`). The header comment's check 3 (:19–36) says `"workers_dev": false` under EVERY door and why at
+true; <the reason>`). The file's FIRST lines spell the deploy command as `package.json` now does — "`npm run deploy` is
+`node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc &&
+wrangler deploy --config wrangler.jsonc`, and `npm run deploy:open` the same over `wrangler.open.jsonc`" — the rest of
+that sentence unchanged (Task 6's implementer: the old two-step spelling became false). The header comment's check 3
+(:19–36) says `"workers_dev": false` under EVERY door and why at
 each — "under `worker` a `workers.dev` URL would go around the hostname's Access application; under `open`, the
 edge rule, the rate limit and Bot Fight Mode (security S2a, C3)" — its "under `open`, a `workers.dev` URL is
 allowed, there being no door to go around" removed, and gains a line **3b**: "No `.wrangler/deploy/config.json`
