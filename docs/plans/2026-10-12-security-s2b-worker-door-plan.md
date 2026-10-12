@@ -1671,7 +1671,7 @@ the "mutant per value class" lesson).
 - Modify: `worker/scripts/factory-glue.mjs` (`EXPECTED` + 2), `worker/scripts/factory.d.ts.template` (+ 2 members);
   `worker/scripts/factory-glue.test.mjs` is NOT touched — it pins no literal, deriving everything from `EXPECTED`
 - Modify: `worker/src/archive.ts` (`save`: the listing before the first dispatch)
-- Test: `worker/test/archive.test.ts` (two cells; Task 8 adds a third), `worker/test/gates.ts` (`failingList`,
+- Test: `worker/test/archive.test.ts` (three cells; Task 8 adds a fourth), `worker/test/gates.ts` (`failingList`,
   `ListThrough`, `swapBucket`'s `list` parameter)
 
 **Interfaces:**
@@ -1683,7 +1683,8 @@ the "mutant per value class" lesson).
 
 - [ ] **Step 1: The module's failing cells.** In `receipt.rs`'s test module, beside the root cells. The module's
   import (`receipt.rs:509`, `use super::ReceiptArchive;`) becomes
-  `use super::{set_share_inner, share_prefix_inner, ReceiptArchive, SHARE_UNCOUNTED};` (12 × E0425 without it), and
+  `use super::{set_share_inner, share_prefix_inner, ReceiptArchive, SHARE_UNCOUNTED};` (written with the cells, so
+  Step 2's RED is one E0432 naming the three missing items), and
   **the first line of each new cell is `let _s = serial();`** — every cell of the module that touches `GAMES` takes it
   (18 do), and without it 3 cells fail in every run (measured 10/10). Every block below was measured green at the
   plan review (the crate 81/81):
@@ -1951,8 +1952,8 @@ pub fn set_share(listing: &str) -> Result<(), JsValue> {
   is not touched.
 
   **Every existing cell that makes a browser's save through the receipt archive sets a count first** — the new put
-  arm refuses a browser save with no listing, and four existing cells save without one (measured: `75 passed, 5
-  failed` without this): `set_share_inner(&listing("", 0, false)).unwrap();` before the `call(…, "POST", "/api/archive", …)`
+  arm refuses a browser save with no listing, and four existing cells save without one (measured: `76 passed; 4
+  failed` without this — the four cells named): `set_share_inner(&listing("", 0, false)).unwrap();` before the `call(…, "POST", "/api/archive", …)`
   in `the_test_root_reads_the_full_address_never_the_truncated_segment` (the loop over three callers),
   `a_plain_name_never_takes_the_test_root` (the browser loop), `a_browsers_save_sent_by_another_caller_than_the_objects_is_refused`
   (the matching pair; the two refused pairs fail in `root()` first and need none) and
@@ -1960,8 +1961,8 @@ pub fn set_share(listing: &str) -> Result<(), JsValue> {
   the receipt having been spent).
 
 - [ ] **Step 4: Run the Rust cells and the glue cells.** `cargo test -p yokohama-worker && cd worker && npm run
-  build:module:debug && npm run test:scripts`. Expected: PASS (the module's count 77 + 3 = 80; the `receipt::` module
-  81 with its own counting — record what the command prints).
+  build:module:debug && npm run test:scripts`. Expected: PASS (the crate's count 77 + 3 = 80; `cargo test -p yokohama-worker receipt::`
+  prints 23 passed, 57 filtered out — record what the command prints).
 
 - [ ] **Step 5: The pool's failing cells.** In `worker/test/gates.ts`, beside `failingPuts`:
 
@@ -1988,7 +1989,7 @@ describe("B12's Worker half — the share counted from a live listing (security 
   const archiveStub = (who: string) => env.ARCHIVER.get(env.ARCHIVER.idFromName(`archive:${who}`));
 
   // Mutants: the listing not handed to the module (every save SHARE_UNCOUNTED); the prefix wrong (an empty count
-  // under 256 fakes); `truncated` not forwarded.
+  // under 256 fakes); `truncated` not forwarded (the truncated-listing cell below).
   it("refuses a 257th record with the NAS's 507 and uploads nothing, and lands the 256th", async () => {
     const who = "quota@t.test";
     const prefix = `test/browser/${await segmentOf(who)}/`;
@@ -2022,6 +2023,22 @@ describe("B12's Worker half — the share counted from a live listing (security 
       expect(result.status).toBe(500);
       expect(await result.text()).toContain("the caller's share was not counted before this save");
       expect(lines.some((l) => (l as { event: string }).event === "archive-count-failed")).toBe(true);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
+
+  // The SHELL forwarding `truncated` (M32 covers the module ignoring it): no pool listing exceeds 1,000 objects, so
+  // a bucket whose `list` answers truncated is swapped in through `swapBucket`'s list parameter (Task 4's run: the
+  // comment's mutant survived 242/242 without this cell; measured red under it — `expected 201 to be 507`).
+  it("a listing R2 reports truncated is a full share: the 507, nothing uploaded", async () => {
+    const who = "truncated@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), truncated: true, cursor: "more" }) as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
     } finally {
       await swapped.restore();
     }
@@ -2098,7 +2115,8 @@ filed-retry and margin rows (the original lone-table row survived all three — 
 M34 the listing not TAKEN → the uncounted row (a stale listing serves twice); M35 `share_prefix` without the `test/`
 root → the prefix row; M36 the shell listing nothing → every pool save `SHARE_UNCOUNTED`; M37 the list failure
 swallowed into an empty listing → the failing-list cell lands a save; M37b the `share_prefix` call outside the `try`
-→ the open project's R-C10 cell reads 500; M37c `share_prefix` not clearing the share → the stale-listing row.
+→ the open project's R-C10 cell reads 500; M37c `share_prefix` not clearing the share → the stale-listing row; M37d the shell writing `truncated: false`
+whatever R2 reported → the truncated-listing pool cell (`expected 201 to be 507`; survived every other cell, measured).
 
 ### Task 5: C1 with D24 — the open door's key rule, a named policy; the Worker module; the shell's one-key-one-object collapse; the open project's cells — Opus (C1, D24; decision D-2; AD-3; Review Focus 5)
 
