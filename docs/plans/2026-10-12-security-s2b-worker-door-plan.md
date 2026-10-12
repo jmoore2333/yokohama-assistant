@@ -178,7 +178,7 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   the new-table form's "their name" field refuses an `@` under the open door as the name step does (Task 5b); a
   layer rule for seats belongs to S4, with the public open door.
 - **D-3 — two Rate Limiting bindings, keyed by caller or by IP, with the figures from the measured calls per move.**
-  `CREATE_LIMIT` (namespace 7301) 10 per 60 s on `POST /api/games`; `WRITE_LIMIT` (namespace 7302) 60 per 10 s on
+  `CREATE_LIMIT` (namespace 7301) 10 per 60 s on `POST /api/games`; `WRITE_LIMIT` (namespace 7302) 120 per 10 s on
   every other unsafe method, `/api/archive` and the operator's POST included. The key: under `worker` a caller's
   digest (`u:` and SHA-256 of the address in hex), under `open` the connecting IP for creates (`ip:<cf-connecting-ip>`)
   and the IP plus the claim's digest for writes; a request with no caller is keyed by IP under either door; an absent
@@ -187,7 +187,10 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   limited (D3 caps sockets). The basis is `docs/web-lane.md` §16's reading of cycle F's live tier — 7.30 `/api`
   requests a move over 1,741 moves in 470 s, `/input` 1.13 a move, so a seat at machine speed writes about 21 per
   10 s ON AVERAGE (the tier's peak of 338 `/api` requests in 10 s holds about 52 unsafe ones, so the pre-flight's
-  per-page peak decides whether 60 stands, Task 10 Step 1(a)); a person with two games is ESTIMATED, not measured,
+  per-page peak decides whether 60 stands, Task 10 Step 1(a) — MEASURED 2026-10-12 at the pre-flight: the local
+  two-browser walk's pages peak at 71 and 69 unsafe requests in a sliding 10 s window, almost all `POST …/input`, with
+  a median fixed bucket of 56 and 52, so 60 would trip on ordinary buckets and does NOT stand; the write limit is **120
+  per 10 s**, 1.7× the measured peak, the live tier being slower than the local walk, never faster); a person with two games is ESTIMATED, not measured,
   at about 4. The live replay needs no pacing: since S1b it sends 26 of the corpus's 2,213 rows at the production
   door — 17 writes, all as one identity, in about 4 s (`worker/RUNBOOK.md` §21; `docs/web-lane.md` §2) — so the
   write limit never binds it (D-8, withdrawn). The dev door is NOT exempt: the instruments play under the limit,
@@ -197,8 +200,8 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   real; the corpus replay is not the reason — `test/walk.ts` drives the objects directly and reaches `handle` for
   `/api/art` alone, so it never spends a limiter; the guard pins production's block to its literals and the pool's
   to the two names (D-10); the shell's logic is proven in the pool through a fake limiter handed in `env`, and the
-  live refusal is read at the wrap's window by `worker/RUNBOOK.md` §7's burst recipe (75 credentialed POSTs as the
-  owner over WARP, reading 429 and `Retry-After` from about the 61st inside one window; `probe-burst.mjs` sends GETs
+  live refusal is read at the wrap's window by `worker/RUNBOOK.md` §7's burst recipe (140 credentialed POSTs as the
+  owner over WARP, reading 429 and `Retry-After` from about the 121st inside one window; `probe-burst.mjs` sends GETs
   alone and can read no 429). Platform facts recorded: the binding is GA; `period` is 10 or 60 only; counters are
   per Cloudflare location and best effort; a `namespace_id` is a STRING in the configuration (wrangler 4.136.3
   refuses an integer by name), unique to the account, and a shared id shares counters across Workers — the owner
@@ -342,7 +345,7 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   lane's rows (`docs/web-lane.md` §2) run at the final head; the Worker's module is rebuilt (`npm run
   build:module:debug`) before every pool run once Task 4 has moved `crates/yokohama-worker` (Tasks 1–3 may run it
   too: the build is idempotent, 25.6 s, byte-identical output).
-- **Every figure at its literal, with its defence in a concise in-code comment** (the owner's S1b rule): `60`/`10`
+- **Every figure at its literal, with its defence in a concise in-code comment** (the owner's S1b rule): `120`/`10`
   and `10`/`60` for the two limits; `"60"`/`"10"` for the two `Retry-After`s; `7301`/`7302`; `8`/`64`/`8`/`1024` for
   the sockets; `256`/`128 << 20` unchanged in the layer; `4429` for the close code; `12` for the digest's hex length.
 - **Every caller value a shell sentence repeats is bounded** (the echo rule's spirit on the TS side): no new shell
@@ -550,7 +553,8 @@ describe("isSafeId (security S2b, C2's name rule; decision D-11)", () => {
 
 - [ ] **Step 2: Run them to see the fail.** `cd worker && npx vitest run -c vitest.scripts.config.ts src/route.unit.test.ts` —
   `src/**/*.unit.test.ts` runs in node under `vitest.scripts.config.ts` (its `include`); the pool's `test/**/*.test.ts`
-  glob never sees it. Expected: FAIL — `isSafeId is not a function` (three cells) and the flipped `caf%C3%A9` row.
+  glob never sees it. Expected: FAIL — `isSafeId is not a function` (two cells), the third new cell's assertion (`a%20b` routed to a
+  table) and the flipped `caf%C3%A9` row: 4 failed, 25 passed.
 
 - [ ] **Step 3: Replace `routableName` with `isSafeId`** in `worker/src/route.ts`:
 
@@ -588,9 +592,9 @@ export function isSafeId(id: string): boolean {
   `isSafeId(name) ? { kind: "table", name } : { kind: "house" }`; `admin.ts`'s `adminRoute` imports `isSafeId` for its
   `{id}`; `index.ts`'s `objectFor` create arm reads `if (named !== undefined && !isSafeId(named)) return house();`.
   Then `grep -rn "routableName(\|TABLE_NAME_MAX_BYTES\|LONE_SURROGATE" worker/src worker/test worker/scripts` prints
-  nothing (the module doc of `route.ts` and `admin.ts` are rewritten where they name the old rule; the prose of
-  `isSafeId`'s doc and the cell's title still name the old function by name, deliberately — hence the call form
-  `routableName(` in the grep).
+  nothing (`adminRoute`'s doc in `admin.ts` names `routableName` and is rewritten to `isSafeId`; `route.ts` named it only in
+  the deleted function's own doc; the prose of `isSafeId`'s doc and the cell's title still name the old function by
+  name, deliberately — hence the call form `routableName(` in the grep).
 
 - [ ] **Step 4: Run the node cells.** Expected: PASS, every row.
 
@@ -764,8 +768,10 @@ describe("C2's name rule — a name the store refuses never makes a Table object
 });
 ```
 
-- [ ] **Step 6: Run the pool to see the fails.** `cd worker && npm run build:module:debug && npx vitest run test/door.test.ts`.
-  Expected: FAIL — `CROSS_SITE` and `ADMIN_NEEDS_JSON` are not exported; the foreign rows answer the operator gate's
+- [ ] **Step 6: Run the pool to see the fails.** `cd worker && npm run build:module:debug && node scripts/test-assets.mjs && npx vitest run test/door.test.ts`
+  (`test-assets.mjs` is `npm test`'s `pretest`, which writes `test/fixtures.gen.ts`; a bare `npx vitest` skips it).
+  Expected: FAIL — `CROSS_SITE` and `ADMIN_NEEDS_JSON` import as `undefined` (an ESM import of a missing name is no
+  error: the cells fail as assertions against `'{}'`); the foreign rows answer the operator gate's
   403 (`this address is not an operator here`: they carry no token), not 204.
 
 - [ ] **Step 7: The refusal in `answer`.** In `worker/src/index.ts`, place `SAFE_METHODS`, `CROSS_SITE` and
@@ -848,10 +854,10 @@ export function isJsonEssence(contentType: string | null): boolean {
   asserted). Run `npm run test:scripts`. Expected: PASS.
 
 - [ ] **Step 10b: The operator cells send the type.** The JSON gate turns 14 cells of `worker/test/operator.test.ts`
-  red as it stands (measured: `14 failed | 216 passed`, all in that file): the helper `expire` (`:97-99`) and the
+  red as it stands (measured: `14 failed | 210 passed` in the worker project, all in that file): the helper `expire` (`:97-99`) and the
   direct `worker(\`${path}?force=\`, …)` in `takes ?force bare` gain `headers: { "content-type": "application/json" }`.
   Rows refused before the type is asked (a stranger's 403, `?force=false`'s 400, the unrouted 404s) need none.
-  Expected after: 230/230 in the worker project.
+  Expected after: 224/224 in the worker project (231 over the pool's two projects).
 
 - [ ] **Step 11: The whole Worker set.** `npm run typecheck && npm test && npm run test:scripts`. Expected: every
   count as the board's Gates read them plus this task's cells; the open project's existing `boss@t.test` operator cell
@@ -1023,7 +1029,7 @@ import type { Target } from "./route";
 export const TOO_MANY = "too many requests from you just now — wait a moment and try again";
 /** A refused create's `Retry-After`, in seconds: the creates' window (10 per 60 s). */
 export const RETRY_AFTER_CREATE = "60";
-/** A refused write's `Retry-After`, in seconds: the writes' window (60 per 10 s). */
+/** A refused write's `Retry-After`, in seconds: the writes' window (120 per 10 s). */
 export const RETRY_AFTER_WRITE = "10";
 /** Where the edge puts the connecting IP. */
 export const IP_HEADER = "cf-connecting-ip";
@@ -1078,7 +1084,7 @@ export async function limited(req: Request, target: Target, identity: Identity, 
 
 ```ts
   /** The two Rate Limiting bindings (security S2b, finding C2; decision D-3): creates, 10 per 60 s, and writes,
-   *  60 per 10 s, in production; the pool binds both with a lenient figure. Optional in the TYPE because a cell
+   *  120 per 10 s, in production; the pool binds both with a lenient figure. Optional in the TYPE because a cell
    *  builds an `Env` by hand; `shellConfig` refuses a configuration lacking either, so no deployment runs without
    *  them (fail closed, as `ARCHIVE` under `r2`). */
   CREATE_LIMIT?: RateLimit;
@@ -1103,15 +1109,16 @@ function limits(env: Env): Limits {
   **Every hand-built `Env` and `ShellConfig` in a unit cell gains the two bindings**, or `shellConfig` refuses it and
   `tsc` refuses the literal (measured: TS2741 on the literal, TS2352 on an untyped fake under `as Env`).
   `config.unit.test.ts`'s `env()` fixture spreads a module-level
-  `const FAKE_LIMITER: RateLimit = { limit: async () => ({ success: true }) }; const LIMITS = { CREATE_LIMIT: FAKE_LIMITER, WRITE_LIMIT: FAKE_LIMITER };`
-  (the `RateLimit` annotation is what keeps the `as Env` cast from TS2352), and `marker.unit.test.ts`'s `ShellConfig`
+  `const FAKE_CREATE: RateLimit = { limit: async () => ({ success: true }) }; const FAKE_WRITE: RateLimit = { limit: async () => ({ success: true }) }; const LIMITS = { CREATE_LIMIT: FAKE_CREATE, WRITE_LIMIT: FAKE_WRITE };`
+  (the `RateLimit` annotation is what keeps the `as Env` cast from TS2352; TWO objects, so the uncrossed check below can
+  see a crossing — one shared fake could not, the pre-flight read), and `marker.unit.test.ts`'s `ShellConfig`
   literal (line 111 — a `ShellConfig` built by hand, which a grep for `shellConfig(` cannot find) gains
   `limits: { create: { limit: async () => ({ success: true }) }, write: { limit: async () => ({ success: true }) } }`;
   `grep -rln "shellConfig\|moduleConfig\|ShellConfig" worker/src/*.unit.test.ts` lists both (and `admin.unit.test.ts`,
   a comment). `config.unit.test.ts` gains three cells (written out, not described): an `env()` lacking `WRITE_LIMIT`
   → `{ error: "the WRITE_LIMIT rate-limit binding is missing — every deployable configuration binds it in its ratelimits block (security S2b)" }`;
-  one lacking both → `CREATE_LIMIT` named first; and `accepted(env()).limits.create`/`.write` are the two fakes,
-  uncrossed. The pool-side identity cell — `const c = shellConfig(env); expect(c.limits.create).toBe(env.CREATE_LIMIT); expect(c.limits.write).toBe(env.WRITE_LIMIT);`
+  one lacking both → `CREATE_LIMIT` named first; and `accepted(env()).limits.create`/`.write` are `FAKE_CREATE`/`FAKE_WRITE`
+  by identity (`toBe`), uncrossed. The pool-side identity cell — `const c = shellConfig(env); if ("error" in c) throw new Error(c.error); expect(c.limits.create).toBe(env.CREATE_LIMIT); expect(c.limits.write).toBe(env.WRITE_LIMIT);` (the narrowing line is what `tsc` needs — TS2339 without it, measured at the pre-flight; the pool, which never type-checks, ran the cell green either way)
   — joins `test/door.test.ts`'s last cell (Step 9), because it needs `cloudflare:workers`; a node cell cannot read the
   pool's `env`.
 
@@ -1139,14 +1146,15 @@ function limits(env: Env): Limits {
   // Two Rate Limiting bindings (security S2b, finding C2; decision D-3), counted per Cloudflare location by the
   // key `src/limits.ts` derives: a caller's digest under `worker`; under `open` the connecting IP for a create and
   // IP plus claim for a write. The figures: ten creates a minute is a person opening tables as fast as a form
-  // allows; sixty writes per ten seconds is six a second, fifteen times a fast player's four — the live tier's two
-  // browsers write about 21 per 10 s each at machine speed on average, and the live replay, which sends 26 rows at
-  // the production door since S1b, never reaches it. A `namespace_id` is a string here and unique to the ACCOUNT,
+  // allows; a hundred and twenty writes per ten seconds is twelve a second, thirty times a fast player's four — the
+  // local two-browser walk's pages peak at 71 unsafe requests in 10 s at machine speed (measured at S2b's pre-flight;
+  // the live tier is slower, never faster), and the live replay, which sends 26 rows at the production door since
+  // S1b, never reaches it. A `namespace_id` is a string here and unique to the ACCOUNT,
   // and a shared id shares counters across Workers. The deploy guard's check 13 holds this block to these literals,
   // and the pool's two files to the two NAMES, with a lenient figure of their own.
   "ratelimits": [
     { "name": "CREATE_LIMIT", "namespace_id": "7301", "simple": { "limit": 10, "period": 60 } },
-    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 60, "period": 10 } }
+    { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 120, "period": 10 } }
   ],
 ```
 
@@ -1181,8 +1189,8 @@ function limiter(answer: (key: string) => boolean): Limiter & { asked: string[] 
 
 describe("C2 — the rate limit, before any object", () => {
   // Mutants: `limiterFor` spending the write limiter on a create; `limited` ignoring `success`; the 429 without
-  // `Retry-After`; the call placed after `objectFor` (a refused create still reaches the house or a table); a GET
-  // asking the limiter.
+  // `Retry-After`; the call placed after `object.fetch` returns (a refused request still reaches the house or a table —
+  // after `objectFor` alone is an equivalent mutant: it builds a stub); a GET asking the limiter.
   it("spends the create limiter on a create and the write limiter on a write, keyed by the caller's digest, and asks nothing for a read", async () => {
     const create = limiter(() => true);
     const write = limiter(() => true);
@@ -1205,6 +1213,7 @@ describe("C2 — the rate limit, before any object", () => {
     expect([result.status, result.text]).toEqual([429, JSON.stringify({ error: TOO_MANY })]);
     expect(result.headers.get("Retry-After"), "a write's window").toBe(RETRY_AFTER_WRITE);
     expect(result.headers.get("Cache-Control")).toBe("no-store");
+    expect(result.headers.get("X-Content-Type-Options")).toBe("nosniff");
     expect(reached, "no object reached").toBe(0);
     const create = await reaching(() => worker("/api/games", { method: "POST", headers: JSON_TYPE, body: '{"players":2,"colors":["Red","Blue"],"start_seat":0,"seats":[{"user":"red@t.test"},{"open":true}]}', token: red, env: limited }));
     expect([create.result.status, create.reached]).toEqual([429, 0]);
@@ -1217,7 +1226,7 @@ describe("C2 — the rate limit, before any object", () => {
     const limited: Env = { ...env, WRITE_LIMIT: broken as unknown as RateLimit };
     const id = "door-c2-broken";
     await seedPlaying(id);
-    const { result, lines } = await logsDuring(() => reaching(() => worker(`/api/games/${id}/input`, { method: "POST", headers: JSON_TYPE, body: '{"line":"1"}', token: await person(RED), env: limited })));
+    const { result, lines } = await logsDuring(() => reaching(async () => worker(`/api/games/${id}/input`, { method: "POST", headers: JSON_TYPE, body: '{"line":"1"}', token: await person(RED), env: limited })));
     expect([result.result.status, result.reached], "the request reached its object").toEqual([200, 1]);
     expect(lines.filter((l) => (l as { event: string }).event === "limiter-failed"), "exactly one line").toHaveLength(1);
   });
@@ -1234,6 +1243,7 @@ describe("C2 — the rate limit, before any object", () => {
     expect(typeof env.CREATE_LIMIT!.limit).toBe("function");
     expect(await env.WRITE_LIMIT!.limit({ key: "door-c2-smoke" })).toEqual({ success: true });
     const c = shellConfig(env);
+    if ("error" in c) throw new Error(c.error); // the narrowing `tsc` needs: `shellConfig` answers `ShellConfig | { error }`
     expect(c.limits.create).toBe(env.CREATE_LIMIT);
     expect(c.limits.write).toBe(env.WRITE_LIMIT);
   });
@@ -1242,8 +1252,9 @@ describe("C2 — the rate limit, before any object", () => {
 
   (`logsDuring` is `test/helpers.ts`'s; import it from `./helpers` as `sockets.test.ts` does.) And in
   `worker/test/open/door.test.ts` (the open project), which gains its OWN copy of the `limiter` fake and imports
-  `callerTag` (`../../src/redact`) and the `Env` type — the fake lives in the other project's file and cannot be
-  shared across the pool's one-file rule:
+  `callerTag` (`../../src/redact`) and `import type { Limiter } from "../../src/limits";` (`Env` is already imported
+  there) — the fake lives in the other project's file and cannot be shared across the pool's one-file rule; the cell
+  goes at the end of the file's last `describe`:
 
 ```ts
   it("keys an open-door create by the connecting IP alone, and a write by IP and the claim's digest", async () => {
@@ -1271,14 +1282,14 @@ describe("C2 — the rate limit, before any object", () => {
  *  repository deploys none. */
 export const RATE_LIMITS = [
   { name: "CREATE_LIMIT", namespace_id: "7301", simple: { limit: 10, period: 60 } },
-  { name: "WRITE_LIMIT", namespace_id: "7302", simple: { limit: 60, period: 10 } },
+  { name: "WRITE_LIMIT", namespace_id: "7302", simple: { limit: 120, period: 10 } },
 ];
 
 /** Check 13: production's block at its literals; each pool file naming exactly the two bindings. */
 function rateLimits(production, pools, failures) {
   if (canonical(production.value.ratelimits) !== canonical(RATE_LIMITS)) {
     failures.push(
-      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 60 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
+      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
     );
   }
   for (const [name, pool] of pools) {
@@ -1296,20 +1307,21 @@ function rateLimits(production, pools, failures) {
   has NO `--help` — names it, and "all twelve" becomes "all thirteen" at `deploy-guard.mjs:4` and `:692`.
   `deploy-guard.test.mjs`: the fixtures
   `PRODUCTION`, `OPEN`, `GATE` and both pool configs gain the block (production's at the literals; the pools' lenient),
-  and three new cells: production with `limit: 61` refused naming `ratelimits`; a pool file lacking `WRITE_LIMIT`
-  refused naming the file; the committed five files pass (the existing `pass every check` cells cover it once the
-  fixtures carry the block).
+  and two new cells: production with `limit: 121` refused naming `ratelimits`; a pool file lacking `WRITE_LIMIT`
+  refused naming the file; the committed five files pass through the existing `pass every check` cells once the
+  fixtures carry the block.
 
 - [ ] **Step 12: Run the node and script suites.** `npm run test:scripts && npm run typecheck`. Expected: PASS.
-  `node scripts/deploy-guard.mjs --config wrangler.jsonc` over the real tree prints the door line; a tree prepared for
-  the pool also prints check 1's sentence (the DEBUG module) and check 9's two (no `web/dist`), none this task's;
+  `node scripts/deploy-guard.mjs --config wrangler.jsonc` over the real tree prints the door line; a tree with no
+  assembled `assets/` also prints check 1's sentence (the DEBUG module) and check 2's (`assets/sw.js is absent`), one
+  with assets but no `web/dist` check 9's two — none this task's;
   `configFailures(root)` over the committed files returns `[]` (the committed-file cells in `test:scripts` read it).
 
 - [ ] **Step 13: Commit.**
 
 ```bash
 git add worker/src/limits.ts worker/src/limits.unit.test.ts worker/src/redact.ts worker/src/redact.unit.test.ts worker/src/env.ts worker/src/config.ts worker/src/config.unit.test.ts worker/src/marker.unit.test.ts worker/src/index.ts worker/wrangler.jsonc worker/wrangler.gate.jsonc worker/wrangler.open.jsonc worker/wrangler.test.jsonc worker/wrangler.open.test.jsonc worker/scripts/deploy-guard.mjs worker/scripts/deploy-guard.test.mjs worker/test/door.test.ts worker/test/open/door.test.ts
-git commit -m "worker: two Rate Limiting bindings — creates 10 per 60 s, writes 60 per 10 s — keyed by the caller's digest under worker and by IP or IP plus claim under open, a 429 before any object; the guard's check 13 (C2) (S2b Task 2)"
+git commit -m "worker: two Rate Limiting bindings — creates 10 per 60 s, writes 120 per 10 s — keyed by the caller's digest under worker and by IP or IP plus claim under open, a 429 before any object; the guard's check 13 (C2) (S2b Task 2)"
 ```
 
 **Mutants (red where named):** M11 `limiterFor` spending the write limiter on a create → Step 9's first cell;
@@ -1319,7 +1331,7 @@ crossed → the 429 cell's two header assertions; M14 the limiter consulted afte
 `catch` removed → the rejecting-limiter cell; M15 a GET asking the limiter → the first cell's `asked` arrays; M16 the worker key as the raw
 address → the first cell (`@` in the key); M17 the open write keyed by IP alone → the open cell; M18 `UNKNOWN_IP`
 read as `null` → the IP cell; M19 `limits()` not refusing an absent binding → the config cell; M20 `RATE_LIMITS`'
-`limit` 61 → the guard cell; M21 the pool-names check dropped → the guard's pool cell; M22 `redactKey`'s regex anchored
+`limit` 121 → the guard cell; M21 the pool-names check dropped → the guard's pool cell; M22 `redactKey`'s regex anchored
 at the start → the `test/` row.
 
 ### Task 3: D3 — the socket caps on a table and in the lobby, refused in the shape the client reads — Opus (D3's Worker half; decision D-4; Review Focus 4)
@@ -2845,7 +2857,7 @@ line `error` → D2's cell.
   `worker/RUNBOOK.md` §3 — the file spec §2.2's C1 row names — with README §1.5 pointing to it; catchers by name; the
   live column: "the open door is not deployed; read at S4's own deployment"; **C2** `fixed <commit>` (Tasks 1–2) — the
   two bindings and their figures, the name grammar; the live column: "the wrap window's burst recipe
-  (`worker/RUNBOOK.md` §7): about the 61st credentialed POST in one 10 s window reads 429, `Retry-After: 10` and the
+  (`worker/RUNBOOK.md` §7): about the 121st credentialed POST in one 10 s window reads 429, `Retry-After: 10` and the
   sentence; plan availability the wrap's deploy"; **D3** `fixed <commit>` (Task 3; the Worker's socket cap — the NAS's
   stream cap and body timeout stay S2c's, the row says so; the lobby draws no refusal, parked); **D23** `fixed
   <commit>` (Task 7) — the two digests, `redactKey` over `record_key` AND `detail`, the Archive object's digest name,
@@ -2897,8 +2909,8 @@ line `error` → D2's cell.
   the `archive-*`, `held` and `archive-owed-*` lines (`:604-641`, `:667`) carry redacted `record_key` and `detail`;
   `id` (`:608`) is `archive:<12 hex>`. §7: the live tiers open with `npm run deploy:dev` and close with
   `npm run deploy`; the replay's duration is UNCHANGED (D-8 withdrawn); the burst recipe goes in (AD-7):
-  `B=https://yokohama.moore.nyc; for i in $(seq 75); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}'; done | sort | uniq -c`
-  over WARP as the owner — 400s, then 429s from about the 61st inside one 10-second window (the limiter counts before
+  `B=https://yokohama.moore.nyc; for i in $(seq 140); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}'; done | sort | uniq -c`
+  over WARP as the owner — 400s, then 429s from about the 121st inside one 10-second window (the limiter counts before
   the layer's 400; counting is per location and best effort, so it may need a second run; `{}` posts nothing). A
   forward note at §19's flip recipe (`:2089`): "`deploy:gate` was retired in security S2b; this recipe reads
   `npm run deploy` for it, around `npm run deploy:dev`". `worker/README.md` §1.5: "Cloudflare's rate-limiting rules
@@ -3101,10 +3113,46 @@ R2's own failure message embedding a key; input-gate behaviour of an awaited dig
 429; R-2–R-6's words (only R-1 was checked against the relayed request); the release module with 18 exports; the
 32,768-socket and `Origin: null` documentation claims.
 
-### The pre-flight (the next session)
+### The pre-flight (2026-10-12, the same session, after the owner's go) — two agents on two exports, no mutants
 
-(to be written: the slice re-run's counts at the branch head; figure (a)'s per-page peaks and whether 60 stands; any
-block corrected, as a new paragraph here first)
+**The run.** Two agents in parallel, each on its own `git archive` export in the session's scratchpad, neither
+touching the tree: an Opus agent spliced Tasks 1 and 2's blocks from the plan verbatim (Task 1 from the committed
+text `faba814e`; Task 2 from the working tree after the write-figure correction below, so the 120 figure is what it
+measured) and ran every step in order, RED and GREEN; a Sonnet agent ran the local two-browser Playwright walk with
+the tally on an export of `85c8dd02`. Reports: `docs/temp/security-review-2026-10-08/s2b-before/preflight-splice-report.md`
+(the splice as `preflight-splice.patch`) and `preflight-tally-report.md` (the tally as `preflight-tally.ndjson`).
+The `wrangler deploy --dry-run` reading (c) was not re-run: the blocks it measured did not change shape (a figure
+inside `simple.limit` moved).
+
+**Figure (a) — 60 does not stand; the write limit is 120 per 10 s.** The walk (`1 passed (3.4m)`; 1,870 moves,
+198 s) tallied 13,095 requests, 2,112 of them POSTs, all but seven `POST /api/games/<id>/input`. Per page, the peak
+of unsafe `/api` requests in a sliding 10 s window: a 71, b 69, the watcher 2 (fixed buckets 65, 68, 2); the median
+fixed bucket 56 and 52 — the peak is sustained, not a spike, so 60 would trip on ordinary buckets of the very
+instrument the limit must survive. The orchestrator's ruling (the SDD ledger): `WRITE_LIMIT` is **120 per 10 s** at
+every site of this plan — 1.7× the measured peak, the live tier being slower than the local walk, never faster; the
+window, `Retry-After: "10"`, the create limit and the namespaces are unmoved; the burst recipe reads about the 121st
+of 140. Seventeen exact replacements, listed in the ledger's ruling.
+
+**The splice — Task 1 green as written; Task 2 two one-token corrections, both in Step 9's block, folded in above.**
+Task 1: Steps 2, 4, 6, 9, 10, 10b and 11 as the plan says, every cell green on the first run after each step.
+Task 2: (C1) the throwing-limiter cell held `await person(RED)` inside a non-async arrow — a PARSE error that dropped
+all of `door.test.ts` (`Test Files 1 failed`); `reaching(async () => …)` is the fix, measured 12 files / 237. (C2)
+figure (d)'s cell read `c.limits` off an un-narrowed `shellConfig` result — TS2339 under `npm run typecheck` while the
+pool ran it green (the pool never type-checks); the narrowing line `if ("error" in c) throw new Error(c.error);` is
+the fix, at the cell and in Step 6's prose. Figure (d): the pool's binding answers `limit()` — the smoke cell green,
+and a read-only probe confirmed the pool's two bindings are distinct objects. Nine sentences the measurement
+contradicted are corrected at their sites: Step 2's and Step 6's expected failures (import-as-`undefined`, not a
+missing export; 4 failed / 25 passed; the `pretest` fixture a bare `npx vitest` skips), Step 10b's counts (14 failed /
+210, then 224/224 — the 216/230 were the lens's Tasks 1–3 splice, carried over), the config fixture's one shared fake
+(now two, so "uncrossed" can be seen), the 429 cell's second header asserted, the in-code mutant comment that named
+M14's equivalent form, "three new cells" (two), the open project's missing `Limiter` import and the cell's place,
+Step 3's module-doc sentence, Step 12's guard output on a tree with no assets. Two things the pre-flight did not
+verify, left to Task 2's reviewer: the pool comment's "more than ten creates a minute as one caller" (nine literal
+call sites; loops untraced) and the Rust suites (no crate byte moved).
+
+**Final counts at the splice's head (Tasks 1–2 only, the 120 figure):** worker `typecheck` clean; `npm test` 12
+files / 237 (worker 11 / 229, open 1 / 8); `test:scripts` 28 files / 571 passed, 1 skipped. Not comparable to the
+lens's 238 / 574, which carried Task 3.
 
 ### The run and the after review
 
