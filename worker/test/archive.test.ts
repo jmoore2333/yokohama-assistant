@@ -1273,6 +1273,22 @@ describe("B12's Worker half — the share counted from a live listing (security 
     }
     expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
   });
+
+  // The SHELL forwarding `size` (the review of Task 4: the shell forwards three values per listing in one statement
+  // — `truncated`, `key`, `size` — and the lesson is a mutant per value class; `size: 0` survived 243/243 without
+  // this cell, measured red under it — `expected 201 to be 507`). The sizes alone reach the bytes bound.
+  it("a listing whose sizes reach 128 MiB is a full share: the 507, nothing uploaded", async () => {
+    const who = "sized@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), objects: [{ key: `${options!.prefix}rev7/over/big.json`, size: 128 * 1024 * 1024 }] }) as unknown as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
 });
 
 describe("side channels during a slow push or upload (spec §5.2)", () => {
