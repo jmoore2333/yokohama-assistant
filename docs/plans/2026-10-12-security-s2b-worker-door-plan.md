@@ -2389,7 +2389,12 @@ export function claimedIdentity(raw: string | null): Identity {
   moves — measured). `test/open/door.test.ts` gains the race cell: 255 records pre-filled under `race y`'s share, then
   `Promise.all` of `through("/api/archive", { claim: "race y" })` and `{ claim: "race   y" }`, the second with its
   table id rewritten; the statuses, sorted, are `[201, 507]` and the share holds 256 records (its source is the
-  packet's `artifacts/lens2_race_handle.probe.ts.txt`; measured `[201, 507]` with the collapse). Run
+  packet's `artifacts/lens2_race_handle.probe.ts.txt`; measured `[201, 507]` with the collapse) — AND, the
+  deterministic row (Task 5's run): a `vi.spyOn(Archive.prototype, "fetch")` around the `Promise.all`, each call's
+  `this.ctx.id.name` read before `mockRestore`, asserted `["archive:race y", "archive:race y"]` — the two saves reached
+  ONE object. Without the collapse the `[201, 507]` row is red only about half the time (measured: 9 of 11 runs alone,
+  3 of 6 inside the project — two objects race on R2 listing timing and the 507 sometimes arrives anyway), while the
+  one-object row reads `["archive:race   y", "archive:race y"]` every run. Run
   `npm run test:scripts && npx vitest run --project open`. Expected: PASS.
 
 - [ ] **Step 8: (moved to Task 5b — the client's name step, the new-table form, the two inverted web cells and the
@@ -2413,7 +2418,8 @@ M40 the sentence the absent caller's → the identity cell; M41 `.test` excepted
 row; M42a the fallback `admit` passing `Diagnostic` → the `\r` row; M42b `resolve` passing `Diagnostic` → the module
 cell and the open project's archive cell; M44 the extractor resolving with a literal policy → the `…/events` cell;
 M44b the adapter's call with a literal policy → the route-level cell and the binary cell; M44c `claimedIdentity`
-keeping space runs → the race cell and `identity.unit.test.ts:456`. (M43 is Task 5b's.)
+keeping space runs → the race cell's one-object row and `identity.unit.test.ts:456` every run (its `[201, 507]` row
+about half the time — timing, measured). (M43 is Task 5b's.)
 
 ### Task 5b: C1's client — the name step and the new-table form refuse an `@`; the two web cells C1 inverts; the Playwright identities follow the target — Opus (C1; decision D-2; AD-1, AD-8)
 
