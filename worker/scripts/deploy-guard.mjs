@@ -1,6 +1,6 @@
-// **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs &&
-// wrangler deploy`, and `npm run deploy:open` the same over `--config
-// wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
+// **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
+// scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `npm run
+// deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
 // 6 hold it to production's blocks), so nothing ships unless all twelve hold. Every check that
 // fails is named, not only the first.
 //
