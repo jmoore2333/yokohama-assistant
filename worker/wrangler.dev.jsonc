@@ -23,7 +23,12 @@
   // not `false`.
   "workers_dev": false,
   "preview_urls": false,
-  "observability": { "enabled": true },
+  // Logs persist in Workers Observability (`worker/RUNBOOK.md` §5, §7). `redact_query_string` (security S2b,
+  // finding D23; decision D-6): an open-door socket's `claimed=` rides the upgrade's URL, and an invocation log
+  // keeps the URL; redacted, no name persists there. The sampling rate stays its default, 1: the live readings
+  // count invocations through these logs, and sampling would be privacy by volume at the instrument's cost. The
+  // shell's own lines carry a caller's digest and a redacted key, never an address (`src/redact.ts`).
+  "observability": { "enabled": true, "redact_query_string": true },
   // The module is imported as a compiled `WebAssembly.Module`, which the
   // factory instantiates anew on every call (spec §2.2).
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],

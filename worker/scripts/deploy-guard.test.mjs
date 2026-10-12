@@ -91,12 +91,17 @@ const DOOR_VARS = `"vars": {
     "ACCESS_AUD": "test-aud"
   }`;
 
+/** Production's logs (security S2b, finding D23; decision D-6): query strings redacted, the sampling rate left at its
+ *  default. What check 14 holds production to, and what the open and dev files carry by the sibling rule. */
+const OBSERVABILITY = `"observability": { "enabled": true, "redact_query_string": true }`;
+
 const PRODUCTION = `// production
 {
   "name": "yokohama-web",
   "main": "src/index.ts",
   "workers_dev": false,
   "preview_urls": false,
+  ${OBSERVABILITY},
   ${ASSETS_BLOCK("./assets")},
   ${OBJECTS},
   ${BUCKET},
@@ -449,6 +454,29 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.test.jsonc": drift }))).toEqual([
       'wrangler.test.jsonc must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (test/worker.test.ts sends a dozen creates a minute as one caller through handle) — got ["CREATE_LIMIT"]',
     ]);
+  });
+  // Check 14 (security S2b, finding D23; decision D-6): production's logs redact query strings and are not sampled.
+  // Mutants: `redact_query_string: false` in production (the `false` row); check 14 dropped (the absent-key row);
+  // the sampling clause dropped (the `0.1` row).
+  const REDACT_REFUSED =
+    "wrangler.jsonc's observability must set redact_query_string to true — an open-door socket's claimed= would persist in the invocation logs otherwise (security S2b, D23)";
+  it("refuses production's observability without redact_query_string, naming the key (security S2b, D23)", () => {
+    const drift = PRODUCTION.replace(OBSERVABILITY, `"observability": { "enabled": true }`);
+    expect(drift, "premise: the key is gone").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([REDACT_REFUSED]);
+  });
+  it("refuses production's observability with redact_query_string false, naming the key (security S2b, D23)", () => {
+    const drift = PRODUCTION.replace(OBSERVABILITY, `"observability": { "enabled": true, "redact_query_string": false }`);
+    expect(drift, "premise: the key is false").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([REDACT_REFUSED]);
+  });
+  it("refuses production's observability sampled at any rate but 1, naming the rate (security S2b, D-6)", () => {
+    const at = (rate) => PRODUCTION.replace(OBSERVABILITY, `"observability": { "enabled": true, "redact_query_string": true, "head_sampling_rate": ${rate} }`);
+    expect(at(0.1), "premise: the rate is set").not.toBe(PRODUCTION);
+    expect(deployGuard(worker({ "wrangler.jsonc": at(0.1) }))).toEqual([
+      "wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)",
+    ]);
+    expect(deployGuard(worker({ "wrangler.jsonc": at(1) })), "the default, written out, passes").toEqual([]);
   });
   it("refuses a configuration with no object bindings or no migrations", () => {
     const bare = PRODUCTION.replace(`${OBJECTS},\n`, "");

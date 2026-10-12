@@ -260,4 +260,49 @@ describe("logOutcome", () => {
       spy.mockRestore();
     }
   });
+
+  // Security S2b, finding D23 (PF-03): a landed, identical or conflicting outcome's detail IS the record's key, and
+  // the one failed case's sentence begins with it, so the key is redacted in BOTH fields. A browser save's key
+  // carries `browser/<readable>-<12 hex>/`, the readable half spelling the caller's address. Mutants: `redactKey`
+  // dropped at `record_key`; `detail` logged unredacted.
+  const BROWSER_PLAN: Plan = { ...PLAN, record_key: "test/browser/red_at_wire.test-c91ad2a917f7/rev7/over/wire.json" };
+  const REDACTED = "test/browser/c91ad2a917f7/rev7/over/wire.json";
+  /** The one line `logOutcome` writes for `outcome`, raw and parsed. */
+  function lineOf(outcome: Outcome): { raw: string; parsed: Record<string, unknown> } {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      logOutcome("t", "browser", BROWSER_PLAN, outcome);
+      expect(spy.mock.calls.length, "one line").toBe(1);
+      const raw = String(spy.mock.calls[0]?.[0]);
+      return { raw, parsed: JSON.parse(raw) as Record<string, unknown> };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("logs a browser save's key redacted in record_key and in the detail a landed outcome carries", async () => {
+    const landed = await executePlan(new FakeBucket().asBucket, BROWSER_PLAN);
+    expect(landed, "premise: the outcome as executePlan builds it").toEqual({ outcome: "landed", detail: BROWSER_PLAN.record_key });
+    const { raw, parsed } = lineOf(landed);
+    expect([parsed.record_key, parsed.detail]).toEqual([REDACTED, REDACTED]);
+    expect(raw, "no readable half").not.toContain("red_at_wire");
+    expect(raw, "no readable half").not.toContain("browser/red");
+  });
+
+  it("logs the failed sentence that begins with the key redacted", async () => {
+    // A create refused as present, then a read finding nothing: the one failure executePlan writes itself.
+    const vanishing = {
+      get: async () => null,
+      put: async (key: string, _value: string, options?: R2PutOptions) => (options?.onlyIf === undefined ? { key } : null),
+    } as unknown as Bucket;
+    const failed = await executePlan(vanishing, BROWSER_PLAN);
+    expect(failed, "premise: the outcome as executePlan builds it").toEqual({
+      outcome: "failed",
+      detail: `${BROWSER_PLAN.record_key} refused a create as present, then read as absent`,
+    });
+    const { raw, parsed } = lineOf(failed);
+    expect(parsed.record_key).toBe(REDACTED);
+    expect(parsed.detail).toBe(`${REDACTED} refused a create as present, then read as absent`);
+    expect(raw, "no readable half").not.toContain("red_at_wire");
+  });
 });

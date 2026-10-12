@@ -8,7 +8,7 @@ import type { Env } from "./env";
 import { CLAIMED_USER_HEADER } from "./identity";
 import { expiryDays, expiryDeadline, markerEnd, openTtlDaysOf, ttlDaysOf, type Ending, type Marker } from "./marker";
 import { Instance, readReply, type Bump, type Replied } from "./module";
-import { callerTag } from "./redact";
+import { callerTag, redactKey } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { abandons } from "./route";
 import { nextRetry, type Generation, type Slot } from "./slot";
@@ -318,7 +318,7 @@ export abstract class TableBase extends DurableObject<Env> {
     this.instance?.drop();
     await this.ctx.storage.deleteAll();
     forgetTables(sql);
-    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: redactKey(owed.plan.record_key), attempt: owed.attempt });
     if (marker !== undefined) log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
     else if (flagged) log("forced", { id });
     else log("removal-ended", { id });
@@ -655,7 +655,7 @@ export abstract class TableBase extends DurableObject<Env> {
     // went with the table: logged once the batch that dropped it has committed
     // (spec §2.6). With the archive on, the delete's own save superseded it.
     if (deleted && holding !== undefined && !this.archiveOn()) {
-      log("archive-owed-dropped", { id, record_key: holding.plan.record_key, attempt: holding.attempt });
+      log("archive-owed-dropped", { id, record_key: redactKey(holding.plan.record_key), attempt: holding.attempt });
     }
     return { pushing: owed?.slot !== undefined, archiving, marker };
   }

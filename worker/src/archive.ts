@@ -4,6 +4,7 @@ import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { Instance, pinnedTo, readReply, type Replied } from "./module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
+import { callerDigest } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { forwardedCaller } from "./table";
 
@@ -85,18 +86,23 @@ export class Archive extends DurableObject<Env> {
       contentType: req.headers.get("content-type") ?? undefined,
       body: new Uint8Array(await req.arrayBuffer()),
     };
-    const id = this.ctx.id.name;
+    // Every line this object logs names it by a digest: its name is `archive:<address>`, and a log persists
+    // (security S2b, D23). The module still reads the whole name's caller.
+    const name = this.ctx.id.name;
+    const caller = callerOf(name);
+    const id = caller === null ? name : ARCHIVE_PREFIX + (await callerDigest(caller));
     const config = this.config;
     if ("error" in config) {
       log("init-refused", { id, error: config.error });
       return respond(500, errorBody(config.error));
     }
-    return this.ctx.blockConcurrencyWhile(() => this.save(id, incoming, config));
+    return this.ctx.blockConcurrencyWhile(() => this.save(name, id, incoming, config));
   }
 
-  /** The receipt loop (the class's doc), under `blockConcurrencyWhile`. */
-  private async save(id: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
-    const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(id))));
+  /** The receipt loop (the class's doc), under `blockConcurrencyWhile`: `name` is the object's own, which the
+   *  module's configuration reads its caller from; `id` is what every line logs it as. */
+  private async save(name: string | undefined, id: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
+    const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(name))));
     const at = nextReading(config.clock);
     // **The share, counted live** (security S2b, B12's Worker half; decision D-5): the object's share prefix from
     // the module, one R2 listing (a Class A operation), and the listing handed to the module, whose put applies

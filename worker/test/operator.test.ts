@@ -10,6 +10,7 @@ import { House } from "../src/house";
 import type { KeySource } from "../src/identity";
 import { handle } from "../src/index";
 import { readReply } from "../src/module";
+import { callerDigest } from "../src/redact";
 import { HOUSE_NAME } from "../src/slot";
 import { Table } from "../src/table";
 import { failingPuts, failPushes, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
@@ -288,7 +289,8 @@ describe("the listing (spec §2.9)", () => {
     const token = await person(BOSS);
     const { result, lines } = await logsDuring(() => worker("/api/admin/tables", { token, env: OPS }));
     expect(result.status).toBe(200);
-    expect(lines).toEqual([{ event: "operator", action: "list", address: BOSS }]);
+    expect(lines).toEqual([{ event: "operator", action: "list", operator: await callerDigest(BOSS) }]);
+    expect(JSON.stringify(lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     const rows = (JSON.parse(result.text) as { tables: Array<Record<string, unknown>> }).tables.filter((r) =>
       [open, dealing, playing, won].includes(String(r.id)),
     );
@@ -331,7 +333,7 @@ describe("the operator's expire (spec §2.9)", () => {
   // saved first, the marker after, and the answer the layer's 204; a second
   // expire then meets the marker's 404, as every request does. Mutants: a
   // marker under another reason; the expire made without the save; the
-  // operator's action not logged, or logged without its address; a plain
+  // operator's action not logged, or logged without its digest; a plain
   // expire passed through to the layer under a marker (its bare "no game
   // named …").
   it("ends a table as its creator's abandon, saved first, and its marker names the operator", async () => {
@@ -345,10 +347,11 @@ describe("the operator's expire (spec §2.9)", () => {
     });
     expect(result).toEqual({ status: 204, text: "" });
     expect(ends(lines)).toEqual([
-      { event: "operator", id, action: "expire", address: BOSS },
+      { event: "operator", id, action: "expire", operator: await callerDigest(BOSS) },
       { event: "archive-landed", id, site: "operator", record_key: recordKey, detail: recordKey },
       { event: "expired", id, reason: "operator", kept: "archive" },
     ]);
+    expect(JSON.stringify(lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     const marker = await markerOf(stub);
     expect(marker).toEqual({ at: expect.any(Number), reason: "operator", kept: "archive" });
     const read = await worker(`/api/games/${id}/table`, { token: await person(RED) });
@@ -451,7 +454,7 @@ describe("the operator's force (spec §2.9)", () => {
   // object for the marker's 90 days: 503); the storage kept; the removal sent
   // again for a marker the house acknowledged; the layer or a wake run on a
   // poisoned table (its load would trap); the sockets left open; the force
-  // not logged, or logged without its address.
+  // not logged, or logged without its digest.
   it.each(["poisoned", "held", "live", "marker", "waiting"] as const)("ends a %s object: no marker, an empty sqlite_master, and the id free again", async (kind) => {
     const id = `op-force-${kind}`;
     const { stub, socket } = await arrange(kind, id);
@@ -462,9 +465,10 @@ describe("the operator's force (spec §2.9)", () => {
     });
     expect(result).toEqual({ status: 204, text: "" });
     expect(ends(lines)).toEqual([
-      { event: "operator", id, action: "force", address: BOSS },
+      { event: "operator", id, action: "force", operator: await callerDigest(BOSS) },
       { event: "forced", id },
     ]);
+    expect(JSON.stringify(lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     const pushed = lines.filter((l) => (l as { event: string }).event === "slot-pushed");
     expect(pushed, "the removal sent unless the house already had it").toEqual(
       kind === "marker" ? [] : [expect.objectContaining({ id, removal: true })],
@@ -524,7 +528,8 @@ describe("the operator's force (spec §2.9)", () => {
     const id = "op-force-empty";
     const { result, lines } = await logsDuring(() => expire(id, true));
     expect(result).toEqual({ status: 204, text: "" });
-    expect(lines).toEqual([{ event: "operator", id, action: "force", address: BOSS }]);
+    expect(lines).toEqual([{ event: "operator", id, action: "force", operator: await callerDigest(BOSS) }]);
+    expect(JSON.stringify(lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     expect(await tablesIn(tableStub(id))).toBe(0);
     expect(await alarmOf(tableStub(id))).toBeNull();
   });
@@ -569,10 +574,11 @@ describe("the operator's force (spec §2.9)", () => {
     });
     expect(result).toEqual({ status: 204, text: "" });
     expect(ends(lines)).toEqual([
-      { event: "operator", id, action: "force", address: BOSS },
+      { event: "operator", id, action: "force", operator: await callerDigest(BOSS) },
       { event: "archive-owed-dropped", id, record_key: recordKey, attempt },
       { event: "forced", id },
     ]);
+    expect(JSON.stringify(lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     expect(await tablesIn(stub)).toBe(0);
   });
 
@@ -699,9 +705,10 @@ describe("the ending names what ended the object (Task 14's L-4)", () => {
     const after = Date.now();
     expect(forcing.result.status, "premise: the push failed, so the alarm finishes the force").toBe(503);
     expect(ends(forcing.lines)).toEqual([
-      { event: "operator", id, action: "force", address: BOSS },
+      { event: "operator", id, action: "force", operator: await callerDigest(BOSS) },
       expect.objectContaining({ event: "slot-failed", id }),
     ]);
+    expect(JSON.stringify(forcing.lines), "no persisted line spells the operator's address (D23)").not.toContain(BOSS);
     const [flag] = await sqlOf(stub, "SELECT v FROM meta WHERE k = 'forced'");
     expect(flag, "the force's batch flagged its REMOVAL").toBeDefined();
     expect(Number(flag!.v), "the flag's time is Date.now(), in milliseconds").toBeGreaterThanOrEqual(before);

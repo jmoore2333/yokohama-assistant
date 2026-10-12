@@ -1,7 +1,7 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
 // scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `npm run
 // deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
-// 6 hold it to production's blocks), so nothing ships unless all thirteen hold. Every check that
+// 6 hold it to production's blocks), so nothing ships unless all fourteen hold. Every check that
 // fails is named, not only the first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
@@ -154,12 +154,20 @@
 //    schema), and the repository deploys none. The shell refuses a
 //    configuration lacking either binding at run time too (`config.ts`'s
 //    `limits`).
+// 14. Production's logs (security S2b, finding D23; decision D-6):
+//    `wrangler.jsonc`'s `observability` sets `redact_query_string` to `true` —
+//    an open-door socket's `claimed=` rides the upgrade's URL, and an
+//    invocation log keeps the URL — and leaves `head_sampling_rate` absent or
+//    `1`, since the live readings count invocations through these logs (AD-10
+//    (a): before this check nothing held the rate, and `0.1` passed). The open
+//    and dev files carry production's block by the sibling rule (T8-a), judged
+//    when the file is the one deployed.
 //
 // Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
 // and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
 // a tree without one, and its sentence is the one to act on.
 //
-// Checks 3–7 and 13 need no build, and `deploy-guard.test.mjs` runs them over the
+// Checks 3–7, 13 and 14 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
 // is the second.
 //
@@ -691,7 +699,8 @@ function poolDeclaration(name, value, failures) {
  *  to production's object blocks, whichever file is named. Check 12's pool
  *  half rides here too (cycle F): neither pool file declares `on`; and check
  *  13 (security S2b, C2): production's rate limits at their figures, and each
- *  pool file binding the two. */
+ *  pool file binding the two; and check 14 (security S2b, D23): production's
+ *  logs redacting query strings, unsampled. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -727,6 +736,14 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   }
   if (production) objectBlocks(production, others, failures);
   if (production) rateLimits(production, others.filter(([n]) => POOLS.includes(n)), failures);
+  // Check 14 (security S2b, D23; decision D-6): production's logs redact query strings and are not sampled.
+  const observed = production ? objectOf(production.value.observability) : undefined;
+  if (production && observed?.redact_query_string !== true) {
+    failures.push("wrangler.jsonc's observability must set redact_query_string to true — an open-door socket's claimed= would persist in the invocation logs otherwise (security S2b, D23)");
+  }
+  if (production && observed?.head_sampling_rate !== undefined && observed.head_sampling_rate !== 1) {
+    failures.push("wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind
   // production would roll it back. Judged when the file is the one deployed.
@@ -748,7 +765,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   return failures;
 }
 
-/** All thirteen checks over the worker package at `root`, inside the repository
+/** All fourteen checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
 export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
@@ -850,7 +867,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
       "at the open door no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and dev files and both pool files; the open and dev files equal production but for their door, and the open file's declaration; " +
-      "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; " +
+      "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; production's logs redacting query strings, unsampled; " +
       "no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );

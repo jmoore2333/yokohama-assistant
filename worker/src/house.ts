@@ -6,7 +6,7 @@ import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { CLOSE_TOO_MANY, closeReason, endAtAdmission, frame, TOO_MANY_LOBBY, TOO_MANY_OWN_LOBBY } from "./frames";
 import { Instance, readReply, type Replied } from "./module";
-import { callerTag } from "./redact";
+import { callerDigest, callerTag } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { decide, type Ack, type HouseRow, type Slot } from "./slot";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
@@ -120,7 +120,7 @@ export class House extends DurableObject<Env> {
     const url = new URL(req.url);
     const operator = req.headers.get(OPERATOR_HEADER);
     if (operator !== null && adminRoute(req.method, url.pathname, url.search.slice(1)).kind === "listing") {
-      log("operator", { action: "list", address: operator });
+      log("operator", { action: "list", operator: await callerDigest(operator) });
       return respond(200, JSON.stringify({ tables: this.listing() }));
     }
     const stream = url.pathname === "/api/stream";

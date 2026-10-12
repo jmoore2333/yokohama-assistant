@@ -5,6 +5,7 @@ import type { Archive } from "../src/archive";
 import * as clockModule from "../src/clock";
 import type { House } from "../src/house";
 import type { ArchiveOwed } from "../src/r2";
+import { callerDigest, redactKey } from "../src/redact";
 import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
 import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
@@ -1190,8 +1191,18 @@ describe("the browser's save (spec §2.6)", () => {
       [200, { leaf: "over", path, identical: true }],
       [409, { error: "a different record is archived under this id" }],
     ]);
-    const line = (outcome: string) => ({ event: `archive-${outcome}`, id: `archive:${caller}`, site: "browser", record_key: recordKey, detail: recordKey });
+    // Security S2b, D23: the object names itself by the caller's digest, and the key is logged redacted in both
+    // fields. Mutants: the object logging its name; `redactKey` dropped at either field.
+    const digest = await callerDigest(caller);
+    const line = (outcome: string) => ({
+      event: `archive-${outcome}`,
+      id: `archive:${digest}`,
+      site: "browser",
+      record_key: redactKey(recordKey),
+      detail: redactKey(recordKey),
+    });
     expect(archiveLines(outcomes.lines)).toEqual([line("landed"), line("identical"), line("conflict")]);
+    expect(JSON.stringify(outcomes.lines), "no persisted line spells the caller's address").not.toContain(caller);
     expect(await bucketText(recordKey), "the record as sent").toBe(record);
 
     const failer = "failer@t.test";
@@ -1202,6 +1213,7 @@ describe("the browser's save (spec §2.6)", () => {
         500,
         { error: `the archive could not be written: ${R2_UNREACHABLE}` },
       ]);
+      expect(JSON.stringify(refused.lines), "no persisted line spells the failing caller's address").not.toContain(failer);
     } finally {
       await failing.restore();
     }
