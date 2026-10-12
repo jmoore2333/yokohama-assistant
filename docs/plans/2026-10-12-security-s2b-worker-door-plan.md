@@ -1671,7 +1671,7 @@ the "mutant per value class" lesson).
 - Modify: `worker/scripts/factory-glue.mjs` (`EXPECTED` + 2), `worker/scripts/factory.d.ts.template` (+ 2 members);
   `worker/scripts/factory-glue.test.mjs` is NOT touched — it pins no literal, deriving everything from `EXPECTED`
 - Modify: `worker/src/archive.ts` (`save`: the listing before the first dispatch)
-- Test: `worker/test/archive.test.ts` (three cells; Task 8 adds a fourth), `worker/test/gates.ts` (`failingList`,
+- Test: `worker/test/archive.test.ts` (four cells; Task 8 adds a fifth), `worker/test/gates.ts` (`failingList`,
   `ListThrough`, `swapBucket`'s `list` parameter)
 
 **Interfaces:**
@@ -2044,6 +2044,22 @@ describe("B12's Worker half — the share counted from a live listing (security 
     }
     expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
   });
+
+  // The SHELL forwarding `size` (the review of Task 4: the shell forwards three values per listing in one statement
+  // — `truncated`, `key`, `size` — and the lesson is a mutant per value class; `size: 0` survived 243/243 without
+  // this cell, measured red under it — `expected 201 to be 507`). The sizes alone reach the bytes bound.
+  it("a listing whose sizes reach 128 MiB is a full share: the 507, nothing uploaded", async () => {
+    const who = "sized@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), objects: [{ key: `${options!.prefix}rev7/over/big.json`, size: 128 * 1024 * 1024 }] }) as unknown as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
 });
 ```
 
@@ -2116,7 +2132,8 @@ M34 the listing not TAKEN → the uncounted row (a stale listing serves twice); 
 root → the prefix row; M36 the shell listing nothing → every pool save `SHARE_UNCOUNTED`; M37 the list failure
 swallowed into an empty listing → the failing-list cell lands a save; M37b the `share_prefix` call outside the `try`
 → the open project's R-C10 cell reads 500; M37c `share_prefix` not clearing the share → the stale-listing row; M37d the shell writing `truncated: false`
-whatever R2 reported → the truncated-listing pool cell (`expected 201 to be 507`; survived every other cell, measured).
+whatever R2 reported → the truncated-listing pool cell (`expected 201 to be 507`; survived every other cell, measured);
+M37e the shell forwarding `size: 0` → the sized-listing pool cell (the review's X0: survived 243/243 without it).
 
 ### Task 5: C1 with D24 — the open door's key rule, a named policy; the Worker module; the shell's one-key-one-object collapse; the open project's cells — Opus (C1, D24; decision D-2; AD-3; Review Focus 5)
 
