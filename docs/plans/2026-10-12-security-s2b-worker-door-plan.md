@@ -2502,7 +2502,8 @@ export function openDoorVerdict(raw: string): NameVerdict {
   `ben`. `App.test.tsx:2637` types `"red"`, and its stub answers `/api/me` with `{ ...wire.me, user: "red" }` once the
   key is set, so the committed `me.json` stays UNMOVED (the corpus fence). Run
   `npx vitest run src/nameRule.test.ts src/SignIn.test.tsx src/App.test.tsx src/NewGame.test.tsx`, then the whole
-  `npx vitest run`. Expected: PASS (1,511 plus this task's cells; record the count).
+  `npx vitest run`. Expected: PASS (1,511 with 0 red at this head before the task — the review's "1,513 with 2 red"
+  was its own export's reading — and 1,514 after; record the count).
 
 - [ ] **Step 4: The Playwright identities follow the target.** In `web/e2e/harness.ts`:
   `export const who = (name: string, domain = "e2e"): string => (LIVE ? \`${name}@${domain}.test\` : name);` and
@@ -2512,7 +2513,10 @@ export function openDoorVerdict(raw: string): NameVerdict {
   `CLAIMED_USER_KEY` a spec seeds and every `x-yokohama-claimed-user` a `request.*` sends; a spec whose live
   identities carry their own domain keeps it through the second argument (`exit_game`'s `who("x", "exit")` for
   `x@exit.test`, `readme_shots`'s `who("ben", "readme")` for `ben@readme.test` — the README's alt text names
-  `ben@readme.test`, and a live re-shot must still draw it; Task 5b's run). `state1_game.spec.ts`, the
+  `ben@readme.test`, and a live re-shot must still draw it; Task 5b's run). A node cell in `web/e2e/harness.node.test.ts`
+  pins `who` both ways: under LIVE (the module re-imported with `vi.resetModules()` after `vi.stubEnv` of the live
+  variable `live.ts` reads) `who("x")` is `x@e2e.test` and `who("ben", "readme")` is `ben@readme.test`; without
+  LIVE both are the bare name. `state1_game.spec.ts`, the
   open door's own window instrument, takes plain names on every target and loses its header sentence "the name step
   takes an address as well as a plain name". The archive-segment restatements (`offline.spec.ts:126-129`,
   `plays_locally.spec.ts:68`) follow the key (`ben` → `ben-<12 hex>`; the readable half has no `_at_`).
@@ -2535,7 +2539,9 @@ git commit -m "web: under the open door the name step and the new-table form ref
 `normalizeName` → the inverted SignIn cell; M43c the `@` test on the key rather than the raw input → the rows whose
 raw input holds an `@` and fails the grammar (AD-8 (d)); M43d `NewGame.tsx`'s seat field back on `normalizeName` →
 `NewGame.test.tsx`; M43e `who` ignoring `LIVE` → the local tier signs in as an address and reads
-`ADDRESS_NOT_A_NAME_HERE` (the e2e gate itself).
+`ADDRESS_NOT_A_NAME_HERE` (the e2e gate itself; the cheapest catching spec is `the_forms.spec.ts`, which signs in
+through `who` — `state1_game` does not, measured); M43f `who` ignoring its `domain` argument → the harness node cell
+(`who("ben", "readme")` reads `ben@readme.test` under LIVE).
 
 ### Task 6: B6 — the dev door admits a `.test` address only; the production file ships it OFF; `wrangler.dev.jsonc`; the guard's door rules and F-40 — Opus (B6; decisions D-1, D-10; rulings R-2, X6)
 
