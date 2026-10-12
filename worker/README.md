@@ -347,7 +347,9 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   beside `open` makes the API answer a 500 naming both variables (`src/config.ts`). The guard cannot
   see the first, which is a secret.
 - **What the guard allows under `open`:**
-  - a `workers.dev` URL, since there is no door to go around;
+  - a `workers.dev` URL, since there is no door to go around; *(Corrected 2026-10-11, security S2a,
+    finding C3: the guard refuses it under `open` too, where it would go around the edge rule, the
+    rate limit and Bot Fight Mode — §9.3, check 3.)*
   - never `preview_urls`, because a preview version is not the deployed code, whatever the door;
   - never `YOKOHAMA_DEV_DOOR=on` in `vars`.
 - **Saves:** a plain name never files its saves under the bucket's `test/` root. That root takes
