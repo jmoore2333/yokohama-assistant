@@ -716,7 +716,7 @@ and nothing re-opens them. The owner's words are quoted where they were given.
 
 ### 9.7 — 2026-10-12, S2b's brainstorm and plan: the owner's rulings R-1–R-6, thirteen decisions and twelve corrections
 
-S2b's plan (`docs/plans/2026-10-12-security-s2b-worker-door-plan.md`) transcribes the brainstorm of 2026-10-12 — the owner's six rulings for the cycle, R-1–R-6, with X1, X3, X4 and X6 standing from 2026-10-11 — takes thirteen decisions of its own (D-8 withdrawn at the plan review and kept by its number, so D-9–D-13 keep theirs) and makes twelve corrections of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at `f1854941` — unchanged since `226e50e9`, the second of the two corrections the run made inside them at the source: `6e23702c` set the write limit at 120 per 10 s on the pre-flight's reading (the first text's 60 did not stand; the burst recipe's 75 POSTs and "the 61st" moved with it), and `226e50e9` corrected D-4 at Task 3's review (the socket caps count OPEN sockets only) — so what follows is what the cycle executed, not its first draft. The plan's three headings are set as this section's bold lines, as §9.5 and §9.6 set theirs; every other line is the plan's byte for byte. The run's rulings are the close's paragraph after them (the plan's Task 10 Step 6), as §9.4's 2026-10-10 paragraph was S1b's.
+S2b's plan (`docs/plans/2026-10-12-security-s2b-worker-door-plan.md`) transcribes the brainstorm of 2026-10-12 — the owner's six rulings for the cycle, R-1–R-6, with X1, X3, X4 and X6 standing from 2026-10-11 — takes thirteen decisions of its own (D-8 withdrawn at the plan review and kept by its number, so D-9–D-13 keep theirs) and makes twelve corrections of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at `8ded960b`, the last of the three corrections the run made inside them at the source: `6e23702c` set the write limit at 120 per 10 s on the pre-flight's reading (the first text's 60 did not stand; the burst recipe's 75 POSTs and "the 61st" moved with it), `226e50e9` corrected D-4 at Task 3's review (the socket caps count OPEN sockets only), and `8ded960b` corrected D-7 and correction 9 at Task 9's review (a new Worker's first deploy runs `wrangler deploy` with neither guard, the deploy guard holding this repository's Worker alone) — so what follows is what the cycle executed, not its first draft. The plan's three headings are set as this section's bold lines, as §9.5 and §9.6 set theirs; every other line is the plan's byte for byte. The run's rulings are the close's paragraph after them (the plan's Task 10 Step 6), as §9.4's 2026-10-10 paragraph was S1b's.
 
 **The owner's rulings for S2b (2026-10-12), and what each binds**
 
@@ -910,9 +910,15 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
   `head_sampling_rate` stays at its default of 1: the live readings count invocations through these logs (the
   Observability query API), and sampling would be privacy by volume at the instrument's cost.
 - **D-7 — S4's first-deploy path is a recipe.** A Worker that does not exist holds no secret, so a new Worker's first
-  deploy runs the deploy guard and `wrangler deploy --config <file>` by hand, and the secrets guard from the second
+  deploy runs `wrangler deploy --config <file>` by hand with NEITHER guard, and the secrets guard from the second
   deploy on; the recipe is written where the guard's cost is recorded (`worker/RUNBOOK.md` §2, `worker/README.md`
-  §9.3). No code: wrangler's "Worker not found" is a sentence, not a contract.
+  §9.3). No code: wrangler's "Worker not found" is a sentence, not a contract. **Corrected at Task 9's review
+  (2026-10-12):** the deploy guard holds THIS repository's Worker — its `name`, its object classes and its bucket, by
+  C3's sibling rule and this cycle's F-40 — so a NEW Worker's file (its own name, its own bucket, R-SEC6) is refused by
+  the guard on its name and its bucket whatever its door (measured: a renamed open file and a renamed production file
+  both refused); the guard judges another Worker's file only once S4 gives it that Worker's identity — S4's change,
+  no guard code in S2b (R-6 stands). The first draft's "runs the deploy guard and `wrangler deploy` by hand" could
+  not pass its own first step.
 - **D-8 — withdrawn at the plan review (2026-10-12).** As drafted, the live replay paced itself at a `PACE_MS` of 150.
   The premise was stale: the replay sends 26 of 2,213 rows at the production door since S1b (17 writes, one
   identity, about 4 s), so the write limit never binds it and no pacing is owed; the arithmetic was wrong on its own
@@ -982,7 +988,9 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
 8. **S4's identity input, recorded on the owner's words (R-3)**: the public Worker at `yokohama.moore.nyc` runs the
    open door behind the Turnstile, controls to be minted later; a second private Worker and the NAS stay behind
    Access; Access is not the public deployment's model.
-9. **The first-deploy path of a new Worker is a recipe** (D-7; the owner's R-6), not a guard rule.
+9. **The first-deploy path of a new Worker is a recipe** (D-7; the owner's R-6), not a guard rule — `wrangler deploy
+   --config <file>` by hand with neither guard, the secrets guard from the second deploy on; the deploy guard holds
+   this repository's Worker alone (its name and bucket) until S4 gives it the new Worker's identity.
 10. **D24 collapses by the grammar**: a plain name's alphabet is ASCII, so once an address is refused under `open`
     every claim is a legal header; the client's name step refuses the rest before any request (D-2).
 11. **D3's Worker half is the socket cap** (D-4); the stream cap and the body-read timeout are the NAS's, S2c's.

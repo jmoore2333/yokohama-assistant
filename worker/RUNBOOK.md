@@ -238,13 +238,19 @@ named like a switch`.
 `deploy`, the safe direction since security S2b, included. A logged-out clone runs `npx wrangler login`
 once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them
 and caches nothing). A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found"
-for a Worker that does not exist yet. **So a NEW Worker's first deploy runs the deploy guard and
-`wrangler deploy --config <file>` by hand — a Worker that does not exist holds no secret — and the
-secrets guard from the second deploy on** (security S2b, decision D-7; the owner's R-6). S4's public
-Worker's first-deploy path is this recipe, and no guard code:
+for a Worker that does not exist yet. **So a NEW Worker's first deploy runs `wrangler deploy --config
+<file>` by hand with neither guard — a Worker that does not exist holds no secret, and the deploy guard
+holds this repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity —
+and the secrets guard from the second deploy on** (security S2b, decision D-7 as corrected at Task 9's
+review; the owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
+whatever its door: C3's sibling rule holds every open-door file to production, and F-40 every unlisted
+worker-door file (measured at the review: a renamed open file and a renamed production file, each with
+its own bucket, both refused). S4's public Worker's first-deploy path is this recipe, and no guard code
+in S2b:
 
 ```sh
-node scripts/deploy-guard.mjs --config <file> && npx wrangler deploy --config <file>   # a NEW Worker's FIRST deploy only
+npx wrangler deploy --config <file>                                                     # a NEW Worker's FIRST deploy: neither guard
+node scripts/secrets-guard.mjs --config <file> && npx wrangler deploy --config <file>   # from its second deploy on
 ```
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
@@ -324,8 +330,9 @@ the whole list; it leaves secrets alone.
   bucket bound, a TTL — either — that is not a whole number of days, an operator entry that is not an address,
   or any value written without quotes. The static release is unaffected, and so are a few `/api/*`
   answers, which is where the rule is not "every `/api/*`":
-  - two answers come before any configuration is read: 405 for any method but GET or HEAD on
-    `/api/art`, and 403 for an upgrade from another site's page (the list at the top of this runbook);
+  - three answers come before any configuration is read: 405 for any method but GET or HEAD on
+    `/api/art`, 403 for an upgrade from another site's page, and 403 for any method but GET or HEAD
+    from another site's page (security S2b, B5) — the list at the top of this runbook;
   - a bad value of any variable but the three chat variables is the Worker's own refusal: 500 on
     every other `/api/*` request;
   - a bad chat variable is read only by the objects' module (`init`). So the Worker's own
@@ -352,9 +359,10 @@ the whole list; it leaves secrets alone.
   address). A deployment flipped from one door to the other keeps every table, seat and archive folder
   keyed under the first door's space, which nobody under the second reaches as their own. So a
   deployment that holds tables or saves keeps its door, and a public open-door deployment is a NEW
-  Worker with its own objects and its own bucket (R-SEC6), starting empty. The door windows of cycles
-  E and F (§19, §20) flipped this Worker for minutes before the rule was written; their recipes stand
-  as records, and a later window is the owner's call against this rule.
+  Worker with its own objects and its own bucket (R-SEC6), starting empty. The specification's words:
+  "The door of the private Worker never flips; the public deployment starts empty (R-SEC6)." The door
+  windows of cycles E and F (§19, §20) flipped this Worker for minutes before the rule was written, and
+  their recipes stand as records; a window on THIS Worker needs the owner to amend R-SEC6 first.
 - **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
   and deploy (§2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
   two files — and nothing is removed from the bucket. With the switch off:
@@ -855,12 +863,13 @@ credential in the repository root's `.dev.vars` (§4), whose values neither prin
 production file ships the dev door `off`, and both tiers play through it, so a run begins with
 `npm run deploy:dev` — `wrangler.dev.jsonc`, production with the dev door `on` — and ends with the
 plain `npm run deploy`, which shuts it again. Both deploy the release build (§1), and each restarts
-every object, so run them between games:
+every object, so run them between games. Each line runs in a subshell from the repository root, so the
+block pastes whole and the closing deploy cannot miss `worker/` and leave the dev door on:
 
 ```sh
-cd worker && npm run deploy:dev   # before: the dev door on
+(cd worker && npm run deploy:dev)   # before: the dev door on
 # … the live Playwright tier, then the live replay, one at a time (below) …
-cd worker && npm run deploy       # after: the dev door off again
+(cd worker && npm run deploy)       # after: the dev door off again
 ```
 
 The dev door is not exempt from the rate limits (decision D-3), and neither tier comes near them: the
@@ -2207,7 +2216,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 - **State 2 — the door on the API paths alone (12:24–12:31Z):** `npm run deploy:gate` FIRST (`wrangler.gate.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("off")`; version `d95668f0`), THEN the secret put back from `git config user.email` through stdin; the PUT with the two hostnames + the NINE paths (`yokohama.moore.nyc/api/admin`, `/api/archive`, `/api/art`, `/api/chat`, `/api/games`, `/api/labels`, `/api/me`, `/api/stream`, `/enter`). Read over WARP from a clean context: `/` 200 with zero `/api/` calls; **a local bot game of five acts with ZERO Worker invocations** (the query API); the owner's "Go to the lobby" → `/enter` → the lobby with no login page, a table created, both sockets opened, `/api/me` naming the owner, the operator listing 200. Read from a HEADED browser WITHOUT WARP: `/` 200 and `/shell.bin` 200 (public), an `X-Requested-With` fetch of `/api/me` and `/api/games` → **401 `WWW-Authenticate: Cloudflare-Access resource_metadata="https://yokohama.moore.nyc/.well-known/cloudflare-access-protected-resource/api/me"`**, a navigation to `/enter`, `/api/games` or `/api/admin/tables` → Access's login page. (curl from a bare client meets Bot Fight Mode's 403 before Access; a browser is the instrument.)
 - **The revert (12:31:37–12:32:32Z):** `npm run deploy` (`wrangler.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("on")`; version `eb8c7839`, the twenty-eighth deployment — 26 and 27 were the window's); the PUT back to the three hostnames (`yokohama`, `yokohama-cli`, `yokohama-nas`), the `aud` unchanged; `wrangler secret list` names both secrets. After-check: `/api/me` over WARP names the owner; **a clean headed browser without WARP at `/` meets Access's login** (12:43Z; the door not drawn); the credential + a claimed header names its caller; a claimed header WITHOUT the credential names the owner, not the claim; the live replay ONCE HOLDS; the quota above.
 - **The three PUT bodies** (`PUT /accounts/{account}/access/apps/11cbcf68-96cd-4310-baee-f2ade812155d`; the MCP or `curl` with an API token that manages Access) carry the application's read-back fields unchanged — `name: yokohama`, `type: self_hosted`, `session_duration: 730h`, `app_launcher_visible: true`, `allowed_idps` (the one identity provider's id), `auto_redirect_to_identity: true`, `http_only_cookie_attribute: true`, `policies` as `[{id, precedence}]` for the three (`sbaitso-friendly` 1, `yokohama-players` 2, `yokohama ST bypass` 3) — and differ ONLY in `domain`, `self_hosted_domains` and `destinations` (`[{type: "public", uri}]`, one per entry): the REVERT lists the three hostnames with `domain: yokohama.moore.nyc`; STATE 1 lists `yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` with `domain: yokohama-nas.moore.nyc`; STATE 2 adds the nine `yokohama.moore.nyc/<path>` entries to state 1's list. Read the application back after every PUT: the `aud` must not change (it did not, three times), and a changed `aud` would orphan every `ACCESS_AUD` the Workers carry.
-- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7.)*
+- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7. Since S2b this recipe runs on THIS Worker only once the owner amends R-SEC6 — "the door of the private Worker never flips" (§3).)*
 
 ### What this deployment does NOT claim
 - The live half of RF1 (the update path) on each host was read ONCE, in a headless persistent context on the workstation — not on the owner's Edge, whose pinned state is the one that failed on 2026-09-29; the owner's own browser is the last reading.

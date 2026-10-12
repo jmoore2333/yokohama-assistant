@@ -380,7 +380,8 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   The client's name step never sends such a claim.
 
 **The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
-`RUNBOOK.md` §19). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
+`RUNBOOK.md` §19). **Since security S2b a window on THIS Worker needs the owner to amend R-SEC6 first**:
+"the door of the private Worker never flips" (C1; `RUNBOOK.md` §3). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
 open door and no Access values or dev door. The recipe: delete the two Worker secrets first
 (`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
 list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
@@ -1769,9 +1770,10 @@ either past it. A listing that fails is a refusal, never a pass, so every deploy
 step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
 deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first
-deploy runs the deploy guard and `wrangler deploy --config <file>` by hand — a Worker that does not
-exist holds no secret — and the secrets guard from the second deploy on (security S2b, decision D-7;
-the owner's R-6).
+deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that does not exist
+holds no secret, and the deploy guard holds this repository's Worker alone, its name and bucket, until
+S4 gives it the new Worker's identity — and the secrets guard from the second deploy on (security S2b,
+decision D-7 as corrected at Task 9's review; the owner's R-6).
 
 ### 9.4 Configuration and secrets
 
@@ -1990,8 +1992,9 @@ the credential, which is never an operator.
   security S2b, opened by `wrangler.dev.jsonc` around a live tier; the public door's preconditions
   are recorded in the M6.5c2 cycle C close (§6). *(Corrected 2026-09-28: `DEV_DOOR_CLIENT_ID` is a
   secret since M6.5c2, where this said it was committed.)*
-  Going public is meant to be a configuration change; on a public door, a scanner's misses would
-  each be a Worker invocation.
+  Going public is meant to be a configuration change — since security S2b, of a NEW Worker that
+  starts empty, since the door of this private Worker never flips (R-SEC6; RUNBOOK §3); on a public
+  door, a scanner's misses would each be a Worker invocation.
 - **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
   remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
   documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three
