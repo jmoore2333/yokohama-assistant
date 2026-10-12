@@ -2809,7 +2809,9 @@ tree, and the profiles (S2a Task 6)"`.
   `docs/plans/2026-10-08-security-remediation-spec.md` (§9.6 appended — never an edit above it), `worker/RUNBOOK.md`
   (§2's commands, the guard's list and the secrets guard's network note; §7's live-tier note and the wake window's
   recipe :803–804 — the dated deploy RECORDS that spell the old command stay as written), `worker/README.md` (the
-  deploy commands wherever `npm run deploy` is spelled; the wake window's recipe :1718–1719), `deploy/README.md`
+  deploy commands wherever `npm run deploy` is spelled; the wake window's recipe :1718–1719; the open-door paragraph's
+  bullet "a `workers.dev` URL, since there is no door to go around" (:350), given a dated correction — C3 refuses it under
+  every door now; Task 7's review), `deploy/README.md`
   (one paragraph on the headers; the build line)
 - Test: `cargo test -p yokohama-web --test lane_document`, `cd worker && npm run test:scripts` (the
   `lane-variables` cells), and every count re-read at Task 6's head
@@ -2852,7 +2854,8 @@ wrangler.jsonc --var YOKOHAMA_WEB_COUNT_WAKES:on`. §2's counts re-read at Task 
 S2a's plan: the three-cycle split, the owner's twelve rulings and the four taken at the plan review, eleven
 decisions, six adjudications and twelve corrections": the rulings section of this plan verbatim (the plan review's
 two bullets included), the decisions D-1–D-11 verbatim, the spec corrections 1–12 verbatim; the run's rulings
-paragraph is the close's (Task 9 Step 6), as §9.5's was S1c's. Nothing above §9.6 is edited.
+paragraph is the close's (Task 9 Step 6), as §9.4's 2026-10-10 paragraph was S1b's (§9.5 never got S1c's — a gap S2c's
+wrap may record; Task 7's review). Nothing above §9.6 is edited.
 
 - [ ] **Step 3: The runbooks and the two READMEs.** `worker/RUNBOOK.md` §2: the command block gains the two other
 scripts as `package.json` spells them (today it holds `npm run deploy` with its one-line gloss); the guard's list
