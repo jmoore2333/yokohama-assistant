@@ -2609,8 +2609,9 @@ export function isTestAddress(email: string): boolean {
   credential names test identities and nobody else".
 
 - [ ] **Step 4: Run the identity cells.** Expected: PASS. Then the pool's `worker.test.ts` and `operator.test.ts`
-  dev-door cells, which claim `.test` addresses throughout (PROBE: `grep -n "Claimed-User" test/*.ts | grep -v "\.test"`
-  prints nothing).
+  dev-door cells, which claim `.test` addresses throughout (PROBE: `grep -h "Claimed-User" test/*.ts | grep -o '"[^"]*@[^"]*"' | grep -v '\.test"'`
+  prints nothing — the first draft's `grep -v "\.test"` over whole lines was vacuous, every pool FILENAME containing
+  `.test`; Task 6's run checked the claim by hand).
 
 - [ ] **Step 5: The configurations.** `wrangler.jsonc`'s dev-door entry becomes:
 
@@ -2651,10 +2652,12 @@ export function isTestAddress(email: string): boolean {
   the tree's `"wrangler.gate.jsonc": GATE` becomes `"wrangler.dev.jsonc": DEV`, every cell naming the gate file
   names the dev file with its verdicts inverted (`"off"` refused there, `"on"` required — the `YOKOHAMA_DEV_DOOR`
   cells alone invert), the three-command loop reads `["deploy:dev", "wrangler.dev.jsonc"]`, and three existing cells
-  need a hand the rule above does not reach (measured: the guard file then passes 75/75):
+  need a hand the rule above does not reach (measured: the guard file then passes 76/76 at Task 6's head — 72 at
+  `85c8dd02`, plus Task 2's two, plus this task's two):
   1. the last two lines of "refuses the dev door on beside the open door…" (`:646-647`, `worked`, expecting
      `toEqual([])` at `wrangler.jsonc`) contradict B6 yet name no gate file — they become
-     `expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door, in production's file").toEqual(naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone/));`;
+     `expect(deployGuard(worker({ "wrangler.jsonc": worked })), "on at the worker door, in production's file").toEqual(naming(/^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler\.dev\.jsonc alone/));`
+     (the `const worked` line stays: the replacement references it);
   2. `gateOn` (`:1033`) would `.replace` a string the renamed fixture no longer holds, silently matching nothing — it
      becomes `devOn = DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', '"YOKOHAMA_DEV_DOOR": "on", "YOKOHAMA_TURNSTILE": "on"')`;
   3. the `YOKOHAMA_TURNSTILE` row `["wrangler.gate.jsonc", "off"]` (`:1217`) is RENAMED only; its declaration stays
