@@ -420,7 +420,7 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     }
     for (i, seat) in doc.seats.iter().enumerate() {
         if let SeatDoc::Human { name: Some(name), .. } = seat {
-            if let Err(why) = check_name(name) {
+            if let Err(why) = check_stored_name(name) {
                 return Err(format!("seat {i}'s name: {why}"));
             }
         }
@@ -429,7 +429,7 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     // finding D25): `create` and `join` apply it on write, and a document that
     // arrives through the archive route or a restore never passed through them.
     if let Some(name) = &doc.name {
-        if let Err(why) = check_name(name) {
+        if let Err(why) = check_stored_name(name) {
             return Err(format!("the table's name: {why}"));
         }
     }
@@ -514,12 +514,29 @@ impl<'a> ChatAt<'a> {
     }
 }
 
-/// The display-name rule, applied on WRITE (create, join, keep) and on READ
-/// ([`check_shape`]), so a document this server wrote is never one it refuses.
+/// The display-name rule, applied on WRITE (create, join, keep, a watcher's
+/// chat name); a stored document reads under [`check_stored_name`], so a
+/// document this server wrote is never one it refuses.
 ///
 /// Trimmed and returned rather than merely checked: the caller stores what
 /// comes back, so " Red " and "Red" are one name and not two.
 pub(crate) fn check_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("a name is 1 to 64 characters".to_string());
+    }
+    // **Visible whole** (security S2c, finding D8): `is_control` alone let a zero-width space and a bidi override
+    // through, and a watcher posted as a seat holder. The rule is `text::invisible`'s — every host, one table.
+    if crate::text::invisible(name).is_some() {
+        return Err(format!("a name has {}", crate::text::INVISIBLE_RULE));
+    }
+    Ok(name.to_string())
+}
+
+/// **The READ-side name rule: the rule as it stood before S2c** (`is_control` alone). `check_shape` runs on every
+/// stored document, and a document this server wrote under the old rule (a display name with a pasted U+200F, a
+/// watcher posted as "Bob\u{200B}") must still read; the new rule is the WRITE side's ([`check_name`]).
+pub(crate) fn check_stored_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() || name.chars().count() > 64 {
         return Err("a name is 1 to 64 characters".to_string());
@@ -3425,6 +3442,21 @@ mod tests {
         assert_eq!(check_shape(&doc).expect_err("a control character"), "the table's name: a name has no control characters");
         doc.name = Some("x".repeat(64));
         assert!(check_shape(&doc).is_ok(), "64 is the bound");
+    }
+
+    /// **A name is visible whole** (security S2c, finding D8 — measured in review: `"Bob\u{200B}"` read as the seat
+    /// holder "Bob"): a zero-width space, a bidi override and a BOM are refused with the rule's sentence; the
+    /// control-character refusal keeps that same sentence; a visible name in another script passes. The sentence is
+    /// pinned at its literal.
+    #[test]
+    fn a_name_with_an_invisible_or_direction_changing_character_is_refused_by_the_rule() {
+        for bad in ["Bob\u{200B}", "Re\u{202E}d", "\u{FEFF}Owner", "Jeremy\u{2066}", "a\tb", "two\u{2028}lines"] {
+            assert_eq!(check_name(bad), Err("a name has no control, invisible or direction-changing character".to_string()), "{bad:?}");
+        }
+        assert_eq!(check_name("  Ben   Castle "), Ok("Ben   Castle".to_string()), "trimmed, as before");
+        assert_eq!(check_name("日本語の名前"), Ok("日本語の名前".to_string()));
+        assert_eq!(check_name("🙂 Ben"), Ok("🙂 Ben".to_string()));
+        assert!(check_name(&"n".repeat(65)).unwrap_err().starts_with("a name is 1 to 64 characters"), "the length rule speaks first, as before");
     }
 
     /// **The mirror names the winner once the game is over, and nobody before

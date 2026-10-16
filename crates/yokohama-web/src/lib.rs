@@ -66,6 +66,7 @@ pub mod bots;
 pub mod chat;
 pub mod client;
 pub mod echo;
+pub mod text;
 pub mod explain;
 pub mod games;
 pub mod grammar;
@@ -9650,7 +9651,7 @@ mod tests {
         .await;
         assert_eq!(
             (status, got["error"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("a message is one line, with no control characters")),
+            (StatusCode::BAD_REQUEST, Some("a message is one line, with no control, invisible or direction-changing character")),
         );
         // an unknown key is the fenced 400
         let (status, _) = post_as(
@@ -9929,7 +9930,7 @@ mod tests {
         .await;
         assert_eq!(
             (status, got["error"].as_str()),
-            (StatusCode::BAD_REQUEST, Some("a name has no control characters")),
+            (StatusCode::BAD_REQUEST, Some("a name has no control, invisible or direction-changing character")),
             "{got}",
         );
         let grey = identity::User::parse("grey@wire.test").expect("an email");
@@ -9951,6 +9952,37 @@ mod tests {
             (StatusCode::NOT_FOUND, Some("the lobby chat is off")),
             "the switch is read before the text: {got}",
         );
+    }
+
+    /// **A document this server wrote under the OLD name rule still reads** (S2c Task 3's compatibility catcher): a
+    /// seat's display name and a house watcher's name carrying a zero-width space, stored before the cycle, are
+    /// served as they were — `check_shape` is the READ-side rule (`check_stored_name`, `is_control` alone); the new
+    /// rule is the write side's. Without this split the lobby chat and the table answered 500 on every route.
+    #[tokio::test]
+    async fn a_document_stored_under_the_old_name_rule_still_reads_and_the_house_chat_still_takes_a_post() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, t) = post_as(&state, "red@wire.test", "/api/games", serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seed": "20260831",
+            "seats": [{ "user": "red@wire.test" }, { "user": "blue@wire.test" }],
+            "id": "pre", "name": "pre", "display_name": "Captain Red",
+        })).await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        let (status, m) = post_as(&state, "green@wire.test", "/api/chat", serde_json::json!({ "text": "hi", "name": "Bob" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        let store = Arc::clone(state.games.store());
+        let (json, ver) = store.read(Doc::Table, "pre").expect("a store").expect("the table");
+        let json = json.replace("Captain Red", "Captain\\u200BRed");
+        store.write_if_version(Doc::Table, "pre", &json, Some(ver)).expect("written");
+        let (json, ver) = store.read(Doc::House, "house").expect("a store").expect("the chat");
+        let json = json.replace("\"Bob\"", "\"Bob\\u200B\"");
+        store.write_if_version(Doc::House, "house", &json, Some(ver)).expect("written");
+        assert!(state.games.read_table("pre").expect("the table still reads").is_some());
+        let (status, body) = get_as(&state, "red@wire.test", "/api/chat").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = post_as(&state, "red@wire.test", "/api/chat", serde_json::json!({ "text": "still here?" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let (status, body) = post_as(&state, "red@wire.test", "/api/chat", serde_json::json!({ "text": "x", "name": "Bob\u{200B}" })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "the WRITE side refuses the same name: {body}");
     }
 
     /// **`Events.chat` on all three arms, and the stream after a chat bump

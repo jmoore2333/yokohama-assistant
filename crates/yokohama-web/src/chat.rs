@@ -30,7 +30,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::identity::User;
-use crate::tables::check_name;
 
 /// This document's own shape version, unrelated to `SEMANTICS_REV`.
 pub const CHAT_SCHEMA: u32 = 1;
@@ -435,8 +434,8 @@ pub fn check_text(raw: &str, limits: &ChatLimits) -> Result<String, String> {
     if text.chars().count() > limits.text {
         return Err(format!("a message is at most {} characters", limits.text));
     }
-    if text.chars().any(char::is_control) {
-        return Err("a message is one line, with no control characters".to_string());
+    if crate::text::invisible(text).is_some() {
+        return Err(format!("a message is one line, with {}", crate::text::INVISIBLE_RULE));
     }
     Ok(text.to_string())
 }
@@ -499,7 +498,7 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
             }
         }
         if let Some(n) = name {
-            check_name(n).map_err(|why| format!("message {i}'s author name: {why}"))?;
+            crate::tables::check_stored_name(n).map_err(|why| format!("message {i}'s author name: {why}"))?;
         }
         match (seat, players) {
             (Some(s), Some(p)) if s >= p => {
@@ -540,7 +539,7 @@ pub fn normalized(mut doc: ChatDoc) -> ChatDoc {
             }
         }
         if let Some(n) = name {
-            if let Ok(stored) = check_name(n) {
+            if let Ok(stored) = crate::tables::check_stored_name(n) {
                 *n = stored;
             }
         }
@@ -576,6 +575,26 @@ mod tests {
         assert!(check_text("hello!", &limits).is_err(), "six characters over a cap of five");
         assert!(check_text("   ", &limits).is_err(), "empty after trimming");
         assert!(check_text("a\nb", &limits).is_err(), "a control character");
+    }
+
+    /// **A line is visible whole, and the LENGTH rule speaks first** (security S2c, finding D8; Review Focus 3):
+    /// the review's reversed line is refused with the rule's sentence; a line of exactly the cap with one zero-width
+    /// space inside it is refused by the CHARACTER sentence (it is within the cap), and one character over the cap
+    /// by the LENGTH sentence — so a person reads the rule they can act on. An emoji line passes; a multi-person
+    /// emoji sequence (a joiner, U+200D, category Cf) does not — the accepted loss (decision D-4).
+    #[test]
+    fn a_line_with_an_invisible_character_is_refused_after_the_length_rule() {
+        let limits = ChatLimits { text: 10, ..ChatLimits::default() };
+        let rule = "a message is one line, with no control, invisible or direction-changing character".to_string();
+        assert_eq!(check_text("\u{202E}emag siht", &limits), Err(rule.clone()));
+        assert_eq!(check_text("gg\u{200B} resign", &limits), Err(rule.clone()));
+        let at_cap = format!("{}\u{200B}", "x".repeat(9));
+        assert_eq!(at_cap.chars().count(), 10, "premise: exactly the cap");
+        assert_eq!(check_text(&at_cap, &limits), Err(rule.clone()), "within the cap: the character rule");
+        let over = format!("{}\u{200B}", "x".repeat(10));
+        assert_eq!(check_text(&over, &limits), Err("a message is at most 10 characters".to_string()), "over the cap: the length rule, first");
+        assert_eq!(check_text("🙂 gg", &limits), Ok("🙂 gg".to_string()));
+        assert_eq!(check_text("\u{1F468}\u{200D}\u{1F469}", &limits), Err(rule), "a joined sequence carries a format character");
     }
 
     #[test]
