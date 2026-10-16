@@ -889,8 +889,9 @@ rows red.
     /// promise a body and whose body then STALLS — one chunk, then a channel nobody closes — is answered 408 with
     /// `BODY_TOO_SLOW` once the deadline passes, in the API's error shape, under a deadline the cell shortens to
     /// 50 ms. The same body completed in two chunks under the deadline reaches the route and is answered by it (a
-    /// 201: the two chunks are one valid create), which pins that the chunks are joined and the deadline is the read's
-    /// alone. The whole cell runs under its own 2-second bound so a mutant that awaits forever reads as RED.
+    /// 201: the two chunks are one valid create), which pins that the chunks are joined; a trickle row pins that the deadline
+    /// is the read's IN ALL, and a gated-route row that it is the read's ALONE (the Task 2 review). The whole cell runs
+    /// under its own 2-second bound so a mutant that awaits forever reads as RED.
     #[tokio::test]
     async fn a_stalled_request_body_is_answered_408_after_the_deadline_and_a_slow_but_arriving_one_reaches_the_route() {
         use tokio_stream::wrappers::ReceiverStream;
@@ -930,6 +931,45 @@ rows red.
         let res = app(Arc::clone(&state)).oneshot(slow).await.expect("the router answers");
         feeder.await.expect("the feeder");
         assert_eq!(res.status(), StatusCode::CREATED, "both chunks reached the route as one body");
+
+        // The deadline is the read's IN ALL (the Task 2 review's I-1: a per-chunk idle deadline, tower-http's
+        // `TimeoutBody` shape, passed every cell): a trickle whose every chunk lands inside the 50 ms deadline, for
+        // 200 ms in all, is answered 408. A per-chunk idle deadline would wait it out and answer the route's 201.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+        let trickle = tokio::spawn(async move {
+            for _ in 0..10 {
+                if tx.send(Ok(b" ".to_vec())).await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let _ = tx.send(Ok(b"{\"players\":2,\"colors\":[\"Red\",\"Blue\"],\"start_seat\":0,\"seats\":[{\"user\":\"red@wire.test\"},{\"open\":true}]}".to_vec())).await;
+        });
+        let trickled = Request::builder()
+            .method("POST")
+            .uri("/api/games")
+            .header(identity::CLAIMED_HEADER, WHO)
+            .header("content-type", "application/json")
+            .body(Body::from_stream(ReceiverStream::new(rx)))
+            .expect("a request");
+        let res = tokio::time::timeout(std::time::Duration::from_secs(2), app(Arc::clone(&state)).oneshot(trickled))
+            .await
+            .expect("answered within the cell's bound")
+            .expect("the router answers");
+        trickle.abort();
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT, "a trickle inside the deadline per chunk is past it in all");
+
+        // The deadline is the READ's alone (the review's I-2: a whole-handler timeout passed every cell, and in
+        // production would 408 a slow replay and blame the body): a request whose body is whole at once, to a route
+        // that is slow after the read (the replay gate held at zero permits, a 100 ms wait), answers the gate's 503.
+        let gated = Arc::new(
+            AppState::in_memory()
+                .with_body_deadline(std::time::Duration::from_millis(50))
+                .with_replay_gate(0, std::time::Duration::from_millis(100)),
+        );
+        start_as(&gated, "slowroute", 20261016, &[WHO, "blue@wire.test"]).await;
+        let (status, _) = get_as(&gated, WHO, "/api/games/slowroute/at/0").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "the route's own slow answer, not the read's deadline");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
         assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
@@ -1014,9 +1054,13 @@ status 400 in the elapsed arm → the cell red at `REQUEST_TIMEOUT`; M31 the dea
 completes (a `sleep` after the read) → red at the cell's FIRST `expect`, the 2-second bound: the stalled read never
 completes, so the mutant never answers (Task 2's probe); M31b a 408 answered after a sleep WITHOUT awaiting the read →
 the anti-vacuity row red (the slow body answered 408); M32 the constructors leaving `body_deadline` at zero → the new
-cell's last line red, and nothing else (tokio's `Timeout` polls the future before its timer, so a body ready on its
+cell's last line AND the production-state cell's `body_deadline` line red (both constructors share the one struct
+literal), and nothing else (tokio's `Timeout` polls the future before its timer, so a body ready on its
 first poll reads even at zero — every in-memory cell's body is; Task 2's probe); M32a `AppState::production` alone at
-zero → the production-state cell's `body_deadline` line red.
+zero → the production-state cell's `body_deadline` line red; M32b a per-chunk IDLE deadline (`timeout(deadline,
+frames.next())` per frame, the `TimeoutBody` shape) → the trickle row red (201 for 408); M32c the deadline over the
+WHOLE handler (`timeout(deadline, adapter_inner(..))`, the `TimeoutLayer` shape) → the gated-route row red (408 for
+503) — both the Task 2 review's probes.
 
 ### Task 3: D8's character rule — control, format and line-separator characters refused in names and chat — Opus (R-2; decision D-4; Review Focus 3)
 
