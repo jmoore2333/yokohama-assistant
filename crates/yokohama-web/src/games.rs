@@ -285,6 +285,23 @@ pub enum SeedPolicy {
     Diagnostic,
 }
 
+/// The chat salt every `Diagnostic` state uses (decision D-5): the fixtures', the corpus walk's, the pool's and
+/// `init_diagnostic()`'s, so a fixture's tags are the same bytes on every host. 32 hex, as a production salt is.
+pub const FIXED_CHAT_SALT: &str = "4c5f8e2a9d1b7c3e6f0a2b4d8e1c3a5f";
+
+impl Games {
+    /// **A new chat document's salt** (security S2c, finding D8; decision D-5): 16 bytes of OS entropy as 32 hex
+    /// under `SeedPolicy::SoloOnly` — every production constructor — and [`FIXED_CHAT_SALT`] under `Diagnostic`.
+    /// The seed rule's shape, deliberately: the policy already says "this state is a fixture", and a second switch
+    /// for the salt would be one more thing every constructor on every host had to set.
+    pub fn chat_salt(&self) -> String {
+        match self.seed_policy {
+            SeedPolicy::Diagnostic => FIXED_CHAT_SALT.to_string(),
+            SeedPolicy::SoloOnly => format!("{:016x}{:016x}", crate::tables::draw_seed(), crate::tables::draw_seed()),
+        }
+    }
+}
+
 /// Every live game, plus the store behind them.
 pub struct Games {
     pub(crate) rules: Arc<Rules>,
@@ -3358,6 +3375,24 @@ mod tests {
         games.prune_lock("t");
         let map = games.locks.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(!map.contains_key("t"), "the unshared entry is pruned through the poison");
+    }
+
+    /// **The salt follows the SEED policy** (decision D-5, the seed rule's shape): under `Diagnostic` — the
+    /// fixtures, the corpus walk, the pool and `init_diagnostic()` on both wasm hosts — it is the constant, so the
+    /// corpus and the pool's replay of it carry the same tags byte for byte; under `SoloOnly`, every production
+    /// constructor's, it is 32 hex of OS entropy, fresh each time. No constructor on any host moves.
+    #[test]
+    fn the_chat_salt_is_fixed_under_diagnostic_and_fresh_entropy_under_solo_only() {
+        let diagnostic = crate::AppState::in_memory().games;
+        assert_eq!(diagnostic.chat_salt(), FIXED_CHAT_SALT);
+        assert_eq!(diagnostic.chat_salt(), FIXED_CHAT_SALT, "the same every time");
+        assert_eq!(FIXED_CHAT_SALT.len(), 32);
+        let production = crate::AppState::in_memory().with_seed_policy(SeedPolicy::SoloOnly).games;
+        let (a, b) = (production.chat_salt(), production.chat_salt());
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()), "{a}");
+        assert_ne!(a, b, "entropy, not a constant");
+        assert_ne!(a, FIXED_CHAT_SALT);
     }
 }
 

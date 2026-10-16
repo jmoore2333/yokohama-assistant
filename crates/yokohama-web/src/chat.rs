@@ -53,6 +53,25 @@ pub const MAX_CREATED_AT: u64 = 253_402_300_799;
 /// keep a document `FsStore` would never have written.
 pub const HOUSE: &str = "house";
 
+/// A tag's length in hex characters: four reads at a glance beside a name, and 65,536 values keep two posters in
+/// one room apart in all but a chance collision.
+pub const TAG_HEX: usize = 4;
+
+/// **The tag a watcher's or house poster's key reads as in ONE room** (security S2c, finding D8; the owner's R-2):
+/// the first four hex of SHA-256 over the room's salt, a newline and the key. Stable within the room, unlinkable
+/// across rooms (another salt), and not invertible to an address: the salt is the room's and is never served, so
+/// a stranger cannot hash a guessed address and confirm it (B7's fence). Under the open door it says "the same key
+/// as before" and nothing more — a name is a claim there by design, the owner's accepted risk (2026-10-13).
+pub fn tag_of(salt: &str, key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(salt.as_bytes());
+    h.update(b"\n");
+    h.update(key.as_bytes());
+    let digest = h.finalize();
+    digest.iter().take(TAG_HEX / 2).map(|b| format!("{b:02x}")).collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatDoc {
     pub schema: u32,
@@ -72,6 +91,11 @@ pub struct ChatDoc {
     /// for its value, so the starting point does not matter.
     #[serde(default)]
     pub rev: u64,
+    /// **The room's salt** (security S2c, finding D8; decision D-5): what a watcher's or house poster's tag is
+    /// derived from, with their key. Given on the document's first append after this cycle by `Games::chat_salt`;
+    /// `None` on a document written before, until then. Never served: the tag is served, and it is one way.
+    #[serde(default)]
+    pub salt: Option<String>,
     pub messages: Vec<Message>,
 }
 
@@ -171,7 +195,7 @@ pub enum Author {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AuthorView {
     Seat { seat: u8, name: Option<String>, you: bool },
-    Watcher { name: Option<String>, you: bool },
+    Watcher { name: Option<String>, you: bool, tag: Option<String> },
     /// A bot is nobody's `you`, so the arm carries no such field.
     Bot { seat: u8, name: Option<String> },
 }
@@ -196,11 +220,11 @@ impl Message {
     /// This message as `reader` is handed it — `you` read off the STORED
     /// address, which is normalized on read ([`normalized`]) and compared
     /// with the reader's normalized key.
-    pub fn view_for(&self, reader: &User) -> MessageView {
+    pub fn view_for(&self, reader: &User, salt: Option<&str>) -> MessageView {
         let you = |user: &String| user == reader.as_str();
         let author = match &self.author {
             Author::Seat { seat, user, name } => AuthorView::Seat { seat: *seat, name: name.clone(), you: you(user) },
-            Author::Watcher { user, name } => AuthorView::Watcher { name: name.clone(), you: you(user) },
+            Author::Watcher { user, name } => AuthorView::Watcher { name: name.clone(), you: you(user), tag: salt.map(|s| tag_of(s, user)) },
             Author::Bot { seat, name } => AuthorView::Bot { seat: *seat, name: name.clone() },
         };
         MessageView {
@@ -354,7 +378,7 @@ impl ChatConfig {
 
 impl ChatDoc {
     pub fn empty(id: &str) -> Self {
-        Self { schema: CHAT_SCHEMA, id: id.to_string(), last: 0, rev: 0, messages: Vec::new() }
+        Self { schema: CHAT_SCHEMA, id: id.to_string(), last: 0, rev: 0, salt: None, messages: Vec::new() }
     }
 
     /// The two numbers a signal carries about this document — see
@@ -418,7 +442,7 @@ impl ChatDoc {
     /// [`MessageView`]. A caller that wants a page from a cursor filters
     /// `messages` first.
     pub fn page_for(&self, reader: &User) -> Vec<MessageView> {
-        self.messages.iter().map(|m| m.view_for(reader)).collect()
+        self.messages.iter().map(|m| m.view_for(reader, self.salt.as_deref())).collect()
     }
 }
 
@@ -565,7 +589,7 @@ mod tests {
     /// number, and `rev` beside it — one revision per append.
     fn doc(msgs: Vec<Message>) -> ChatDoc {
         let last = msgs.last().map_or(0, |m| m.seq);
-        ChatDoc { schema: CHAT_SCHEMA, id: "t".into(), last, rev: last, messages: msgs }
+        ChatDoc { schema: CHAT_SCHEMA, id: "t".into(), last, rev: last, salt: None, messages: msgs }
     }
 
     #[test]
@@ -768,13 +792,13 @@ mod tests {
             [
                 json!({ "kind": "seat", "seat": 0, "name": "Red", "you": true }),
                 json!({ "kind": "seat", "seat": 1, "name": null, "you": false }),
-                json!({ "kind": "watcher", "name": null, "you": false }),
+                json!({ "kind": "watcher", "name": null, "you": false, "tag": null }),
                 json!({ "kind": "bot", "seat": 1, "name": "V4" }),
             ],
         );
         let to_green = authors(&green);
         assert_eq!(to_green[0]["you"], false, "red's message is not green's");
-        assert_eq!(to_green[2], json!({ "kind": "watcher", "name": null, "you": true }), "green's own");
+        assert_eq!(to_green[2], json!({ "kind": "watcher", "name": null, "you": true, "tag": null }), "green's own");
     }
 
     /// **Each of the three variables HAS a default, and a bad value is refused
@@ -1034,5 +1058,56 @@ mod tests {
         assert_eq!(old.counts(), ChatCounts { last: 2, rev: 0 });
         assert!(!old.messages[0].deleted);
         assert_eq!(check_shape(&old, None), Ok(()));
+    }
+
+    /// **The tag is four hex of SHA-256 over the room's salt, a newline and the key** (security S2c, finding D8;
+    /// decision D-5): deterministic; different by salt (two rooms never share a tag) and by key (two posters never
+    /// share one, bar a 1-in-65,536 collision); never longer than four. The reference value is the hash computed by
+    /// hand once (`printf 'salt\nred@wire.test' | sha256sum | cut -c1-4`).
+    #[test]
+    fn a_tag_is_four_hex_of_the_salted_key_and_differs_by_salt_and_by_key() {
+        let t = tag_of("salt", "red@wire.test");
+        assert_eq!(t.len(), TAG_HEX);
+        assert!(t.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{t}");
+        assert_eq!(t, tag_of("salt", "red@wire.test"), "deterministic");
+        assert_ne!(t, tag_of("other", "red@wire.test"), "a different room, a different tag");
+        assert_ne!(t, tag_of("salt", "blue@wire.test"), "a different key, a different tag");
+        assert_eq!(TAG_HEX, 4);
+    }
+
+    /// **A watcher's view carries the tag; a seat's and a bot's never; a document with no salt carries `None`**
+    /// (Review Focus 4: a document written before this cycle, read on any host). The reader's own message is
+    /// tagged too — "you · a1b2" tells the reader their own tag so they can recognise it on their next message.
+    #[test]
+    fn view_for_tags_watcher_authors_only_and_none_without_a_salt() {
+        let red = User::parse("red@wire.test").unwrap();
+        let watcher = Message { seq: 1, created_at: 0, author: Author::Watcher { user: "green@wire.test".into(), name: Some("Green".into()) }, text: "hi".into(), deleted: false };
+        let seat = Message { seq: 2, created_at: 0, author: Author::Seat { seat: 0, user: "red@wire.test".into(), name: Some("Red".into()) }, text: "gl".into(), deleted: false };
+        let bot = Message { seq: 3, created_at: 0, author: Author::Bot { seat: 1, name: None }, text: "…".into(), deleted: false };
+        match watcher.view_for(&red, Some("salt")).author {
+            AuthorView::Watcher { tag, you, .. } => { assert_eq!(tag, Some(tag_of("salt", "green@wire.test"))); assert!(!you); }
+            other => panic!("{other:?}"),
+        }
+        match watcher.view_for(&red, None).author {
+            AuthorView::Watcher { tag, .. } => assert_eq!(tag, None, "no salt yet: no tag, and no panic"),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(seat.view_for(&red, Some("salt")).author, AuthorView::Seat { you: true, .. }), "a seat is server-bound: no tag field at all");
+        assert!(matches!(bot.view_for(&red, Some("salt")).author, AuthorView::Bot { .. }));
+        let own = Message { seq: 4, created_at: 0, author: Author::Watcher { user: "red@wire.test".into(), name: None }, text: "me".into(), deleted: false };
+        match own.view_for(&red, Some("salt")).author {
+            AuthorView::Watcher { tag, you, name } => { assert_eq!(tag, Some(tag_of("salt", "red@wire.test"))); assert!(you); assert_eq!(name, None); }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// **The salt is on the wire as a field a reader never sees and an old document reads as absent.**
+    #[test]
+    fn a_document_without_a_salt_field_deserializes_with_none_and_a_view_carries_no_salt() {
+        let old = r#"{"schema":1,"id":"t","last":0,"rev":0,"messages":[]}"#;
+        let doc: ChatDoc = serde_json::from_str(old).expect("an old document");
+        assert_eq!(doc.salt, None);
+        let json = serde_json::to_string(&MessageView { seq: 1, created_at: 0, author: AuthorView::Watcher { name: None, you: false, tag: Some("abcd".into()) }, text: String::new(), deleted: false }).unwrap();
+        assert!(json.contains(r#""tag":"abcd""#) && !json.contains("salt"), "{json}");
     }
 }

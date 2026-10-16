@@ -737,7 +737,7 @@ const CHAT_MESSAGE = ["seq", "created_at", "author", "text", "deleted"] as const
 // No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
 // and a `you`, and the address stays in the server's document.
 const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
-const CHAT_AUTHOR_WATCHER = ["kind", "name", "you"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "name", "you", "tag"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.

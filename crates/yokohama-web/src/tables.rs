@@ -1073,16 +1073,21 @@ impl Games {
     /// +1 per append and per delete, so `rev - last` moves exactly when a held
     /// message was deleted. The counts come back beside the message for the
     /// caller's cache.
-    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<(Message, ChatCounts), GameError> {
+    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<(Message, ChatCounts, Option<String>), GameError> {
         let (mut doc, version) = self.read_chat(at)?;
         doc.id = at.key().to_string();
+        if doc.salt.is_none() {
+            // **The first append salts the room** (security S2c, D8; decision D-5) — a read never writes, so a
+            // document from before this cycle carries `None` until somebody posts.
+            doc.salt = Some(self.chat_salt());
+        }
         let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text, deleted: false };
         doc.last = message.seq;
         doc.rev += 1;
         doc.messages.push(message.clone());
         doc.trim(self.chat.limits.keep);
         self.write_chat(at, &doc, version)?;
-        Ok((message, doc.counts()))
+        Ok((message, doc.counts(), doc.salt.clone()))
     }
 
     /// **The one writer** (R-6.4.15 (b)): the text rule, the table's own lock,
@@ -1098,25 +1103,32 @@ impl Games {
     /// `a_chat_bump_precedes_no_write`. A bump ahead of its write sends every
     /// browser at the table to fetch a message that has not landed, and the
     /// message that then lands is announced to nobody.
-    pub fn chat_append(
+    pub fn chat_append(&self, id: &str, author: Author, text: &str) -> Result<Message, GameError> {
+        self.chat_append_salted(id, author, text).map(|(message, _)| message)
+    }
+
+    /// [`Self::chat_append`] and the document's salt beside the message — what the POST's reply needs to draw the
+    /// poster's own tag as a later page will (security S2c, D8): the salt is given by this very append on a
+    /// document's first message, so the reply cannot read it off anything the caller holds.
+    pub fn chat_append_salted(
         &self,
         id: &str,
         author: Author,
         text: &str,
-    ) -> Result<Message, GameError> {
+    ) -> Result<(Message, Option<String>), GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         self.require_table(id)?;
         self.with_table_lock(id, || {
             let (table, _) = self
                 .read_table(id)?
                 .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
-            let (message, counts) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
+            let (message, counts, salt) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
             // `message.seq` IS the document's `last`: the trim drops the oldest and
             // leaves the number alone, which is the whole of R-6.4.9.
             self.chat_counts.lock().expect("games lock").insert(id.to_string(), counts);
             // AFTER the write, never before (the gated cell).
             self.signal.bump_table(id);
-            Ok(message)
+            Ok((message, salt))
         })
     }
 
@@ -1127,12 +1139,17 @@ impl Games {
     /// seat author a refusal here: the house has no seats, and the shape rule
     /// says so rather than this function restating it.
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
+        self.house_append_salted(author, text).map(|(message, _)| message)
+    }
+
+    /// [`Self::house_append`] and the document's salt (see [`Self::chat_append_salted`]).
+    pub fn house_append_salted(&self, author: Author, text: &str) -> Result<(Message, Option<String>), GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         // `enter`, poisoned or not: the house's lock guards no data.
         let _serialized = enter(&self.house_lock);
-        let (message, _) = self.append_locked(ChatAt::House, author, text)?;
+        let (message, _, salt) = self.append_locked(ChatAt::House, author, text)?;
         self.signal.bump_house_chat();
-        Ok(message)
+        Ok((message, salt))
     }
 
     /// The delete itself, with the caller's lock ALREADY HELD: read, tombstone,
@@ -5572,6 +5589,7 @@ mod tests {
             id: id.clone(),
             last: 1,
             rev: 1,
+            salt: None,
             messages: vec![message(Author::Seat { seat: 0, user: " RED@T.test ".into(), name: Some("  Red ".into()) })],
         };
         let json = serde_json::to_string(&stored).expect("a chat document");
@@ -5856,6 +5874,57 @@ mod tests {
         assert_eq!(house.borrow().chat, 1, "and leaves the counter where it was");
         let (page, counts) = games.house_page(&who("g@t.test"), 0).expect("a page");
         assert_eq!((page.len(), counts.last), (1, 1), "and wrote nothing");
+    }
+
+    /// **The first append gives a document its salt, and a second keeps it** (decision D-5): two watchers' tags
+    /// differ, one watcher's two messages share one, and the stored document carries the salt the views were
+    /// derived from. Under `in_memory()` the salt is the constant, which is what makes the corpus byte-stable.
+    #[test]
+    fn the_first_append_salts_the_document_and_tags_are_stable_within_it() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::Diagnostic);
+        let red = who("red@t.test");
+        let id = games.create(&two_people("salted", CORPUS_SEED), &red).expect("a table").id;
+        let watcher = |user: &str, name: &str| Author::Watcher { user: user.into(), name: Some(name.into()) };
+        // A watcher posts only at an unlocked table, through the route's admission; the writer is reached
+        // directly, as the house cell above reaches `house_append`.
+        games.chat_append(&id, watcher("green@wire.test", "Green"), "first").expect("green's first");
+        games.chat_append(&id, watcher("blue@wire.test", "Blue"), "second").expect("blue's");
+        games.chat_append(&id, watcher("green@wire.test", "Green"), "third").expect("green's second");
+        let (table, _) = games.read_table(&id).expect("a store").expect("the table");
+        let (page, counts) = games.chat_page(&id, &table, &who("red@wire.test"), 0).expect("the page");
+        assert_eq!((page.len(), counts.last), (3, 3), "premise: three messages");
+        let tags: Vec<Option<String>> = page
+            .iter()
+            .map(|m| match &m.author {
+                crate::chat::AuthorView::Watcher { tag, .. } => tag.clone(),
+                other => panic!("every author is a watcher: {other:?}"),
+            })
+            .collect();
+        assert_eq!(tags[0], tags[2], "one watcher's two messages share one tag");
+        assert_ne!(tags[0], tags[1], "two watchers' tags differ");
+        for tag in &tags {
+            let tag = tag.as_deref().expect("every watcher author carries a tag");
+            assert!(tag.len() == crate::chat::TAG_HEX && tag.bytes().all(|b| b.is_ascii_hexdigit()), "{tag}");
+        }
+        let (json, _) = games.store().read(Doc::Chat, &id).expect("a store").expect("the chat");
+        let stored: ChatDoc = serde_json::from_str(&json).expect("a chat document");
+        assert_eq!(stored.salt, Some(crate::games::FIXED_CHAT_SALT.to_string()), "the salt the views were derived from");
+    }
+
+    /// **The POST's reply carries the tag a later page will** (the plan's gap: `view_for` has three call sites, two
+    /// of them the replies, which hold a message and no document): the first message of a fresh room is answered
+    /// with the room's tag, equal to the page's.
+    #[test]
+    fn a_post_reply_carries_the_same_tag_as_the_page_that_follows() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::Diagnostic);
+        let green = who("green@t.test");
+        let author = Author::Watcher { user: "green@t.test".into(), name: Some("Green".into()) };
+        let (message, salt) = games.house_append_salted(author, "first words").expect("a house post");
+        let reply = message.view_for(&green, salt.as_deref());
+        let (page, _) = games.house_page(&green, 0).expect("the house");
+        assert_eq!(page.len(), 1);
+        assert_eq!(reply.author, page[0].author, "reply and page draw the same author, tag included");
+        assert!(matches!(&reply.author, crate::chat::AuthorView::Watcher { tag: Some(_), you: true, .. }), "{reply:?}");
     }
 
     /// **A delete removes the chat document and forgets the count.**

@@ -1089,7 +1089,7 @@ export interface Outcome {
  *  messages, and a poster with no name reads as their seat or as "someone". */
 export type ChatAuthor =
   | { kind: "seat"; seat: PlayerId; name: string | null; you: boolean }
-  | { kind: "watcher"; name: string | null; you: boolean }
+  | { kind: "watcher"; name: string | null; you: boolean; tag: string | null }
   | { kind: "bot"; seat: PlayerId; name: string | null };
 
 export interface ChatMessage {

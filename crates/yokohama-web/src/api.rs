@@ -1167,8 +1167,8 @@ pub fn chat_post(
     let (table, viewer) = admitted(games, id, user)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
-    let message = games.chat_append(id, author, &text)?;
-    Ok(message.view_for(user))
+    let (message, salt) = games.chat_append_salted(id, author, &text)?;
+    Ok(message.view_for(user, salt.as_deref()))
 }
 
 /// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
@@ -1244,8 +1244,8 @@ pub fn house_chat_post(
     lobby_chat_on(games)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
-    let message = games.house_append(author, &text)?;
-    Ok(message.view_for(user))
+    let (message, salt) = games.house_append_salted(author, &text)?;
+    Ok(message.view_for(user, salt.as_deref()))
 }
 
 /// `DELETE /api/games/{id}/chat/{seq}` (M6.5c2 cycle D, R-D4) — a message
