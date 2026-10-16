@@ -183,6 +183,10 @@ impl ApiError {
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self { status: StatusCode::TOO_MANY_REQUESTS, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
+    /// A body that did not arrive in time (security S2c, decision D-3): 408 with [`BODY_TOO_SLOW`].
+    pub fn request_timeout(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::REQUEST_TIMEOUT, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
+    }
     pub fn not_found(message: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
@@ -407,6 +411,17 @@ pub const REPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(feature = "server")]
 pub const BUSY: &str = "the server is busy replaying — try again in a second";
 
+/// How long a request body may take to arrive, in all (security S2c, D3's companion; decision D-3): every
+/// legitimate body is under 512 KiB and arrives in one burst over the tunnel; ten seconds is a slow phone on a bad
+/// link, and a stall past it is a connection somebody is holding, which this turns from an unbounded hold into a
+/// rate the edge and the caps already bound. `axum::serve` sets no timer, so without this the binary bounds no
+/// read at all.
+#[cfg(feature = "server")]
+pub const BODY_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// The 408's sentence.
+#[cfg(feature = "server")]
+pub const BODY_TOO_SLOW: &str = "the request body did not arrive within 10 seconds";
+
 /// Everything a transport handler may reach: the layer's state, the identity
 /// door, the streams' cadence and the streams' channels.
 ///
@@ -480,6 +495,8 @@ pub struct AppState {
     pub replay_gate: Arc<tokio::sync::Semaphore>,
     /// How long a replay request waits for a permit — [`REPLAY_WAIT`].
     pub replay_wait: std::time::Duration,
+    /// The body read's deadline — [`BODY_READ_DEADLINE`]; a cell shortens it through [`Self::with_body_deadline`].
+    pub body_deadline: std::time::Duration,
 }
 
 #[cfg(feature = "server")]
@@ -687,6 +704,7 @@ impl AppState {
             ttls: sweep::Ttls::none(),
             replay_gate: Arc::new(tokio::sync::Semaphore::new(REPLAY_PERMITS)),
             replay_wait: REPLAY_WAIT,
+            body_deadline: BODY_READ_DEADLINE,
         }
     }
 
@@ -739,6 +757,10 @@ impl AppState {
     /// and a cell takes to read `NamesOnly` over a fixture's store.
     pub fn with_claim_policy(self, policy: identity::ClaimPolicy) -> Self {
         Self { claims: policy, ..self }
+    }
+
+    pub fn with_body_deadline(self, deadline: std::time::Duration) -> Self {
+        Self { body_deadline: deadline, ..self }
     }
 
     /// This state under its own replay gate (security S1b) — the builder a
@@ -1079,11 +1101,13 @@ async fn house_stream(
 #[cfg(feature = "server")]
 async fn adapter(State(state): State<Arc<AppState>>, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, 2 << 20).await {
-        Ok(b) => b,
-        Err(e) => {
-            return ApiError::bad_request(format!("the body could not be read: {e}")).into_response()
-        }
+    // **The ONE body read, under a deadline** (security S2c, decision D-3): every `/api` request with a body reaches
+    // this site — the catch-all and `/api/games` route here; the three separate routes and `/enter` are GETs — so
+    // one `timeout` bounds every body, and the limit arm below answers exactly as it did.
+    let bytes = match tokio::time::timeout(state.body_deadline, axum::body::to_bytes(body, 2 << 20)).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => return ApiError::bad_request(format!("the body could not be read: {e}")).into_response(),
+        Err(_elapsed) => return ApiError::request_timeout(BODY_TOO_SLOW).into_response(),
     };
     let method = parts.method.as_str().to_string();
     let path = parts.uri.path().to_string();
@@ -1465,6 +1489,7 @@ mod tests {
             ApiError::not_found(long.clone()),
             ApiError::server_error(long.clone()),
             ApiError::too_many_requests(long.clone()),
+            ApiError::request_timeout(long.clone()),
         ];
         for e in &built {
             assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
@@ -1473,7 +1498,7 @@ mod tests {
         // Every constructor that TAKES a message passes it through `capped`: the
         // count of `message: impl Into<String>` signatures in the impl block is
         // the count of `Self::capped(message.into())` calls, and both are the
-        // four built above. A fifth constructor that skips the cap fails the
+        // five built above. A sixth constructor that skips the cap fails the
         // second count before it fails a body; `dealing`, `open` and `playing`
         // carry constants, and `busy()` builds the struct literally from one.
         let source = include_str!("lib.rs");
@@ -3001,6 +3026,56 @@ mod tests {
         .expect("a production state over memory");
         assert_eq!(state.replay_gate.available_permits(), 2, "the gate the production state builds");
         assert_eq!(state.replay_wait, std::time::Duration::from_secs(2), "the wait the production state builds");
+    }
+
+    /// **A body that does not arrive is answered, not awaited** (security S2c, D3's companion, "the request body
+    /// read timeout" the S1 stack review left unverified; decision D-3; Review Focus 2): a POST whose headers
+    /// promise a body and whose body then STALLS — one chunk, then a channel nobody closes — is answered 408 with
+    /// `BODY_TOO_SLOW` once the deadline passes, in the API's error shape, under a deadline the cell shortens to
+    /// 50 ms. The same body completed in two chunks under the deadline reaches the route and is answered by it (a
+    /// 201: the two chunks are one valid create), which pins that the chunks are joined and the deadline is the read's
+    /// alone. The whole cell runs under its own 2-second bound so a mutant that awaits forever reads as RED.
+    #[tokio::test]
+    async fn a_stalled_request_body_is_answered_408_after_the_deadline_and_a_slow_but_arriving_one_reaches_the_route() {
+        use tokio_stream::wrappers::ReceiverStream;
+        let state = Arc::new(AppState::in_memory().with_body_deadline(std::time::Duration::from_millis(50)));
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+        tx.send(Ok(b"{\"players\":".to_vec())).await.expect("the first chunk");
+        let stalled = Request::builder()
+            .method("POST")
+            .uri("/api/games")
+            .header(identity::CLAIMED_HEADER, WHO)
+            .header("content-type", "application/json")
+            .body(Body::from_stream(ReceiverStream::new(rx)))
+            .expect("a request");
+        let res = tokio::time::timeout(std::time::Duration::from_secs(2), app(Arc::clone(&state)).oneshot(stalled))
+            .await
+            .expect("answered within the cell's bound: the deadline, not the body, ended the read")
+            .expect("the router answers");
+        drop(tx);
+        assert_eq!(res.status(), StatusCode::REQUEST_TIMEOUT);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"], BODY_TOO_SLOW);
+
+        // The anti-vacuity: two chunks that both arrive under the deadline are one body to the route.
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+        let feeder = tokio::spawn(async move {
+            tx.send(Ok(b"{\"players\":2,\"colors\":[\"Red\",\"Blue\"],".to_vec())).await.expect("chunk 1");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            tx.send(Ok(b"\"start_seat\":0,\"seats\":[{\"user\":\"red@wire.test\"},{\"open\":true}]}".to_vec())).await.expect("chunk 2");
+        });
+        let slow = Request::builder()
+            .method("POST")
+            .uri("/api/games")
+            .header(identity::CLAIMED_HEADER, WHO)
+            .header("content-type", "application/json")
+            .body(Body::from_stream(ReceiverStream::new(rx)))
+            .expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(slow).await.expect("the router answers");
+        feeder.await.expect("the feeder");
+        assert_eq!(res.status(), StatusCode::CREATED, "both chunks reached the route as one body");
+        assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
+        assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the production figure on every constructor");
     }
 
     /// **A `deal` this server cannot BUILD is a 500; a request it will not
