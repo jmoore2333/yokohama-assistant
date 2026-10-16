@@ -3026,6 +3026,7 @@ mod tests {
         .expect("a production state over memory");
         assert_eq!(state.replay_gate.available_permits(), 2, "the gate the production state builds");
         assert_eq!(state.replay_wait, std::time::Duration::from_secs(2), "the wait the production state builds");
+        assert_eq!(state.body_deadline, std::time::Duration::from_secs(10), "the deadline the production state builds");
     }
 
     /// **A body that does not arrive is answered, not awaited** (security S2c, D3's companion, "the request body
@@ -3075,7 +3076,7 @@ mod tests {
         feeder.await.expect("the feeder");
         assert_eq!(res.status(), StatusCode::CREATED, "both chunks reached the route as one body");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
-        assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the production figure on every constructor");
+        assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
 
     /// **A `deal` this server cannot BUILD is a 500; a request it will not
