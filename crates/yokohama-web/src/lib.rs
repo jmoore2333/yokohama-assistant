@@ -53,6 +53,8 @@
 pub mod art;
 #[cfg(feature = "server")]
 pub mod assets;
+#[cfg(feature = "server")]
+pub mod streams;
 // ---- end server ----
 pub mod api;
 pub mod archive;
@@ -175,6 +177,11 @@ impl ApiError {
     }
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
+    }
+    /// A caller over a cap (security S2c, D3's NAS half): 429, the sentence a constant; no `Retry-After`, since the
+    /// client ends a signal on it rather than waiting (the client's decision D-2).
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::TOO_MANY_REQUESTS, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
     pub fn not_found(message: impl Into<String>) -> Self {
         Self { status: StatusCode::NOT_FOUND, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
@@ -433,6 +440,9 @@ pub struct AppState {
     /// hand out a receiver — is held here rather than fetched back out of the
     /// layer below.
     pub signals: Arc<signal::Signals>,
+    /// The open-stream counts (security S2c, finding D3's NAS half): one per process, read by the two stream
+    /// routes at admission.
+    pub streams: Arc<streams::Streams>,
     /// Whether this deployment offers multiplayer (M6.5b2, R-6.5b2.4).
     ///
     /// Read by [`app`], which leaves the three transport routes off the router
@@ -662,6 +672,7 @@ impl AppState {
             claims: identity::ClaimPolicy::NamesOnly,
             heartbeat: HEARTBEAT,
             signals,
+            streams: Arc::new(streams::Streams::default()),
             // On, which is [`Multiplayer::from_env_value`]'s own answer to an
             // unset variable: every constructor above this one builds the
             // deployment that existed before M6.5b2, and only `new` and
@@ -864,6 +875,22 @@ where
     }
 }
 
+/// A stream that holds its admission slot until it is dropped (security S2c, D3): the slot lives inside the SSE
+/// body, so hyper's drop of an abandoned connection is what frees it, and nothing else can.
+#[cfg(feature = "server")]
+struct Admitted<S> {
+    inner: S,
+    _slot: streams::Slot,
+}
+
+#[cfg(feature = "server")]
+impl<S: tokio_stream::Stream + Unpin> tokio_stream::Stream for Admitted<S> {
+    type Item = S::Item;
+    fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<S::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+    }
+}
+
 /// `GET /api/games/{id}/stream` — the change signal, PUSHED (spec §3.1).
 ///
 /// **The same admission and the same object as `…/events`**, which is the whole
@@ -934,6 +961,12 @@ async fn stream(
     use tokio_stream::StreamExt;
 
     api::events_at(&state.games, &id, &user)?;
+    // **The cap, after the admission read's own verdict** (security S2c, D3): a 403 or a 404 about the table is
+    // answered first and takes no slot; the (n+1)-th stream of a caller, or of the table, is a 429 before any
+    // frame. The slot rides the body (`Admitted`), so an abandoned connection frees it when hyper drops the body.
+    let slot = Arc::clone(&state.streams)
+        .admit(streams::Room::Table(id.clone()), &user)
+        .map_err(ApiError::too_many_requests)?;
     let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
     let frames = tokio_stream::wrappers::WatchStream::new(rx).then(move |bump| {
@@ -971,7 +1004,8 @@ async fn stream(
             }
         }
     });
-    Ok(Sse::new(UntilLast { inner: Box::pin(frames), done: false }).keep_alive(KeepAlive::new().interval(heartbeat)))
+    Ok(Sse::new(Admitted { inner: UntilLast { inner: Box::pin(frames), done: false }, _slot: slot })
+        .keep_alive(KeepAlive::new().interval(heartbeat)))
 }
 
 /// `GET /api/stream` — the house channel (spec §3.2).
@@ -997,21 +1031,20 @@ async fn stream(
 /// table and has nothing to scope.
 #[cfg(feature = "server")]
 async fn house_stream(
-    identity::Identity(_user): identity::Identity,
+    identity::Identity(user): identity::Identity,
     State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ApiError> {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
+    // **The cap** (security S2c, D3): the house's own figures and sentences; identity is still the whole of the
+    // admission, and the slot rides the body as a table stream's does.
+    let slot = Arc::clone(&state.streams).admit(streams::Room::House, &user).map_err(ApiError::too_many_requests)?;
     let rx = state.signals.subscribe_house();
     let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
-        Ok::<_, std::convert::Infallible>(
-            Event::default()
-                .event("house")
-                .data(signal::house_frame(h.seq, h.chat, h.rev)),
-        )
+        Ok::<_, std::convert::Infallible>(Event::default().event("house").data(signal::house_frame(h.seq, h.chat, h.rev)))
     });
-    Sse::new(frames).keep_alive(KeepAlive::new().interval(state.heartbeat))
+    Ok(Sse::new(Admitted { inner: frames, _slot: slot }).keep_alive(KeepAlive::new().interval(state.heartbeat)))
 }
 
 /// The ONE piece of axum between a request and the layer (R-6.5a.3). Identity
@@ -1431,6 +1464,7 @@ mod tests {
             ApiError::bad_request(long.clone()),
             ApiError::not_found(long.clone()),
             ApiError::server_error(long.clone()),
+            ApiError::too_many_requests(long.clone()),
         ];
         for e in &built {
             assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
@@ -1439,7 +1473,7 @@ mod tests {
         // Every constructor that TAKES a message passes it through `capped`: the
         // count of `message: impl Into<String>` signatures in the impl block is
         // the count of `Self::capped(message.into())` calls, and both are the
-        // three built above. A fourth constructor that skips the cap fails the
+        // four built above. A fifth constructor that skips the cap fails the
         // second count before it fails a body; `dealing`, `open` and `playing`
         // carry constants, and `busy()` builds the struct literally from one.
         let source = include_str!("lib.rs");
@@ -5898,6 +5932,83 @@ mod tests {
             .await
             .expect("the router answers");
         res.status()
+    }
+
+    /// `GET …/stream` as a RESPONSE the caller holds — its body is the SSE stream, never polled here — so the
+    /// admission slot stays taken for as long as the response lives (security S2c, D3): dropping it is what frees
+    /// the slot, exactly as hyper's drop of an abandoned connection does.
+    async fn stream_response(state: &Arc<AppState>, uri: &str, who: &str) -> Response {
+        app(Arc::clone(state))
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .header(identity::CLAIMED_HEADER, who)
+                    .header("accept", "text/event-stream")
+                    .body(Body::empty())
+                    .expect("a GET"),
+            )
+            .await
+            .expect("the router answers")
+    }
+
+    /// **The caps at the routes** (security S2c, finding D3's NAS half; decision D-1): a caller's ninth table
+    /// stream is a 429 BEFORE any frame, in the API's error shape with the caller's sentence; the admission read's
+    /// own refusal still comes first (a stranger at a locked table reads 403, never 429, with every slot free);
+    /// a dropped response frees the slot; the house stream is capped under its own sentence.
+    #[tokio::test]
+    async fn a_callers_ninth_stream_is_a_429_before_any_frame_and_a_dropped_response_frees_it() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(&state, WHO, "/api/games", serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": WHO}, {"open": true}] })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().expect("an id").to_string();
+        let uri = format!("/api/games/{id}/stream");
+        let mut held = Vec::new();
+        for _ in 0..streams::STREAMS_PER_CALLER {
+            let res = stream_response(&state, &uri, WHO).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            held.push(res);
+        }
+        let ninth = stream_response(&state, &uri, WHO).await;
+        assert_eq!(ninth.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(ninth.into_body(), usize::MAX).await.expect("a body");
+        let got: serde_json::Value = serde_json::from_slice(&bytes).expect("the API's error shape");
+        assert_eq!(got["error"], streams::TOO_MANY_STREAMS_CALLER);
+        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused one took no slot");
+        assert_eq!(stream_status(&state, &uri, "blue@wire.test").await, StatusCode::OK, "another caller is unaffected");
+        drop(held.pop());
+        assert_eq!(stream_status(&state, &uri, WHO).await, StatusCode::OK, "a dropped response freed its slot");
+        // The house, under its own sentence.
+        let mut house = Vec::new();
+        for _ in 0..streams::HOUSE_STREAMS_PER_CALLER {
+            house.push(stream_response(&state, "/api/stream", WHO).await);
+        }
+        let ninth = stream_response(&state, "/api/stream", WHO).await;
+        assert_eq!(ninth.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(ninth.into_body(), usize::MAX).await.expect("a body");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"], streams::TOO_MANY_HOUSE_CALLER);
+        drop(house);
+        assert_eq!(state.streams.open(&streams::Room::House), 0);
+    }
+
+    /// **A cap never masks the admission read's own refusal** (M27's catcher, which the plan's route cell lacks):
+    /// a caller holding the whole per-caller figure at a table that is then deleted reads 404, never 429, and the
+    /// refused request takes no slot.
+    #[tokio::test]
+    async fn a_cap_does_not_mask_the_admission_reads_refusal() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(&state, WHO, "/api/games", serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": WHO}, {"open": true}] })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().expect("an id").to_string();
+        let uri = format!("/api/games/{id}/stream");
+        let mut held = Vec::new();
+        for _ in 0..streams::STREAMS_PER_CALLER {
+            held.push(stream_response(&state, &uri, WHO).await);
+        }
+        let (status, _) = delete_as(&state, WHO, &format!("/api/games/{id}")).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(stream_status(&state, &uri, WHO).await, StatusCode::NOT_FOUND, "the table's refusal comes first");
+        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused request took no slot (a stranger's too)");
+        drop(held);
     }
 
     /// The corpus-seed 2P game PLAYED OUT by both seats as bots, as a record.
