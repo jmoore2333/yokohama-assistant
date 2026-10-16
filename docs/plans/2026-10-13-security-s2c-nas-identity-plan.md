@@ -309,7 +309,9 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
   `cargo test -p yokohama-web --no-default-features --features server --lib identity::`;
   `cargo check -p yokohama-web --no-default-features --target wasm32-unknown-unknown`;
   `cargo clippy --workspace --all-targets -- -D warnings`; `cd web && npm run typecheck && npx vitest run && npm run
-  test:wasm`; `cd worker && npm run typecheck && npm run test:scripts && npm test` — `npm run build:module:debug`
+  build:wasm && npm run test:wasm` (the wasm REBUILT before `test:wasm` whenever a change reaches it — `text.rs` and
+  `chat.rs` compile into it; a stale `web/wasm-node/` module replays the old rule green — Task 3's finding; the rebuild
+  also replaces `web/src/local/wasm/`'s debug build with a release one, which Task 9's `npm run e2e` rebuilds as debug); `cd worker && npm run typecheck && npm run test:scripts && npm test` — `npm run build:module:debug`
   FIRST whenever the layer moved (Tasks 1–4 and 6 move it; the build is idempotent). Task 6 adds `cargo test -p
   yokohama-cli`. Task 9 adds `cd web && npm run build` and `npm run e2e`. Every count recorded against the board's
   "Gates at HEAD".
@@ -1145,9 +1147,11 @@ mod tests {
 
 ```rust
 //! The character rule for a person's text (security S2c, finding D8; decision D-4): a name, a display name, a
-//! watcher's name and a chat line carry NO control (Cc), format (Cf) or line-separator (Zl, Zp) character. `Cc` is
-//! `char::is_control`; `Cf` is the table below; `Zl` and `Zp` are two code points. Nothing else is judged here —
-//! confusable letters are provenance's problem, which the tag answers (`chat::tag_of`), not this rule's. **What the
+//! watcher's name and a chat line carry NO control (Cc), format (Cf) or line-separator (Zl, Zp) character when they
+//! are WRITTEN — by create, join, keep or a chat post; a stored or uploaded document (a restore, an archive) reads
+//! under `tables::check_stored_name`, the rule as it stood. `Cc` is `char::is_control`; `Cf` is the table below;
+//! `Zl` and `Zp` are two code points. Nothing else is judged here — confusable letters are provenance's problem,
+//! which the tag answers (`chat::tag_of`, Task 4's), not this rule's. **What the
 //! rule does not reach**, measured at the plan review (L1-F4): the default-ignorable LETTERS and marks outside Cc/Cf
 //! (U+115F, U+1160, U+3164, U+FFA0 the Hangul fillers, U+034F, U+17B4, U+17B5) and U+2800 (Braille blank, So) pass,
 //! so `"Bob\u{3164}"` reads as `Bob`; the tag is what tells such a watcher from the seat holder (a seat carries none).
@@ -1216,8 +1220,9 @@ And in `lib.rs`'s module list, beside `pub mod echo;`: `pub mod text;` (the modu
 
 - [ ] **Step 4: Run the cells.** `cargo test -p yokohama-web --lib text::` — expected: 2 passed.
 
-- [ ] **Step 5: Write the failing cells at the two sites.** In `tables.rs`'s test module, beside the existing
-  `check_name` cells:
+- [ ] **Step 5: Write the failing cells at the two sites.** In `tables.rs`'s test module, directly after
+  `check_shape_bounds_the_tables_own_name` (no cell there calls `check_name` directly — the name rule's cell reads
+  through `check_shape`; Task 3's probe):
 
 ```rust
     /// **A name is visible whole** (security S2c, finding D8 — measured in review: `"Bob\u{200B}"` read as the seat
@@ -1263,8 +1268,53 @@ In `chat.rs`'s test module, beside `check_text_trims_and_bounds_by_characters_no
 (`ChatLimits` has `Default` — keep 500, text 500 — and `check_text` checks the length at `chat.rs:435` before the
 character at `:438`, so the order cell runs as written.)
 
-In `lib.rs`'s test module, the compatibility catcher (plan review L1-F1; AD-1). It is green before Step 7 and after
-it, and red under the plan's first draft, where `check_shape` read names through the new `check_name` and `GET` and
+Two more rows, each a catcher Task 3's probe measured (green at the head, red under its mutant):
+
+In `tables.rs`, inside `a_stored_author_is_served_in_its_normal_form`, directly after that cell's existing final
+`assert_eq!(…);` (the statement ending `[crate::chat::AuthorView::Seat { seat: 0, name: Some("Red".into()), you: true }],` /
+`);`) and before the cell's closing `}` — `stored`, `message`, `games` and `id` are the cell's own bindings, and
+`..stored` moves `stored` after its last use (M7b: `normalized` alone back on the write rule survived every cell, since
+the cell's stored name `"  Red "` is one both rules admit):
+
+```rust
+        // **The READ rule's trim reaches a name the WRITE rule refuses** (S2c Task 3): a stored name both padded and
+        // carrying a zero-width space is served trimmed — `normalized` reads through `check_stored_name`; through
+        // `check_name` it would refuse the name and serve it padded.
+        let (_, version) = games.store().read(Doc::Chat, &id).expect("a store").expect("the chat");
+        let padded = ChatDoc {
+            messages: vec![message(Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("  Red\u{200B} ".into()) })],
+            ..stored
+        };
+        let json = serde_json::to_string(&padded).expect("a chat document");
+        games.store().write_if_version(Doc::Chat, &id, &json, Some(version)).expect("stored");
+        let (page, _) = page_of(&games, &id, 0).expect("served");
+        assert_eq!(
+            page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
+            [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red\u{200B}".into()), you: true }],
+            "a padded invisible name is served trimmed",
+        );
+```
+
+In `tables.rs`, inside `create_refuses_the_new_arms_in_order_and_an_open_seat_is_not_human`, directly after the two
+lines `r.display_name = Some("\u{7}".into());` / `assert!(games.create(&r, &red).unwrap_err().to_string().contains("control"));`
+and before the next `let mut r = req("o");` (the password row) — M3a: create's display-name site alone on the read
+rule survived every cell, since the existing rows use a BEL both rules refuse; join and keep share the line's exact
+shape and the create row stands for the class; the watcher's chat name in `api.rs` is pinned by the compatibility
+cell's last line:
+
+```rust
+        let mut r = req("o");
+        r.display_name = Some("Captain\u{200B}Red".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "display name: a name has no control, invisible or direction-changing character",
+            "create reads a display name through the WRITE rule (S2c Task 3): the read rule admits a zero-width space",
+        );
+```
+
+In `lib.rs`'s test module, the compatibility catcher (plan review L1-F1; AD-1). Its READ lines are green before Step
+7 and after it; its last line, the WRITE refusal, is red before Step 7 and green after it (Task 3's probe); the whole
+cell is red under the plan's first draft, where `check_shape` read names through the new `check_name` and `GET` and
 `POST /api/chat` answered 500 (M7a):
 
 ```rust
@@ -1370,7 +1420,11 @@ git commit -m "web: names and chat lines refuse control, format and line-separat
 `is_control` alone → the tables cell red; M4 `check_text` likewise → the chat cell red; M5 the length check moved
 after the character check → the order cell red at "over the cap"; M6 `is_line_separator` always `false` → the
 `invisible` cell red on `"line\u{2028}two"`; M7 `INVISIBLE_RULE` reworded → both site cells red at their literal;
-M7a `check_shape` back to `check_name` → the compatibility cell red at the 500 (plan review L1-F1).
+M7a `check_shape` back to `check_name` → the compatibility cell red at its `read_table` line (a Server error, the
+table document "malformed") for the table sites, and at `GET /api/chat`'s 500 for the chat site; `check_shape_bounds_the_tables_own_name`
+red at its READ literal for the table-name site (plan review L1-F1; Task 3's probe); M7b `chat::normalized` alone back on
+the write rule → the padded-invisible row red (served padded and refused); M3a create's display-name site alone on
+the read rule → the `Captain\u{200B}Red` row red (201 for the refusal).
 
 ---
 
