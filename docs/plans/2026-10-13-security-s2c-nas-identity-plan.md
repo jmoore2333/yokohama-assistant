@@ -864,10 +864,17 @@ rows red.
 ### Task 2: The body-read deadline at the adapter — 10 seconds, 408 — Opus (R-7; decision D-3; Review Focus 2)
 
 **Files:**
-- Modify: `crates/yokohama-web/src/lib.rs` — the adapter's body read (line 1049 today), `AppState` (a field and a
-  builder), `ApiError` (a constructor), the two constants.
+- Modify: `crates/yokohama-web/src/lib.rs` — the adapter's body read (line 1082 at Task 1's head `ddde1c82`; 1049 at
+  the plan's base), `AppState` (a field and a builder), `ApiError` (a constructor), the two constants.
 - Test: the cell below in `lib.rs`'s test module; `every_api_error_message_is_capped_at_construction`'s `built` vec
-  (Step 3).
+  (Step 3); and ONE line in the existing production-state cell
+  `the_production_state_builds_a_two_permit_gate_with_a_two_second_wait`, beside its `replay_wait` row (Task 2's probe:
+  a zero deadline set in `AppState::production` alone passed all 543 web cells — every in-memory body is ready on
+  its first poll, and tokio's `Timeout` polls the future before its timer):
+
+```rust
+    assert_eq!(state.body_deadline, std::time::Duration::from_secs(10), "the deadline the production state builds");
+```
 
 **Interfaces:**
 - Consumes: Task 1's `AppState` shape (the field list).
@@ -924,7 +931,7 @@ rows red.
         feeder.await.expect("the feeder");
         assert_eq!(res.status(), StatusCode::CREATED, "both chunks reached the route as one body");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
-        assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the production figure on every constructor");
+        assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
 ```
 
@@ -980,7 +987,7 @@ built above. A sixth constructor" (plan review L1-R2):
 ```
 
 ```rust
-// lib.rs — the adapter's read (line 1049 today):
+// lib.rs — the adapter's read (line 1082 at Task 1's head):
     let (parts, body) = req.into_parts();
     // **The ONE body read, under a deadline** (security S2c, decision D-3): every `/api` request with a body reaches
     // this site — the catch-all and `/api/games` route here; the three separate routes and `/enter` are GETs — so
@@ -1004,9 +1011,12 @@ git commit -m "web: a request body has ten seconds to arrive — one deadline at
 
 **Named mutants:** M29 the `timeout` removed → the cell's own 2-second bound reds the first `expect`; M30 the
 status 400 in the elapsed arm → the cell red at `REQUEST_TIMEOUT`; M31 the deadline applied after `to_bytes`
-completes (a `sleep` instead of a `timeout`) → the anti-vacuity row red (the slow body answered 408); M32 the
-constructors leaving `body_deadline` at zero → every adapter cell red at once (a zero deadline answers 408 to
-everything).
+completes (a `sleep` after the read) → red at the cell's FIRST `expect`, the 2-second bound: the stalled read never
+completes, so the mutant never answers (Task 2's probe); M31b a 408 answered after a sleep WITHOUT awaiting the read →
+the anti-vacuity row red (the slow body answered 408); M32 the constructors leaving `body_deadline` at zero → the new
+cell's last line red, and nothing else (tokio's `Timeout` polls the future before its timer, so a body ready on its
+first poll reads even at zero — every in-memory cell's body is; Task 2's probe); M32a `AppState::production` alone at
+zero → the production-state cell's `body_deadline` line red.
 
 ### Task 3: D8's character rule — control, format and line-separator characters refused in names and chat — Opus (R-2; decision D-4; Review Focus 3)
 
@@ -2603,7 +2613,9 @@ deploy record §3.22 is the window's (Task 10; R-8: no first window, so §3.21 i
     "parked" note stays); the NAS half goes in their place: `the NAS's half fixed <Task 1's SHA> (S2c Task 1): 8 streams per caller a room, 64
     a table, the house 8 per caller and 256 in all, OPEN streams only (a slot the SSE body drops), the (n+1)-th a 429
     with its sentence before any frame; the client ends a signal on 429 (S2c Task 5) — which is also AD-4's lobby
-    refusal drawn on both hosts; the body read has a 10-second deadline at the adapter, 408 (S2c Task 2)`; catchers, by NAME as the C2 row does: `streams.rs` `the_caps_refuse_the_ninth_of_a_caller_and_the_sixty_fifth_of_a_table_and_a_dropped_slot_frees_the_count`,
+    refusal drawn on both hosts; the body read has a 10-second deadline at the adapter, 408 (S2c Task 2); the table's total
+    judges a seated player as it judges anyone — a full room refuses them until streams close — and neither figure is a
+    budget a feature may lean on; a seat-aware admission is S4's (the Task 1 review; the scanner's lockout shape)`; catchers, by NAME as the C2 row does: `streams.rs` `the_caps_refuse_the_ninth_of_a_caller_and_the_sixty_fifth_of_a_table_and_a_dropped_slot_frees_the_count`,
     `lib.rs` `a_callers_ninth_stream_is_a_429_before_any_frame_and_a_dropped_response_frees_it`,
     `a_cap_does_not_mask_the_admission_reads_refusal` and
     `a_stalled_request_body_is_answered_408_after_the_deadline_and_a_slow_but_arriving_one_reaches_the_route`,
