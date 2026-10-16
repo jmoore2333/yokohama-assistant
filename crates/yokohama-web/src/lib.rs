@@ -5953,7 +5953,8 @@ mod tests {
 
     /// **The caps at the routes** (security S2c, finding D3's NAS half; decision D-1): a caller's ninth table
     /// stream is a 429 BEFORE any frame, in the API's error shape with the caller's sentence; the admission read's
-    /// own refusal still comes first (a stranger at a locked table reads 403, never 429, with every slot free);
+    /// own refusal still comes first (the 404 cell below; the admission matrix's `shut_out` rows hold the 403 — this
+    /// cell sends no stranger);
     /// a dropped response frees the slot; the house stream is capped under its own sentence.
     #[tokio::test]
     async fn a_callers_ninth_stream_is_a_429_before_any_frame_and_a_dropped_response_frees_it() {
@@ -5980,7 +5981,9 @@ mod tests {
         // The house, under its own sentence.
         let mut house = Vec::new();
         for _ in 0..streams::HOUSE_STREAMS_PER_CALLER {
-            house.push(stream_response(&state, "/api/stream", WHO).await);
+            let res = stream_response(&state, "/api/stream", WHO).await;
+            assert_eq!(res.status(), StatusCode::OK, "the house's figure is the caller's own, beside its table streams");
+            house.push(res);
         }
         let ninth = stream_response(&state, "/api/stream", WHO).await;
         assert_eq!(ninth.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -6007,7 +6010,7 @@ mod tests {
         let (status, _) = delete_as(&state, WHO, &format!("/api/games/{id}")).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(stream_status(&state, &uri, WHO).await, StatusCode::NOT_FOUND, "the table's refusal comes first");
-        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused request took no slot (a stranger's too)");
+        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused request took no slot");
         drop(held);
     }
 

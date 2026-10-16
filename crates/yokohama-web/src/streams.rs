@@ -155,6 +155,13 @@ mod tests {
         }
         assert_eq!(streams.open(&table), STREAMS_PER_TABLE);
         assert_eq!(streams.admit(table.clone(), &user("ninth@wire.test")).unwrap_err(), TOO_MANY_STREAMS_TABLE);
+        // **The ORDER of the two verdicts, where both would fail** (M25's catcher — Task 1's probe: a fresh caller's
+        // first stream cannot tell the order, since only one check can fail for it): a caller AT its own figure in a
+        // FULL room reads the TABLE's sentence, so the total's verdict comes first.
+        assert_eq!(streams.admit(table.clone(), &user("c1@wire.test")).unwrap_err(), TOO_MANY_STREAMS_TABLE);
+        // **The per-caller figure is per ROOM** (Task 1's probe P4b: a count keyed by the caller alone survived every
+        // cell): c1 at eight here may still open at another table.
+        assert!(streams.admit(Room::Table("u".to_string()), &user("c1@wire.test")).is_ok(), "the per-caller figure is per room");
         drop(fill);
         drop(held);
         drop(blue);
@@ -169,6 +176,8 @@ mod tests {
         }
         assert_eq!(streams.open(&Room::House), HOUSE_STREAMS_TOTAL);
         assert_eq!(streams.admit(Room::House, &user("late@wire.test")).unwrap_err(), TOO_MANY_HOUSE_TOTAL);
+        // The order again, in the house: h1 holds eight in the full house and reads the TOTAL's sentence.
+        assert_eq!(streams.admit(Room::House, &user("h1@wire.test")).unwrap_err(), TOO_MANY_HOUSE_TOTAL);
         assert_eq!((STREAMS_PER_CALLER, STREAMS_PER_TABLE, HOUSE_STREAMS_PER_CALLER, HOUSE_STREAMS_TOTAL), (8, 64, 8, 256));
     }
 }
