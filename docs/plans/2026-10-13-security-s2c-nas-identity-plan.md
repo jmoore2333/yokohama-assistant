@@ -505,6 +505,13 @@ mod tests {
         }
         assert_eq!(streams.open(&table), STREAMS_PER_TABLE);
         assert_eq!(streams.admit(table.clone(), &user("ninth@wire.test")).unwrap_err(), TOO_MANY_STREAMS_TABLE);
+        // **The ORDER of the two verdicts, where both would fail** (M25's catcher — Task 1's probe: a fresh caller's
+        // first stream cannot tell the order, since only one check can fail for it): a caller AT its own figure in a
+        // FULL room reads the TABLE's sentence, so the total's verdict comes first.
+        assert_eq!(streams.admit(table.clone(), &user("c1@wire.test")).unwrap_err(), TOO_MANY_STREAMS_TABLE);
+        // **The per-caller figure is per ROOM** (Task 1's probe P4b: a count keyed by the caller alone survived every
+        // cell): c1 at eight here may still open at another table.
+        assert!(streams.admit(Room::Table("u".to_string()), &user("c1@wire.test")).is_ok(), "the per-caller figure is per room");
         drop(fill);
         drop(held);
         drop(blue);
@@ -519,6 +526,8 @@ mod tests {
         }
         assert_eq!(streams.open(&Room::House), HOUSE_STREAMS_TOTAL);
         assert_eq!(streams.admit(Room::House, &user("late@wire.test")).unwrap_err(), TOO_MANY_HOUSE_TOTAL);
+        // The order again, in the house: h1 holds eight in the full house and reads the TOTAL's sentence.
+        assert_eq!(streams.admit(Room::House, &user("h1@wire.test")).unwrap_err(), TOO_MANY_HOUSE_TOTAL);
         assert_eq!((STREAMS_PER_CALLER, STREAMS_PER_TABLE, HOUSE_STREAMS_PER_CALLER, HOUSE_STREAMS_TOTAL), (8, 64, 8, 256));
     }
 }
@@ -546,7 +555,8 @@ In `lib.rs`'s test module, beside `stream_status`:
 
     /// **The caps at the routes** (security S2c, finding D3's NAS half; decision D-1): a caller's ninth table
     /// stream is a 429 BEFORE any frame, in the API's error shape with the caller's sentence; the admission read's
-    /// own refusal still comes first (a stranger at a locked table reads 403, never 429, with every slot free);
+    /// own refusal still comes first (the 404 cell below; the admission matrix's `shut_out` rows hold the 403 — this
+    /// cell sends no stranger);
     /// a dropped response frees the slot; the house stream is capped under its own sentence.
     #[tokio::test]
     async fn a_callers_ninth_stream_is_a_429_before_any_frame_and_a_dropped_response_frees_it() {
@@ -573,7 +583,9 @@ In `lib.rs`'s test module, beside `stream_status`:
         // The house, under its own sentence.
         let mut house = Vec::new();
         for _ in 0..streams::HOUSE_STREAMS_PER_CALLER {
-            house.push(stream_response(&state, "/api/stream", WHO).await);
+            let res = stream_response(&state, "/api/stream", WHO).await;
+            assert_eq!(res.status(), StatusCode::OK, "the house's figure is the caller's own, beside its table streams");
+            house.push(res);
         }
         let ninth = stream_response(&state, "/api/stream", WHO).await;
         assert_eq!(ninth.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -600,7 +612,7 @@ In `lib.rs`'s test module, beside `stream_status`:
         let (status, _) = delete_as(&state, WHO, &format!("/api/games/{id}")).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert_eq!(stream_status(&state, &uri, WHO).await, StatusCode::NOT_FOUND, "the table's refusal comes first");
-        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused request took no slot (a stranger's too)");
+        assert_eq!(state.streams.open(&streams::Room::Table(id.clone())), streams::STREAMS_PER_CALLER, "the refused request took no slot");
         drop(held);
     }
 ```
@@ -611,8 +623,9 @@ is what makes its `OK` rows free their slots at once, which the cell relies on. 
 the response is dropped — it returns `res.status()` by value, so the response drops at the function's end — the
 premise holds; the reviewer confirms by reading it.)
 
-- [ ] **Step 2: Run them red.** `cargo test -p yokohama-web --lib streams::` — expected: a compile error
-  (`unresolved module streams`).
+- [ ] **Step 2: Run them red.** `cargo test -p yokohama-web --lib streams::` — expected: a compile error (rustc
+  1.97.1: ``cannot find module or crate `streams` in this scope``, E0433, and ``no field `streams` on type
+  `std::sync::Arc<AppState>` ``, E0609).
 
 - [ ] **Step 3: `streams.rs`.**
 
@@ -822,8 +835,8 @@ async fn house_stream(
 (If `WatchStream`'s `map` is not `Unpin` under the compiler's reading, `Box::pin(frames)` as `stream` already does
 — `Pin<Box<S>>` is `Unpin` and `Stream`. The reviewer records which form compiled.)
 
-- [ ] **Step 5: Run the cells green.** `cargo test -p yokohama-web --lib -- streams:: a_callers_ninth` —
-  expected: both green; every stream cell in the file still green (the caps are far above what any cell opens).
+- [ ] **Step 5: Run the cells green.** `cargo test -p yokohama-web --lib -- streams:: a_callers_ninth a_cap_does_not_mask` —
+  expected: all three green; every stream cell in the file still green (the caps are far above what any cell opens).
 
 - [ ] **Step 6: The suites (§"Global Constraints"), then commit.**
 
@@ -834,7 +847,10 @@ git commit -m "web: open-stream caps on the NAS — 8 per caller a room, 64 a ta
 
 **Named mutants (the reviewer's, on an export):** M23 `>=` → `>` at the caller's verdict → the module cell red at
 the ninth; M24 `Slot::drop` emptied → the module cell red at "a closed stream frees the slot" and the route cell at
-"freed its slot"; M25 the two verdicts swapped → the module cell red at the sixty-fifth (the sentence); M26 the
+"freed its slot"; M25 the two verdicts swapped → the module cell red at the `c1`-at-a-full-table row and the `h1`-in-a-full-house
+row (a caller at its figure in a full room reads the TOTAL's sentence; a fresh caller's first stream cannot tell the
+order — Task 1's probe); M25a the per-caller count keyed by the caller alone, without the room → the module cell's
+`u`-table row and the route cell's house loop red (Task 1's probe P4b); M26 the
 house arm counting into the table's figures (`Room::House` mapped to the table constants) → the house rows red at
 the 65th instead of the 257th; M27 the route's slot taken BEFORE `events_at` → `a_cap_does_not_mask_the_admission_reads_refusal` red
 at the 404 (a caller holding eight slots at a deleted table reads 429 instead of the table's own refusal); the
