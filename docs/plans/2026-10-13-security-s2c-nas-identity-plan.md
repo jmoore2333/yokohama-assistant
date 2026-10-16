@@ -630,6 +630,10 @@ premise holds; the reviewer confirms by reading it.)
 //! **The figures mirror the Worker's** so the two hosts read alike: 8 per caller a room, 64 a table. The verdicts in
 //! the Worker's order — the room's total first, then the caller's — each a constant sentence and never a caller
 //! value. The maps hold an entry only while a stream is open (B8's lesson: a map nobody has written costs nothing).
+//!
+//! **The per-caller key is the identity the door hands over** — the verified address under Access, the claimed name
+//! under the open door, where a name rotation escapes the per-caller figure and meets the room's total alone (S2b's
+//! D-3, recorded for S4); the room's total is the bound a process relies on.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
