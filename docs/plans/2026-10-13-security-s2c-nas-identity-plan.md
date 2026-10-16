@@ -892,7 +892,8 @@ rows red.
     /// `BODY_TOO_SLOW` once the deadline passes, in the API's error shape, under a deadline the cell shortens to
     /// 50 ms. The same body completed in two chunks under the deadline reaches the route and is answered by it (a
     /// 201: the two chunks are one valid create), which pins that the chunks are joined; a trickle row pins that the deadline
-    /// is the read's IN ALL, and a gated-route row that it is the read's ALONE (the Task 2 review). The whole cell runs
+    /// is the read's IN ALL, and a gated-route row and a pooled-route row that it is the read's ALONE — neither the
+    /// route's wait after the read nor its run on the pool is under it (the Task 2 review and its re-review). The whole cell runs
     /// under its own 2-second bound so a mutant that awaits forever reads as RED.
     #[tokio::test]
     async fn a_stalled_request_body_is_answered_408_after_the_deadline_and_a_slow_but_arriving_one_reaches_the_route() {
@@ -972,6 +973,22 @@ rows red.
         start_as(&gated, "slowroute", 20261016, &[WHO, "blue@wire.test"]).await;
         let (status, _) = get_as(&gated, WHO, "/api/games/slowroute/at/0").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "the route's own slow answer, not the read's deadline");
+
+        // The deadline is not the DISPATCH's either (the re-review's N-1: a deadline over the read and the pool's run
+        // passed every cell — in production it would 408 a replay that spends over ten seconds on the pool and blame
+        // the body): a whole body to a route slow ON THE POOL (an archive put that sleeps 100 ms) under the 50 ms
+        // deadline is answered by the route.
+        let pooled = Arc::new(
+            AppState::with_store_chat_and_archive(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(SlowArchive(std::time::Duration::from_millis(100))),
+            )
+            .with_body_deadline(std::time::Duration::from_millis(50)),
+        );
+        let (status, v) = post_as(&pooled, "local@browser", "/api/archive", archive_body()).await;
+        assert!(matches!(status.as_u16(), 200 | 201), "the route's own answer, not the read's deadline: {v}");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
         assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
@@ -1062,7 +1079,9 @@ first poll reads even at zero — every in-memory cell's body is; Task 2's probe
 zero → the production-state cell's `body_deadline` line red; M32b a per-chunk IDLE deadline (`timeout(deadline,
 frames.next())` per frame, the `TimeoutBody` shape) → the trickle row red (201 for 408); M32c the deadline over the
 WHOLE handler (`timeout(deadline, adapter_inner(..))`, the `TimeoutLayer` shape) → the gated-route row red (408 for
-503) — both the Task 2 review's probes.
+503) — both the Task 2 review's probes; M32d the deadline over the read AND the dispatch's pool join
+(`timeout(deadline, spawn_blocking(..))`, the permit wait outside it) → the pooled-route row red (the 408's sentence
+for the route's 200/201) — the re-review's probe P3.
 
 ### Task 3: D8's character rule — control, format and line-separator characters refused in names and chat — Opus (R-2; decision D-4; Review Focus 3)
 
@@ -1312,6 +1331,32 @@ cell's last line:
         );
 ```
 
+and directly after those rows' closing `);`, before the password row — the Task 3 review's I-1: create's TABLE-name
+site alone on the read rule survived every cell (the tables cell calls `check_name` directly; the create rows use 65
+characters, which both rules refuse; the compatibility cell's table is `"pre"`), and the table's name is a value class
+of its own, R-2's first (M3b):
+
+```rust
+        let mut r = req("o");
+        r.name = Some("Thursday\u{200B}game".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "name: a name has no control, invisible or direction-changing character",
+            "create reads a table's name through the WRITE rule: the read rule admits a zero-width space",
+        );
+```
+
+In `chat.rs`, inside `malformed_fields_are_refused_but_length_is_not`, directly after
+`assert!(check_shape(&ctl, Some(2)).is_err(), "a control character in a stored text");` — the review's I-2: the cycle
+split the TEXT rule as it split the name rule (`check_text` strict; `chat::check_shape` reads a stored line under
+`is_control` alone), and nothing pinned that a stored FORMAT character still reads; a stored-text arm moved onto
+`text::invisible` survived every cell and would 500 every room holding one pre-cycle joined line (M4a):
+
+```rust
+        let joined = doc(vec![seat(1, 0, "h\u{200D}i")]);
+        assert_eq!(check_shape(&joined, Some(2)), Ok(()), "a stored line the old rule admitted still reads (D-4: a family emoji's joiners)");
+```
+
 In `lib.rs`'s test module, the compatibility catcher (plan review L1-F1; AD-1). Its READ lines are green before Step
 7 and after it; its last line, the WRITE refusal, is red before Step 7 and green after it (Task 3's probe); the whole
 cell is red under the plan's first draft, where `check_shape` read names through the new `check_name` and `GET` and
@@ -1319,8 +1364,9 @@ cell is red under the plan's first draft, where `check_shape` read names through
 
 ```rust
     /// **A document this server wrote under the OLD name rule still reads** (S2c Task 3's compatibility catcher): a
-    /// seat's display name and a house watcher's name carrying a zero-width space, stored before the cycle, are
-    /// served as they were — `check_shape` is the READ-side rule (`check_stored_name`, `is_control` alone); the new
+    /// seat's display name, the TABLE's own name and a house watcher's name carrying a zero-width space, and a house
+    /// LINE carrying a joiner, stored before the cycle, are served as they were — `check_shape` is the READ-side rule
+    /// (`check_stored_name` and `is_control` alone on a line); the new
     /// rule is the write side's. Without this split the lobby chat and the table answered 500 on every route.
     #[tokio::test]
     async fn a_document_stored_under_the_old_name_rule_still_reads_and_the_house_chat_still_takes_a_post() {
@@ -1336,9 +1382,12 @@ cell is red under the plan's first draft, where `check_shape` read names through
         let store = Arc::clone(state.games.store());
         let (json, ver) = store.read(Doc::Table, "pre").expect("a store").expect("the table");
         let json = json.replace("Captain Red", "Captain\\u200BRed");
+        let json = json.replace("\"name\": \"pre\"", "\"name\": \"p\\u200Bre\"");
+        assert!(json.contains("p\\u200Bre"), "premise: the stored table's own name carries a zero-width space");
         store.write_if_version(Doc::Table, "pre", &json, Some(ver)).expect("written");
         let (json, ver) = store.read(Doc::House, "house").expect("a store").expect("the chat");
-        let json = json.replace("\"Bob\"", "\"Bob\\u200B\"");
+        let json = json.replace("\"Bob\"", "\"Bob\\u200B\"").replace("\"text\": \"hi\"", "\"text\": \"h\\u200Di\"");
+        assert!(json.contains("\"text\": \"h\\u200Di\""), "premise: a stored LINE carries a joiner the old rule admitted (D-4)");
         store.write_if_version(Doc::House, "house", &json, Some(ver)).expect("written");
         assert!(state.games.read_table("pre").expect("the table still reads").is_some());
         let (status, body) = get_as(&state, "red@wire.test", "/api/chat").await;
@@ -1349,6 +1398,9 @@ cell is red under the plan's first draft, where `check_shape` read names through
         assert_eq!(status, StatusCode::BAD_REQUEST, "the WRITE side refuses the same name: {body}");
     }
 ```
+
+(The store writes PRETTY JSON — `to_string_pretty` — so the keys carry a space after the colon, which the two
+`premise` lines pin; a `replace` with no space matches nothing and the premises red at once — the Task 3 review.)
 
 - [ ] **Step 6: Run them red.** `cargo test -p yokohama-web --lib tables::tests::a_name_with_an_invisible` and
   `--lib chat::tests::a_line_with_an_invisible` — expected: both FAIL on the first `Err` assertion (today's sentence
@@ -1424,7 +1476,11 @@ M7a `check_shape` back to `check_name` → the compatibility cell red at its `re
 table document "malformed") for the table sites, and at `GET /api/chat`'s 500 for the chat site; `check_shape_bounds_the_tables_own_name`
 red at its READ literal for the table-name site (plan review L1-F1; Task 3's probe); M7b `chat::normalized` alone back on
 the write rule → the padded-invisible row red (served padded and refused); M3a create's display-name site alone on
-the read rule → the `Captain\u{200B}Red` row red (201 for the refusal).
+the read rule → the `Captain\u{200B}Red` row red (an `Ok` table for the refusal — the row calls `Games::create`
+directly; the Task 3 review's m-5); M3b create's TABLE-name site alone on the read
+rule → the `Thursday\u{200B}game` row red; M4a `chat::check_shape`'s stored-text arm on `text::invisible` → the
+`h\u{200D}i` unit row red and the compatibility cell red at `GET /api/chat`'s 500; M7a's table-name site alone → the
+compatibility cell's `read_table` line red (the `p\u{200B}re` premise) — the Task 3 review's probes.
 
 ---
 
@@ -1433,11 +1489,12 @@ the read rule → the `Captain\u{200B}Red` row red (201 for the refusal).
 **Files:**
 - Modify: `crates/yokohama-web/src/chat.rs` (`ChatDoc`, `AuthorView`, `Message::view_for`, `tag_of`),
   `crates/yokohama-web/src/games.rs` (`FIXED_CHAT_SALT`, `Games::chat_salt`), `crates/yokohama-web/src/tables.rs`
-  (`append_locked`, the ONE site both `chat_append` at line 1084 and `house_append` at line 1112 reach — their calls
-  at 1096 and 1116 — returning the document's salt beside the message; `chat_append_salted` and `house_append_salted`,
-  with the two old functions kept as thin wrappers so the ~15 test call sites do not move),
+  (`append_locked`, the ONE site both `chat_append` (line 1101 at Task 3's head) and `house_append` (1129) reach —
+  their calls at 1113 and 1133 — returning the document's salt beside the message; `chat_append_salted` and
+  `house_append_salted`, with the two old functions kept as thin wrappers so the 27 test call sites — 24 in `tables.rs`,
+  2 in `games.rs`, 1 in `sweep.rs` — do not move),
   `crates/yokohama-web/src/api.rs` (the two POST replies, lines 1171 and 1248, the `view_for` sites that hold no
-  document), `crates/yokohama-web/src/chat.rs:422` (`ChatDoc::page_for`, the third `view_for` site, with `self.salt` in
+  document), `crates/yokohama-web/src/chat.rs:420` (`ChatDoc::page_for`, the third `view_for` site, with `self.salt` in
   scope); `grep -n view_for crates/yokohama-web/src` lists exactly those three,
   `web/src/types.ts:1090-1093` (`ChatAuthor`), `web/src/wire/contract.ts:740` (the watcher key list, Step 6),
   `web/src/wire/*.json` (regenerated once).
@@ -1459,6 +1516,7 @@ the read rule → the `Captain\u{200B}Red` row red (201 for the refusal).
     fn a_tag_is_four_hex_of_the_salted_key_and_differs_by_salt_and_by_key() {
         let t = tag_of("salt", "red@wire.test");
         assert_eq!(t.len(), TAG_HEX);
+        assert_eq!(t, "c54e", "the hand-computed reference (`printf 'salt\\nred@wire.test' | sha256sum | cut -c1-4`): the newline\n        is part of the derivation — dropping it passed every unit cell (Task 4's probe P-sep)");
         assert!(t.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{t}");
         assert_eq!(t, tag_of("salt", "red@wire.test"), "deterministic");
         assert_ne!(t, tag_of("other", "red@wire.test"), "a different room, a different tag");
@@ -1528,15 +1586,16 @@ In `games.rs`'s test module:
     }
 ```
 
-(`in_memory()` builds `Diagnostic` — `lib.rs` line 464's constructor chain; if `.games` is not reachable as a public
-field from the test module, use the crate-visible accessor the neighbouring cells use.)
+(`in_memory()` builds `Diagnostic` — `lib.rs:632`, `with_store_chat_and_archive`; `games.rs:464` is `with_limits`'s own
+`Diagnostic`; if `.games` is not reachable as a public field from the test module, use the crate-visible accessor the
+neighbouring cells use.)
 
 In `tables.rs`'s test module, beside the chat cells:
 
 ```rust
     /// **The first append gives a document its salt, and a second keeps it** (decision D-5): two watchers' tags
     /// differ, one watcher's two messages share one, and the stored document carries the salt the views were
-    /// derived from. Under `in_memory()` the salt is the constant, which is what makes the corpus byte-stable.
+    /// derived from. Under `games()` (`Diagnostic`) the salt is the constant, which is what makes the corpus byte-stable.
     #[test]
     fn the_first_append_salts_the_document_and_tags_are_stable_within_it() {
         // Build the state and a table exactly as the file's watcher-chat cell does (the cell that posts as a
@@ -1546,8 +1605,9 @@ In `tables.rs`'s test module, beside the chat cells:
         //   the three author views are Watcher; views[0].tag == views[2].tag; views[0].tag != views[1].tag;
         //   every tag is Some and 4 hex;
         //   the stored ChatDoc (read through the store as the file's other chat cells read it) has salt == Some(FIXED_CHAT_SALT.to_string()).
-        // NOTE (plan review L1-R11): the file's `games()` helper is `SoloOnly` (entropy) — build this cell's state with
-        // `games().with_seed_policy(SeedPolicy::Diagnostic)`; and no table-level WATCHER chat cell exists to copy (a
+        // NOTE (plan review L1-R11, corrected by Task 4's probe): the file's `games()` helper is `Diagnostic` ALREADY
+        // (`Games::new` → `with_limits` ends `.with_seed_policy(SeedPolicy::Diagnostic)`); the cell keeps
+        // `games().with_seed_policy(SeedPolicy::Diagnostic)` to state its premise; and no table-level WATCHER chat cell exists to copy (a
         // watcher posts only at an unlocked table), so append `Author::Watcher` through `chat_append` directly, as
         // `a_house_append_bumps_…` (~line 5794) does for the house. About 33 lines.
     }
@@ -1574,6 +1634,44 @@ of fixture setup); the ASSERTIONS above are the cell, and the reviewer checks ea
 `a_post_reply_carries_the_same_tag_as_the_page_that_follows`, is the replies' catcher: they are two of `view_for`'s
 three sites and hold no document (plan review L1-F3).
 
+Two more cells, from Task 4's probe. In `tables.rs`, after the reply cell — a page reads EVERY message under the
+document's current salt, so one page is self-consistent even if every append re-salts; the defect shows only ACROSS
+reads, and under `Diagnostic` the constant hides it, so this cell runs under `SoloOnly` (M9b: every append re-salting
+passed every cell, the corpus and the pool):
+
+```rust
+    /// **A second append KEEPS the salt** (decision D-5's "and a second keeps it", pinned under entropy — Task 4's
+    /// probe): a message a reader already holds keeps its tag when the next message lands; re-salting on every
+    /// append would change every poster's tag at each new message in production, which `Diagnostic`'s constant
+    /// hides.
+    #[test]
+    fn a_held_messages_tag_survives_the_next_append_under_entropy() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::SoloOnly);
+        let green = who("green@t.test");
+        let post = |user: &str, name: &str| {
+            games.house_append(Author::Watcher { user: user.into(), name: Some(name.into()) }, "words").expect("a post")
+        };
+        post("green@t.test", "Green");
+        let (first, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        let salt = serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt;
+        post("blue@t.test", "Blue");
+        let (second, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        assert_eq!(serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt, salt, "the second append keeps the salt");
+        assert_eq!(second[0].author, first[0].author, "a message a reader holds keeps its tag across the next append");
+    }
+```
+
+And in `lib.rs`'s test module, beside the house chat cells, a ROUTE cell (Task 4's probe: a reply in `api.rs` answering
+`view_for(user, None)`, and `chat_append_salted` returning `None`, left the reply cell green — only the corpus caught
+them, and a regenerated corpus freezes a leak as faithfully as a fix, the M6.1 lesson). The implementer writes it
+against the file's helpers (`post_as`, `get_as`; an open table a watcher may post at, as the file's watcher-chat cells
+build one); the ASSERTIONS are the cell, named `a_chat_reply_carries_the_authors_tag_as_the_next_page_draws_it`:
+`POST /api/chat` as a watcher with a name answers 201 with `author.tag` a four-hex string; the following `GET /api/chat`'s
+last message's `author` equals the reply's `author` byte for byte (tag included); the same two facts at a table's
+chat (`POST /api/games/{id}/chat` as a watcher, then its page).
+
 - [ ] **Step 2: Run them red.** `cargo test -p yokohama-web --lib chat::tests::a_tag_is` etc. — expected: compile
   errors (`tag_of`, `TAG_HEX`, `salt`, `tag` do not exist).
 
@@ -1586,9 +1684,9 @@ three sites and hold no document (plan review L1-F3).
     /// `None` on a document written before, until then. Never served: the tag is served, and it is one way.
     #[serde(default)]
     pub salt: Option<String>,
-// … and every literal of the struct gains `salt: None`: `ChatDoc::empty` (`chat.rs:381`), the test helper `fn doc`
-// (`chat.rs:568`) and `tables.rs:5562`'s; the cell `a_page_marks_you_on_the_readers_own_messages_and_carries_no_user`
-// (`chat.rs:841`) gains `"tag": null` in its two watcher `json!` literals.
+// … and every literal of the struct gains `salt: None`: `ChatDoc::empty` (`chat.rs:356`), the test helper `fn doc`
+// (`chat.rs:568`) and `tables.rs:5570`'s; the cell `a_page_marks_you_on_the_readers_own_messages_and_carries_no_user`
+// (`chat.rs:749`) gains `"tag": null` in its two watcher `json!` literals (line numbers at Task 3's head).
 
 // chat.rs — beside the other `pub const`s:
 /// A tag's length in hex characters: four reads at a glance beside a name, and 65,536 values keep two posters in
@@ -1646,9 +1744,9 @@ impl Games {
 ```
 
 ```rust
-// tables.rs — `append_locked`, the ONE site both `chat_append` (line 1084 today) and `house_append` (line 1112) reach,
+// tables.rs — `append_locked`, the ONE site both `chat_append` (line 1101 at Task 3's head) and `house_append` (1129) reach,
 // salts the document on its first append and returns the salt beside the message; the two writers gain `*_salted`
-// forms the POST replies call, and keep their signatures as thin wrappers so the ~15 test call sites do not move
+// forms the POST replies call, and keep their signatures as thin wrappers so the 27 test call sites do not move
 // (plan review L1-F3; AD-4):
     /// +1 per append and per delete, so `rev - last` moves exactly when a held
     /// message was deleted. The counts come back beside the message for the
@@ -1735,7 +1833,7 @@ impl Games {
 ```
 
 - [ ] **Step 4: Run the cells green.** `cargo test -p yokohama-web --lib -- chat:: games:: tables::` — expected: green,
-  the five new cells, and the reply cell, included; every `view_for` call site compiles with the salt argument.
+  the five new cells, the reply cell, the held-message cell and the route cell included; every `view_for` call site compiles with the salt argument.
 
 - [ ] **Step 5: Regenerate the corpus ONCE, and READ the diff.**
   `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`, then `git diff --stat web/src/wire` and
@@ -1764,12 +1862,16 @@ git commit -m "web: watcher and house authors carry a per-room tag — four hex 
 ```
 
 **Named mutants:** M8 `tag_of` ignores the salt → the tag cell red at "a different room"; M9 the append never fills
-the salt → the tables cell red (every tag `None`) and the corpus diff empty; M9a the reply passes `None` → the
-reply cell red (plan review L1-F3); M10 `view_for` tags seat authors →
-the view cell's seat row red (the `matches!` on `Seat` has no `tag`, so the mutant is a compile error — the reviewer
-records it as structurally impossible, which is the point of the enum shape); M11 `chat_salt` returns the constant
+the salt → the tables cell red (every tag `None`) and the corpus diff empty; M9a a reply in `api.rs` answering `view_for(user, None)`, or
+`chat_append_salted` returning `None` → the ROUTE cell red at the reply/page comparison, and the corpus's
+`chat_post_watcher.json` / `house_chat_post.json` (the reply cell catches `house_append_salted` alone — Task 4's probe);
+M9b every append re-salting → the held-message cell red at "the second append keeps the salt" (green under
+`Diagnostic`, whose salt is the constant; Task 4's probe); M10 `view_for` tags seat authors (a `tag` added to
+`AuthorView::Seat`) → a compile error at the stored-author cell's two `AuthorView::Seat { seat: 0, name: …, you: true }`
+literals in `tables.rs`, NOT at the view cell's `matches!`, whose `..` accepts the field — structurally impossible by
+those literals, which the reviewer records (Task 4's probe); M11 `chat_salt` returns the constant
 under `SoloOnly` → the games cell red at "entropy, not a constant"; M12 `TAG_HEX` 12 → the tag cell red at the
-length; M13 the salt serialized into `MessageView` → the serde cell red.
+final `assert_eq!(TAG_HEX, 4)` (`t.len() == TAG_HEX` holds at 12); M13 the salt serialized into `MessageView` → the serde cell red.
 
 ---
 
