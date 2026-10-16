@@ -3036,7 +3036,8 @@ mod tests {
     /// `BODY_TOO_SLOW` once the deadline passes, in the API's error shape, under a deadline the cell shortens to
     /// 50 ms. The same body completed in two chunks under the deadline reaches the route and is answered by it (a
     /// 201: the two chunks are one valid create), which pins that the chunks are joined; a trickle row pins that the deadline
-    /// is the read's IN ALL, and a gated-route row that it is the read's ALONE (the Task 2 review). The whole cell runs
+    /// is the read's IN ALL, and a gated-route row and a pooled-route row that it is the read's ALONE — neither the
+    /// route's wait after the read nor its run on the pool is under it (the Task 2 review and its re-review). The whole cell runs
     /// under its own 2-second bound so a mutant that awaits forever reads as RED.
     #[tokio::test]
     async fn a_stalled_request_body_is_answered_408_after_the_deadline_and_a_slow_but_arriving_one_reaches_the_route() {
@@ -3116,6 +3117,22 @@ mod tests {
         start_as(&gated, "slowroute", 20261016, &[WHO, "blue@wire.test"]).await;
         let (status, _) = get_as(&gated, WHO, "/api/games/slowroute/at/0").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "the route's own slow answer, not the read's deadline");
+
+        // The deadline is not the DISPATCH's either (the re-review's N-1: a deadline over the read and the pool's run
+        // passed every cell — in production it would 408 a replay that spends over ten seconds on the pool and blame
+        // the body): a whole body to a route slow ON THE POOL (an archive put that sleeps 100 ms) under the 50 ms
+        // deadline is answered by the route.
+        let pooled = Arc::new(
+            AppState::with_store_chat_and_archive(
+                Arc::new(MemStore::default()),
+                identity::IdentityMode::Open,
+                chat::ChatConfig::default(),
+                Arc::new(SlowArchive(std::time::Duration::from_millis(100))),
+            )
+            .with_body_deadline(std::time::Duration::from_millis(50)),
+        );
+        let (status, v) = post_as(&pooled, "local@browser", "/api/archive", archive_body()).await;
+        assert!(matches!(status.as_u16(), 200 | 201), "the route's own answer, not the read's deadline: {v}");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
         assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
