@@ -1,7 +1,9 @@
 //! The character rule for a person's text (security S2c, finding D8; decision D-4): a name, a display name, a
-//! watcher's name and a chat line carry NO control (Cc), format (Cf) or line-separator (Zl, Zp) character. `Cc` is
-//! `char::is_control`; `Cf` is the table below; `Zl` and `Zp` are two code points. Nothing else is judged here —
-//! confusable letters are provenance's problem, which the tag answers (`chat::tag_of`), not this rule's. **What the
+//! watcher's name and a chat line carry NO control (Cc), format (Cf) or line-separator (Zl, Zp) character when they
+//! are WRITTEN — by create, join, keep or a chat post; a stored or uploaded document (a restore, an archive) reads
+//! under `tables::check_stored_name`, the rule as it stood. `Cc` is `char::is_control`; `Cf` is the table below;
+//! `Zl` and `Zp` are two code points. Nothing else is judged here — confusable letters are provenance's problem,
+//! which the tag answers (`chat::tag_of`, Task 4's), not this rule's. **What the
 //! rule does not reach**, measured at the plan review (L1-F4): the default-ignorable LETTERS and marks outside Cc/Cf
 //! (U+115F, U+1160, U+3164, U+FFA0 the Hangul fillers, U+034F, U+17B4, U+17B5) and U+2800 (Braille blank, So) pass,
 //! so `"Bob\u{3164}"` reads as `Bob`; the tag is what tells such a watcher from the seat holder (a seat carries none).

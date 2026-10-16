@@ -4048,6 +4048,13 @@ mod tests {
         r.display_name = Some("\u{7}".into());
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("control"));
         let mut r = req("o");
+        r.display_name = Some("Captain\u{200B}Red".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "display name: a name has no control, invisible or direction-changing character",
+            "create reads a display name through the WRITE rule (S2c Task 3): the read rule admits a zero-width space",
+        );
+        let mut r = req("o");
         r.password = Some("   ".into());
         assert!(
             games.create(&r, &red).unwrap_err().to_string().contains("at least one character")
@@ -5573,6 +5580,22 @@ mod tests {
         assert_eq!(
             page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
             [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red".into()), you: true }],
+        );
+        // **The READ rule's trim reaches a name the WRITE rule refuses** (S2c Task 3): a stored name both padded and
+        // carrying a zero-width space is served trimmed — `normalized` reads through `check_stored_name`; through
+        // `check_name` it would refuse the name and serve it padded.
+        let (_, version) = games.store().read(Doc::Chat, &id).expect("a store").expect("the chat");
+        let padded = ChatDoc {
+            messages: vec![message(Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("  Red\u{200B} ".into()) })],
+            ..stored
+        };
+        let json = serde_json::to_string(&padded).expect("a chat document");
+        games.store().write_if_version(Doc::Chat, &id, &json, Some(version)).expect("stored");
+        let (page, _) = page_of(&games, &id, 0).expect("served");
+        assert_eq!(
+            page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
+            [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red\u{200B}".into()), you: true }],
+            "a padded invisible name is served trimmed",
         );
     }
 
