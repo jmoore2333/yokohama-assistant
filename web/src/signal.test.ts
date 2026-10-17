@@ -317,6 +317,21 @@ describe("the signal, over the stream", () => {
     expect(result.current, "no word stands beside the ended sentence").toBe("live");
   });
 
+  it("says nothing after an end when the tab is hidden and shown again", async () => {
+    const ends: End[] = [];
+    stubApi(() => ({ status: 429, body: { error: "too many" } }));
+    const { result } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toHaveLength(1);
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current, "no word stands beside the ended sentence").toBe("live");
+  });
+
   it("ends on the EDGE's expired session, with the sentence the door links from", async () => {
     // **Important 2 of the whole-branch review, and the false sentence under
     // it.** `readStream` classifies Access's 401 and throws `ACCESS_CHALLENGE`

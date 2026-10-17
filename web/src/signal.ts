@@ -520,6 +520,7 @@ export function usePolled<T>(
     };
 
     const onVisibility = () => {
+      if (stopped) return;
       if (visible()) {
         setLink("refreshing");
         // At once, and not on a delay: the whole point of letting go while
