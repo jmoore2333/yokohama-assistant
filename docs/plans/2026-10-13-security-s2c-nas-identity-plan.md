@@ -2862,9 +2862,14 @@ the only form in which a claim appears in a sentence — for the owner at the cl
 - [ ] **Step 5: The `BROWSER_UA` recipes (D-13).** In `worker/RUNBOOK.md`: MOVE the variable's one definition — §7's
   `BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs")…')` at line 972 (at Task 6's head) — up to the first
   recipe that needs it (§3's operator playbook, before line 497), leaving the old line a pointer back to it; the moved
-  line runs its `node` in a SUBSHELL, `BROWSER_UA=$(cd worker && node -e '…')`, so the shell's directory stays the
-  repository root that §4's recipe assumes (Task 7's probe: a `cd worker &&` outside the `$(…)` leaves the shell in
-  `worker/`), then add `-A "$BROWSER_UA"` to the
+  line is INDEPENDENT of the shell's directory — `BROWSER_UA=$(cd "$(git rev-parse --show-toplevel)/worker" && node -e
+  '…')` — because §3's own block four lines above it is a bare `cd worker` (the three `wrangler secret` lines), and a
+  definition that works from the root alone reads EMPTY from `worker/`, after which `curl -A ""` sends NO User-Agent
+  header at all, the most bot-shaped request there is (the Task 7 review's I-1, measured against a loopback listener);
+  its lead-in says it works from any directory. And the burst's own sentence at §7 ("The burst below stays outside
+  this block, since its first line keeps the shell in `worker/` to set a variable") is false once that first line is
+  the pointer — it reads: "The burst below stays outside this block: it reads `$BROWSER_UA`, which §3's operator
+  playbook sets, and spends the owner's write budget (the bullet says when to run it)" (the review's I-2), then add `-A "$BROWSER_UA"` to the
   seven recipe lines: 497, 498, 499 (§3's playbook), 561 (§4's credential read), 587 (§5's health read), 792 and 793
   (§5's upgrade probes). `deploy/RUNBOOK.md` and `docs/web-lane.md` do not move: §3 already sets its own `UA` and
   passes `-A "$UA"` on every recipe (lines 298–330), and the lane holds no recipe `curl`. A `curl` inside a dated record (worker §8–§21, deploy §3.17–§3.21)
@@ -2874,8 +2879,10 @@ the only form in which a claim appears in a sentence — for the owner at the cl
   1. `crates/yokohama-web/tests/wire_fixtures.rs:2998`: "Not empty, and the plan expected it to be: these two were
      on the corpus before this cycle, and neither names a person." over a FOUR-row list. Rewrite to name the four:
      "Not empty: `identity_cases` and `why` were on the corpus when this pin was written (M6.5c2 cycle D), `why_withheld`
-     joined with the explain surface at the requester's visibility (the security core PR, A1/B1) and `id_cases` with
-     the hash router's id grammar (S2a, Task 5); none of the four names a person." (`5304a43f`, `60030076`, `b36dd351`) — confirm each row's
+     joined with the explain surface at the requester's visibility (security S1a, Task 1; A1/B1) and `id_cases` with
+     the hash router's id grammar (S2a, Task 5); none of the four names a person." (`5304a43f`, `60030076`, `b36dd351` —
+     `60030076` is S1a's Task 1 on `security-s1`, PR #49, not the core PR #48: the plan review's C-48 text named the
+     wrong PR, the Task 7 review's I-3) — confirm each row's
      cycle with `git log -S'"why_withheld"' --oneline -- crates/yokohama-web/tests/wire_fixtures.rs` (and the same
      for `id_cases`) and write what the log says.
   2. `worker/src/index.ts:114` ("stateless, and in this order —") and `answer`'s own "in this order" doc: verified
@@ -2920,7 +2927,9 @@ comparison made against the RAW claim (the plan's first draft) → the cut-or-es
 - Modify: `deploy/cloudflared-config.yml`, `deploy/update.sh` (one line: the swap's `docker run` gains the hardening,
   L4-F5), `deploy/README.md` (§1 lines 39–41, §4's `docker run` and its "127.0.0.1:8080" bullet,
   §6), `deploy/RUNBOOK.md` §3 (the container create body at lines 237–245 today; §0 "What is true before you start"
-  does NOT name the shared network — it is §0's "bind address" bullet (lines 49–56: "the server does not verify
+  does NOT name the shared network — §3's opening clause at lines 233–235 does ("the network `cloudflared-nas` shares
+  with the services it serves"), and it reads: "the network only `cloudflared-nas` and this server join (S2c; before it,
+  every served service sat there)" (the Task 8 review's I-1) — and it is §0's "bind address" bullet (lines 49–56: "the server does not verify
   Access's signed assertion, so anything that reached 8080 some other way could send the header") that restates the rule
   Step 2 rewrites, and it gains one sentence: "since security S2c cloudflared also validates the assertion on both ingress
   rules and `README.md` §1's recipe is the rule"; §3's closing paragraph, "Do not publish 8080 to the LAN", stays true), `crates/yokohama-web/src/identity.rs:17-18` (the module doc's last sentence),
@@ -2931,7 +2940,7 @@ comparison made against the RAW claim (the plan's first draft) → the cut-or-es
 **Interfaces:** none consumed or produced.
 
 - [ ] **Step 1: The cloudflared block — an INSERTION into the file as it stands, never a rewrite.**
-  `deploy/cloudflared-config.yml` is 111 lines today, 100 of them comments (the header recipe, the `cf-edge` note,
+  `deploy/cloudflared-config.yml` is 111 lines today, 91 of them comments — 100 after the insertion (the header recipe, the `cf-edge` note,
   each rule's PROTECTED-BY and heartbeat reasoning, the `yokohama.moore.nyc` note). A whole-file block that replaces it
   would drop all of them against this plan's own sentence that "the file's existing comments stay" (lens 4, L4-F1;
   the block as first written parsed but was a different file). The implementer makes exactly three changes:
@@ -2943,7 +2952,12 @@ comparison made against the RAW claim (the plan's first draft) → the cut-or-es
   `cloudflared-nas` also joins (`cf-internal` is for `yokohama-web` and cloudflared ALONE since S2c; the terminal has
   its own)" and "2. add an ingress block below, above the catch-all, with the same `originRequest.access` block".
   The comment at lines 62–66 ("the origin does not verify Access's signed assertion … This tunnel is the one path…")
-  stays true and gains nothing.
+  stays true and gains nothing. (d) The `cf-edge` note at lines 20–23 ("`cloudflared-nas` joins BOTH `cf-edge` and
+  `cf-internal`, and every service it actually serves sits on `cf-internal`. Corrected to the network that works.")
+  reads as CURRENT — only its first clause is dated — and contradicts the recipe's step 1 four lines above it once the
+  terminal has its own network (the Task 8 review's I-1); it is written in the past tense: "Until S2c, `cloudflared-nas`
+  joined both `cf-edge` and `cf-internal`, and every service it served sat on `cf-internal`; step 1 above is the rule
+  since."
 
 ```yaml
   # Security S2c (finding B10's host half; the owner's R-1, 2026-10-13): each rule below carries
@@ -3004,7 +3018,7 @@ comparison made against the RAW claim (the plan's first draft) → the cut-or-es
 >    yourself through the hostname, `/api/me` names you. Repeat after any change to the host. What this does not
 >    close is §4's second bullet: on a shared host, a process that can route to the container's address.
 
-(The following sentence of §1, "Publish the port to nothing but the tunnel.", is absorbed by step 1; §4's `docker run` gains the three hardening flags of step 3 and its bullet on
+(The following sentence of §1, "Publish the port to nothing but the tunnel.", is absorbed by step 1; §4's `docker run` and §9's rollback `docker run` gain the three hardening flags of step 3 (Task 8's probe: §9 runs the same container), and §4's bullet on
 `127.0.0.1:8080` and §6 "Behind a proxy" (whose `http://localhost:8080` variant publishes the port that step 1 forbids)
 gain one cross-reference each to §1's recipe; `deploy/update.sh`'s `run_args` gains the same three flags — MEASURED
 on the export: `YOKOHAMA_WEB_NETWORK=cf-internal YOKOHAMA_WEB_PUBLISH= bash deploy/update.sh --dry-run v0.6.3` today
@@ -3028,7 +3042,8 @@ self-hoster update would silently undo step 3; with the one added line it prints
 With the prose: "**Hardened since security S2c (B10's host half, 2026-10-13):** the container drops every
 capability (it binds 8080 as uid 10001 and needs none), may not gain privileges, and is bounded at 512 MiB — no
 recorded reading exceeds a few tens of megabytes (`deploy/RUNBOOK.md` §3.3: 12.0 MB container peak; §3.21's B8 reading
-flat at 0.57 MB RSS over 1,000 requests), and the window reads `docker stats` across one capped 4,096-event replay; a
+container usage 9.1–11.0 MB and cgroup `rss` 0.38–0.57 MB over 1,000 requests — Task 8's probe corrected the plan's
+"flat at 0.57 MB RSS"), and the window reads `docker stats` across one capped 4,096-event replay; a
 container that hits the bound is restarted by its policy, which is the right answer for a memory leak and a wrong
 figure alike (read `docker stats` at the window and raise it with a reason, never silently)." And the terminal
 container's network: "**The terminal container is NOT on `cf-internal`** since S2c: it joins its own network, which
@@ -3049,7 +3064,9 @@ deploy record §3.22 is the window's (Task 10; R-8: no first window, so §3.21 i
 - [ ] **Step 5: The ledger's rows** (`docs/security-ledger.md`), each edited in place in the row's own columns:
   - **B10:** the cycle column `S2 (code) + S3 (host)` becomes `S2c (host half; code half accepted)` (S3 no longer owns the
     host half, and the row would otherwise contradict its own status), the live column's "the shared network read live
-    2026-10-08" is kept and the window appends its readings; status `the host half fixed at S2's wrap window (the record: deploy/RUNBOOK.md §3.22); the code half
+    2026-10-08" is kept and the window appends its readings; status `the host half written in the documents, applied at
+    S2's wrap window and not fixed until read back there (the record: deploy/RUNBOOK.md §3.22; Task 8's probe — no
+    window has run when the row is written; the close turns it to fixed with the readings); the code half
     ACCEPTED by the owner (2026-10-13, R-1 — R-SEC4 amended): cloudflared's originRequest.access on both ingress rules
     (deploy/cloudflared-config.yml), a network only cloudflared and the server join, CapDrop ALL / no-new-privileges
     / 512 MiB; the README §1 recipe with the negative probe; re-open trigger: a NAS hostname served without Access,
@@ -3059,7 +3076,10 @@ deploy record §3.22 is the window's (Task 10; R-8: no first window, so §3.21 i
   - **D3:** the row's two sentences the cycle falsifies are REPLACED, not appended to — "The NAS's stream cap and its
     body-read timeout stay `open`, S2c's (spec §9.7 correction 11)." and "Recorded, not closed: the lobby draws no
     refusal — `Lobby.tsx` passes no `onEnd` … (AD-4, owed before any open door is deployed)" (its lobby-total
-    "parked" note stays); the NAS half goes in their place: `the NAS's half fixed <Task 1's SHA> (S2c Task 1): 8 streams per caller a room, 64
+    "parked" note stays); the NAS half goes in their place — the headline SHA is the commit the fix STANDS at, the
+    ledger's convention in its other eighteen `fixed <commit>` headlines (the Task 8 review's I-2), the task commits
+    listed after it: `the NAS's half fixed dd583791 (S2c Tasks 1, 2 and 5 — dca93360, ddde1c82; 092f6f2c, f716c899,
+    fbad0d00, 47d2db45; 0072e80e, afb25129, 8c113a4f, dd583791): 8 streams per caller a room, 64
     a table, the house 8 per caller and 256 in all, OPEN streams only (a slot the SSE body drops), the (n+1)-th a 429
     with its sentence before any frame; the client ends a signal on 429 (S2c Task 5) — which is also AD-4's lobby
     refusal drawn on both hosts; the body read has a 10-second deadline at the adapter, 408 (S2c Task 2); the table's total
@@ -3072,7 +3092,9 @@ deploy record §3.22 is the window's (Task 10; R-8: no first window, so §3.21 i
     signal's sentence …" and "keeps the ended signal's sentence when the opening listings land AFTER the end …", and
     `web/src/App.test.tsx` "lands on the lobby with the cap's sentence when the table's own stream is refused 429 …"
     (the implementer copies each name from the task's block and `grep -n`s it).
-  - **D8:** `fixed <Task 3's and Task 4's SHAs> (S2c Tasks 3–5): names, display names, watcher names and chat text
+  - **D8:** `fixed 3ba77827 (S2c Tasks 3–5 — 30a14af6, 7f16fb04, 8f8874ea; 99723c6d, 0a3c1c3e, 9efde0ce, 3ba77827;
+    0072e80e, afb25129 — Task 5's two that touch Chat.tsx and Chat.test.tsx; 8c113a4f and dd583791 are D3's client arm,
+    the Task 8 review's I-2): names, display names, watcher names and chat text
     refuse Cc, Cf (Unicode 17.0.0's table in text.rs, 170 code points pinned), Zl and Zp; watcher and house authors
     carry a four-hex tag of SHA-256 over a per-document salt and the key, drawn "name · tag"; under the open door the
     tag says "the same key as before" and nothing more (the owner's accepted risk, R-2)`; catchers by name: `text.rs` `the_format_table_is_unicode_17s_cf_sorted_disjoint_and_170_long`,
@@ -3084,7 +3106,8 @@ deploy record §3.22 is the window's (Task 10; R-8: no first window, so §3.21 i
     `the_chat_salt_is_fixed_under_diagnostic_and_fresh_entropy_under_solo_only`; `tables.rs`
     `a_post_reply_carries_the_same_tag_as_the_page_that_follows`; `lib.rs`
     `a_document_stored_under_the_old_name_rule_still_reads_and_the_house_chat_still_takes_a_post` (the read side's
-    catcher, Task 3); `web/src/Chat.test.tsx` the tag's label cell.
+    catcher, Task 3); `web/src/Chat.test.tsx`'s three cells that assert the tag, by their titles (the authors cell, the
+    "you · tag" cell, the house author's cell); D8's cycle column reads `S2c` (Task 8's probe).
   - **B1** (the HI-F2 note; the row's last sentence "The design option … is an S2 candidate" is replaced by this one, and
     the catcher column gains Task 6's `a_tampered_record_is_withheld_while_hidden_and_a_mismatch_once_public` and the CLI's
     `locate_is_the_pre_search_half_of_account_parts_and_the_halves_agree`): `HI-F2 ACCEPTED (the owner, 2026-10-13, R-3): at a solo table undo past game over
@@ -3118,7 +3141,11 @@ variables; the ledger's cell names against the cells Tasks 1–5 wrote (`grep -n
   `web/src/precache.node.test.ts:135-139` (the served set's first name; inside `describe.skipIf(!existsSync(glue))`, so
   it is SILENTLY skipped until `npm run build:wasm` has run), `web/scripts/headers.d.mts` (the new export's declaration,
   C-33), `web/e2e/harness.node.test.ts` (C-35),
-  `web/scripts/headers.mjs:21-40` and `:50-66` (`CSP_MODE`, the nonce constant, `cspOf`'s `script-src`),
+  `web/scripts/headers.mjs:21-40` and `:50-66` (`CSP_MODE`, the nonce constant, `cspOf`'s `script-src`; at Task 8's
+  head `cspOf` is 69–89, the e2e-build comments 19–28 and 47–55, the harness doc 73–83 with its arm at 119–122, the
+  runbook's bullet §7 928–934 — Task 9's probe; and two sentences false once enforced, rewritten beyond the first
+  draft: `headerSet`'s doc ("XFO closes B4 while `frame-ancestors` is only reported") and `e2e-build.mjs`'s post-e2e
+  parenthetical),
   `web/scripts/headers.node.test.ts:35-50` and `:51-78` (the mode and directive cells; a nonce cell),
   `web/scripts/e2e-build.mjs:1-13` and `:30-36` (the comment and its cell's title), `web/e2e/harness.ts:76-125` and
   `:244-268` (`watchForBreakage`'s forgiveness arm and `isReportOnlyDetectionLine` removed; every spec that prints
@@ -3195,6 +3222,8 @@ export const CSP_MODE = "enforce";
 export const CLOUDFLARE_INJECTION_NONCE = "<the 22 characters drawn above>";
 ```
 
+(The constant sits AFTER the `CLOUDFLARE` constant, whose rewritten comment says "below" — Task 9's probe.)
+
 and in `cspOf`:
 
 ```js
@@ -3210,7 +3239,9 @@ detection script carries whatever nonce the response's CSP header names — `CLO
   precache's served set — `grep -rniI "report-only" web/scripts web/src web/e2e worker/scripts worker/test deploy`, read by
   eye — moves to the enforced name. The survivors that stay: `headers.mjs`'s mode table and its comment,
   `e2e-build.mjs` (the report-only build's rewrite), `headers.d.mts`'s `CSP_HEADER` type, `framed.spec.ts:27`'s
-  `FRAME_FENCES` list, and `sw.node.test.ts:726,740` (an inline fixture header, independent of the mode). The first
+  `FRAME_FENCES` list, `sw.node.test.ts:726,740` (an inline fixture header, independent of the mode), `harness.ts`'s
+  any-type CSP read, `harness.node.test.ts`'s fixtures, the mode cell's report-only rows and the README's history
+  sentence (Task 9's probe). The first
   draft's grep was case-sensitive and `web/`-only and missed `deploy/smoke-image.sh` and
   `worker/scripts/assemble-assets.test.mjs`; plan review P-4).
 
@@ -3362,7 +3393,8 @@ describe("the CSP lines (any console type) are read on every tier, and nothing i
   5. `cd web && npm run build:wasm && cd ../worker && npm run build:module:debug`, then the suites:
      `cargo test -p yokohama-web` (`the_two_npm_packages_carry_the_workspace_version` and `wire_fixtures` clean
      without the flag), the lane's rows, `cd web && npm run build` (the RELEASE client, so `web/dist` carries the
-     enforced set for the window; `worker/gen` and `worker/assets` by `cd worker && npm run build`).
+     enforced set — a VALUE-LESS release build in the tree; the window rebuilds each host's dist WITH its values, as
+     the recipes do, Task 9's probe; `worker/gen` and `worker/assets` by `cd worker && npm run build`).
 
 - [ ] **Step 9: Commit — two commits.**
 
