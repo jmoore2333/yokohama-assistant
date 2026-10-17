@@ -3755,3 +3755,46 @@ guidance, the edge copying the nonce onto the script it injects and its parser's
 margin, the tunnel freeing a closed tab's slot, the 408 through the edge, the edge's answer to a stream 429, a stored
 format character on the NAS volume, a public `why` to time, and the release builds, the pool after the bump, the
 image smoke under Docker and the roster.
+
+### The run (Tasks 1–9), 2026-10-15 → 2026-10-17 — what each task's review found
+
+Every task by SDD (Opus implementers for 1–6 and 9, Sonnet for 7 and 8, Opus reviewers on `git archive` exports; the
+briefs cut from this plan by the skill's script; every implementer probing the brief's blocks before reporting, so
+every task reported DONE_WITH_CONCERNS and every concern was corrected in THIS plan first, then transcribed). Task 1
+(`dca93360`, `ddde1c82`; one round): the slot's drop traced over a real socket; the lobby's cap named. Task 2
+(`092f6f2c` … `47d2db45`; one round): the deadline at the one read site, the 408's sentence tied to its figure
+(M25/M25a). Task 3 (`30a14af6`, `7f16fb04`, `8f8874ea`; one round): `check_name` on writes, `check_stored_name` lenient
+(the plan review's C1), `check_text`'s length rule's order (M32a–d). Task 4 (`99723c6d` … `3ba77827`; one round): the
+tag and its salt, the corpus regenerated ONCE, the Worker's replay exemption. Task 5 (`0072e80e` … `dd583791`; one
+round): the 429 arm, `finish`, the visibility guard, the lobby's `ended` state (C5's sentence kept), the tag label.
+Task 6 (`25d18ff4` … `b446edec`; no round): `why::locate`, the record-built answer, the route-walk cell under the
+debug-armed DFS counter. Task 7 (`291b9e35` … `2fd7263f`; one round): `claimRedacted` by echo-equality, the `g`
+flag, `BROWSER_UA` from any directory in the clone, the survivors. Task 8 (`d921d078`, `6aed2916`; one round):
+cloudflared's access blocks, the README's recipe, `update.sh`'s flags, the RUNBOOK's create body, the ledger's rows.
+Task 9 (`3f0779b3`, `f97e1be2`; no round): `enforce` with the alphanumeric nonce, the harness forgiving nothing, the
+smoke and assembly cells on the enforced name, the bump to 0.6.3 (the lock's nine lines; the corpus's version lines —
+the second and last corpus move). The plan commits between them (`63a7df27` … `cd6cac36`, `67e26a1c`) are the
+corrections' places in the text above; the SDD ledger `docs/temp/security-review-2026-10-08/s2c-sdd/progress.md` holds
+every ruling (D-1–D-15 and the run's).
+
+### The after review (Task 10 Step 4), 2026-10-17
+
+The orchestrator's re-derivation at `6aed2916`: the seven fence crates untouched since `2ea0edf3`; the CLI moved in
+`src/why.rs` alone; `SEMANTICS_REV` 7; the version 0.6.3 in the three manifests; the lock 9 insertions and 9 deletions;
+the corpus moved in 10 files (Task 4's tag, Task 9's version). The battery (one Opus agent on an export of `6aed2916`):
+66 of 68 named mutants RED in all 78 applied forms, 0 green where red was expected, 2 structurally impossible (M10,
+M39) as this plan says. The wave (one Opus implementer in the tree): 40 items — the task reviews' deferred minors and
+the re-read's three stale sentences — in `55eef3e0` (docs and comments), `6fb2c7c4` (the test rows) and `7077ad70`
+(`End.sentence` required; Task 5's C5); its re-review (Opus, on an export) approved all 40 and found ONE Important in
+the fix diff — the root README's two NAS passages written "from the window on", FALSE at the close (the owner's rule:
+a committed sentence reads true the moment it is committed) — fixed in round 2, `4ec68e0f`, with three Minors; the
+round-2 re-read left one clause (the `End` doc's edge-challenge sources), taken by the orchestrator as `ed8c7f6f`
+(a Minor never extends the loop; the stack review's lenses 3 and 4 both read `signal.ts`). The suites at `67e26a1c`
+(one sequence, 23 rows, 33 min): web 557 (lib 519; `wire_fixtures` 18 clean without the flag), wasm 10, worker 81, the server-feature `identity::` slice 9, the wasm32 check clean; web typecheck clean, vitest 1,527/73, `test:wasm` 374/16, `npm run e2e` 81 passed (8.4 min); worker typecheck clean, `test:scripts` 593/29, the pool 250/13; core 1,587 / 29, the CLI 863 / 2, oracle 191, difftest 52 / 5, bridge 81 + four node suites, eval_probe 214, solver 132, workspace clippy clean. the fifteen-gate roster RE-RUN at `ed8c7f6f` (the roster crates byte-identical to the bump commit `f97e1be2` but for `why.rs`'s doc lines — D-10), ONE uninterrupted sequence, alone, release binaries pre-built, Mac17,3 Apple M5: **478s** total (fuzz 50s, census 2s, observation 4s, action_equiv 26s, action_worst 1s, arena 22s, policy_div 6s, evaluator 251s, architecture 46s, recovery_lib 24s, piped_dogfood 12s, differential 27s, routes3_diff 2s, scoring_diff 2s, routes3_worst 3s); ≤ 420 s stays crossed — OD-6.
+
+### The re-read of S2a's and S2b's deferred lists (D-14), 2026-10-17
+
+Inside the wave: 89 ledger rows (`docs/temp/security-review-2026-10-08/s2c-sdd/deferred-lists-s2a-s2b.md`) read
+against the head; 3 stale sentences taken in `55eef3e0` (the S2a/S2b re-read's three: the sentences this plan's
+corrections had already made false); every test and design note left recorded, each with its verdict in
+`s2c-sdd/wave-report.md`'s table.

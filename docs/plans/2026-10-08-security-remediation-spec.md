@@ -511,6 +511,25 @@ The brainstorm of 2026-10-10 settled seven questions; the plan transcribes them 
    `why_refusals.json` `mismatch` row is a construction and Task 6 moves nothing (decision D-8). Still one
    regeneration per cycle, as §9.3's correction 1 allows — a value moved, not the wire's shape.
 
+**The run's rulings (the gap S2a's Task 9 named, filled at S2c's close, 2026-10-17, from the S1c plan's §"Review record" — the run and the after review entries, verbatim; the plan's spec correction 9 of S2c's §9.8):**
+
+#### The run (Tasks 1–8), 2026-10-10/11 — what each task's review found that this plan did not know (the SDD ledger `docs/temp/security-review-2026-10-08/s1c-sdd/progress.md` carries every ruling)
+
+Every task came back DONE_WITH_CONCERNS and every task's review found something the plan's draft had wrong; each was corrected in this plan at the source and the code transcribed back, so the plan and the code are the same bytes. The load-bearing ones:
+
+- **Task 1 (`d6e12f54`, three fix rounds to `ae89c36c`):** `echo` must be `{:?}` less its quotes, not `str::escape_debug` (an apostrophe and a combining mark broke D-1); the literal 409's `expect` and the uploaded table's unvalidated watcher were unbounded echoes the draft read as safe; the cap's first layer had twenty-two holes — `api.rs`'s struct literals, `busy()`, the Worker's one — closed at the BOUNDARY (`api::error_value`, the one serializer, a side note of the owner's); every `identity.rs` sentence and the seed needed a row; the filter term bypassed `echo`'s escape through the CLI's `parse_filter` (the guard refuses what `echo` would change); the "equivalent" length half of the guard was live (ML, the re-reviewer's one run); three comments false.
+- **Task 2 (`81c28451`, `3080c404`):** cell (b) matched its own literal; the draft's early return in `dispatch` skipped the HEAD strip; a dropped pre-read survived every draft cell (the helper prunes on every exit — the `ReadGate` cell is the catcher); cell (c) held by scheduling, 5 in 5,000 idle; the two axum-native transport routes answered the store's 500 for an unsafe id (→ Task 4).
+- **Task 3 (`31aab954`):** `/api/games` could not tell M13 and `/api/nothing` is the adapter's, not the fallback's; the arm's order was unpinned; "streams" had no cell; and a HEAD RAN A WRITE ARM — pre-existing, HIGH, the creator's HEAD of a game deleted it (→ Task 4, the ledger's B13).
+- **Task 4 (`60882323`):** cell (b)'s clock started after the yield and never failed under M17; M18 reads a 401 after ~1.4 s, never a 503; C6's 404 reached the Worker's socket upgrade (an unsafe id refused as an unknown id's, 4404 — the ruled patch).
+- **Task 5 (`b6743f23`, `ab7808ed`):** the draft's first cell failed correct code (two emails' segments begin with `.`); seven sites spelled the legacy segment (the fixtures pin among them); `corpus.gen.ts` is gitignored; `node:crypto` fails the pool's typecheck; the recipe needed `--remote`; and the recipe had two holes the window would have hit — a bare `mv` nests silently, and a collided folder cannot be split by a sender the files never name (the allow-list table first; the NAS move guarded between the swap's stop and start; R2 after the deploy with the new key read first).
+- **Task 6 (`0ec32142`, `8db7cc5c`):** the drifted-record construction never reached the route (the bot's last move was forced and the rebuild refused the stale digest — the last DECISION, re-stamped); Review Focus 5's game-over half was unpinned; four doc sentences would have stated the leak.
+- **Task 7 (`e456def3`, `0a965f37`):** "read by nothing" was false of the legacy function; the Worker's 4404 holds for names of at most 64 bytes (a longer name is the house's unupgraded 404); "every caller value goes through `echo`" is false of a library's own sentence (the cap bounds it); four neighbouring sentences were false.
+- **Task 8 (`eea894a1`):** 0.6.1, the version alone, every suite at the head (the figures in the PR and the ledger).
+
+#### The after review (Task 9 Step 5), 2026-10-11 — the orchestrator's own, at `eea894a1` and the wave's `30088995`
+
+The read-only half at the code head: the six fenced crates byte-identical to `680737e5`; the CLI's diff `screen_model.rs` alone; the Worker crate's `receipt.rs` alone; `SEMANTICS_REV` 7; the corpus moved in six files — Task 5's three `path` values and Task 8's version fields — and nothing else; the echo grep over eight files reads only the known left-alone sites; no raw path echo; `tables.rs` holds no `lock_for(` outside its tests; `no_store` is a `.layer`; `UntilLast` wraps the table stream and `house_stream` is untouched; the permit condition exactly `is_replay_route && resolved.is_ok()`; `caller_segment` the legacy mapping cut at 48 plus the digest over the normalized key, `legacy_caller_segment` called by `caller_segment`, the subcommand and its cell alone; `refused_at` reads `visibility_of` with the mismatch's seat; `answer`'s four guards read the folded method; `events_at` refuses an unsafe id at its head. The one fix wave (`30088995`): eight MUST items and eight optional ones, every catcher red, MG failing with a message in 5 s; its re-review clean with two Minors and a doc clause parked for the stack review's commit. The mutant battery (every named mutant, about forty, on an export of the wave's head) was still running at this close; its report lands in `docs/temp/security-review-2026-10-08/s1c-sdd/battery-report.md` and the wrap session reads it, ruling on any survivor, before the merges. The fifteen-gate roster at `04713bed`: 484 s on the Mac, one uninterrupted sequence, release binaries pre-built (the per-gate walls in the ledger).
+
 ### 9.6 — 2026-10-11, S2's brainstorm and S2a's plan: the three-cycle split, the owner's twelve rulings and the four taken at the plan review, eleven decisions, six adjudications and twelve corrections
 
 S2a's plan (`docs/plans/2026-10-11-security-s2a-browser-fences-plan.md`) transcribes the brainstorm of 2026-10-11 — S2 cut into three cycles between the hosts, and the owner's twelve rulings (X1–X6 and A1–A6) — with the owner's rulings on the plan's four flagged decisions at its review (D-7 taken, D-8 done live with the owner, D-2 and D-1 standing as proposed) and the plan review's six adjudications (AD-1–AD-6); it takes eleven decisions of its own and makes twelve corrections of this specification, recorded forward. The three sections follow VERBATIM, as the plan reads at `7d7c6dec` — unchanged since `5a03a609` but for one numeral, D-8's citation of W-1 corrected to `worker/RUNBOOK.md` §20 on 2026-10-12 (Task 7's concern 4); every other correction the run made at the source moved the plan's other sections — so what follows is what the cycle executed. The run's rulings are the close's paragraph after them (the plan's Task 9 Step 6), as §9.4's 2026-10-10 paragraph was S1b's.
@@ -713,6 +732,18 @@ and nothing re-opens them. The owner's words are quoted where they were given.
     in this release and by both in the next.
 12. **The wire corpus moves in S2a** by one new contract file (`id_cases.json`, Task 5) and the version fields
     (Task 8); §6's "once, in S1" was S1's.
+
+**The run's rulings (the gap S2c's plan review found — its correction 13 — filled at S2c's close, 2026-10-17, from the S2a plan's §"Review record" — the run and the after review entries, verbatim):**
+
+#### The run (Tasks 1–8) — what each task's review found that this plan did not know
+
+**Shape.** Tasks 1–8 on `security-s2` from `5a4c9444` to `4101fada` (2026-10-12, one session): implementers Opus but Tasks 5 and 6 (Sonnet), reviewers Opus throughout; every task's cells green on the plan's blocks at its first run; every task but 4 and 8 reported `DONE_WITH_CONCERNS` and every task but 4 and 8 needed one fix round — and every concern and every Important was corrected IN THIS PLAN first, then transcribed (the ledger `docs/temp/security-review-2026-10-08/s2a-sdd/progress.md` carries each as a `Ruling:` line). The tree held one writer at a time; Task 5 ran beside Task 4's review and Task 6 beside Tasks 4 and 5's, on exports.
+
+**What the reviews found that this plan did not know.** Task 1: the two reader comments claimed the JS and Rust readers refuse the SAME value shapes — `http` 1.5.0 admits a tab and an empty value (C-1); then a lone-surrogate escape and a 65,536-byte name passed `parseHeadersJson` and stopped Rust, and `p.length === 2` had no row (I-1) — the reader made EXACT (`isWellFormed`, `HEADER_NAME_MAX`, the arity, five rows); the stamp cell's `toContain` passed `'unsafe-inline'` appended in `vite.config.ts` (I-2); an invalid UTF-8 byte passed `readFileSync(.., "utf8")` and stopped the NAS — the strict file reader `readHeadersText` for every read by the tooling (C-2); and the orchestrator's own sentence that `readFileSync` drops a BOM was false (C-3). Task 2: the guard threw a stack trace on an unreadable `headers.json` instead of naming it (C-1); its `_headers` arm sat inside the loop over `worker/static`'s files, so a tree with no static `_headers` was never held — the arm moved outside, the cells made exact one-sentence (I-1, m-1); the Worker's `no-store` reason was the NAS's — a routed request reaches the Worker before the zone's cache (I-2); no row sent `/api` exactly (m-2). Task 3: a comment cited line numbers the task itself moved (C-1); the cell's doc promised a 401 row no row sent — the header-less `GET /api/games` added (C-2); the binary cell never read the present arm's stderr and read "once" as `contains` (I-1); the scratch trees not removed (m-3). Task 4: the override's comment said the harness does not read `info` lines — the task made it read them (C-1); the regex's `report-only` clause had no catcher (C-2); the harness's `expected` status filter could swallow a CSP line whose hash spells the digits (C-3) — approved after the pre-review fix, the two framed cells green on the real binary. Task 5: the extended route comment said "lobby" where the code says door (I-1); `isSafeId`'s "arm by arm" named five of six arms (I-2). Task 6: the guard's own header spelled the two-step deploy (C-2); the instrument cell pinned the order the calls START, not that the clear finishes (I-1); "run `npx wrangler whoami` once" was advice that does nothing (I-2); the ignore cell's re-inclusion pin and the shim dirs (m-1, m-2). Task 7: a stale clause and a wrong wrap-options list in this plan's own Task 7 text (concerns 2, 3); D-8's W-1 citation §21 for §20, copied verbatim into §9.6 (concern 4); the §9.6 intro's identity claim (the implementer's second concern); the README's `workers.dev`-under-`open` bullet (I-1). Task 8: approved; the brief's README line numbers were master's. Deferred minors not taken by the wave are listed in the ledger's "not taken" paragraph and the after-review entry below.
+
+#### The after review (Task 9 Step 5)
+
+**The orchestrator's own, on the tree at `4101fada` and an export.** The fences: `git diff 1e9c092d` over the eight crates EMPTY; `SEMANTICS_REV` 7; the corpus moved by `id_cases.json` (new), `contract.ts` and Task 8's three version files. Every row of §"Task 9 Step 5" re-derived from the code: `cspOf` carries `'wasm-unsafe-eval'` and no `'unsafe-…'`; `isApiPath` is `/api` exactly or `/api/…`, `withApiHeaders` returns a 101 as it came, `handle` wraps `/api` alone; `production` reads the file with `?`, `with_dist` with `expect`, the layer by `from_fn_with_state` on the whole router; `shellResponse(hit)` with the three-name `NOT_CARRIED`; `main.tsx`'s branch; the override through `readHeadersText` with `CSP_MODE` untouched; `isSafeId` on the decoded id; `headers.json` skipped at the copy and refused when absent; the guard's `open` skip gone, the sibling arm, `readHeadersText`; `leaveNoSession` clear-then-close; the three deploy lines naming one file three times. The live shape measured: the release client's `dist/headers.json` and the assembled `_headers`' `/*` block name the SAME six, and the local binary's `/shell.bin` carries them in the same order (plus its own `cache-control`), `/api/health` the set with `no-store` and `nosniff`. **The battery** (one Opus agent on an export of `4101fada`): all 78 named mutants — M1–M38 and every lettered variant — red where this plan names them, 0 findings; the three e2e mutants through the framed spec. **The wave** (`final-wave-brief.md`): sixteen deferred minors triaged in — the reader sentences made true and both readers refusing a repeated name (A1–A6), the unreadable-file arm and the layer's `insert` pinned and B3's sentence (B1–B3), the assembly's strict-reader cell and three sentences (C1–C4), the framed cell reading the policy's VALUE, console lines labelled by type and "enforced at `error`" scoped (D1–D3) — three commits `ee2f4868, 52939c39, af7f30d5`, re-reviewed clean; four wording residuals PARKED with their true forms in the ledger (two sentences of the ruling's own in `headers.mjs`, two echoes of B3's cause in `lib.rs`, and D2's label unpinned). **The readings at the final head** (`suites.sh`, 1,657 s): the per-edit suites and the lane's rows as the 2026-10-12 guidingpath row lists them, the e2e 81 passed (6.4m); the roster at `4101fada` 487 s. Nothing load-bearing is open.
 
 ### 9.7 — 2026-10-12, S2b's brainstorm and plan: the owner's rulings R-1–R-6, thirteen decisions and twelve corrections
 
@@ -1003,3 +1034,266 @@ long-lived; B6's "shorten/rotate" half reads `accepted`) stand from 2026-10-11 u
 **S4's identity input, revised on the owner's words (2026-10-12, after S2b's close; supersedes correction 8's open-door shape for the public deployment):** the public Worker will run a B2C auth provider (Auth0, Clerk, Stytch or the like) behind the Turnstile — the enrolment or sign-in flow greets a player on the way to multiplayer — and it is ONE OR THE OTHER per deployment, never Access and a provider side by side: "we would just have one or the other — since we would be ready soon to move this over we would keep access running until we're ready to switch — not a problem if it goes open for some period during testing — in that brainstorm we would review the providers and pick which would integrate cleanest and then it would be live under that model for the duration of the dev until we go live (and afterwards). I would note, access provides a much stronger protection over a B2C provider since it abstracts out the worker serving any auth code, cloudflare intercepts it on the first access at their perimeter, but it should be straightforward to integrate." The architecture's reading, for the S4 brainstorm: the provider's identity is a verified ADDRESS, so it takes the layer's `worker` door unchanged (R-SEC5's groundwork — the S2b controls lean on no Access); the new work is the shell's second verifier arm, a Worker-minted session cookie (an `EventSource` and a WebSocket upgrade carry no header), the client's sign-in flow after the Turnstile, the header set's allowances if the login is embedded, and the deploy guard's second identity (D-7); the open door stays the self-hoster's and LAN mode (R-2), not the public path. Access stays live on the private Worker until the switch; a period open during testing is accepted.
 
 **The order from here, and the auth cycle's place (the owner, 2026-10-12, after S2b's close):** the first window (`v0.6.2`, from the tag's tree) and S2c with S2's wrap (0.6.3 enforcing; the stack review; the merges; the second window) — THEN the auth cycle, its own branch from master after S2's wrap, stacked under nothing, its brainstorm reviewing the providers and picking the one that integrates cleanest — THEN S3 stacked on it, reading its hosts-and-operations rows (B11 and D22 among them) against the deployment model that will ship — then S4. Why that slot: the provider model should be live for the rest of the development, so the earlier it lands on a clean baseline the more of S3's live readings run under it; S3's Access-shaped rows are decided once; and the session cookie, the token handling and the client flow are a new surface that S3's lens and the S4 pre-public review then both read. Placing it inside S2's stack would enlarge the stack review and confound the enforcement reading and the second window. **Access is not retired:** it stays an OPERATING provider — a self-hoster may want it, and the owner expects to keep an additional Worker on Access for personal use and development — so the shell keeps both verifier arms and the door is one model per deployment, never both on one Worker (the paragraph above). §9.2's stacked-branch rule reads with this insertion: S1 → S2 → the auth cycle → S3, each stacked on the merged tree before it.
+
+### 9.8 — 2026-10-13 and 2026-10-15, S2c's brainstorm and plan: the owner's rulings R-1–R-8, fifteen decisions and thirteen corrections (appended at S2c's close, 2026-10-17, from `docs/plans/2026-10-13-security-s2c-nas-identity-plan.md`'s first three sections, verbatim)
+
+#### The owner's rulings for S2c (2026-10-13), and what each binds
+
+The brainstorm of 2026-10-13 settled this cycle's eight forks (the eighth on 2026-10-15) from first principles; the plan transcribes them and
+nothing re-opens them. The owner's words are quoted where they were given.
+
+- **R-1 — B10: host half only, the code half ACCEPTED.** cloudflared's `originRequest.access` (`required: true`,
+  the team name, the AUD tag) on both ingress rules; a Docker network only `yokohama-web` and `cloudflared-nas`
+  join; `CapDrop: ALL`, `no-new-privileges` and a memory limit on the container; the README's one rule rewritten
+  as that recipe with a negative probe; nothing enters the dependency tree. The owner: "host half only, code half
+  accepted - noting that my surveys tell me most homelab users will not be using access at all, but we're including
+  it to maintain parity and in the event they want to host this somewhere more robust they can leverage the
+  identity work we're doing already." The reasoning the owner asked for and accepted, recorded for the public
+  reader: the code half uniquely closes one path, a request reaching port 8080 without passing cloudflared, which
+  on this NAS the private network closes for nothing and which a tunnel-based self-hoster meets only by publishing
+  the port by accident on a LAN, where the open door already makes every name a claim; a verifier would add an
+  outbound TLS dependency at boot, a JWT parser on every request, two required variables and the first C/asm build
+  in the musl binary (`ring`), about 20 crates on a server half of 80; Cloudflare's own guidance requires origin
+  validation "unless your application is connected to Access through Cloudflare Tunnel", which is this recipe. The
+  owner's words on the tree: "I'm a bit wary of adding so many new dependencies, right now the project is extremely
+  lean on dependencies"; "I'm reticent to add a C/asm build into this". **This is the owner's amendment of R-SEC4's
+  sentence** ("what protects them is the origin verifying the assertion, and cloudflared's `access.required`"): the
+  controls are cloudflared's validation and the private network; the re-open trigger is a NAS hostname served
+  without Access, or a real self-host population asking for the binary to defend itself (the zero-dependency
+  trusted-proxy peer check is the recorded cheap shape, not taken). The reserved mode name `cf-access-jwt` is
+  retired as a reservation (Task 8). Binds Tasks 8 and 10.
+- **R-2 — D8: the per-room salted tag, and the character rule.** Watcher and house authors carry a tag the server
+  derives from a per-document salt and the caller's key, drawn `name · tag`; table names, watcher names and chat
+  text refuse control, format and line-separator characters. The owner's note, transcribed because it bounds what
+  the tag promises: "after S2 closes we are looking at adding another identity provider option … but people can
+  still choose to not use access or auth0 or anything else in the identity layer at all in their build/deploy stage.
+  So for those that have no identity provider, they would still just put in their name and there wouldn't be a
+  problem with having that per room salted tag, even though players can just use whatever name they want to claim
+  someone else's identity, using a different 'attack' vector, but achieving the same end result - granted that's a
+  known and accepted risk for those where their environment has no need for identity verification." Under the open
+  door the tag says "the same key as before" and nothing more; the plan's sentences say so (Task 4). Binds Tasks 3,
+  4 and 5.
+- **R-3 — HI-F2 accepted as documented.** No code: the ledger's B1 row gains the reasoning (the only party is the
+  player; the archive keeps the first finished record and answers a different one under the same key with 409;
+  the three documents already state the solo exception). Binds Task 8.
+- **R-4 — the residuals.** S2c takes: the lobby's silent cap refusal (AD-4) folded into D3's client arm;
+  `claimRedacted` rewriting only a span equal to the raw claim, with a configuration-refusal row, and the `g` flag on
+  `redactKey`; the `BROWSER_UA` recipes; the §9.5 gap; the lane's §1 and §14 deployed-state sentences; and the FIVE
+  surviving comment items the orchestrator read at the head (`crates/yokohama-web/tests/wire_fixtures.rs:2998`'s
+  "these two" over a four-row list, false; `worker/src/index.ts:114`'s "in this order" list, to verify;
+  `web/src/wire/contract.ts:447`'s `IdCase` undocumented; `web/scripts/headers.mjs:177`'s parse refusal naming
+  neither the new reasons nor the name bound; `worker/src/index.ts:84`'s 143-character line). *Read at the code by
+  the plan review (2026-10-15): `headers.mjs:177`'s refusal already names the bound and omits only 'non-empty';
+  `index.ts:114`'s list is true as written and needs no edit; `index.ts:84` is 143 characters.* It reads at the window:
+  the `limiter-failed` line's `String(e)`. It leaves recorded where they are: the open-door write key and the
+  seat-key rule (S4's, D-2/D-3 of S2b), the lobby's total arm, the copied pool helpers, the two one-row loops, and the
+  test and design notes of both SDD ledgers. **And a standing step for the launch:** before the tag, the after review
+  re-reads every deferred list of S2a, S2b and S2c against the head and takes any surviving sentence that is false
+  or stale, leaving only test and design notes behind — the owner: "others may not have access to all the spec/plan
+  docs that we have when we move this to public so it would be important to have the comments in code and docs
+  that are 'final' to be reflective of their actual state." Binds Tasks 5, 7 and 10.
+- **R-5 — AD-6 stands: a Rate Limiting binding that throws is logged and the request proceeds.** The limiter is a
+  cost bound, not an access control; the window reads the count of `limiter-failed` lines, expected zero. Binds Task
+  8 (the ledger's C2 row) and Task 10 (the window).
+- **R-6 — the wrap ships `enforce` with a FIXED NONCE; "accept the refusal" is the recorded fallback.** Cloudflare
+  reads a nonce from the response's CSP header and sets it on the scripts it injects (its JavaScript detections
+  documentation), so a static header with a committed nonce keeps Bot Fight Mode's detection script running and the
+  console clean; the policy's inline-script rule becomes nominal while its source lists and `frame-ancestors` stay
+  strict, which the constant's comment says. If the first window's Report-Only reading shows any line but the known
+  detection script, STOP for the owner before Task 9; if the second window finds the injected script without the
+  nonce, the fallback is one constant and the harness's forgiveness at `error` (Task 9's recipe). `'unsafe-inline'`
+  is dominated by the nonce; `Cache-Control: no-transform` is out because it also stops the analytics beacon the
+  owner keeps on. Binds Tasks 9 and 10. *Re-pointed by R-8 (2026-10-15): there is no first window and no
+  Report-Only reading; the STOP and the fallback are read at the one window's NAS canary, under the enforced policy
+  (D-15), before the Worker deploys.*
+- **R-7 — NO pre-flight this cycle; the body-read deadline stays.** The owner asked whether the pre-flight earns its
+  cost when the task agents run that work anyway: this cycle has no figure to measure (the caps mirror the Worker's,
+  the deadline and the nonce are constants, the Cf count is pinned by the cell that transcribes it), and the
+  one-token transcription slips it caught in S2a and S2b are what the implementer's own probe catches one task later
+  at the same cost. X4 was S1c's shape for a cycle with figures to measure, not a standing step. The plan review's
+  lenses still EXECUTE the plan's blocks (R-1's method, where the real finds came from), and the implementers probe.
+  The deadline: the binary applies no read deadline of any kind today (`axum::serve` sets no timer, so hyper's
+  header timeout is off, and nothing bounds a body's arrival); a 10-second deadline at the one read site turns an
+  unbounded hold into a rate, which the edge and the caps already bound — "a small bound against a small risk, of
+  the kind a binary meant for strangers' LANs should carry". Binds Tasks 2 and 10.
+- **R-8 — the two windows are folded into ONE (2026-10-15), re-ruling X2 of 2026-10-11.** The owner opened the
+  session with "we can update this plan as you review so that we run the 0.6.3 in this cycle", accepting the
+  previous session's close recommendation, transcribed because it fixes the window's order: "At the 0.6.3 window,
+  deploy the NAS first and read the console on a fresh profile at every level before the Worker is touched. The NAS
+  sits on the same zone, so it meets the same injections, and only you use it, so an enforced policy that blocks
+  something breaks your own session and nobody else's. A clean NAS read is the wild reading; the Worker's deploy
+  proceeds on it. A line that does appear is the pre-registered fallback, one constant, before the Worker ships."
+  What it changes: `v0.6.2` is never tagged and never deployed (the hosts run 0.6.1 until this window; the next
+  release is 0.6.3); the S2a plan's Task 9 Steps 8–10 are SUPERSEDED, their readings taken inside this window — the
+  header reads, the live acceptance (c), the two-identity block (d) with its two never-read readings (D1, B1's
+  withheld `why`), the deploy records; the Report-Only reading is replaced by the NAS CANARY under the enforced
+  policy (D-15), which gates the Worker's deploy; Task 9 has no window precondition. What it keeps: X2's "nominal
+  amount of work" was the flag, and the flag is Task 9's as before; the release before either deploy; the roster at
+  the bump; the regeneration for the version. Recorded as spec correction 12. Binds Tasks 9 and 10.
+
+**The design the owner approved (2026-10-13), in one line each:** the branch `security-s2c` on `security-s2b`'s head
+`2ea0edf3`, a PR against it, one merge to master at the wrap (X1); ten tasks, Opus reviewers throughout, Sonnet
+implementers for the two documents tasks (X3); D3's figures 8 per caller per room, 64 per table, the house 8 per
+caller and 256 total, OPEN streams only, the (n+1)-th a 429 before any frame; the client ends a signal on a 429 with
+the server's sentence and the lobby draws an ended signal; the body deadline 10 s, 408; the character rule Cc, Cf, Zl,
+Zp with Cf transcribed from Unicode 17.0.0 (the toolchain's own tables, `char::UNICODE_VERSION`) and a count pin,
+multi-person emoji sequences accepted as the loss; the tag four hex of SHA-256 over a per-document salt and the key;
+the withheld `why` built from the record before any search, the withheld-mismatch sentence retired; the wrap's
+mechanics as Task 9 and Task 10 spell them. **Amended 2026-10-15 (R-8):** there is no first window — `v0.6.2` is
+never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10 opens with the NAS as the canary.
+
+#### The decisions this plan takes (the orchestrator's; D-1–D-15)
+
+- **D-1 — the stream caps are a slot the SSE body holds.** `streams::Streams` counts per room and per
+  (room, caller), OPEN streams only: `admit` hands back a `Slot` whose `Drop` decrements both counts and removes a
+  zero entry (B8's lesson: the maps never hold more than the open streams), and the stream adapter `Admitted<S>`
+  carries the slot inside the response body, so hyper's drop of an abandoned connection frees the slot and nothing
+  else can. The verdicts in the Worker's order (`sockets.unit.test.ts`): the room's total first, then the caller's.
+  The refusal is `ApiError::too_many_requests` (429) with one of four constant sentences, answered BEFORE any frame,
+  after the admission read (`api::events_at`) has answered its own 403 or 404, so a cap never masks a refusal about
+  the table. No `Retry-After`: the client ends the signal rather than waiting (D-2).
+- **D-2 — a 429 on a stream ENDS the client's signal.** `web/src/signal.ts`'s stream OPEN (line 479) reads every status but 404, 403
+  and the edge's expired session as "cannot reach the server" and climbs the backoff ladder; a 429 there would be a
+  silent retry storm against the cap, so that arm gains 429 with `reason: "refused"` and the server's sentence. The
+  woken RE-READ (line 316) does not climb the ladder — a failure there keeps the stream and retries on the next frame —
+  and a 429 there is never the cap's (the NAS caps streams, the Worker limits unsafe methods only), so it stays as it
+  is: a transient edge 429 on a listing read must not end live updates (plan review L2-F4). **An end ENDS the
+  effect's run** (the Task 5 review's I-1): at each of `usePolled`'s three end sites — the stream's open refusal, the
+  socket's `end` frame, the re-read's `gone` — a `finish(e)` sets `stopped = true`, lets the link word go
+  (`setLink("live")`) and then calls `onEnd`; without it no end site set `stopped`, the `visibilitychange` listener
+  stayed installed, and a tab hidden and shown again reopened the stream under a standing ended sentence (measured:
+  `opens=2`, the strip still refused over a live stream; and "refreshing…" beside the sentence after a refused
+  reopen). `Lobby.tsx`'s `usePolled` passes an `onEnd` that draws the sentence and stops — which is S2b's AD-4 on
+  both hosts at once: the NAS's 429 reaches `onEnd` as `refused` through the refusal arm, and the Worker's sockets —
+  a table's and the lobby's — end on an `end` frame (reason `gone`, carrying the sentence; closed 4429) that reaches
+  the same `onEnd` through the frame handler with the server's sentence (the Task 5 review's I-2: never `refused`).
+- **D-3 — the body deadline lives at the ONE read site, not in a middleware.** Every `/api` request with a body
+  reaches `adapter` (`lib.rs` line 1049, `to_bytes(body, 2 << 20)`): the catch-all `/api/{*rest}` and `/api/games`
+  route there, and the three separate routes (`events`, `stream`, `house_stream`) and `enter` are GETs. So
+  `tokio::time::timeout(state.body_deadline, to_bytes(..))` at that site covers every body, changes no other
+  answer (a 2 MiB overrun still answers the adapter's own 400), and answers `ApiError::request_timeout` (408) with
+  `BODY_TOO_SLOW` when the deadline passes. The design message of 2026-10-13 said "one middleware"; this is the
+  exact form, and the brainstorm's reasoning (every read site under one clock; GETs, streams and the handler's
+  compute never under it) holds of it.
+- **D-4 — the character rule is Cc, Cf, Zl and Zp, with Cf transcribed in-source.** `text::FORMAT_RANGES` is
+  Unicode 17.0.0's General_Category Cf, 21 ranges and 170 code points, transcribed from the UCD's
+  `extracted/DerivedGeneralCategory.txt` (dated 2025-07-24) — the toolchain's own Unicode version (`rustc 1.97.1`
+  reports `char::UNICODE_VERSION` = 17.0.0) — with a cell pinning the count and the ranges' order; `char::is_control`
+  is Cc (65 code points); U+2028 and U+2029 are Zl and Zp. No crate, since the layer compiles to wasm and the fence
+  covers it. U+200D (the joiner) is Cf, so a multi-person emoji sequence is refused in chat while a single emoji
+  (U+1F642), a flag (two regional indicators) and a variation selector (U+FE0F, category Mn) pass — the loss the
+  owner accepted; the non-joiner U+200C (Persian, Indic spelling) is the same category and refused too — for the
+  owner at the close (O-2). The rule applies through `tables::check_name` (table names, display names, watcher names on WRITE)
+  and `chat::check_text`; a STORED document reads under the rule it was written under — `tables::check_stored_name`,
+  `is_control` alone, at `tables::check_shape`'s two name sites, `chat::check_shape`'s author name and
+  `chat::normalized` — so a document this server wrote before the cycle (a pasted U+200F, a family emoji's joiners)
+  still reads and never answers 500; the new rule meets it the next time the name is written (plan review L1-F1); the client sends text unvalidated and draws the 400's sentence.
+- **D-5 — the tag: a per-document salt the seed policy fixes for fixtures.** `ChatDoc.salt: Option<String>`
+  (serde default), filled on the document's first APPEND after this cycle from `Games::chat_salt()`: 16 bytes of OS
+  entropy as 32 hex under `SeedPolicy::SoloOnly` (every production constructor), and the constant `FIXED_CHAT_SALT`
+  under `SeedPolicy::Diagnostic` (the fixtures, the corpus walk, the pool and `init_diagnostic()` on both wasm
+  hosts), so no constructor on any host changes and the wire corpus and the pool stay byte-stable. The tag is the
+  first four hex of SHA-256 over `salt`, a newline and the key; a document without a salt (written before this cycle,
+  not yet appended to) carries `tag: null` and the client draws no tag. Watcher authors carry it; seat and bot
+  authors do not (a seat is server-bound). Four hex is readable; under the open door a name can be searched for a
+  colliding tag, which the owner's note accepts.
+- **D-6 — ONE additive extraction in the CLI's `why` module.** `account_parts` locates the event (the index `arg`
+  names or the last explainable bot move, by replay), reads the mover and its contestant, THEN decides. The layer
+  must read the requester's visibility between those halves, and `last_explainable_bot_move` is private. The first
+  half becomes `pub fn locate(..) -> Result<Located, Refusal>` and the second `pub fn account_from(Located, ..)`;
+  `account_parts` is `account_from(locate(..)?, ..)` and the CLI's own `why` output is byte-identical (pinned by
+  the CLI's existing `why` cells). This is the one byte under `crates/yokohama-cli` this cycle, recorded as a
+  correction of spec §6's CLI sentence; `cargo test -p yokohama-cli` runs at the task and the roster is owed anyway
+  by the bump (D-10). The alternative, a second "last explainable bot move" rule in the layer, is a second derivation
+  of a CLI fact, which the house forbids.
+- **D-7 — the withheld-mismatch sentence is retired.** With the search run only at `Visibility::Public`, a mismatch
+  can no longer be found while withheld, so `MISMATCH_WITHHELD` and `Why::refused_at` are deleted with their cells,
+  and the structural catcher takes their place: a record whose bot move was tampered answers the WITHHELD payload at
+  a withheld visibility (the old flow answered the mismatch refusal there) and the Mismatch refusal verbatim at a
+  public one. No timing is measured.
+- **D-8 — HI-F2 is a ledger row (R-3).** The B1 row's note becomes `accepted` text with the reasoning; no code.
+- **D-9 — the nonce is a committed constant named for what it is.** `CLOUDFLARE_INJECTION_NONCE` in
+  `web/scripts/headers.mjs`, 22 base64 characters drawn once by the implementer (alphanumeric, AD-13), rides `script-src` as
+  `'nonce-<value>'`; `CSP_MODE` flips to `enforce`; the e2e build's rewrite is an identity on an enforced set and is
+  kept for a report-only build; the harness's Report-Only forgiveness (`isReportOnlyDetectionLine`,
+  `reportOnlyForgiven`) is removed so any CSP line is breakage on every tier. The fallback (R-6, timed by
+  D-15): restore the forgiveness from this commit's parent in the ENFORCED line's words, read at `error`, and drop
+  the nonce token at the next release — never under a published tag.
+- **D-10 — the bump to `0.6.3` is Task 9's last step; the roster runs at the code head after it.** The lane's §7
+  recipe (the five steps); the fixture regeneration for `server_version` and the backup envelope's `app_version` is
+  this cycle's SECOND regeneration (Task 4's is the first), each diff read — the owner's corpus note (2026-10-09)
+  bounds regenerations that change the wire's SHAPE; a version line is mechanical. Spec §5.2 asks the fifteen gates
+  when the workspace version moves (AD-3's precedent: S2a ran them after its bump).
+- **D-11 — no pre-flight (R-7).** Task 10 has no pre-flight step; the plan review's lenses execute the blocks; every
+  implementer probes its brief.
+- **D-12 — the host half's catcher is the window.** `cloudflared tunnel ingress validate` over the new file; the
+  container's `HostConfig` read back from Portainer; the negative probe from the terminal container (a connection to
+  `yokohama-web:8080` fails); the hostnames serving as the owner. cloudflared's validation is CONFIG-READ, not
+  exercised: exercising it needs a request that reaches the tunnel without passing Access, which the design forbids.
+  The deploy record says so.
+- **D-13 — `BROWSER_UA` is added to RECIPES, never to dated records.** The operating sections of `worker/RUNBOOK.md`
+  hold seven recipe `curl` lines without it — §3's operator playbook (497–499), §4's credential read (561), §5's health
+  read (587) and §5's upgrade probes (792–793); §2 has none — and `BROWSER_UA` is already defined once, at §7's burst
+  bullet (line 972 at Task 6's head); `deploy/RUNBOOK.md` §3 already sets its own `UA` and passes `-A "$UA"` on every recipe, and the
+  lane holds no recipe `curl` at all (plan review L2-R7), so neither moves; a `curl` inside a numbered
+  deployment record stays as it was run.
+- **D-14 — the close re-reads the deferred lists (R-4).** Task 10 Step 4's after review walks the three SDD ledgers'
+  deferred and parked items against the head and takes every surviving false or stale sentence before the tag.
+- **D-15 — the canary order at the one window (R-8).** The NAS deploys first, with the enforced policy, and a FRESH
+  profile's first visit to its hostname is read at EVERY console level before the Worker is touched — the NAS meets
+  the zone's injections exactly as the Worker does, and only the owner uses it. Three readings, pre-registered:
+  **(i)** no CSP line, and the injected detection script carries the nonce (`curl -A "$BROWSER_UA" -s
+  https://yokohama-nas.moore.nyc/ | grep -o 'nonce="[^"]*"'` over WARP equals the constant — `deploy/RUNBOOK.md`
+  §3.15 measured the edge's rewrite on every `curl` of `/` through this tunnel — or the browser's VIEW-SOURCE, never the
+  Elements panel, since a browser hides a `nonce` attribute's value from the DOM once a policy is enforced)
+  — the wild reading is CLEAN and the Worker deploys; **(ii)** exactly one CSP line, and it names Bot Fight Mode's
+  inline detection script (the edge did not copy the nonce) — R-6's fallback, "accept the refusal": the token is
+  INERT (an enforced policy blocks that script with the token or without), so the Worker deploys the SAME build and
+  the window continues; the line's text is recorded, the live Playwright tier's one run reports it as the one
+  finding, and the fallback commit lands after the window on master by the owner's word — the harness's forgiveness
+  restored at `error` from the line as read, the nonce constant's comment rewritten to say the edge did not honour
+  it, the token itself dropped at the NEXT release (dropping it under a published tag would change the shipped
+  header); **(iii)** ANY other line — an injection nobody listed, blocked — is the STOP for the owner before the
+  Worker deploys: the NAS is the owner's alone, its rollback is `yokohama-web:0.6.1-s1` with the pre-S2c
+  `HostConfig`, and the enforcement shape returns to the owner with the line in hand. A nonce present and a CSP line
+  printed matches neither (i) nor (ii) and is (iii). The Worker's own console read
+  after its deploy takes the same three readings; a Worker reading that differs from the NAS's is itself a finding
+  (one zone, one header set).
+
+#### Spec corrections (to be recorded as §9.8 by Task 10, dated 2026-10-13 and 2026-10-15)
+
+1. **R-SEC4 is amended by the owner (R-1):** B10's code half is `accepted`; the controls behind Access are
+   cloudflared's `access.required` and a network only the tunnel joins; `cf-access-jwt` is not built, and spec §2.2's
+   B10 (code half) row reads as the host half's recipe plus the README's rule.
+2. **D3's NAS half** is `8` per caller per room, `64` per table, the house `8` per caller and `256` total, OPEN
+   streams only, a 429 before any frame; the client ends a signal on it (D-1, D-2).
+3. **"The body read timeout"** is a 10-second deadline at the adapter's one read site, answering 408 (D-3).
+4. **D8's fix** is the Cc/Cf/Zl/Zp rule with Cf transcribed from Unicode 17.0.0, and a per-document salted tag on
+   watcher and house authors (D-4, D-5); the report's "label house-chat names as self-chosen in the client" is met by
+   the tag.
+5. **The explain surface's two rules:** the withheld `why` runs no search (the visibility is read first; the payload
+   is built from the record; `MISMATCH_WITHHELD` retired, D-6, D-7); HI-F2 is accepted (R-3).
+6. **§6's CLI sentence** ("the CLI is touched only at `suggest::stream_seed`") gains S2c's one extraction in
+   `crates/yokohama-cli/src/why.rs`, behaviour-preserving, nowhere the bot decides (D-6).
+7. **X4's pre-flight is not run this cycle** (R-7); the plan review's executing lenses and the implementers' probes
+   are the pre-run checks.
+8. **The enforcement shape** is a fixed nonce (R-6, D-9); "accept the refusal" is the recorded fallback; `0.6.3`.
+9. **§9.5's gap** — S1c's run's-rulings paragraph never appended — is filled by this close from the S1c plan's
+   §"Review record" (Task 10 Step 5).
+10. **AD-6 is confirmed by the owner** (R-5).
+11. **The corpus regenerates twice this cycle**, Task 4's for the tag and Task 9's for the version, each diff read
+    (D-10).
+12. **X2 is re-ruled by the owner (R-8, 2026-10-15): ONE window and one version.** §9.6's X2 ("two windows, two
+    versions… S2a ships `0.6.2` with the policy in Report-Only; the wrap ships `0.6.3` enforcing"), its correction 1
+    ("Two windows and two versions"), its correction 11 ("`frame-ancestors 'none'` rides the Report-Only policy in
+    0.6.2") and §9.7's "the first window (`v0.6.2`, from the tag's tree)" read with this: `v0.6.2` was built (S2a's
+    Task 8) and never tagged or deployed; the hosts go from 0.6.1 to 0.6.3 in one window; the Report-Only reading is
+    replaced by the NAS canary under the enforced policy (D-15); S2a's live acceptance (§5.3 for S2a) and the
+    two-identity block's readings are taken in that window; B4's frame fence is `X-Frame-Options: DENY` alone until
+    0.6.3, and both headers from it. The same fold reads §2.2's "the CSP" row ("shipped as
+    `Content-Security-Policy-Report-Only` for one release, then enforced … a release's console read") as one release,
+    0.6.3, enforced at its first deploy, and §9.7's "the second window" (the R-SEC6 clarification's "S2's second window
+    included" and the closing paragraph's "the second window") as the one window.
+13. **§9.6's gap** — S2a's run's-rulings paragraph, which the S2a plan said was the close's (its Task 9 Step 6),
+    never appended — is filled by this close from the S2a plan's §"Review record" (the run and the after review),
+    as correction 9 fills §9.5's (Task 10 Step 5; the plan review's AD-12, 2026-10-15).
