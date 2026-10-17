@@ -7142,22 +7142,28 @@ mod tests {
         assert_eq!(b["ok"]["provenance"]["index"], n);
     }
 
-    /// **Through the route, on a DRIFTED record** (Review Focus 5; decision
-    /// D-7): a vs-bot game is played through the bot's first turn, the bot's
-    /// last DECISION — its last move whose position offered another — is
+    /// **Through the route, on a DRIFTED record** (Review Focus 5; decisions
+    /// D-6, D-7): a vs-bot game is played through the bot's first turn, the
+    /// bot's last DECISION — its last move whose position offered another — is
     /// swapped for ANOTHER member of the legal list at that position, the
     /// record cut after it, re-stamped and written back, and the handle
     /// rebuilt from the store; `why` at that event, asked by the human while
-    /// the bot's starting order is hidden, is a `mismatch` refusal naming no
-    /// move. The construction is measured to reach `Refusal::Mismatch`: with
-    /// `refused_at` stubbed as `refused`, this cell read the CLI's sentence,
-    /// both moves named (at one run, event 3). The table's bot stream is
-    /// OS-entropy seeded, so each run's bot decides under its own seed; the
-    /// search for the event is what keeps the cell independent of which. The
-    /// mutant that serves `refused` regardless names the reconstructed move in
-    /// `Debug` form, which the cell reads for.
+    /// the bot's starting order is hidden, is the WITHHELD half (security
+    /// S2c): the visibility is read before any search, so no reconstruction
+    /// runs and the drift is never reached — the payload names the move the
+    /// record holds at that index and nothing a search would have found, the
+    /// reconstructed move's `Debug` nowhere in the body. The construction is
+    /// asserted to reach `Refusal::Mismatch` (the CLI's own `account_parts`
+    /// over the drifted record), so the mutant that runs `account_from` before
+    /// the visibility read answers the mismatch refusal here and fails the
+    /// "withheld, not refused" line (M38). **A pre-search refusal still
+    /// reaches a withheld requester** (the plan review's AD-14): at the same
+    /// visibility, `why` at the human's own move reads `human_seat`. The
+    /// table's bot stream is OS-entropy seeded, so each run's bot decides
+    /// under its own seed; the search for the event is what keeps the cell
+    /// independent of which.
     #[tokio::test]
-    async fn a_why_on_a_drifted_record_names_no_reconstructed_move_to_a_withheld_requester() {
+    async fn a_why_on_a_drifted_record_is_withheld_from_a_requester_who_may_not_see_the_account() {
         use yokohama_core::{get_legal_moves, state_at, GameRecord, RecordedEvent};
         let store = Arc::new(MemStore::default());
         let state = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Open));
@@ -7204,31 +7210,75 @@ mod tests {
         // both digests), so the drifted record is stamped over its own end.
         let end = state_at(&record, k + 1, &rules).expect("the drifted record replays");
         record.stamp_terminal_digest(&end);
+        // The drift IS one: the CLI's own `account_parts` over the drifted
+        // record, under the seed its provenance carries, refuses event k as a
+        // mismatch — so the withheld answer below is the visibility's doing,
+        // never a reconstruction that happened to agree.
+        let cli = yokohama_cli::repl::Repl::new(
+            yokohama_cli::session::Session::from_record(record.clone(), rules.clone()).expect("the drifted record loads"),
+        );
+        let reconstructed = yokohama_cli::why::account_parts(cli.session.mode, cli.session.record(), &rules, cli.bots(), Some(k));
+        assert_eq!(reconstructed.err().map(|r| explain::kind_of(&r)), Some("mismatch"), "premise: the drift reconstructs as a mismatch");
         store.write_if_version(Doc::Record, "drift", &serde_json::to_string(&record).expect("json"), Some(version)).expect("written back");
         // The restart: a fresh state over the same store rebuilds the handle.
         let restarted = Arc::new(AppState::with_store(Arc::clone(&store) as Arc<dyn Store>, identity::IdentityMode::Open));
         let (status, why) = get_as(&restarted, "blue@wire.test", &format!("/api/games/drift/why?event={k}")).await;
         assert_eq!(status, StatusCode::OK, "{why}");
-        assert_eq!(why["refusal"]["kind"], "mismatch", "{why}");
-        let message = why["refusal"]["message"].as_str().expect("a sentence");
-        assert_eq!(message, explain::MISMATCH_WITHHELD.replace("{index}", &k.to_string()).replace("{seat}", "0"));
-        assert!(!message.contains(&format!("{decided:?}")), "{message}");
-        assert!(why["ok"].is_null() && why["withheld"].is_null(), "{why}");
+        assert!(why["withheld"].is_object() && why["refusal"].is_null() && why["ok"].is_null(), "withheld, not refused: {why}");
+        assert_eq!(why["withheld"]["provenance"]["index"], k, "{why}");
+        // The reconstructed move's `Debug`, escaped as the body escapes it.
+        let debug = serde_json::to_string(&format!("{decided:?}")).expect("json");
+        let debug = &debug[1..debug.len() - 1];
+        assert!(!why.to_string().contains(debug), "{why}");
+
+        // **A pre-search refusal still reaches a withheld requester** (AD-14):
+        // the human plays one move of its own, and `why` at that event — the
+        // bot's card still hidden, `?event=k` still withheld — reads
+        // `human_seat`, which `locate` raises before any visibility is read.
+        let (_, frame) = get_as(&restarted, "blue@wire.test", "/api/games/drift").await;
+        assert_eq!(frame["to_move"], 1, "premise: the rebuild's pump finished the bot's turn: {frame}");
+        let n = frame["events"].as_u64().expect("an event count");
+        let mut events = n;
+        for _ in 0..10 {
+            if events > n {
+                break;
+            }
+            let (_, now) = get_as(&restarted, "blue@wire.test", "/api/games/drift").await;
+            let line = match now["prompt"]["rows"].as_array().and_then(|r| r.last()) {
+                Some(row) => row["number"].as_u64().expect("a numbered row").to_string(),
+                None => "confirm".to_string(),
+            };
+            let (status, reply) = post_as(&restarted, "blue@wire.test", "/api/games/drift/input", serde_json::json!({ "line": line })).await;
+            assert_eq!(status, StatusCode::OK, "{line}: {reply}");
+            events = reply["events"].as_u64().expect("an event count");
+        }
+        assert!(events > n, "premise: the human's move is in the record");
+        let (status, still) = get_as(&restarted, "blue@wire.test", &format!("/api/games/drift/why?event={k}")).await;
+        assert_eq!(status, StatusCode::OK, "{still}");
+        assert!(still["withheld"].is_object(), "premise: the same withheld visibility: {still}");
+        let (status, human) = get_as(&restarted, "blue@wire.test", &format!("/api/games/drift/why?event={n}")).await;
+        assert_eq!(status, StatusCode::OK, "{human}");
+        assert_eq!(human["refusal"]["kind"], "human_seat", "{human}");
+        assert!(human["withheld"].is_null() && human["ok"].is_null(), "{human}");
     }
 
     /// **The same drift at GAME OVER, to a seat holder and to a watcher**
-    /// (Review Focus 5's second half): the finished vs-bot table, whose bot
-    /// still holds its starting order at game over, has its latest bot
-    /// decision that another legal member can replace — the rest of the record
-    /// still legal, the game still over, the card still hidden — swapped,
-    /// re-stamped and rebuilt. The SEAT HOLDER, whom the record route serves
-    /// the whole record, reads the CLI's own sentence, both moves named
-    /// (`account_parts`' refusal over the drifted record, word for word); a
-    /// WATCHER, whom that route refuses, reads `MISMATCH_WITHHELD`. The mutant
-    /// that hands `refused_at` an empty seat list in place of the requester's
-    /// seats survives the two cells above and fails the seat holder's line.
+    /// (Review Focus 5's second half; decision D-7): the finished vs-bot
+    /// table, whose bot still holds its starting order at game over, has its
+    /// latest bot decision that another legal member can replace — the rest of
+    /// the record still legal, the game still over, the card still hidden —
+    /// swapped, re-stamped and rebuilt. The SEAT HOLDER, whom the record route
+    /// serves the whole record, reads the CLI's own sentence, both moves named
+    /// (`account_parts`' refusal over the drifted record, word for word): the
+    /// honesty gate fires the moment an account could be served. A WATCHER,
+    /// whom that route refuses, reads the WITHHELD half (security S2c): the
+    /// visibility is read before any search, so none runs and the drift is
+    /// never reached. The mutant that runs `account_from` before the
+    /// visibility read fails the watcher's line (M38); the one that reads the
+    /// visibility over an empty seat list in place of the requester's seats
+    /// fails the seat holder's.
     #[tokio::test]
-    async fn a_why_on_a_drifted_record_at_game_over_names_both_moves_to_a_seat_holder_and_none_to_a_watcher() {
+    async fn a_why_on_a_drifted_record_at_game_over_names_both_moves_to_a_seat_holder_and_is_withheld_from_a_watcher() {
         use yokohama_core::{get_legal_moves, is_game_over, state_at, GameRecord, GameState, RecordedEvent};
         let over = a_finished_vs_bot_game("late").await;
         let store = Arc::clone(over.games.store());
@@ -7286,12 +7336,15 @@ mod tests {
         assert!(why["refusal"]["message"].as_str().unwrap_or_default().contains(&format!("{decided:?}")), "{why}");
         let (status, seen) = get_as(&restarted, "watcher@wire.test", &format!("/api/games/late/why?event={k}")).await;
         assert_eq!(status, StatusCode::OK, "{seen}");
-        assert_eq!(seen["refusal"]["kind"], "mismatch", "{seen}");
-        assert_eq!(
-            seen["refusal"]["message"],
-            explain::MISMATCH_WITHHELD.replace("{index}", &k.to_string()).replace("{seat}", "0"),
-            "a watcher at game over, the card still hidden"
+        assert!(
+            seen["withheld"].is_object() && seen["refusal"].is_null() && seen["ok"].is_null(),
+            "a watcher at game over, the card still hidden, reads the withheld half: {seen}"
         );
+        assert_eq!(seen["withheld"]["provenance"]["index"], k, "{seen}");
+        // The reconstructed move's `Debug`, escaped as the body escapes it.
+        let debug = serde_json::to_string(&format!("{decided:?}")).expect("json");
+        let debug = &debug[1..debug.len() - 1];
+        assert!(!seen.to_string().contains(debug), "{seen}");
     }
 
     /// **A locked session refuses a SEARCH and still serves a PROJECTION.**

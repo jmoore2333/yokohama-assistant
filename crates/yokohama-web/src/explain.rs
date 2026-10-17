@@ -19,12 +19,12 @@
 //! > second, and it must not reimplement the first half: the refusals ARE the
 //! > honesty gate.
 //!
-//! **The one exception among `why`'s twelve is a `mismatch` served while the
-//! mover's account is withheld** ([`Why::refused_at`], S1a's residual M-3): it
-//! carries this layer's [`MISMATCH_WITHHELD`], naming neither move nor version,
-//! because the reconstructed move was chosen over the bot's hidden hand. (The
-//! same refusal type carries `locked`, `foreign_bot` and `suggest`'s two
-//! layer-authored sentences, none of them among the twelve.)
+//! **All twelve of `why`'s are carried verbatim**: a refusal the search finds
+//! is reachable only at a public visibility, since the search runs only there
+//! (security S2c) — a withheld requester is answered from the record by
+//! [`Why::withheld_from`], before any search. (The same refusal type carries
+//! `locked`, `foreign_bot` and `suggest`'s two layer-authored sentences, none
+//! of them among the twelve.)
 
 use serde::Serialize;
 use yokohama_cli::bot::DecisionExplanation;
@@ -348,16 +348,6 @@ pub fn visibility_of(now: &GameState, mover: PlayerId, held: &[PlayerId]) -> Vis
 pub const WITHHELD_REASON: &str = "the bot's account is withheld while its starting order is hidden from you — \
                                    it is served once that card is public, or to a seat holder once the game is over";
 
-/// The mismatch refusal's sentence while the account is withheld (S1a's
-/// residual M-3): the kind stays `mismatch`, the index and the seat are named,
-/// and NO move is — the reconstructed one was chosen over the bot's hidden
-/// hand, and the recorded one is withheld with it so the sentence is one
-/// sentence. `{index}` and `{seat}` are filled by [`Why::refused_at`].
-pub const MISMATCH_WITHHELD: &str = "`why` cannot account for event {index} honestly: replaying seat {seat}'s \
-    decision did not reproduce the move the record says was played, and both moves are withheld while the bot's \
-    starting order is hidden from you — they are served once that card is public, or to a seat holder once the \
-    game is over. The game is untouched.";
-
 /// The fifteen search counters, named exactly as every other instrument names
 /// them.
 ///
@@ -520,6 +510,23 @@ pub struct WhyOk {
 }
 
 impl Why {
+    /// **The withheld half from the RECORD alone** (security S2c, the explain surface's first rule; decision D-6):
+    /// built before any search from what `why::locate` read by replay — the move played, the claim, the sentence —
+    /// so a withheld answer costs the requester's clock nothing a hidden hand could vary (the S1 stack review's
+    /// timing channel: 1 ms–4.4 s of search, a function of the hand, closed by not running it). The same bytes
+    /// [`Self::account`] produces at `Visibility::Withheld`, pinned.
+    pub fn withheld_from(l: &yokohama_cli::why::Located, rules: &Rules) -> Self {
+        Self {
+            ok: None,
+            withheld: Some(WhyWithheld {
+                provenance: Provenance::located(l),
+                text: yokohama_cli::describe::describe_move(&l.recorded, &l.state, rules),
+                reason: WITHHELD_REASON,
+            }),
+            refusal: None,
+        }
+    }
+
     /// The account at `visibility` ([`visibility_of`] is the route's reading).
     pub fn account(a: &WhyAccount, rules: &Rules, visibility: Visibility) -> Self {
         let provenance = Provenance::of(&a.reconstruction);
@@ -552,30 +559,12 @@ impl Why {
         }
     }
 
-    /// The CLI's refusal, blind to visibility: a SERVED answer goes through
-    /// [`Self::refused_at`], and this is the form `refused_at` falls back to and
-    /// the corpus's `why_refused` fixture is built with.
+    /// The CLI's refusal, carried verbatim — the form the route serves and the
+    /// corpus's `why_refused` fixture is built with. It needs no visibility: a
+    /// refusal the search finds is reachable only at a public visibility, since
+    /// the search runs only there (security S2c).
     pub fn refused(r: &Refusal) -> Self {
         Self { ok: None, withheld: None, refusal: Some(RefusalDto::of(r)) }
-    }
-
-    /// [`Self::refused`] at the requester's visibility: a `Mismatch` whose seat's
-    /// account [`visibility_of`] withholds carries [`MISMATCH_WITHHELD`]; every
-    /// other refusal, and a mismatch at a public visibility, is `refused`'s own.
-    pub fn refused_at(r: &Refusal, now: &GameState, held: &[PlayerId]) -> Self {
-        if let Refusal::Mismatch(m) = r {
-            if visibility_of(now, m.seat, held) == Visibility::Withheld {
-                return Self {
-                    ok: None,
-                    withheld: None,
-                    refusal: Some(RefusalDto {
-                        kind: kind_of(r),
-                        message: MISMATCH_WITHHELD.replace("{index}", &m.index.to_string()).replace("{seat}", &m.seat.0.to_string()),
-                    }),
-                };
-            }
-        }
-        Self::refused(r)
     }
 
     /// A locked session. Not one of `why`'s twelve — the lockdown is the
@@ -599,13 +588,13 @@ impl Why {
     /// A move made by `played`, a bot this build does not run (spec §2.4's
     /// second mask), and `why` it does not — the CLI's reason, cut to its
     /// clause ([`crate::bots::Runs::No`]; cycle F, spec §2.3: every refusal
-    /// keeps its reason). Answered BEFORE `why::account_parts`, which would
+    /// keeps its reason). Answered BEFORE `why::locate`, which would
     /// read the converted seat as "a controller this driver will not run …
     /// resumed as a HUMAN seat" — a CLI fact that is false on the web, where
     /// nothing converts a bot's seat. A deliberate exception of `suggest`'s
     /// kind: the twelve `Refusal`s stay `account_parts`' own strings, carried
-    /// verbatim, save the withheld mismatch, which `refused_at` words
-    /// ([`MISMATCH_WITHHELD`]).
+    /// verbatim — a refusal the search finds is reachable only at a public
+    /// visibility, since the search runs only there (security S2c).
     pub fn foreign(played: &str, why: &str) -> Self {
         Self {
             ok: None,
@@ -629,7 +618,7 @@ pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
 
 /// `why`'s foreign-bot pre-empt: `Some` when the event `why` addresses is a
 /// move made by a FOREIGN bot seat of `record`, `None` to let
-/// `why::account_parts` answer.
+/// `why::locate` and `why::account_from` answer.
 ///
 /// - **Bare `why`** addresses the most recent bot move, and is answered here
 ///   with the FIRST foreign seat's reason whenever the record has one. A web
@@ -675,15 +664,27 @@ impl Provenance {
     }
 }
 
+impl Provenance {
+    fn located(l: &yokohama_cli::why::Located) -> Self {
+        Self {
+            contestant: l.contestant.echo(),
+            evaluator_version: yokohama_core::game::eval::EVAL_IMPL_VERSION,
+            index: l.index,
+            seat: l.seat,
+            recorded_version: l.recorded_version,
+            current_version: l.current_version,
+        }
+    }
+}
+
 /// A typed refusal, tagged and worded.
 ///
 /// **`message` is the CLI's own `Display` for the variant, never re-authored.**
 /// `guide_sync` pins the tester guide to those strings, so a second wording here
 /// would drift from the screen the guide documents — and the two frontends would
-/// be refusing the same thing in different words. **The one exception among
-/// `why`'s twelve is [`Why::refused_at`]'s** (S1a's residual M-3): a
-/// `mismatch` served while the mover's account is withheld carries
-/// [`MISMATCH_WITHHELD`], naming neither move nor version.
+/// be refusing the same thing in different words. **All twelve are carried
+/// so**: a refusal the search finds is reachable only at a public visibility,
+/// since the search runs only there (security S2c).
 ///
 /// `kind` is a stable snake_case tag, and `RefusalKind` below is what makes it
 /// impossible to add a variant and forget one.
@@ -863,9 +864,9 @@ impl SuggestRefusal {
     /// **These four are the one place M3 re-words at all**, and the licence is
     /// specific: they live inside `repl::suggest_cmd`'s rendered output and no
     /// `guide_sync` cell pins them. `Refusal`'s twelve are carried verbatim,
-    /// save the withheld mismatch, which `refused_at` words
-    /// ([`MISMATCH_WITHHELD`]), because those strings ARE pinned to the tester
-    /// guide.
+    /// because those strings ARE pinned to the tester guide — a refusal the
+    /// search finds is reachable only at a public visibility, since the search
+    /// runs only there (security S2c).
     pub fn message(self) -> &'static str {
         match self {
             Self::LiveMode => {
@@ -1226,62 +1227,57 @@ mod tests {
         for key in ["decision_seed", "forced"] {
             assert!(withheld["withheld"]["provenance"].get(key).is_none(), "{key} rides the claim: {withheld}");
         }
+        // **And the RECORD alone builds those same bytes** (security S2c, decision D-6): `withheld_from` over
+        // `locate`'s reading, with no search run, serializes to the withheld payload `account` produced.
+        let located = yokohama_cli::why::locate(repl.session.mode, repl.session.record(), &rules, None).expect("located");
+        let from_record = serde_json::to_string(&Why::withheld_from(&located, &rules)).expect("json");
+        let from_account = serde_json::to_string(&Why::account(&a, &rules, Visibility::Withheld)).expect("json");
+        assert_eq!(from_record, from_account, "the record-built withheld half differs from the account-built one");
     }
 
-    /// **A mismatch refusal is served at the requester's visibility** (S1a's
-    /// residual M-3): the `Mismatch` arm names the RECONSTRUCTED move, which
-    /// the search chose over the bot's hidden hand — the B1 channel in one
-    /// sentence — so while the account is withheld the refusal keeps its kind
-    /// and carries `MISMATCH_WITHHELD`, naming no move; at a public visibility
-    /// it is the CLI's own sentence, both moves named. Every other refusal is
-    /// served as it is at either visibility, since none carries what a search
-    /// found. The mutant that serves `refused` regardless fails the withheld
-    /// line.
+    /// **A tampered record is answered WITHHELD while the mover's card is hidden, and refused as a mismatch once
+    /// public** (security S2c, decision D-7 — the unit pin of the two halves; the route cells in `lib.rs` catch their order: the old flow
+    /// searched first and answered the withheld-mismatch refusal here; the new one never reaches the search, so
+    /// the withheld payload is what a withheld requester gets, whatever the record says). The public half keeps
+    /// the Mismatch refusal verbatim — the honesty gate fires the moment an account could be served.
     #[test]
-    fn a_mismatch_refusal_names_no_move_while_the_account_is_withheld() {
-        use yokohama_cli::why::{Mismatch, Refusal};
+    fn a_tampered_record_is_withheld_while_hidden_and_a_mismatch_once_public() {
+        // A vs-bot session whose recorded bot move is replaced by another legal move.
+        use yokohama_core::{get_legal_moves, state_at, RecordedEvent};
         let (repl, _) = vs_bot(1);
-        let now = repl.session.state().clone();
-        let bot = yokohama_core::PlayerId(0);
-        let human = yokohama_core::PlayerId(1);
-        let m = Refusal::Mismatch(Box::new(Mismatch {
-            index: 0,
-            seat: bot,
-            controller: "v4-step9-draft1@v4".to_string(),
-            reconstructed: "PlaceAssistants { areas: [3, 7] }".to_string(),
-            recorded: "Place assistants in areas 2 and 5".to_string(),
-            recorded_version: Some(4),
-            current_version: 4,
-        }));
-        // Mid-game, the bot's starting order hidden from the human (vs_bot(1)
-        // pumps one bot move): withheld.
-        assert_eq!(visibility_of(&now, bot, &[human]), Visibility::Withheld, "premise");
-        let withheld = Why::refused_at(&m, &now, &[human]);
-        let r = withheld.refusal.as_ref().expect("a refusal");
-        assert_eq!(r.kind, "mismatch");
-        assert_eq!(r.message, MISMATCH_WITHHELD.replace("{index}", "0").replace("{seat}", "0"));
-        assert!(!r.message.contains("PlaceAssistants") && !r.message.contains("areas 2 and 5"), "{}", r.message);
-        // The holder of the bot's seat reads everything: the CLI's sentence.
-        let public = Why::refused_at(&m, &now, &[bot]);
-        assert_eq!(public.refusal.as_ref().expect("a refusal").message, m.to_string());
-        assert!(public.refusal.as_ref().unwrap().message.contains("PlaceAssistants"));
-        // Every other refusal is the same bytes at either visibility: the
-        // eleven samples besides the mismatch, each at the withheld reading
-        // (the human's) and the public one (the bot seat's holder).
-        let others: Vec<Refusal> =
-            refusal_samples().into_iter().filter(|r| !matches!(r, Refusal::Mismatch(_))).collect();
-        assert_eq!(others.len(), 11, "premise: the twelve refusals less the mismatch");
-        for other in &others {
-            for held in [human, bot] {
-                assert_eq!(
-                    serde_json::to_string(&Why::refused_at(other, &now, &[held])).unwrap(),
-                    serde_json::to_string(&Why::refused(other)).unwrap(),
-                    "{} read by seat {}'s holder",
-                    kind_of(other),
-                    held.0
-                );
+        let rules = Rules::standard();
+        let mut tampered = repl.session.record().clone();
+        // The bot's last DECISION (a position offering another legal move), swapped for another member of the
+        // list, the record cut after it and re-stamped over its own end (as the route cell
+        // `a_why_on_a_drifted_record_is_withheld_from_a_requester_who_may_not_see_the_account` builds its drift).
+        let k = (0..tampered.events.len()).rev().find(|&k| {
+            matches!(tampered.events[k], RecordedEvent::Move(_)) && {
+                let at = state_at(&tampered, k, &rules).expect("a prefix");
+                at.current_player == PlayerId::new(0) && get_legal_moves(&at, &rules).len() > 1
             }
-        }
+        }).expect("the bot has decided");
+        let before = state_at(&tampered, k, &rules).expect("the position");
+        let RecordedEvent::Move(decided) = tampered.events[k].clone() else { unreachable!() };
+        let other = get_legal_moves(&before, &rules).into_iter().find(|m| *m != decided).expect("another legal move");
+        tampered.events[k] = RecordedEvent::Move(other);
+        tampered.events.truncate(k + 1);
+        let end = state_at(&tampered, k + 1, &rules).expect("the drifted record replays");
+        tampered.stamp_terminal_digest(&end);
+        let drifted = yokohama_cli::repl::Repl::new(
+            yokohama_cli::session::Session::from_record(tampered, rules.clone()).expect("the drifted record loads"),
+        );
+        let (mode, tampered, bots) = (drifted.session.mode, drifted.session.record(), drifted.bots());
+        let located = yokohama_cli::why::locate(mode, tampered, &rules, Some(k)).expect("located, pre-search");
+        let withheld_now = drifted.session.state().clone();
+        assert_eq!(visibility_of(&withheld_now, located.seat, &[]), Visibility::Withheld, "premise");
+        let w = Why::withheld_from(&located, &rules);
+        assert!(w.withheld.is_some() && w.refusal.is_none() && w.ok.is_none(), "withheld, not refused: {}", serde_json::to_string(&w).unwrap());
+        assert_eq!(w.withheld.as_ref().unwrap().text, yokohama_cli::describe::describe_move(&located.recorded, &located.state, &rules), "the RECORDED move's text, never the reconstruction's");
+        let public = yokohama_cli::why::account_from(located, bots, &rules);
+        let Err(refusal) = public else { panic!("the tampered move must not reconstruct") };
+        let r = Why::refused(&refusal);
+        assert_eq!(r.refusal.as_ref().unwrap().kind, "mismatch");
+        assert!(r.refusal.as_ref().unwrap().message.contains(&format!("{decided:?}")), "{}", r.refusal.as_ref().unwrap().message);
     }
 
     /// **The served continuation masks its fulfil lines as the ranking masks

@@ -892,11 +892,11 @@ export interface Provenance {
 }
 
 /** A typed refusal. Under `why`'s twelve tags `message` is the CLI's own
- *  sentence, never re-authored. The one exception among `why`'s twelve
- *  (security S1c, M-3): a `mismatch` served while the mover's account is
- *  withheld carries the server's `MISMATCH_WITHHELD`, naming neither move nor
- *  version. The same type carries `locked`, `foreign_bot` and `suggest`'s two
- *  layer-authored sentences (`bot_seat`, `locked`).
+ *  sentence, never re-authored: a refusal the search finds is reachable only
+ *  at a public visibility, since the search runs only there (security S2c) —
+ *  a withheld requester reads `withheld`, never a `mismatch`. The same type
+ *  carries `locked`, `foreign_bot` and `suggest`'s two layer-authored
+ *  sentences (`bot_seat`, `locked`).
  *  `kind` is one of the twelve `why` tags, `why`'s `locked` or `foreign_bot`,
  *  or one of `suggest`'s four (`live_mode`, `game_over`, `bot_seat`, `locked`,
  *  plus `search` for an agent error surfaced verbatim). */
