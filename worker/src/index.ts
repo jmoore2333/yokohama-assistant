@@ -256,9 +256,14 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
     forwarded = target;
   }
 
+  // An open-door upgrade's claim rode its URL, and the header above now carries it: the object's request drops the
+  // parameter, so its URL names no caller (`forwardedCaller` reads the header alone; the S2 stack review, lens 1,
+  // Minor 2). Every other parameter rides through.
+  const forwardedUrl = new URL(req.url);
+  if (config.door === "open" && isUpgrade(req.headers)) forwardedUrl.searchParams.delete(CLAIMED_PARAM);
   const object = objectFor(forwarded, env, identity, body, headers);
   try {
-    return await object.fetch(new Request(req.url, { method: req.method, headers, body }));
+    return await object.fetch(new Request(forwardedUrl, { method: req.method, headers, body }));
   } catch (e) {
     log("object-failed", { target: forwarded.kind, path: url.pathname, error: String(e) });
     return respond(500, errorBody(OBJECT_FAILED));

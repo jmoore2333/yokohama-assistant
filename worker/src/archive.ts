@@ -4,7 +4,7 @@ import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { Instance, pinnedTo, readReply, type Replied } from "./module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
-import { callerDigest } from "./redact";
+import { callerDigest, redactKey } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { forwardedCaller } from "./table";
 
@@ -130,7 +130,9 @@ export class Archive extends DurableObject<Env> {
       try {
         listed = await (this.env.ARCHIVE as R2Bucket).list({ prefix: prefix.ok, limit: 1000 });
       } catch (e) {
-        log("archive-count-failed", { id, error: String(e) });
+        // Through `redactKey`, as the put path's R2 messages are (`logOutcome`): a listing error that spells the
+        // share's prefix names its folder by the digest alone (the S2 stack review, lens 1, Minor 1).
+        log("archive-count-failed", { id, error: redactKey(String(e)) });
       }
       if (listed !== undefined) {
         const listing = JSON.stringify({ truncated: listed.truncated, objects: listed.objects.map((o) => ({ key: o.key, size: o.size })) });

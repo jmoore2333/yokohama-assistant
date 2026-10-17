@@ -928,7 +928,8 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    Steps 6 and 7 are the `worker` door's. Under `open` (§1.5) the Worker verifies no assertion: step
    6 reads the claimed name, from the `X-Yokohama-Claimed-User` header on a fetch and from the
    `claimed=` parameter on an upgrade, and step 7 forwards it as `X-Yokohama-Claimed-User`, which
-   also names the caller's Archive object, each run of its spaces collapsed to one (security S2b);
+   also names the caller's Archive object, each run of its spaces collapsed to one (security S2b),
+   and drops the parameter from the URL it hands the object (since the S2 stack review);
    there the rate limit keys a create by the connecting IP and a write by the IP and the claim's
    digest. *(Added 2026-09-28, M6.5c2.)*
 
@@ -1765,9 +1766,10 @@ files, which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 nee
 12 read the assembled tree and its stamp, so they run only on the workstation that deploys.
 
 **Then the secrets guard** (security S2a, decision D-11) asks the account for the Worker's secret
-NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS` or
-`YOKOHAMA_WEB_TEST_CLOCK`: the guard refuses both in a committed file, and a secret would carry
-either past it. A listing that fails is a refusal, never a pass, so every deploy script is a network
+NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+`YOKOHAMA_WEB_TEST_CLOCK` or, since the S2 stack review, `YOKOHAMA_DEV_DOOR`: the guard refuses the
+first two in a committed file and judges the third there, and a secret would carry any of them past
+it. A listing that fails is a refusal, never a pass, so every deploy script is a network
 step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
 deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first

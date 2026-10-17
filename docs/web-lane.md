@@ -465,8 +465,9 @@ the door of the private Worker flips only inside the review's known exercises an
   security S2b the dev door is `on` in `wrangler.dev.jsonc` alone and every other worker-door file it is told is
   held to production exactly (F-40). **Every deploy
   script asks the account for the Worker's secret NAMES before it ships** (`worker/scripts/secrets-guard.mjs`,
-  decision D-11) and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS` or `YOKOHAMA_WEB_TEST_CLOCK`: the guard
-  refuses both in a committed file, and a secret would carry either past it. It is a network step: a logged-out clone runs `npx wrangler login` once, and one with more
+  decision D-11) and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS`, `YOKOHAMA_WEB_TEST_CLOCK` or, since the S2
+  stack review, `YOKOHAMA_DEV_DOOR`: the guard refuses the first two in a committed file and judges the third there,
+  and a secret would carry any of them past it. It is a network step: a logged-out clone runs `npx wrangler login` once, and one with more
   than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing); a listing that
   fails is a refusal; and a NEW Worker's first deploy cannot pass it, since wrangler answers "Worker not found" —
   so a new Worker's first deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that

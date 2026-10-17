@@ -921,6 +921,22 @@ describe("the deploy guard", () => {
     expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
   });
 
+  // The S2 stack review (lens 1, Minor 4): the switch read as a string alone, so a JSON `true` in production's file
+  // passed the guard — the shell refuses it (`config.ts`'s `strings`), so nothing opened, but the guard's job is to
+  // refuse it at the file. Mutant: the type rule missing (production's `true` reads `[]`).
+  it("refuses a YOKOHAMA_DEV_DOOR that is not a string, at either door", () => {
+    const typed = /^wrangler\.jsonc's vars set YOKOHAMA_DEV_DOOR to .+ — a switch is a string in quotes, "on" or "off", and the shell refuses any other type \(config\.ts's strings\)$/;
+    for (const value of ["true", "false", "1", "null", '["on"]', '{"on": true}']) {
+      const file = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', `"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": ${value}`);
+      expect(deployGuard(worker({ "wrangler.jsonc": file })), value).toEqual(naming(typed));
+      expect(deployGuard(worker({ "wrangler.jsonc": file })).find((f) => typed.test(f)), `${value}: the value shown`).toContain(`YOKOHAMA_DEV_DOOR to ${JSON.stringify(JSON.parse(value))} —`);
+    }
+    const openTrue = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open", "YOKOHAMA_DEV_DOOR": true');
+    expect(deployGuard(worker({ "wrangler.jsonc": openTrue })), "the open door too").toEqual(naming(typed));
+    const off = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "off"');
+    expect(deployGuard(worker({ "wrangler.jsonc": off })), "the string the file ships passes").not.toEqual(naming(/a switch is a string/));
+  });
+
   // F-40 (the S2a plan review): an unlisted worker-door file is production's sibling with NO allowed difference.
   // Mutant: the dev file's allowed difference (`DEV_DIFFERS`) in place of none — a copy of production carrying the
   // dev door "off", as the real file does, is then refused for not being "on" (Task 6's review, X6).

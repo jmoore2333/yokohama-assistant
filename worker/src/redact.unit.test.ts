@@ -31,6 +31,15 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
     );
   });
 
+  // The S2 stack review (lens 1, Minor 1): a segment with no slash after its digest — a listing's prefix as a
+  // message might spell it bare, or the key's end — is redacted too, and keeps its shape (no slash is added). Mutant:
+  // the trailing `/` required again (both rows keep their readable half).
+  it("drops the readable half of a segment that no slash follows, adding no slash", () => {
+    expect(redactKey("list: invalid prefix test/browser/zqxjv9_maple-460f9d44576e")).toBe("list: invalid prefix test/browser/460f9d44576e");
+    expect(redactKey('no share for "browser/red_at_wire.test-c91ad2a917f7": try again')).toBe('no share for "browser/c91ad2a917f7": try again');
+    expect(redactKey("browser/red-0123456789abcdef"), "sixteen hex after the dash are no twelve-hex digest: left whole").toBe("browser/red-0123456789abcdef");
+  });
+
   it("redacts EVERY browser segment in a message, not the first alone (the g flag)", () => {
     const two = 'copy browser/alice-0123456789ab/x.json to browser/bob-fedcba987654/y.json failed';
     expect(redactKey(two)).toBe("copy browser/0123456789ab/x.json to browser/fedcba987654/y.json failed");

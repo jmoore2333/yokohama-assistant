@@ -278,6 +278,20 @@ describe("the open door (M6.5c2, spec §2.1)", () => {
     const refused = await through("/api/stream", { claim: "ben", headers: UPGRADE });
     expect([refused.status, refused.webSocket], "an upgrade's header is no claim").toEqual([401, null]);
   });
+
+  // The S2 stack review (lens 1, Minor 2): once the Worker has read the claim off an upgrade's URL, the header it sets
+  // carries it, and the object's own request names no `claimed` — `forwardedCaller` reads only the header, and the
+  // URL is what an invocation record keeps. Only `claimed` is dropped: another parameter rides through. Mutant: the
+  // parameter forwarded (the object's URL ends `claimed=zqxjv9+maple`).
+  it("forwards an upgrade to its object without the claimed parameter, the claim in the header alone", async () => {
+    const res = await reaching(() => through(claimedAt("/api/stream?other=1", "zqxjv9 maple"), { headers: UPGRADE }));
+    const tab = await socket(res.result);
+    expect(res.house.length, "the house alone").toBe(1);
+    const reached = new URL(res.house[0]!.url);
+    expect([reached.pathname, reached.search], "no claimed parameter; the other one kept").toEqual(["/api/stream", "?other=1"]);
+    expect(yokohamaHeaders(res.house[0]!), "the claim, in the header").toEqual({ "x-yokohama-claimed-user": "zqxjv9 maple" });
+    tab.ws.close(1000, "done");
+  });
 });
 
 describe("what the open door refuses (M6.5c2, spec §2.1)", () => {

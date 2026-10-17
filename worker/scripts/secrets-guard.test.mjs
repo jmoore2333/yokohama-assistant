@@ -1,8 +1,9 @@
 // **The deploy's secrets, judged** (security S2a, decision D-11; the S1 stack review's unverified HI item): the
-// deploy guard refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` and `YOKOHAMA_WEB_TEST_CLOCK` in a committed file, and a
-// Worker SECRET of either name would reach the shell's `env` past it. `judgeSecrets` reads `wrangler secret
-// list`'s JSON and refuses the two by name; the command runs it before `wrangler deploy`. The command cells run
-// the script as the deploy does, with a fake `npx` first on `PATH` — no account is asked.
+// deploy guard refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` and `YOKOHAMA_WEB_TEST_CLOCK` in a committed file and judges
+// `YOKOHAMA_DEV_DOOR` there, and a Worker SECRET of any of the three names would reach the shell's `env` past it.
+// `judgeSecrets` reads `wrangler secret list`'s JSON and refuses the three by name (the dev door's since the S2
+// stack review, lens 1, Minor 3); the command runs it before `wrangler deploy`. The command cells run the script as
+// the deploy does, with a fake `npx` first on `PATH` — no account is asked.
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +30,13 @@ describe("judgeSecrets", () => {
     expect(judgeSecrets(listing("YOKOHAMA_DIAGNOSTIC_SEEDS", "YOKOHAMA_WEB_TEST_CLOCK")), "one sentence per name").toHaveLength(2);
     expect(FORBIDDEN_SECRETS).toHaveProperty("YOKOHAMA_DIAGNOSTIC_SEEDS");
     expect(FORBIDDEN_SECRETS).toHaveProperty("YOKOHAMA_WEB_TEST_CLOCK");
+    // The S2 stack review (lens 1, Minor 3): the dev door's switch, and the salt in the seeds name's reason.
+    expect(FORBIDDEN_SECRETS).toHaveProperty("YOKOHAMA_DEV_DOOR");
+    expect(judgeSecrets(listing("YOKOHAMA_WEB_ADMINS", "YOKOHAMA_DEV_DOOR"))).toEqual([
+      `secrets-guard: the Worker holds a secret named YOKOHAMA_DEV_DOOR — ${FORBIDDEN_SECRETS.YOKOHAMA_DEV_DOOR}; delete it: npx wrangler secret delete YOKOHAMA_DEV_DOOR`,
+    ]);
+    expect(FORBIDDEN_SECRETS.YOKOHAMA_DIAGNOSTIC_SEEDS, "the seeds switch also fixes the chat salt").toContain("chat salt");
+    expect(Object.keys(FORBIDDEN_SECRETS), "the three names, and no other").toEqual(["YOKOHAMA_DIAGNOSTIC_SEEDS", "YOKOHAMA_WEB_TEST_CLOCK", "YOKOHAMA_DEV_DOOR"]);
   });
   it("refuses a listing it cannot read rather than passing it", () => {
     for (const bad of ["", "nonsense", "{}", '[{"type":"secret_text"}]', "[1]", "[null]"]) {

@@ -228,8 +228,9 @@ file; production's logs redacting query strings, unsampled; …`.
 
 **Then the secrets guard** (`scripts/secrets-guard.mjs`, decision D-11) asks the account for the
 Worker's secret NAMES through `npx wrangler secret list` — never a value — and refuses a secret named
-`YOKOHAMA_DIAGNOSTIC_SEEDS` or `YOKOHAMA_WEB_TEST_CLOCK`, the two switches the guard refuses in a
-committed file, which a secret would carry past it: `secrets-guard: the Worker holds a secret named
+`YOKOHAMA_DIAGNOSTIC_SEEDS`, `YOKOHAMA_WEB_TEST_CLOCK` or, since the S2 stack review,
+`YOKOHAMA_DEV_DOOR`: the two switches the guard refuses in a committed file and the one it judges
+there, which a secret would carry past it: `secrets-guard: the Worker holds a secret named
 <name> — <why>; delete it: npx wrangler secret delete <name>`. A listing that fails or does not parse
 is a refusal, never a pass; a clean one prints `secrets-guard: <n> secrets on <file>'s Worker, none
 named like a switch`.
@@ -778,6 +779,8 @@ expires in 2031 (spec §0.5).
   - **`archive-count-failed`** `{id, error}`: the Archive object's R2 listing of the caller's share
     failed. No listing reaches the module, so the save is refused uncounted: the layer's 500 with
     `the caller's share was not counted before this save` inside it, which the outbox retries.
+    `error` is R2's own text through `redactKey` (since the S2 stack review), so a listing error
+    that spells the share's prefix names its folder by the digest alone.
   - an Archive object's **`init-refused`** `{id, error}` (one of the shell's own lines, above): `init`
     refused the object's caller — a claim the key grammar refuses, such as `..` — and the request is
     the layer's 401. `error` is the grammar's sentence, which repeats the claim, at most 64
