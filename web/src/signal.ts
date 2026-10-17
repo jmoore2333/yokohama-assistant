@@ -173,10 +173,11 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
  *  consumer branches on `reason` today; each draws `sentence`. */
 export interface End {
   reason: "deleted" | "gone" | "refused";
-  /** Always present: every end the hook hands over carries the server's sentence; the client's own for the edge's
-   *  expired session (`ACCESS_CHALLENGE`, read by `isSessionExpired`) or for a refusal whose body is not this API's
-   *  JSON (the bare status, `api.ts`'s `call` and `sse.ts`); or, for an `end` frame that brought none,
-   *  `endSentence`'s (the frame handler below) — so a consumer draws it as it is. */
+  /** Always present: every end the hook hands over carries the server's sentence; the client's own for the edge —
+   *  its expired session (`ACCESS_CHALLENGE`, read by `isSessionExpired`) or its challenge not passed
+   *  (`EdgeRefusal`'s `EDGE_CHECK` / `EDGE_CHECK_REPEATED`, `api.ts`'s `pastTheEdge`) — or for a refusal whose body
+   *  is not this API's JSON (the bare status, `api.ts`'s `call` and `sse.ts`); or, for an `end` frame that brought
+   *  none, `endSentence`'s (the frame handler below) — so a consumer draws it as it is. */
   sentence: string;
 }
 
