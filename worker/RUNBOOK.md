@@ -925,13 +925,11 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   - live only, since cycle F, the release feed's failure while the repository is private: GitHub's
     404 a real browser meets, or the CORS refusal the claimed header causes at GitHub's preflight —
     nothing else from the feed, and nothing at any other address — counted apart from the beacon's;
-  - live only, since security S2a (decision D-9), the Report-Only refusal of the INLINE detection
-    script Bot Fight Mode's JavaScript detections inject into every HTML answer the edge serves:
-    Chromium logs it at console type `info`, and the walk reads every CSP line at ANY type, so this
-    one line is forgiven only in its measured words and only at a page of the deployment's own
-    origin, counted apart and printed with the beacon's and the feed's counts. Any other CSP line,
-    an enforced one included, is breakage. Locally there is no edge, no injected script and no
-    forgiveness: the local walk is served the policy ENFORCED (`web/scripts/e2e-build.mjs`);
+  - since security S2c (R-6) the walk forgives NO CSP line on any tier: the enforced policy carries
+    the fixed nonce the edge copies onto its detection script, so a CSP line is a finding (the
+    fallback, D-15, restores a forgiveness at `error` in the line's measured words). The walk reads
+    every CSP line at ANY console type, live and locally, where there is no edge and no injected
+    script;
   - in both modes, the deal's DESIGNED 409 on `GET …/api/games/<id>/deal` — a table that flipped to
     playing between two of the browser's requests, the refusal the dealing screen branches on — in
     both of its arms, the failed response and its console line (I-81), counted as `dealAnswers`.

@@ -1,6 +1,7 @@
 export declare const CSP_MODE: "report-only" | "enforce";
 export declare const CSP_HEADER: Readonly<Record<"report-only" | "enforce", string>>;
 export declare const CLOUDFLARE: Readonly<{ script: readonly string[]; frame: readonly string[]; connect: readonly string[] }>;
+export declare const CLOUDFLARE_INJECTION_NONCE: string;
 export interface HeaderValues {
   siteUrl: string | null;
   releaseFeed: string | null;

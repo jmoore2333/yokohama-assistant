@@ -542,8 +542,7 @@ test("a person holding only a link joins a locked open table and plays", async (
       // Live, how often each allowed console error was spent, each its own count.
       (LIVE
         ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, b ${watchB.forgiven} times` +
-          `; the release feed's failure forgiven a ${watchA.feedForgiven}, b ${watchB.feedForgiven} times` +
-          `; the detection script's Report-Only line forgiven a ${watchA.reportOnlyForgiven}, b ${watchB.reportOnlyForgiven} times`
+          `; the release feed's failure forgiven a ${watchA.feedForgiven}, b ${watchB.feedForgiven} times`
         : ""),
   );
   expect(watchA.failures, "a's page reported no errors").toEqual([]);

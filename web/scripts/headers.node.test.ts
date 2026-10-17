@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CLOUDFLARE,
+  CLOUDFLARE_INJECTION_NONCE,
   CSP_HEADER,
   CSP_MODE,
   cspOf,
@@ -40,12 +41,20 @@ describe("the policy", () => {
     styleHashes: ["'sha256-abc='"],
   };
 
-  it("ships Report-Only in this release, under the mode's own header name (X2: the wrap flips it)", () => {
-    expect(CSP_MODE).toBe("report-only");
-    expect(headerSet(NONE)[0]![0]).toBe("Content-Security-Policy-Report-Only");
-    expect(headerSet({ ...NONE, mode: "enforce" })[0]![0]).toBe("Content-Security-Policy");
+  it("ships ENFORCED since 0.6.3, under the policy's own header name (X2: S2's wrap flipped it)", () => {
+    expect(CSP_MODE).toBe("enforce");
+    expect(headerSet(NONE)[0]![0]).toBe("Content-Security-Policy");
+    expect(headerSet({ ...NONE, mode: "report-only" })[0]![0]).toBe("Content-Security-Policy-Report-Only");
     expect(CSP_HEADER).toEqual({ "report-only": "Content-Security-Policy-Report-Only", enforce: "Content-Security-Policy" });
     expect(() => headerSet({ ...NONE, mode: "report" as never })).toThrow(/report-only or enforce/);
+  });
+
+  it("carries one fixed nonce in script-src for the detection script Cloudflare injects, named for what it is", () => {
+    expect(CLOUDFLARE_INJECTION_NONCE).toMatch(/^[A-Za-z0-9+/]{22}$/);
+    const d = directives(cspOf(NONE));
+    expect(d.get("script-src")).toEqual(["'self'", "'wasm-unsafe-eval'", `'nonce-${CLOUDFLARE_INJECTION_NONCE}'`, ...CLOUDFLARE.script]);
+    // The nonce rides script-src ALONE: a style nonce would let the edge inject styles too, which nothing asks for.
+    for (const [name, values] of d) if (name !== "script-src") expect(values.join(" ")).not.toContain("nonce-");
   });
 
   it("names every directive once, in one order, with the sources the c1 review derived from the built bundle", () => {
@@ -59,7 +68,7 @@ describe("the policy", () => {
       ]);
       expect(d.get("default-src"), at).toEqual(["'self'"]);
       // `'wasm-unsafe-eval'`: the module Worker compiles the engine (`assets/worker-*.js`).
-      expect(d.get("script-src"), at).toEqual(["'self'", "'wasm-unsafe-eval'", ...CLOUDFLARE.script]);
+      expect(d.get("script-src"), at).toEqual(["'self'", "'wasm-unsafe-eval'", `'nonce-${CLOUDFLARE_INJECTION_NONCE}'`, ...CLOUDFLARE.script]);
       expect(d.get("img-src"), at).toEqual(["'self'"]);
       expect(d.get("font-src"), at).toEqual(["'self'"]);
       expect(d.get("frame-src"), at).toEqual([...CLOUDFLARE.frame]);
@@ -137,7 +146,7 @@ describe("the inline style of the 404 page (decision D-4)", () => {
 describe("the set, its block and its file", () => {
   it("is six headers in one order, the five companions at the c1 review's values", () => {
     expect(headerSet(NONE).map(([name]) => name)).toEqual([
-      "Content-Security-Policy-Report-Only", "X-Frame-Options", "X-Content-Type-Options",
+      "Content-Security-Policy", "X-Frame-Options", "X-Content-Type-Options",
       "Referrer-Policy", "Permissions-Policy", "Cross-Origin-Opener-Policy",
     ]);
     const values = Object.fromEntries(headerSet(NONE));
@@ -152,7 +161,7 @@ describe("the set, its block and its file", () => {
     const lines = headersBlock(headerSet(NONE)).split("\n");
     expect(lines[0]).toBe("/*");
     expect(lines.slice(1, 7).every((l) => /^  [A-Za-z-]+: \S/.test(l))).toBe(true);
-    expect(lines[1]).toBe(`  Content-Security-Policy-Report-Only: ${cspOf(NONE)}`);
+    expect(lines[1]).toBe(`  Content-Security-Policy: ${cspOf(NONE)}`);
     expect(lines.at(-1), "ends with one newline").toBe("");
     expect(lines).toHaveLength(8);
   });

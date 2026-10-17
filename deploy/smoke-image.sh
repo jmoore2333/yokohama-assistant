@@ -135,9 +135,9 @@ door() {
   # The policy is printed, not compared: its values are the image's build's.
   expect "GET / x-frame-options" "$(header / x-frame-options)" DENY
   local csp
-  csp="$(header / content-security-policy-report-only)"
-  test -n "$csp" || fail "GET / carries no content-security-policy-report-only"
-  echo "smoke:   GET / content-security-policy-report-only = $csp"
+  csp="$(header / content-security-policy)"
+  test -n "$csp" || fail "GET / carries no content-security-policy"
+  echo "smoke:   GET / content-security-policy = $csp"
   expect "GET /api/health cache-control" "$(header /api/health cache-control)" no-store
   expect "GET /api/health x-content-type-options" "$(header /api/health x-content-type-options)" nosniff
   get /sw.js

@@ -133,7 +133,7 @@ the default features, so its image includes the open door.
 From the repository root:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.2-s2a .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.3-s2 .
 ```
 
 It compiles the server and the browser module on the pinned Rust toolchain, then builds the client. The
@@ -157,7 +157,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
   --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama \
   --build-arg YOKOHAMA_SITE_BLURB="A few words under the title." \
   --build-arg YOKOHAMA_SITE_NOTICE="Not affiliated with Asmodee" \
-  -t yokohama-web:0.6.2-s2a .
+  -t yokohama-web:0.6.3-s2 .
 ```
 
 | Argument | Maximum | What it draws |
@@ -196,7 +196,7 @@ docker run -d --name yokohama-web \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
   --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true --memory 512m \
-  yokohama-web:0.6.2-s2a
+  yokohama-web:0.6.3-s2
 ```
 
 - **`/data` is the one thing that must outlive the container.** Every applied move is written there as the
@@ -233,9 +233,10 @@ no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`
 at start, then sets that header set on every answer: the content security policy, `X-Frame-Options:
 DENY`, `X-Content-Type-Options: nosniff`, the referrer policy, a `Permissions-Policy` and
 `Cross-Origin-Opener-Policy`, with `Cache-Control: no-store` beside them on every answer under `/api`.
-In 0.6.2 the policy is sent as `Content-Security-Policy-Report-Only`: a browser logs a violation and
-blocks nothing, and a later release enforces it. A client build without the file (older than 0.6.2,
-or none) serves no header set, and the server says so once at start, on stderr. A malformed file
+Since 0.6.3 the policy is sent as `Content-Security-Policy`, enforced, with a fixed nonce for the
+script Cloudflare injects (`web/scripts/headers.mjs`); 0.6.2 was built with it Report-Only and never
+deployed. A client build without the file (older than 0.6.2, or none) serves no header set, and the
+server says so once at start, on stderr. A malformed file
 stops it at start, naming the file. The smoke (§5) reads `X-Frame-Options` and the policy on `/`, and
 `no-store` and `nosniff` on `/api/health`.
 
@@ -246,7 +247,7 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.2-s2a      # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port>, default 18080
 ```
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on
