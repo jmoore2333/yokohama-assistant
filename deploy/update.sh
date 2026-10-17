@@ -180,7 +180,10 @@ main() {
   run_args=(-d --name "$CONTAINER")
   if [ -n "$PUBLISH" ]; then run_args+=(-p "$PUBLISH"); fi
   if [ -n "$NETWORK" ]; then run_args+=(--network "$NETWORK"); fi
-  run_args+=(-v "$VOLUME:/data" --env-file "$RUN_ENV" --restart unless-stopped "$IMAGE")
+  run_args+=(-v "$VOLUME:/data" --env-file "$RUN_ENV" --restart unless-stopped)
+  # The hardening of deploy/README.md section 1, step 3 (security S2c, B10's host half): no capability (the server
+  # binds 8080 as uid 10001 and needs none), no privilege gained, 512 MiB.
+  run_args+=(--cap-drop ALL --security-opt no-new-privileges:true --memory 512m "$IMAGE")
 
   # What an operator does when the new container does not come up. It is a
   # printed line, never a step: the script does not undo its own swap.

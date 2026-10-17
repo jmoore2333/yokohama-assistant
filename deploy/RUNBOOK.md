@@ -50,7 +50,8 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
   remove.** `cf-access` trusts a header that only Access sets, which is true
   only while the tunnel is the one path to the port: the server does not verify
   Access's signed assertion, so anything that reached 8080 some other way could
-  send the header and be anyone. `worker` rests on the same condition for its
+  send the header and be anyone. Since security S2c cloudflared also validates the assertion on both ingress
+  rules and `README.md` §1's recipe is the rule. `worker` rests on the same condition for its
   proxy. `open` trusts whatever name a caller types, so it belongs on a network
   where everyone who can reach the port may play (the self-host guide's
   [open door](README.md#2-the-open-door-a-home-network-a-lan-or-a-vpn)). Publish
@@ -240,9 +241,23 @@ POST /containers/create?name=yokohama-web
           "YOKOHAMA_WEB_TABLE_TTL_DAYS=90", "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS=7"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
+                  "CapDrop": ["ALL"],
+                  "SecurityOpt": ["no-new-privileges:true"],
+                  "Memory": 536870912,
                   "Mounts": [{ "Type": "volume", "Source": "yokohama-web-data",
                                "Target": "/data" }] } }
 ```
+
+**Hardened since security S2c (B10's host half, 2026-10-13):** the container drops every
+capability (it binds 8080 as uid 10001 and needs none), may not gain privileges, and is bounded at 512 MiB — no
+recorded reading exceeds a few tens of megabytes (§3.3: 12.0 MB container peak; §3.21's B8 reading:
+container usage 9.1 to 11.0 MB and cgroup `rss` 0.38 to 0.57 MB over 1,000 requests), and the window reads `docker stats` across one capped 4,096-event replay; a
+container that hits the bound is restarted by its policy, which is the right answer for a memory leak and a wrong
+figure alike (read `docker stats` at the window and raise it with a reason, never silently).
+
+**The terminal container is NOT on `cf-internal`** since S2c: it joins its own network, which
+cloudflared also joins (Portainer: the container's Networks), so a shell in it cannot reach this server's port; the
+negative probe in `README.md` §1 step 4 is read at every deploy.
 
 **The `Env` line is not optional and is not in the image.** Neither Dockerfile
 sets `YOKOHAMA_WEB_IDENTITY`, deliberately: there is no default mode, so an
@@ -271,7 +286,10 @@ store. Do not publish 8080 to the LAN: `cf-access` trusts a header only Access
 sets, and that holds only while cloudflared is the one path to this port.
 
 Then edit the tunnel config (this repo's `cloudflared-config.yml` is the
-deployed copy), **back up the old one first**, and restart:
+deployed copy), **back up the old one first**, and read the new file back with
+`cloudflared tunnel ingress validate` inside the connector's container BEFORE the restart (security S2c;
+`access.required` is config-read, not exercised — a wrong `teamName` or `audTag` answers 403 on both
+hostnames), and restart:
 
 ```
 POST /containers/cloudflared-nas/restart
