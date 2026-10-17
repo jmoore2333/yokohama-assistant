@@ -164,7 +164,7 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
   reaches `adapter` (`lib.rs` line 1049, `to_bytes(body, 2 << 20)`): the catch-all `/api/{*rest}` and `/api/games`
   route there, and the three separate routes (`events`, `stream`, `house_stream`) and `enter` are GETs. So
   `tokio::time::timeout(state.body_deadline, to_bytes(..))` at that site covers every body, changes no other
-  answer (a 2 MiB overrun still answers the adapter's own 400), and answers `ApiError::request_timeout` (408) with
+  answer (a 2 MiB overrun that ARRIVES still answers the adapter's own 400 (a body DECLARED over the limit that never arrives is the 408 after ten seconds — the stack review's lens 2, Minor 3)), and answers `ApiError::request_timeout` (408) with
   `BODY_TOO_SLOW` when the deadline passes. The design message of 2026-10-13 said "one middleware"; this is the
   exact form, and the brainstorm's reasoning (every read site under one clock; GETs, streams and the handler's
   compute never under it) holds of it.
