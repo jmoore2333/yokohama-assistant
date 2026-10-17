@@ -56,8 +56,9 @@ anything that reaches port 8080 without passing Access can send the header and b
 4. **Read it back:** from a shell in any OTHER container on the host, first a CONTROL that proves the tool works —
    `wget -qO- --timeout=3 http://127.0.0.1:<that container's own port>/` must answer — then `wget -qO-
    --timeout=3 http://yokohama-web:8080/api/health` must FAIL with a resolution, connection or timeout error ("bad
-   address", "refused" or "timed out"; any HTTP answer, "not found" included, fails the probe, and GNU `wget -q`
-   prints nothing, so its exit status is the reading), and so must the same address by the server's IP on
+   address", "refused" or "timed out" from busybox `wget`; any HTTP answer, "not found" included, fails the probe;
+   GNU `wget -q` prints nothing, and its exit status 4, a network failure, is the pass — exit 0, exit 8 for an HTTP
+   error answer, or any other status is the finding), and so must the same address by the server's IP on
    `cf-internal` (`docker inspect`; 172.21.0.4 on the owner's NAS at every recorded recreation, read again after a
    network change) — a name that does not resolve proves nothing about a route.
    List the network's members (`docker network inspect cf-internal`): the tunnel and this server, nothing else. As
