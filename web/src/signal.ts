@@ -2,7 +2,7 @@
 // itself (spec §5.1).
 //
 // **One hook, four consumers.** `usePolled` owns the visibility rule (R-P8),
-// the connection, the backoff and the three refusals that end a signal rather
+// the connection, the backoff and the four refusals that end a signal rather
 // than slowing it down; `useSignal` is the instance whose resource is a game's
 // stream, and the dealing screen, the lobby and the open table are the other
 // three. That generalization is what made M6.3 one change: the reader under
@@ -151,7 +151,7 @@ export interface Source<T> {
  *  to its own leave. Only the game screen had a fallback, so a real abandon
  *  took the dealing screen and the open table to the lobby in silence, and so
  *  did an open table filling its last seat without the stranger watching it
- *  (a 403 read as `gone`). The two refusals that END a signal already carry the
+ *  (a 403 read as `gone`). The four refusals that END a signal already carry the
  *  server's own message and are not routed through here; these two are the
  *  frames, and the words are the client's because the frame has none. */
 export const endSentence = (reason: "deleted" | "gone"): string =>
@@ -159,9 +159,9 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
 
 /** Why a signal STOPPED, as opposed to failing and backing off.
  *
- *  The server said this stream is over (`deleted`), the resource is gone (404)
- *  or it is not ours to read (403). None of the three changes by being asked
- *  again, while the screen goes on saying "reconnecting…" about something that
+ *  The server said this stream is over (`deleted`), the resource is gone (404),
+ *  it is not ours to read (403) or the caller's open streams are at the cap (429,
+ *  security S2c). None of the four changes by being asked again, while the screen goes on saying "reconnecting…" about something that
  *  is not coming back.
  *
  *  **The socket arm reads a refusal at ADMISSION as `gone` whatever its
@@ -465,7 +465,7 @@ export function usePolled<T>(
         throw new Error("the stream closed");
       } catch (e) {
         if (stopped || mine.signal.aborted) return;
-        // **The THREE refusals that END this rather than slowing it down.** See
+        // **The FOUR refusals that END this rather than slowing it down** (404, 403, the edge's expired session, and the stream cap's 429). See
         // `End`; nothing is scheduled after any of these lines.
         //
         // **The third is the EDGE's, and it was the review's Important 2**
@@ -476,7 +476,12 @@ export function usePolled<T>(
         // they could have walked through. The consumers' `onEnd` puts the
         // sentence on a screen that draws it through `Refusal`, which is where
         // the link to `/enter` is.
-        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || isSessionExpired(e))) {
+        //
+        // — and a 429, the stream cap's refusal at admission
+        // (security S2c, D3): an answer about this caller's open streams, which asking again cannot change; the NAS answers it
+        // on `/stream` and `/api/stream`, the Worker's lobby ends on a frame instead (`End`), and both reach the consumer's
+        // `onEnd` as `refused`.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || e.status === 429 || isSessionExpired(e))) {
           ended.current?.({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,

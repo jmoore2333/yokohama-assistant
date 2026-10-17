@@ -101,6 +101,14 @@ describe("the chat panel", () => {
     // "spectating" since M6.5c2 (R-6.5c2.7), and the separator keeps the
     // needle about the marker and never about what somebody typed.
     expect(rows[2]!).toHaveTextContent("\u00b7 spectating");
+    // **The watcher's tag, beside the name** (security S2c, D8; decision D-5): four hex the server derived from the
+    // room's salt and the poster's key, so two posters with one chosen name read apart and one poster reads the same
+    // across their messages. The separator is the marker's, as the "spectating" needle is.
+    if (green.author.tag === null) throw new Error("the corpus watcher carries a tag since S2c's Task 4");
+    expect(green.author.tag).toMatch(/^[0-9a-f]{4}$/);
+    expect(rows[2]!).toHaveTextContent(`· ${green.author.tag}`);
+    // A seat carries no tag field and draws none.
+    expect(rows[0]!.textContent).not.toMatch(/· [0-9a-f]{4}/);
     // The text, and a time on every row.
     expect(rows[1]!).toHaveTextContent(wire.chat.messages[1]!.text);
     for (const r of rows) expect(r.querySelector("time")).not.toBeNull();
@@ -134,6 +142,30 @@ describe("the chat panel", () => {
       "someone",
     ]);
     for (const r of rows) expect(r.textContent).not.toContain("@");
+  });
+
+  it("draws the reader's own tag as 'you · tag', a nameless watcher's as 'someone · tag', and no tag where the room has none yet", async () => {
+    open();
+    const [red, blue, green] = wire.chat.messages;
+    if (red?.author.kind !== "seat" || blue?.author.kind !== "seat" || green?.author.kind !== "watcher") {
+      throw new Error("the corpus page is red's, blue's, then the watcher's");
+    }
+    const own: ChatPage = {
+      ...wire.chat,
+      messages: [
+        { ...green, author: { ...green.author, name: null, you: true, tag: "a1b2" } },
+        { ...green, seq: green.seq + 1, author: { ...green.author, name: null, you: false, tag: "c3d4" } },
+        { ...green, seq: green.seq + 2, author: { ...green.author, tag: null } },
+      ],
+    };
+    chatStub((call) => (call.method === "GET" ? own : undefined));
+    render(<Chat scope={TABLE} count={own.last} colors={colors} sendName={false} />);
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows.map((r) => r.querySelector(".chat-who")!.textContent)).toEqual([
+      "you · a1b2 · spectating",
+      "someone · c3d4 · spectating",
+      `${green.author.name} · spectating`,
+    ]);
   });
 
   it("fetches the delta when the count rises above what it holds, and NOTHING when it does not", async () => {

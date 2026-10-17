@@ -470,6 +470,10 @@ export function Chat({ scope, count, rev, canModerate = false, colors, sendName,
     return (
       <span className={`chat-who${scope.kind === "table" ? " watching" : ""}`}>
         {a.name ?? (a.you ? "you" : "someone")}
+        {/* **The tag** (security S2c, D8): the server's four hex for this poster in this room, drawn where a
+            name's provenance would be — "you · a1b2" tells the reader their own tag. `null` before the room's
+            first message since the tag landed (an old document): nothing drawn, nothing claimed. */}
+        {a.tag !== null && <span className="meta"> &middot; {a.tag}</span>}
         {scope.kind === "table" && <span className="meta"> &middot; spectating</span>}
       </span>
     );

@@ -366,6 +366,47 @@ describe("the lobby", () => {
     expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
   });
 
+  it("draws an ended signal's sentence in its error strip and asks nothing more (the lobby's refusal, AD-4)", async () => {
+    // Stub every listing as the file's cells do, and the house signal — the request the lobby's `usePolled` source
+    // opens (`GET /api/stream` on this host) — as a 429 with the cap's sentence; the sentence is the server's.
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? { status: 429, body: { error: sentence } } : undefined));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+      });
+      // The stream was opened once and never again; the listings were fetched once at mount.
+      expect(stub.matching("GET", "/api/stream")).toHaveLength(1);
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the ended signal's sentence when the opening listings land AFTER the end (take clears the strip)", async () => {
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      const hold = gate<void>();
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return { status: 429, body: { error: sentence } };
+        if (isGamesList(call)) return hold.promise.then(() => lists(call)!) as unknown as Reply;
+        return undefined;
+      });
+      await until(() => stub.matching("GET", "/api/stream").length === 1, "the stream was refused");
+      await flush();
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      hold.resolve();
+      await flush();
+      await until(() => within(section("Your tables")).queryByRole("link", { name: "wire" }) !== null, "the listings landed");
+      expect(screen.queryByText(sentence)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // **The repository link** (R-6.5c2.40): a quiet link among the actions where
   // the build names one, in a new tab, and absent where it does not.
   it("draws the project link among the actions only where the build names one", async () => {

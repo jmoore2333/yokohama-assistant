@@ -251,6 +251,24 @@ describe("the signal, over the stream", () => {
     }
   });
 
+  it("ends on a 429 — the stream cap's refusal — with the server's sentence, and never backs off over it", async () => {
+    // **The NAS's stream cap and the Worker's socket cap end a signal alike** (security S2c, D3; decision D-2):
+    // a 429 at admission is an answer about THIS caller's open streams, and asking again every few seconds would be
+    // a retry storm against the very cap. The consumer draws the sentence: the table screens land in the lobby with
+    // it (Review Focus 1).
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    const stub = stubApi(() => ({ status: 429, body: { error: sentence } }));
+    const { unmount } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    unmount();
+  });
+
   it("ends on the EDGE's expired session, with the sentence the door links from", async () => {
     // **Important 2 of the whole-branch review, and the false sentence under
     // it.** `readStream` classifies Access's 401 and throws `ACCESS_CHALLENGE`
