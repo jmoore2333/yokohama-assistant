@@ -7347,6 +7347,40 @@ mod tests {
         assert!(!seen.to_string().contains(debug), "{seen}");
     }
 
+    #[tokio::test]
+    async fn a_withheld_why_walks_no_more_routes_than_locate_so_no_search_runs() {
+        use yokohama_core::{route_dfs_count, route_dfs_reset, GameRecord};
+        let over = a_finished_vs_bot_game("late").await;
+        let rules = Rules::standard();
+        let (json, _) = over.games.store().read(Doc::Record, "late").expect("a store").expect("the record");
+        let record: GameRecord = serde_json::from_str(&json).expect("the record parses");
+        let holder = identity::User::parse("blue@wire.test").expect("a user");
+        let watcher = identity::User::parse("watcher@wire.test").expect("a user");
+        let _ = over.games.handle("late").expect("the handle, warm before any count");
+        let mut rows = Vec::new();
+        for n in (0..record.events.len()).rev().take(80) {
+            route_dfs_reset();
+            if yokohama_cli::why::locate(yokohama_cli::session::TrackingMode::Simulation, &record, &rules, Some(n)).is_err() {
+                continue;
+            }
+            let l = route_dfs_count();
+            route_dfs_reset();
+            let w = api::why(&over.games, &watcher, "late", &api::WhyQuery { event: Some(n) }).ok().expect("an answer");
+            let wc = route_dfs_count();
+            route_dfs_reset();
+            let p = api::why(&over.games, &holder, "late", &api::WhyQuery { event: Some(n) }).ok().expect("an answer");
+            let pc = route_dfs_count();
+            rows.push((n, l, wc, pc, w.withheld.is_some(), p.ok.is_some()));
+        }
+        let walking = rows.iter().filter(|r| r.4 && r.5 && r.3 > r.1).count();
+        assert!(walking > 0, "anti-vacuity: no bot move here has a route-walking search");
+        for r in &rows {
+            if r.4 {
+                assert_eq!(r.2, r.1, "a withheld why at event {} walked routes beyond locate's replay", r.0);
+            }
+        }
+    }
+
     /// **A locked session refuses a SEARCH and still serves a PROJECTION.**
     ///
     /// The rule the three route families follow, pinned in both directions
