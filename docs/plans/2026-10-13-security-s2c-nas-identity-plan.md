@@ -1516,7 +1516,7 @@ compatibility cell's `read_table` line red (the `p\u{200B}re` premise) — the T
     fn a_tag_is_four_hex_of_the_salted_key_and_differs_by_salt_and_by_key() {
         let t = tag_of("salt", "red@wire.test");
         assert_eq!(t.len(), TAG_HEX);
-        assert_eq!(t, "c54e", "the hand-computed reference (`printf 'salt\\nred@wire.test' | sha256sum | cut -c1-4`): the newline\n        is part of the derivation — dropping it passed every unit cell (Task 4's probe P-sep)");
+        assert_eq!(t, "c54e", "the hand-computed reference (`printf 'salt\\nred@wire.test' | sha256sum | cut -c1-4`): the newline is part of the derivation — dropping it passed every unit cell (Task 4's probe P-sep)");
         assert!(t.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{t}");
         assert_eq!(t, tag_of("salt", "red@wire.test"), "deterministic");
         assert_ne!(t, tag_of("other", "red@wire.test"), "a different room, a different tag");
@@ -1871,7 +1871,8 @@ M9b every append re-salting → the held-message cell red at "the second append 
 literals in `tables.rs`, NOT at the view cell's `matches!`, whose `..` accepts the field — structurally impossible by
 those literals, which the reviewer records (Task 4's probe); M11 `chat_salt` returns the constant
 under `SoloOnly` → the games cell red at "entropy, not a constant"; M12 `TAG_HEX` 12 → the tag cell red at the
-final `assert_eq!(TAG_HEX, 4)` (`t.len() == TAG_HEX` holds at 12); M13 the salt serialized into `MessageView` → the serde cell red.
+reference line (`"c54e"` against a twelve-character tag; before the reference was asserted it red at the final
+`assert_eq!(TAG_HEX, 4)` — Task 4's fix round); M13 the salt serialized into `MessageView` → the serde cell red.
 
 ---
 
