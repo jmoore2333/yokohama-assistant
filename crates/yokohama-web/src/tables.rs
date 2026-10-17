@@ -425,9 +425,11 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
             }
         }
     }
-    // **The table's own name, by the same rule as a seat's** (security S1b,
-    // finding D25): `create` and `join` apply it on write, and a document that
-    // arrives through the archive route or a restore never passed through them.
+    // **The table's own name, by the same READ rule as a seat's** (security
+    // S1b, finding D25): `create` and `join` apply the stricter write rule,
+    // `check_name`, to every name they store, and a document that arrives
+    // through the archive route or a restore never passed through them — so it
+    // reads here under the rule as it stood, which a pre-S2c name still passes.
     if let Some(name) = &doc.name {
         if let Err(why) = check_stored_name(name) {
             return Err(format!("the table's name: {why}"));
@@ -4088,7 +4090,7 @@ mod tests {
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
 
         // **The ORDER, and only a probe wrong in TWO ways can see it.** Each of
-        // the six above carries a single defect, so it says a rule EXISTS and
+        // the rows above carries a single defect, so it says a rule EXISTS and
         // nothing about where in the chain it sits: `name` moved above the
         // creator check would leave every one of them green. Each probe below
         // is wrong at two ADJACENT links and asserts that the EARLIER sentence
@@ -5579,7 +5581,7 @@ mod tests {
 
     /// **A stored author is served in the form the shape rule reads it in**
     /// (M6.5c2 cycle D, row 130). The rule parses the address (trimmed and
-    /// lowercased, `User::parse`) and the name (trimmed, `check_name`) and
+    /// lowercased, `User::parse`) and the name (trimmed, `check_stored_name`) and
     /// threw both results away, so a document written by hand or brought back
     /// by a restore served `" RED@T.test "` beside a seat whose key is
     /// `red@t.test` — two people, to a client comparing them. The address no

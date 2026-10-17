@@ -50,9 +50,10 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
   remove.** `cf-access` trusts a header that only Access sets, which is true
   only while the tunnel is the one path to the port: the server does not verify
   Access's signed assertion, so anything that reached 8080 some other way could
-  send the header and be anyone. Since security S2c cloudflared also validates the assertion on both ingress
-  rules and `README.md` §1's recipe is the rule. `worker` rests on the same condition for its
-  proxy. `open` trusts whatever name a caller types, so it belongs on a network
+  send the header and be anyone. `worker` rests on the same condition for its
+  proxy. Since security S2c cloudflared — not the server — validates the
+  assertion on both ingress rules, and `README.md` §1's recipe is the rule.
+  `open` trusts whatever name a caller types, so it belongs on a network
   where everyone who can reach the port may play (the self-host guide's
   [open door](README.md#2-the-open-door-a-home-network-a-lan-or-a-vpn)). Publish
   8080 and the first two properties are gone — see §3.
@@ -251,7 +252,7 @@ POST /containers/create?name=yokohama-web
 **Hardened since security S2c (B10's host half, 2026-10-13):** the container drops every
 capability (it binds 8080 as uid 10001 and needs none), may not gain privileges, and is bounded at 512 MiB — no
 recorded reading exceeds a few tens of megabytes (§3.3: 12.0 MB container peak; §3.21's B8 reading:
-container usage 9.1 to 11.0 MB and cgroup `rss` 0.38 to 0.57 MB over 1,000 requests), and the window reads `docker stats` across one capped 4,096-event replay; a
+container usage 9.1 to 11.0 MB and cgroup `rss` 0.38 to 0.57 MB over 1,000 requests), and the window reads `docker stats` under its probes, one capped 4,096-event replay among them; a
 container that hits the bound is restarted by its policy, which is the right answer for a memory leak and a wrong
 figure alike (read `docker stats` at the window and raise it with a reason, never silently).
 

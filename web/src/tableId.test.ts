@@ -12,8 +12,8 @@ const cases = wire.idCases;
 const shown = (s: string): string =>
   `"${[...s].map((c) => { const cp = c.codePointAt(0)!; return cp >= 0x20 && cp <= 0x7e ? c : `\\u${cp.toString(16).padStart(4, "0")}`; }).join("")}"`;
 
-/** Copied from the committed table's `raw` column, so the table must carry every one or the pin proves nothing
- *  about them. */
+/** The committed table's `raw` column, row for row — the two length rows spelled from `ID_MAX` rather than
+ *  copied — so the table must carry every one or the pin proves nothing about them. */
 const REQUIRED = [
   "sim-0123456789abcdef", "local-1e205cc2c8b9f836", "x", "7", "evening-2", "evening_2", "evening.2", "x.tablet",
   "a".repeat(ID_MAX), "a".repeat(ID_MAX + 1),

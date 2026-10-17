@@ -26,8 +26,9 @@ const shown = (s: string): string =>
 
 /** The inputs the rule turns on — each a place where a JavaScript built-in
  *  and Rust disagree, or a refusal the archive's containment rests on (spec
- *  §2.1, review H1). **Copied from the committed table's `raw` column**, so the
- *  table must carry every one, or the pin proves nothing about them. Every code
+ *  §2.1, review H1). **The committed table's `raw` column, row for row** (the
+ *  two length rows spelled from `NAME_MAX` rather than copied), so the table
+ *  must carry every one, or the pin proves nothing about them. Every code
  *  point outside ASCII is written as an escape, never as the character. */
 const REQUIRED = [
   "red@wire.test", "Red@Wire.TEST", " Red@Wire.TEST ", "a+b@x.test",

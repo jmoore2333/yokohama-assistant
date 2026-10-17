@@ -182,7 +182,8 @@ main() {
   if [ -n "$NETWORK" ]; then run_args+=(--network "$NETWORK"); fi
   run_args+=(-v "$VOLUME:/data" --env-file "$RUN_ENV" --restart unless-stopped)
   # The hardening of deploy/README.md section 1, step 3 (security S2c, B10's host half): no capability (the server
-  # binds 8080 as uid 10001 and needs none), no privilege gained, 512 MiB.
+  # binds 8080 as uid 10001 and needs none), no privilege gained, 512 MiB — far above every recorded reading
+  # (deploy/RUNBOOK.md section 3).
   run_args+=(--cap-drop ALL --security-opt no-new-privileges:true --memory 512m "$IMAGE")
 
   # What an operator does when the new container does not come up. It is a

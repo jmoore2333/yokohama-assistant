@@ -49,10 +49,11 @@ export const CLOUDFLARE = Object.freeze({
  *  and the console clean. A fixed nonce is a password everyone can read: the policy's INLINE-script rule is
  *  therefore nominal, and what the policy still enforces is its source lists, `object-src 'none'`, `base-uri
  *  'none'` and `frame-ancestors 'none'` — which, with no HTML sink in the client, is where its value was. Drawn
- *  once with `randomBytes(16)`, base64 without padding, 22 characters, redrawn until alphanumeric; pinned by its
- *  cell. The recorded fallback, should the edge ever inject the script WITHOUT this nonce: restore the harness's
- *  forgiveness from this commit's parent in the ENFORCED line's words, read at `error`, and drop the token below at
- *  the next release (S2c's plan, D-9 and D-15). */
+ *  once with `randomBytes(16)`, base64 without padding, 22 characters, redrawn until alphanumeric; its SHAPE held by
+ *  its cell (which admits `+` and `/` too, AD-13's choice). The recorded fallback, should the edge ever inject the
+ *  script WITHOUT this nonce: restore S2a's `isReportOnlyDetectionLine` and its arm in `web/e2e/harness.ts` as they
+ *  stood at `d921d078`, in the ENFORCED line's words, read at `error`, and drop the token below at the next release
+ *  (S2c's plan, D-9 and D-15). */
 export const CLOUDFLARE_INJECTION_NONCE = "9fbW9ooNwE2u6pVVRviwRA";
 
 /**

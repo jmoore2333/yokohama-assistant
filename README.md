@@ -366,9 +366,10 @@ live, historical, the card indexes, the explanations — is built for the seat t
 so walking every position of the replay returns your own hands and no other's and the history
 cannot be harvested in a single pass. Before M6.1 that was a fence around whoever happened to be
 moving; it is now a fence around a named person, resolved from the identity header on every
-request. On the NAS it is still **not** a claim that the identity was verified; on Cloudflare the
-Worker verifies Access's signed assertion before anything else reads the request — see
-[Hosting](#hosting) below.
+request. On the NAS the server verifies nothing itself: since S2's wrap window cloudflared verifies
+Access's signed assertion on the tunnel's ingress before the server reads the request, and the
+tunnel is the one path to its port (the self-host guide's §1 recipe). On Cloudflare the Worker
+verifies the assertion before anything else reads the request — see [Hosting](#hosting) below.
 
 **Asking the bot.** `Suggest` runs the production bot on your seat and shows the move, the line
 it searched, and the arithmetic term by term. `Why` does the same for a move a bot already
@@ -405,9 +406,11 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     2026-09-22 under the mode then called `claimed`, from the M6.5c2 close (2026-09-28) it ran
     `yokohama-web:0.6.0-m6.5c2` under `cf-access`, from cycle D's close (2026-09-29) it ran
     `yokohama-web:0.6.0-m6.5c2d`, from cycle E's release (2026-09-30) it ran
-    `yokohama-web:0.6.0-m6.5c2e`, and since cycle F's release (2026-10-01) it runs
-    `yokohama-web:0.6.0-m6.5c2f`, with server-sent events, a directory archive and the hourly sweep at the
-    Worker's 90 and 7 days (`deploy/RUNBOOK.md` §3.17 to §3.20 are the last four deployments' records).
+    `yokohama-web:0.6.0-m6.5c2e`, from cycle F's release (2026-10-01) it ran
+    `yokohama-web:0.6.0-m6.5c2f`, from security S1's release (2026-10-11) it ran `yokohama-web:0.6.1-s1`,
+    and since S2's wrap window it runs `yokohama-web:0.6.3-s2`, with server-sent events, a directory
+    archive and the hourly sweep at the Worker's 90 and 7 days (`deploy/RUNBOOK.md` §3.19 to §3.22 are
+    the last four deployments' records).
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the

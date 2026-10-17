@@ -386,9 +386,9 @@ fn account(
 
 /// **Where `why` looks, before any search** (security S2c, decision D-6): the index `arg` names or the last
 /// explainable bot move, the state that move was decided in (`state_at(record, n)`), its mover and the mover's
-/// contestant, with every pre-search refusal in [`account_parts`]'s order — pure replay, so a caller that stops
-/// here has paid nothing a hidden hand could vary. The layer's `why` reads the requester's visibility on this and
-/// reaches [`account_from`] only when the account may be served.
+/// contestant, with every pre-search refusal in [`account_parts`]'s order — pure replay that runs no search, so a
+/// caller that stops here pays the replay alone, which the old flow paid too. The layer's `why` reads the
+/// requester's visibility on this and reaches [`account_from`] only when the account may be served.
 pub struct Located {
     pub index: usize,
     pub seat: PlayerId,
@@ -399,6 +399,7 @@ pub struct Located {
     pub current_version: u32,
 }
 
+/// The pre-search half of [`account_parts`]: what it reads and every refusal it raises are [`Located`]'s doc.
 pub fn locate(mode: TrackingMode, record: &GameRecord, rules: &Rules, arg: Option<usize>) -> Result<Located, Refusal> {
     if matches!(mode, TrackingMode::Live) {
         return Err(Refusal::LiveMode);

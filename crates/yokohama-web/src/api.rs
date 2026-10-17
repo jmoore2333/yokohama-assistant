@@ -1733,15 +1733,16 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
         )
     };
     // **A move a foreign bot made is the layer's to word** (M6.5c2,
-    // R-6.5c2.10): `account_parts` would call that seat a diagnostic that
+    // R-6.5c2.10): `why::locate` would call that seat a diagnostic that
     // "resumed as a HUMAN seat". Outside the lock, over the clone, as the
     // search below is.
     if let Some(refused) = explain::foreign_why(&record, games.rules(), q.event) {
         return Ok(refused);
     }
     // **The visibility is read BEFORE any search** (security S2c, the explain surface's first rule; D-6, D-7):
-    // `locate` is pure replay — the index, the mover, its contestant and every pre-search refusal — and costs
-    // nothing a hidden hand could vary; a withheld answer is built from it and never reaches `decide`.
+    // `locate` is pure replay — the index, the mover, its contestant and every pre-search refusal — and runs no
+    // search: a withheld answer is built from it, costs the replay alone (which the old flow paid too) and never
+    // reaches `decide`.
     let located = match yokohama_cli::why::locate(mode, &record, games.rules(), q.event) {
         Ok(l) => l,
         Err(refusal) => return Ok(explain::Why::refused(&refusal)),

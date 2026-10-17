@@ -37,8 +37,8 @@ originRequest:
 ingress:
   # Security S2c (finding B10's host half; the owner's R-1, 2026-10-13): each rule below carries
   # `originRequest.access`, so cloudflared validates the Access assertion ITSELF before it proxies a request -- the
-  # signature, the issuer and the audience -- and a request that reached this connector without passing Access (a
-  # bypass policy, a hostname added later) is refused here, in Cloudflare's own code. `teamName` is the team's
+  # signature, the issuer and the audience -- and refuses, in Cloudflare's own code, any request that reaches it
+  # without a valid token for that application (a bypass policy, a hostname added later). `teamName` is the team's
   # `<team>.cloudflareaccess.com` prefix and `audTag` the one application's audience (one application carries the
   # three hostnames, spec B11); both are the Worker's committed values (`worker/wrangler.jsonc`), not secrets. With
   # `required: true` a request carrying no valid token answers 403 from cloudflared. Read it back with

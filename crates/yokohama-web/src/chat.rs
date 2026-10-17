@@ -542,8 +542,9 @@ pub fn check_shape(doc: &ChatDoc, players: Option<u8>) -> Result<(), String> {
 
 /// `doc` with every author in the form [`check_shape`] parses it into — the
 /// address as `User::parse` keys it (trimmed, lowercased) and the name as
-/// `check_name` stores it (trimmed) — for a document that has PASSED the shape
-/// rule (M6.5c2 cycle D, row 130).
+/// `tables::check_stored_name` reads it (trimmed; the READ rule, never the
+/// write rule's `check_name`, which would leave a pre-S2c name padded) — for a
+/// document that has PASSED the shape rule (M6.5c2 cycle D, row 130).
 ///
 /// The rule used to parse both and throw the results away, so a document
 /// written by hand or brought back by a restore served `" RED@T.test "` beside

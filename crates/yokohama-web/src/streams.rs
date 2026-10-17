@@ -4,17 +4,22 @@
 //! **Counted at admission, OPEN streams only.** [`Streams::admit`] hands back a [`Slot`] that the SSE body holds
 //! ([`crate::Admitted`]) and releases on its drop — so a connection the client abandons frees its slot exactly when
 //! hyper drops the body, never before and never later, and nothing else can free one. The review's measurement:
-//! 500 streams as 500 watchers in 3.1 s, one chat post fanned out to 500 admission reads; each table-stream frame
-//! costs a `spawn_blocking` read, and the pool is 512 threads, which is why the house's total is 256 here where the
-//! Worker's lobby holds 1,024 sockets per object.
+//! 500 streams as 500 watchers in 3.1 s, one chat post fanned out to 500 admission reads, since each table-stream
+//! frame costs a `spawn_blocking` read on the one 512-thread pool. A house frame reads nothing, but every lobby it
+//! reaches re-reads its three listings on a bump that re-lists, three dispatches on that same pool — 768 at 256
+//! lobbies — which is why the house's total is 256 here where the Worker's lobby holds 1,024 sockets per object,
+//! its lobbies' re-reads landing on requests of their own.
 //!
 //! **The figures mirror the Worker's** so the two hosts read alike: 8 per caller a room, 64 a table. The verdicts in
 //! the Worker's order — the room's total first, then the caller's — each a constant sentence and never a caller
 //! value. The maps hold an entry only while a stream is open (B8's lesson: a map nobody has written costs nothing).
 //!
 //! **The per-caller key is the identity the door hands over** — the verified address under Access, the claimed name
-//! under the open door, where a name rotation escapes the per-caller figure and meets the room's total alone (S2b's
-//! D-3, recorded for S4); the room's total is the bound a process relies on.
+//! under the open door, where a name rotation escapes the per-caller figure and meets the room's total alone (the
+//! Worker's sibling is `docs/web-lane.md` §15's socket-cap row, S2b's finding D3; recorded for S4). The room's total
+//! is the bound a process relies on, and it judges a seated player as it judges anyone: a full room refuses them, in
+//! the TABLE's sentence that takes them to the lobby (S2c's D-2), until streams close. Neither figure is a budget a
+//! feature may lean on; a seat-aware admission is S4's.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -29,8 +34,10 @@ pub const STREAMS_PER_CALLER: usize = 8;
 pub const STREAMS_PER_TABLE: usize = 64;
 /// Lobby streams one caller may hold open. The Worker's `LOBBY_PER_CALLER`.
 pub const HOUSE_STREAMS_PER_CALLER: usize = 8;
-/// Lobby streams the process holds open in all: 32 people at eight, half the blocking pool a house bump could
-/// otherwise occupy (the Worker's lobby object holds 1,024 because it pays no admission read per socket).
+/// Lobby streams the process holds open in all: 32 people at eight. A house frame reads nothing, but each lobby it
+/// reaches re-reads its three listings on a bump that re-lists, on the one 512-thread blocking pool — 768
+/// dispatches at this figure (the Worker's lobby object holds 1,024 because its lobbies' re-reads are requests of
+/// their own).
 pub const HOUSE_STREAMS_TOTAL: usize = 256;
 
 pub const TOO_MANY_STREAMS_CALLER: &str = "too many open streams from you at this table — close one and try again";

@@ -184,7 +184,7 @@ impl ApiError {
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self { status: StatusCode::TOO_MANY_REQUESTS, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
-    /// A body that did not arrive in time (security S2c, decision D-3): 408 with [`BODY_TOO_SLOW`].
+    /// A body that did not arrive in time (security S2c, decision D-3): 408 with `BODY_TOO_SLOW`.
     pub fn request_timeout(message: impl Into<String>) -> Self {
         Self { status: StatusCode::REQUEST_TIMEOUT, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
@@ -415,8 +415,8 @@ pub const BUSY: &str = "the server is busy replaying — try again in a second";
 /// How long a request body may take to arrive, in all (security S2c, D3's companion; decision D-3): every
 /// legitimate body is under 512 KiB and arrives in one burst over the tunnel; ten seconds is a slow phone on a bad
 /// link, and a stall past it is a connection somebody is holding, which this turns from an unbounded hold into a
-/// rate the edge and the caps already bound. `axum::serve` sets no timer, so without this the binary bounds no
-/// read at all.
+/// rate the edge already bounds, and the container's memory bound meets. `axum::serve` sets no timer, so without
+/// this the binary bounds no read at all.
 #[cfg(feature = "server")]
 pub const BODY_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// The 408's sentence.
@@ -760,6 +760,7 @@ impl AppState {
         Self { claims: policy, ..self }
     }
 
+    /// This state under its own body deadline (security S2c, D-3) — the builder a cell takes to read the 408.
     pub fn with_body_deadline(self, deadline: std::time::Duration) -> Self {
         Self { body_deadline: deadline, ..self }
     }

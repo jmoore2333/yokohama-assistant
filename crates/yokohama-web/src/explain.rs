@@ -512,9 +512,9 @@ pub struct WhyOk {
 impl Why {
     /// **The withheld half from the RECORD alone** (security S2c, the explain surface's first rule; decision D-6):
     /// built before any search from what `why::locate` read by replay — the move played, the claim, the sentence —
-    /// so a withheld answer costs the requester's clock nothing a hidden hand could vary (the S1 stack review's
-    /// timing channel: 1 ms–4.4 s of search, a function of the hand, closed by not running it). The same bytes
-    /// [`Self::account`] produces at `Visibility::Withheld`, pinned.
+    /// so it runs no search: a withheld answer costs the replay alone, which the old flow paid too (the S1 stack
+    /// review's timing channel: 1 ms–4.4 s of search, a function of the hand, closed by not running it). The same
+    /// bytes [`Self::account`] produces at `Visibility::Withheld`, pinned.
     pub fn withheld_from(l: &yokohama_cli::why::Located, rules: &Rules) -> Self {
         Self {
             ok: None,
@@ -527,7 +527,9 @@ impl Why {
         }
     }
 
-    /// The account at `visibility` ([`visibility_of`] is the route's reading).
+    /// The account at `visibility`. The route hands it `Visibility::Public` alone, since a withheld requester is
+    /// answered by [`Self::withheld_from`] before any search; the `Withheld` arm is that half's pinned twin, built
+    /// from a searched account, and no served answer takes it.
     pub fn account(a: &WhyAccount, rules: &Rules, visibility: Visibility) -> Self {
         let provenance = Provenance::of(&a.reconstruction);
         let text = yokohama_cli::describe::describe_move(&a.mv, &a.state, rules);
@@ -633,7 +635,7 @@ pub const FOREIGN_BOT_KIND: &str = "foreign_bot";
 /// - **`why <n>`** is answered here only when event `n` is a move whose mover
 ///   — `state_at(record, n).current_player`, the CLI's own attribution — is a
 ///   foreign seat. A human's move, an event out of range, a setup reveal or a
-///   replay that fails are `account_parts`' to word.
+///   replay that fails are `why::locate`'s to word.
 pub fn foreign_why(record: &yokohama_core::GameRecord, rules: &Rules, event: Option<usize>) -> Option<Why> {
     let foreign = crate::bots::foreign(record);
     let (_, first, first_why) = foreign.first()?;

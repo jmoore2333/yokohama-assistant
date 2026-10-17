@@ -494,8 +494,8 @@ corrected.
 
 ```sh
 # The browser User-Agent every curl at either host carries (the smoke's own; §7's Bot Fight Mode bullet says why).
-# This is the ONE definition: §4, §5 and §7 use the variable as set here. It works from any directory (the `cd` is
-# inside the substitution, to the repository's own worker/), and leaves the shell where it was.
+# This is the ONE definition: §4, §5 and §7 use the variable as set here. It works from any directory in the clone
+# (the `cd` is inside the substitution, to the repository's own worker/), and leaves the shell where it was.
 BROWSER_UA=$(cd "$(git rev-parse --show-toplevel)/worker" && node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
 B=https://yokohama.moore.nyc
 curl -s -A "$BROWSER_UA" "$B/api/admin/tables" | jq                                              # the listing

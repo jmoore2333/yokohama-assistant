@@ -1333,8 +1333,8 @@ function consolePage() {
   };
 }
 
-/** Chromium's Report-Only refusal of an inline script under the shipped `script-src`, word for word (the hash is
- *  the injected script's own, and varies). */
+/** Chromium's Report-Only refusal of an inline script under 0.6.2's `script-src` (the shipped one carries the nonce
+ *  since 0.6.3), word for word (the hash is the injected script's own, and varies). */
 const RO_INLINE =
   "Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com https://static.cloudflareinsights.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-aBV9DC+smatNUlnkSmZOl+jfLQV1VY8nHmiO1eoMzIU='), or a nonce ('nonce-...') is required to enable inline execution. The policy is report-only, so the violation has been logged but no further action has been taken.";
 /** The same refusal of an inline STYLE — another directive's line. */
