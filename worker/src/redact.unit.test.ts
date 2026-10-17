@@ -40,6 +40,15 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
     expect(redactKey("browser/red-0123456789abcdef"), "sixteen hex after the dash are no twelve-hex digest: left whole").toBe("browser/red-0123456789abcdef");
   });
 
+  // The S2 stack review's second run (lens 1, N-1): the readable half is `caller_segment`'s alphabet alone
+  // (`[a-z0-9._-]`, `@` written `_at_`), so a match never runs across a message to a LATER twelve-hex token and
+  // names it as the folder. Mutant: the readable half back to `[^/]*` — the line below reads `browser/fedcba987654`.
+  it("stops the readable half at the segment's own alphabet, never at a later hex token across the message", () => {
+    expect(redactKey("list browser/alice_at_corp.example-0123456789ab failed; see a-fedcba987654")).toBe(
+      "list browser/0123456789ab failed; see a-fedcba987654",
+    );
+  });
+
   it("redacts EVERY browser segment in a message, not the first alone (the g flag)", () => {
     const two = 'copy browser/alice-0123456789ab/x.json to browser/bob-fedcba987654/y.json failed';
     expect(redactKey(two)).toBe("copy browser/0123456789ab/x.json to browser/fedcba987654/y.json failed");
