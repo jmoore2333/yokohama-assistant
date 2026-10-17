@@ -2602,7 +2602,7 @@ run, named `a_withheld_why_walks_no_more_routes_than_locate_so_no_search_runs`:
         let record: GameRecord = serde_json::from_str(&json).expect("the record parses");
         let holder = identity::User::parse("blue@wire.test").expect("a user");
         let watcher = identity::User::parse("watcher@wire.test").expect("a user");
-        let _ = over.games.handle("late").ok().expect("the handle, warm before any count");
+        let _ = over.games.handle("late").expect("the handle, warm before any count"); // `.ok().expect` trips clippy's `ok_expect`: `GameError` is `Debug`
         let mut rows = Vec::new();
         for n in (0..record.events.len()).rev().take(80) {
             route_dfs_reset();
