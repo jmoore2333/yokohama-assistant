@@ -230,8 +230,8 @@ elsewhere, which is how this NAS is deployed.
 
 ## 3. Run it, and take the hostname
 
-**The container joins `cf-internal`** — the network `cloudflared-nas` shares
-with the services it serves. (The config file's recipe said `cf-edge`; the
+**The container joins `cf-internal`** — the network only `cloudflared-nas` and this
+server join (S2c; before it, every served service sat there). (The config file's recipe said `cf-edge`; the
 deployment never matched it, and the file has been corrected.)
 
 ```

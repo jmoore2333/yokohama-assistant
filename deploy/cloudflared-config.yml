@@ -19,8 +19,8 @@
 # protects nothing (no Access).
 #
 # Step 1 said `cf-edge` until 2026-09-01 and the deployment never matched it:
-# `cloudflared-nas` joins BOTH `cf-edge` and `cf-internal`, and every service it
-# actually serves sits on `cf-internal`. Corrected to the network that works.
+# until S2c, `cloudflared-nas` joined both `cf-edge` and `cf-internal`, and every
+# service it served sat on `cf-internal`; step 1 above is the rule since.
 
 tunnel: 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc
 credentials-file: /etc/cloudflared/6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.json
