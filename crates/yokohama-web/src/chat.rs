@@ -724,6 +724,8 @@ mod tests {
         assert!(check_shape(&bad_name, Some(2)).is_err());
         let ctl = doc(vec![seat(1, 0, "a\u{7}b")]);
         assert!(check_shape(&ctl, Some(2)).is_err(), "a control character in a stored text");
+        let joined = doc(vec![seat(1, 0, "h\u{200D}i")]);
+        assert_eq!(check_shape(&joined, Some(2)), Ok(()), "a stored line the old rule admitted still reads (D-4: a family emoji's joiners)");
         let mut newer = doc(vec![]);
         newer.schema = CHAT_SCHEMA + 1;
         assert!(check_shape(&newer, Some(2)).is_err());

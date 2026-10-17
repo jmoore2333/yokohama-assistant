@@ -4072,6 +4072,13 @@ mod tests {
             "create reads a display name through the WRITE rule (S2c Task 3): the read rule admits a zero-width space",
         );
         let mut r = req("o");
+        r.name = Some("Thursday\u{200B}game".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "name: a name has no control, invisible or direction-changing character",
+            "create reads a table's name through the WRITE rule: the read rule admits a zero-width space",
+        );
+        let mut r = req("o");
         r.password = Some("   ".into());
         assert!(
             games.create(&r, &red).unwrap_err().to_string().contains("at least one character")

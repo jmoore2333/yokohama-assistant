@@ -10012,8 +10012,9 @@ mod tests {
     }
 
     /// **A document this server wrote under the OLD name rule still reads** (S2c Task 3's compatibility catcher): a
-    /// seat's display name and a house watcher's name carrying a zero-width space, stored before the cycle, are
-    /// served as they were — `check_shape` is the READ-side rule (`check_stored_name`, `is_control` alone); the new
+    /// seat's display name, the TABLE's own name and a house watcher's name carrying a zero-width space, and a house
+    /// LINE carrying a joiner, stored before the cycle, are served as they were — `check_shape` is the READ-side rule
+    /// (`check_stored_name` and `is_control` alone on a line); the new
     /// rule is the write side's. Without this split the lobby chat and the table answered 500 on every route.
     #[tokio::test]
     async fn a_document_stored_under_the_old_name_rule_still_reads_and_the_house_chat_still_takes_a_post() {
@@ -10029,9 +10030,12 @@ mod tests {
         let store = Arc::clone(state.games.store());
         let (json, ver) = store.read(Doc::Table, "pre").expect("a store").expect("the table");
         let json = json.replace("Captain Red", "Captain\\u200BRed");
+        let json = json.replace("\"name\": \"pre\"", "\"name\": \"p\\u200Bre\"");
+        assert!(json.contains("p\\u200Bre"), "premise: the stored table's own name carries a zero-width space");
         store.write_if_version(Doc::Table, "pre", &json, Some(ver)).expect("written");
         let (json, ver) = store.read(Doc::House, "house").expect("a store").expect("the chat");
-        let json = json.replace("\"Bob\"", "\"Bob\\u200B\"");
+        let json = json.replace("\"Bob\"", "\"Bob\\u200B\"").replace("\"text\": \"hi\"", "\"text\": \"h\\u200Di\"");
+        assert!(json.contains("\"text\": \"h\\u200Di\""), "premise: a stored LINE carries a joiner the old rule admitted (D-4)");
         store.write_if_version(Doc::House, "house", &json, Some(ver)).expect("written");
         assert!(state.games.read_table("pre").expect("the table still reads").is_some());
         let (status, body) = get_as(&state, "red@wire.test", "/api/chat").await;
