@@ -53,8 +53,8 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
   send the header and be anyone. `worker` rests on the same condition for its
   proxy. cloudflared — not the server — is where the assertion is validated,
   on both ingress rules: `cloudflared-config.yml` carries the two `access`
-  blocks (security S2c), S2's window copies that file to the NAS, and until
-  then the running tunnel passes each request on unchecked. `README.md` §1's
+  blocks (security S2c); S2's window copied that file to the NAS on 2026-10-17 (§3.22), and
+  until then the running tunnel passed each request on unchecked. `README.md` §1's
   recipe is the rule.
   `open` trusts whatever name a caller types, so it belongs on a network
   where everyone who can reach the port may play (the self-host guide's
@@ -63,8 +63,9 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
 - **The tunnel is LOCALLY managed.** `/volume1/docker/cloudflared/config/config.yml`
   on the NAS is the source of truth for ingress; the Zero Trust dashboard shows
   its routes read-only. This repository's `cloudflared-config.yml` is the file a
-  deploy copies there — S2's window is the first to copy S2c's `access` blocks,
-  so until then it is ahead of the NAS's file — and the file on the NAS is the
+  deploy copies there — S2's window copied S2c's `access` blocks first, on 2026-10-17 (§3.22); the NAS's
+  copy is the file as `5cbeb390` committed it, and this file differs from it since by the
+  comment that records that window — and the file on the NAS is the
   thing that runs.
 - **The NAS is an Intel Atom C2538: 4 cores, 16.8 GB, DSM 7.4, kernel 3.10.108,
   Docker 24.0.2, x86_64.**
@@ -236,8 +237,8 @@ elsewhere, which is how this NAS is deployed.
 ## 3. Run it, and take the hostname
 
 **The container joins `cf-internal`**, which is for `cloudflared-nas` and this server alone (security S2c,
-B10's host half): S2's window moves the terminal container to a network of its own, and until then every service the
-tunnel serves sits on `cf-internal`. (The config file's recipe said `cf-edge`; the deployment never matched it, and
+B10's host half): since S2's window (2026-10-17, §3.22) the terminal container sits on a network of its own, `cf-terminal`,
+which cloudflared also joins; until then every service the tunnel served sat on `cf-internal`. (The config file's recipe said `cf-edge`; the deployment never matched it, and
 the file has been corrected.)
 
 ```
@@ -254,8 +255,8 @@ POST /containers/create?name=yokohama-web
                                "Target": "/data" }] } }
 ```
 
-**The create body hardens the container** (security S2c, B10's host half, 2026-10-13; S2's window is the first
-deploy to run it): the container drops every capability (it binds 8080 as uid 10001 and needs none), may not gain
+**The create body hardens the container** (security S2c, B10's host half, 2026-10-13; S2's window ran it first,
+2026-10-17, §3.22): the container drops every capability (it binds 8080 as uid 10001 and needs none), may not gain
 privileges, and is bounded at 512 MiB — no
 recorded reading exceeds a few tens of megabytes (§3.3: 12.0 MB container peak; §3.21's B8 reading:
 container usage 9.1 to 11.0 MB and cgroup `rss` 0.38 to 0.57 MB over 1,000 requests), and the window reads `docker stats` under its probes, one capped 4,096-event replay among them; a
@@ -263,9 +264,13 @@ container that hits the bound is restarted by its policy, which is the right ans
 figure alike (read `docker stats` at the window and raise it with a reason, never silently).
 
 **The terminal container belongs on its own network, never on `cf-internal`**: one cloudflared also joins
-(Portainer: the container's Networks), so a shell in it cannot reach this server's port. S2's window moves it there
-(until then it shares `cf-internal`), and the negative probe in `README.md` §1 step 4 is read at every deploy from
-that window on.
+(Portainer: the container's Networks), so a shell in it cannot reach this server's port. S2's window moved it there
+(2026-10-17, §3.22; it shared `cf-internal` until then), and the negative probe in `README.md` §1 step 4 is read at every
+deploy since. **The two Portainer stack files still name the old networks** (the terminal stack `yokohama` lists
+`cf-internal`; the stack `cloudflared-nas` lists `cf-edge` and `cf-internal`): the move was made container by container
+through the Docker API, so an update of either stack from its file would recreate its container on the old networks —
+the owner edits both files in Portainer's editor (the terminal on `cf-terminal`; cloudflared on all three) before the
+next stack update.
 
 **The `Env` line is not optional and is not in the image.** Neither Dockerfile
 sets `YOKOHAMA_WEB_IDENTITY`, deliberately: there is no default mode, so an
@@ -2505,6 +2510,30 @@ The same code as the Worker's thirty-second deployment (`worker/RUNBOOK.md` §21
 
 ---
 
+### 3.22 The nineteenth deployment — `yokohama-web:0.6.3-s2`, 2026-10-17 (security S2's release; a record, not a plan)
+
+The same code as the Worker's thirty-fourth deployment (`worker/RUNBOOK.md` §22): master `5cbeb390`, the merge of PR #52 after PR #55 and PR #54 (merge commits `70ade983`, `53f427a2`), tagged `v0.6.3` and **published by `release.yml` (run 39034825202, 4.7 min, the release at 13:05:35Z) BEFORE either deploy was cut** — the owner's standing order; the tree built was `0745cfb9`, one documents commit past the tag with every code path byte-identical to it. ONE window for the three S2 cycles (the fold, R-8 of the S2c plan: `v0.6.2` was never tagged or deployed, so this host went 0.6.1 → 0.6.3), the orchestrator with the owner at the keyboard, **the NAS first as the canary** (D-15) and the Worker only on its reading. What changed for this host since §3.21: the header set ENFORCED with the fixed nonce (S2a's set, S2c's R-6), the stream caps and the body deadline (S2c's D3 half, R-7), the name rule and the chat tag (D8), the withheld `why` (B1), and B10's host half — cloudflared validating the Access assertion, the private network, the hardened container — applied here for the first time.
+
+- **The build** (§1's recipe, 17:44Z): the musl binary **7,196,456 B** (§3.21's was 7,107,608 B), `ELF 64-bit LSB pie executable, x86-64, static-pie linked`, 13.8 s; the NAS's dist with `YOKOHAMA_SITE_URL=https://yokohama-nas.moore.nyc`, the four other values and no Turnstile key — **the release `yokohama-release-aeb4c3dc275d122a`** (the Worker's is `yokohama-release-ef0f946478c75a51`, the same code under its own address), 153 precache entries, 10,091,200 B, the module 1,250,253 B at `/assets/yokohama_wasm_bg-DSKrRp2q.wasm` (`wasm-opt 133`, 1,892,039 → 1,250,253 B), `shell.bin` 4,590 B, `debug_trap` 0, `dist/headers.json` 911 B.
+- **The image** (§2's path): the context 181 entries, zero `._` entries, 11,515,786 B, served from a scratch directory on the LAN at `192.168.1.221:8899` (`.dev.vars` 404 before the POST; the directory held the context and the tunnel file below and nothing else; stopped and emptied once both were fetched); `POST /build … t=yokohama-web:0.6.3-s2` through Portainer's Docker proxy at 17:49:12Z — the image `sha256:7b34fa49…`, 25,211,873 B.
+- **The update reading pinned FIRST** (`node web/scripts/pinned-browsers.mjs nas https://yokohama-nas.moore.nyc web/scripts/pinned/nas-s2 --go-wait 90`, a fresh profile over WARP): pinned 17:50:36Z on `yokohama-release-8a792d37d7fbe8f3`, the game tab `local-35f5c229fb8be0df` at 3 events, `PINNED` 17:50:38Z — before anything on this host moved.
+- **The network split** (17:47:52–17:48:30Z, through Portainer): a new internal network **`cf-terminal`** (no egress); `cloudflared-nas` and `yokohama-terminal` joined to it; the terminal disconnected from `cf-internal`. Read back: `cf-internal` holds `cloudflared-nas` and `yokohama-web` and nothing else; `cf-terminal` holds `cloudflared-nas` (172.27.0.2) and `yokohama-terminal` (172.27.0.3). The terminal hostname served 200 throughout. **The two Portainer stack files were not changed** (the Portainer MCP's stack calls answer 503 on this server; the files were read off the volume): the owner's item, above in §3.
+- **The tunnel file** (17:46–17:48Z): the running `config.yml` (5,936 B, the 2026-09-22 revision, no `access` block) backed up as **`config.yml.bak-2026-10-17`**, then this repository's `cloudflared-config.yml` as `5cbeb390` committed it written in its place through a one-shot container on the config directory — 7,727 B, SHA-256 `13fe2d58286ca127f0733822e8f4a395613259799ced481a8d95046e32347b14`, root-owned 644; **`cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate` inside the connector's container: `Validating rules from /etc/cloudflared/config.yml` — `OK`** (cloudflared 2026.3.0; its log recommends 2026.10.1, the owner's item); the connector restarted at 17:49:56Z — the new process up at 17:49:59Z with four connections registered by 17:50:01Z (ewr11, ewr14, ewr11, ewr08) and **no refusal in its log**; through it, `/api/health` still 0.6.1, `/api/me` naming the owner, the terminal 200 — the `access` blocks admitted the owner's requests before the swap, which is the config-read D-12 asked for.
+- **The swap** (17:55:02–17:55:21Z): `yokohama-web` (`50dad60b`, §3.21's) stopped and deleted; the new one **`56a78d7e`** created from §3's body — the FOUR `Env` entries, `cf-internal`, `unless-stopped`, the volume, **and the hardened `HostConfig`, read back through Portainer: `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges:true"]`, `Memory: 536870912`** (the kernel took all three); started 17:55:20.54Z, `listening on http://0.0.0.0:8080` at 17:55:20.617Z; `cloudflared-nas` restarted (the server at 172.21.0.2, the connector at 172.21.0.3 on `cf-internal`).
+- **§3.2 readings** (17:55:59Z): `/api/health` **`server_version 0.6.3`**, `semantics_rev 7`, `identity cf-access`, `signal sse`, `archive dir`, `table_ttl_days 90`, `open_table_ttl_days 7`; `/api/me` names the owner — no STOP; `/sw.js` names `yokohama-release-aeb4c3dc275d122a`.
+- **The header reads** (right after the health read, before `go`): `/`, `/shell.bin`, `/api/health`, `/nothing-here` and the entry chunk `/assets/index-BvjgOIZi.js` each carry the whole set — `content-security-policy` with `'nonce-9fbW9ooNwE2u6pVVRviwRA'` in `script-src`, `style-src` naming the one hash, `connect-src` naming this host's `wss://`, `frame-ancestors 'none'`; `x-frame-options: DENY`; `x-content-type-options: nosniff`; `referrer-policy: strict-origin-when-cross-origin`; `permissions-policy`; `cross-origin-opener-policy: same-origin` — `/shell.bin` and `/api/health` `cache-control: no-store` (`BYPASS` / `DYNAMIC`), the entry chunk `immutable` (`MISS`, a new hash); `/nothing-here` answers 200 with the shell on this host. **The edge's injected script carries the nonce**: `curl … / | grep -o 'nonce="…"'` read exactly one `nonce="9fbW9ooNwE2u6pVVRviwRA"` attribute (the canary's browser read two, below).
+- **`go` at 17:56:01Z**, 41 seconds after the server's "listening" line.
+- **THE CANARY (D-15)** — a fresh Chromium profile's first visit to `https://yokohama-nas.moore.nyc/` over WARP, every console message at every level recorded with its type (the orchestrator's `canary.mjs` on Playwright's Chromium, the pinned instrument's shape), 17:56:24–17:56:44Z: **no CSP line at any level**; the document's body carried TWO `nonce="9fbW9ooNwE2u6pVVRviwRA"` attributes (the edge's detection script, one injection, two tags); the door read "Ready to play offline"; **the ONE console line was `[error] Failed to load resource: the server responded with a status of 403 ()` at `https://api.github.com/repos/jmoore2333/yokohama-assistant/releases/latest`** — the release feed's failure while the repository is private, the line the live walk forgives by name (`worker/RUNBOOK.md` §7), not a policy line. **The reading is (i), clean** (the orchestrator's ruling, the owner at the keyboard and told): the wild reading, so the Worker's deploy proceeded. A second navigation, served by the service worker, printed NOTHING and carried the set with `cache-control: no-store` (D13's reading); `/nothing-here` the same, SW-served; **B4**: a `data:` page framing `https://yokohama-nas.moore.nyc/#/lobby` was refused — the console's one line `Framing 'https://yokohama-nas.moore.nyc/' violates the following Content Security Policy directive: "frame-ancestors 'none'". The request has been blocked.` (Access answered the framed request over WARP; the policy refused the frame; nothing acted); the profile's two cookies (`CF_Authorization`, `cf_clearance`) cleared before the context closed, none left.
+- **The network read and the negative probe** (an exec in `yokohama-terminal`, uid 1026, its `eth1` at 172.27.0.3): the control `wget -qO- --timeout=3 http://127.0.0.1:7681/` answered **HTTP 407** (ttyd's own auth refusal — the tool works and the listener answers); `wget -qO- --timeout=3 http://yokohama-web:8080/api/health` → **`bad address 'yokohama-web:8080'`** rc 1; the same by the server's address `http://172.21.0.2:8080/api/health` → **`download timed out`** rc 1. The terminal image carries BusyBox `wget` (a window-time read, as the plan said).
+- **THE UPDATE READING on this host**: `go` at 17:56:01Z; the door reloaded once at 17:56:03Z; **11 checks, every check held** (17:56:20Z) — the door had not taken a release before `go`, the deployed release is not the pinned one (`8a792d37d7fbe8f3` → `aeb4c3dc275d122a`), the door reloaded itself exactly once and reads "Ready to play offline", both generations stand, the install fetched `/shell.bin` and no HTML, the game tab drew "A new version is ready. Reload to use it", did not reload and kept its game; `done` at 18:01:10Z — `cookies: cleared before close` before the final `closed:` line, the profile's `Default/Cookies` holds no row (D15).
+- **S2c's probes on this host** (the owner over WARP, 17:59:51–18:00:22Z, at the scratch table `probe-s2c`, the owner against the bot): **D3** nine `curl -N` streams as one identity — eight held (each 108 B, the counters frame), **the ninth 429** `{"error":"too many open streams from you at this table — close one and try again"}` (84 B, `cache-control: no-store`), a tenth 200 once the eight were closed; **R-7's deadline** — a POST with `Content-Length: 100` and a stdin that sent nothing: **the EDGE's own `400 Bad Request`** (`server: cloudflare`, `text/html`) after 20.0 s, when the body closed short — the origin's 408 was never reached, as the plan foresaw of the edge; the cell and the plan review's real-TCP probe (10.0 s) are the deadline's catchers; **D8** a table name holding U+200B → **400** `name: a name has no control, invisible or direction-changing character`; **B3** a seeded create beside an open seat → 400 in `SEED_NOT_SOLO`'s words, nothing created (404 after); **A1** `keep` 200 then `suggest` **200, 3,628 B, the keys `ok, refusal`**, no seed-like key, no sixteen-hex value; **B9** a table answer carries `cache-control: no-store`, `nosniff`, `cf-cache-status: DYNAMIC` (a 409 while dealing); **AD-19** `POST /api/archive` with the layer's own `spread-4p-4096` fixture — **4,096 events, a 182,948-byte body — 201 in 0.35 s**, filed `browser/jamoore_at_gmail.com-d3aaf981a753/rev7/abandoned/local-spread4096.json` (161,737 B) with its table document (741 B), both removed by name afterwards; **`docker stats`**: before the probes `usage` 10,956,800 B, `max_usage` 12,668,928 B, `rss` 475,136 B; after them and the capped replay **`max_usage` 12,943,360 B** (`usage` 11,120,640 B, `rss` 471,040 B) — **2.4 % of the 512 MiB bound**, the margin the plan asked for. The probe tables (`probe-s2c`, `probe-s2c-2`) deleted (204, 404 after); neither was filed under `rev7/abandoned/`.
+- **The two-identity block** (S2a's D-8, superseded into this window; WARP off 18:22:50–18:41:16Z): **profile B, `myfreemovies@gmail.com`, was a Google Chrome window driven by Playwright on a fresh profile** — Playwright's own Chromium was refused by Google's sign-in ("This browser or app may not be secure"), the installed Chrome without its automation flags was not; **a headless reuse of that profile met Bot Fight Mode's managed challenge**, so every probe of B's ran headed, each a page-context `fetch` or `EventSource` from the host's own page, the cookie never read out (no fallback file was made; the profile was deleted at the slot's end); profile A was the owner's own Chrome through Claude in Chrome, its own Access session naming the owner off WARP. **D1 — READ LIVE**: A created `probe-d1` as `[A, open]`; B's `EventSource` on its stream opened in 75 ms and took the `signal` frame (`status open`); A joined seat 1 ITSELF at 18:37:51Z (200, 67 ms); **B's stream received ONE `end` frame `{"reason":"gone"}` at 29.6 s and closed** — the browser's one reconnect attempt was refused and the `EventSource` read CLOSED at 32.6 s (`a_refused_stream_writes_gone_once_and_closes`, live). **B1 — the WITHHELD `why` READ LIVE**: A created `probe-b1` as `[bot, A]` with `start_seat 0` and kept (`{"seat":1,"card":1}` → 200; 8 events, `playing`, the bot's first turn pumped at once); `GET …/why` **as the opponent (A): 200 in 51 ms, 428 B; as a watcher (B): 200 in 83 ms** — `ok: null`, `withheld` with the provenance (`v4-step9-draft1@v2{b=4,eval_impl=3,k=1,m=8,weights=…}`, index 7, seat 0, versions 2/2), the text `End additional-action phase` and the one reason sentence; **no search value** — beside the search's 1 ms–4.4 s, the withheld answer runs none (S2c's "without delay"); a public `why` (game over with a held seat) was not reached, as the plan expected. **D8's tag — READ LIVE**: B posted at the table's chat as the watcher "Bee" → 201 with `author.tag` **`bc48`**; A read it back as `{"kind":"watcher","name":"Bee","you":false,"tag":"bc48"}`. Both tables deleted (204, 404 after); `probe-b1`, which had events, was filed by the server under `rev7/abandoned/` (1,731 + 836 B) and removed by name; the browser folders hold only the `live-review_at_m65b.test` pair from before, the shape check printed nothing. The rows the Worker's half read are in `worker/RUNBOOK.md` §22.
+- **Rollback**: `yokohama-web:0.6.1-s1` is on the NAS — recreate from §3's body WITHOUT the three hardening keys if that image needs them gone (it does not: the keys are the runtime's, not the image's); the tunnel file's previous revision is `config.yml.bak-2026-10-17` (one file, one restart — it carries no `access` block, so cloudflared then passes requests on unchecked again); the terminal's network is not a rollback step. §5's bullets stand; the archive rename of S1 stays one-way.
+
+**What this deployment does NOT claim:** the origin's 408 was not read through the edge (the edge answered its own 400 first); the `init-refused` log line was not observed in a tail (see §22); a public `why` was not read live; the update reading is a headless fresh profile on the workstation, not the owner's browser; nothing about this host's request cost per move was measured.
+
+---
+
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
 
 **This section described an upgrade path. It is now the record of why that path was deleted**, by
@@ -2623,6 +2652,11 @@ The files' last versions are in history: `git show 87d30a14:deploy/worker/src/in
   legacy folder again, beside the renamed one, until the roll forward's window runs the recipe once
   more — step 2's merge branch (and step 3's new-key-first read) is written for exactly that second
   run. *(Added 2026-10-11, security S1c.)*
+- **Across security S2 (`0.6.3-s2`, §3.22) the tunnel file carries the `access` blocks and the container the three
+  hardening keys.** A rollback of the IMAGE alone keeps both, and the 0.6.1 binary runs under them (nothing in it
+  needs a capability); a rollback of the tunnel file to `config.yml.bak-2026-10-17` removes the assertion check at
+  cloudflared, so the header the origin trusts is then vouched for by the network alone again. The headers are
+  stateless; nothing in that window is one-way. *(Added 2026-10-17, security S2.)*
 - **The store is not rolled back by either.** It is the named volume
   `yokohama-web-data`; the records are the whole state, which is why they
   replay.

@@ -3248,6 +3248,8 @@ sentence of this plan was contradicted by the code. The findings file: `docs/tem
 
 ### The window (Task 9 Steps 8–10) — SUPERSEDED by the fold (2026-10-15)
 
+*(2026-10-17: the one window ran — the S2c plan's §"Review record", its window entry; `deploy/RUNBOOK.md` §3.22 and `worker/RUNBOOK.md` §22 are the records; this cycle's readings — the header reads, the Report-Only reading's successor under the ENFORCED policy, the live acceptance, the two-identity block — were taken there, every one clean.)*
+
 Never run as written: the owner folded S2's two windows into one at S2c's open (the S2c plan's R-8 and D-15; spec
 §9.8's correction 12), so `v0.6.2` was never tagged or deployed and the hosts go from 0.6.1 to 0.6.3 in one window.
 This step's readings — the header reads per host and path, the two-identity block's two readings and the §8 rows,

@@ -52,7 +52,7 @@ anything that reaches port 8080 without passing Access can send the header and b
    reaches it without a valid token for that application.
 3. **A hardened container:** `--cap-drop ALL --security-opt no-new-privileges:true --memory 512m` on the `docker run`
    (§4's flags, with no `-p` under step 1; `deploy/update.sh` passes the same three; the owner's NAS takes them as
-   `CapDrop`, `SecurityOpt` and `Memory` from `deploy/RUNBOOK.md` §3's create body, from S2's window on).
+   `CapDrop`, `SecurityOpt` and `Memory` from `deploy/RUNBOOK.md` §3's create body, since S2's window on 2026-10-17).
 4. **Read it back:** from a shell in any OTHER container on the host, first a CONTROL that proves the tool works —
    `wget -qO- --timeout=3 http://127.0.0.1:<that container's own port>/` must answer — then `wget -qO-
    --timeout=3 http://yokohama-web:8080/api/health` must FAIL with a resolution, connection or timeout error ("bad

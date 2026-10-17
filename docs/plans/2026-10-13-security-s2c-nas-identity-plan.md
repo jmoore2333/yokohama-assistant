@@ -3519,7 +3519,7 @@ red.
   findings are fixed as NEW commits on `security-s2c` with their catchers, and the fix commits get a scoped second
   run of the dimension that found them. The record: this plan's §"Review record" and the ledger.
 
-- [ ] **Step 8: The merges** (X1; the owner's rulings of 2026-10-09 and 2026-10-11). In order, each a MERGE COMMIT
+- [x] **Step 8: The merges** (X1; the owner's rulings of 2026-10-09 and 2026-10-11). In order, each a MERGE COMMIT
   through `gh pr merge --merge`, never a squash, so every task's SHA the records cite survives: the S2c PR
   (`security-s2c` → `security-s2b`); PR #54 (`security-s2b` → `security-s2`); PR #52 (`security-s2` → `master`).
   Master has not moved past the stack's base `1e9c092d` (checked 2026-10-13), so master's content is byte-identical
@@ -3529,11 +3529,11 @@ red.
   `gh pr merge --merge` writes the PR's title into the merge commit's body and master would carry a sentence the fold
   made false (R-4's rule for the public launch, L4-F9).
 
-- [ ] **Step 9: The tag and the release, BEFORE either deploy** (the owner's standing order from S1's wrap). On
+- [x] **Step 9: The tag and the release, BEFORE either deploy** (the owner's standing order from S1's wrap). On
   master: `git tag -a v0.6.3 -m "Yokohama CLI v0.6.3 — security S2: the browser's fences, the Worker's door, the NAS's identity; the policy enforced" && git push origin v0.6.3`;
   `release.yml` runs on any `v*` tag; the release's assets read on GitHub before the window opens.
 
-- [ ] **Step 10: The window — ONE for S2 (R-8), the orchestrator with the owner at the keyboard, both hosts, the NAS
+- [x] **Step 10: The window — ONE for S2 (R-8), the orchestrator with the owner at the keyboard, both hosts, the NAS
   first as the canary (D-15).** It OPENS by naming the two-identity block (c) and agreeing its slot (S2a's D-8; the
   owner's two Access sign-ins), with Claude in Chrome recorded as reachable in both profiles before any deploy (S2a's
   opening precondition); WARP off only for that slot; every `curl` over WARP with the smoke's `BROWSER_UA` (set as `worker/RUNBOOK.md` §7's burst bullet sets it:
@@ -3634,7 +3634,7 @@ red.
   file's previous revision, which is the backup (a) made); the S2a plan's §"Review record" window heading already
   points here (Step 1).
 
-- [ ] **Step 11: The hand-off into the auth cycle.** The board's Track 4 rewritten: S2 COMPLETE and live (the merge
+- [x] **Step 11: The hand-off into the auth cycle.** The board's Track 4 rewritten: S2 COMPLETE and live (the merge
   SHAs, the tag `v0.6.3` — `v0.6.2` never cut, R-8 — the window's readings, the live column); the next session's first step — "the AUTH CYCLE's
   brainstorm, its own branch from master after S2's wrap, stacked under nothing (the owner, 2026-10-12; spec §9.7's
   closing paragraph): the providers reviewed and picked (Auth0, Clerk, Stytch or the like) for the public Worker
@@ -3843,3 +3843,15 @@ about 250 concurrent stalls fill the container's 512 MiB and the restart policy 
 S4's; the Worker's limiter meters unsafe methods only (a GET or an upgrade reaches an object); a refused Worker
 socket stays CLOSING and raises the framing loop's cost; the NAS listener sets no TCP keepalive (behind the tunnel the
 peer is cloudflared).
+
+### The window (Task 10 Step 10), 2026-10-17 — ONE window for S2, the orchestrator with the owner at the keyboard, the NAS first as the canary
+
+**The order ran as written.** The release (run 39034825202, 13:05:35Z) before either deploy; `cd web && npm run build` per host and `cd worker && npm run build` from the tree `0745cfb9` (every code path byte-identical to `v0.6.3`); the update reading pinned on each host BEFORE it moved; the NAS (a) whole before the Worker (b) was touched; the two-identity block (c) in one slot with WARP off; the records (d) and this hand-off (Step 11). The records of record are `deploy/RUNBOOK.md` §3.22 and `worker/RUNBOOK.md` §22, each with its figures, times and rollback; the ledger's live column names what each row read.
+
+**THE CANARY read (i), clean.** A fresh profile's first visit to the NAS under the ENFORCED policy printed no CSP line at any level; the edge's detection script carried the fixed nonce (two tags in the document); the second, SW-served navigation printed nothing. The one console line was the release feed's failure at `api.github.com` (403 on the NAS, 404 on the Worker minutes later — GitHub's answers to an anonymous reader of a private repository), the line the live walk forgives by name and not a policy line: the orchestrator ruled it (i) with the line recorded verbatim, told the owner before touching the Worker, and the owner raised nothing. The Worker's canary and the live Playwright tier (2 passed, 1,387 moves) read the same: the policy enforced, the console clean of it. **D-15's fallback was not needed.**
+
+**What the window read that no window had** — D1 live (one `gone` frame and the close, the second identity's `EventSource`); B1's withheld `why` live (51 ms as the opponent, 83 ms as a watcher, no search value); D8's tag read by the other identity (`bc48`); the lane's rows 108 and 119; B10's host half applied and read back (the validated tunnel file, the hardened `HostConfig`, the network split, the negative probe); S2b's acceptance whole (the burst 122 × 400 / 178 × 429 with `Retry-After: 10`, the ninth socket's `end` and 4429, the ninth lobby page's sentence, the operator's JSON type and foreign-Origin 403, D23's nine log lines without an address, `limiter-failed` 0); R-7's deadline met the edge's own 400 on a short body before the origin's 408 (recorded as the edge's, as the plan foresaw); AD-19's capped replay — 4,096 events in 0.35 s with the container's memory peak at 12.9 MB of 512 MiB.
+
+**Method facts for the next window.** (1) Google refuses a sign-in inside Playwright's Chromium ("This browser or app may not be secure"); the installed Google Chrome launched by Playwright without its automation flags is accepted — the second identity's window is that. (2) A headless browser off WARP meets Bot Fight Mode's managed challenge even with the Access cookie; the second identity's probes run headed, each a page-context `fetch`/`EventSource`, the cookie never read out. (3) The Cloudflare MCP's OAuth completes on this machine's local listener; a pasted callback URL is refused afterwards, and the server's tools appear only once the whole flow (the dashboard's 2FA included) is through. (4) Wrangler's own OAuth token is refused by the GraphQL and the observability APIs. (5) The Portainer MCP's stack calls answer 503 on this server, so the stack files are read off the volume through a one-shot container, and a network change made through the Docker API is not in them — the owner's item on the board. (6) The exec API through Portainer's proxy returns a command's output, which made the negative probe and `ingress validate` readable in place. (7) A `curl` with `Content-Length` and a stalled stdin reads the EDGE's 400 when the body closes short; the origin's deadline is unreachable through Cloudflare from the outside, and its catchers are the cell and the real-TCP probe.
+
+**Left in place for the owner:** the two Portainer stack files; cloudflared 2026.3.0 on the NAS (its log recommends 2026.10.1); the window's scratch under the session scratchpad (`window/`, small) and the gitignored instrument profiles `web/scripts/pinned/nas-s2` and `worker-s2`, which hold no cookie.

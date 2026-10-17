@@ -21,7 +21,8 @@
 # Step 1 said `cf-edge` until 2026-09-01 and the deployment never matched it:
 # `cloudflared-nas` joined both `cf-edge` and `cf-internal`, and every service it
 # served sat on `cf-internal`. Step 1 above is the rule (security S2c), and S2's
-# window is the deploy that first brings the NAS to it.
+# window (2026-10-17, `deploy/RUNBOOK.md` §3.22) brought the NAS to it: the terminal
+# on its own network `cf-terminal`, `cf-internal` for `yokohama-web` and cloudflared alone.
 
 tunnel: 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc
 credentials-file: /etc/cloudflared/6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.json
