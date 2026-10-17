@@ -180,6 +180,10 @@ describe("the set, its block and its file", () => {
       expect(() => parseHeadersJson(bad), bad).toThrow(/headers\.json/);
     }
     expect(() => parseHeadersJson('[["X-A","1"],["x-a","2"]]')).toThrow("headers.json names x-a twice");
+    // The refusal names every reason the reader checks (S2c, the residuals): its words, once, over the empty array.
+    expect(() => parseHeadersJson("[]")).toThrow(
+      "headers.json is not the client build's header set — a non-empty array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
+    );
   });
 
   it("reads a file's BYTES strictly: an invalid UTF-8 byte is refused, where readFileSync(.., 'utf8') would substitute U+FFFD, and a BOM is kept for the parse to refuse, where TextDecoder's default would strip it — what the NAS refuses, the byte at std::fs::read_to_string and the BOM at serde_json's parse", () => {

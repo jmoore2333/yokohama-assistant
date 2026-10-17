@@ -175,7 +175,7 @@ export function parseHeadersJson(text) {
     !CONTROL.test(p[1]);
   if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(pair)) {
     throw new Error(
-      "headers.json is not the client build's header set — an array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
+      "headers.json is not the client build's header set — a non-empty array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
     );
   }
   const seen = new Set();

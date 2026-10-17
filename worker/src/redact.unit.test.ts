@@ -30,4 +30,11 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
       'R2 refused "browser/c91ad2a917f7/rev7/over/x.json"',
     );
   });
+
+  it("redacts EVERY browser segment in a message, not the first alone (the g flag)", () => {
+    const two = 'copy browser/alice-0123456789ab/x.json to browser/bob-fedcba987654/y.json failed';
+    expect(redactKey(two)).toBe("copy browser/0123456789ab/x.json to browser/fedcba987654/y.json failed");
+    expect(redactKey("test/browser/alice-0123456789ab/x.json")).toBe("test/browser/0123456789ab/x.json");
+    expect(redactKey("rev7/over/abc.json")).toBe("rev7/over/abc.json");
+  });
 });

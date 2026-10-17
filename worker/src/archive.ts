@@ -195,7 +195,7 @@ export class Archive extends DurableObject<Env> {
       });
     } catch (e) {
       if (typeof e !== "string" || receipt !== undefined) throw e;
-      log("init-refused", { id, error: digest === undefined ? e : claimRedacted(e, digest) });
+      log("init-refused", { id, error: digest === undefined ? e : claimRedacted(e, callerOf(this.ctx.id.name) ?? "", digest) });
       return this.callerRefused(incoming.user) ?? respond(500, errorBody(e));
     }
     if ("trapped" in done) {
@@ -234,15 +234,29 @@ export class Archive extends DurableObject<Env> {
 
 /** A quoted span as the echo rule writes one — escapes `\"` and `\\` inside — of at most 1,024 characters: the
  *  layer's echo repeats at most 64 characters (`echo::ECHO_MAX`), each escaped as `{:?}` escapes it to at most ten,
- *  `\u{10ffff}`, and `…` after a cut. */
-const QUOTED = /"(?:[^"\\]|\\.){0,1024}"/;
+ *  `\u{10ffff}`, and `…` after a cut. Global, and read by `replace` alone. */
+const QUOTED = /"(?:[^"\\]|\\.){0,1024}"/g;
 
-/** `sentence` with its FIRST quoted span replaced by `digest`, quoted: a layer sentence repeats the caller it refused
- *  through the echo rule, which the site writes inside `"…"`, so the first span is that caller (Task 7's concern 1,
- *  promoted at S2b's after review: an `init-refused` line spelled a refused open-door claim). One replacement of a
- *  bounded span; a sentence with no quoted span is returned as it is. */
-function claimRedacted(sentence: string, digest: string): string {
-  return sentence.replace(QUOTED, `"${digest}"`);
+/** A span's text as `{:?}` wrote it, read back: `\u{…}`, `\n`, `\r`, `\t`, `\0`, and `\` before any other character. */
+function unescaped(inner: string): string {
+  return inner.replace(/\\(?:u\{([0-9a-f]+)\}|(.))/g, (_, hex: string | undefined, c: string) =>
+    hex !== undefined ? String.fromCodePoint(parseInt(hex, 16)) : ({ n: "\n", r: "\r", t: "\t", "0": "\0" } as Record<string, string>)[c] ?? c,
+  );
+}
+
+/** The claim as the layer's echo shows it, unescaped: its first 64 characters, and `…` after a cut (`echo::echo`). */
+function echoed(claim: string): string {
+  const chars = Array.from(claim);
+  return chars.length > 64 ? chars.slice(0, 64).join("") + "…" : claim;
+}
+
+/** `sentence` with every quoted span EQUAL to the caller's claim as the echo rule writes it replaced by `digest`,
+ *  quoted (security S2c, R-4); a span that is anything else — a configuration refusal's value, `LOBBY_CHAT "maybe"` —
+ *  is left as it is. The span is read back through the escapes and compared with the claim cut as the echo cuts it,
+ *  so a claim over 64 characters, or one carrying a quote or a backslash, is redacted as a plain one is; plain
+ *  equality on the raw claim left those in the persisted line (S2b's D23; the plan review, L2-F3). */
+function claimRedacted(sentence: string, claim: string, digest: string): string {
+  return sentence.replace(QUOTED, (span) => (unescaped(span.slice(1, -1)) === echoed(claim) ? `"${digest}"` : span));
 }
 
 /** The caller an archive object serves: its name less the prefix, or `null`

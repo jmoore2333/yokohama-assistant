@@ -33,9 +33,12 @@ export async function callerDigest(address: string): Promise<string> {
 }
 
 /** A browser save's segment, as `archive::caller_segment` writes it since security S1c: the readable half, `-`,
- *  twelve hex. Matched where `browser/` starts the key, follows a root (`test/`), or follows any character no key
- *  segment holds — a quote or a space, where R2's message spells the key inside a sentence. */
-const SEGMENT = /(^|[^A-Za-z0-9._-])browser\/[^/]*-([0-9a-f]{12})\//;
+ *  twelve hex. Matched wherever `browser/` starts the key, follows a root (`test/`), or follows any character no key
+ *  segment holds — a quote or a space, where R2's message spells the key inside a sentence — and EVERY such segment in a
+ *  message, since one R2 sentence can name two keys (security S2c, the residual S2b's re-review parked). The `g`
+ *  flag is safe here because only `replace` reads this expression (never `test` or `exec`, which would carry
+ *  `lastIndex` between calls). */
+const SEGMENT = /(^|[^A-Za-z0-9._-])browser\/[^/]*-([0-9a-f]{12})\//g;
 
 /** `key` with the segment's readable half dropped — `browser/<12 hex>/…` — so a line still names the folder and
  *  not the address it spells. A key with no such segment (a server game's; a legacy folder) is returned as it is. */

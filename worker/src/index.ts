@@ -81,8 +81,8 @@ const NO_ONE: Identity = { kind: "none" };
  *  subrequests and never to the answer it returns (Cloudflare's rule; the Workers Cache (static-asset requests
  *  included) is the one setting that could keep a frame, and the guard's check 10 refuses it), while the NAS's one
  *  `Router::layer` says the same for the host where the zone's extension rule DID keep a private frame at the
- *  edge (S1c, B9); `nosniff`, so an API body is never read as a script. The whole set the static release carries (`_headers`' `/*` block) buys
- *  nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
+ *  edge (S1c, B9); `nosniff`, so an API body is never read as a script. The whole set the static release carries
+ *  (`_headers`' `/*` block) buys nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
 export const API_HEADERS: ReadonlyArray<readonly [string, string]> = [
   ["Cache-Control", "no-store"],
   ["X-Content-Type-Options", "nosniff"],
