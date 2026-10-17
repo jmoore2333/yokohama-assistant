@@ -15,6 +15,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { drawSeat, NewGame } from "./NewGame";
 import { DISPLAY_NAME_KEY } from "./api";
+import { ADDRESS_NOT_A_NAME_HERE } from "./nameRule";
 import { patchServerFacts, resetFactsForTest } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
 import { trimSeed } from "./seedRule";
@@ -130,6 +131,24 @@ describe("the table form's seats", () => {
     await user.click(screen.getByRole("button", { name: "Deal" }));
     await waitFor(() => expect(creates(stub)).toHaveLength(1));
     expect(posted(stub).seats).toEqual([{ user: ME }, { user: "blue@wire.test" }]);
+  });
+
+  // ...and NOT an address on an open door (security S2b, C1; decision D-2;
+  // AD-8 (a)): the server's `ClaimPolicy::NamesOnly` keys no address there, so a
+  // seat bound to one could never be taken. Refused IN PLACE, in the door's own
+  // words (`openDoorVerdict`), and the create is held.
+  it("refuses an ADDRESS for a specific person on an open door, in place and in the door's words, and holds the create", async () => {
+    const { stub, user } = show();
+    await user.selectOptions(seat("Blue"), "person");
+    const field = screen.getByLabelText("Blue player's name");
+    await user.type(field, "Blue@Wire.test");
+    expect(field).toHaveAttribute("aria-invalid", "true");
+    expect(field.closest(".form-seat")!.querySelector(".field-error")?.textContent).toBe(ADDRESS_NOT_A_NAME_HERE);
+    const deal = screen.getByRole("button", { name: "Deal" });
+    expect(deal).toBeDisabled();
+    // The attempt, so "posts nothing" is measured rather than true by construction (Task 5b's review, Minor 1).
+    await user.click(deal);
+    expect(creates(stub)).toHaveLength(0);
   });
 
   // A person the server would not key is refused IN PLACE, and a blank one

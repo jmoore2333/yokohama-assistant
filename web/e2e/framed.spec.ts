@@ -41,7 +41,7 @@ test.afterAll(() => framer.close());
 /** How long the frame is watched after its document answered, for a request it would make if it had rendered. */
 const SETTLE_MS = 2_000;
 
-test("a page on another origin that frames the lobby gets a refused frame: X-Frame-Options DENY on the answer, the policy ENFORCED beside it, and none of the release asked for", async ({ page }) => {
+test("a page on another origin that frames the lobby gets a refused frame: X-Frame-Options DENY on the answer, the policy ENFORCED beside it as the release ships it since 0.6.3, and none of the release asked for", async ({ page }) => {
   const origin = new URL(BASE_URL).origin;
   const asked: string[] = [];
   page.on("request", (r) => {
@@ -54,7 +54,7 @@ test("a page on another origin that frames the lobby gets a refused frame: X-Fra
   // The policy's VALUE, not its name alone (Task 4's review, M1): the walk is the enforcement reading only while it
   // is served the release's policy, so the two sources that reading rests on are read off the answer itself.
   const policy = answer.headers()["content-security-policy"];
-  expect(policy, "the e2e build serves the policy ENFORCED (decision D-9)").toContain("script-src 'self' 'wasm-unsafe-eval'");
+  expect(policy, "the e2e build serves the policy ENFORCED, as the release ships it since 0.6.3 (decision D-9; S2c, R-6)").toContain("script-src 'self' 'wasm-unsafe-eval'");
   expect(policy, "and its own frame fence beside the header").toContain("frame-ancestors 'none'");
   await page.waitForTimeout(SETTLE_MS);
   expect(asked.filter((p) => p.startsWith("/assets/")), "a refused frame parses nothing, so it asks for no script").toEqual([]);

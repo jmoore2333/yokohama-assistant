@@ -2606,6 +2606,27 @@ describe("the route", () => {
     expect(rejected).toEqual([]);
   });
 
+  it("lands on the lobby with the cap's sentence when the table's own stream is refused 429 (Review Focus 1, as the code does it)", async () => {
+    // **Every table consumer leaves on ANY `End`** (`App`'s `toLobby(e.sentence)`, `OpenTable`'s and `Dealing`'s
+    // `onLeave`): a 429 at admission ends as `refused` and the player lands in the lobby with the server's sentence,
+    // as a 403 does and as the Worker's `4429` close does (an `end` frame, `gone`). The table page does not stay.
+    window.location.hash = "#/t/wire";
+    const sentence = "too many open streams from you at this table — close one and try again";
+    vi.useFakeTimers();
+    try {
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/stream")) return { status: 429, body: { error: sentence } };
+        if (call.path.endsWith("/table")) return wire.tableOpen;
+        return undefined;
+      });
+      await until(() => screen.queryByRole("heading", { name: "Lobby" }) !== null, "the lobby was drawn");
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+      expect(window.location.hash).toBe("#/lobby");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The other half of the same rule: a game LEFT takes the hash with it, so the
   // address never names a screen that is not on it.
   it("clears the game and the hash when the Game menu leaves for the lobby", async () => {
@@ -2635,12 +2656,17 @@ describe("the route", () => {
 
 describe("the door", () => {
   it("shows the name step when the door is open and nobody has a name, then the lobby", async () => {
+    // **A NAME, because the door is open** (security S2b, C1; decision D-2):
+    // the server keys no address there, and the corpus's `me.json` holds one
+    // (`red@wire.test`). So the player types a plain name and the stub answers
+    // with the corpus's `me` under that name — the committed corpus unmoved.
+    const signedIn = { ...wire.me, user: "red" };
     const stub = stubApi((call) => {
       // Answered the way the SERVER answers it: from the header this browser
-      // is sending. A stub that returned `wire.me` regardless would model a
+      // is sending. A stub that returned `signedIn` regardless would model a
       // server that ignores its own header, and signing in would prove nothing.
       if (call.path.endsWith("/api/me"))
-        return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+        return localStorage.getItem(CLAIMED_USER_KEY) ? signedIn : wire.meSignedOut;
       if (isGamesList(call, "mine")) return wire.games;
       if (isGamesList(call)) return gamesNamed();
       if (call.path.endsWith("/api/labels")) return wire.labels;
@@ -2661,13 +2687,13 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/games")).toHaveLength(0);
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText("Name"), wire.me.user!);
+    await user.type(screen.getByLabelText("Name"), signedIn.user);
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     // The band's corner names the server's answer — its key rides as the
     // corner's title (`IdentityCorner`).
     await waitFor(() =>
-      expect(document.querySelector(".identity-corner [title]")).toHaveAttribute("title", wire.me.user!),
+      expect(document.querySelector(".identity-corner [title]")).toHaveAttribute("title", signedIn.user),
     );
     // The list, and no individual game: signing in lands on the LOBBY, not
     // inside whatever game happens to be first.

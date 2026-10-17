@@ -4,6 +4,7 @@ import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 import { Instance, pinnedTo, readReply, type Replied } from "./module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
+import { callerDigest, redactKey } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { forwardedCaller } from "./table";
 
@@ -40,6 +41,12 @@ interface Incoming {
  * one caller's saves go one at a time and no other event reaches the module
  * across the upload's await:
  *
+ * 0. the caller's share counted (security S2b, B12's Worker half): the
+ *    module's `share_prefix`, one R2 listing of it, and the listing handed to
+ *    the module's `set_share`, whose put holds the save to the production
+ *    quota before any plan is deferred. A listing that fails is logged
+ *    (`archive-count-failed`) and not handed over, so the put refuses the
+ *    save uncounted;
  * 1. the save dispatched, pinned to P-2's reading, taken ONCE — the layer's
  *    strict replay and checks, then its put, deferred as a plan;
  * 2. with a plan, the upload (`executePlan`) and its outcome logged, then
@@ -51,7 +58,8 @@ interface Incoming {
  *    off — the first answer is the answer.
  *
  * A browser's save costs its strict replay twice (spec §2.6). A throw inside
- * the loop — a receipt the module refused, thrown on (`dispatch`), or a plan
+ * the loop — a listing `set_share` refused (thrown by `save`'s own `guarded`
+ * call), a receipt the module refused (thrown on by `dispatch`), or a plan
  * `parsePlan` refuses — or a loop running past 30 seconds RESETS this object
  * (Cloudflare's State API, for `blockConcurrencyWhile`). It holds nothing of
  * its own, so nothing is lost: the save is the caller's to send again.
@@ -78,20 +86,64 @@ export class Archive extends DurableObject<Env> {
       contentType: req.headers.get("content-type") ?? undefined,
       body: new Uint8Array(await req.arrayBuffer()),
     };
-    const id = this.ctx.id.name;
+    // Every line this object logs names it by a digest: its name is `archive:<address>`, and a log persists
+    // (security S2b, D23). The module still reads the whole name's caller.
+    const name = this.ctx.id.name;
+    const caller = callerOf(name);
+    const digest = caller === null ? undefined : await callerDigest(caller);
+    const id = digest === undefined ? name : ARCHIVE_PREFIX + digest;
     const config = this.config;
     if ("error" in config) {
       log("init-refused", { id, error: config.error });
       return respond(500, errorBody(config.error));
     }
-    return this.ctx.blockConcurrencyWhile(() => this.save(id, incoming, config));
+    return this.ctx.blockConcurrencyWhile(() => this.save(name, id, digest, incoming, config));
   }
 
-  /** The receipt loop (the class's doc), under `blockConcurrencyWhile`. */
-  private async save(id: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
-    const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(id))));
+  /** The receipt loop (the class's doc), under `blockConcurrencyWhile`: `name` is the object's own, which the
+   *  module's configuration reads its caller from; `id` is what every line logs it as; `digest` is its caller's,
+   *  which a refusal that repeats the caller is logged with in the caller's place (`dispatch`). */
+  private async save(name: string | undefined, id: string | undefined, digest: string | undefined, incoming: Incoming, config: ShellConfig): Promise<Response> {
+    const instance = (this.instance ??= new Instance(moduleConfig(this.env, callerOf(name))));
     const at = nextReading(config.clock);
-    const first = this.dispatch(id, instance, incoming, at);
+    // **The share, counted live** (security S2b, B12's Worker half; decision D-5): the object's share prefix from
+    // the module, one R2 listing (a Class A operation), and the listing handed to the module, whose put applies
+    // the production quota's own arithmetic before any plan is deferred. A listing that fails is logged and NOT
+    // handed over: the put then refuses the save uncounted (`SHARE_UNCOUNTED`), the layer's 500, which the outbox
+    // retries. A `test/` address lists under `test/`; a server game's own save is never counted (its prefix is
+    // empty, and `share_prefix` answers `undefined` for every object but an Archive object's).
+    let prefix: { ok: string | undefined } | { trapped: string };
+    try {
+      prefix = instance.guarded((mod) => mod.share_prefix());
+    } catch (e) {
+      // `init` refused this object's caller (the key grammar's): nothing to count, and `dispatch` below refuses it
+      // exactly as it always did — the layer's 401 through `callerRefused`, never a thrown string.
+      if (typeof e !== "string") throw e;
+      prefix = { ok: undefined };
+    }
+    if ("trapped" in prefix) {
+      log("trap", { id, call: "share_prefix", error: prefix.trapped });
+      return respond(500, errorBody(TRAP));
+    }
+    if (prefix.ok !== undefined) {
+      let listed: R2Objects | undefined;
+      try {
+        listed = await (this.env.ARCHIVE as R2Bucket).list({ prefix: prefix.ok, limit: 1000 });
+      } catch (e) {
+        // Through `redactKey`, as the put path's R2 messages are (`logOutcome`): a listing error that spells the
+        // share's prefix names its folder by the digest alone (the S2 stack review, lens 1, Minor 1).
+        log("archive-count-failed", { id, error: redactKey(String(e)) });
+      }
+      if (listed !== undefined) {
+        const listing = JSON.stringify({ truncated: listed.truncated, objects: listed.objects.map((o) => ({ key: o.key, size: o.size })) });
+        const set = instance.guarded((mod) => mod.set_share(listing));
+        if ("trapped" in set) {
+          log("trap", { id, call: "set_share", error: set.trapped });
+          return respond(500, errorBody(TRAP));
+        }
+      }
+    }
+    const first = this.dispatch(id, digest, instance, incoming, at);
     if (first instanceof Response) return first;
     if (first.archive === undefined) return respond(first.status, first.body);
     const plan = parsePlan(first.archive);
@@ -105,7 +157,7 @@ export class Archive extends DurableObject<Env> {
     // measured equivalent by the whole-branch review's battery (r17b). Were
     // the layer ever to stamp a browser's save, the browser-save cell would
     // have to run on a ticking clock to see it.
-    const again = this.dispatch(id, instance, incoming, at, { plan, outcome });
+    const again = this.dispatch(id, digest, instance, incoming, at, { plan, outcome });
     return again instanceof Response ? again : respond(again.status, again.body);
   }
 
@@ -118,10 +170,13 @@ export class Archive extends DurableObject<Env> {
    * that `init` refused (`callerRefused`), which is the layer's 401: only the
    * first dispatch can meet it, since the second runs on the module the first
    * built, so a string the second throws — a receipt the module refused — is
-   * thrown on.
+   * thrown on. The refusal is logged `init-refused` with the caller it repeats
+   * replaced by `digest` (`claimRedacted`): under `open` that caller is a
+   * claim, and a log persists (security S2b, D23).
    */
   private dispatch(
     id: string | undefined,
+    digest: string | undefined,
     instance: Instance,
     incoming: Incoming,
     at: number,
@@ -142,7 +197,10 @@ export class Archive extends DurableObject<Env> {
       });
     } catch (e) {
       if (typeof e !== "string" || receipt !== undefined) throw e;
-      log("init-refused", { id, error: e });
+      log("init-refused", {
+        id,
+        error: digest === undefined ? e : claimRedacted(e, callerOf(this.ctx.id.name) ?? "", digest),
+      });
       return this.callerRefused(incoming.user) ?? respond(500, errorBody(e));
     }
     if ("trapped" in done) {
@@ -177,6 +235,37 @@ export class Archive extends DurableObject<Env> {
       return undefined;
     }
   }
+}
+
+/** A quoted span as the echo rule writes one — escapes `\"` and `\\` inside — of at most 1,024 characters: the
+ *  layer's echo repeats at most 64 characters (`echo::ECHO_MAX`), each escaped as `{:?}` escapes it to at most ten,
+ *  `\u{10ffff}`, and `…` after a cut. Global, and read by `replace` alone. */
+const QUOTED = /"(?:[^"\\]|\\.){0,1024}"/g;
+
+/** A span's text as `{:?}` wrote it, read back: `\u{…}`, `\n`, `\r`, `\t`, `\0`, and `\` before any other
+ *  character. */
+function unescaped(inner: string): string {
+  return inner.replace(/\\(?:u\{([0-9a-f]+)\}|(.))/g, (_, hex: string | undefined, c: string) =>
+    hex !== undefined
+      ? String.fromCodePoint(parseInt(hex, 16))
+      : ({ n: "\n", r: "\r", t: "\t", "0": "\0" } as Record<string, string>)[c] ?? c,
+  );
+}
+
+/** The claim as the layer's echo shows it, unescaped: its first 64 characters, and `…` after a cut (`echo::echo`). */
+function echoed(claim: string): string {
+  const chars = Array.from(claim);
+  return chars.length > 64 ? chars.slice(0, 64).join("") + "…" : claim;
+}
+
+/** `sentence` with every quoted span EQUAL to the caller's claim as the echo rule writes it replaced by `digest`,
+ *  quoted (security S2c, R-4); a span that is anything else — a configuration refusal's value,
+ *  `LOBBY_CHAT "maybe"` — is left as it is. The span is read back through the escapes and compared with the claim
+ *  cut as the echo cuts it, so a claim over 64 characters, or one carrying a quote or a backslash, is redacted as a
+ *  plain one is; plain equality on the raw claim left those in the persisted line (S2b's D23; the plan review,
+ *  L2-F3). */
+function claimRedacted(sentence: string, claim: string, digest: string): string {
+  return sentence.replace(QUOTED, (span) => (unescaped(span.slice(1, -1)) === echoed(claim) ? `"${digest}"` : span));
 }
 
 /** The caller an archive object serves: its name less the prefix, or `null`

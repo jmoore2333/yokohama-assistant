@@ -604,7 +604,8 @@ describe("routing to the objects (spec §2.3)", () => {
   // browser, which WebSockets' lack of CORS would otherwise let read turn and
   // timing frames — is refused 403 unupgraded; the site's own pages, and a
   // client that sends no `Origin` (curl, the deploy readings), pass. A plain
-  // request is not an upgrade and is never refused for its `Origin`. Mutants:
+  // READ is never refused for its `Origin` (an unsafe method from another site
+  // is B5's, `door.test.ts`). Mutants:
   // no check; a prefix compare (`https://yokohama.test.evil.test`); a host
   // compare (`http://yokohama.test`); an absent `Origin` refused; every request
   // checked.
@@ -627,7 +628,7 @@ describe("routing to the objects (spec §2.3)", () => {
     const table = await upgradeFrom("/api/games/origin-t/stream", "https://evil.test");
     expect(table.slice(0, 2), "a table's stream as well as the lobby's").toEqual([403, true]);
   });
-  it("(the Origin check) the site's own page, or no Origin at all, is upgraded; a plain request is never refused for its Origin", async () => {
+  it("(the Origin check) the site's own page, or no Origin at all, is upgraded; a plain READ is never refused for its `Origin` (an unsafe method from another site is B5's, `door.test.ts`)", async () => {
     const token = await person(RED);
     for (const headers of [{ ...UPGRADE, Origin: ORIGIN }, UPGRADE]) {
       const tab = await socket(await worker("/api/stream", { token, headers }));

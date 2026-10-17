@@ -4,7 +4,8 @@
 // entitled to answer otherwise than the axum host the corpus was cut from,
 // each a PURE function — a real clock (`freezeClock`), a lobby and a house
 // chat other people share (`filterLobby`, `normalizeHouseChat`,
-// `houseDeleteRow`), and the archive's two first sends, which land only once
+// `houseDeleteRow`), a house chat a production host salts from OS entropy
+// (`houseWatcherTag`), and the archive's two first sends, which land only once
 // (`firstSendAccepts`, `resetRecipe`) — and the fixtures each applies to. The
 // host fields are `HOST_FIELDS`, `../corpus-walk.mjs`'s. Beside them, the
 // production seed rule (security S1b): the walk's seeded tables a deployed
@@ -181,6 +182,73 @@ export function normalizeHouseChat(name, got, base, baseRev) {
     .filter((m) => typeof m?.seq === "number" && m.seq > base)
     .map((m) => ({ ...m, seq: m.seq - base }));
   return { ...got, last: got.last - base, rev: got.rev - baseRev, messages };
+}
+
+/** `chat::TAG_HEX` (`crates/yokohama-web/src/chat.rs`): a tag is this many hex
+ *  characters, the first of SHA-256 over the room's salt and the poster's key. */
+export const TAG_HEX = 4;
+/** A tag as `tag_of` writes one: `TAG_HEX` LOWERCASE hex digits and nothing else. */
+const TAG = new RegExp(`^[0-9a-f]{${TAG_HEX}}$`);
+const isTag = (v) => typeof v === "string" && TAG.test(v);
+
+/**
+ * **The house rows' watcher tag on a production host** (security S2c, finding
+ * D8; decision D-5; the Task 4 review's I-1). A deployed Worker is `SoloOnly` —
+ * the deploy guard refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` in every deployable
+ * config — so the house chat's first append after 0.6.3 draws a salt from OS
+ * entropy, and the run's own poster reads a tag that is not the corpus's, cut
+ * under `Diagnostic`'s fixed salt (bar a 1-in-65,536 chance). The table chat
+ * rows sit at `wire`, which the production seed rule skips, so these two
+ * payloads are the whole exposure.
+ *
+ * A watcher author's `tag` is taken back to the committed one ONLY when the
+ * live value is `TAG_HEX` lowercase hex digits that differ from it — the
+ * `hostFields` rule's shape: spent only on a value the host SENT that differs
+ * — and, on the page, only when it is the tag the post's reply carried
+ * (`replyTag`, the run's own post as the replay recorded it): one poster, one
+ * tag, across the reply and the page. Each take-back is a line in `spent`. A
+ * dropped, `null` or malformed tag is left as it came and the comparison
+ * reports it; a page whose tag is not the reply's is a difference with its
+ * reason, its tag taken back so it is reported once.
+ *
+ * The page's messages are paired by position with the committed page's, as
+ * the comparison pairs them, after `normalizeHouseChat` has dropped the
+ * messages before the base. Answers the payload, the lines spent and the
+ * differences found; `got` is not rewritten.
+ */
+export function houseWatcherTag(name, committed, got, replyTag) {
+  if (!HOUSE_CHAT.has(name)) throw new Error(`${name} is not a house chat payload`);
+  const spent = [];
+  const diffs = [];
+  const watcherTag = (author) => author?.kind === "watcher" && isTag(author.tag);
+  /** The live author with its tag taken back, or as it came. */
+  const takeBack = (path, mine, live, page) => {
+    if (!watcherTag(mine) || live === null || typeof live !== "object" || !Object.hasOwn(live, "tag") || !isTag(live.tag)) {
+      return live;
+    }
+    if (page && live.tag !== replyTag) {
+      diffs.push({
+        path,
+        reason: `the page's tag is not the one the post's reply carried (${JSON.stringify(replyTag ?? null)})`,
+        committed: mine.tag,
+        got: live.tag,
+      });
+      return { ...live, tag: mine.tag };
+    }
+    if (live.tag === mine.tag) return live;
+    spent.push(`houseWatcherTag ${name}.${path}: ${JSON.stringify(mine.tag)} → ${JSON.stringify(live.tag)}`);
+    return { ...live, tag: mine.tag };
+  };
+  if (name === "house_chat_post") {
+    const author = takeBack("author.tag", committed?.author, got?.author, false);
+    return { got: author === got?.author ? got : { ...got, author }, spent, diffs };
+  }
+  if (!Array.isArray(got?.messages)) return { got, spent, diffs };
+  const messages = got.messages.map((m, i) => {
+    const author = takeBack(`messages.${i}.author.tag`, committed?.messages?.[i]?.author, m?.author, true);
+    return author === m?.author ? m : { ...m, author };
+  });
+  return { got: { ...got, messages }, spent, diffs };
 }
 
 /**

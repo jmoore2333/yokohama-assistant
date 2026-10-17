@@ -58,7 +58,7 @@ import { Unreachable } from "./Door";
 import { Refusal } from "./Refusal";
 import { ReleaseNotice } from "./ReleaseNotice";
 import { hashOf, navigate } from "./route";
-import { usePolled } from "./signal";
+import { usePolled, type End } from "./signal";
 import type { ReadinessStatus } from "./swRegister";
 import { mayAbandon, rowAction, rowMeta, seatChips, type Section } from "./tables";
 import type { GamesList, TableView } from "./types";
@@ -264,6 +264,10 @@ export function Lobby({
   /** The lobby's own strip, at the foot: a reading where every scope was
    *  refused, the pager's, a copy the browser refused, and Abandon's. */
   const [error, setError] = useState<string | null>(null);
+  /** Why the house signal STOPPED, once it has (security S2c, D3; AD-4): kept apart from `error` because `take` —
+   *  every listing that lands, the opening read among them — clears the strip, and a signal that ended before the
+   *  opening read landed would otherwise have its sentence wiped and read "live" over a dead stream again. */
+  const [ended, setEnded] = useState<string | null>(null);
   /** Each scope's pages after the first, and the cursor after THEM — one
    *  pager per scope (cycle E, R-E6; Your tables' alone until then).
    *
@@ -404,6 +408,13 @@ export function Lobby({
     },
     me !== null,
     take,
+    // **An ended signal is said, once, where the lobby says its refusals** (security S2c, D3; S2b's AD-4): the
+    // stream cap's 429 on the NAS, or the socket cap's `end` frame on the Worker, carries a sentence the player can
+    // act on; before this the lobby read "live" with a dead stream. `usePolled` opens nothing after an end, and
+    // every end it hands over carries a sentence (`End`), so the lobby draws it as it is. A house `end` frame without
+    // one would read in a table's words (`endSentence`); no host sends one — the house's only `end` is the cap's,
+    // with its sentence (`worker/src/house.ts`).
+    useCallback((e: End) => setEnded(e.sentence), []),
   );
 
   const page = async (scope: Scope, cursor: string) => {
@@ -603,6 +614,8 @@ export function Lobby({
     </a>
   );
 
+  /** The foot strip: the last refusal, else why the signal stopped. */
+  const foot = error ?? ended;
   return (
     <div className="lobby">
       <LobbyBand crumbs={["Lobby"]} corner={corner ?? (me === null ? toDevice : null)} />
@@ -769,9 +782,10 @@ export function Lobby({
 
         {/* The lobby's own strip: a reading where EVERY listing was refused
             (one refused listing is said in its own section, `strip`), the
-            pager's, a copy the browser refused, and Abandon's. **Not a second "Can't reach the server"
+            pager's, a copy the browser refused, and Abandon's — else why the house signal STOPPED (`ended`,
+            security S2c). **Not a second "Can't reach the server"
             under state C's card**, which says it already. */}
-        {error && !(serverUp === false && error === UNREACHED) && <Refusal sentence={error} />}
+        {foot && !(serverUp === false && foot === UNREACHED) && <Refusal sentence={foot} />}
       </div>
     </div>
   );

@@ -411,7 +411,7 @@ impl Api {
             return;
         }
         let user = who.map(|w| yokohama_web::identity::User::parse(w).expect("a valid identity"));
-        let sentence = yokohama_web::identity::resolve(self.state.identity, &axum::http::HeaderMap::new())
+        let sentence = yokohama_web::identity::resolve(self.state.identity, self.state.claims, &axum::http::HeaderMap::new())
             .expect_err("no header, no user");
         let identity: yokohama_web::api::Identity<'_> = match &user {
             Some(u) => Ok(u),
@@ -2307,21 +2307,19 @@ fn constructed() -> Vec<(String, Value)> {
 
     // The WITHHELD half: one bot turn at a vs-bot table, the person at seat 1
     // asking about the bot's last move while the bot's starting order is
-    // still a masked slot in its hand — asserted, as the premise.
+    // still a masked slot in its hand — asserted, as the premise. Built as the
+    // ROUTE builds it (security S2c, decision D-6): `why::locate`, then
+    // `Why::withheld_from`, and no search — never through `Why::account`'s
+    // withheld arm, which the route no longer reaches (the M6.4 lesson: a
+    // fixture built on a host the served answer never takes is not coverage).
+    // The two give the same bytes, pinned in `explain.rs`.
     let mut one_turn = build(vec![Some(PROVISIONAL_DEFAULT_BOT), None]);
     one_turn.pump_bots();
-    let one_bot = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), None], BOT_SEED);
-    let early = yokohama_cli::why::account_parts(
-        one_turn.session.mode, one_turn.session.record(), &rules, &one_bot, None,
-    )
-    .unwrap_or_else(|r| panic!("the bot's first turn holds a move to account for: {r}"));
-    let visibility = yokohama_web::explain::visibility_of(
-        one_turn.session.state(),
-        early.reconstruction.seat,
-        &[PlayerId::new(1)],
-    );
+    let early = yokohama_cli::why::locate(one_turn.session.mode, one_turn.session.record(), &rules, None)
+        .unwrap_or_else(|r| panic!("the bot's first turn holds a move to account for: {r}"));
+    let visibility = yokohama_web::explain::visibility_of(one_turn.session.state(), early.seat, &[PlayerId::new(1)]);
     assert_eq!(visibility, yokohama_web::explain::Visibility::Withheld, "after one bot turn the card is hidden");
-    let why_withheld = serde_json::to_value(yokohama_web::explain::Why::account(&early, &rules, visibility))
+    let why_withheld = serde_json::to_value(yokohama_web::explain::Why::withheld_from(&early, &rules))
         .expect("a serializable withheld account");
 
     // **A TERMINAL explanation, which is a different picture and not an empty
@@ -2995,8 +2993,10 @@ fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
 /// one is a finding unless it is here — and here by PATH where the payload has
 /// one, so a new field in the same file is not waved through with it.
 ///
-/// Not empty, and the plan expected it to be: these two were on the corpus
-/// before this cycle, and neither names a person.
+/// Not empty: `identity_cases` and `why` were on the corpus when this pin was
+/// written (M6.5c2 cycle D), `why_withheld` joined with the explain surface at
+/// the requester's visibility (security S1a, Task 1; A1/B1) and `id_cases` with
+/// the hash router's id grammar (S2a, Task 5); none of the four names a person.
 const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
     ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
     ("id_cases", None, "the id grammar's contract: its one @ is a refused input, and no route serves the file"),

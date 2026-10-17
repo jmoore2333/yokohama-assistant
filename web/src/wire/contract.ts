@@ -444,6 +444,10 @@ export interface IdentityCase {
   display: string | null;
 }
 const _identityCases: readonly IdentityCase[] = identityCases;
+/** One input of the store's id grammar and the layer's answer (security S2a, Task 5): `raw` as a client could send
+ *  it in a route or a hash, `safe` whether `is_safe_id` admits it. Not a route's payload: a CONTRACT, emitted by
+ *  `wire_fixtures`, which the client's hash router (`tableId.ts`) is pinned to as the name step is pinned to
+ *  `identityCases`. */
 export interface IdCase {
   raw: string;
   safe: boolean;
@@ -737,7 +741,7 @@ const CHAT_MESSAGE = ["seq", "created_at", "author", "text", "deleted"] as const
 // No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
 // and a `you`, and the address stays in the server's document.
 const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
-const CHAT_AUTHOR_WATCHER = ["kind", "name", "you"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "name", "you", "tag"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.

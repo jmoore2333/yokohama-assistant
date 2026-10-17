@@ -24,7 +24,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../playwright.config", async () => ({ BASE_URL: (await import("./live")).baseUrlFor(false) }));
 
 import type { ConsoleMessage, Page, Response as PwResponse } from "@playwright/test";
-import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, isReleaseFeedError, isReportOnlyDetectionLine, tally } from "./harness";
+import { BEACON_PREFIX, capSentence, isBeaconCorsError, isDealAnswer, isDealAnswerLine, isReleaseFeedError, tally } from "./harness";
 import {
   EXIT_LAUNCH_ARGS,
   LIVE_ORIGIN,
@@ -344,6 +344,41 @@ describe("identityHeaders and liveContextOptions", () => {
     const live = await import("./live");
     expect(live.LIVE).toBe(false);
     expect(await live.liveContextOptions("a@e2e.test")).toEqual({});
+  });
+});
+
+// **`who`: an identity follows the target** (security S2b, C1; Task 5b). The
+// local tier's binary is `production`, `NamesOnly`, so a caller there is a plain
+// NAME; the live tier's dev door names a `.test` ADDRESS, and a spec whose live
+// identities carry their own domain keeps it — `readme_shots`' `ben@readme.test`
+// is what the README's alt text names. Through the ENV, as a run sets it: `LIVE`
+// is read once, when `live.ts` is, so each cell loads a fresh `harness.ts` (and
+// with it a fresh `live.ts`) after stubbing the variable.
+describe("who — an identity follows the target", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  /** `harness.ts` as a run whose target is `target` loads it. */
+  async function harnessUnder(target: string) {
+    vi.stubEnv("YOKOHAMA_WEB_E2E_TARGET", target);
+    vi.resetModules();
+    return import("./harness");
+  }
+
+  it("live, a `.test` address: the default domain, or the spec's own", async () => {
+    const h = await harnessUnder("live");
+    expect(h.who("x")).toBe("x@e2e.test");
+    expect(h.who("ben", "readme")).toBe("ben@readme.test");
+    expect(h.WALKER).toBe("walker@e2e.test");
+  });
+
+  it("locally, the bare name, whatever the domain", async () => {
+    const h = await harnessUnder("");
+    expect(h.who("x")).toBe("x");
+    expect(h.who("ben", "readme")).toBe("ben");
+    expect(h.WALKER).toBe("walker");
   });
 });
 
@@ -1278,10 +1313,10 @@ describe("tally — one line per request a browser makes", () => {
   });
 });
 
-// ---- the Report-Only lines, as Chromium 143–153 words and levels them (MEASURED, the S2a plan review) ---------
+// ---- the CSP lines, as Chromium 143–153 words and levels them (MEASURED, the S2a plan review) ---------------
 
 /** A page whose console emits a line of the type the cell chooses — `watchForBreakage` reads the type, so the
- *  `fakePage` above, which emits `error` alone, cannot drive the Report-Only arm. */
+ *  `fakePage` above, which emits `error` alone, cannot drive a CSP line at `info`. */
 function consolePage() {
   const handlers = new Map<string, Handler[]>();
   const page = {
@@ -1298,8 +1333,8 @@ function consolePage() {
   };
 }
 
-/** Chromium's Report-Only refusal of an inline script under the shipped `script-src`, word for word (the hash is
- *  the injected script's own, and varies). */
+/** Chromium's Report-Only refusal of an inline script under 0.6.2's `script-src` (the shipped one carries the nonce
+ *  since 0.6.3), word for word (the hash is the injected script's own, and varies). */
 const RO_INLINE =
   "Executing inline script violates the following Content Security Policy directive 'script-src 'self' 'wasm-unsafe-eval' https://challenges.cloudflare.com https://static.cloudflareinsights.com'. Either the 'unsafe-inline' keyword, a hash ('sha256-aBV9DC+smatNUlnkSmZOl+jfLQV1VY8nHmiO1eoMzIU='), or a nonce ('nonce-...') is required to enable inline execution. The policy is report-only, so the violation has been logged but no further action has been taken.";
 /** The same refusal of an inline STYLE — another directive's line. */
@@ -1310,7 +1345,7 @@ const ENFORCED_INLINE = RO_INLINE.replace(
   "The action has been blocked.",
 );
 
-describe("the Report-Only lines (type info) are read, and the live tier forgives exactly one (security S2a, decision D-9)", () => {
+describe("the CSP lines (any console type) are read on every tier, and nothing is forgiven (security S2a, decision D-9; S2c)", () => {
   afterEach(() => {
     vi.doUnmock("./live");
     vi.resetModules();
@@ -1321,12 +1356,12 @@ describe("the Report-Only lines (type info) are read, and the live tier forgives
     const watch = watchForBreakage(fake.page);
     const local = baseUrlFor(false);
     fake.line("info", RO_INLINE, `${local}/`);
+    expect(watch.failures[0], "the label is the message's own type").toBe(`console.info: ${RO_INLINE}`);
     fake.line("info", RO_STYLE, `${local}/`);
     expect(watch.failures).toHaveLength(2);
     // The wording with `report-only` before the policy's name (the regex's optional clause), at `info`: read too.
     fake.line("info", RO_INLINE.replace("following Content Security Policy", "following report-only Content Security Policy"), `${local}/`);
     expect(watch.failures, "the report-only wording, read at info").toHaveLength(3);
-    expect(watch.reportOnlyForgiven).toBe(0);
   });
   it("locally a CSP line is breakage even when a cell's expected status digits appear in its hash — the status filter never swallows it", async () => {
     const { watchForBreakage } = await harnessAt(false);
@@ -1335,27 +1370,16 @@ describe("the Report-Only lines (type info) are read, and the live tier forgives
     fake.line("error", ENFORCED_INLINE.replace("aBV9DC+", "a409DC+"), `${baseUrlFor(false)}/`);
     expect(watch.failures, "an enforced refusal whose hash spells 409").toHaveLength(1);
   });
-  it("live forgives the Report-Only inline-script line at a page of the deployment, counted apart, and nothing beside it", async () => {
+  it("live forgives NO CSP line, whatever its level or its page (security S2c: the enforced policy carries the nonce)", async () => {
     const { watchForBreakage } = await harnessAt(true);
     const fake = consolePage();
     const watch = watchForBreakage(fake.page);
     fake.line("info", RO_INLINE, `${LIVE_ORIGIN}/`);
-    expect([watch.failures, watch.reportOnlyForgiven, watch.forgiven]).toEqual([[], 1, 0]);
     fake.line("info", RO_STYLE, `${LIVE_ORIGIN}/`);
     fake.line("error", ENFORCED_INLINE, `${LIVE_ORIGIN}/`);
     fake.line("info", RO_INLINE, "https://elsewhere.test/");
+    expect([watch.failures.length, watch.forgiven, watch.feedForgiven]).toEqual([4, 0, 0]);
     fake.line("info", "an ordinary info line", `${LIVE_ORIGIN}/`);
-    expect(watch.failures).toHaveLength(3);
-    expect(watch.reportOnlyForgiven).toBe(1);
-  });
-  it("isReportOnlyDetectionLine: the measured line at the deployment's ORIGIN, and nothing that merely starts with it", () => {
-    expect(isReportOnlyDetectionLine(RO_INLINE, `${LIVE_ORIGIN}/`, LIVE_ORIGIN)).toBe(true);
-    expect(isReportOnlyDetectionLine(RO_INLINE, `${LIVE_ORIGIN}.evil.test/`, LIVE_ORIGIN), "a longer host is another origin").toBe(false);
-    expect(isReportOnlyDetectionLine(RO_INLINE, "not a url", LIVE_ORIGIN)).toBe(false);
-    expect(isReportOnlyDetectionLine(ENFORCED_INLINE, `${LIVE_ORIGIN}/`, LIVE_ORIGIN), "an ENFORCED refusal is breakage").toBe(false);
-    expect(
-      isReportOnlyDetectionLine(RO_INLINE.replace("inline script", "script from 'https://evil.test/x.js'"), `${LIVE_ORIGIN}/`, LIVE_ORIGIN),
-      "a refused external script is breakage",
-    ).toBe(false);
+    expect(watch.failures, "an ordinary info line is still read as nothing").toHaveLength(4);
   });
 });

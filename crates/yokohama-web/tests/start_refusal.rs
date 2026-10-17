@@ -37,6 +37,14 @@
 //! says so on stderr; a malformed file exits 1 before it listens, naming
 //! the file.
 //!
+//! And since the S2 stack review (lens 2, Important 1), the stream cap's slot
+//! on the binary: a caller's eight table streams held open over real sockets,
+//! each read past its first frame, make the ninth a 429 in
+//! `TOO_MANY_STREAMS_CALLER`'s words, and closing one socket admits the next.
+//! The slot rides the SSE body, and only a body hyper polls and drops proves
+//! it: the in-process cells hold an unpolled response, so a slot released at
+//! the body's first poll passed every one of them.
+//!
 //! **Every wait is bounded.** Both pipes are read on their own threads into
 //! channels; a start is polled every 50 ms for its listening line or its exit,
 //! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
@@ -379,6 +387,60 @@ fn get(port: u16, path: &str) -> (u16, http::HeaderMap) {
     (status, headers)
 }
 
+/// One stream `GET` to the server at `port` as `user` at the open door, over a
+/// plain socket held OPEN (no `Connection: close`), each read and write
+/// bounded by [`BOUND`]. A 200 is read until its first `signal` frame has
+/// arrived — so hyper has polled the body at least once, the moment a slot
+/// released at the first poll would be gone — and the socket is handed back
+/// for the cell to hold; any other status is read to its `Content-Length` and
+/// its body parsed as JSON. The status, the socket and the body (`Null` for a
+/// 200).
+#[cfg(feature = "open-door")]
+fn open_stream(port: u16, user: &str, path: &str) -> (u16, std::net::TcpStream, serde_json::Value) {
+    use std::io::Write;
+    use yokohama_web::identity::CLAIMED_HEADER;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{CLAIMED_HEADER}: {user}\r\nAccept: text/event-stream\r\n\r\n"
+    )
+    .expect("the request writes");
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(at) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        let n = stream.read(&mut chunk).expect("the head reads");
+        assert!(n > 0, "the server closed before a whole head: {:?}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&chunk[..n]);
+    };
+    let head = String::from_utf8_lossy(&seen[..head_end]).into_owned();
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("a status line");
+    if status == 200 {
+        while !String::from_utf8_lossy(&seen[head_end..]).contains("event: signal") {
+            let n = stream.read(&mut chunk).expect("the first frame reads");
+            assert!(n > 0, "the stream closed before its first frame: {:?}", String::from_utf8_lossy(&seen));
+            seen.extend_from_slice(&chunk[..n]);
+        }
+        return (status, stream, serde_json::Value::Null);
+    }
+    let length: usize = head
+        .lines()
+        .find_map(|l| l.split_once(':').filter(|(name, _)| name.trim().eq_ignore_ascii_case("content-length")))
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("a {status} with no Content-Length, which this reader does not decode: {head}"));
+    while seen.len() < head_end + length {
+        let n = stream.read(&mut chunk).expect("the body reads");
+        assert!(n > 0, "the server closed inside the body: {:?}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&chunk[..n]);
+    }
+    let body = serde_json::from_slice(&seen[head_end..head_end + length]).unwrap_or(serde_json::Value::Null);
+    (status, stream, body)
+}
+
 /// No stamp sentence of any of the rule's three shapes: each names the stamp
 /// file, and each says "Turnstile site key".
 fn assert_no_stamp_sentence(stderr: &str, shown: &str, what: &str) {
@@ -528,6 +590,38 @@ fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseed
     assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }
 
+/// **The binary refuses an address under the open door and admits a name**
+/// (security S2b, finding C1; decision D-2): the catcher of `main` →
+/// `AppState::new` → `production` → `NamesOnly`, which no in-process cell runs
+/// — the seed rule's binary cell's shape. An address claimed at the open door
+/// is the layer's 401 in its one sentence; a plain name creates the table.
+/// Mutants: the production literal building `Diagnostic` (the address reads
+/// 201); the adapter resolving with a literal policy.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_refuses_an_address_claim_at_the_open_door_and_admits_a_name() {
+    use yokohama_web::identity::ADDRESS_NOT_A_NAME;
+
+    let scratch = Scratch::new("claims-open");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the key rule at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let body = |user: &str, id: &str| {
+        serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": user }, { "open": true }], "id": id, "name": id,
+        })
+    };
+    let (status, refused) = post(port, "red@wire.test", "/api/games", &body("red@wire.test", "addressed"));
+    assert_eq!((status, refused), (401, serde_json::json!({ "error": ADDRESS_NOT_A_NAME })));
+    let (status, opened) = post(port, "ben", "/api/games", &body("ben", "named"));
+    assert_eq!(status, 201, "{opened}");
+    assert!(server.running(), "still serving after both requests");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+}
+
 /// **The rename's table, read off the binary** (security S1c, finding D26;
 /// the fix round's Minor 3). The deploy window renames every legacy folder from
 /// what `yokohama-web segment` prints, so the line is pinned whole: one line
@@ -619,4 +713,71 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     let (status, _, stderr) = Server::spawn("open", &scratch).exited("a malformed headers.json");
     assert_eq!(status.code(), Some(1));
     assert!(stderr.contains("headers.json"), "{stderr}");
+}
+
+/// **The stream slot is held by the body hyper serves, and freed when the
+/// socket closes** (the S2 stack review, lens 2, Important 1; security S2c,
+/// D3): the binary `main` runs, at the open door, over real sockets. A
+/// caller's eight table streams, each held open and read past its first
+/// frame, make the ninth a 429 in `TOO_MANY_STREAMS_CALLER`'s words with no
+/// frame; another caller is still admitted beside them, so the refusal is the
+/// caller's figure and not a server that stopped answering; closing one of the
+/// eight sockets admits the caller's next stream, polled every 50 ms up to
+/// [`BOUND`] since the server learns of a close only when hyper reads it.
+/// Mutant (the review's M-slot-early): `Admitted`'s slot an `Option` taken at
+/// the body's first poll — every in-process cell stays green, and here the
+/// ninth reads 200.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_holds_a_stream_slot_while_its_socket_is_open_and_frees_it_when_the_socket_closes() {
+    use yokohama_web::streams::{STREAMS_PER_CALLER, TOO_MANY_STREAMS_CALLER};
+
+    let scratch = Scratch::new("stream-slots");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the stream cap at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let created = serde_json::json!({
+        "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+        "seats": [{ "user": "red" }, { "open": true }], "id": "slots", "name": "slots",
+    });
+    let (status, body) = post(port, "red", "/api/games", &created);
+    assert_eq!(status, 201, "{body}");
+    let path = "/api/games/slots/stream";
+
+    let mut held = Vec::new();
+    for n in 1..=STREAMS_PER_CALLER {
+        let (status, socket, body) = open_stream(port, "red", path);
+        assert_eq!(status, 200, "stream {n} of {STREAMS_PER_CALLER} is admitted: {body}");
+        held.push(socket);
+    }
+    let (status, _, body) = open_stream(port, "red", path);
+    assert_eq!(
+        (status, &body),
+        (429, &serde_json::json!({ "error": TOO_MANY_STREAMS_CALLER })),
+        "the ninth stream, with eight held open and each past its first frame"
+    );
+    let (status, blue, body) = open_stream(port, "blue", path);
+    assert_eq!(status, 200, "another caller is admitted beside red's eight: {body}");
+    drop(blue);
+
+    drop(held.pop());
+    let deadline = Instant::now() + BOUND;
+    let reopened = loop {
+        let (status, socket, body) = open_stream(port, "red", path);
+        match status {
+            200 => break socket,
+            429 if Instant::now() < deadline => {
+                assert_eq!(body["error"], TOO_MANY_STREAMS_CALLER, "only the caller's figure refuses here: {body}");
+                drop(socket);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => panic!("a closed socket did not free its slot within {BOUND:?}: the last open read {status} {body}"),
+        }
+    };
+    drop(reopened);
+    drop(held);
+    assert!(server.running(), "still serving after every stream");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }

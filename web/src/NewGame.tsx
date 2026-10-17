@@ -25,7 +25,7 @@ import {
 import { LobbyBand } from "./Band";
 import { seatClass } from "./Cards";
 import { VersionTag } from "./Chips";
-import { normalizeName } from "./nameRule";
+import { normalizeName, openDoorVerdict } from "./nameRule";
 import { Refusal } from "./Refusal";
 import { checkSeed, trimSeed } from "./seedRule";
 import type { PlayerColor, TableView } from "./types";
@@ -188,6 +188,11 @@ function TableForm({
   /** **A specific person is a NAME on an open door and an ADDRESS behind
    *  Access** (spec §2.1): the door's own name, from `/api/health`. */
   const byName = useIdentityMode() === "open";
+  /** **The door's own verdict on a person typed for a seat** (security S2b,
+   *  C1; decision D-2; AD-8 (a)): on an open door any `@` is refused first, in
+   *  the door's words — the server keys no address there, so a seat bound to
+   *  one could never be taken — and behind Access the key grammar alone. */
+  const verdict = (raw: string) => (byName ? openDoorVerdict(raw) : normalizeName(raw));
   const colors = COLORS.slice(0, players) as PlayerColor[];
   /** A seed is honoured at a SOLO table only (R-SEC8(b)): every human seat
    *  mine, none open. The field is withheld — not disabled — the moment a seat
@@ -201,11 +206,11 @@ function TableForm({
 
   /** Why a "specific person" row cannot be sent: `null` when it can, `""` when
    *  it is blank — held without a sentence, because nothing typed is not a
-   *  mistake yet — and the key grammar's own reason otherwise (`nameRule.ts`). */
+   *  mistake yet — and the door's verdict's own reason otherwise (`verdict`). */
   const personError = (row: SeatRow): string | null => {
     if (row.kind !== "person") return null;
     if (row.person.trim() === "") return "";
-    const n = normalizeName(row.person);
+    const n = verdict(row.person);
     return n.ok ? null : n.reason;
   };
   const held = seedError !== null || seats.some((r) => personError(r) !== null);
@@ -233,7 +238,7 @@ function TableForm({
         if (row.kind === "bot") return { bot: true };
         if (row.kind === "open") return { open: true };
         if (row.kind === "me") return { user: me };
-        const n = normalizeName(row.person);
+        const n = verdict(row.person);
         return { user: n.ok ? n.key : row.person.trim() };
       }),
       // The seed is a STRING from the keystroke to the wire (`WireSeed`), and

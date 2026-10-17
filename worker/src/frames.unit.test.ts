@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "./frames";
+import {
+  CLOSE_TOO_MANY,
+  closeReason,
+  END_DELETED,
+  END_GONE,
+  endAtAdmission,
+  frame,
+  sentenceOf,
+  TOO_MANY_LOBBY,
+  TOO_MANY_OWN_LOBBY,
+  TOO_MANY_OWN_TABLE,
+  TOO_MANY_TABLE,
+} from "./frames";
 
 // Spec §2.4, "The framing": every message a table object sends is
 // `{"event": <name>, "data": <the SSE frame's data, byte-identical>}`.
@@ -76,5 +88,20 @@ describe("the close reason (pool fact 6)", () => {
     expect(bytes(exact)).toBe(123);
     expect(closeReason(exact)).toBe(exact);
     expect(closeReason("")).toBe("");
+  });
+});
+
+// Security S2b, finding D3 (decision D-4): a socket refused for its count is closed 4429 after an `end` frame that
+// carries one of four sentences. The pool's cap cells (`test/caps.test.ts`) build BOTH sides of each comparison
+// from these constants, so a constant moved reads green there: this cell pins them at their LITERALS, as the house
+// rule compares a sent frame with literal bytes (`test/sockets.test.ts`). Mutants: `4404` for the code (a deleted
+// table's); any sentence reworded.
+describe("the socket caps' close (security S2b, D3)", () => {
+  it("closes 4429 and carries the four sentences, at their literals", () => {
+    expect(CLOSE_TOO_MANY).toBe(4429);
+    expect(TOO_MANY_OWN_TABLE).toBe("you have too many connections open to this table — close another tab and try again");
+    expect(TOO_MANY_TABLE).toBe("this table has as many connections as it can take — try again later");
+    expect(TOO_MANY_OWN_LOBBY).toBe("you have too many connections open to the lobby — close another tab and try again");
+    expect(TOO_MANY_LOBBY).toBe("the lobby has as many connections as it can take — try again later");
   });
 });

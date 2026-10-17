@@ -1,8 +1,9 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
-// scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `npm run
-// deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39; checks 2–7 and 10–12 then judge THAT file, and 5 and
-// 6 hold it to production's blocks), so nothing ships unless all twelve hold. Every check that
-// fails is named, not only the first.
+// scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, `npm run
+// deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39) and `npm run deploy:dev` the same over
+// `wrangler.dev.jsonc` (security S2b, B6) — checks 2–7 and 10–12 then judge THAT file, and 5 and 6 hold it to
+// production's blocks — so nothing ships unless all fourteen hold. Every check that fails is named, not only the
+// first.
 //
 // 1. `gen/factory.js` exists and does not contain `debug_trap(` — the RELEASE
 //    module. M6.5b's `grep -c debug_trap` rule, for this module: the release
@@ -29,19 +30,26 @@
 //    `ACCESS_AUD` set, without which no assertion is verified and every caller
 //    is no one; under `open`, `YOKOHAMA_DEV_DOOR` is not `on`, the dev door
 //    being the worker door's test instrument (the Worker refuses the pair at
-//    run time too).
+//    run time too); and under `worker`, `YOKOHAMA_DEV_DOOR` is `on` in
+//    `wrangler.dev.jsonc` alone, which must set it to exactly `on` (security
+//    S2b, B6; R-SEC8(d); decision D-1): the dev door is the live tiers'
+//    instrument, deployed around a live tier by `npm run deploy:dev` and
+//    reverted after by the plain `npm run deploy`.
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
 //    prints the door it reads before its verdict (`doorLine`).
 // 3b. No `.wrangler/deploy/config.json` beside the package or at the repository
 //    root (`REDIRECT_FILE`, D18); every open-door file judged by `--config` is
-//    held to production as its sibling (C3).
+//    held to production as its sibling (C3); `wrangler.dev.jsonc` is held to
+//    production but for its dev door `on` (security S2b, B6); and every OTHER
+//    worker-door file judged by `--config` is held to production exactly, with
+//    no allowed difference (F-40).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
 // 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
-//    `wrangler.jsonc`, the open and gate files AND both pool configurations,
+//    `wrangler.jsonc`, the open and dev files AND both pool configurations,
 //    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
 //    `html_handling` `none`, `not_found_handling` `404-page` (cycle F, R-F5;
 //    spec §2.5), `run_worker_first` `["/api/*", "/enter"]`, the binding
@@ -134,12 +142,38 @@
 //    `on` is one of its allowed differences from production (T8-a), and a POOL
 //    file's `on` is refused whichever file is judged: the pool never deploys,
 //    so never a keyed build.
+// 13. Production's two Rate Limiting bindings (security S2b, finding C2;
+//    decision D-3): `wrangler.jsonc`'s `ratelimits` block is EXACTLY
+//    `RATE_LIMITS`, read as values — `CREATE_LIMIT` 10 per 60 s and
+//    `WRITE_LIMIT` 120 per 10 s, namespaces `7301` and `7302`, the literals the
+//    shell's comment defends — and each pool file binds exactly the two NAMES,
+//    at any figure: the pool's figures are lenient by design, since
+//    `test/worker.test.ts` sends more creates through `handle` than production
+//    allows. The open and dev files carry production's block by the sibling
+//    rule (T8-a), judged when the file is the one deployed. Read at the TOP
+//    LEVEL: `ratelimits` is not inherited by a named environment (wrangler's
+//    schema), and the repository deploys none. The shell refuses a
+//    configuration lacking either binding at run time too (`config.ts`'s
+//    `limits`).
+// 14. Production's logs (security S2b, finding D23; decision D-6):
+//    `wrangler.jsonc`'s `observability` sets `redact_query_string` to `true` —
+//    an open-door socket's `claimed=` rides the upgrade's URL, and an
+//    invocation log keeps the URL — and leaves `head_sampling_rate` absent or
+//    `1`, since the live readings count invocations through these logs (AD-10
+//    (a): before this check nothing held the rate, and `0.1` passed). The
+//    nested `observability.logs` keys wrangler also reads are held the same
+//    way: its `head_sampling_rate` absent or `1`, and its `invocation_logs`
+//    never `false` (Task 7's run: both passed the first form). Nor are the
+//    logs switched off: `observability.enabled`, `observability.logs.enabled`
+//    and `observability.logs.persist` are never `false` (Task 7's review). The
+//    open and dev files carry production's block by the sibling rule (T8-a),
+//    judged when the file is the one deployed.
 //
 // Checks 2, 9, 11 and 12 read the assets tree the judged configuration names,
 // and 9, 11 and 12 only an ASSEMBLED one — a tree with a `sw.js`; check 2 names
 // a tree without one, and its sentence is the one to act on.
 //
-// Checks 3–7 need no build, and `deploy-guard.test.mjs` runs them over the
+// Checks 3–7, 13 and 14 need no build, and `deploy-guard.test.mjs` runs them over the
 // committed files — the per-commit catcher; the live reading at each deploy
 // is the second.
 //
@@ -247,9 +281,9 @@ export const REDIRECT_FILE = ".wrangler/deploy/config.json";
  *  `--config wrangler.open.jsonc`. */
 const OPEN_FILE = "wrangler.open.jsonc";
 
-/** The gate window's configuration (R-E10): production with the dev door
- *  "off" — held to production's blocks like the open file. */
-const GATE_FILE = "wrangler.gate.jsonc";
+/** The live tiers' configuration (security S2b, B6; decision D-1): production with the dev door `on`, held to
+ *  production's blocks like the open file. */
+const DEV_FILE = "wrangler.dev.jsonc";
 
 /** What check 6 compares, and what each block's absence leaves undeclared. */
 const OBJECT_BLOCKS = {
@@ -277,6 +311,31 @@ function objectBlocks(production, pools, failures) {
       if (p !== t) {
         failures.push(`${name}'s ${key} differs from wrangler.jsonc's — it would ship or test what production does not ship: ${t} against ${p}`);
       }
+    }
+  }
+}
+
+/** Production's two Rate Limiting bindings as values (security S2b, finding C2; decision D-3), the literals the
+ *  shell's comment defends. The dev and open files carry the same block by the sibling rule; a pool file is held
+ *  to the two NAMES alone, its figures being lenient by design (`test/worker.test.ts`'s creates through `handle`).
+ *  Read at the top level: `ratelimits` is not inherited by a named environment (wrangler's schema), and the
+ *  repository deploys none. */
+export const RATE_LIMITS = [
+  { name: "CREATE_LIMIT", namespace_id: "7301", simple: { limit: 10, period: 60 } },
+  { name: "WRITE_LIMIT", namespace_id: "7302", simple: { limit: 120, period: 10 } },
+];
+
+/** Check 13: production's block at its literals; each pool file naming exactly the two bindings. */
+function rateLimits(production, pools, failures) {
+  if (canonical(production.value.ratelimits) !== canonical(RATE_LIMITS)) {
+    failures.push(
+      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
+    );
+  }
+  for (const [name, pool] of pools) {
+    const names = Array.isArray(pool.value.ratelimits) ? pool.value.ratelimits.map((b) => objectOf(b)?.name).sort() : [];
+    if (canonical(names) !== canonical(["CREATE_LIMIT", "WRITE_LIMIT"])) {
+      failures.push(`${name} must bind exactly CREATE_LIMIT and WRITE_LIMIT under ratelimits, at any figure (test/worker.test.ts sends a dozen creates a minute as one caller through handle) — got ${canonical(names)}`);
     }
   }
 }
@@ -348,7 +407,7 @@ function known(door) {
 /** What each deployable sibling may differ in: `vars` keys, each with the
  *  value the sibling must hold (`undefined`: absent). Everything else is
  *  production's, exactly. */
-const GATE_DIFFERS = { YOKOHAMA_DEV_DOOR: "off" };
+const DEV_DIFFERS = { YOKOHAMA_DEV_DOOR: "on" };
 const OPEN_DIFFERS = {
   YOKOHAMA_WEB_IDENTITY: "open",
   ACCESS_TEAM_DOMAIN: undefined,
@@ -434,9 +493,22 @@ function doorRules(name, value, failures) {
   }
   // Read as the shell reads a switch (`config.ts`'s `folded`): trimmed, in any case.
   const devDoor = vars.YOKOHAMA_DEV_DOOR;
+  // And typed as the shell types it (`config.ts`'s `strings`): a value that is not a string is refused at the file,
+  // at either door, where the rules below read strings alone (the S2 stack review, lens 1, Minor 4).
+  if (devDoor !== undefined && typeof devDoor !== "string") {
+    failures.push(
+      `${name}'s vars set YOKOHAMA_DEV_DOOR to ${JSON.stringify(devDoor)} — a switch is a string in quotes, "on" or "off", and the shell refuses any other type (config.ts's strings)`,
+    );
+  }
   if (door === "open" && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
     failures.push(
       `${name}'s vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair`,
+    );
+  }
+  // The dev door is the live tiers' instrument and opens in ONE file (security S2b, B6; R-SEC8(d); decision D-1).
+  if (door === "worker" && name !== DEV_FILE && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
+    failures.push(
+      `${name}'s vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler.dev.jsonc alone (npm run deploy:dev), around a live tier, and reverted after (R-SEC8(d))`,
     );
   }
 }
@@ -638,7 +710,10 @@ function poolDeclaration(name, value, failures) {
  *  judge it alone; check 5 holds production, the open file and each pool to
  *  spec §2.3's assets block, and check 6 holds the open file and each pool
  *  to production's object blocks, whichever file is named. Check 12's pool
- *  half rides here too (cycle F): neither pool file declares `on`. */
+ *  half rides here too (cycle F): neither pool file declares `on`; and check
+ *  13 (security S2b, C2): production's rate limits at their figures, and each
+ *  pool file binding the two; and check 14 (security S2b, D23): production's
+ *  logs redacting query strings, unsampled. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -652,19 +727,17 @@ export function configFailures(root, config = PRODUCTION_FILE) {
       failures.push(`${config} names YOKOHAMA_DIAGNOSTIC_SEEDS — diagnostic seeds are set in the pool's configurations and nowhere else`);
     }
     secretsInVars(config, judged.value, failures);
-    // The gate file exists to shut the dev door: anything but "off" defeats it.
-    if (config === GATE_FILE) {
-      const gate = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
-      if (gate !== "off") {
-        failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "off" — its only purpose is the worker door with the dev door shut; got ${JSON.stringify(gate) ?? "nothing"}`);
-      }
+    // The dev file exists to open the dev door: anything but "on" defeats it.
+    if (config === DEV_FILE) {
+      const dev = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
+      if (dev !== "on") failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got ${JSON.stringify(dev) ?? "nothing"}`);
     }
   }
   if (production) assetsBlock(PRODUCTION_FILE, production.value, failures);
   const others = [];
   // The named configuration is held to the same blocks even when it is none of
   // the listed ones (`configFrom` accepts any `wrangler*.jsonc`).
-  const held = [OPEN_FILE, GATE_FILE, ...POOLS];
+  const held = [OPEN_FILE, DEV_FILE, ...POOLS];
   if (config !== PRODUCTION_FILE && !held.includes(config)) held.push(config);
   for (const name of held) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
@@ -675,21 +748,58 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     }
   }
   if (production) objectBlocks(production, others, failures);
+  if (production) rateLimits(production, others.filter(([n]) => POOLS.includes(n)), failures);
+  // Check 14 (security S2b, D23; decision D-6): production's logs redact query strings and are not sampled.
+  const observed = production ? objectOf(production.value.observability) : undefined;
+  if (production && observed?.redact_query_string !== true) {
+    failures.push("wrangler.jsonc's observability must set redact_query_string to true — an open-door socket's claimed= would persist in the invocation logs otherwise (security S2b, D23)");
+  }
+  if (production && observed?.head_sampling_rate !== undefined && observed.head_sampling_rate !== 1) {
+    failures.push("wrangler.jsonc's observability must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  // Logs switched OFF drop every line the readings count, whatever the rate (Task 7's review): the block's
+  // `enabled` here, the nested `logs.enabled` and `logs.persist` below — none of the three ever `false`.
+  if (production && observed?.enabled === false) {
+    failures.push("wrangler.jsonc's observability must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  // wrangler 4.136.3 also reads `observability.logs.head_sampling_rate` and `observability.logs.invocation_logs`
+  // (Task 7's run): a rate set there samples the same logs, and `invocation_logs: false` drops the lines the
+  // readings count — both held, so the top-level clause cannot be sidestepped by the nested key.
+  const logs = production ? objectOf(observed?.logs) : undefined;
+  if (production && logs?.head_sampling_rate !== undefined && logs.head_sampling_rate !== 1) {
+    failures.push("wrangler.jsonc's observability.logs must leave head_sampling_rate at 1 — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.invocation_logs === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set invocation_logs to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.enabled === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
+  if (production && logs?.persist === false) {
+    failures.push("wrangler.jsonc's observability.logs must not set persist to false — the live readings count invocations through these logs (security S2b, D-6)");
+  }
   // A deployable sibling is production with ONE thing changed (T8-a): a deploy
   // REPLACES the Worker's variables wholesale, so a sibling that fell behind
   // production would roll it back. Judged when the file is the one deployed.
-  if (production && judged && config === GATE_FILE) siblingDrift(config, production.value, judged.value, GATE_DIFFERS, failures);
+  if (production && judged && config === DEV_FILE) siblingDrift(config, production.value, judged.value, DEV_DIFFERS, failures);
   if (production && judged && config === OPEN_FILE) siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
   // **Every open-door file is production's sibling** (security S2a, C3): a public configuration written later
   // and judged by `--config` is held to production's blocks and vars as the window's file is, not only to the
   // assets and object blocks. (S4's public Worker, its own deployment, will need a rule of its own.)
-  if (production && judged && config !== PRODUCTION_FILE && config !== GATE_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
+  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
     siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
+  }
+  // **Every unlisted worker-door file is production's sibling with NO allowed difference** (the S2a plan review's
+  // F-40; security S2b): a configuration judged by `--config` whose door is `worker` and which is neither
+  // production nor the dev file is held to production exactly — a deploy of it would otherwise roll production
+  // back or open a door no committed file opens.
+  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "worker") {
+    siblingDrift(config, production.value, judged.value, {}, failures);
   }
   return failures;
 }
 
-/** All twelve checks over the worker package at `root`, inside the repository
+/** All fourteen checks over the worker package at `root`, inside the repository
  *  at `repo`: `[]` when every one holds. */
 export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_FILE) {
   const failures = [];
@@ -790,8 +900,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
       "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
-      "at the open door no dev door, every open-door file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and gate files and both pool files; the open and gate files equal production but for their door, and the open file's declaration; " +
-      "the same object bindings, migrations and bucket binding in each; no operator list or dev-door client id in its vars; " +
+      "at the open door no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and dev files and both pool files; the open and dev files equal production but for their door, and the open file's declaration; " +
+      "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; production's logs redacting query strings, unsampled; " +
+      "no operator list or dev-door client id in its vars; " +
       "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
   );
 }

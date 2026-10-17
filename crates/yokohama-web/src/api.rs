@@ -1167,8 +1167,8 @@ pub fn chat_post(
     let (table, viewer) = admitted(games, id, user)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&table.seats, viewer, user, req.name.as_deref())?;
-    let message = games.chat_append(id, author, &text)?;
-    Ok(message.view_for(user))
+    let (message, salt) = games.chat_append_salted(id, author, &text)?;
+    Ok(message.view_for(user, salt.as_deref()))
 }
 
 /// Who a poster IS, from the viewer the admission produced (R-6.4.2, R-6.4.15).
@@ -1244,8 +1244,8 @@ pub fn house_chat_post(
     lobby_chat_on(games)?;
     let text = chat::check_text(&req.text, &games.chat.limits).map_err(ApiError::bad_request)?;
     let author = author_of(&[], client::Viewer::Spectator, user, req.name.as_deref())?;
-    let message = games.house_append(author, &text)?;
-    Ok(message.view_for(user))
+    let (message, salt) = games.house_append_salted(author, &text)?;
+    Ok(message.view_for(user, salt.as_deref()))
 }
 
 /// `DELETE /api/games/{id}/chat/{seq}` (M6.5c2 cycle D, R-D4) — a message
@@ -1689,12 +1689,11 @@ pub fn suggest(games: &Games, user: &User, id: &str) -> Result<explain::SuggestR
 /// reimplement the first half: the refusals ARE the honesty gate."* A
 /// reconstruction that does not equal the recorded move refuses, naming both
 /// moves and both versions — and that refusal reaches the browser as data,
-/// because a branch nobody has ever seen is where defects live. **The one
-/// exception is served at the requester's visibility**
-/// ([`explain::Why::refused_at`], S1a's residual M-3): a `mismatch` served
-/// while the mover's account is withheld carries the layer's
-/// [`explain::MISMATCH_WITHHELD`], naming neither move nor version, since the
-/// reconstructed move was chosen over the bot's hidden hand.
+/// because a branch nobody has ever seen is where defects live. The route
+/// calls its two halves, `why::locate` and `why::account_from`, and reads the
+/// requester's visibility between them: a refusal the search finds is
+/// reachable only at a public visibility, since the search runs only there
+/// (security S2c).
 ///
 /// Same lock discipline as `suggest`, for the same reason: the reconstruction
 /// runs the same `decide` path the pump ran.
@@ -1734,21 +1733,28 @@ pub fn why(games: &Games, user: &User, id: &str, q: &WhyQuery) -> Result<explain
         )
     };
     // **A move a foreign bot made is the layer's to word** (M6.5c2,
-    // R-6.5c2.10): `account_parts` would call that seat a diagnostic that
+    // R-6.5c2.10): `why::locate` would call that seat a diagnostic that
     // "resumed as a HUMAN seat". Outside the lock, over the clone, as the
     // search below is.
     if let Some(refused) = explain::foreign_why(&record, games.rules(), q.event) {
         return Ok(refused);
     }
-    Ok(
-        match yokohama_cli::why::account_parts(mode, &record, games.rules(), &bots, q.event) {
-            Ok(account) => {
-                let visibility = explain::visibility_of(&now, account.reconstruction.seat, &held);
-                explain::Why::account(&account, games.rules(), visibility)
-            }
-            Err(refusal) => explain::Why::refused_at(&refusal, &now, &held),
-        },
-    )
+    // **The visibility is read BEFORE any search** (security S2c, the explain surface's first rule; D-6, D-7):
+    // `locate` is pure replay — the index, the mover, its contestant and every pre-search refusal — and runs no
+    // search: a withheld answer is built from it, costs the replay alone (which the old flow paid too) and never
+    // reaches `decide`.
+    let located = match yokohama_cli::why::locate(mode, &record, games.rules(), q.event) {
+        Ok(l) => l,
+        Err(refusal) => return Ok(explain::Why::refused(&refusal)),
+    };
+    let visibility = explain::visibility_of(&now, located.seat, &held);
+    if visibility == explain::Visibility::Withheld {
+        return Ok(explain::Why::withheld_from(&located, games.rules()));
+    }
+    Ok(match yokohama_cli::why::account_from(located, &bots, games.rules()) {
+        Ok(account) => explain::Why::account(&account, games.rules(), visibility),
+        Err(refusal) => explain::Why::refused(&refusal),
+    })
 }
 
 /// `GET /api/games/{id}/index/{kind}` — a card index, as a VIEW.

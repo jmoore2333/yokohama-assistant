@@ -118,6 +118,7 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
       devDoor: false,
       diagnosticSeeds: false,
       clock: { kind: "wall" },
+      limits: { create: { limit: async () => ({ success: true }) }, write: { limit: async () => ({ success: true }) } },
     });
     expect(ttlDaysOf(config(90))).toBe(90);
     expect(ttlDaysOf(config(null))).toBeNull();

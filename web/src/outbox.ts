@@ -181,9 +181,9 @@ function fingerprint(record: string): string {
  *  so is a 413 — the record's SIZE, over the archive's body limit, which no
  *  retry changes (the S1 stack review's CB-F12: it read as offline, with no
  *  sentence, and was sent again on every drain for ever); a 403, a 5xx or a
- *  fetch that never arrived is about the moment, and is retried — a 507
- *  among them, which carries the server's sentence: the caller's share of the
- *  archive is full. */
+ *  fetch that never arrived is about the moment, and is retried — a 507 and
+ *  a 429 among them, which carry the server's sentence: the caller's share of
+ *  the archive is full, or the server's rate limit is reached. */
 function reasonFor(e: unknown): { reason: PendingReason; sentence?: string } {
   if (e instanceof ApiError) {
     if (e.status === 401) return { reason: "signed-out" };
@@ -192,6 +192,9 @@ function reasonFor(e: unknown): { reason: PendingReason; sentence?: string } {
     // A 507 is the caller's share of the archive FULL (security S1b, finding
     // B12): the server's state, retried like an offline row, and shown.
     if (e.status === 507) return { reason: "offline", sentence: e.message };
+    // A 429 is the server's rate limit (security S2b, finding C2): the moment's, retried like an offline row, and
+    // shown with the server's sentence.
+    if (e.status === 429) return { reason: "offline", sentence: e.message };
   }
   return { reason: "offline" };
 }

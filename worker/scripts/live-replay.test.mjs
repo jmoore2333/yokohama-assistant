@@ -190,6 +190,95 @@ describe("normalizeHouseChat", () => {
   });
 });
 
+// **The house rows' watcher tag on a production host** (security S2c, finding
+// D8; the Task 4 review's I-1). A deployed Worker is `SoloOnly`, so the live
+// house chat's first append after 0.6.3 draws an entropy salt and the run's own
+// poster, red, reads a tag that is not the committed `7e52`. The judge takes it
+// back only when it is four lowercase hex AND the page's tag is the one the
+// post's reply carried, each take-back counted in `spent`; anything else stays
+// a mismatch. Through the replay and its fake production host, as the driver's
+// cells below are. Mutants: the take-back spent on an absent or `null` tag
+// (M9c, cells 2 and 3); the reply/page agreement ignored (M9d, cell 4).
+describe("houseWatcherTag", () => {
+  /** `walk.json`'s two house rows: the run's own post, then the page after it. */
+  const POST_ROW = 43;
+  const PAGE_ROW = 44;
+  /** The tag a fresh salt gave red in the review's measurement: four hex, not the committed one. */
+  const PRODUCTION = "8196";
+  const DROPPED = Symbol("dropped");
+  const tagged = (author, tag) => {
+    if (tag !== DROPPED) return { ...author, tag };
+    const { tag: _dropped, ...rest } = author;
+    return rest;
+  };
+  /** The fake production host with the post's reply and the page's own message carrying these tags. */
+  const hostWith = (postTag, pageTag) =>
+    fakeHost({
+      edit: (plan, rows) => {
+        const at = (n) => rows.find((r) => r.script === "walk.json" && r.index === n).row;
+        expect([at(POST_ROW).fixture, at(PAGE_ROW).fixture], "the premise: the walk's house post and page").toEqual(["house_chat_post", "house_chat"]);
+        const post = liveBody("house_chat_post");
+        plan[planIndex(rows, "walk.json", POST_ROW)] = () => json(at(POST_ROW).status, { ...post, author: tagged(post.author, postTag) });
+        const page = liveBody("house_chat");
+        const messages = page.messages.map((m) => (m.seq > BASE ? { ...m, author: tagged(m.author, pageTag) } : m));
+        plan[planIndex(rows, "walk.json", PAGE_ROW)] = () => json(at(PAGE_ROW).status, { ...page, messages });
+      },
+    });
+  const tagSpends = (result) => result.spent.filter((s) => s.startsWith("houseWatcherTag"));
+  const where = (result) => result.mismatches.map((m) => `${m.fixture} ${m.path}`);
+
+  it("takes a production tag back to the committed one, counted in spent, when the reply and the page carry the same four hex", async () => {
+    expect(committed("house_chat_post").author.tag, "the premise: the committed tag").toBe("7e52");
+    expect(committed("house_chat").messages[0].author.tag, "and the page's").toBe("7e52");
+    const { result, text } = await run(hostWith(PRODUCTION, PRODUCTION));
+    expect(result.mismatches).toEqual([]);
+    expect(result.holds).toBe(true);
+    expect(tagSpends(result)).toEqual([
+      'houseWatcherTag house_chat_post.author.tag: "7e52" → "8196"',
+      'houseWatcherTag house_chat.messages.0.author.tag: "7e52" → "8196"',
+    ]);
+    expect(text).toContain("live-replay: HOLDS");
+  });
+
+  it("refuses an ABSENT tag as a mismatch, and spends nothing on it", async () => {
+    const { result } = await run(hostWith(DROPPED, DROPPED));
+    expect(result.holds).toBe(false);
+    expect(where(result)).toEqual(["house_chat_post author.tag", "house_chat messages.0.author.tag"]);
+    expect(tagSpends(result)).toEqual([]);
+  });
+
+  it("refuses a null tag as a mismatch, and spends nothing on it", async () => {
+    const { result } = await run(hostWith(null, null));
+    expect(result.holds).toBe(false);
+    expect(where(result)).toEqual(["house_chat_post author.tag", "house_chat messages.0.author.tag"]);
+    expect(tagSpends(result)).toEqual([]);
+  });
+
+  it("refuses a page whose tag is not the post's reply's: two production values, and a production reply beside the committed page", async () => {
+    const other = await run(hostWith(PRODUCTION, "a1b2"));
+    expect(other.result.holds).toBe(false);
+    expect(where(other.result), "the reply's own tag is spent; the page is held to it").toEqual(["house_chat messages.0.author.tag"]);
+    expect(other.result.mismatches[0].reason).toContain("the post's reply carried");
+    expect(tagSpends(other.result)).toEqual(['houseWatcherTag house_chat_post.author.tag: "7e52" → "8196"']);
+    const committedPage = await run(hostWith(PRODUCTION, "7e52"));
+    expect(committedPage.result.holds).toBe(false);
+    expect(where(committedPage.result), "a page reading as the corpus does not agree with a reply that did not").toEqual([
+      "house_chat messages.0.author.tag",
+    ]);
+  });
+
+  // A tag is `TAG_HEX` LOWERCASE hex and nothing else: a rule loosened to any
+  // run of hex, or to either case, passed the four cells above (M9e).
+  it("refuses a MALFORMED tag as a mismatch at both rows, and spends nothing on it: five hex, and four with an uppercase digit", async () => {
+    for (const bad of ["81960", "819A"]) {
+      const { result } = await run(hostWith(bad, bad));
+      expect(result.holds, bad).toBe(false);
+      expect(where(result), bad).toEqual(["house_chat_post author.tag", "house_chat messages.0.author.tag"]);
+      expect(tagSpends(result), bad).toEqual([]);
+    }
+  });
+});
+
 // M6.5c2 cycle D (R-D4): the walk's house post is deleted by the run that made
 // it, by the number that run's post was really given. Mutants: the path left
 // as the walk has it (the first run's delete names a stranger's message, or
@@ -563,7 +652,7 @@ describe("replay", () => {
     expect(text).toContain("expected 400 in SEED_NOT_SOLO's words · got 201");
   });
 
-  it("sends the credential to the Worker's origin alone, the forces bare, and a claimed header only for a row's who", async () => {
+  it("sends the credential to the Worker's origin alone, the forces with only the JSON type, and a claimed header only for a row's who", async () => {
     const host = fakeHost();
     await run(host);
     const forces = host.requests.filter((r) => r.url.includes("/api/admin/"));
@@ -571,7 +660,7 @@ describe("replay", () => {
       [...IDS, ...IDS].map((id) => `POST ${ORIGIN}/api/admin/tables/${id}/expire?force`),
     );
     for (const force of forces) {
-      expect(Object.keys(force.headers), "a force is the owner's own assertion, over WARP").toEqual([]);
+      expect(force.headers, "a force is the owner's own assertion, over WARP: no credential, only the JSON type since B5").toEqual({ "content-type": "application/json" });
     }
     // The base read, then each row the production seed rule sends.
     const sentRows = host.rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, SKIPPED));

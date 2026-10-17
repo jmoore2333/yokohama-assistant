@@ -14,7 +14,7 @@ import type { Table } from "../src/table";
  * push. A push FAILED is made on the table's side instead (`failPushes`),
  * and so is an archive upload held or failed: the object's own bucket is
  * swapped (`swapBucket`), with its puts held (`heldPuts`) or rejected
- * (`failingPuts`).
+ * (`failingPuts`), or its share's listing rejected (`failingList`).
  *
  * Every cell restores its patch in a `finally`, and BEFORE any
  * `runDurableObjectAlarm` that follows an abort: a module-level patch survives
@@ -155,10 +155,16 @@ export async function failPushes(stub: DurableObjectStub<Table>, times: number):
  *  object's own bucket, whose `put` the answer may call through to. */
 export type PutThrough = (real: R2Bucket, key: string, value: string, options?: R2PutOptions) => Promise<R2Object | null>;
 
+/** What a swapped bucket does with a `list` (`swapBucket`): `real` is the
+ *  object's own bucket, whose `list` the answer may call through to. */
+export type ListThrough = (real: R2Bucket, options: R2ListOptions | undefined) => Promise<R2Objects>;
+
 /**
  * The bucket a LIVE object reaches, replaced — its `env` swapped, inside the
  * object, for a copy whose `ARCHIVE` reads from the object's own bucket and
- * hands every `put` to `put` — as `failPushes` swaps `HOUSE`, and for its
+ * hands every `put` to `put` and every `list` to `list` (by default the real
+ * bucket's: an archive object lists its share before every save, security
+ * S2b) — as `failPushes` swaps `HOUSE`, and for its
  * reasons: the original is never written to, an eviction discards the copy
  * (pool fact 4), and `restore()` puts the original back. A table object or an
  * archive object alike: each reads `this.env.ARCHIVE` when it uploads.
@@ -166,6 +172,7 @@ export type PutThrough = (real: R2Bucket, key: string, value: string, options?: 
 export async function swapBucket(
   stub: DurableObjectStub<Table> | DurableObjectStub<Archive>,
   put: PutThrough,
+  list: ListThrough = (real, options) => real.list(options),
 ): Promise<{ restore(): Promise<void> }> {
   const target = stub as unknown as DurableObjectStub;
   let own: Env | undefined;
@@ -176,6 +183,7 @@ export async function swapBucket(
     const swapped = {
       get: (...args: Parameters<R2Bucket["get"]>) => real.get(...args),
       put: (key: string, value: string, options?: R2PutOptions) => put(real, key, value, options),
+      list: (options?: R2ListOptions) => list(real, options),
     };
     object["env"] = { ...own, ARCHIVE: swapped as unknown as R2Bucket };
   });
@@ -187,9 +195,9 @@ export async function swapBucket(
   };
 }
 
-/** The message a `failingPuts` put rejects with — what R2's own failure
- *  carries into the outcome's `detail`. */
-export const R2_UNREACHABLE = "R2 is unreachable (failingPuts)";
+/** The message a `failingPuts` put (and a `failingList` list) rejects with —
+ *  what R2's own failure carries into the outcome's `detail`. */
+export const R2_UNREACHABLE = "R2 is unreachable (failingPuts or failingList)";
 
 /** The next `times` puts whose key `only` accepts REJECT, as an unreachable
  *  R2 answers; every other put reaches the real bucket. */
@@ -197,6 +205,11 @@ export function failingPuts(times: number, only: (key: string) => boolean = () =
   let left = times;
   return (real, key, value, options) =>
     only(key) && left-- > 0 ? Promise.reject(new Error(R2_UNREACHABLE)) : real.put(key, value, options);
+}
+
+/** A bucket whose `list` REJECTS as an unreachable R2 answers, every other call reaching the real bucket. */
+export function failingList(): ListThrough {
+  return () => Promise.reject(new Error(R2_UNREACHABLE));
 }
 
 /**

@@ -2,7 +2,7 @@
 // itself (spec §5.1).
 //
 // **One hook, four consumers.** `usePolled` owns the visibility rule (R-P8),
-// the connection, the backoff and the three refusals that end a signal rather
+// the connection, the backoff and the four refusals that end a signal rather
 // than slowing it down; `useSignal` is the instance whose resource is a game's
 // stream, and the dealing screen, the lobby and the open table are the other
 // three. That generalization is what made M6.3 one change: the reader under
@@ -151,7 +151,7 @@ export interface Source<T> {
  *  to its own leave. Only the game screen had a fallback, so a real abandon
  *  took the dealing screen and the open table to the lobby in silence, and so
  *  did an open table filling its last seat without the stranger watching it
- *  (a 403 read as `gone`). The two refusals that END a signal already carry the
+ *  (a 403 read as `gone`). The four refusals that END a signal already carry the
  *  server's own message and are not routed through here; these two are the
  *  frames, and the words are the client's because the frame has none. */
 export const endSentence = (reason: "deleted" | "gone"): string =>
@@ -159,9 +159,9 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
 
 /** Why a signal STOPPED, as opposed to failing and backing off.
  *
- *  The server said this stream is over (`deleted`), the resource is gone (404)
- *  or it is not ours to read (403). None of the three changes by being asked
- *  again, while the screen goes on saying "reconnecting…" about something that
+ *  The server said this stream is over (`deleted`), the resource is gone (404),
+ *  it is not ours to read (403) or the caller's open streams are at the cap (429,
+ *  security S2c). None of the four changes by being asked again, while the screen goes on saying "reconnecting…" about something that
  *  is not coming back.
  *
  *  **The socket arm reads a refusal at ADMISSION as `gone` whatever its
@@ -173,7 +173,12 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
  *  consumer branches on `reason` today; each draws `sentence`. */
 export interface End {
   reason: "deleted" | "gone" | "refused";
-  sentence?: string;
+  /** Always present: every end the hook hands over carries the server's sentence; the client's own for the edge —
+   *  its expired session (`ACCESS_CHALLENGE`, read by `isSessionExpired`) or its challenge not passed
+   *  (`EdgeRefusal`'s `EDGE_CHECK` / `EDGE_CHECK_REPEATED`, `api.ts`'s `pastTheEdge`) — or for a refusal whose body
+   *  is not this API's JSON (the bare status, `api.ts`'s `call` and `sse.ts`); or, for an `end` frame that brought
+   *  none, `endSentence`'s (the frame handler below) — so a consumer draws it as it is. */
+  sentence: string;
 }
 
 /**
@@ -263,6 +268,11 @@ export function usePolled<T>(
     // otherwise land after the screen is gone and set state on an unmounted
     // tree.
     let stopped = false;
+    const finish = (e: End) => {
+      stopped = true;
+      setLink("live");
+      ended.current?.(e);
+    };
     let controller: AbortController | null = null;
     /** Whether THIS run of the effect has connected at least once (R-N3). A
      *  signal that has lost nothing is "connecting"; only a connection that was
@@ -320,7 +330,7 @@ export function usePolled<T>(
           // frames nothing can act on, and an expired session is fixed by
           // walking through `/enter` rather than by asking again.
           controller?.abort();
-          ended.current?.({
+          finish({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,
           });
@@ -359,15 +369,16 @@ export function usePolled<T>(
           // that was abandoned, `gone` for one that stopped being readable
           // under a live connection.
           // **And it is given WORDS here, once, for all four consumers**
-          // (final review I-2). A server-supplied sentence is kept if one
-          // ever arrives; today none does, and defaulting in the consumers
-          // instead would be three copies of the same two strings with one
-          // of them already missing.
+          // (final review I-2). A server-supplied sentence is kept — the
+          // Worker's admission refusals send one (`frames.ts`'s
+          // `endAtAdmission`, the socket caps' among them since security
+          // S2b) — and defaulting in the consumers instead would be three
+          // copies of the same two strings with one of them already missing.
           const { reason, sentence } = JSON.parse(f.data) as {
             reason: "deleted" | "gone";
             sentence?: string;
           };
-          ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
+          finish({ reason, sentence: sentence ?? endSentence(reason) });
           return;
         }
         if (f.event !== "signal" && f.event !== "house") return;
@@ -465,7 +476,7 @@ export function usePolled<T>(
         throw new Error("the stream closed");
       } catch (e) {
         if (stopped || mine.signal.aborted) return;
-        // **The THREE refusals that END this rather than slowing it down.** See
+        // **The FOUR refusals that END this rather than slowing it down** (404, 403, the edge's expired session, and the stream cap's 429). See
         // `End`; nothing is scheduled after any of these lines.
         //
         // **The third is the EDGE's, and it was the review's Important 2**
@@ -476,8 +487,16 @@ export function usePolled<T>(
         // they could have walked through. The consumers' `onEnd` puts the
         // sentence on a screen that draws it through `Refusal`, which is where
         // the link to `/enter` is.
-        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || isSessionExpired(e))) {
-          ended.current?.({
+        //
+        // — and a 429, the stream cap's refusal at admission
+        // (security S2c, D3): an answer about this caller's open streams, which asking again cannot change; the NAS answers it
+        // on `/stream` and `/api/stream`, the Worker's sockets — a table's and the lobby's — end on an `end` frame instead
+        // (reason `gone`, carrying the sentence; `End`), and both reach the consumer's `onEnd` with the server's sentence.
+        // This catch also covers the socket arm's PROBE above, so a 429 on that listing read ends the signal too, where
+        // the stream arm's woken re-read keeps the stream (AD-6); no listing read answers 429 on either host today (the
+        // Worker's limits skip GET and HEAD, and the NAS's two 429s are the stream admissions), so it is recorded only.
+        if (e instanceof ApiError && (e.status === 404 || e.status === 403 || e.status === 429 || isSessionExpired(e))) {
+          finish({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,
           });
@@ -510,6 +529,7 @@ export function usePolled<T>(
     };
 
     const onVisibility = () => {
+      if (stopped) return;
       if (visible()) {
         setLink("refreshing");
         // At once, and not on a delay: the whole point of letting go while

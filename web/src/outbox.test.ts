@@ -264,6 +264,17 @@ describe("a game that finishes", () => {
     expect(reasonWords("offline", full)).toBe(full);
   });
 
+  // A 429 is the server's rate limit (security S2b, finding C2): the moment's, not the record's. The row is kept and
+  // retried as an offline row is, and it carries the server's own sentence. Mutant M58: the arm dropped — the row
+  // reads `offline` with no sentence.
+  it("reads a 429 as a wait that carries the server's sentence, not as a refusal", async () => {
+    const slow = "too many requests from you just now — wait a moment and try again";
+    hosts({ archive: "dir", onArchive: () => ({ status: 429, body: { error: slow } }) });
+    await noteGameOver(GAME);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "offline", sentence: slow })]);
+    expect(reasonWords("offline", slow)).toBe(slow);
+  });
+
   // A 413 says THIS RECORD is over the archive's body limit (the S1 stack
   // review's CB-F12): its size, which no retry changes. It is a refusal with
   // the server's sentence, never an offline row retried on every drain — and,

@@ -47,22 +47,24 @@ const PIN_SIDECAR = path.join(FIXTURES, "browser-played-2p.provenance.json");
 const MODULE = path.join(HERE, "..", "src", "local", "wasm", "yokohama_wasm_bg.wasm");
 
 /**
- * A path-safe, readable rendering of the caller's address.
+ * A path-safe, readable rendering of the caller's key.
  *
  * The server's own rule, in `crates/yokohama-web/src/archive.rs`'s
  * `caller_segment` (R-6.5b.15; security S1c, finding D26): `@` becomes
  * `_at_`, anything outside `[a-z0-9._-]` becomes `_`, cut at 48, then `-` and
- * the first twelve hex characters of a SHA-256 over the address. Restated here
+ * the first twelve hex characters of a SHA-256 over the key. Restated here
  * rather than read off the reply, because the reply is the thing under test — a
  * server that filed a game under the wrong prefix would be believed by a walk
- * that took the prefix from it.
+ * that took the prefix from it. Since security S2b (C1) the key is a plain NAME
+ * under this tier's open door (`who`): `ben` reads `ben-<12 hex>`, and the
+ * readable half has no `_at_`.
  */
-function callerSegment(email: string): string {
-  const readable = [...email]
+function callerSegment(key: string): string {
+  const readable = [...key]
     .map((c) => (c === "@" ? "_at_" : /[a-z0-9._-]/.test(c) ? c : "_"))
     .join("")
     .slice(0, 48);
-  return `${readable}-${createHash("sha256").update(email).digest("hex").slice(0, 12)}`;
+  return `${readable}-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`;
 }
 
 const SEGMENT = callerSegment(WALKER);

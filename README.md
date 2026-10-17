@@ -242,10 +242,12 @@ The full walkthrough is [`docs/web-lane.md` §14](docs/web-lane.md#14-getting-st
 
 ### What both deployments run
 
-The settings a player notices, as cycle F's release set them (2026-10-01); the table of the defaults both
-run is [`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
+The settings a player notices, as cycle F's release set them (2026-10-01) and security S1's window
+(2026-10-11) left them, the Worker's dev door turned off; the table of the defaults both run is
+[`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
 
-- **The door.** The NAS runs `cf-access`; the Worker runs `worker` with a dev door behind Access.
+- **The door.** The NAS runs `cf-access`; the Worker runs `worker`, its dev door OFF since S1's window
+  and opened only around a live tier.
 - **The archive.** A finished game is filed to a directory on the NAS and to an R2 bucket on the Worker.
 - **The transport.** Server-sent events on the NAS, a WebSocket on the Worker.
 - **Expiry.** Both end a table idle for 90 days, or 7 days while a seat is still empty. The Worker does it
@@ -366,9 +368,15 @@ live, historical, the card indexes, the explanations — is built for the seat t
 so walking every position of the replay returns your own hands and no other's and the history
 cannot be harvested in a single pass. Before M6.1 that was a fence around whoever happened to be
 moving; it is now a fence around a named person, resolved from the identity header on every
-request. On the NAS it is still **not** a claim that the identity was verified; on Cloudflare the
-Worker verifies Access's signed assertion before anything else reads the request — see
-[Hosting](#hosting) below.
+request. On the NAS it is still **not** a claim that the identity was verified: the server reads
+the address Access sets and verifies nothing itself, and today cloudflared passes each request on
+without checking Access's token, while the terminal container shares the server's network,
+`cf-internal`. S2's wrap window will give cloudflared Access's own token check on both of its
+ingress rules and the terminal a network of its own, so that the tunnel becomes the one path to
+the port (the self-host guide's §1 recipe); `deploy/RUNBOOK.md` §3.22, written at that window, will
+record it. On Cloudflare the Worker verifies Access's signed assertion before anything else reads
+the request, and its dev door, which lets the live tiers' service token name a test address, is
+off except while a live tier runs — see [Hosting](#hosting) below.
 
 **Asking the bot.** `Suggest` runs the production bot on your seat and shows the move, the line
 it searched, and the arithmetic term by term. `Why` does the same for a move a bot already
@@ -400,14 +408,18 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     default.
   - It gives the open door its own section and trust model, for a home network, a LAN or a VPN with no
     identity provider: anyone who can reach the server may use any name.
-  - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached only
-    through the existing cloudflared tunnel, behind Access. It ran `yokohama-web:0.5.0-m6.5b2.1` from
-    2026-09-22 under the mode then called `claimed`, from the M6.5c2 close (2026-09-28) it ran
-    `yokohama-web:0.6.0-m6.5c2` under `cf-access`, from cycle D's close (2026-09-29) it ran
-    `yokohama-web:0.6.0-m6.5c2d`, from cycle E's release (2026-09-30) it ran
-    `yokohama-web:0.6.0-m6.5c2e`, and since cycle F's release (2026-10-01) it runs
-    `yokohama-web:0.6.0-m6.5c2f`, with server-sent events, a directory archive and the hourly sweep at the
-    Worker's 90 and 7 days (`deploy/RUNBOOK.md` §3.17 to §3.20 are the last four deployments' records).
+  - The owner's own instance is a container on a Synology NAS at `yokohama-nas.moore.nyc`, reached from
+    outside the NAS only through the existing cloudflared tunnel, behind Access. It ran
+    `yokohama-web:0.5.0-m6.5b2.1` from 2026-09-22 under the mode then called `claimed`, from the M6.5c2
+    close (2026-09-28) it ran `yokohama-web:0.6.0-m6.5c2` under `cf-access`, from cycle D's close
+    (2026-09-29) it ran `yokohama-web:0.6.0-m6.5c2d`, from cycle E's release (2026-09-30) it ran
+    `yokohama-web:0.6.0-m6.5c2e`, from cycle F's release (2026-10-01) it ran
+    `yokohama-web:0.6.0-m6.5c2f`, and since security S1's window (2026-10-11) it runs
+    `yokohama-web:0.6.1-s1`, with server-sent events, a directory archive and the hourly sweep at the
+    Worker's 90 and 7 days (`deploy/RUNBOOK.md` §3.18 to §3.21 are the last four deployments' records).
+    S2's wrap window will move it to `yokohama-web:0.6.3-s2`, give cloudflared's two ingress rules
+    Access's own token check and the terminal container a network of its own, and record the three as
+    `deploy/RUNBOOK.md` §3.22.
     [`deploy/RUNBOOK.md`](deploy/RUNBOOK.md) is its operating record rather than a plan: §1 the static
     musl cross-compile on the workstation, §2 delivery as a context tarball the NAS fetches through
     Portainer's Docker proxy (`POST /build?remote=…`), §3 the container (network `cf-internal`, the
@@ -431,8 +443,9 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     Access, as this repository deploys it, or an open door.
   - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md). The cleanup
     cycles after it, M6.5c2's A to F, are recorded in
-    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record). Since 2026-10-01 it
-    runs cycle F's release, the Worker's thirty-first deployment (`worker/RUNBOOK.md` §20).
+    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record). Since 2026-10-11 it
+    runs security S1's release, the Worker's thirty-second and thirty-third deployments
+    (`worker/RUNBOOK.md` §21).
 - **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in a Web
   Worker, so a game against the bot needs no server.
   - The game is kept in the browser's own storage, and the release installs whole for offline play.

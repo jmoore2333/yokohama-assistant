@@ -79,7 +79,7 @@
 import { type Page, type Request, type WebSocket } from "@playwright/test";
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, deadEnd, nameThisBrowser, readScreen, rng, signIn, watchForBreakage, type Affordance } from "./harness";
+import { act, deadEnd, nameThisBrowser, readScreen, rng, signIn, watchForBreakage, who, type Affordance } from "./harness";
 import {
   EXIT,
   LIVE,
@@ -111,10 +111,12 @@ test.skip(
 );
 
 /** The three people: `.test` identities, so the game's save files under the
- *  bucket's `test/` root. */
-const X = "x@exit.test";
-const Y = "y@exit.test";
-const W = "w@exit.test";
+ *  bucket's `test/` root — through `who`, which spells a live identity as a
+ *  `.test` address under this spec's own domain, `x@exit.test` (security S2b,
+ *  C1). */
+const X = who("x", "exit");
+const Y = who("y", "exit");
+const W = who("w", "exit");
 
 /** How many moves the two of them play before x abandons the table. */
 const MOVES = 40;
@@ -648,8 +650,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
       ` (awake median ${median ?? "n/a"} ms); chat — table x ${said.x} / y ${said.y} (the watcher's panel ` +
       `${watcherLines}), lobby x 1 / y 1, both deleted; forgiven — the beacon's CORS error x ${watchX.forgiven}, ` +
       `y ${watchY.forgiven}, w ${watchW.forgiven}; the release feed's failure x ${watchX.feedForgiven}, ` +
-      `y ${watchY.feedForgiven}, w ${watchW.feedForgiven}; the detection script's Report-Only line ` +
-      `x ${watchX.reportOnlyForgiven}, y ${watchY.reportOnlyForgiven}, w ${watchW.reportOnlyForgiven}; ` +
+      `y ${watchY.feedForgiven}, w ${watchW.feedForgiven}; ` +
       `the deal's 409 x ${watchX.dealAnswers}, ` +
       `y ${watchY.dealAnswers}, w ${watchW.dealAnswers}; console — x ${consoleOf(watchX.failures)}, ` +
       `y ${consoleOf(watchY.failures)}, w ${consoleOf(watchW.failures)}; ` +

@@ -82,3 +82,13 @@ export function closeReason(sentence: string): string {
   }
   return sentence.slice(0, end);
 }
+
+/** The close code of a socket refused for its count (security S2b, finding D3): the shape of the 4403/4404
+ *  closes, one more mirror of an HTTP status. */
+export const CLOSE_TOO_MANY = 4429;
+
+/** The four sentences a cap's `end` frame carries (host-written): the caller's own count, and the object's. */
+export const TOO_MANY_OWN_TABLE = "you have too many connections open to this table — close another tab and try again";
+export const TOO_MANY_TABLE = "this table has as many connections as it can take — try again later";
+export const TOO_MANY_OWN_LOBBY = "you have too many connections open to the lobby — close another tab and try again";
+export const TOO_MANY_LOBBY = "the lobby has as many connections as it can take — try again later";

@@ -196,7 +196,7 @@ describe("the assembly (spec §2.3)", () => {
     const block = rules(text).get("/*");
     expect(Object.keys(block)).toEqual(set.map(([name]) => name.toLowerCase()));
     expect(block["x-frame-options"]).toBe("DENY");
-    expect(block["content-security-policy-report-only"]).toContain("wss://yokohama.test");
+    expect(block["content-security-policy"]).toContain("wss://yokohama.test");
     // An INPUT of the assembly, never an asset: the zone's WAF edge rule is derived from the tree's top level
     // (`edge-rule.test.mjs`'s drift cell), and a browser gains nothing from the file — its pairs ride every answer.
     expect(existsSync(join(out, "headers.json")), "headers.json is not copied into the assets tree").toBe(false);

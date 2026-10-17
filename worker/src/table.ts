@@ -8,6 +8,7 @@ import type { Env } from "./env";
 import { CLAIMED_USER_HEADER } from "./identity";
 import { expiryDays, expiryDeadline, markerEnd, openTtlDaysOf, ttlDaysOf, type Ending, type Marker } from "./marker";
 import { Instance, readReply, type Bump, type Replied } from "./module";
+import { callerTag, redactKey } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { abandons } from "./route";
 import { nextRetry, type Generation, type Slot } from "./slot";
@@ -96,6 +97,9 @@ export interface Incoming {
   /** `…/events` (a GET) or `…/stream` (an upgrade), answered through the
    *  module's `events`; absent on every other request. */
   transport?: Transport;
+  /** The caller's tag on an upgrade (security S2b, D3): `u:` and their digest, computed here because `admit` runs
+   *  in `answer`'s synchronous turn and a digest is async. */
+  callerTag?: string;
   body: Uint8Array;
 }
 
@@ -170,7 +174,7 @@ export abstract class TableBase extends DurableObject<Env> {
   /** An operator's expire (`withLifecycle`). */
   protected abstract operate(id: string, address: string, force: boolean): Promise<Response>;
   /** An upgrade's answer (`withSockets`, `table/sockets.ts`). */
-  protected abstract admit(id: string, user: string | undefined, reply: Replied): Response;
+  protected abstract admit(id: string, user: string | undefined, callerTag: string | undefined, reply: Replied): Response;
   /** The frames a request owes its sockets (`withSockets`). */
   abstract sendFrames(id: string, bumps: Bump[]): void;
   /** A force's end of every socket (`withSockets`). */
@@ -195,15 +199,17 @@ export abstract class TableBase extends DurableObject<Env> {
     // no client sends a HEAD here.)
     if (transport !== undefined && req.method !== "GET") return respond(405, "");
     if (transport === "stream" && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
+    const user = forwardedCaller(req.headers, this.config);
     const incoming: Incoming = {
       id: this.ctx.id.name ?? requestedId(url.pathname, req.headers, create),
-      user: forwardedCaller(req.headers, this.config),
+      user,
       method: req.method,
       path: url.pathname,
       query: url.search.slice(1),
       contentType: req.headers.get("content-type") ?? undefined,
       create,
       transport,
+      callerTag: transport === "stream" && user !== undefined ? await callerTag(user) : undefined,
       // The body, read once: the LAST await before the reply but for an
       // abandon's upload, which `blockConcurrencyWhile` shields (`abandon`).
       // The wake, the call and the batch all run after it, in `answer`'s one
@@ -312,7 +318,7 @@ export abstract class TableBase extends DurableObject<Env> {
     this.instance?.drop();
     await this.ctx.storage.deleteAll();
     forgetTables(sql);
-    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+    if (owed !== undefined) log("archive-owed-dropped", { id, record_key: redactKey(owed.plan.record_key), attempt: owed.attempt });
     if (marker !== undefined) log("marker-ended", { id, reason: marker.reason, at: marker.at, kept: marker.kept });
     else if (flagged) log("forced", { id });
     else log("removal-ended", { id });
@@ -408,7 +414,7 @@ export abstract class TableBase extends DurableObject<Env> {
     this.sendFrames(id, bumps);
     if (done.pushing) this.ctx.waitUntil(this.deliverSlot());
     if (done.archiving) this.ctx.waitUntil(this.deliverArchive({ fromRequest: true }));
-    return incoming.transport === "stream" ? this.admit(id, incoming.user, reply) : respond(reply.status, reply.body);
+    return incoming.transport === "stream" ? this.admit(id, incoming.user, incoming.callerTag, reply) : respond(reply.status, reply.body);
   }
 
   /**
@@ -649,7 +655,7 @@ export abstract class TableBase extends DurableObject<Env> {
     // went with the table: logged once the batch that dropped it has committed
     // (spec §2.6). With the archive on, the delete's own save superseded it.
     if (deleted && holding !== undefined && !this.archiveOn()) {
-      log("archive-owed-dropped", { id, record_key: holding.plan.record_key, attempt: holding.attempt });
+      log("archive-owed-dropped", { id, record_key: redactKey(holding.plan.record_key), attempt: holding.attempt });
     }
     return { pushing: owed?.slot !== undefined, archiving, marker };
   }

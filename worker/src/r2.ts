@@ -1,3 +1,4 @@
+import { redactKey } from "./redact";
 import { log } from "./respond";
 
 /**
@@ -61,11 +62,18 @@ export type Site = "game-over" | "abandon" | "expiry" | "operator" | "browser";
  * The shell's line for an upload's outcome (spec §2.8; the layer's own lines
  * reach this log through `readReply` since M6.5c2, under names of their own):
  * `archive-<outcome>`, naming the object, the site, the record's key and the
- * outcome's detail, and `extra` beside them. Never the record a conflict
- * holds: the line names the detail, and `held` stays the module's to read.
+ * outcome's detail, and `extra` beside them — spread FIRST, so it replaces
+ * none of them and a key it carried is never logged unredacted. Never the
+ * record a conflict holds: the line names the detail, and `held` stays the
+ * module's to read.
+ *
+ * The key is logged REDACTED in both fields (security S2b, D23): the segment's readable half dropped, its digest kept,
+ * so a line names the folder and not the address it spells. A landed, identical or conflicting outcome's detail IS
+ * the record's key (`executePlan`'s `at()` and `against()`), and the one failed case's begins with it. R2's own
+ * failure message goes through the same `redactKey`, which leaves it as it is unless it spells a segment.
  */
 export function logOutcome(id: string | undefined, site: Site, plan: Plan, outcome: Outcome, extra: Record<string, unknown> = {}): void {
-  log(`archive-${outcome.outcome}`, { id, site, record_key: plan.record_key, detail: outcome.detail, ...extra });
+  log(`archive-${outcome.outcome}`, { ...extra, id, site, record_key: redactKey(plan.record_key), detail: redactKey(outcome.detail) });
 }
 
 /** The five fields of a plan, in the module's order. */

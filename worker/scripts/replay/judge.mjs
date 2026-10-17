@@ -7,7 +7,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { HOST_FIELDS } from "../corpus-walk.mjs";
 import { LOBBY_PAUSE_MS, LOBBY_REREADS } from "./credential.mjs";
-import { cursorNames, filterLobby, freezeClock, HOUSE_CHAT, LOBBY, normalizeHouseChat } from "./exemptions.mjs";
+import { cursorNames, filterLobby, freezeClock, HOUSE_CHAT, houseWatcherTag, LOBBY, normalizeHouseChat } from "./exemptions.mjs";
 
 /** A value one side of a comparison does not have. */
 const ABSENT = Symbol("absent");
@@ -84,7 +84,9 @@ function differences(committed, got, path = []) {
 /**
  * One named reply against its committed file: the clock frozen, the host
  * fields exempted (each proven to differ), and a lobby page or a house chat
- * payload normalized. Answers the differences and the exemptions it spent.
+ * payload normalized — the house's watcher tag held to the post's reply
+ * (`context.houseTag`) and taken back to the committed one. Answers the
+ * differences and the exemptions it spent.
  */
 export function judge(fixture, reply, context) {
   const committed = JSON.parse(context.corpus[fixture]);
@@ -132,6 +134,10 @@ export function judge(fixture, reply, context) {
           ? `normalizeHouseChat ${fixture}: seq taken back by ${context.base}`
           : `normalizeHouseChat ${fixture}: seq and last taken back by ${context.base}, rev by ${context.baseRev}; ${count(listed - got.messages.length, "earlier message")} dropped`,
       );
+      const tag = houseWatcherTag(fixture, committed, got, context.houseTag);
+      got = tag.got;
+      spent.push(...tag.spent);
+      diffs.push(...tag.diffs);
     }
   } catch (e) {
     return { diffs: [...diffs, { path: "(normalized)", reason: errorText(e) }], spent };

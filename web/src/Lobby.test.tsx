@@ -366,6 +366,105 @@ describe("the lobby", () => {
     expect(screen.getByText(/no table is waiting for players/)).toBeInTheDocument();
   });
 
+  it("draws an ended signal's sentence in its error strip and asks nothing more (the lobby's refusal, AD-4)", async () => {
+    // Stub every listing as the file's cells do, and the house signal — the request the lobby's `usePolled` source
+    // opens (`GET /api/stream` on this host) — as a 429 with the cap's sentence; the sentence is the server's.
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      const { stub } = show((call) => (call.path.endsWith("/api/stream") ? { status: 429, body: { error: sentence } } : undefined));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+      });
+      // The stream was opened once and never again; the listings were fetched once at mount.
+      expect(stub.matching("GET", "/api/stream")).toHaveLength(1);
+      for (const scope of ["mine", "open", "playing"] as const) {
+        expect(stub.calls.filter((c) => isGamesList(c, scope)), `the ${scope} listing, read once`).toHaveLength(1);
+      }
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the ended signal's sentence when the opening listings land AFTER the end (take clears the strip)", async () => {
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      const hold = gate<void>();
+      const { stub } = show((call) => {
+        if (call.path.endsWith("/api/stream")) return { status: 429, body: { error: sentence } };
+        if (isGamesList(call)) return hold.promise.then(() => lists(call)!) as unknown as Reply;
+        return undefined;
+      });
+      await until(() => stub.matching("GET", "/api/stream").length === 1, "the stream was refused");
+      await flush();
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      hold.resolve();
+      await flush();
+      await until(() => within(section("Your tables")).queryByRole("link", { name: "wire" }) !== null, "the listings landed");
+      expect(screen.queryByText(sentence)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("draws a refusal that comes after the ended signal in its place on the strip (the strip's order, M35b)", async () => {
+    // **The last refusal, else why the signal stopped** (security S2c, D3): a refusal the player's own action earned
+    // after the end — here a copy the browser refused — is the strip's word while it stands, and the ended sentence
+    // is what the strip says when nothing else does. Reversed, the refusal would hide behind the ended sentence.
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      show((call) => (call.path.endsWith("/api/stream") ? { status: 429, body: { error: sentence } } : undefined));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await until(
+        () => within(section("Your tables")).queryByRole("button", { name: "Copy link: wire2" }) !== null,
+        "the listings landed",
+      );
+      expect(screen.getByText(sentence), "the premise: the ended sentence is on the strip").toBeInTheDocument();
+      const url = new URL("#/t/wire2", window.location.href).href;
+      const refused = `the link could not be copied \u2014 it is ${url}`;
+      vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(
+        new DOMException("Write permission denied.", "NotAllowedError"),
+      );
+      fireEvent.click(within(section("Your tables")).getByRole("button", { name: "Copy link: wire2" }));
+      await until(() => screen.queryByText(refused) !== null, "the copy's refusal was drawn");
+      expect(screen.queryByText(sentence), "the refusal is drawn in place of the ended sentence").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("draws the Worker's ended house socket on its strip — an end frame, reason gone, then the 4429 close — and opens nothing more", async () => {
+    // **AD-4 on the Worker's half** (security S2c, D3; the Task 5 review's I-2): the Worker's cap accepts the socket,
+    // sends `end` with `{ reason: "gone", sentence }` and closes 4429 (`worker/src/frames.ts`). The frame keeps its
+    // own reason, so a lobby that drew only a `refused` end would leave the Worker's cap unsaid.
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.useFakeTimers();
+    try {
+      const sentence = "you have too many connections open to the lobby — close another tab and try again";
+      show();
+      await until(() => FakeSocket.made.length === 1, "the house socket was opened");
+      act(() => FakeSocket.made[0]!.accept());
+      act(() => FakeSocket.made[0]!.frame("end", { reason: "gone", sentence }));
+      act(() => FakeSocket.made[0]!.shut(4429, sentence));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+      });
+      expect(FakeSocket.made, "one socket, and none after the end").toHaveLength(1);
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      setSignalKind("sse");
+      vi.unstubAllGlobals();
+    }
+  });
+
   // **The repository link** (R-6.5c2.40): a quiet link among the actions where
   // the build names one, in a new tab, and absent where it does not.
   it("draws the project link among the actions only where the build names one", async () => {
