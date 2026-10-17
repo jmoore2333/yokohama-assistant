@@ -1991,7 +1991,25 @@ the `finish` helper), written by the implementer against the file's helpers, the
 then a `visibilitychange` to visible (the file's way of firing it) opens NO second stream (`stub.matching("GET",
 "/stream")` stays at one) and `onEnd` was called once (M33a: `stopped` not set at the end sites → red); (ii) "says
 nothing beside an ended signal" — after the end the link word is `live` (nothing drawn), and after a shown tab's
-refused reopen it is still not "refreshing…" 60 fake seconds on (M33b: the link word not let go at the end → red).
+refused reopen it is still not "refreshing…" 60 fake seconds on (M33b: the link word not let go at the end → red);
+and (iii), measured by Task 5's round-1 probe, a LATER hide and show (M33c: the handler's guard removed → red):
+
+```ts
+  it("says nothing after an end when the tab is hidden and shown again", async () => {
+    const ends: End[] = [];
+    stubApi(() => ({ status: 429, body: { error: "too many" } }));
+    const { result } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toHaveLength(1);
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current, "no word stands beside the ended sentence").toBe("live");
+  });
+```
 
 And in `web/src/App.test.tsx`, after "lands on the lobby with the sentence when the hand-over's table refuses", the
 landing Review Focus 1 now names (plan review L2-F1; AD-5: the behaviour is the code's own, so the cell pins it and
@@ -2048,7 +2066,18 @@ three `ended.current?.({` sites in place of the bare call:
         };
 ```
 
-so an end ends the effect's run: the `visibilitychange` listener's `schedule(0)` opens nothing after it, and the link
+and ONE guard at the top of the `visibilitychange` handler (Task 5's round-1 probe: the handler sets
+`setLink("refreshing")` BEFORE `schedule(0)`, and `open()` then bails on `stopped`, so a tab hidden and shown again
+after the end — exactly what the cap's sentence asks the player to do — stood "refreshing…" beside the ended sentence
+until a reload):
+
+```ts
+    const onVisibility = () => {
+      if (stopped) return;
+      if (visible()) {
+```
+
+so an end ends the effect's run: the `visibilitychange` listener opens nothing and says nothing after it, and the link
 word stops saying anything (the hook's own rule: "The link describes a signal that is RUNNING, so one that stops stops
 saying anything").
 
@@ -2287,7 +2316,8 @@ git commit -m "web client: a 429 ends a signal with the server's sentence (the s
 **Named mutants:** M33 the 429 arm dropped from the stream site (line 479) → the signal cell red (the stub asked
 again); M33a `stopped` not set at the end sites → the "opens nothing after an end" cell red (a second open on a
 shown tab); M33b the link word not let go at the end → the "says nothing beside an ended signal" cell red (the
-Task 5 review's I-1); M34, in its true direction (AD-6): a 429 ADDED to the re-read arm → the "keeps the stream when a woken re-read
+Task 5 review's I-1); M33c the visibility handler's `stopped` guard removed → the "hidden and shown again" cell red
+(Task 5's round-1 probe); M34, in its true direction (AD-6): a 429 ADDED to the re-read arm → the "keeps the stream when a woken re-read
 is refused 429" cell red (the first draft's retirement rested on a cell that drives a 500 — Task 5's probe); M35 the
 lobby's `onEnd` not passed → the lobby cells red; M35a `onEnd` writes `setError` → the race cell red (plan review
 L2-F2); M35b the strip's order reversed (`ended ?? error`) → the refusal-after-end cell red; M35c the lobby drawing only a
