@@ -150,8 +150,16 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
   silent retry storm against the cap, so that arm gains 429 with `reason: "refused"` and the server's sentence. The
   woken RE-READ (line 316) does not climb the ladder — a failure there keeps the stream and retries on the next frame —
   and a 429 there is never the cap's (the NAS caps streams, the Worker limits unsafe methods only), so it stays as it
-  is: a transient edge 429 on a listing read must not end live updates (plan review L2-F4). `Lobby.tsx`'s `usePolled` passes an `onEnd` that draws the sentence and stops — which is S2b's AD-4 on
-  both hosts at once, since the Worker's lobby socket ends on an `end` frame through the same `onEnd`.
+  is: a transient edge 429 on a listing read must not end live updates (plan review L2-F4). **An end ENDS the
+  effect's run** (the Task 5 review's I-1): at each of `usePolled`'s three end sites — the stream's open refusal, the
+  socket's `end` frame, the re-read's `gone` — a `finish(e)` sets `stopped = true`, lets the link word go
+  (`setLink("live")`) and then calls `onEnd`; without it no end site set `stopped`, the `visibilitychange` listener
+  stayed installed, and a tab hidden and shown again reopened the stream under a standing ended sentence (measured:
+  `opens=2`, the strip still refused over a live stream; and "refreshing…" beside the sentence after a refused
+  reopen). `Lobby.tsx`'s `usePolled` passes an `onEnd` that draws the sentence and stops — which is S2b's AD-4 on
+  both hosts at once: the NAS's 429 reaches `onEnd` as `refused` through the refusal arm, and the Worker's sockets —
+  a table's and the lobby's — end on an `end` frame (reason `gone`, carrying the sentence; closed 4429) that reaches
+  the same `onEnd` through the frame handler with the server's sentence (the Task 5 review's I-2: never `refused`).
 - **D-3 — the body deadline lives at the ONE read site, not in a middleware.** Every `/api` request with a body
   reaches `adapter` (`lib.rs` line 1049, `to_bytes(body, 2 << 20)`): the catch-all `/api/{*rest}` and `/api/games`
   route there, and the three separate routes (`events`, `stream`, `house_stream`) and `enter` are GETs. So
@@ -1910,13 +1918,15 @@ reference line (`"c54e"` against a twelve-character tag; before the reference wa
 ### Task 5: The client — a 429 ends a signal, the lobby draws an ended signal, watcher and house authors show their tag — Opus (R-2, R-4; decision D-2; Review Focus 1)
 
 **Files:**
-- Modify: `web/src/signal.ts:479` (the stream-open refusal arm; the re-read arm at 316 stays, AD-6),
+- Modify: `web/src/signal.ts:479` (the stream-open refusal arm; the re-read arm at 316 stays, AD-6) and its three
+  end sites (a `finish` helper, the Task 5 review's I-1),
   `web/src/Lobby.tsx:387` (`usePolled`'s call
   gains `onEnd`; the sentence lands in an `ended` state beside `error` — line 266 — because `take` (every
   listing that lands, the opening read among them) and `copyLink` clear `error`, and an end that arrived before the
   opening listings would be wiped; the foot strip draws `error ?? ended`), `web/src/Chat.tsx:470-474` (the
   watcher label), `web/src/types.ts` (done in Task 4).
-- Test: `web/src/signal.test.ts` (one cell beside line 230's; one after the woken re-read cell at 696), `web/src/Lobby.test.tsx` (three cells),
+- Test: `web/src/signal.test.ts` (one cell beside line 230's; one after the woken re-read cell at 696; two for the
+  end's finish), `web/src/Lobby.test.tsx` (four cells: three on the NAS's 429, one on the Worker's `end` frame),
   `web/src/App.test.tsx` (one cell, after "lands on the lobby with the sentence when the hand-over's table refuses"),
   `web/src/Chat.test.tsx` (the authors cell at line 82 extended; two new cells).
 
@@ -1975,6 +1985,14 @@ passed every cell), the cell that pins AD-6's half (M34, in its true direction):
   });
 ```
 
+And two cells for the end's finish (the Task 5 review's two probes, measured red at the first draft and green under
+the `finish` helper), written by the implementer against the file's helpers, the ASSERTIONS being the cells: (i)
+"opens nothing after an end, even when the tab is shown again" — a stream refused 429 at its open ends the signal;
+then a `visibilitychange` to visible (the file's way of firing it) opens NO second stream (`stub.matching("GET",
+"/stream")` stays at one) and `onEnd` was called once (M33a: `stopped` not set at the end sites → red); (ii) "says
+nothing beside an ended signal" — after the end the link word is `live` (nothing drawn), and after a shown tab's
+refused reopen it is still not "refreshing…" 60 fake seconds on (M33b: the link word not let go at the end → red).
+
 And in `web/src/App.test.tsx`, after "lands on the lobby with the sentence when the hand-over's table refuses", the
 landing Review Focus 1 now names (plan review L2-F1; AD-5: the behaviour is the code's own, so the cell pins it and
 no code changes for it):
@@ -2014,8 +2032,25 @@ no code changes for it):
 with one sentence added to the comment above it, as its LAST paragraph, directly above the `if` (after "**The third
 is the EDGE's**"): "— and a 429, the stream cap's refusal at admission
 (security S2c, D3): an answer about this caller's open streams, which asking again cannot change; the NAS answers it
-on `/stream` and `/api/stream`, the Worker's lobby ends on a frame instead (`End`), and both reach the consumer's
-`onEnd` as `refused`."
+on `/stream` and `/api/stream`, the Worker's sockets — a table's and the lobby's — end on an `end` frame instead
+(reason `gone`, carrying the sentence; `End`), and both reach the consumer's `onEnd` with the server's sentence."
+(The first draft's "as `refused`" was false of the Worker, whose frame keeps its own reason — the Task 5 review's
+I-2; a reader gating on `reason === "refused"` would miss the Worker's cap.)
+
+And the end's FINISH (the review's I-1), a helper inside `usePolled`'s effect beside its `stopped` flag, called at the
+three `ended.current?.({` sites in place of the bare call:
+
+```ts
+        const finish = (e: End) => {
+          stopped = true;
+          setLink("live");
+          ended.current?.(e);
+        };
+```
+
+so an end ends the effect's run: the `visibilitychange` listener's `schedule(0)` opens nothing after it, and the link
+word stops saying anything (the hook's own rule: "The link describes a signal that is RUNNING, so one that stops stops
+saying anything").
 
 The arm's neighbours state their count of the ending refusals, and they move with it (plan review L2-F5): `End`'s
 doc ("None of the three changes by being asked again") and the open arm's own "The THREE refusals that END this"
@@ -2099,7 +2134,12 @@ holds and the cells drive `GET /api/stream` through the file's `show(handler)`; 
 `error ?? ended` (Task 5's probe: the reversed order passed every cell, and under it a refusal after the end — Abandon's,
 a refused copy — hides behind the ended sentence): after the ended signal's sentence is drawn, one refused action the
 file already stubs (a refused Abandon, or a copy the browser refuses) draws ITS refusal on the strip in place of the
-ended sentence; the implementer writes it against the file's helpers, the ASSERTIONS being the cell (M35b).
+ended sentence; the implementer writes it against the file's helpers, the ASSERTIONS being the cell (M35b). A FOURTH cell pins the
+Worker half of "AD-4 on both hosts" (the review's I-2: every lobby cell drove the NAS's 429, and a lobby that drew only
+a `refused` end passed every cell): under `setSignalKind("ws")`, the house socket accepts, sends `end` with
+`{ reason: "gone", sentence }` and closes 4429 (the Worker's own shape, `worker/src/frames.ts`); the sentence is
+drawn on the strip and ONE socket was opened after four backoff rungs (M35c: the lobby drawing only a `refused` end →
+red; M35 reds it too).
 
 - [ ] **Step 6: Run them red**, then wire `onEnd`:
 
@@ -2245,10 +2285,13 @@ git commit -m "web client: a 429 ends a signal with the server's sentence (the s
 ```
 
 **Named mutants:** M33 the 429 arm dropped from the stream site (line 479) → the signal cell red (the stub asked
-again); M34, in its true direction (AD-6): a 429 ADDED to the re-read arm → the "keeps the stream when a woken re-read
+again); M33a `stopped` not set at the end sites → the "opens nothing after an end" cell red (a second open on a
+shown tab); M33b the link word not let go at the end → the "says nothing beside an ended signal" cell red (the
+Task 5 review's I-1); M34, in its true direction (AD-6): a 429 ADDED to the re-read arm → the "keeps the stream when a woken re-read
 is refused 429" cell red (the first draft's retirement rested on a cell that drives a 500 — Task 5's probe); M35 the
 lobby's `onEnd` not passed → the lobby cells red; M35a `onEnd` writes `setError` → the race cell red (plan review
-L2-F2); M35b the strip's order reversed (`ended ?? error`) → the refusal-after-end cell red; M36 the tag drawn for a
+L2-F2); M35b the strip's order reversed (`ended ?? error`) → the refusal-after-end cell red; M35c the lobby drawing only a
+`refused` end → the Worker-frame cell red (the review's I-2); M36 the tag drawn for a
 `null` → the new chat cell's third row red; M37 the tag drawn on seats → the authors cell's seat row red; M37a the tag
 gated to the table scope → the house author's cell red (Task 5's probe).
 
@@ -2261,8 +2304,12 @@ gated to the table scope → the house author's cell red (Task 5's probe).
   `crates/yokohama-web/src/explain.rs` (`Provenance::located`, `Why::withheld_from`; `MISMATCH_WITHHELD` at 356 and
   `Why::refused_at` at 565 REMOVED, with the module doc's sentences at 23–24, 351–357, 563, 607–608, 684–686 and the
   cells at 1235–1270 rewritten), `crates/yokohama-web/src/api.rs:1701-1750` (`why`'s flow; the doc at 1687–1699),
-  `crates/yokohama-web/src/lib.rs` (the two cells at 6966 and 7044 rewritten, with their doc comments at 6905 and
-  6979–6980); and the retired names' six other sites: `explain.rs:556-557` (`Why::refused`'s doc, an intra-doc link to
+  `crates/yokohama-web/src/lib.rs` (the two cells at 7160 and 7231 at Task 5's head `3ba77827`, with their doc
+  comments at 7145–7159 and 7219–7230, rewritten); three doc sentences false after the change (Task 6's probe):
+  `account_parts`' own doc ("Every refusal in this module is raised here" → "raised here, by its two halves `locate`
+  and `account_from`"), `explain.rs`'s `Why::foreign` ("Answered BEFORE `why::account_parts`") and `foreign_why`
+  ("`None` to let `why::account_parts` answer"), both pointed at `why::locate` and `why::account_from`; and the retired
+  names' six other sites: `explain.rs:556-557` (`Why::refused`'s doc, an intra-doc link to
   `refused_at`) and `:866-867` (`SuggestRefusal::message`'s doc, a link to `MISMATCH_WITHHELD`) — both links break
   when the items go; `web/src/types.ts:897` (`RefusalRow`'s doc: "the one exception among `why`'s twelve … withheld
   carries the server's `MISMATCH_WITHHELD`"); `docs/web-lane.md:166` (the explanation-surface bullet's
@@ -2316,11 +2363,21 @@ gated to the table scope → the house author's cell red (Task 5's probe).
     }
 ```
 
+And M40's FULL catcher, in the same cell after those rows (Task 6's probe: M40's plain form is red through the lost
+`NoBotMoveYet`, but a variant that keeps `last_explainable_bot_move`'s refusal and then takes the LAST move passed the
+whole CLI lib — no CLI cell asks bare `why` while the record's last move is a human's and a bot move exists; only
+the web lib's `why_is_withheld_…` cell at a finished game caught it): apply ONE human move from `r.session.legal()`
+after `play_to_a_branching_bot_move` (seat 0 is the human; the bot holds seat 1), assert as a premise that the
+record's last event is seat 0's move, then assert that `locate(TrackingMode::Simulation, session.record(), &rules,
+None).expect(..).index` equals the LAST of `move_indices_of(record, &rules, PlayerId::new(1))` — the last explainable
+bot move, not the last move (M40a). The implementer writes the rows against the file's helpers; the ASSERTIONS are
+the catcher.
+
 (`TrackingMode`'s variant names are the CLI's — `grep -n "enum TrackingMode" crates/yokohama-cli/src`; the fixture
 setup is the file's own, named in the comment.)
 
-- [ ] **Step 2: Run it red.** `cargo test -p yokohama-cli why::` — expected: a compile error (`locate`,
-  `account_from`, `Located` do not exist).
+- [ ] **Step 2: Run it red.** `cargo test -p yokohama-cli why::` — expected: a compile error (`locate` and
+  `account_from` do not exist; the cell never names `Located`).
 
 - [ ] **Step 3: The extraction** — the first half of `account_parts` (lines 392 to the `read_seat` match's end)
   moves into `locate`, the second (from `bots.decision_seed` on) into `account_from`; NO line's logic changes.
@@ -2475,15 +2532,26 @@ rendering is byte-identical by construction.)
 ```
 
 In `lib.rs`, the two cells at 6966 and 7044 (the route's withheld-mismatch rows) are rewritten to the same two
-facts THROUGH THE ROUTE: the SEAT HOLDER's `GET …/why` at the running tampered table (the bot's card hidden from the other seat)
+facts THROUGH THE ROUTE: the first cell asserts as its PREMISE that the CLI's `account_parts` over the drifted record
+refuses event k as a `mismatch` (so M38's catch rests on an asserted fact, not on luck — Task 6's probe), then the SEAT
+HOLDER's `GET …/why` at the running tampered table (the bot's card hidden from the other seat)
 reads `withheld` an object, `refusal` and `ok` null, `withheld.provenance.index == k`, and the swapped move's Debug
 nowhere in the body — the cell renamed `a_why_on_a_drifted_record_is_withheld_from_a_requester_who_may_not_see_the_account`,
 its old name being false after the change;
 the seat holder's at game over reads the mismatch refusal's `kind` and its sentence naming both moves, and a watcher
-there reads `withheld`. The first cell also asks, at the same withheld visibility, `?event=<a human move>` and reads
-the `human_seat` refusal: a pre-search refusal still reaches a withheld requester (the plan review's AD-14).
+there reads `withheld` — that second cell renamed `…names_both_moves_to_a_seat_holder_and_is_withheld_from_a_watcher`
+(its old `…and_none_to_a_watcher` false now that the withheld half names the move played), its doc rewritten (Task
+6's probe). The first cell also asks `?event=<a human move>` and reads the `human_seat` refusal — the drift record
+holds only BOT moves (the bot holds the start seat and the record is cut inside its first turn), so the cell first
+plays ONE human move through `/input` as `play_turn_vs_bot` does (the frame's `to_move` asserted 1, the prompt's last
+row posted until the event count rises), re-asks `?event=k` and asserts `withheld` again (the same visibility,
+asserted), then reads `?event=n` as `human_seat`: a pre-search refusal still reaches a withheld requester (the plan
+review's AD-14; Task 6's probe).
 
-- [ ] **Step 6: Run them red.** Compile errors on `withheld_from`; the tampered cell red on "withheld, not refused".
+- [ ] **Step 6: Run them red.** Compile errors on `withheld_from` (the tampered cell calls the halves directly and
+  is green the moment `withheld_from` exists, whatever `api::why` does); with `withheld_from` in and `api.rs` still on
+  the old flow, the ROUTE cell `a_why_on_a_drifted_record_is_withheld_from_a_requester_who_may_not_see_the_account` is
+  the one red on "withheld, not refused" (Task 6's probe).
 
 - [ ] **Step 7: The layer.**
 
@@ -2564,7 +2632,9 @@ git commit -m "web: the withheld why is built from the record before any search 
 red (`…is_withheld_from_a_requester_who_may_not_see_the_account` on "withheld, not refused"; the game-over cell on the
 watcher's `withheld`) — the explain cell calls the halves directly and cannot see their order; M39 `withheld_from`'s text from a reconstruction (unreachable without a search; the
 reviewer records it as structurally impossible); M40 `locate` with `arg = None` picking the LAST move rather than
-the last explainable bot move → the CLI's `why` cells red; M41 `account_from` skipping the mismatch gate → the CLI's
+the last explainable bot move → the CLI's `why` cells red in its plain form (through the lost `NoBotMoveYet`); M40a the
+variant keeping the refusal and then taking the last move → the new cell's bare-`why` row red after a human move
+(Task 6's probe); M41 `account_from` skipping the mismatch gate → the CLI's
 mismatch cells red; M42 `visibility_of`'s seat replaced by `now.current_player` → the explain visibility cells red.
 
 ### Task 7: The residuals — `claimRedacted` by equality, the `g` flag, the `BROWSER_UA` recipes, the five comment survivors — Sonnet implementer, Opus reviewer (R-4; decisions D-13, D-14)
@@ -2732,6 +2802,9 @@ the only form in which a claim appears in a sentence — for the owner at the cl
      that literal over `parseHeadersJson("[]")`. The cell runs under `cd web && npx vitest run -c vitest.node.config.ts
      scripts/headers.node.test.ts` (or `npm run test:wasm`); `web/` has no `test:scripts`.
   5. `worker/src/index.ts:84`: wrap the 143-character line at the file's width.
+  6. `worker/src/table/sockets.ts:100-101` (the Task 5 review's m-4): "the game screen draws it, the lobby does not
+     (`Lobby.tsx` passes no `onEnd`; recorded, AD-4)" is false since Task 5 — the lobby draws the `end` frame's
+     sentence on its strip through `usePolled`'s `onEnd` (S2c Task 5); reword to say so.
 
 - [ ] **Step 7: The suites, then commit** (documents and the two TS edits may be one commit; the recipes a second).
 
@@ -3167,7 +3240,11 @@ describe("the CSP lines (any console type) are read on every tier, and nothing i
   Report-Only in 0.6.2 and enforced at S2's wrap** … B4 rests on `X-Frame-Options` alone", "**The e2e build alone serves
   it ENFORCED** … the local walk is the enforcement reading", and "**Bot Fight Mode's injected detection script is the
   release's one known line** … the reading is the window's own sessions" — rewritten as the 929 bullet is: 0.6.3 ships
-  the policy ENFORCED with a fixed nonce; nothing is forgiven; B4's frame fence is both headers. `deploy/README.md`: "In 0.6.2 the policy is sent as
+  the policy ENFORCED with a fixed nonce; nothing is forgiven; B4's frame fence is both headers; and the two lobby
+  sentences Task 5 made false (the Task 5 review's m-4): §4's Worker bullet at line 162, "which the game screen draws
+  and the lobby does not (§15)", and §15's entry at line 938, "**A refused lobby socket is silent until reload** …
+  `Lobby.tsx` passes no `onEnd`" — both read: the lobby draws the `end` frame's sentence on its strip since 0.6.3
+  (S2c Task 5, AD-4 on both hosts). `deploy/README.md`: "In 0.6.2 the policy is sent as
   `Content-Security-Policy-Report-Only`: a browser logs a violation and blocks nothing, and a later release enforces
   it." → "Since 0.6.3 the policy is sent as `Content-Security-Policy`, enforced, with a fixed nonce for the script
   Cloudflare injects (`web/scripts/headers.mjs`); 0.6.2 was built with it Report-Only and never deployed."; "(older
