@@ -173,7 +173,9 @@ export const endSentence = (reason: "deleted" | "gone"): string =>
  *  consumer branches on `reason` today; each draws `sentence`. */
 export interface End {
   reason: "deleted" | "gone" | "refused";
-  sentence?: string;
+  /** Always present: every end the hook hands over carries the server's sentence or, for an `end` frame that
+   *  brought none, `endSentence`'s (the frame handler below) — so a consumer draws it as it is. */
+  sentence: string;
 }
 
 /**

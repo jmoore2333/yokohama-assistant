@@ -410,8 +410,11 @@ export function Lobby({
     take,
     // **An ended signal is said, once, where the lobby says its refusals** (security S2c, D3; S2b's AD-4): the
     // stream cap's 429 on the NAS, or the socket cap's `end` frame on the Worker, carries a sentence the player can
-    // act on; before this the lobby read "live" with a dead stream. `usePolled` opens nothing after an end.
-    useCallback((e: End) => setEnded(e.sentence ?? "the lobby's live updates have stopped — reload to reconnect"), []),
+    // act on; before this the lobby read "live" with a dead stream. `usePolled` opens nothing after an end, and
+    // every end it hands over carries a sentence (`End`), so the lobby draws it as it is. A house `end` frame without
+    // one would read in a table's words (`endSentence`); no host sends one — the house's only `end` is the cap's,
+    // with its sentence (`worker/src/house.ts`).
+    useCallback((e: End) => setEnded(e.sentence), []),
   );
 
   const page = async (scope: Scope, cursor: string) => {
