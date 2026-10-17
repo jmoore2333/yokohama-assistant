@@ -3476,6 +3476,7 @@ mod tests {
         assert_eq!(check_name("日本語の名前"), Ok("日本語の名前".to_string()));
         assert_eq!(check_name("🙂 Ben"), Ok("🙂 Ben".to_string()));
         assert!(check_name(&"n".repeat(65)).unwrap_err().starts_with("a name is 1 to 64 characters"), "the length rule speaks first, as before");
+        assert!(check_name(&format!("{}\u{200B}", "n".repeat(64))).unwrap_err().starts_with("a name is 1 to 64 characters"), "over the cap AND invisible: the length rule speaks first");
     }
 
     /// **The mirror names the winner once the game is over, and nobody before

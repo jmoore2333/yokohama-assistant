@@ -114,6 +114,7 @@ mod tests {
             assert_eq!(invisible(good), None, "{good:?} is visible text");
         }
         assert_eq!(invisible("ok\u{202E}x"), Some('\u{202E}'), "the first offending character, for a cell — never for a sentence");
+        assert_eq!(invisible("a\u{200B}b\u{202E}c"), Some('\u{200B}'), "the FIRST of two offenders");
         assert_eq!(INVISIBLE_RULE, "no control, invisible or direction-changing character");
     }
 }

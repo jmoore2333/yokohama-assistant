@@ -379,6 +379,9 @@ describe("the lobby", () => {
       });
       // The stream was opened once and never again; the listings were fetched once at mount.
       expect(stub.matching("GET", "/api/stream")).toHaveLength(1);
+      for (const scope of ["mine", "open", "playing"] as const) {
+        expect(stub.calls.filter((c) => isGamesList(c, scope)), `the ${scope} listing, read once`).toHaveLength(1);
+      }
       expect(screen.getByText(sentence)).toBeInTheDocument();
     } finally {
       vi.useRealTimers();

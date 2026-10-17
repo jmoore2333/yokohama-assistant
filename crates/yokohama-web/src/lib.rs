@@ -3135,6 +3135,7 @@ mod tests {
         let (status, v) = post_as(&pooled, "local@browser", "/api/archive", archive_body()).await;
         assert!(matches!(status.as_u16(), 200 | 201), "the route's own answer, not the read's deadline: {v}");
         assert_eq!(BODY_READ_DEADLINE, std::time::Duration::from_secs(10));
+        assert!(BODY_TOO_SLOW.contains(&format!("{} seconds", BODY_READ_DEADLINE.as_secs())), "the sentence states the deadline");
         assert_eq!(AppState::in_memory().body_deadline, BODY_READ_DEADLINE, "the figure on the fixture constructor; the production constructor's is pinned in the production-state cell");
     }
 
@@ -10099,11 +10100,12 @@ mod tests {
         );
     }
 
-    /// **A document this server wrote under the OLD name rule still reads** (S2c Task 3's compatibility catcher): a
-    /// seat's display name, the TABLE's own name and a house watcher's name carrying a zero-width space, and a house
-    /// LINE carrying a joiner, stored before the cycle, are served as they were — `check_shape` is the READ-side rule
-    /// (`check_stored_name` and `is_control` alone on a line); the new
-    /// rule is the write side's. Without this split the lobby chat and the table answered 500 on every route.
+    /// **A document this server wrote under the OLD name and line rules still reads** (S2c Task 3's compatibility
+    /// catcher): a seat's display name, the TABLE's own name and a house watcher's name carrying a zero-width space,
+    /// and a house LINE carrying a joiner, stored before the cycle, read as they were stored (the table's two names
+    /// in its document, the house's name and line on the served page) — `check_shape` is the READ-side rule
+    /// (`check_stored_name`, and `is_control` alone on a line); the new rule is the write side's. Without this split
+    /// the lobby chat and the table answered 500 on every route.
     #[tokio::test]
     async fn a_document_stored_under_the_old_name_rule_still_reads_and_the_house_chat_still_takes_a_post() {
         let state = Arc::new(AppState::in_memory());
@@ -10125,9 +10127,17 @@ mod tests {
         let json = json.replace("\"Bob\"", "\"Bob\\u200B\"").replace("\"text\": \"hi\"", "\"text\": \"h\\u200Di\"");
         assert!(json.contains("\"text\": \"h\\u200Di\""), "premise: a stored LINE carries a joiner the old rule admitted (D-4)");
         store.write_if_version(Doc::House, "house", &json, Some(ver)).expect("written");
-        assert!(state.games.read_table("pre").expect("the table still reads").is_some());
+        let (doc, _) = state.games.read_table("pre").expect("the table still reads").expect("the table");
+        assert_eq!(doc.name.as_deref(), Some("p\u{200B}re"), "the table's own name reads as stored");
+        assert!(
+            matches!(&doc.seats[0], table::SeatDoc::Human { name: Some(n), .. } if n == "Captain\u{200B}Red"),
+            "the seat's display name reads as stored: {:?}",
+            doc.seats[0],
+        );
         let (status, body) = get_as(&state, "red@wire.test", "/api/chat").await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["messages"][0]["author"]["name"], "Bob\u{200B}", "the house watcher's name is served as stored");
+        assert_eq!(body["messages"][0]["text"], "h\u{200D}i", "the house line is served as stored");
         let (status, body) = post_as(&state, "red@wire.test", "/api/chat", serde_json::json!({ "text": "still here?" })).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let (status, body) = post_as(&state, "red@wire.test", "/api/chat", serde_json::json!({ "text": "x", "name": "Bob\u{200B}" })).await;

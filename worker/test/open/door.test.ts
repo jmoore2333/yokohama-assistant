@@ -367,16 +367,25 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
 
   // Security S2c, R-4: equality with the raw claim alone would let a refused claim the echo CUT (over 64 characters)
   // or ESCAPED (a quote, a backslash) into the persisted line, so the span is compared as the echo wrote it, read
-  // back. Mutant: `claimRedacted` back to `sentence.includes(`"${claim}"`)`.
+  // back. Mutants: `claimRedacted` back to `sentence.includes(`"${claim}"`)`; `echoed`'s cut at `>= 64` (the
+  // 64-character row, the boundary the echo does NOT cut); the `t` entry dropped from `unescaped`'s map (the tab row).
+  // Each row names a part of the claim its spelled echo would keep, so "not spelled" can fail for every row.
   it("logs a refused claim the echo cut or escaped by its digest too", async () => {
     const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
-    for (const claim of ["a@b@" + "x".repeat(80), 'a@b@"quoted', "a@b@back\\slash"]) {
+    const rows: Array<[claim: string, spelled: string]> = [
+      ["a@b@" + "x".repeat(80), "a@b@xx"],
+      ["a@b@" + "x".repeat(60), "a@b@xx"],
+      ['a@b@"quoted', "quoted"],
+      ["a@b@back\\slash", "a@b@ba"],
+      ["a@b@x\ty", "a@b@x"],
+    ];
+    for (const [claim, spelled] of rows) {
       const { lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
       const digest = await callerDigest(claim);
       const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ error: string }>;
       expect(refused, claim.slice(0, 12)).toHaveLength(1);
       expect(refused[0]!.error, "the claim is named by its digest").toContain(`"${digest}"`);
-      expect(refused[0]!.error, "and not spelled").not.toContain(claim.slice(0, 6));
+      expect(refused[0]!.error, "and not spelled").not.toContain(spelled);
     }
   });
 
