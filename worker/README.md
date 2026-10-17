@@ -376,7 +376,8 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   judge it; that object's `init` refuses the caller, and it answers the layer's own 401, as the NAS
   does. *(Corrected 2026-10-12: this said the object answered a 500 where the NAS answers its 401 —
   so it did until M6.5c2 cycle D, whose `callerRefused` answers the layer's 401.)* Its `init-refused`
-  log line repeats the refused claim, at most 64 characters — a residual owed to S2b's after review.
+  log line names the refused claim by its digest (S2b's after review, `4814c999`; the echo's cut and
+  escaped forms since security S2c, `291b9e35`), and keeps a configuration refusal's value as it is.
   The client's name step never sends such a claim.
 
 **The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
@@ -1909,10 +1910,11 @@ layer's diagnostics printed nothing on this host, which was true until the log s
 **The lines that carried an address, or a folder that spells one, no longer do since security S2b**
 (finding D23): the `operator` line carries the first twelve hex of SHA-256 over the operator's
 address, every record key is logged with its folder's digest alone (`browser/<12 hex>/`), and an
-Archive object names itself `archive:<12 hex>`. Owed to S2b's after review: an Archive object's
-`init-refused` repeats a claim the key grammar refused (never a well-formed address), and
-`limiter-failed`'s `error` may carry the limit key, an IP under `open`, if the platform's text
-echoes it.
+Archive object names itself `archive:<12 hex>`. An Archive object's `init-refused` names a claim
+the key grammar refused by its digest (S2b's after review, `4814c999`), the echo's cut and escaped
+forms included (security S2c, `291b9e35`), and keeps a configuration refusal's value as it is. Owed
+to S2b's after review: `limiter-failed`'s `error` may carry the limit key, an IP under `open`, if
+the platform's text echoes it.
 
 Two lines carry a reading rule. A `slot-pushed` without its `slot-acked` is a delivery the alarm
 will retry. An `expiry-failed` that repeats hourly is read by its `body`: one naming a stored

@@ -5,8 +5,8 @@
 # hostnames there, add them here.
 #
 # ADDING A SERVICE (the whole recipe):
-#   1. put the service's container on a docker network `cloudflared-nas` also joins (`cf-internal` is for
-#      `yokohama-web` and cloudflared ALONE since S2c; the terminal has its own)
+#   1. put the service's container on a docker network `cloudflared-nas` also joins (keep `cf-internal` for
+#      `yokohama-web` and cloudflared alone; the terminal belongs on its own network, which cloudflared also joins)
 #   2. add an ingress block below, above the catch-all, with the same `originRequest.access` block
 #   3. create a proxied CNAME  <name>.moore.nyc -> 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.cfargotunnel.com
 #   4. create a Cloudflare Access application for that hostname -- or add
@@ -19,8 +19,9 @@
 # protects nothing (no Access).
 #
 # Step 1 said `cf-edge` until 2026-09-01 and the deployment never matched it:
-# until S2c, `cloudflared-nas` joined both `cf-edge` and `cf-internal`, and every
-# service it served sat on `cf-internal`; step 1 above is the rule since.
+# `cloudflared-nas` joined both `cf-edge` and `cf-internal`, and every service it
+# served sat on `cf-internal`. Step 1 above is the rule (security S2c), and S2's
+# window is the deploy that first brings the NAS to it.
 
 tunnel: 6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc
 credentials-file: /etc/cloudflared/6a6c468e-5e1e-4a7c-88a6-4e2fe07da1fc.json
@@ -70,9 +71,10 @@ ingress:
   # forwards, so Access is this origin's door AND its identity. That header is
   # worth what the path to the port is worth: the origin does not verify
   # Access's signed assertion, so anything that reached port 8080 without
-  # passing Access could send the header and be anyone. This tunnel is the one
-  # path to the container's port 8080, which is published nowhere; that is the
-  # other half of why the arrangement holds.
+  # passing Access could send the header and be anyone. Keep this tunnel the one
+  # path to the container's port 8080: publish it nowhere, and keep `cf-internal`
+  # for the server and cloudflared alone (step 1 above); that is the other half
+  # of why the arrangement holds.
   #
   # M6.5b2's spec (§3.2) designs a PATH-SCOPED application instead -- one
   # application, six destinations (its own heading says FIVE and then lists

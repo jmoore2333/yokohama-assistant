@@ -51,16 +51,17 @@ anything that reaches port 8080 without passing Access can send the header and b
    (`deploy/cloudflared-config.yml` is the owner's). cloudflared then refuses, in its own code, any request that
    reaches it without a valid token for that application.
 3. **A hardened container:** `--cap-drop ALL --security-opt no-new-privileges:true --memory 512m` on the `docker run`
-   (§4's flags, with no `-p` under step 1; `deploy/update.sh` passes the same three; the owner's NAS carries them as
-   `CapDrop`, `SecurityOpt` and `Memory` in `deploy/RUNBOOK.md` §3's create body).
+   (§4's flags, with no `-p` under step 1; `deploy/update.sh` passes the same three; the owner's NAS takes them as
+   `CapDrop`, `SecurityOpt` and `Memory` from `deploy/RUNBOOK.md` §3's create body, from S2's window on).
 4. **Read it back:** from a shell in any OTHER container on the host, first a CONTROL that proves the tool works —
    `wget -qO- --timeout=3 http://127.0.0.1:<that container's own port>/` must answer — then `wget -qO-
    --timeout=3 http://yokohama-web:8080/api/health` must FAIL with a resolution, connection or timeout error ("bad
    address", "refused" or "timed out" from busybox `wget`; any HTTP answer, "not found" included, fails the probe;
    GNU `wget -q` prints nothing, and its exit status 4, a network failure, is the pass — exit 0, exit 8 for an HTTP
    error answer, or any other status is the finding), and so must the same address by the server's IP on
-   `cf-internal` (`docker inspect`; 172.21.0.4 on the owner's NAS at every recorded recreation, read again after a
-   network change) — a name that does not resolve proves nothing about a route.
+   `cf-internal` (`docker inspect`; 172.21.0.4 on the owner's NAS at the recorded recreations through `RUNBOOK.md`
+   §3.18, where §3.19–§3.21 record none; read it again after a network change) — a name that does not resolve proves
+   nothing about a route.
    List the network's members (`docker network inspect cf-internal`): the tunnel and this server, nothing else. As
    yourself through the hostname, `/api/me` names you. Repeat after any change to the host. What this does not
    close is §4's second bullet: on a shared host, a process that can route to the container's address.
@@ -453,10 +454,13 @@ read of Docker or git. Read it once before the first real run, and again after c
 ```bash
 docker image ls yokohama-web                     # every earlier tag is still here
 docker stop yokohama-web && docker rm yokohama-web
-docker run -d --name yokohama-web -p 127.0.0.1:8080:8080 -v yokohama-web-data:/data \
+docker run -d --name yokohama-web --network cf-internal -v yokohama-web-data:/data \
   --env-file ~/yokohama/run.env --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true --memory 512m yokohama-web:<previous tag>
 ```
+
+That is §1's form, for a `cf-access` host: no port published. A host with no tunnel network, §4's example and the
+script's default, runs it with `-p 127.0.0.1:8080:8080` in place of `--network cf-internal`.
 
 The script names the previous image when it swaps. [`RUNBOOK.md`](RUNBOOK.md) §5 lists what each release changed on
 the volume that an older binary cannot read.

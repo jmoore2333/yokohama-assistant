@@ -20,7 +20,7 @@
 // IDENTITY on the shipped set: the shipped `CSP_MODE` is `enforce` (security
 // S2c, R-6), so the build's own `dist/headers.json` already carries the policy
 // under `Content-Security-Policy` and the rewrite below changes nothing. It is
-// kept so a report-only build — a rollback to 0.6.2's shape — still walks
+// kept so a report-only build still walks
 // ENFORCED locally: enforced, a violation in the page is a console `error` the
 // walk fails on, and a violation inside the module Worker — which prints on no
 // console in either mode — is a refusal the walk meets as a game that never
@@ -50,7 +50,7 @@ const run = spawnSync("npm", ["run", "build:client"], { env, stdio: "inherit" })
 if (run.error) console.error(`e2e-build: could not run npm: ${run.error.message}`);
 // **The e2e build serves the policy ENFORCED** (security S2a, decision D-9) — since 0.6.3 an IDENTITY on the
 // shipped set, whose `CSP_MODE` is `enforce` (security S2c, R-6): no pair carries the Report-Only name, so every
-// pair comes back as it went in. Kept so a report-only build (a rollback to 0.6.2's shape) still walks enforced: a
+// pair comes back as it went in. Kept so a report-only build still walks enforced: a
 // Report-Only violation is a LINE and not a block — Chromium logs it at console type `info`, which the harness
 // reads but which stops nothing — and a violation inside the module Worker prints nowhere in either mode, so only
 // an ENFORCED walk, where an INLINE or SOURCE refusal is an `error` the harness fails on (an enforced `eval`

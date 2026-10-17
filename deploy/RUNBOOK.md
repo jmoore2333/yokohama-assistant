@@ -51,17 +51,21 @@ has served hosted multiplayer at `yokohama.moore.nyc` since 2026-09-23, and is o
   only while the tunnel is the one path to the port: the server does not verify
   Access's signed assertion, so anything that reached 8080 some other way could
   send the header and be anyone. `worker` rests on the same condition for its
-  proxy. Since security S2c cloudflared — not the server — validates the
-  assertion on both ingress rules, and `README.md` §1's recipe is the rule.
+  proxy. cloudflared — not the server — is where the assertion is validated,
+  on both ingress rules: `cloudflared-config.yml` carries the two `access`
+  blocks (security S2c), S2's window copies that file to the NAS, and until
+  then the running tunnel passes each request on unchecked. `README.md` §1's
+  recipe is the rule.
   `open` trusts whatever name a caller types, so it belongs on a network
   where everyone who can reach the port may play (the self-host guide's
   [open door](README.md#2-the-open-door-a-home-network-a-lan-or-a-vpn)). Publish
   8080 and the first two properties are gone — see §3.
 - **The tunnel is LOCALLY managed.** `/volume1/docker/cloudflared/config/config.yml`
   on the NAS is the source of truth for ingress; the Zero Trust dashboard shows
-  its routes read-only. A copy of what is deployed lives here as
-  `cloudflared-config.yml` — that copy is documentation, and the file on the NAS
-  is the thing that runs.
+  its routes read-only. This repository's `cloudflared-config.yml` is the file a
+  deploy copies there — S2's window is the first to copy S2c's `access` blocks,
+  so until then it is ahead of the NAS's file — and the file on the NAS is the
+  thing that runs.
 - **The NAS is an Intel Atom C2538: 4 cores, 16.8 GB, DSM 7.4, kernel 3.10.108,
   Docker 24.0.2, x86_64.**
 - **The image contains carved-out third-party art** (`ASSETS.md`). Private
@@ -231,9 +235,10 @@ elsewhere, which is how this NAS is deployed.
 
 ## 3. Run it, and take the hostname
 
-**The container joins `cf-internal`** — the network only `cloudflared-nas` and this
-server join (S2c; before it, every served service sat there). (The config file's recipe said `cf-edge`; the
-deployment never matched it, and the file has been corrected.)
+**The container joins `cf-internal`**, which is for `cloudflared-nas` and this server alone (security S2c,
+B10's host half): S2's window moves the terminal container to a network of its own, and until then every service the
+tunnel serves sits on `cf-internal`. (The config file's recipe said `cf-edge`; the deployment never matched it, and
+the file has been corrected.)
 
 ```
 POST /containers/create?name=yokohama-web
@@ -249,16 +254,18 @@ POST /containers/create?name=yokohama-web
                                "Target": "/data" }] } }
 ```
 
-**Hardened since security S2c (B10's host half, 2026-10-13):** the container drops every
-capability (it binds 8080 as uid 10001 and needs none), may not gain privileges, and is bounded at 512 MiB — no
+**The create body hardens the container** (security S2c, B10's host half, 2026-10-13; S2's window is the first
+deploy to run it): the container drops every capability (it binds 8080 as uid 10001 and needs none), may not gain
+privileges, and is bounded at 512 MiB — no
 recorded reading exceeds a few tens of megabytes (§3.3: 12.0 MB container peak; §3.21's B8 reading:
 container usage 9.1 to 11.0 MB and cgroup `rss` 0.38 to 0.57 MB over 1,000 requests), and the window reads `docker stats` under its probes, one capped 4,096-event replay among them; a
 container that hits the bound is restarted by its policy, which is the right answer for a memory leak and a wrong
 figure alike (read `docker stats` at the window and raise it with a reason, never silently).
 
-**The terminal container is NOT on `cf-internal`** since S2c: it joins its own network, which
-cloudflared also joins (Portainer: the container's Networks), so a shell in it cannot reach this server's port; the
-negative probe in `README.md` §1 step 4 is read at every deploy.
+**The terminal container belongs on its own network, never on `cf-internal`**: one cloudflared also joins
+(Portainer: the container's Networks), so a shell in it cannot reach this server's port. S2's window moves it there
+(until then it shares `cf-internal`), and the negative probe in `README.md` §1 step 4 is read at every deploy from
+that window on.
 
 **The `Env` line is not optional and is not in the image.** Neither Dockerfile
 sets `YOKOHAMA_WEB_IDENTITY`, deliberately: there is no default mode, so an
@@ -286,8 +293,8 @@ while a host bind mount arrives root-owned and the server cannot write its game
 store. Do not publish 8080 to the LAN: `cf-access` trusts a header only Access
 sets, and that holds only while cloudflared is the one path to this port.
 
-Then edit the tunnel config (this repo's `cloudflared-config.yml` is the
-deployed copy), **back up the old one first**, and read the new file back with
+Then edit the tunnel config (this repo's `cloudflared-config.yml` is the file
+to copy), **back up the old one first**, and read the new file back with
 `cloudflared tunnel ingress validate` inside the connector's container BEFORE the restart (security S2c;
 `access.required` is config-read, not exercised — a wrong `teamName` or `audTag` answers 403 on both
 hostnames), and restart:
@@ -320,12 +327,12 @@ Over WARP, as the owner, with a browser's User-Agent: the zone's Bot Fight Mode 
 curl-shaped request with its own 403 before Access sees it (§3.14's vantage):
 
 ```bash
-UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36'
+# BROWSER_UA: set once, in `worker/RUNBOOK.md` §3's operator playbook (the smoke's own value, the ONE definition).
 B=https://yokohama-nas.moore.nyc
-curl -sS -A "$UA" "$B/api/health"                # "identity":"cf-access", and this build's server_version
-curl -sS -A "$UA" "$B/api/me"                    # {"mode":"cf-access","user":"<your Access address>"}
-curl -sS -A "$UA" "$B/api/games?scope=mine"      # your own tables
-curl -sS -A "$UA" -o /dev/null -w '%{http_code}\n' "$B/art/areas/Church.webp"   # 200
+curl -sS -A "$BROWSER_UA" "$B/api/health"                # "identity":"cf-access", and this build's server_version
+curl -sS -A "$BROWSER_UA" "$B/api/me"                    # {"mode":"cf-access","user":"<your Access address>"}
+curl -sS -A "$BROWSER_UA" "$B/api/games?scope=mine"      # your own tables
+curl -sS -A "$BROWSER_UA" -o /dev/null -w '%{http_code}\n' "$B/art/areas/Church.webp"   # 200
 ```
 
 **The load-bearing reading is `/api/me` naming you.** A deployment whose mode is wrong, or whose header
@@ -341,8 +348,8 @@ client's state B, "This server couldn't tell who you are", by design. Service Au
 this request is the credential even from the owner's workstation:
 
 ```bash
-curl -sS -A "$UA" -H @"$H" "$B/api/me"                                       # {"mode":"cf-access","user":null}
-curl -sS -A "$UA" -H @"$H" -o /dev/null -w '%{http_code}\n' "$B/api/games"   # 401
+curl -sS -A "$BROWSER_UA" -H @"$H" "$B/api/me"                                       # {"mode":"cf-access","user":null}
+curl -sS -A "$BROWSER_UA" -H @"$H" -o /dev/null -w '%{http_code}\n' "$B/api/games"   # 401
 rm -f "$H"
 ```
 

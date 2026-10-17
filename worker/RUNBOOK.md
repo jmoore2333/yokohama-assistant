@@ -783,9 +783,10 @@ expires in 2031 (spec §0.5).
     that spells the share's prefix names its folder by the digest alone.
   - an Archive object's **`init-refused`** `{id, error}` (one of the shell's own lines, above): `init`
     refused the object's caller — a claim the key grammar refuses, such as `..` — and the request is
-    the layer's 401. `error` is the grammar's sentence, which repeats the claim, at most 64
-    characters; never a well-formed address, which `init` admits (a residual owed to S2b's after
-    review).
+    the layer's 401. `error` is the grammar's sentence with the refused claim named by its digest
+    (S2b's after review, `4814c999`; the echo's cut and escaped forms since security S2c,
+    `291b9e35`), and a configuration refusal's value is kept as it is. A well-formed address never
+    meets this line, since `init` admits one.
 - **The bucket**, through wrangler's own login: `npx wrangler r2 object get
   "yokohama-archive/<key>" --remote --file <path>`. A pair is `rev7/{over,abandoned}/<id>.json` and
   `.table.json`, and a browser's save sits under `browser/<caller_segment>/`. A game whose table's
@@ -975,17 +976,22 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
 
   ```sh
   # BROWSER_UA: set once, in §3's operator playbook (the curl playbook).
-  B=https://yokohama.moore.nyc; for i in $(seq 140); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}'; done | sort | uniq -c
+  B=https://yokohama.moore.nyc
+  seq 300 | xargs -P 16 -I@ curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}' | sort | uniq -c
   curl -s -i -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}' | grep -i -e '^HTTP' -e '^retry-after' -e '"error"'
   ```
 
-  It reads 400s, then 429s from about the 121st inside one 10-second window: the limiter counts
-  before the layer's 400, and `{}` posts nothing. The last line, sent at once inside the same window,
-  shows one refusal whole — `429`, `Retry-After: 10` and `too many requests from you just now — wait a
-  moment and try again`. Counting is per Cloudflare location and best effort, so a burst may need a
-  second run to read its 429. `scripts/probe-burst.mjs` sends GETs alone and can read no 429. The
-  burst spends the owner's own write budget, so for ten seconds the owner's writes are refused: run
-  it between games.
+  Sixteen posts at a time, because the limit is a RATE: 120 posts must land inside one 10-second
+  window, and a sequential loop, a new TLS connection a post, ran at about ten a second on a fast
+  host at the S2 stack review, under the twelve a second the limit needs. (`-I@` and not `-I{}`:
+  xargs rewrites every `{}` in the line, the body included.) It reads 400s and 429s: the limiter
+  counts before the layer's 400, `{}` posts nothing, and once 120 posts are inside the window the
+  rest are refused. The last line, sent from the same shell at once after the burst, inside the same
+  window, shows one refusal whole — `429`, `Retry-After: 10` and `too many requests from you just
+  now — wait a moment and try again`. Counting is per Cloudflare location and best effort, so a
+  burst may need a second run to read its 429. `scripts/probe-burst.mjs` sends GETs alone and can
+  read no 429. The burst spends the owner's own write budget, so for ten seconds the owner's writes
+  are refused: run it between games.
 - **Bot Fight Mode's 403.** The zone's Bot Fight Mode and JavaScript detections — ON, by the owner's
   decision — answer a bot-shaped request BEFORE Access sees it: 403, `cf-mitigated: challenge`, and
   a `text/html` "Just a moment…" body of about 5,259 B (§8, reading 1). Both tiers print a body
@@ -2243,7 +2249,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 - **State 2 — the door on the API paths alone (12:24–12:31Z):** `npm run deploy:gate` FIRST (`wrangler.gate.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("off")`; version `d95668f0`), THEN the secret put back from `git config user.email` through stdin; the PUT with the two hostnames + the NINE paths (`yokohama.moore.nyc/api/admin`, `/api/archive`, `/api/art`, `/api/chat`, `/api/games`, `/api/labels`, `/api/me`, `/api/stream`, `/enter`). Read over WARP from a clean context: `/` 200 with zero `/api/` calls; **a local bot game of five acts with ZERO Worker invocations** (the query API); the owner's "Go to the lobby" → `/enter` → the lobby with no login page, a table created, both sockets opened, `/api/me` naming the owner, the operator listing 200. Read from a HEADED browser WITHOUT WARP: `/` 200 and `/shell.bin` 200 (public), an `X-Requested-With` fetch of `/api/me` and `/api/games` → **401 `WWW-Authenticate: Cloudflare-Access resource_metadata="https://yokohama.moore.nyc/.well-known/cloudflare-access-protected-resource/api/me"`**, a navigation to `/enter`, `/api/games` or `/api/admin/tables` → Access's login page. (curl from a bare client meets Bot Fight Mode's 403 before Access; a browser is the instrument.)
 - **The revert (12:31:37–12:32:32Z):** `npm run deploy` (`wrangler.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("on")`; version `eb8c7839`, the twenty-eighth deployment — 26 and 27 were the window's); the PUT back to the three hostnames (`yokohama`, `yokohama-cli`, `yokohama-nas`), the `aud` unchanged; `wrangler secret list` names both secrets. After-check: `/api/me` over WARP names the owner; **a clean headed browser without WARP at `/` meets Access's login** (12:43Z; the door not drawn); the credential + a claimed header names its caller; a claimed header WITHOUT the credential names the owner, not the claim; the live replay ONCE HOLDS; the quota above.
 - **The three PUT bodies** (`PUT /accounts/{account}/access/apps/11cbcf68-96cd-4310-baee-f2ade812155d`; the MCP or `curl` with an API token that manages Access) carry the application's read-back fields unchanged — `name: yokohama`, `type: self_hosted`, `session_duration: 730h`, `app_launcher_visible: true`, `allowed_idps` (the one identity provider's id), `auto_redirect_to_identity: true`, `http_only_cookie_attribute: true`, `policies` as `[{id, precedence}]` for the three (`sbaitso-friendly` 1, `yokohama-players` 2, `yokohama ST bypass` 3) — and differ ONLY in `domain`, `self_hosted_domains` and `destinations` (`[{type: "public", uri}]`, one per entry): the REVERT lists the three hostnames with `domain: yokohama.moore.nyc`; STATE 1 lists `yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` with `domain: yokohama-nas.moore.nyc`; STATE 2 adds the nine `yokohama.moore.nyc/<path>` entries to state 1's list. Read the application back after every PUT: the `aud` must not change (it did not, three times), and a changed `aud` would orphan every `ACCESS_AUD` the Workers carry.
-- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7. Since S2b this recipe runs on THIS Worker only once the owner amends R-SEC6 — "the door of the private Worker never flips" (§3).)*
+- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7. Since S2b this recipe runs on THIS Worker inside the review's known exercises, and after the security process only by an owner decision, never as an operating step — the owner's clarification (2026-10-12) of "the door of the private Worker never flips" (§3). Corrected 2026-10-17, the S2 stack review: this sentence said the recipe waited on an amendment of R-SEC6.)*
 
 ### What this deployment does NOT claim
 - The live half of RF1 (the update path) on each host was read ONCE, in a headless persistent context on the workstation — not on the owner's Edge, whose pinned state is the one that failed on 2026-09-29; the owner's own browser is the last reading.

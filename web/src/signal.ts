@@ -493,8 +493,8 @@ export function usePolled<T>(
         // on `/stream` and `/api/stream`, the Worker's sockets — a table's and the lobby's — end on an `end` frame instead
         // (reason `gone`, carrying the sentence; `End`), and both reach the consumer's `onEnd` with the server's sentence.
         // This catch also covers the socket arm's PROBE above, so a 429 on that listing read ends the signal too, where
-        // the stream arm's woken re-read keeps the stream (AD-6); neither host answers a GET with 429 today (the
-        // Worker's limits skip GET and HEAD, the NAS's two 429s are the stream admissions), so it is recorded only.
+        // the stream arm's woken re-read keeps the stream (AD-6); no listing read answers 429 on either host today (the
+        // Worker's limits skip GET and HEAD, and the NAS's two 429s are the stream admissions), so it is recorded only.
         if (e instanceof ApiError && (e.status === 404 || e.status === 403 || e.status === 429 || isSessionExpired(e))) {
           finish({
             reason: e.status === 404 ? "gone" : "refused",

@@ -242,10 +242,12 @@ The full walkthrough is [`docs/web-lane.md` §14](docs/web-lane.md#14-getting-st
 
 ### What both deployments run
 
-The settings a player notices, as cycle F's release set them (2026-10-01); the table of the defaults both
-run is [`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
+The settings a player notices, as cycle F's release set them (2026-10-01) and security S1's window
+(2026-10-11) left them, the Worker's dev door turned off; the table of the defaults both run is
+[`docs/web-lane.md` §14](docs/web-lane.md#the-defaults-both-deployments-run).
 
-- **The door.** The NAS runs `cf-access`; the Worker runs `worker` with a dev door behind Access.
+- **The door.** The NAS runs `cf-access`; the Worker runs `worker`, its dev door OFF since S1's window
+  and opened only around a live tier.
 - **The archive.** A finished game is filed to a directory on the NAS and to an R2 bucket on the Worker.
 - **The transport.** Server-sent events on the NAS, a WebSocket on the Worker.
 - **Expiry.** Both end a table idle for 90 days, or 7 days while a seat is still empty. The Worker does it
@@ -441,8 +443,9 @@ network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
     Access, as this repository deploys it, or an open door.
   - The cycle's record is [its close](docs/plans/2026-09-26-web-frontend-m6.5c-close.md). The cleanup
     cycles after it, M6.5c2's A to F, are recorded in
-    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record). Since 2026-10-01 it
-    runs cycle F's release, the Worker's thirty-first deployment (`worker/RUNBOOK.md` §20).
+    [the lane document's list of records](docs/web-lane.md#11-the-records-of-record). Since 2026-10-11 it
+    runs security S1's release, the Worker's thirty-second and thirty-third deployments
+    (`worker/RUNBOOK.md` §21).
 - **The browser: single player** (M6.5b, M6.5b2). The same layer, compiled to WebAssembly, runs in a Web
   Worker, so a game against the bot needs no server.
   - The game is kept in the browser's own storage, and the release installs whole for offline play.
