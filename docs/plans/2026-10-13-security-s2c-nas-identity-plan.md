@@ -227,7 +227,7 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
 - **D-13 — `BROWSER_UA` is added to RECIPES, never to dated records.** The operating sections of `worker/RUNBOOK.md`
   hold seven recipe `curl` lines without it — §3's operator playbook (497–499), §4's credential read (561), §5's health
   read (587) and §5's upgrade probes (792–793); §2 has none — and `BROWSER_UA` is already defined once, at §7's burst
-  bullet (line 966); `deploy/RUNBOOK.md` §3 already sets its own `UA` and passes `-A "$UA"` on every recipe, and the
+  bullet (line 972 at Task 6's head); `deploy/RUNBOOK.md` §3 already sets its own `UA` and passes `-A "$UA"` on every recipe, and the
   lane holds no recipe `curl` at all (plan review L2-R7), so neither moves; a `curl` inside a numbered
   deployment record stays as it was run.
 - **D-14 — the close re-reads the deferred lists (R-4).** Task 10 Step 4's after review walks the three SDD ledgers'
@@ -2578,6 +2578,59 @@ row posted until the event count rises), re-asks `?event=k` and asserts `withhel
 asserted), then reads `?event=n` as `human_seat`: a pre-search refusal still reaches a withheld requester (the plan
 review's AD-14; Task 6's probe).
 
+And the cell that pins the property this task exists for — the Task 6 review's I-1: every cell that sees the route's
+order sees it through the PAYLOAD, so a search run for a withheld requester and thrown away (M38d: `withheld_from`
+built, then `account_from` run and dropped) passed the whole web lib, 518/518, and would reopen the S1 stack review's
+timing channel with every suite green. Core exports a debug-armed, thread-local route-walk counter
+(`yokohama_core::{route_dfs_count, route_dfs_reset}`, `game/route_enum.rs`) that counts every President-route DFS,
+replay's and search's alike; the cell calls `api::why` DIRECTLY (the HTTP path dispatches on the blocking pool, another
+thread) and, over a finished vs-bot game, asserts at every bot move that the watcher's withheld `why` walks exactly
+the routes `locate` alone walks, with the seat holder's public `why` walking MORE at some events as the anti-vacuity
+(measured on the export: equal at all 37 bot moves read, the public count greater at 15; red under M38d at event 208,
+27 walks against `locate`'s 25). Debug builds only (the counter is armed under `cfg(any(test, debug_assertions))`;
+every per-edit suite is one); it sees route-walking searches only (an in-hand President point walks none), which is
+why it runs over a whole game. In `lib.rs`'s test module, beside the drifted-record cells, the reviewer's probe as
+run, named `a_withheld_why_walks_no_more_routes_than_locate_so_no_search_runs`:
+
+```rust
+    #[tokio::test]
+    async fn a_withheld_why_walks_no_more_routes_than_locate_so_no_search_runs() {
+        use yokohama_core::{route_dfs_count, route_dfs_reset, GameRecord};
+        let over = a_finished_vs_bot_game("late").await;
+        let rules = Rules::standard();
+        let (json, _) = over.games.store().read(Doc::Record, "late").expect("a store").expect("the record");
+        let record: GameRecord = serde_json::from_str(&json).expect("the record parses");
+        let holder = identity::User::parse("blue@wire.test").expect("a user");
+        let watcher = identity::User::parse("watcher@wire.test").expect("a user");
+        let _ = over.games.handle("late").ok().expect("the handle, warm before any count");
+        let mut rows = Vec::new();
+        for n in (0..record.events.len()).rev().take(80) {
+            route_dfs_reset();
+            if yokohama_cli::why::locate(yokohama_cli::session::TrackingMode::Simulation, &record, &rules, Some(n)).is_err() {
+                continue;
+            }
+            let l = route_dfs_count();
+            route_dfs_reset();
+            let w = api::why(&over.games, &watcher, "late", &api::WhyQuery { event: Some(n) }).ok().expect("an answer");
+            let wc = route_dfs_count();
+            route_dfs_reset();
+            let p = api::why(&over.games, &holder, "late", &api::WhyQuery { event: Some(n) }).ok().expect("an answer");
+            let pc = route_dfs_count();
+            rows.push((n, l, wc, pc, w.withheld.is_some(), p.ok.is_some()));
+        }
+        let walking = rows.iter().filter(|r| r.4 && r.5 && r.3 > r.1).count();
+        assert!(walking > 0, "anti-vacuity: no bot move here has a route-walking search");
+        for r in &rows {
+            if r.4 {
+                assert_eq!(r.2, r.1, "a withheld why at event {} walked routes beyond locate's replay", r.0);
+            }
+        }
+    }
+```
+
+(`a_finished_vs_bot_game`, `Doc::Record`, `api::WhyQuery` and the helpers are the file's; the implementer confirms the
+names at the head and the cell's wall in debug.)
+
 - [ ] **Step 6: Run them red.** Compile errors on `withheld_from` (the tampered cell calls the halves directly and
   is green the moment `withheld_from` exists, whatever `api::why` does); with `withheld_from` in and `api.rs` still on
   the old flow, the ROUTE cell `a_why_on_a_drifted_record_is_withheld_from_a_requester_who_may_not_see_the_account` is
@@ -2660,7 +2713,9 @@ git commit -m "web: the withheld why is built from the record before any search 
 
 **Named mutants:** M38 `api::why` calling `account_from` before the visibility read → the two `lib.rs` route cells
 red (`…is_withheld_from_a_requester_who_may_not_see_the_account` on "withheld, not refused"; the game-over cell on the
-watcher's `withheld`) — the explain cell calls the halves directly and cannot see their order; M39 `withheld_from`'s text from a reconstruction (unreachable without a search; the
+watcher's `withheld`) — the explain cell calls the halves directly and cannot see their order; M38d the search run for
+a withheld requester and its result DROPPED (`withheld_from` built, `account_from` run and thrown away) → the
+route-walk cell red (the Task 6 review's I-1: every payload cell passed it); M39 `withheld_from`'s text from a reconstruction (unreachable without a search; the
 reviewer records it as structurally impossible); M40 `locate` with `arg = None` picking the LAST move rather than
 the last explainable bot move → the CLI's `why` cells red in its plain form (through the lost `NoBotMoveYet`); M40a the
 variant keeping the refusal and then taking the last move → the new cell's bare-`why` row red after a human move
@@ -2707,19 +2762,21 @@ plan review measured them (L2-R3, L2-F3):
   // whole. Drive the archive object as the cell above does, with the module's configuration refused as
   // `table.test.ts`'s `init-module` arm refuses it. Mutant: the first quoted span rewritten whatever it holds.
   it("rewrites only the quoted span that IS the claim, and leaves a configuration refusal's value as it is", async () => {
-    // **A claim no other cell uses**: the Archive object caches the module it built (`this.instance ??=`), so the
-    // refused configuration stays in THIS name's object for the rest of the file.
-    const claim = "cfg refused";
     const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
     const bad = JSON.stringify({ identity: "open", archive: "off", caller: null, lobby_chat: "maybe", chat_keep: null, chat_text: null });
     const spy = vi.spyOn(configModule, "moduleConfig").mockReturnValue(bad);
     try {
-      const { lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
-      const digest = await callerDigest(claim);
-      const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ id: string; error: string }>;
-      expect(refused.map((l) => l.id)).toEqual([ARCHIVE_PREFIX + digest]);
-      expect(refused[0]!.error, "the value is the configuration's, kept verbatim").toBe('YOKOHAMA_WEB_LOBBY_CHAT must be on or off \u2014 got "maybe"');
-      expect(refused[0]!.error, "and no digest stands in its place").not.toContain(digest);
+      // **Claims no other cell uses**: the Archive object caches the module it built (`this.instance ??=`), so the
+      // refused configuration stays in THIS name's object for the rest of the file. `may` is a prefix of the value
+      // the sentence quotes and `maybe-x` is prefixed BY it: a prefix test in either direction rewrites the value.
+      for (const claim of ["cfg refused", "may", "maybe-x"]) {
+        const { lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
+        const digest = await callerDigest(claim);
+        const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ id: string; error: string }>;
+        expect(refused.map((l) => l.id), claim).toEqual([ARCHIVE_PREFIX + digest]);
+        expect(refused[0]!.error, `${claim}: the value is the configuration's, kept verbatim`).toBe('YOKOHAMA_WEB_LOBBY_CHAT must be on or off \u2014 got "maybe"');
+        expect(refused[0]!.error, `${claim}: and no digest stands in its place`).not.toContain(digest);
+      }
     } finally {
       spy.mockRestore();
     }
@@ -2743,7 +2800,9 @@ plan review measured them (L2-R3, L2-F3):
 
 - [ ] **Step 2: Run them red.** `cd worker && npx vitest run -c vitest.scripts.config.ts src/redact.unit.test.ts` (the
   default config's two projects include `test/**` only; the two-segment row fails: today the second segment is
-  untouched) and `npm test -- door` (row (2) fails: today the first quoted span is rewritten whatever it holds).
+  untouched) and `npm test -- door` (the configuration cell fails: today the first quoted span is rewritten whatever
+  it holds; the cut-or-escaped cell is GREEN before the change — it guards the equality against the raw-claim form,
+  M16a — Task 7's probe).
 
 - [ ] **Step 3: The two changes.**
 
@@ -2801,8 +2860,11 @@ the only form in which a claim appears in a sentence — for the owner at the cl
 - [ ] **Step 4: Run them green; then `npm run typecheck && npm run test:scripts && npm test`.**
 
 - [ ] **Step 5: The `BROWSER_UA` recipes (D-13).** In `worker/RUNBOOK.md`: MOVE the variable's one definition — §7's
-  `BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs")…')` at line 966 — up to the first recipe that needs it
-  (§3's operator playbook, before line 497), leaving line 966 a pointer back to it, then add `-A "$BROWSER_UA"` to the
+  `BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs")…')` at line 972 (at Task 6's head) — up to the first
+  recipe that needs it (§3's operator playbook, before line 497), leaving the old line a pointer back to it; the moved
+  line runs its `node` in a SUBSHELL, `BROWSER_UA=$(cd worker && node -e '…')`, so the shell's directory stays the
+  repository root that §4's recipe assumes (Task 7's probe: a `cd worker &&` outside the `$(…)` leaves the shell in
+  `worker/`), then add `-A "$BROWSER_UA"` to the
   seven recipe lines: 497, 498, 499 (§3's playbook), 561 (§4's credential read), 587 (§5's health read), 792 and 793
   (§5's upgrade probes). `deploy/RUNBOOK.md` and `docs/web-lane.md` do not move: §3 already sets its own `UA` and
   passes `-A "$UA"` on every recipe (lines 298–330), and the lane holds no recipe `curl`. A `curl` inside a dated record (worker §8–§21, deploy §3.17–§3.21)
@@ -2839,7 +2901,7 @@ the only form in which a claim appears in a sentence — for the owner at the cl
 - [ ] **Step 7: The suites, then commit** (documents and the two TS edits may be one commit; the recipes a second).
 
 ```bash
-git add worker/src/archive.ts worker/src/redact.ts worker/src/redact.unit.test.ts worker/test/open/door.test.ts worker/src/index.ts web/src/wire/contract.ts web/scripts/headers.mjs web/scripts/headers.node.test.ts crates/yokohama-web/tests/wire_fixtures.rs
+git add worker/src/archive.ts worker/src/redact.ts worker/src/redact.unit.test.ts worker/test/open/door.test.ts worker/src/index.ts worker/src/table/sockets.ts web/src/wire/contract.ts web/scripts/headers.mjs web/scripts/headers.node.test.ts crates/yokohama-web/tests/wire_fixtures.rs
 git commit -m "worker, web: claimRedacted rewrites only the span equal to the claim; every browser segment in a message redacted; five surviving comment sentences made true (security S2c, the residuals)"
 git add worker/RUNBOOK.md
 git commit -m "docs: every recipe curl carries BROWSER_UA; dated records untouched (security S2c, D-13)"
