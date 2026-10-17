@@ -50,7 +50,9 @@ describe("the policy", () => {
   });
 
   it("carries one fixed nonce in script-src for the detection script Cloudflare injects, named for what it is", () => {
-    expect(CLOUDFLARE_INJECTION_NONCE).toMatch(/^[A-Za-z0-9+/]{22}$/);
+    // Alphanumeric, as its comment says it was drawn (the S2 stack review, lens 3, Minor 1: the cell admitted `+` and
+    // `/`, and the lens's mutant H4, `9fbW9ooNwE2u6pVV+/iwRA`, kept every header cell green).
+    expect(CLOUDFLARE_INJECTION_NONCE).toMatch(/^[A-Za-z0-9]{22}$/);
     const d = directives(cspOf(NONE));
     expect(d.get("script-src")).toEqual(["'self'", "'wasm-unsafe-eval'", `'nonce-${CLOUDFLARE_INJECTION_NONCE}'`, ...CLOUDFLARE.script]);
     // The nonce rides script-src ALONE: a style nonce would let the edge inject styles too, which nothing asks for.

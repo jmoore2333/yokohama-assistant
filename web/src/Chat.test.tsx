@@ -150,12 +150,17 @@ describe("the chat panel", () => {
     if (red?.author.kind !== "seat" || blue?.author.kind !== "seat" || green?.author.kind !== "watcher") {
       throw new Error("the corpus page is red's, blue's, then the watcher's");
     }
+    const { tag: _dropped, ...rest } = green.author;
+    const untagged = rest as typeof green.author;
     const own: ChatPage = {
       ...wire.chat,
       messages: [
         { ...green, author: { ...green.author, name: null, you: true, tag: "a1b2" } },
         { ...green, seq: green.seq + 1, author: { ...green.author, name: null, you: false, tag: "c3d4" } },
         { ...green, seq: green.seq + 2, author: { ...green.author, tag: null } },
+        // The key ABSENT, as a server rolled back past the tag would send it (the S2 stack review, lens 3, Minor 4):
+        // no tag drawn, never a dangling " · ".
+        { ...green, seq: green.seq + 3, author: untagged },
       ],
     };
     chatStub((call) => (call.method === "GET" ? own : undefined));
@@ -164,6 +169,7 @@ describe("the chat panel", () => {
     expect(rows.map((r) => r.querySelector(".chat-who")!.textContent)).toEqual([
       "you · a1b2 · spectating",
       "someone · c3d4 · spectating",
+      `${green.author.name} · spectating`,
       `${green.author.name} · spectating`,
     ]);
   });
