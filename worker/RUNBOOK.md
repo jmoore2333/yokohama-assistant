@@ -494,8 +494,9 @@ corrected.
 
 ```sh
 # The browser User-Agent every curl at either host carries (the smoke's own; §7's Bot Fight Mode bullet says why).
-# This is the ONE definition: §4, §5 and §7 use the variable as set here.
-cd worker && BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
+# This is the ONE definition: §4, §5 and §7 use the variable as set here. The `cd` is inside the substitution, so the
+# shell stays at the repository root.
+BROWSER_UA=$(cd worker && node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
 B=https://yokohama.moore.nyc
 curl -s -A "$BROWSER_UA" "$B/api/admin/tables" | jq                                              # the listing
 curl -s -A "$BROWSER_UA" -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire"        # expire: 204
