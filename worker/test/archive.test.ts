@@ -1290,6 +1290,27 @@ describe("B12's Worker half — the share counted from a live listing (security 
     expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
   });
 
+  // The S2 stack review (lens 1, Minor 1): the listing's failure is logged through `redactKey`, as the put path's
+  // lines are (`logOutcome`). R2's real list error is not knowable offline, so the bucket here rejects with a message
+  // that spells the share's prefix, the shape S2b's premise gives R2's put messages. Mutant: `String(e)` logged bare
+  // (the readable half `listed_at_t.test` persists).
+  it("logs a listing failure that spells the share's prefix with the prefix's readable half dropped", async () => {
+    const who = "listed@t.test";
+    const stub = archiveStub(who);
+    const segment = await segmentOf(who);
+    const digest = segment.slice(segment.lastIndexOf("-") + 1);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), (_real, options) => Promise.reject(new Error(`list: invalid prefix ${options?.prefix}`)));
+    try {
+      const { result, lines } = await logsDuring(() => browserSave(stub, who));
+      expect(result.status).toBe(500);
+      const failed = lines.filter((l) => (l as { event: string }).event === "archive-count-failed") as { error: string }[];
+      expect(failed.map((l) => l.error), "the prefix by its digest alone").toEqual([`Error: list: invalid prefix test/browser/${digest}/`]);
+      expect(JSON.stringify(lines), "the readable half nowhere in the object's lines").not.toContain("listed_at_t.test");
+    } finally {
+      await swapped.restore();
+    }
+  });
+
   // The SHELL forwarding `truncated` (M32 covers the module ignoring it): no pool listing exceeds 1,000 objects, so
   // a bucket whose `list` answers truncated is swapped in through `swapBucket`'s list parameter (Task 4's run: the
   // comment's mutant survived 242/242 without this cell; measured red under it — `expected 201 to be 507`).

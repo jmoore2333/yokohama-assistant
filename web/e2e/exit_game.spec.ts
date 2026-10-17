@@ -650,8 +650,7 @@ test("two people and a watcher play a paced game across four hibernations, and i
       ` (awake median ${median ?? "n/a"} ms); chat — table x ${said.x} / y ${said.y} (the watcher's panel ` +
       `${watcherLines}), lobby x 1 / y 1, both deleted; forgiven — the beacon's CORS error x ${watchX.forgiven}, ` +
       `y ${watchY.forgiven}, w ${watchW.forgiven}; the release feed's failure x ${watchX.feedForgiven}, ` +
-      `y ${watchY.feedForgiven}, w ${watchW.feedForgiven}; the detection script's Report-Only line ` +
-      `x ${watchX.reportOnlyForgiven}, y ${watchY.reportOnlyForgiven}, w ${watchW.reportOnlyForgiven}; ` +
+      `y ${watchY.feedForgiven}, w ${watchW.feedForgiven}; ` +
       `the deal's 409 x ${watchX.dealAnswers}, ` +
       `y ${watchY.dealAnswers}, w ${watchW.dealAnswers}; console — x ${consoleOf(watchX.failures)}, ` +
       `y ${consoleOf(watchY.failures)}, w ${consoleOf(watchW.failures)}; ` +

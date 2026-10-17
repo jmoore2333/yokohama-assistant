@@ -30,4 +30,29 @@ describe("redact.ts (security S2b, decisions D-3, D-4, D-6)", () => {
       'R2 refused "browser/c91ad2a917f7/rev7/over/x.json"',
     );
   });
+
+  // The S2 stack review (lens 1, Minor 1): a segment with no slash after its digest — a listing's prefix as a
+  // message might spell it bare, or the key's end — is redacted too, and keeps its shape (no slash is added). Mutant:
+  // the trailing `/` required again (both rows keep their readable half).
+  it("drops the readable half of a segment that no slash follows, adding no slash", () => {
+    expect(redactKey("list: invalid prefix test/browser/zqxjv9_maple-460f9d44576e")).toBe("list: invalid prefix test/browser/460f9d44576e");
+    expect(redactKey('no share for "browser/red_at_wire.test-c91ad2a917f7": try again')).toBe('no share for "browser/c91ad2a917f7": try again');
+    expect(redactKey("browser/red-0123456789abcdef"), "sixteen hex after the dash are no twelve-hex digest: left whole").toBe("browser/red-0123456789abcdef");
+  });
+
+  // The S2 stack review's second run (lens 1, N-1): the readable half is `caller_segment`'s alphabet alone
+  // (`[a-z0-9._-]`, `@` written `_at_`), so a match never runs across a message to a LATER twelve-hex token and
+  // names it as the folder. Mutant: the readable half back to `[^/]*` — the line below reads `browser/fedcba987654`.
+  it("stops the readable half at the segment's own alphabet, never at a later hex token across the message", () => {
+    expect(redactKey("list browser/alice_at_corp.example-0123456789ab failed; see a-fedcba987654")).toBe(
+      "list browser/0123456789ab failed; see a-fedcba987654",
+    );
+  });
+
+  it("redacts EVERY browser segment in a message, not the first alone (the g flag)", () => {
+    const two = 'copy browser/alice-0123456789ab/x.json to browser/bob-fedcba987654/y.json failed';
+    expect(redactKey(two)).toBe("copy browser/0123456789ab/x.json to browser/fedcba987654/y.json failed");
+    expect(redactKey("test/browser/alice-0123456789ab/x.json")).toBe("test/browser/0123456789ab/x.json");
+    expect(redactKey("rev7/over/abc.json")).toBe("rev7/over/abc.json");
+  });
 });

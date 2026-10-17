@@ -18,11 +18,13 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-/** The policy's mode, a CONSTANT and not a build value (decision D-1): `report-only` ships
- *  `Content-Security-Policy-Report-Only` — this release, 0.6.2, one release in the wild whose violations are read
- *  in the window and the Playwright tier (D-9) — and `enforce` ships `Content-Security-Policy`, which S2's wrap
- *  flips to, with the cell beside it. A build value would let a deploy weaken the policy without a commit. */
-export const CSP_MODE = "report-only";
+/** The policy's mode, a CONSTANT and not a build value (decision D-1 of S2a): `enforce` ships
+ *  `Content-Security-Policy` — since 0.6.3, S2's wrap (security S2c, R-6) — and `report-only` ships
+ *  `Content-Security-Policy-Report-Only`, the shape 0.6.2 was built with and never deployed: S2's two windows were
+ *  folded into one, and the wild reading is the NAS canary at 0.6.3's window, under the enforced policy (S2c's plan,
+ *  D-15).
+ *  A build value would let a deploy weaken the policy without a commit. */
+export const CSP_MODE = "enforce";
 
 /** The two names the policy ships under, by mode. */
 export const CSP_HEADER = Object.freeze({
@@ -33,14 +35,26 @@ export const CSP_HEADER = Object.freeze({
 /** Cloudflare's hosts, named because both deployments sit behind the zone (decision D-2): `challenges` is
  *  Turnstile's widget and the Managed Challenge (a script and an iframe); `static.cloudflareinsights.com` is the
  *  Web Analytics beacon the zone injects into every HTML answer, kept on by the owner's standing rule, and
- *  `cloudflareinsights.com` is where that beacon posts. The one script this list cannot name is Bot Fight Mode's
- *  INLINE detection script, which carries no nonce a static shell could match: it is the known Report-Only
- *  line of this release, read in the window, and the enforcement decision is the wrap's. */
+ *  `cloudflareinsights.com` is where that beacon posts. Bot Fight Mode's INLINE detection script carries whatever
+ *  nonce the response's CSP header names — `CLOUDFLARE_INJECTION_NONCE`, below. */
 export const CLOUDFLARE = Object.freeze({
   script: Object.freeze(["https://challenges.cloudflare.com", "https://static.cloudflareinsights.com"]),
   frame: Object.freeze(["https://challenges.cloudflare.com"]),
   connect: Object.freeze(["https://cloudflareinsights.com"]),
 });
+
+/** **A nonce that never changes, named for what it is** (security S2c, the owner's R-6). Cloudflare reads a nonce
+ *  from the response's CSP header and sets it on the scripts it injects — Bot Fight Mode's inline detection script
+ *  on a first load — so a static header carrying this value keeps that script running under the enforced policy
+ *  and the console clean. A fixed nonce is a password everyone can read: the policy's INLINE-script rule is
+ *  therefore nominal, and what the policy still enforces is its source lists, `object-src 'none'`, `base-uri
+ *  'none'` and `frame-ancestors 'none'` — which, with no HTML sink in the client, is where its value was. Drawn
+ *  once with `randomBytes(16)`, base64 without padding, 22 characters, redrawn until alphanumeric; its shape,
+ *  alphanumeric, pinned by its cell. The recorded fallback, should the edge ever inject the
+ *  script WITHOUT this nonce: restore S2a's `isReportOnlyDetectionLine` and its arm in `web/e2e/harness.ts` as they
+ *  stood at `d921d078`, in the ENFORCED line's words, read at `error`, and drop the token below at the next release
+ *  (S2c's plan, D-9 and D-15). */
+export const CLOUDFLARE_INJECTION_NONCE = "9fbW9ooNwE2u6pVVRviwRA";
 
 /**
  * The CSP hash of every inline `<style>` in `html`, in document order: `'sha256-<base64>'` over EXACTLY the
@@ -73,7 +87,7 @@ export function cspOf({ siteUrl, releaseFeed, styleHashes }) {
   connect.push(...CLOUDFLARE.connect);
   return [
     "default-src 'self'",
-    `script-src 'self' 'wasm-unsafe-eval' ${CLOUDFLARE.script.join(" ")}`,
+    `script-src 'self' 'wasm-unsafe-eval' 'nonce-${CLOUDFLARE_INJECTION_NONCE}' ${CLOUDFLARE.script.join(" ")}`,
     ["style-src 'self'", ...styleHashes].join(" "),
     "img-src 'self'",
     "font-src 'self'",
@@ -90,11 +104,12 @@ export function cspOf({ siteUrl, releaseFeed, styleHashes }) {
 
 /**
  * The set, as `[name, value]` pairs in the order both hosts send them: the policy under its mode's name, then
- * the five companions — `X-Frame-Options: DENY` (enforced from this release, whatever the policy's mode: it is
- * what closes B4 while `frame-ancestors` is only reported), `nosniff` (the zone adds it at the edge for answers
- * the edge serves; the service worker's synthesized navigation needs it from the stored entry), the referrer
- * policy, a Permissions-Policy that turns off what the app never asks for, and COOP `same-origin` (the app opens
- * no popups; Access's login is a top-level redirect and Turnstile an iframe).
+ * the five companions — `X-Frame-Options: DENY` (sent whatever the policy's mode: since 0.6.3 it and the enforced
+ * `frame-ancestors 'none'` are B4's frame fence together, and under a report-only build it is the fence alone),
+ * `nosniff` (the zone adds it at the edge for answers the edge serves; the service worker's synthesized navigation
+ * needs it from the stored entry), the referrer policy, a Permissions-Policy that turns off what the app never asks
+ * for, and COOP `same-origin` (the app opens no popups; Access's login is a top-level redirect and Turnstile an
+ * iframe).
  *
  * @param {{ siteUrl: string | null, releaseFeed: string | null, styleHashes: readonly string[], mode?: string }} values
  * @returns {[string, string][]}
@@ -175,7 +190,7 @@ export function parseHeadersJson(text) {
     !CONTROL.test(p[1]);
   if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(pair)) {
     throw new Error(
-      "headers.json is not the client build's header set — an array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
+      "headers.json is not the client build's header set — a non-empty array of [name, value] pairs, each name a token of at most 65,535 bytes, each value non-empty and free of control characters, every string well-formed",
     );
   }
   const seen = new Set();

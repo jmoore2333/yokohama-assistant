@@ -132,11 +132,11 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     expect(emitted, "the build emits the header set").toContain("headers.json");
     // **The header set the build wrote** (security S2a, decision D-1): the six
     // pairs, read through the ONE reader both hosts' paths use, the policy first
-    // under its Report-Only name.
+    // under the enforced name.
     expect(existsSync(join(built, "headers.json")), "dist/headers.json exists").toBe(true);
     const headerPairs = parseHeadersJson(readFileSync(join(built, "headers.json"), "utf8"));
     expect(headerPairs, "the header set is six pairs").toHaveLength(6);
-    expect(headerPairs[0]![0]).toBe("Content-Security-Policy-Report-Only");
+    expect(headerPairs[0]![0]).toBe("Content-Security-Policy");
     const distFiles = emitted.filter((f) => f !== "sw.js" && !NOT_PRECACHED.includes(f));
     const { entries } = buildPrecache({
       distFiles,

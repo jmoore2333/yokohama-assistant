@@ -2606,6 +2606,27 @@ describe("the route", () => {
     expect(rejected).toEqual([]);
   });
 
+  it("lands on the lobby with the cap's sentence when the table's own stream is refused 429 (Review Focus 1, as the code does it)", async () => {
+    // **Every table consumer leaves on ANY `End`** (`App`'s `toLobby(e.sentence)`, `OpenTable`'s and `Dealing`'s
+    // `onLeave`): a 429 at admission ends as `refused` and the player lands in the lobby with the server's sentence,
+    // as a 403 does and as the Worker's `4429` close does (an `end` frame, `gone`). The table page does not stay.
+    window.location.hash = "#/t/wire";
+    const sentence = "too many open streams from you at this table — close one and try again";
+    vi.useFakeTimers();
+    try {
+      app((call) => {
+        if (call.path.endsWith("/api/games/wire/stream")) return { status: 429, body: { error: sentence } };
+        if (call.path.endsWith("/table")) return wire.tableOpen;
+        return undefined;
+      });
+      await until(() => screen.queryByRole("heading", { name: "Lobby" }) !== null, "the lobby was drawn");
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+      expect(window.location.hash).toBe("#/lobby");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // The other half of the same rule: a game LEFT takes the hash with it, so the
   // address never names a screen that is not on it.
   it("clears the game and the hash when the Game menu leaves for the lobby", async () => {

@@ -376,7 +376,8 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   judge it; that object's `init` refuses the caller, and it answers the layer's own 401, as the NAS
   does. *(Corrected 2026-10-12: this said the object answered a 500 where the NAS answers its 401 —
   so it did until M6.5c2 cycle D, whose `callerRefused` answers the layer's 401.)* Its `init-refused`
-  log line repeats the refused claim, at most 64 characters — a residual owed to S2b's after review.
+  log line names the refused claim by its digest (S2b's after review, `4814c999`; the echo's cut and
+  escaped forms since security S2c, `291b9e35`), and keeps a configuration refusal's value as it is.
   The client's name step never sends such a claim.
 
 **The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
@@ -928,7 +929,8 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    Steps 6 and 7 are the `worker` door's. Under `open` (§1.5) the Worker verifies no assertion: step
    6 reads the claimed name, from the `X-Yokohama-Claimed-User` header on a fetch and from the
    `claimed=` parameter on an upgrade, and step 7 forwards it as `X-Yokohama-Claimed-User`, which
-   also names the caller's Archive object, each run of its spaces collapsed to one (security S2b);
+   also names the caller's Archive object, each run of its spaces collapsed to one (security S2b),
+   and drops the parameter from the URL it hands the object (since the S2 stack review);
    there the rate limit keys a create by the connecting IP and a write by the IP and the claim's
    digest. *(Added 2026-09-28, M6.5c2.)*
 
@@ -1765,9 +1767,10 @@ files, which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 nee
 12 read the assembled tree and its stamp, so they run only on the workstation that deploys.
 
 **Then the secrets guard** (security S2a, decision D-11) asks the account for the Worker's secret
-NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS` or
-`YOKOHAMA_WEB_TEST_CLOCK`: the guard refuses both in a committed file, and a secret would carry
-either past it. A listing that fails is a refusal, never a pass, so every deploy script is a network
+NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+`YOKOHAMA_WEB_TEST_CLOCK` or, since the S2 stack review, `YOKOHAMA_DEV_DOOR`: the guard refuses the
+first two in a committed file and judges the third there, and a secret would carry any of them past
+it. A listing that fails is a refusal, never a pass, so every deploy script is a network
 step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
 deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first
@@ -1907,10 +1910,11 @@ layer's diagnostics printed nothing on this host, which was true until the log s
 **The lines that carried an address, or a folder that spells one, no longer do since security S2b**
 (finding D23): the `operator` line carries the first twelve hex of SHA-256 over the operator's
 address, every record key is logged with its folder's digest alone (`browser/<12 hex>/`), and an
-Archive object names itself `archive:<12 hex>`. Owed to S2b's after review: an Archive object's
-`init-refused` repeats a claim the key grammar refused (never a well-formed address), and
-`limiter-failed`'s `error` may carry the limit key, an IP under `open`, if the platform's text
-echoes it.
+Archive object names itself `archive:<12 hex>`. An Archive object's `init-refused` names a claim
+the key grammar refused by its digest (S2b's after review, `4814c999`), the echo's cut and escaped
+forms included (security S2c, `291b9e35`), and keeps a configuration refusal's value as it is. Owed
+to S2b's after review: `limiter-failed`'s `error` may carry the limit key, an IP under `open`, if
+the platform's text echoes it.
 
 Two lines carry a reading rule. A `slot-pushed` without its `slot-acked` is a delivery the alarm
 will retry. An `expiry-failed` that repeats hourly is read by its `body`: one naming a stored

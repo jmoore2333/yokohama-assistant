@@ -1,8 +1,9 @@
 // **The deploy's secrets, judged before `wrangler deploy`** (security S2a, decision D-11). The deploy guard
-// refuses the diagnostic seeds and the test clock in a committed configuration (its rules 4 and 4b); a Worker
-// SECRET of either name reaches the shell's `env` past both, since a deploy leaves secrets alone and the guard
-// reads files. So the deploy asks wrangler for the names — `wrangler secret list` prints a JSON array of
-// `{name, type}`, never a value — and refuses the two. Pure but for the one `execFileSync`, which the command
+// refuses the diagnostic seeds and the test clock in a committed configuration (its rules 4 and 4b) and judges the
+// dev door's switch there (its door rules); a Worker SECRET of any of the three names reaches the shell's `env`
+// past them, since a deploy leaves secrets alone and the guard reads files. So the deploy asks wrangler for the
+// names — `wrangler secret list` prints a JSON array of `{name, type}`, never a value — and refuses the three (the
+// dev door's since the S2 stack review, lens 1, Minor 3). Pure but for the one `execFileSync`, which the command
 // alone makes; the cells drive `judgeSecrets` over captured listings and the command over a fake `npx`.
 //
 // The listing asks the ACCOUNT: every deploy script — the plain `deploy`, the safe direction, included — is a network
@@ -18,8 +19,15 @@ import { pathToFileURL } from "node:url";
 
 /** The names a secret must never have, and why. */
 export const FORBIDDEN_SECRETS = Object.freeze({
-  YOKOHAMA_DIAGNOSTIC_SEEDS: "a creator's seed would be honoured beside another person (R-SEC8(b)); diagnostic seeds are the pool's",
+  YOKOHAMA_DIAGNOSTIC_SEEDS:
+    "a creator's seed would be honoured beside another person (R-SEC8(b)), and the same switch sets the layer's " +
+    "SeedPolicy::Diagnostic, under which every room's chat salt is the committed FIXED_CHAT_SALT, so anyone could " +
+    "confirm a watcher's tag by hashing a guessed address; diagnostic seeds are the pool's",
   YOKOHAMA_WEB_TEST_CLOCK: "the test clock pins the layer's reading; it is the pool's and never deploys",
+  YOKOHAMA_DEV_DOOR:
+    "the dev door's switch is the configuration's — off in wrangler.jsonc and, of the files a deploy names, on in " +
+    "wrangler.dev.jsonc alone, as the deploy guard judges them — and a live tier opens it with `npm run deploy:dev`, " +
+    "a var and never a secret",
 });
 
 /** `wrangler secret list`'s output judged: `[]` when no secret is forbidden; one sentence per forbidden name;

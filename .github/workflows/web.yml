@@ -249,7 +249,7 @@ jobs:
       # GitHub runs an unspecified shell as `bash -e {0}`, so `-e` is ON unless
       # the step turns it off: the `set +e` below is what makes the sentence
       # above true (M6.5c2, measured — without it a red `cargo` printed nothing).
-      - name: the refusing build, and that its eight identity cells really ran
+      - name: the refusing build, and that its nine identity cells really ran
         run: |
           set +e
           set -uo pipefail
@@ -260,8 +260,8 @@ jobs:
             echo "::error::the refusing build did not pass — R-6.5b2.3's only CI witness; its output is above"
             exit "$status"
           fi
-          echo "$out" | grep -q "test result: ok. 8 passed" || {
-            echo "::error::the identity:: filter did not run eight cells — R-6.5b2.3's only CI witness"
+          echo "$out" | grep -q "test result: ok. 9 passed" || {
+            echo "::error::the identity:: filter did not run nine cells — R-6.5b2.3's only CI witness"
             exit 1
           }
       # M6.5b (spec §6.3): the corpus, replayed through the module built above.

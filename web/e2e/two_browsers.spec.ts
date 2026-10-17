@@ -473,9 +473,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
         ? `; live at ${BASE_URL}: the beacon's CORS error forgiven a ${watchA.forgiven}, ` +
           `b ${watchB.forgiven}, c ${watchC.forgiven} times` +
           `; the release feed's failure forgiven a ${watchA.feedForgiven}, ` +
-          `b ${watchB.feedForgiven}, c ${watchC.feedForgiven} times` +
-          `; the detection script's Report-Only line forgiven a ${watchA.reportOnlyForgiven}, ` +
-          `b ${watchB.reportOnlyForgiven}, c ${watchC.reportOnlyForgiven} times`
+          `b ${watchB.feedForgiven}, c ${watchC.feedForgiven} times`
         : ""),
   );
   expect(moves, "the walk must not hit its own cap").toBeLessThan(CAP);

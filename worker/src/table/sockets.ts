@@ -97,10 +97,11 @@ export function withSockets<T extends TableParts>(Base: T) {
       if (status === 200) {
         // **The caps** (security S2b, finding D3; decision D-4): the caller's own count under their tag, and the
         // object's in all. A refused socket is ACCEPTED all the same, sent `end` with the sentence and closed
-        // 4429 — the shape `signal.ts` reads as `ended`; the game screen draws it, the lobby does not (`Lobby.tsx`
-        // passes no `onEnd`; recorded, AD-4). Answered unupgraded, the client's ladder would reconnect and hammer. A
-        // tag outlives hibernation, so the count does too; OPEN sockets alone are counted (`openCount`: a dangling
-        // close must not lock anyone out).
+        // 4429 — the shape `signal.ts` reads as `ended`; every screen that opens a table socket — the game screen,
+        // the dealing screen and the open table — takes the `end` frame's sentence through `usePolled`'s `onEnd`, as
+        // the lobby takes its own socket's (`house.ts`; on its strip since S2c Task 5). Answered unupgraded, the
+        // client's ladder would reconnect and hammer. A tag outlives hibernation, so the count does too; OPEN
+        // sockets alone are counted (`openCount`: a dangling close must not lock anyone out).
         const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
         const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
         this.ctx.acceptWebSocket(server, callerTag === undefined ? [id] : [id, callerTag]);

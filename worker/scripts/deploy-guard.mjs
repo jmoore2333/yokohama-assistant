@@ -493,6 +493,13 @@ function doorRules(name, value, failures) {
   }
   // Read as the shell reads a switch (`config.ts`'s `folded`): trimmed, in any case.
   const devDoor = vars.YOKOHAMA_DEV_DOOR;
+  // And typed as the shell types it (`config.ts`'s `strings`): a value that is not a string is refused at the file,
+  // at either door, where the rules below read strings alone (the S2 stack review, lens 1, Minor 4).
+  if (devDoor !== undefined && typeof devDoor !== "string") {
+    failures.push(
+      `${name}'s vars set YOKOHAMA_DEV_DOOR to ${JSON.stringify(devDoor)} — a switch is a string in quotes, "on" or "off", and the shell refuses any other type (config.ts's strings)`,
+    );
+  }
   if (door === "open" && typeof devDoor === "string" && devDoor.trim().replace(/[A-Z]/g, (c) => c.toLowerCase()) === "on") {
     failures.push(
       `${name}'s vars set YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, and the Worker refuses the pair`,

@@ -15,7 +15,9 @@
 //! verified, and the mode rule ([`admit`]) holds their callers to that shape.
 //! Which mode a deployment runs under belongs in that deployment's own record,
 //! beside the [`ENV_VAR`] its container sets. Reserved and unbuilt:
-//! `cf-access-jwt` and `neon`, each a new arm here.
+//! `neon`, a new arm here. `cf-access-jwt` was reserved and is NOT built, by the owner's ruling of 2026-10-13 (security
+//! S2c, R-1, amending R-SEC4): behind Access the tunnel validates the assertion and a private network is the one path
+//! to the port — `deploy/README.md` §1 — and the binary stays a trusting origin, as `worker` is.
 
 use std::fmt;
 use std::str::FromStr;

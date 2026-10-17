@@ -278,6 +278,20 @@ describe("the open door (M6.5c2, spec §2.1)", () => {
     const refused = await through("/api/stream", { claim: "ben", headers: UPGRADE });
     expect([refused.status, refused.webSocket], "an upgrade's header is no claim").toEqual([401, null]);
   });
+
+  // The S2 stack review (lens 1, Minor 2): once the Worker has read the claim off an upgrade's URL, the header it sets
+  // carries it, and the object's own request names no `claimed` — `forwardedCaller` reads only the header, and the
+  // URL is what an invocation record keeps. Only `claimed` is dropped: another parameter rides through. Mutant: the
+  // parameter forwarded (the object's URL ends `claimed=zqxjv9+maple`).
+  it("forwards an upgrade to its object without the claimed parameter, the claim in the header alone", async () => {
+    const res = await reaching(() => through(claimedAt("/api/stream?other=1", "zqxjv9 maple"), { headers: UPGRADE }));
+    const tab = await socket(res.result);
+    expect(res.house.length, "the house alone").toBe(1);
+    const reached = new URL(res.house[0]!.url);
+    expect([reached.pathname, reached.search], "no claimed parameter; the other one kept").toEqual(["/api/stream", "?other=1"]);
+    expect(yokohamaHeaders(res.house[0]!), "the claim, in the header").toEqual({ "x-yokohama-claimed-user": "zqxjv9 maple" });
+    tab.ws.close(1000, "done");
+  });
 });
 
 describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
@@ -338,6 +352,55 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ id: string; error: string }>;
     expect(refused.map((l) => l.id), "one init-refused line, naming the object by the digest").toEqual([ARCHIVE_PREFIX + digest]);
     expect(refused[0]!.error, "the refusal names the claim by its digest").toContain(`"${digest}"`);
+  });
+
+  // Security S2c, R-4 (S2b's re-review parked it): `claimRedacted` rewrites the quoted span that IS the claim and no
+  // other, so a refusal whose sentence quotes a VALUE that is not the claim (a configuration variable) is logged
+  // whole. Drive the archive object as the cell above does, with the module's configuration refused as
+  // `table.test.ts`'s `init-module` arm refuses it. Mutant: the first quoted span rewritten whatever it holds.
+  it("rewrites only the quoted span that IS the claim, and leaves a configuration refusal's value as it is", async () => {
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    const bad = JSON.stringify({ identity: "open", archive: "off", caller: null, lobby_chat: "maybe", chat_keep: null, chat_text: null });
+    const spy = vi.spyOn(configModule, "moduleConfig").mockReturnValue(bad);
+    try {
+      // **Claims no other cell uses**: the Archive object caches the module it built (`this.instance ??=`), so the
+      // refused configuration stays in THIS name's object for the rest of the file. `may` is a prefix of the value
+      // the sentence quotes and `maybe-x` is prefixed BY it: a prefix test in either direction rewrites the value.
+      for (const claim of ["cfg refused", "may", "maybe-x"]) {
+        const { lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
+        const digest = await callerDigest(claim);
+        const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ id: string; error: string }>;
+        expect(refused.map((l) => l.id), claim).toEqual([ARCHIVE_PREFIX + digest]);
+        expect(refused[0]!.error, `${claim}: the value is the configuration's, kept verbatim`).toBe('YOKOHAMA_WEB_LOBBY_CHAT must be on or off \u2014 got "maybe"');
+        expect(refused[0]!.error, `${claim}: and no digest stands in its place`).not.toContain(digest);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Security S2c, R-4: equality with the raw claim alone would let a refused claim the echo CUT (over 64 characters)
+  // or ESCAPED (a quote, a backslash) into the persisted line, so the span is compared as the echo wrote it, read
+  // back. Mutants: `claimRedacted` back to `sentence.includes(`"${claim}"`)`; `echoed`'s cut at `>= 64` (the
+  // 64-character row, the boundary the echo does NOT cut); the `t` entry dropped from `unescaped`'s map (the tab row).
+  // Each row names a part of the claim its spelled echo would keep, so "not spelled" can fail for every row.
+  it("logs a refused claim the echo cut or escaped by its digest too", async () => {
+    const save = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    const rows: Array<[claim: string, spelled: string]> = [
+      ["a@b@" + "x".repeat(80), "a@b@xx"],
+      ["a@b@" + "x".repeat(60), "a@b@xx"],
+      ['a@b@"quoted', "quoted"],
+      ["a@b@back\\slash", "a@b@ba"],
+      ["a@b@x\ty", "a@b@x"],
+    ];
+    for (const [claim, spelled] of rows) {
+      const { lines } = await logsDuring(() => through("/api/archive", { method: "POST", claim, headers: JSON_TYPE, body: save }));
+      const digest = await callerDigest(claim);
+      const refused = lines.filter((l) => (l as { event?: unknown }).event === "init-refused") as Array<{ error: string }>;
+      expect(refused, claim.slice(0, 12)).toHaveLength(1);
+      expect(refused[0]!.error, "the claim is named by its digest").toContain(`"${digest}"`);
+      expect(refused[0]!.error, "and not spelled").not.toContain(spelled);
+    }
   });
 
   // **An address is no caller under the open door** (security S2b, finding

@@ -33,12 +33,18 @@ export async function callerDigest(address: string): Promise<string> {
 }
 
 /** A browser save's segment, as `archive::caller_segment` writes it since security S1c: the readable half, `-`,
- *  twelve hex. Matched where `browser/` starts the key, follows a root (`test/`), or follows any character no key
- *  segment holds — a quote or a space, where R2's message spells the key inside a sentence. */
-const SEGMENT = /(^|[^A-Za-z0-9._-])browser\/[^/]*-([0-9a-f]{12})\//;
+ *  twelve hex — the readable half in `caller_segment`'s own alphabet (`[a-z0-9._-]`), so a match never runs across a
+ *  message to a later hex token (the S2 stack review, lens 1 N-1). Matched wherever `browser/` starts the key, follows a root (`test/`), or follows any character no key
+ *  segment holds — a quote or a space, where R2's message spells the key inside a sentence — and EVERY such segment
+ *  in a message, since one R2 sentence can name two keys (security S2c, the residual S2b's re-review parked). The
+ *  digest is followed by the segment's `/` or by no further hex digit — a prefix a message spells without its
+ *  slash, or a segment at the message's end (the S2 stack review, lens 1, Minor 1) — and the slash, when there is
+ *  one, is kept as it was. The `g` flag is safe here because only `replace` reads this expression (never `test` or
+ *  `exec`, which would carry `lastIndex` between calls). */
+const SEGMENT = /(^|[^A-Za-z0-9._-])browser\/[a-z0-9._-]*-([0-9a-f]{12})(\/|(?![0-9a-f]))/g;
 
 /** `key` with the segment's readable half dropped — `browser/<12 hex>/…` — so a line still names the folder and
  *  not the address it spells. A key with no such segment (a server game's; a legacy folder) is returned as it is. */
 export function redactKey(key: string): string {
-  return key.replace(SEGMENT, "$1browser/$2/");
+  return key.replace(SEGMENT, "$1browser/$2$3");
 }

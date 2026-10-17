@@ -36,9 +36,35 @@ The server reads exactly ONE identity header, and which one is your decision: `Y
 
 A person's seats are keyed by that address, so a player is who Access says they are.
 
-**The one rule this door rests on:** the tunnel must be the ONLY path to the container's port. The server
-does not verify Access's signed assertion (`Cf-Access-Jwt-Assertion`), so anything that reaches port 8080
-without passing Access can send the header and be anyone. Publish the port to nothing but the tunnel.
+**The one rule this door rests on, and how to make it true:** the tunnel must be the ONLY path to the container's
+port. The server does not verify Access's signed assertion (`Cf-Access-Jwt-Assertion`) — by the owner's ruling of
+2026-10-13 (security S2c, R-1): a verifier in the binary would add an outbound TLS dependency, a token parser on
+every request and the first C build in the musl binary to close a path the recipe below closes for nothing — so
+anything that reaches port 8080 without passing Access can send the header and be anyone. The recipe:
+1. **A Docker network only the tunnel and this server join.** Create it (`docker network create cf-internal`),
+   start `cloudflared` on it, start this server on it with NO port published (`YOKOHAMA_WEB_NETWORK=cf-internal` and
+   `YOKOHAMA_WEB_PUBLISH=` empty for `deploy/update.sh`, or `--network cf-internal` and no `-p` at all), and put every
+   other container — a terminal, a registry, anything — on a
+   different network. cloudflared may join several networks; this server joins one.
+2. **cloudflared validates the assertion itself.** In its configuration, each ingress rule for an Access-covered
+   hostname carries `originRequest.access` with `required: true`, your `teamName` and the application's `audTag`
+   (`deploy/cloudflared-config.yml` is the owner's). cloudflared then refuses, in its own code, any request that
+   reaches it without a valid token for that application.
+3. **A hardened container:** `--cap-drop ALL --security-opt no-new-privileges:true --memory 512m` on the `docker run`
+   (§4's flags, with no `-p` under step 1; `deploy/update.sh` passes the same three; the owner's NAS takes them as
+   `CapDrop`, `SecurityOpt` and `Memory` from `deploy/RUNBOOK.md` §3's create body, from S2's window on).
+4. **Read it back:** from a shell in any OTHER container on the host, first a CONTROL that proves the tool works —
+   `wget -qO- --timeout=3 http://127.0.0.1:<that container's own port>/` must answer — then `wget -qO-
+   --timeout=3 http://yokohama-web:8080/api/health` must FAIL with a resolution, connection or timeout error ("bad
+   address", "refused" or "timed out" from busybox `wget`; any HTTP answer, "not found" included, fails the probe;
+   GNU `wget -q` prints nothing, and its exit status 4, a network failure, is the pass — exit 0, exit 8 for an HTTP
+   error answer, or any other status is the finding), and so must the same address by the server's IP on
+   `cf-internal` (`docker inspect`; 172.21.0.4 on the owner's NAS at the recorded recreations through `RUNBOOK.md`
+   §3.18, where §3.19–§3.21 record none; read it again after a network change) — a name that does not resolve proves
+   nothing about a route.
+   List the network's members (`docker network inspect cf-internal`): the tunnel and this server, nothing else. As
+   yourself through the hostname, `/api/me` names you. Repeat after any change to the host. What this does not
+   close is §4's second bullet: on a shared host, a process that can route to the container's address.
 
 The third mode, `worker`, reads `X-Yokohama-User`. It is the header the Cloudflare host's own Worker sets
 for its objects. An identity-aware proxy of your own can play that part. It must:
@@ -111,7 +137,7 @@ the default features, so its image includes the open door.
 From the repository root:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.2-s2a .
+docker build --platform linux/amd64 -f deploy/Dockerfile -t yokohama-web:0.6.3-s2 .
 ```
 
 It compiles the server and the browser module on the pinned Rust toolchain, then builds the client. The
@@ -135,7 +161,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
   --build-arg YOKOHAMA_PROJECT_URL=https://example.org/yokohama \
   --build-arg YOKOHAMA_SITE_BLURB="A few words under the title." \
   --build-arg YOKOHAMA_SITE_NOTICE="Not affiliated with Asmodee" \
-  -t yokohama-web:0.6.2-s2a .
+  -t yokohama-web:0.6.3-s2 .
 ```
 
 | Argument | Maximum | What it draws |
@@ -173,13 +199,16 @@ docker run -d --name yokohama-web \
   -v yokohama-web-data:/data \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
   --restart unless-stopped \
-  yokohama-web:0.6.2-s2a
+  --cap-drop ALL --security-opt no-new-privileges:true --memory 512m \
+  yokohama-web:0.6.3-s2
 ```
 
 - **`/data` is the one thing that must outlive the container.** Every applied move is written there as the
   game's record, and a game is rebuilt from it. Use a named volume: the server runs as uid 10001, and a
   named volume takes the image's ownership on first use, where a host bind mount arrives owned by root.
-- **`127.0.0.1:8080`** keeps the port on this machine, for a tunnel or a proxy on the same host. On a
+- **`127.0.0.1:8080`** keeps the port on this machine, for a tunnel or a proxy on the same host. With
+  `cf-access`, §1's recipe forbids a published port — a private network and `--network cf-internal` in place of
+  `-p` — and this example is the case without a tunnel network, cloudflared running on the host, say. On a
   machine others share, loopback is a path too: under `cf-access` any process there can send the header
   and be anyone. A Docker network the tunnel shares, with nothing published, keeps the port off the
   host's published ports and off loopback (§6), but on a Linux host any process that can route to the
@@ -209,9 +238,10 @@ no TTL is set. The two TTLs are the Cloudflare host's names with its meanings (`
 at start, then sets that header set on every answer: the content security policy, `X-Frame-Options:
 DENY`, `X-Content-Type-Options: nosniff`, the referrer policy, a `Permissions-Policy` and
 `Cross-Origin-Opener-Policy`, with `Cache-Control: no-store` beside them on every answer under `/api`.
-In 0.6.2 the policy is sent as `Content-Security-Policy-Report-Only`: a browser logs a violation and
-blocks nothing, and a later release enforces it. A client build without the file (older than 0.6.2,
-or none) serves no header set, and the server says so once at start, on stderr. A malformed file
+Since 0.6.3 the policy is sent as `Content-Security-Policy`, enforced, with a fixed nonce for the
+script Cloudflare injects (`web/scripts/headers.mjs`); 0.6.2 was built with it Report-Only and never
+deployed. A client build without the file (older than 0.6.2, or none) serves no header set, and the
+server says so once at start, on stderr. A malformed file
 stops it at start, naming the file. The smoke (§5) reads `X-Frame-Options` and the policy on `/`, and
 `no-store` and `nosniff` on `/api/health`.
 
@@ -222,7 +252,7 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.2-s2a      # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port>, default 18080
 ```
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on
@@ -241,7 +271,8 @@ link, and checks the image it builds with one for the link alone (`.github/workf
 
 - **Cloudflare Tunnel with Access** (`cf-access`): route the hostname to the container in cloudflared's
   ingress — `http://localhost:8080` when cloudflared runs on the same host, or the container's name on a
-  Docker network the two share, with no port published at all, as the owner's NAS does — and add the
+  Docker network the two share, with no port published at all, as the owner's NAS does (§1's recipe; the
+  `http://localhost:8080` form publishes the port that recipe forbids) — and add the
   hostname to a self-hosted Access application. `RUNBOOK.md` §3 and `cloudflared-config.yml` are the
   owner's working example, the DNS step included (§3.1).
 - **Any other proxy:** the server serves plain HTTP, including server-sent events on
@@ -423,9 +454,13 @@ read of Docker or git. Read it once before the first real run, and again after c
 ```bash
 docker image ls yokohama-web                     # every earlier tag is still here
 docker stop yokohama-web && docker rm yokohama-web
-docker run -d --name yokohama-web -p 127.0.0.1:8080:8080 -v yokohama-web-data:/data \
-  --env-file ~/yokohama/run.env --restart unless-stopped yokohama-web:<previous tag>
+docker run -d --name yokohama-web --network cf-internal -v yokohama-web-data:/data \
+  --env-file ~/yokohama/run.env --restart unless-stopped \
+  --cap-drop ALL --security-opt no-new-privileges:true --memory 512m yokohama-web:<previous tag>
 ```
+
+That is §1's form, for a `cf-access` host: no port published. A host with no tunnel network, §4's example and the
+script's default, runs it with `-p 127.0.0.1:8080:8080` in place of `--network cf-internal`.
 
 The script names the previous image when it swaps. [`RUNBOOK.md`](RUNBOOK.md) §5 lists what each release changed on
 the volume that an older binary cannot read.
