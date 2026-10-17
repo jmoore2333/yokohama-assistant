@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { CLOSE_TOO_MANY, closeReason, TOO_MANY_OWN_LOBBY, TOO_MANY_OWN_TABLE, TOO_MANY_TABLE } from "../src/frames";
+import { CLOSE_TOO_MANY, closeReason, TOO_MANY_LOBBY, TOO_MANY_OWN_LOBBY, TOO_MANY_OWN_TABLE, TOO_MANY_TABLE } from "../src/frames";
 import { type House, LOBBY_PER_CALLER, LOBBY_TAG, LOBBY_TOTAL } from "../src/house";
 import { callerTag } from "../src/redact";
 import { HOUSE_NAME } from "../src/slot";
@@ -246,6 +246,44 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     const again = await house.fetch("https://yokohama.test/api/chat", { method: "POST", headers: { "X-Yokohama-User": "lob3@t.test", "content-type": "application/json" }, body: '{"text":"again"}' });
     expect(again.status, await again.text()).toBe(201);
     expect(await heard, "admitted past 1,024 dangling refusals").toContain('"event":"house"');
+    // **What the total REFUSES** (the S2 stack review, lens 2, Important 2: the dangling block above pins what the
+    // total does not count, and nothing filled it with OPEN sockets — W4, the total's count read as 0, kept all 250
+    // pool tests green): 1,024 OPEN lobby sockets across 128 callers at eight each — the three callers above topped
+    // up to eight, 125 more beside them — and the 1,025th, a fresh caller's first, is refused with the LOBBY's own
+    // sentence and the 4429 close; once one OPEN socket closes, the same caller is admitted.
+    for (const who of ["lob2@t.test", "lob3@t.test"]) {
+      for (let i = 1; i < LOBBY_PER_CALLER; i += 1) kept.push(await lobby(who));
+    }
+    for (let c = 0; c < LOBBY_TOTAL / LOBBY_PER_CALLER - 3; c += 1) {
+      for (let i = 0; i < LOBBY_PER_CALLER; i += 1) kept.push(await lobby(`fill${c}@t.test`));
+    }
+    expect(await heldOpen(house), "the lobby full of OPEN sockets, 128 callers at eight").toBe(LOBBY_TOTAL);
+    const freed = kept[kept.length - 1]!.webSocket!; // the last fill caller's eighth, OPEN
+    const full = await lobby("late@t.test");
+    expect(full.status, "accepted, so the browser reads the frame").toBe(101);
+    kept.push(full);
+    expect(await heldOpen(house, await callerTag("late@t.test")), "the 1,025th refused: CLOSING under its tag, never OPEN").toBe(0);
+    const fullWs = full.webSocket!;
+    fullWs.accept();
+    const refused = firstFrame(fullWs);
+    const shut = new Promise<{ code: number; reason: string }>((resolve) => fullWs.addEventListener("close", (e) => resolve({ code: e.code, reason: e.reason }), { once: true }));
+    expect(await refused, "the 1,025th: the lobby's own sentence").toBe(endWith(TOO_MANY_LOBBY));
+    expect(await shut).toEqual({ code: CLOSE_TOO_MANY, reason: closeReason(TOO_MANY_LOBBY) });
+    expect(await heldOpen(house), "the refused socket is not counted").toBe(LOBBY_TOTAL);
+    freed.accept();
+    freed.close(1000);
+    for (let i = 0; i < 20 && (await heldOpen(house)) >= LOBBY_TOTAL; i += 1) await new Promise((r) => setTimeout(r, 50));
+    expect(await heldOpen(house), "one OPEN socket closed").toBe(LOBBY_TOTAL - 1);
+    const admitted = await lobby("late@t.test");
+    expect(admitted.status).toBe(101);
+    kept.push(admitted);
+    const admittedWs = admitted.webSocket!;
+    admittedWs.accept();
+    const listened = firstFrame(admittedWs);
+    const posted2 = await house.fetch("https://yokohama.test/api/chat", { method: "POST", headers: { "X-Yokohama-User": "late@t.test", "content-type": "application/json" }, body: '{"text":"in"}' });
+    expect(posted2.status, await posted2.text()).toBe(201);
+    expect(await listened, "admitted once a socket has gone: the lobby's frame, not an end").toContain('"event":"house"');
+    expect(await heldOpen(house), "full again").toBe(LOBBY_TOTAL);
     expect([LOBBY_PER_CALLER, LOBBY_TOTAL], "the lobby's literals (node cannot import house.ts: it loads cloudflare:workers)").toEqual([8, 1024]);
   }, 15_000);
 });
