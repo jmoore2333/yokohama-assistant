@@ -263,6 +263,11 @@ export function usePolled<T>(
     // otherwise land after the screen is gone and set state on an unmounted
     // tree.
     let stopped = false;
+    const finish = (e: End) => {
+      stopped = true;
+      setLink("live");
+      ended.current?.(e);
+    };
     let controller: AbortController | null = null;
     /** Whether THIS run of the effect has connected at least once (R-N3). A
      *  signal that has lost nothing is "connecting"; only a connection that was
@@ -320,7 +325,7 @@ export function usePolled<T>(
           // frames nothing can act on, and an expired session is fixed by
           // walking through `/enter` rather than by asking again.
           controller?.abort();
-          ended.current?.({
+          finish({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,
           });
@@ -367,7 +372,7 @@ export function usePolled<T>(
             reason: "deleted" | "gone";
             sentence?: string;
           };
-          ended.current?.({ reason, sentence: sentence ?? endSentence(reason) });
+          finish({ reason, sentence: sentence ?? endSentence(reason) });
           return;
         }
         if (f.event !== "signal" && f.event !== "house") return;
@@ -479,10 +484,10 @@ export function usePolled<T>(
         //
         // — and a 429, the stream cap's refusal at admission
         // (security S2c, D3): an answer about this caller's open streams, which asking again cannot change; the NAS answers it
-        // on `/stream` and `/api/stream`, the Worker's lobby ends on a frame instead (`End`), and both reach the consumer's
-        // `onEnd` as `refused`.
+        // on `/stream` and `/api/stream`, the Worker's sockets — a table's and the lobby's — end on an `end` frame instead
+        // (reason `gone`, carrying the sentence; `End`), and both reach the consumer's `onEnd` with the server's sentence.
         if (e instanceof ApiError && (e.status === 404 || e.status === 403 || e.status === 429 || isSessionExpired(e))) {
-          ended.current?.({
+          finish({
             reason: e.status === 404 ? "gone" : "refused",
             sentence: e.message,
           });

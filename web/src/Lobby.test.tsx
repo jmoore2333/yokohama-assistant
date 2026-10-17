@@ -434,6 +434,34 @@ describe("the lobby", () => {
     }
   });
 
+  it("draws the Worker's ended house socket on its strip — an end frame, reason gone, then the 4429 close — and opens nothing more", async () => {
+    // **AD-4 on the Worker's half** (security S2c, D3; the Task 5 review's I-2): the Worker's cap accepts the socket,
+    // sends `end` with `{ reason: "gone", sentence }` and closes 4429 (`worker/src/frames.ts`). The frame keeps its
+    // own reason, so a lobby that drew only a `refused` end would leave the Worker's cap unsaid.
+    setSignalKind("ws");
+    FakeSocket.made = [];
+    vi.stubGlobal("WebSocket", FakeSocket);
+    vi.useFakeTimers();
+    try {
+      const sentence = "you have too many connections open to the lobby — close another tab and try again";
+      show();
+      await until(() => FakeSocket.made.length === 1, "the house socket was opened");
+      act(() => FakeSocket.made[0]!.accept());
+      act(() => FakeSocket.made[0]!.frame("end", { reason: "gone", sentence }));
+      act(() => FakeSocket.made[0]!.shut(4429, sentence));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+      });
+      expect(FakeSocket.made, "one socket, and none after the end").toHaveLength(1);
+      expect(screen.getByText(sentence)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+      setSignalKind("sse");
+      vi.unstubAllGlobals();
+    }
+  });
+
   // **The repository link** (R-6.5c2.40): a quiet link among the actions where
   // the build names one, in a new tab, and absent where it does not.
   it("draws the project link among the actions only where the build names one", async () => {

@@ -269,6 +269,54 @@ describe("the signal, over the stream", () => {
     unmount();
   });
 
+  it("opens nothing after an end, even when the tab is shown again", async () => {
+    // **An end ENDS the run** (security S2c, the Task 5 review's I-1): the lobby is the one consumer that stays on
+    // screen after an end, and a tab hidden and shown again — what the cap's sentence asks the player to do with
+    // another tab — must not open the stream behind the ended sentence.
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    const stub = stubApi(() => ({ status: 429, body: { error: sentence } }));
+    const { unmount } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    unmount();
+  });
+
+  it("says nothing beside an ended signal", async () => {
+    // **The link describes a signal that is RUNNING** (the hook's own rule; the Task 5 review's I-1): a tab shown
+    // again says "refreshing…", and when that reopen is refused the word is let go with the run, rather than
+    // standing beside the ended sentence for ever.
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    let refuse = false;
+    const { stream, stub } = streamed(undefined, (call) =>
+      refuse && call.path.endsWith("/stream") ? { status: 429, body: { error: sentence } } : undefined,
+    );
+    const { result } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await until(() => stream.opens() > 0, "the stream was opened");
+    await settle();
+    expect(result.current).toBe("live");
+    refuse = true;
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await until(() => ends.length > 0, "the reopen was refused");
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    expect(stub.matching("GET", "/stream")).toHaveLength(2);
+    expect(result.current).toBe("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current, "no word stands beside the ended sentence").toBe("live");
+  });
+
   it("ends on the EDGE's expired session, with the sentence the door links from", async () => {
     // **Important 2 of the whole-branch review, and the false sentence under
     // it.** `readStream` classifies Access's 401 and throws `ACCESS_CHALLENGE`
