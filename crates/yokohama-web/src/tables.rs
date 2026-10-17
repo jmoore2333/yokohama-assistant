@@ -5934,6 +5934,28 @@ mod tests {
         assert!(matches!(&reply.author, crate::chat::AuthorView::Watcher { tag: Some(_), you: true, .. }), "{reply:?}");
     }
 
+    /// **A second append KEEPS the salt** (decision D-5's "and a second keeps it", pinned under entropy — Task 4's
+    /// probe): a message a reader already holds keeps its tag when the next message lands; re-salting on every
+    /// append would change every poster's tag at each new message in production, which `Diagnostic`'s constant
+    /// hides.
+    #[test]
+    fn a_held_messages_tag_survives_the_next_append_under_entropy() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::SoloOnly);
+        let green = who("green@t.test");
+        let post = |user: &str, name: &str| {
+            games.house_append(Author::Watcher { user: user.into(), name: Some(name.into()) }, "words").expect("a post")
+        };
+        post("green@t.test", "Green");
+        let (first, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        let salt = serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt;
+        post("blue@t.test", "Blue");
+        let (second, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        assert_eq!(serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt, salt, "the second append keeps the salt");
+        assert_eq!(second[0].author, first[0].author, "a message a reader holds keeps its tag across the next append");
+    }
+
     /// **A delete removes the chat document and forgets the count.**
     ///
     /// The document goes with the record and the table inside the store's own

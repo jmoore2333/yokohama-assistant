@@ -10046,6 +10046,46 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "the WRITE side refuses the same name: {body}");
     }
 
+    /// **A chat POST's reply carries the poster's tag as the next page draws it** (security S2c, finding D8; Task 4's
+    /// probe): the replies are two of `view_for`'s three call sites and hold a message and no document, so the salt
+    /// reaches them only through the `*_salted` writer. At the house and at a table, a watcher's reply and the page
+    /// that follows draw the same author byte for byte, and its `tag` is four hex. M9a's catcher: a reply answering
+    /// `view_for(user, None)`, or `chat_append_salted` returning `None`, left the layer's reply cell green.
+    #[tokio::test]
+    async fn a_chat_reply_carries_the_authors_tag_as_the_next_page_draws_it() {
+        let four_hex = |tag: &serde_json::Value| {
+            tag.as_str().is_some_and(|t| t.len() == chat::TAG_HEX && t.bytes().all(|b| b.is_ascii_hexdigit()))
+        };
+        let state = Arc::new(AppState::in_memory());
+
+        // The house.
+        let (status, m) =
+            post_as(&state, "grey@wire.test", "/api/chat", serde_json::json!({ "text": "evening", "name": "Grey" })).await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        let (status, page) = get_as(&state, "grey@wire.test", "/api/chat").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let last = page["messages"].as_array().and_then(|ms| ms.last()).expect("the house's newest message");
+        assert_eq!(last["author"].to_string(), m["author"].to_string(), "the house page draws the reply's author, tag included");
+        assert!(four_hex(&m["author"]["tag"]), "the house reply carries the poster's tag: {m}");
+
+        // A table — unlocked, so a watcher is admitted without a knock.
+        start_as(&state, "tagged", ENDED_SEED, &["red@wire.test", "blue@wire.test"]).await;
+        let (status, m) = post_as(
+            &state,
+            "grey@wire.test",
+            "/api/games/tagged/chat",
+            serde_json::json!({ "text": "from the rail", "name": "Grey" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{m}");
+        assert_eq!(m["author"]["kind"], "watcher", "{m}");
+        let (status, page) = get_as(&state, "grey@wire.test", "/api/games/tagged/chat").await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let last = page["messages"].as_array().and_then(|ms| ms.last()).expect("the table's newest message");
+        assert_eq!(last["author"].to_string(), m["author"].to_string(), "the table page draws the reply's author, tag included");
+        assert!(four_hex(&m["author"]["tag"]), "the table reply carries the poster's tag: {m}");
+    }
+
     /// **`Events.chat` on all three arms, and the stream after a chat bump
     /// carries the new count and an unmoved `events`** (spec §4, mutation 5).
     ///

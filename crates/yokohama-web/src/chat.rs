@@ -1070,6 +1070,7 @@ mod tests {
     fn a_tag_is_four_hex_of_the_salted_key_and_differs_by_salt_and_by_key() {
         let t = tag_of("salt", "red@wire.test");
         assert_eq!(t.len(), TAG_HEX);
+        assert_eq!(t, "c54e", "the hand-computed reference (`printf 'salt\\nred@wire.test' | sha256sum | cut -c1-4`): the newline\n        is part of the derivation — dropping it passed every unit cell (Task 4's probe P-sep)");
         assert!(t.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "{t}");
         assert_eq!(t, tag_of("salt", "red@wire.test"), "deterministic");
         assert_ne!(t, tag_of("other", "red@wire.test"), "a different room, a different tag");
