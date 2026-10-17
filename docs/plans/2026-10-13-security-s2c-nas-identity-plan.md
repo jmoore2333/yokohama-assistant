@@ -3583,8 +3583,11 @@ red.
   other answer is the edge's or the connector's (both may buffer a body before the origin sees it), recorded as such,
   with the cell and the plan review's real-TCP probe (10.0 s, lens 1) the deadline's catchers; a name with `\u{200B}`
   refused 400 by the rule's sentence; a watcher's post read back with its four-hex tag by a second identity;
-  `docker stats` for the container's memory under the probes (the 512 MiB bound's margin recorded); then `done` once
-  the update reading's checks print.
+  `docker stats` for the container's memory under the probes AND across ONE capped 4,096-event replay — an archive
+  upload of a record at the event cap (the layer's `OPTIONS_CAP`/event cap fixture, or the spread fixture
+  `crates/yokohama-web/tests/fixtures/`'s, through `POST /api/archive` as the owner) — the 512 MiB bound's margin
+  recorded from both (AD-19; `deploy/RUNBOOK.md` §3's sentence names this reading — the wave's note); then `done`
+  once the update reading's checks print.
   (b) **The Worker**, on a clean or a fallback canary: the update reading pinned (`worker https://yokohama.moore.nyc
   web/scripts/pinned/worker-s2 --go-wait 90`); `npm run deploy:dev` (the dev door ON for the live tiers — S2b's
   bracket; the secrets guard's sentence); health 0.6.3; **`touch …/worker-s2/go` right after the health read, `done`
