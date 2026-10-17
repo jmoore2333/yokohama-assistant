@@ -1498,8 +1498,11 @@ compatibility cell's `read_table` line red (the `p\u{200B}re` premise) — the T
   scope); `grep -n view_for crates/yokohama-web/src` lists exactly those three,
   `web/src/types.ts:1090-1093` (`ChatAuthor`), `web/src/wire/contract.ts:740` (the watcher key list, Step 6),
   `web/src/wire/*.json` (regenerated once); `worker/scripts/replay/exemptions.mjs` (a named exemption beside
-  `normalizeHouseChat`, Step 6b — the Task 4 review's I-1), `worker/scripts/live-replay.test.mjs` (four cells beside
-  `describe("normalizeHouseChat")`), `worker/RUNBOOK.md` §7's replay notes (one line).
+  `normalizeHouseChat`, Step 6b — the Task 4 review's I-1), `worker/scripts/replay/judge.mjs` (the `HOUSE_CHAT` branch
+  calls it after `normalizeHouseChat` and folds in its payload, spends and differences), `worker/scripts/live-replay.mjs`
+  (the run records its own house post's reply tag beside `houseShift`; the header's "three named exemptions" reads
+  four — Task 4's round), `worker/scripts/live-replay.test.mjs` (five cells beside `describe("normalizeHouseChat")`),
+  `worker/RUNBOOK.md` §7's replay notes (one line).
 - Test: cells in `chat.rs`, `games.rs` and `tables.rs`; the corpus check; the pool; the four replay cells.
 
 **Interfaces:**
@@ -1870,16 +1873,19 @@ impl Games {
   page that disagree, stays a mismatch the judge reports. Four cells in `worker/scripts/live-replay.test.mjs` beside
   `describe("normalizeHouseChat")`, each asserting through the judge as the file's cells do: (1) a production tag
   (four hex, not the committed one, the same on the reply and the page) is spent and the row holds; (2) an ABSENT
-  tag is a mismatch; (3) a `null` tag is a mismatch; (4) a reply and a page whose tags DISAGREE are a mismatch. And
+  tag is a mismatch; (3) a `null` tag is a mismatch; (4) a reply and a page whose tags DISAGREE are a mismatch; (5) a MALFORMED tag on
+  the reply and the page — five hex digits (`81960`) and uppercase (`819A`) — is a mismatch at both rows with nothing
+  spent (Task 4's round-1 probe: a rule loosened to any run of hex, or to either case, passed the first four). And
   one line in `worker/RUNBOOK.md` §7's replay notes: since 0.6.3 the two house rows' watcher tag is a production
   value the judge takes back to the committed one, counted in `spent`; a dropped, null or malformed tag fails the
-  row. `cd worker && npm run test:scripts` green with the four.
+  row. `cd worker && npm run test:scripts` green with the five. The agreement check (b) holds for every valid page tag, the
+  committed one included, so a run whose reply LOST its tag fails at both rows — by design (Task 4's round).
 
 - [ ] **Step 7: The suites, then commit** (the corpus in the same commit as the code that moved it, as every
   regeneration is).
 
 ```bash
-git add crates/yokohama-web/src/chat.rs crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/api.rs web/src/types.ts web/src/wire worker/scripts/replay/exemptions.mjs worker/scripts/live-replay.test.mjs worker/RUNBOOK.md
+git add crates/yokohama-web/src/chat.rs crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/api.rs web/src/types.ts web/src/wire worker/scripts/replay/exemptions.mjs worker/scripts/replay/judge.mjs worker/scripts/live-replay.mjs worker/scripts/live-replay.test.mjs worker/RUNBOOK.md
 git commit -m "web: watcher and house authors carry a per-room tag — four hex of SHA-256 over a document salt and the key, the salt given on first append, fixed under the diagnostic seed policy; the corpus regenerated once (security S2c, D8)"
 ```
 
@@ -1891,7 +1897,7 @@ the salt → the tables cell red (every tag `None`) and the corpus diff empty; M
 M9b every append re-salting → the held-message cell red at "the second append keeps the salt" (green under
 `Diagnostic`, whose salt is the constant; Task 4's probe); M9c the replay's exemption spending on an absent or `null`
 tag → the replay cells (2) and (3) red; M9d the exemption ignoring the reply/page agreement → cell (4) red (the Task 4
-review's I-1); M10 `view_for` tags seat authors (a `tag` added to
+review's I-1); M9e the hex rule loosened to any run of hex, or to either case → cell (5) red (Task 4's round-1 probe); M10 `view_for` tags seat authors (a `tag` added to
 `AuthorView::Seat`) → a compile error at the stored-author cell's two `AuthorView::Seat { seat: 0, name: …, you: true }`
 literals in `tables.rs`, NOT at the view cell's `matches!`, whose `..` accepts the field — structurally impossible by
 those literals, which the reviewer records (Task 4's probe); M11 `chat_salt` returns the constant
