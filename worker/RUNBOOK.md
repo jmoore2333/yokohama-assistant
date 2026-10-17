@@ -494,9 +494,9 @@ corrected.
 
 ```sh
 # The browser User-Agent every curl at either host carries (the smoke's own; §7's Bot Fight Mode bullet says why).
-# This is the ONE definition: §4, §5 and §7 use the variable as set here. The `cd` is inside the substitution, so the
-# shell stays at the repository root.
-BROWSER_UA=$(cd worker && node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
+# This is the ONE definition: §4, §5 and §7 use the variable as set here. It works from any directory (the `cd` is
+# inside the substitution, to the repository's own worker/), and leaves the shell where it was.
+BROWSER_UA=$(cd "$(git rev-parse --show-toplevel)/worker" && node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
 B=https://yokohama.moore.nyc
 curl -s -A "$BROWSER_UA" "$B/api/admin/tables" | jq                                              # the listing
 curl -s -A "$BROWSER_UA" -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire"        # expire: 204
@@ -875,8 +875,8 @@ whatever the one before it did, and the closing deploy runs and shuts the dev do
 Each comment stands on a line of its own: an interactive zsh reads `#` as a comment only with
 `interactivecomments` set, which is off by default, and there a trailing `#` is a parse error that runs
 nothing, while a comment line prints `command not found: #` and the next line runs (measured with stub
-commands). The burst below stays outside this block, since its first line keeps the shell in `worker/` to
-set a variable:
+commands). The burst below stays outside this block: it reads `$BROWSER_UA`, which §3's operator
+playbook sets, and spends the owner's write budget (the bullet says when to run it):
 
 ```sh
 # before: the dev door on

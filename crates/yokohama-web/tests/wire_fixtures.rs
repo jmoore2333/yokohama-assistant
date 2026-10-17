@@ -2997,7 +2997,7 @@ fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
 ///
 /// Not empty: `identity_cases` and `why` were on the corpus when this pin was
 /// written (M6.5c2 cycle D), `why_withheld` joined with the explain surface at
-/// the requester's visibility (the security core PR, A1/B1) and `id_cases` with
+/// the requester's visibility (security S1a, Task 1; A1/B1) and `id_cases` with
 /// the hash router's id grammar (S2a, Task 5); none of the four names a person.
 const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
     ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
