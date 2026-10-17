@@ -6150,6 +6150,83 @@ mod tests {
         drop(held);
     }
 
+    /// **A body that PANICS frees its slot, and the counts stay usable** (the S2 stack review, lens 2, Important 1's
+    /// second cell; the lens's probe, transcribed): an [`Admitted`] stream whose third poll panics, served by
+    /// `axum::serve` and read over a real socket. The panic unwinds hyper's connection task, tokio drops the task's
+    /// future, and with it the body and the slot — so the room reads 0 again, and a later `admit` and `open`, each
+    /// of which takes the streams lock with an `expect`, prove that lock was not left poisoned. Mutant: a frame
+    /// counter that holds the streams lock across the inner poll — the panic poisons the lock, and every admission
+    /// after it panics; no other cell polls a panicking body.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_stream_body_frees_its_slot_over_a_real_socket() {
+        use std::io::{Read, Write};
+
+        /// One frame, a wake, then a panic on the third poll.
+        struct Panicky {
+            polls: u32,
+        }
+        impl tokio_stream::Stream for Panicky {
+            type Item = Result<axum::response::sse::Event, std::convert::Infallible>;
+            fn poll_next(
+                mut self: std::pin::Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Self::Item>> {
+                self.polls += 1;
+                match self.polls {
+                    1 => std::task::Poll::Ready(Some(Ok(axum::response::sse::Event::default().data("one")))),
+                    2 => {
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    }
+                    _ => panic!("a panicking frame (this cell's own, on purpose)"),
+                }
+            }
+        }
+
+        let counts = Arc::new(streams::Streams::default());
+        let room = streams::Room::Table("t".to_string());
+        let red = identity::User::parse("red").expect("a key");
+        let (served, served_room, served_red) = (Arc::clone(&counts), room.clone(), red.clone());
+        let router = Router::new().route(
+            "/p",
+            axum::routing::get(move || {
+                let (counts, room, red) = (Arc::clone(&served), served_room.clone(), served_red.clone());
+                async move {
+                    let slot = counts.admit(room, &red).expect("the first stream is admitted");
+                    axum::response::sse::Sse::new(Admitted { inner: Panicky { polls: 0 }, _slot: slot })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move { axum::serve(listener, router).await.expect("the server serves") });
+        let socket = tokio::task::spawn_blocking(move || {
+            let mut socket = std::net::TcpStream::connect(addr).expect("the server accepts");
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(5))).expect("a read bound");
+            socket.write_all(b"GET /p HTTP/1.1\r\nHost: x\r\n\r\n").expect("the request writes");
+            let mut seen = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while !String::from_utf8_lossy(&seen).contains("data: one") {
+                let n = socket.read(&mut chunk).expect("the first frame reads");
+                assert!(n > 0, "closed before the first frame: {:?}", String::from_utf8_lossy(&seen));
+                seen.extend_from_slice(&chunk[..n]);
+            }
+            socket
+        })
+        .await
+        .expect("the reader thread");
+        // The socket stays OPEN: what frees the slot is the panic, never the client's close.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while counts.open(&room) != 0 {
+            assert!(std::time::Instant::now() < deadline, "the panicking body's slot was not freed within 5 s");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let again = counts.admit(room.clone(), &red).expect("the counts admit after the panic");
+        assert_eq!(counts.open(&room), 1, "the lock reads, and counts the new slot");
+        drop(again);
+        drop(socket);
+    }
+
     /// The corpus-seed 2P game PLAYED OUT by both seats as bots, as a record.
     ///
     /// [`a_finished_two_person_game`]'s mechanism, lifted so several tables in
