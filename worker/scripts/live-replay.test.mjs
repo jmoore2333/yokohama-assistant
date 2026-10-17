@@ -266,6 +266,17 @@ describe("houseWatcherTag", () => {
       "house_chat messages.0.author.tag",
     ]);
   });
+
+  // A tag is `TAG_HEX` LOWERCASE hex and nothing else: a rule loosened to any
+  // run of hex, or to either case, passed the four cells above (M9e).
+  it("refuses a MALFORMED tag as a mismatch at both rows, and spends nothing on it: five hex, and four with an uppercase digit", async () => {
+    for (const bad of ["81960", "819A"]) {
+      const { result } = await run(hostWith(bad, bad));
+      expect(result.holds, bad).toBe(false);
+      expect(where(result), bad).toEqual(["house_chat_post author.tag", "house_chat messages.0.author.tag"]);
+      expect(tagSpends(result), bad).toEqual([]);
+    }
+  });
 });
 
 // M6.5c2 cycle D (R-D4): the walk's house post is deleted by the run that made
