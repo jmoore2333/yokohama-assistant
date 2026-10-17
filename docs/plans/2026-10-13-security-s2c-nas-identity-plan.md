@@ -2958,6 +2958,7 @@ comparison made against the RAW claim (the plan's first draft) → the cut-or-es
   terminal has its own network (the Task 8 review's I-1); it is written in the past tense: "Until S2c, `cloudflared-nas`
   joined both `cf-edge` and `cf-internal`, and every service it served sat on `cf-internal`; step 1 above is the rule
   since."
+  **[Overruled at the stack review, 2026-10-17 — lens 4's I-1: the past tense here describes a state no window has produced, which the owner's rule forbids however deliberate the choice; the deploy documents were rewritten as the RULE and the RECIPE, true before and after the window (the §"Review record"'s stack-review entry).]**
 
 ```yaml
   # Security S2c (finding B10's host half; the owner's R-1, 2026-10-13): each rule below carries
@@ -3599,7 +3600,7 @@ red.
   the fallback, exactly the recorded line, counted as the finding); **S2a's readings on this host:** the header
   reads above; B9's Worker half on a table answer (`no-store`, `nosniff`); D14's `#/t/..`; B4's framed page (with (a)'s Access
   caveat); D13's SW
-  navigation; **S2b's live acceptance** (spec §5.3; X2): the 429 burst at the 121st of 140 (`worker/RUNBOOK.md` §7's
+  navigation; **S2b's live acceptance** (spec §5.3; X2): the 429s once 120 writes sit inside one 10-second window — the PARALLEL burst of 300, since a sequential loop runs under the limit's rate (the stack review's lens 4, I-5; `worker/RUNBOOK.md` §7's
   recipe, AD-7), the socket cap (nine sockets as one identity, the ninth's `end` and 4429), the operator playbook's
   JSON type (a bodyless POST to expire → 403; the JSON POST → 204; a foreign-Origin POST → 403), D23's redaction in
   the Workers logs (no address, no query string; the `init-refused` line a digest), the `limiter-failed` count (zero

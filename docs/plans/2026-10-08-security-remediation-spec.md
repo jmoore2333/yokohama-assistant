@@ -1297,3 +1297,9 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
 13. **§9.6's gap** — S2a's run's-rulings paragraph, which the S2a plan said was the close's (its Task 9 Step 6),
     never appended — is filled by this close from the S2a plan's §"Review record" (the run and the after review),
     as correction 9 fills §9.5's (Task 10 Step 5; the plan review's AD-12, 2026-10-15).
+
+#### Errata (2026-10-17, S2's stack review — lens 4 M-5 and M-9; a dated note, since the sections above are verbatim records)
+
+- The heading "Spec corrections (to be recorded as §9.8 by Task 10, dated 2026-10-13 and 2026-10-15)" inside §9.8 is the plan's text as written before the recording; the recording is §9.8 itself (S2c's close, 2026-10-17).
+- §9.8's D-13 says `BROWSER_UA` "is already defined once, at §7's burst bullet" of `worker/RUNBOOK.md`; S2c's Task 7 moved the one definition to §3 and §7 reads it from there.
+- §4's S1b sentence "`ARCHIVE_BODY_LIMIT` (512 KiB) eight times the longest one pretty-printed (54 KB)" is about ten times (512 KiB against 54 KB); the lane's copy was corrected at the stack review.
