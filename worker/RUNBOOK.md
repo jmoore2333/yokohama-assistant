@@ -493,10 +493,13 @@ corrected.
 **The three calls**, over WARP as the operator:
 
 ```sh
+# The browser User-Agent every curl at either host carries (the smoke's own; §7's Bot Fight Mode bullet says why).
+# This is the ONE definition: §4, §5 and §7 use the variable as set here.
+cd worker && BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
 B=https://yokohama.moore.nyc
-curl -s "$B/api/admin/tables" | jq                                              # the listing
-curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire"        # expire: 204
-curl -s -w '\n%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire?force"   # force: 204 or 503
+curl -s -A "$BROWSER_UA" "$B/api/admin/tables" | jq                                              # the listing
+curl -s -A "$BROWSER_UA" -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire"        # expire: 204
+curl -s -A "$BROWSER_UA" -w '\n%{http_code}\n' -X POST -H 'content-type: application/json' "$B/api/admin/tables/<id>/expire?force"   # force: 204 or 503
 ```
 
 **The two POSTs carry `content-type: application/json`** (security S2b, finding B5): without it the
@@ -558,7 +561,7 @@ expires in 2031 (spec §0.5).
   if (!names.every((n) => v[n])) { console.error(".dev.vars lacks one of " + names.join(", ")); process.exit(1); }
   fs.writeFileSync(process.argv[1], names.map((n) => n + ": " + v[n]).join("\n") + "\n", { mode: 0o600 });
   ' "$H" && chmod 600 "$H"
-  curl -s -H @"$H" https://yokohama.moore.nyc/api/health
+  curl -s -A "$BROWSER_UA" -H @"$H" https://yokohama.moore.nyc/api/health
   rm -f "$H"
   ```
 
@@ -584,7 +587,7 @@ expires in 2031 (spec §0.5).
 
 ## 5. Reading it
 
-- **Health**, over WARP as the owner: `curl -s https://yokohama.moore.nyc/api/health`. It reads
+- **Health**, over WARP as the owner: `curl -s -A "$BROWSER_UA" https://yokohama.moore.nyc/api/health`. It reads
   `identity: "cf-access"`, `signal: "ws"`, and the archive switch.
 - **The tail**: `npx wrangler tail yokohama-web --format json > "$SCRATCH/tail.json"`, left running
   beside the readings. Every event is one invocation, PRETTY-PRINTED across many lines: parse the
@@ -789,8 +792,8 @@ expires in 2031 (spec §0.5).
 
   ```sh
   WS=(-H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==')
-  curl --http1.1 -s -i -N --max-time 5 "${WS[@]}" -H 'Origin: https://yokohama.moore.nyc' https://yokohama.moore.nyc/api/stream | head -1
-  curl --http1.1 -s -i --max-time 5 "${WS[@]}" -H 'Origin: https://evil.example' https://yokohama.moore.nyc/api/stream | sed -n '1p;$p'
+  curl --http1.1 -s -A "$BROWSER_UA" -i -N --max-time 5 "${WS[@]}" -H 'Origin: https://yokohama.moore.nyc' https://yokohama.moore.nyc/api/stream | head -1
+  curl --http1.1 -s -A "$BROWSER_UA" -i --max-time 5 "${WS[@]}" -H 'Origin: https://evil.example' https://yokohama.moore.nyc/api/stream | sed -n '1p;$p'
   ```
 
 - **`node scripts/read-deploy.mjs`** reads a live deployment: `assets` checks every precache entry
@@ -969,7 +972,7 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   owner, with the smoke's browser `User-Agent` (the next bullet):
 
   ```sh
-  cd worker && BROWSER_UA=$(node -e 'import("./scripts/smoke-release.mjs").then((m) => console.log(m.BROWSER_UA))')
+  # BROWSER_UA: set once, in §3's operator playbook (the curl playbook).
   B=https://yokohama.moore.nyc; for i in $(seq 140); do curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}'; done | sort | uniq -c
   curl -s -i -X POST -H 'content-type: application/json' -A "$BROWSER_UA" "$B/api/chat" -d '{}' | grep -i -e '^HTTP' -e '^retry-after' -e '"error"'
   ```
