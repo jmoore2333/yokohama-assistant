@@ -1497,8 +1497,10 @@ compatibility cell's `read_table` line red (the `p\u{200B}re` premise) — the T
   document), `crates/yokohama-web/src/chat.rs:420` (`ChatDoc::page_for`, the third `view_for` site, with `self.salt` in
   scope); `grep -n view_for crates/yokohama-web/src` lists exactly those three,
   `web/src/types.ts:1090-1093` (`ChatAuthor`), `web/src/wire/contract.ts:740` (the watcher key list, Step 6),
-  `web/src/wire/*.json` (regenerated once).
-- Test: cells in `chat.rs`, `games.rs` and `tables.rs`; the corpus check; the pool.
+  `web/src/wire/*.json` (regenerated once); `worker/scripts/replay/exemptions.mjs` (a named exemption beside
+  `normalizeHouseChat`, Step 6b — the Task 4 review's I-1), `worker/scripts/live-replay.test.mjs` (four cells beside
+  `describe("normalizeHouseChat")`), `worker/RUNBOOK.md` §7's replay notes (one line).
+- Test: cells in `chat.rs`, `games.rs` and `tables.rs`; the corpus check; the pool; the four replay cells.
 
 **Interfaces:**
 - Consumes: Task 3's rule (the cells' names and text pass it).
@@ -1853,20 +1855,43 @@ impl Games {
   its kind" fails on the list (both sides are sorted, so the order is free); vitest green. On a fresh export
   `npm run build:wasm` runs first (`typecheck-worker.mjs` refuses without `src/local/wasm/yokohama_wasm.d.ts`).
 
+- [ ] **Step 6b: The live corpus replay's exemption for the tag** (the Task 4 review's I-1, a window defect the
+  per-edit suites cannot see: a deployed Worker is `SoloOnly` — the deploy guard refuses `YOKOHAMA_DIAGNOSTIC_SEEDS` in
+  every deployable config — so the live house chat's first append after 0.6.3 draws an entropy salt, and the two
+  house rows of the walk (`house_chat_post`, `house_chat`; rows 43 and 44) read the watcher's `author.tag` as a
+  value that is not the committed `7e52`, bar a 1-in-65,536 chance; the table chat rows sit at the open-seat `wire`
+  table the production seed rule already skips; measured with the replay's own judge). In
+  `worker/scripts/replay/exemptions.mjs`, a NAMED exemption beside `normalizeHouseChat` (or inside it, as the
+  implementer judges, the name and the spend visible either way): a watcher author's `tag` in the live answer is
+  taken back to the committed value ONLY when (a) the live value is a string of exactly four lowercase hex digits
+  (`TAG_HEX`), and (b) the run's own poster reads ONE tag across `house_chat_post`'s reply and `house_chat`'s page
+  (the reply's tag recorded, the page's compared); each take-back counted in `spent` as the `hostFields` rule counts
+  its own — spent only on a value the host SENT that differs — so a dropped, `null` or malformed tag, or a post and a
+  page that disagree, stays a mismatch the judge reports. Four cells in `worker/scripts/live-replay.test.mjs` beside
+  `describe("normalizeHouseChat")`, each asserting through the judge as the file's cells do: (1) a production tag
+  (four hex, not the committed one, the same on the reply and the page) is spent and the row holds; (2) an ABSENT
+  tag is a mismatch; (3) a `null` tag is a mismatch; (4) a reply and a page whose tags DISAGREE are a mismatch. And
+  one line in `worker/RUNBOOK.md` §7's replay notes: since 0.6.3 the two house rows' watcher tag is a production
+  value the judge takes back to the committed one, counted in `spent`; a dropped, null or malformed tag fails the
+  row. `cd worker && npm run test:scripts` green with the four.
+
 - [ ] **Step 7: The suites, then commit** (the corpus in the same commit as the code that moved it, as every
   regeneration is).
 
 ```bash
-git add crates/yokohama-web/src/chat.rs crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/api.rs web/src/types.ts web/src/wire
+git add crates/yokohama-web/src/chat.rs crates/yokohama-web/src/games.rs crates/yokohama-web/src/tables.rs crates/yokohama-web/src/api.rs web/src/types.ts web/src/wire worker/scripts/replay/exemptions.mjs worker/scripts/live-replay.test.mjs worker/RUNBOOK.md
 git commit -m "web: watcher and house authors carry a per-room tag — four hex of SHA-256 over a document salt and the key, the salt given on first append, fixed under the diagnostic seed policy; the corpus regenerated once (security S2c, D8)"
 ```
 
-**Named mutants:** M8 `tag_of` ignores the salt → the tag cell red at "a different room"; M9 the append never fills
+**Named mutants:** M8 `tag_of` ignores the salt → the tag cell red at the reference line (`02c6` for `c54e`; before
+the reference was asserted, at "a different room" — the Task 4 review's m-3); M9 the append never fills
 the salt → the tables cell red (every tag `None`) and the corpus diff empty; M9a a reply in `api.rs` answering `view_for(user, None)`, or
 `chat_append_salted` returning `None` → the ROUTE cell red at the reply/page comparison, and the corpus's
 `chat_post_watcher.json` / `house_chat_post.json` (the reply cell catches `house_append_salted` alone — Task 4's probe);
 M9b every append re-salting → the held-message cell red at "the second append keeps the salt" (green under
-`Diagnostic`, whose salt is the constant; Task 4's probe); M10 `view_for` tags seat authors (a `tag` added to
+`Diagnostic`, whose salt is the constant; Task 4's probe); M9c the replay's exemption spending on an absent or `null`
+tag → the replay cells (2) and (3) red; M9d the exemption ignoring the reply/page agreement → cell (4) red (the Task 4
+review's I-1); M10 `view_for` tags seat authors (a `tag` added to
 `AuthorView::Seat`) → a compile error at the stored-author cell's two `AuthorView::Seat { seat: 0, name: …, you: true }`
 literals in `tables.rs`, NOT at the view cell's `matches!`, whose `..` accepts the field — structurally impossible by
 those literals, which the reviewer records (Task 4's probe); M11 `chat_salt` returns the constant
@@ -1885,9 +1910,9 @@ reference line (`"c54e"` against a twelve-character tag; before the reference wa
   listing that lands, the opening read among them) and `copyLink` clear `error`, and an end that arrived before the
   opening listings would be wiped; the foot strip draws `error ?? ended`), `web/src/Chat.tsx:470-474` (the
   watcher label), `web/src/types.ts` (done in Task 4).
-- Test: `web/src/signal.test.ts` (one cell beside line 230's), `web/src/Lobby.test.tsx` (two cells),
+- Test: `web/src/signal.test.ts` (one cell beside line 230's; one after the woken re-read cell at 696), `web/src/Lobby.test.tsx` (three cells),
   `web/src/App.test.tsx` (one cell, after "lands on the lobby with the sentence when the hand-over's table refuses"),
-  `web/src/Chat.test.tsx` (the authors cell at line 82 extended; one new cell).
+  `web/src/Chat.test.tsx` (the authors cell at line 82 extended; two new cells).
 
 **Interfaces:**
 - Consumes: Task 1's 429 and sentences; Task 4's `tag` on the wire (the corpus fixtures carry it after Task 4's
@@ -1913,6 +1938,34 @@ reference line (`"c54e"` against a twelve-character tag; before the reference wa
     });
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
     unmount();
+  });
+```
+
+And after the woken re-read cell (`signal.test.ts:696`, "says reconnecting when a woken re-read FAILS, keeps the
+stream" — which drives a 500, so it pins nothing about a 429 there; Task 5's probe: a 429 added to the re-read arm
+passed every cell), the cell that pins AD-6's half (M34, in its true direction):
+
+```ts
+  it("keeps the stream when a woken re-read is refused 429 (AD-6: the cap answers at admission, never at a listing read)", async () => {
+    const { stream, stub } = streamed(undefined, (call) =>
+      call.path.endsWith("/table") ? { status: 429, body: { error: "too many requests" } } : undefined,
+    );
+    const ends: End[] = [];
+    const { result } = renderHook(() =>
+      usePolled<TableView>(
+        { key: "wire", once: () => api.table("wire"), stream: "/api/games/wire/stream" },
+        true,
+        () => {},
+        (e) => ends.push(e),
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("signal", at(1));
+    await settle();
+    expect(ends).toEqual([]);
+    expect(result.current).toBe("reconnecting");
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(stub.matching("GET", "/stream")[0]!.signal!.aborted).toBe(false);
   });
 ```
 
@@ -1952,15 +2005,17 @@ no code changes for it):
         if (e instanceof ApiError && (e.status === 404 || e.status === 403 || e.status === 429 || isSessionExpired(e))) {
 ```
 
-with one sentence added to the comment above it: "— and a 429, the stream cap's refusal at admission
+with one sentence added to the comment above it, as its LAST paragraph, directly above the `if` (after "**The third
+is the EDGE's**"): "— and a 429, the stream cap's refusal at admission
 (security S2c, D3): an answer about this caller's open streams, which asking again cannot change; the NAS answers it
 on `/stream` and `/api/stream`, the Worker's lobby ends on a frame instead (`End`), and both reach the consumer's
 `onEnd` as `refused`."
 
 The arm's neighbours state their count of the ending refusals, and they move with it (plan review L2-F5): `End`'s
 doc ("None of the three changes by being asked again") and the open arm's own "The THREE refusals that END this"
-read four, as measured below; `endSentence`'s doc, "The two refusals that END a signal", reads four likewise; the
-re-read arm's comment at 316, whose arm does not change (AD-6), keeps its three:
+read four, as measured below; `endSentence`'s doc, "The two refusals that END a signal", reads four likewise, and the
+file's header at `signal.ts:5` ("the three refusals that end a signal rather than slowing it down") reads four (Task
+5's probe); the re-read arm's comment at 316, whose arm does not change (AD-6), keeps its three:
 
 ```ts
 /** Why a signal STOPPED, as opposed to failing and backing off.
@@ -2034,7 +2089,11 @@ re-read arm's comment at 316, whose arm does not change (AD-6), keeps its three:
 
 The lobby's `usePolled` source IS the house stream (`Lobby.tsx:391`, `stream: "/api/stream"`), so the plan's premise
 holds and the cells drive `GET /api/stream` through the file's `show(handler)`; `until`, `gate`, `isGamesList`,
-`lists`, `flush` and `section` are the file's own helpers (plan review L2-R6).
+`lists`, `flush` and `section` are the file's own helpers (plan review L2-R6). A THIRD cell pins the strip's ORDER,
+`error ?? ended` (Task 5's probe: the reversed order passed every cell, and under it a refusal after the end — Abandon's,
+a refused copy — hides behind the ended sentence): after the ended signal's sentence is drawn, one refused action the
+file already stubs (a refused Abandon, or a copy the browser refuses) draws ITS refusal on the strip in place of the
+ended sentence; the implementer writes it against the file's helpers, the ASSERTIONS being the cell (M35b).
 
 - [ ] **Step 6: Run them red**, then wire `onEnd`:
 
@@ -2085,7 +2144,8 @@ import type { GamesList, TableView } from "./types";
       <LobbyBand crumbs={["Lobby"]} corner={corner ?? (me === null ? toDevice : null)} />
 // …
             (one refused listing is said in its own section, `strip`), the
-            pager's, a copy the browser refused, and Abandon's. **Not a second "Can't reach the server"
+            pager's, a copy the browser refused, and Abandon's — else why the house signal STOPPED (`ended`,
+            security S2c). **Not a second "Can't reach the server"
             under state C's card**, which says it already. */}
         {foot && !(serverUp === false && foot === UNREACHED) && <Refusal sentence={foot} />}
       </div>
@@ -2136,6 +2196,21 @@ and one new cell:
   });
 ```
 
+And beside "sends the browser's name for a watcher and at the house", the HOUSE half of this task's title (Task 5's
+probe: a tag gated to the table scope passed every cell; at HEAD the house corpus row reads `Red · 7e52`):
+
+```ts
+  it("draws a house author's tag, with no spectating marker", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const author = wire.houseChat.messages[0]!.author;
+    if (author.kind !== "watcher" || author.tag === null) throw new Error("the house corpus author is a tagged watcher");
+    stubApi((call) => (call.method === "GET" && call.path.includes("/chat") ? wire.houseChat : undefined));
+    render(<Chat scope={{ kind: "house" }} sendName />);
+    const [row] = await screen.findAllByRole("listitem");
+    expect(row!.querySelector(".chat-who")!.textContent).toBe(`${author.name} · ${author.tag}`);
+  });
+```
+
 (The exact `textContent` strings depend on how the label composes its spans; the implementer reads the rendered
 text in the red run and pins the composition the code below produces — the three facts to pin are: the tag follows
 the name or its fallback with ` · `, a `null` tag draws nothing, and the "spectating" marker follows.)
@@ -2164,10 +2239,12 @@ git commit -m "web client: a 429 ends a signal with the server's sentence (the s
 ```
 
 **Named mutants:** M33 the 429 arm dropped from the stream site (line 479) → the signal cell red (the stub asked
-again); M34 retired with the re-read arm (AD-6): a 429 at the re-read keeps the stream, which the file's existing "says
-reconnecting when a woken re-read FAILS, keeps the stream" cell already pins; M35 the lobby's `onEnd` not passed → the
-lobby cells red; M35a `onEnd` writes `setError` → the race cell red (plan review L2-F2); M36 the tag drawn for a
-`null` → the new chat cell's third row red; M37 the tag drawn on seats → the authors cell's seat row red.
+again); M34, in its true direction (AD-6): a 429 ADDED to the re-read arm → the "keeps the stream when a woken re-read
+is refused 429" cell red (the first draft's retirement rested on a cell that drives a 500 — Task 5's probe); M35 the
+lobby's `onEnd` not passed → the lobby cells red; M35a `onEnd` writes `setError` → the race cell red (plan review
+L2-F2); M35b the strip's order reversed (`ended ?? error`) → the refusal-after-end cell red; M36 the tag drawn for a
+`null` → the new chat cell's third row red; M37 the tag drawn on seats → the authors cell's seat row red; M37a the tag
+gated to the table scope → the house author's cell red (Task 5's probe).
 
 ---
 
