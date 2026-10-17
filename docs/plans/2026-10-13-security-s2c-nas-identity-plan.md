@@ -3799,3 +3799,47 @@ Inside the wave: 89 ledger rows (`docs/temp/security-review-2026-10-08/s2c-sdd/d
 against the head; 3 stale sentences taken in `55eef3e0` (the S2a/S2b re-read's three: the sentences this plan's
 corrections had already made false); every test and design note left recorded, each with its verdict in
 `s2c-sdd/wave-report.md`'s table.
+
+### The stack review (Task 10 Step 7), 2026-10-17 — four Sonnet lenses on exports of `58081f6f`, the orchestrator's verification, one fix dispatch, four scoped second runs
+
+As agents, not a Workflow (the owner opted into none by name this session): lens 1 hidden information and identity,
+lens 2 the cost bounds, lens 3 the client and the headers, lens 4 the documents' claims against the code — each on its
+own `git archive` export with master `1e9c092d` beside it, every row tried with a probe the lens ran (reports in
+`docs/temp/security-review-2026-10-08/s2-stack-review/`). Counts: lens 1 — 0 Critical, 1 Important, 4 Minor, 4
+Information; lens 2 — 0, 2, 3, 7; lens 3 — 0, 0, 4, 5 (the local e2e 81 passed, no CSP line; 28 of 29 mutants red);
+lens 4 — 0, 6, 9, 8. **Every Important was verified by the orchestrator on its own export and CONFIRMED:** lens 2's
+two bounds pinned by no cell (the NAS stream slot's hold by the body — a slot freed at the first poll left the web
+crate's 519 lib cells and every integration binary green; the Worker lobby's 1,024-socket total — the count as `0`
+left the pool's 250 green); lens 1's and lens 4's three `init-refused` sentences claiming a leak the code digests;
+lens 4's deploy documents describing the hardened, split NAS in the present tense before any window (Task 8's own
+tense choice — overruled by the owner's rule), the lane's §1 and §14 and the root README at cycle F's Worker facts
+after S1's window moved them, two R-SEC6 pointers without the clarification (and this log's "seven pointers" sentence,
+corrected forward in guidingpath), the burst recipe too slow in sequence to reach its 429 (confirmed by arithmetic:
+a sequential TLS `curl` loop runs under 12 requests a second against 120 per 10 s), the rollback block publishing a
+port against §1. **The one fix dispatch** (Opus, in the tree; `s2-stack-review/fix-brief.md`): `f8ebb42b` (the slot
+pinned on the built binary over real sockets, eight held and the ninth refused, one closed and the next admitted, plus
+a panicking-body cell), `e94e13f4` (the lobby's 1,024 OPEN sockets across 128 callers, the 1,025th `TOO_MANY_LOBBY`
+and 4429, one closed admits again), `c44dd059` (lens 1's four one-line hardenings with cells: the listing error through
+`redactKey` and its slash-less shape; the forwarded upgrade's `claimed` parameter dropped; `YOKOHAMA_DEV_DOOR` in the
+secrets guard's forbidden list, the salt named in the seeds reason; the deploy guard refusing a non-string dev switch),
+`bba110f5` (the nonce cell tightened to alphanumeric — the orchestrator's AD-13 reversed, the lens's H4 mutant red;
+the chat tag drawn only when a string), `1d550f18` (the deadline doc's header residual; the lane's §15 NAS row),
+`490412ef` (every document sentence: the deploy documents as the rule and the recipe, true before and after the
+window; the README's Worker bullets at S1's release with the dev door off; the lane's §1, §14 table and §2 counts at
+S1's and the close's readings; the R-SEC6 pointers; the parallel burst recipe with `-I@` — the brief's `-I{}` would
+have rewritten the `{}` body, the implementer's catch; the rollback block on `cf-internal` without a port; the ledger's
+C3 title and B4 live column; the API map's 429 and 408; the e2e build script's "report-only build"; the lane's "about
+ten times"), and the orchestrator's `55493d8d` (guidingpath's stack-review row, the plan's Task 8 note and Step 10
+burst sentence, the spec's errata under §9.8, the web workflow's identity step counting the nine cells the slice has
+run since S2b — a red CI step nobody had read). **Parked (recorded, not fixed):** lens 3's M-2 (the lobby's cap
+sentence promises a retry the lobby has no control for — D3/AD-4's design; a UX item for the auth cycle) and M-3 (a
+429 at a stream's open ends the signal, an edge 1015 included — no such edge rule exists; the zone is the owner's).
+**The scoped second runs** (each lens resumed by name on an export of `55493d8d`): lens 2 — I-1, I-2, M-1–M-3 addressed, the slot-freed and lobby-as-0 mutants red at the new cells; lens 3 — M-1, M-4 addressed, H4 red; lens 1 — I-1, M-1–M-4 addressed, seven mutants red, one new Minor (an over-redaction across a message) fixed by the orchestrator as `abdacbdf` with its cell; lens 4 — 15 addressed, one new Minor (the errata's section reference) corrected; 0 new breakage. **The readings at the
+final head `abdacbdf`:** the lane's rows one sequence at `55493d8d` (`s2c-sdd/suites-final/summary.txt`): clippy clean, web 559 (lib 520, `start_refusal` 8, `wire_fixtures` 18 clean), wasm 10, worker 81, `identity::` 9, wasm32 clean; web typecheck clean, vitest 1,527/73, `test:wasm` 374/16, e2e (8.7m): 81 passed; worker typecheck clean, `test:scripts` 595/29, the pool 252/13 — and after the N-1 fix at `abdacbdf` the worker rows again: typecheck clean, `test:scripts` 596/29, the pool 252/13; the five roster crates byte-identical to `ed8c7f6f`, so the roster's 478 s stands.
+Lens information worth the record: the withheld `why` never reaches the search (a planted panic in `account_from`
+fired for all 111 public requests and none of the 111 withheld ones); a stalled 2 MiB body holds about 2.1 MiB, so
+about 250 concurrent stalls fill the container's 512 MiB and the restart policy is the backstop; the lockout shape
+(strangers filling a table's or the house's streams ahead of a seated player) measured on both hosts and recorded as
+S4's; the Worker's limiter meters unsafe methods only (a GET or an upgrade reaches an object); a refused Worker
+socket stays CLOSING and raises the framing loop's cost; the NAS listener sets no TCP keepalive (behind the tunnel the
+peer is cloudflared).

@@ -1302,4 +1302,4 @@ never tagged — and Task 9 waits for nothing; the one window at Task 10 Step 10
 
 - The heading "Spec corrections (to be recorded as §9.8 by Task 10, dated 2026-10-13 and 2026-10-15)" inside §9.8 is the plan's text as written before the recording; the recording is §9.8 itself (S2c's close, 2026-10-17).
 - §9.8's D-13 says `BROWSER_UA` "is already defined once, at §7's burst bullet" of `worker/RUNBOOK.md`; S2c's Task 7 moved the one definition to §3 and §7 reads it from there.
-- §4's S1b sentence "`ARCHIVE_BODY_LIMIT` (512 KiB) eight times the longest one pretty-printed (54 KB)" is about ten times (512 KiB against 54 KB); the lane's copy was corrected at the stack review.
+- §9.3's table's S1b sentence "`ARCHIVE_BODY_LIMIT` (512 KiB) eight times the longest one pretty-printed (54 KB)" is about ten times (512 KiB against 54 KB); the lane's copy was corrected at the stack review.
