@@ -411,7 +411,7 @@ impl Api {
             return;
         }
         let user = who.map(|w| yokohama_web::identity::User::parse(w).expect("a valid identity"));
-        let sentence = yokohama_web::identity::resolve(self.state.identity, &axum::http::HeaderMap::new())
+        let sentence = yokohama_web::identity::resolve(self.state.identity, self.state.claims, &axum::http::HeaderMap::new())
             .expect_err("no header, no user");
         let identity: yokohama_web::api::Identity<'_> = match &user {
             Some(u) => Ok(u),
@@ -2307,21 +2307,19 @@ fn constructed() -> Vec<(String, Value)> {
 
     // The WITHHELD half: one bot turn at a vs-bot table, the person at seat 1
     // asking about the bot's last move while the bot's starting order is
-    // still a masked slot in its hand — asserted, as the premise.
+    // still a masked slot in its hand — asserted, as the premise. Built as the
+    // ROUTE builds it (security S2c, decision D-6): `why::locate`, then
+    // `Why::withheld_from`, and no search — never through `Why::account`'s
+    // withheld arm, which the route no longer reaches (the M6.4 lesson: a
+    // fixture built on a host the served answer never takes is not coverage).
+    // The two give the same bytes, pinned in `explain.rs`.
     let mut one_turn = build(vec![Some(PROVISIONAL_DEFAULT_BOT), None]);
     one_turn.pump_bots();
-    let one_bot = BotSeats::new(vec![Some(PROVISIONAL_DEFAULT_BOT), None], BOT_SEED);
-    let early = yokohama_cli::why::account_parts(
-        one_turn.session.mode, one_turn.session.record(), &rules, &one_bot, None,
-    )
-    .unwrap_or_else(|r| panic!("the bot's first turn holds a move to account for: {r}"));
-    let visibility = yokohama_web::explain::visibility_of(
-        one_turn.session.state(),
-        early.reconstruction.seat,
-        &[PlayerId::new(1)],
-    );
+    let early = yokohama_cli::why::locate(one_turn.session.mode, one_turn.session.record(), &rules, None)
+        .unwrap_or_else(|r| panic!("the bot's first turn holds a move to account for: {r}"));
+    let visibility = yokohama_web::explain::visibility_of(one_turn.session.state(), early.seat, &[PlayerId::new(1)]);
     assert_eq!(visibility, yokohama_web::explain::Visibility::Withheld, "after one bot turn the card is hidden");
-    let why_withheld = serde_json::to_value(yokohama_web::explain::Why::account(&early, &rules, visibility))
+    let why_withheld = serde_json::to_value(yokohama_web::explain::Why::withheld_from(&early, &rules))
         .expect("a serializable withheld account");
 
     // **A TERMINAL explanation, which is a different picture and not an empty
@@ -2473,6 +2471,7 @@ async fn corpus() -> Corpus {
     all.push(("site_space_words".to_string(), site_space_words()));
     all.push(("production_bot".to_string(), production_bot()));
     all.push(("identity_cases".to_string(), identity_cases()));
+    all.push(("id_cases".to_string(), id_cases()));
     all.push(("seed_cases".to_string(), seed_cases()));
     // The ONE normalization, applied to everything so no payload can acquire a
     // clock without passing through it. See [`FROZEN_CREATED_AT`].
@@ -2820,6 +2819,42 @@ fn the_identity_cases_carry_the_key_grammar_s_verdicts() {
     }
 }
 
+/// **The store's id grammar, as verdicts over a case list** (security S2a, finding D14; decision D-6): the hash
+/// router's `#/t/<id>` admits exactly what `store::is_safe_id` admits, and this file is how the client's copy
+/// (`web/src/tableId.ts`) is held to the server's both ways, as the name step is held by `identity_cases`. Not a
+/// payload any route serves — a CONTRACT. The rows the rule turns on: the two id shapes the client itself draws
+/// (`sim-` and `local-` with hex), the length bound at 64 and 65, the reserved suffixes in both cases, the leading
+/// character, every traversal spelling, a space (what `#/t/a%20b` decodes to) and a non-ASCII letter.
+fn id_cases() -> Value {
+    use yokohama_web::store::is_safe_id;
+    let (a64, a65) = ("a".repeat(64), "a".repeat(65));
+    let inputs = [
+        "sim-0123456789abcdef", "local-1e205cc2c8b9f836", "x", "7", "evening-2", "evening_2", "evening.2", "x.tablet",
+        a64.as_str(), a65.as_str(),
+        "x.table", "X.TABLE", "x.chat", "x.Chat",
+        "_house", "house", "-x", ".x", "_x", "x-", "x.", "x_",
+        ".", "..", "../x", "x/..", "a/b", "x/", "/x",
+        "a b", " x", "x ", "", "a@b", "a%20b", "B\u{e9}n", "\u{212a}elvin", "a\u{200b}b", "x\n",
+    ];
+    Value::Array(inputs.iter().map(|raw| json!({ "raw": raw, "safe": is_safe_id(raw) })).collect())
+}
+
+/// **What the rows say, where a person would check first** — the premises the client's pin rests on: the two
+/// drawn shapes pass, the bound is 64, a reserved suffix is refused in any case, every traversal spelling and the
+/// space are refused.
+#[test]
+fn the_id_cases_carry_the_store_s_verdicts() {
+    let rows = id_cases();
+    let rows = rows.as_array().expect("a list");
+    let safe = |raw: &str| rows.iter().find(|r| r["raw"] == raw).unwrap_or_else(|| panic!("no row for {raw:?}"))["safe"] == true;
+    for ok in ["sim-0123456789abcdef", "local-1e205cc2c8b9f836", "x", "evening.2", "x.tablet", &"a".repeat(64)] {
+        assert!(safe(ok), "{ok:?} is a usable id");
+    }
+    for bad in [&"a".repeat(65), "x.table", "X.TABLE", "x.chat", "_house", "-x", ".", "..", "../x", "a/b", "a b", "", "a@b", "a%20b", "B\u{e9}n"] {
+        assert!(!safe(bad), "{bad:?} is refused");
+    }
+}
+
 /// **The bot this build deals, for the screens that must name it without
 /// asking** (M6.5c2, spec §2.4; review M1, R2-m6).
 ///
@@ -2958,10 +2993,13 @@ fn addresses_for(value: &Value, reader: Option<&str>) -> AddressRead {
 /// one is a finding unless it is here — and here by PATH where the payload has
 /// one, so a new field in the same file is not waved through with it.
 ///
-/// Not empty, and the plan expected it to be: these two were on the corpus
-/// before this cycle, and neither names a person.
+/// Not empty: `identity_cases` and `why` were on the corpus when this pin was
+/// written (M6.5c2 cycle D), `why_withheld` joined with the explain surface at
+/// the requester's visibility (security S1a, Task 1; A1/B1) and `id_cases` with
+/// the hash router's id grammar (S2a, Task 5); none of the four names a person.
 const CONSTRUCTED_WITH_AN_AT: &[(&str, Option<&str>, &str)] = &[
     ("identity_cases", None, "the key grammar's contract: its rows ARE sample keys, and no route serves the file"),
+    ("id_cases", None, "the id grammar's contract: its one @ is a refused input, and no route serves the file"),
     ("why", Some("ok.provenance.contestant"), "a contestant's identity spells `name@v<version>{params}`: a bot, not a person"),
     ("why_withheld", Some("withheld.provenance.contestant"), "the same contestant identity, on the withheld half"),
 ];

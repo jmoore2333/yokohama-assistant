@@ -4,12 +4,14 @@ import { adminRoute, OPERATOR_HEADER, type OperatorRow } from "./admin";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
-import { frame } from "./frames";
+import { CLOSE_TOO_MANY, closeReason, endAtAdmission, frame, TOO_MANY_LOBBY, TOO_MANY_OWN_LOBBY } from "./frames";
 import { Instance, readReply, type Replied } from "./module";
+import { callerDigest, callerTag } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { decide, type Ack, type HouseRow, type Slot } from "./slot";
 import { deleteDoc, deleteMeta, ensureTables, getMeta, readDocs, setMeta, upsertDoc } from "./storage";
 import { forwardedCaller, isUpgrade, NOT_AN_UPGRADE } from "./table";
+import { capVerdict, openCount } from "./table/sockets";
 
 /** The house chat's one id — the layer's `chat::HOUSE`, the only id its store
  *  takes for that document. It is also the object's name (`HOUSE_NAME`). */
@@ -17,6 +19,15 @@ const HOUSE = "house";
 
 /** The tag every lobby socket is accepted under (spec §2.5). */
 export const LOBBY_TAG = "lobby";
+
+/** How many lobby sockets one caller may hold (security S2b, finding D3; decision D-4): a table's own figure
+ *  (`SOCKETS_PER_CALLER`), for its reason — one per VISIBLE tab, plus a reconnect's overlap, OPEN sockets alone
+ *  counted (`openCount`). */
+export const LOBBY_PER_CALLER = 8;
+/** How many lobby sockets the house holds in all: ONE house serves every caller's lobby, so its ceiling is a
+ *  population — 128 callers, each at their eight (`LOBBY_PER_CALLER`); every applied push frames each of them,
+ *  which this bounds, and the platform's own ceiling is 32,768. */
+export const LOBBY_TOTAL = 1024;
 
 /** The house's trap 500, host-written in the table's shape (spec §2.4,
  *  "Traps"). */
@@ -36,6 +47,9 @@ interface Incoming {
   user: string | undefined;
   /** `GET /api/stream`, an upgrade: the lobby socket. */
   stream: boolean;
+  /** The caller's tag on an upgrade (security S2b, D3): `u:` and their digest, computed here because `admit` runs
+   *  in `answer`'s synchronous turn and a digest is async. */
+  callerTag?: string;
   method: string;
   path: string;
   query: string;
@@ -65,8 +79,11 @@ interface Incoming {
  *   its first call (`wake`), so the listing survives an eviction.
  * - The lobby socket, `GET /api/stream`, is admitted by the module's
  *   `identity`: its 401 is answered unupgraded; otherwise the socket is
- *   accepted under the tag `lobby` with `{ user }`, and sent NOTHING on
- *   connect, as the NAS's lobby stream writes nothing on connect. A non-`GET`
+ *   accepted under the tag `lobby` — and the caller's, `callerTag` (security
+ *   S2b, D3) — with `{ user }`, and sent NOTHING on connect, as the NAS's
+ *   lobby stream writes nothing on connect; one that would cross a cap
+ *   (`LOBBY_PER_CALLER`, `LOBBY_TOTAL`) is accepted, sent an `end` with the
+ *   cap's sentence and closed 4429, as a table's is. A non-`GET`
  *   is 405 with an empty body, and a `GET` that is not an upgrade the table's
  *   426 (the orchestrator's ruling I-48).
  * - Every applied copy or removal, and every reply carrying
@@ -103,15 +120,17 @@ export class House extends DurableObject<Env> {
     const url = new URL(req.url);
     const operator = req.headers.get(OPERATOR_HEADER);
     if (operator !== null && adminRoute(req.method, url.pathname, url.search.slice(1)).kind === "listing") {
-      log("operator", { action: "list", address: operator });
+      log("operator", { action: "list", operator: await callerDigest(operator) });
       return respond(200, JSON.stringify({ tables: this.listing() }));
     }
     const stream = url.pathname === "/api/stream";
     if (stream && req.method !== "GET") return respond(405, "");
     if (stream && !isUpgrade(req.headers)) return respond(426, errorBody(NOT_AN_UPGRADE));
+    const user = forwardedCaller(req.headers, this.config);
     const incoming: Incoming = {
-      user: forwardedCaller(req.headers, this.config),
+      user,
       stream,
+      callerTag: stream && user !== undefined ? await callerTag(user) : undefined,
       method: req.method,
       path: url.pathname,
       query: url.search.slice(1),
@@ -238,7 +257,7 @@ export class House extends DurableObject<Env> {
     const instance = (this.instance ??= new Instance(moduleConfig(this.env, null)));
     const refused = this.wake(instance);
     if (refused !== undefined) return refused;
-    if (incoming.stream) return this.admit(instance, incoming.user);
+    if (incoming.stream) return this.admit(instance, incoming.user, incoming.callerTag);
     let reply: Replied;
     let house: string | undefined;
     try {
@@ -373,8 +392,10 @@ export class House extends DurableObject<Env> {
     this.frameLobby(instance, readDocs(this.ctx.storage.sql).get("house"));
   }
 
-  /** The lobby socket's admission (spec §2.5): the module's `identity`. */
-  private admit(instance: Instance, user: string | undefined): Response {
+  /** The lobby socket's admission (spec §2.5): the module's `identity`, then the caps (security S2b, D3) — a
+   *  table's arm (`table/sockets.ts`) under the lobby's figures and sentences, the OPEN counts (`openCount`) read
+   *  BEFORE the accept so the new socket does not count itself. */
+  private admit(instance: Instance, user: string | undefined, tag: string | undefined): Response {
     const done = instance.guarded((mod) => readReply(mod.identity(user)));
     if ("trapped" in done) {
       log("trap", { id: HOUSE, call: "identity", error: done.trapped });
@@ -384,7 +405,15 @@ export class House extends DurableObject<Env> {
     if (status !== 200) return respond(status, body);
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    this.ctx.acceptWebSocket(server, [LOBBY_TAG]);
+    const own = tag === undefined ? 0 : openCount(this.ctx.getWebSockets(tag));
+    const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: LOBBY_PER_CALLER, total: LOBBY_TOTAL });
+    this.ctx.acceptWebSocket(server, tag === undefined ? [LOBBY_TAG] : [LOBBY_TAG, tag]);
+    if (over !== undefined) {
+      const sentence = over === "own" ? TOO_MANY_OWN_LOBBY : TOO_MANY_LOBBY;
+      server.send(frame("end", endAtAdmission(sentence)));
+      server.close(CLOSE_TOO_MANY, closeReason(sentence));
+      return new Response(null, { status: 101, webSocket: client });
+    }
     server.serializeAttachment({ user } satisfies Attachment);
     return new Response(null, { status: 101, webSocket: client });
   }

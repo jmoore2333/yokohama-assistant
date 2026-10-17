@@ -7,7 +7,7 @@
 // refuses, the client refuses before any request is made.
 
 import { describe, expect, it } from "vitest";
-import { NAME_MAX, WHITE, normalizeName } from "./nameRule";
+import { ADDRESS_NOT_A_NAME_HERE, NAME_MAX, WHITE, normalizeName, openDoorVerdict } from "./nameRule";
 import { wire } from "./wire/contract";
 
 const cases = wire.identityCases;
@@ -26,8 +26,9 @@ const shown = (s: string): string =>
 
 /** The inputs the rule turns on — each a place where a JavaScript built-in
  *  and Rust disagree, or a refusal the archive's containment rests on (spec
- *  §2.1, review H1). **Copied from the committed table's `raw` column**, so the
- *  table must carry every one, or the pin proves nothing about them. Every code
+ *  §2.1, review H1). **The committed table's `raw` column, row for row** (the
+ *  two length rows spelled from `NAME_MAX` rather than copied), so the table
+ *  must carry every one, or the pin proves nothing about them. Every code
  *  point outside ASCII is written as an escape, never as the character. */
 const REQUIRED = [
   "red@wire.test", "Red@Wire.TEST", " Red@Wire.TEST ", "a+b@x.test",
@@ -105,5 +106,17 @@ describe("the name rule", () => {
     expect(why("ANONYMOUS")).toMatch(/means nobody/);
     expect(why("b\u00e9n")).toMatch(/letters, numbers, spaces/);
     expect(why("a@b@c")).toMatch(/exactly one @/);
+  });
+});
+
+describe("openDoorVerdict (security S2b, C1; decision D-2)", () => {
+  // Mutants: the `@` test dropped (every address row admitted); the test on the KEY rather than the raw input (a
+  // raw `@` that fails the grammar would get the grammar's sentence about writing an address, at a door that refuses
+  // every address — AD-8 (d)).
+  it("refuses every committed row whose raw input holds an @, in the door's own words, and agrees with normalizeName on every other row", () => {
+    const withAt = cases.filter((c) => c.raw.includes("@"));
+    expect(withAt.length).toBeGreaterThanOrEqual(4);
+    for (const c of withAt) expect(openDoorVerdict(c.raw), shown(c.raw)).toEqual({ ok: false, reason: ADDRESS_NOT_A_NAME_HERE });
+    for (const c of cases.filter((c) => !c.raw.includes("@"))) expect(openDoorVerdict(c.raw), shown(c.raw)).toEqual(normalizeName(c.raw));
   });
 });

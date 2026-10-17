@@ -223,6 +223,52 @@ fn cache_control(uri_path: &str) -> Option<&'static str> {
 /// one.
 const PRESENCE_FILES: [&str; 3] = ["/robots.txt", "/llms.txt", "/sitemap.xml"];
 
+/// The file the client build writes beside `build-values.json` (security S2a, decision D-1): the header set as
+/// an array of `[name, value]` pairs, in the order both hosts send them.
+pub const HEADERS_FILE: &str = "headers.json";
+
+/// **The header set both hosts serve, read from `dist/headers.json`** (security S2a, decision D-1). The client
+/// build generates the set once from its checked values (`web/scripts/headers.mjs`) — the policy with its
+/// `connect-src` hosts, the 404 page's style hash, `X-Frame-Options: DENY` and the four other companions — and
+/// writes it as ordered `[name, value]` pairs; the Worker's asset layer serves the same pairs from `_headers`.
+/// This host reads them ONCE at construction and [`crate::app`]'s one layer sets every pair on every answer.
+///
+/// An ABSENT file is an empty set — a dev run with an older or absent client build still serves, and `main`
+/// prints one line saying so — and a file of any other shape is `Err`, naming the file: a build that wrote the
+/// wrong thing is refused at start rather than served without its policy. A name or a value `http` would
+/// refuse is the same refusal, so a header this host could not send is never half-sent. So is a name the file
+/// repeats, compared case-insensitively (S2a's after review): this host's layer `insert`s, so it would send the
+/// last pair, and the Worker's `_headers` would send the values joined with a comma (Cloudflare's documented rule
+/// for a header applied twice) — one file read two ways; `web/scripts/headers.mjs`'s reader refuses it too.
+pub fn response_headers(root: &Path) -> Result<Vec<(http::HeaderName, http::HeaderValue)>, String> {
+    let path = root.join(HEADERS_FILE);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{} could not be read: {e}", path.display())),
+    };
+    let pairs: Vec<(String, String)> = serde_json::from_str(&text).map_err(|e| {
+        format!("{} is not the client build's header set (an array of [name, value] pairs): {e}", path.display())
+    })?;
+    if pairs.is_empty() {
+        return Err(format!("{} holds no header at all", path.display()));
+    }
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    pairs
+        .into_iter()
+        .map(|(name, value)| {
+            let header = http::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| format!("{}: {name:?} is not a header name", path.display()))?;
+            if !seen.insert(name.to_ascii_lowercase()) {
+                return Err(format!("{} names {name} twice", path.display()));
+            }
+            let value = http::HeaderValue::from_str(&value)
+                .map_err(|_| format!("{}: the value of {name} is not a header value", path.display()))?;
+            Ok((header, value))
+        })
+        .collect()
+}
+
 /// The page a miss with an extension is answered with, relative to the root
 /// (M6.5c2 cycle F, R-F5; spec §2.5): `web/public/404.html`, which the build
 /// copies into `dist`.
@@ -681,5 +727,55 @@ mod tests {
             assert_eq!(check_build_stamp(&root, door), Ok(()), "{door:?}: unkeyed");
         }
         std::fs::remove_dir_all(&root).expect("the dist is removable");
+    }
+
+    /// **The header set is the client build's file, read in order** (security S2a, decision D-1): an array of
+    /// `[name, value]` pairs becomes header pairs in that order; an ABSENT file is an empty set (a dev run with
+    /// an older client build still serves; `main` says so once); a file of any other shape, one that repeats a
+    /// name in any case, and one that exists but cannot be read are each refused by name, because a build that
+    /// wrote the wrong thing must not be served without its policy in silence.
+    #[test]
+    fn response_headers_reads_the_pairs_in_order_and_refuses_any_other_shape() {
+        // The file's own scratch idiom (the cache, assets and stamp cells' `temp_dir()` roots): `tempfile` is not a
+        // dependency, and the owner's dependency fence keeps it so.
+        let dir = std::env::temp_dir().join(format!("yokohama-headers-{}-a", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a scratch dist");
+        assert_eq!(response_headers(&dir).expect("absent is empty"), vec![]);
+        std::fs::write(
+            dir.join(HEADERS_FILE),
+            r#"[["Content-Security-Policy-Report-Only", "default-src 'self'"], ["X-Frame-Options", "DENY"]]"#,
+        )
+        .unwrap();
+        let read = response_headers(&dir).expect("the pairs");
+        assert_eq!(read.len(), 2);
+        assert_eq!(read[0].0.as_str(), "content-security-policy-report-only");
+        assert_eq!(read[0].1.to_str().unwrap(), "default-src 'self'");
+        assert_eq!(read[1].0.as_str(), "x-frame-options");
+        for (bad, why) in [
+            ("{}", "an object"),
+            ("[]", "an empty list"),
+            (r#"[["X-Frame-Options"]]"#, "a one-member pair"),
+            (r#"[["X Frame", "DENY"]]"#, "a name with a space"),
+            ("[[\"X-Frame-Options\", \"DE\\u0000NY\"]]", "a value with a control character"),
+            ("nonsense", "not JSON"),
+            // `insert` here would keep the last, the Worker's `_headers` would join the two: refused on both hosts.
+            (r#"[["X-A", "1"], ["x-a", "2"]]"#, "a name repeated in another case"),
+        ] {
+            std::fs::write(dir.join(HEADERS_FILE), bad).unwrap();
+            let err = response_headers(&dir).expect_err(why);
+            assert!(err.contains("headers.json"), "{why}: the refusal names the file: {err}");
+        }
+        std::fs::write(dir.join(HEADERS_FILE), r#"[["X-A", "1"], ["x-a", "2"]]"#).unwrap();
+        let err = response_headers(&dir).expect_err("a repeated name");
+        assert!(err.ends_with("headers.json names x-a twice"), "the refusal names the repeated name: {err}");
+        // A file that is there and cannot be read — a DIRECTORY of its name, which reads `IsADirectory`, not
+        // `NotFound` — is refused naming it, never read as absent (Task 3's review, m-1).
+        std::fs::remove_file(dir.join(HEADERS_FILE)).expect("the file is removable");
+        std::fs::create_dir(dir.join(HEADERS_FILE)).expect("a directory of the file's name");
+        let err = response_headers(&dir).expect_err("a directory where the file would be");
+        assert!(err.contains("headers.json could not be read"), "the refusal names the file: {err}");
+        // The scratch tree removed, as the file's other cells remove theirs (Task 3's review, m-3).
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

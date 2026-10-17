@@ -15,6 +15,7 @@ import {
 } from "../marker";
 import { pinnedTo, readReply, type Bump, type Instance, type Replied } from "../module";
 import { executePlan, logOutcome, parsePlan, type Outcome, type Plan, type Site } from "../r2";
+import { callerDigest, redactKey } from "../redact";
 import { errorBody, log, respond } from "../respond";
 import { nextRetry } from "../slot";
 import { clearDocs, clearMetaBut, deleteMeta, getMeta, hasDoc, hasTables, readDocs, setMeta } from "../storage";
@@ -407,7 +408,7 @@ export function withLifecycle<T extends TableParts>(Base: T) {
           deleteMeta(sql, "expiry_failed");
         });
         this.arm(this.nextDue(sql));
-        log("held", { id, record_key: recordKey });
+        log("held", { id, record_key: redactKey(recordKey) });
         return;
       }
       const attempt = expiryFailedOf(sql);
@@ -419,7 +420,7 @@ export function withLifecycle<T extends TableParts>(Base: T) {
     /**
      * **An operator's expire** (spec §2.9), reached only with
      * `X-Yokohama-Operator`, which the Worker sets past its gate; logged
-     * `operator` with the action and the operator's address.
+     * `operator` with the action and the operator's digest (security S2b, D23).
      *
      * - `?force`: `force`.
      * - A plain expire: while a marker stands, the marker's 404, as every
@@ -431,7 +432,7 @@ export function withLifecycle<T extends TableParts>(Base: T) {
      *   (`held`, a retry's count).
      */
     protected async operate(id: string, address: string, force: boolean): Promise<Response> {
-      log("operator", { id, action: force ? "force" : "expire", address });
+      log("operator", { id, action: force ? "force" : "expire", operator: await callerDigest(address) });
       if (force) return this.force(id);
       const marker = markerOf(this.ctx.storage.sql);
       if (marker !== undefined) return respond(404, errorBody(markerSentence(marker)));
@@ -497,7 +498,7 @@ export function withLifecycle<T extends TableParts>(Base: T) {
       );
       this.instance?.drop();
       this.endSockets(id);
-      if (owed !== undefined) log("archive-owed-dropped", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+      if (owed !== undefined) log("archive-owed-dropped", { id, record_key: redactKey(owed.plan.record_key), attempt: owed.attempt });
       await this.deliverSlot();
       return hasTables(sql) ? respond(503, errorBody(UNCONFIRMED)) : respond(204, "");
     }

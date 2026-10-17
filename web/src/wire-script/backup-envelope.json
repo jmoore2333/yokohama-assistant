@@ -3,7 +3,7 @@
   "envelope": 1,
   "created_at": 1789000000,
   "origin": "wire.test",
-  "app_version": "0.6.1",
+  "app_version": "0.6.3",
   "semantics_rev": 7,
   "rules_hash": "d85445c479cb1ead",
   "games": [

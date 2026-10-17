@@ -5,11 +5,12 @@ import type { Archive } from "../src/archive";
 import * as clockModule from "../src/clock";
 import type { House } from "../src/house";
 import type { ArchiveOwed } from "../src/r2";
+import { callerDigest, redactKey } from "../src/redact";
 import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
 import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
 import { upsertDoc } from "../src/storage";
-import { failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
+import { failingList, failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
 import {
   ANOTHER_RECORD,
   BLUE,
@@ -1190,8 +1191,18 @@ describe("the browser's save (spec §2.6)", () => {
       [200, { leaf: "over", path, identical: true }],
       [409, { error: "a different record is archived under this id" }],
     ]);
-    const line = (outcome: string) => ({ event: `archive-${outcome}`, id: `archive:${caller}`, site: "browser", record_key: recordKey, detail: recordKey });
+    // Security S2b, D23: the object names itself by the caller's digest, and the key is logged redacted in both
+    // fields. Mutants: the object logging its name; `redactKey` dropped at either field.
+    const digest = await callerDigest(caller);
+    const line = (outcome: string) => ({
+      event: `archive-${outcome}`,
+      id: `archive:${digest}`,
+      site: "browser",
+      record_key: redactKey(recordKey),
+      detail: redactKey(recordKey),
+    });
     expect(archiveLines(outcomes.lines)).toEqual([line("landed"), line("identical"), line("conflict")]);
+    expect(JSON.stringify(outcomes.lines), "no persisted line spells the caller's address").not.toContain(caller);
     expect(await bucketText(recordKey), "the record as sent").toBe(record);
 
     const failer = "failer@t.test";
@@ -1202,10 +1213,134 @@ describe("the browser's save (spec §2.6)", () => {
         500,
         { error: `the archive could not be written: ${R2_UNREACHABLE}` },
       ]);
+      expect(JSON.stringify(refused.lines), "no persisted line spells the failing caller's address").not.toContain(failer);
     } finally {
       await failing.restore();
     }
     expect(await bucketText(`test/browser/${await segmentOf(failer)}/rev7/over/wire.json`)).toBeNull();
+  });
+
+  // The 48-cut in the WASM module against the NATIVE `caller_segment` (S2b Task 8; spec §9.6 correction 9). The
+  // address is 56 characters; its readable half, `…cut_at_wire.test`, is cut at 48. The segment below was
+  // confirmed three ways at the plan review (native, Python, the WASM module in the pool), and the key is READ BACK
+  // by listing the bucket, so the helper is not the only witness. Mutant M57: the module's cut or digest diverging
+  // from native (`readable.truncate(40)`) lands elsewhere and reds the literal; the pool helper's `.slice(0, 40)`
+  // reds the last line.
+  it("lands a 56-character address under the native segment: the readable half cut at 48, then the digest of the whole address", async () => {
+    const address = "a-very-long-local-part-for-the-forty-eight-cut@wire.test";
+    expect(address.length).toBe(56);
+    const res = await save(address, ARCHIVE_WALK[0]!.body);
+    expect([res.status, res.text]).toEqual([201, expect.stringContaining('"leaf":"over"')]);
+    const listed = await env.ARCHIVE!.list({ prefix: "test/browser/" });
+    // The bucket is shared with the file's earlier cells: read this caller's folder by its readable stem.
+    const segments = [...new Set(listed.objects.map((o) => o.key.split("/")[2]!))].filter((g) => g.startsWith("a-very-long-local-part"));
+    expect(segments, "the one folder the save landed under, read from the bucket").toEqual([
+      "a-very-long-local-part-for-the-forty-eight-cut_a-2e9a7b138059",
+    ]);
+    expect(segments[0], "and the pool helper's restatement agrees").toBe(await segmentOf(address));
+  });
+});
+
+describe("B12's Worker half — the share counted from a live listing (security S2b, decision D-5)", () => {
+  /** A browser's save of the walk's finished pair, through red's archive object, as the Worker forwards it. */
+  function browserSave(stub: DurableObjectStub<Archive>, who: string): Promise<Response> {
+    const body = JSON.stringify(ARCHIVE_WALK[0]!.body);
+    return stub.fetch("https://yokohama.test/api/archive", { method: "POST", headers: { "X-Yokohama-User": who, "content-type": "application/json" }, body });
+  }
+  const archiveStub = (who: string) => env.ARCHIVER.get(env.ARCHIVER.idFromName(`archive:${who}`));
+
+  // Mutants: the listing not handed to the module (every save SHARE_UNCOUNTED); the prefix wrong (an empty count
+  // under 256 fakes); `truncated` not forwarded (the truncated-listing cell below).
+  it("refuses a 257th record with the NAS's 507 and uploads nothing, and lands the 256th", async () => {
+    const who = "quota@t.test";
+    const prefix = `test/browser/${await segmentOf(who)}/`;
+    for (let i = 0; i < 255; i += 1) {
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.json`, "{}");
+      await env.ARCHIVE!.put(`${prefix}rev7/over/g${i}.table.json`, "{}");
+    }
+    const landed = await browserSave(archiveStub(who), who);
+    expect(landed.status, await landed.clone().text()).toBe(201);
+    const key = `${prefix}rev7/over/${(ARCHIVE_WALK[0]!.body as { table: string }).table.match(/"id": "([^"]+)"/)![1]}.json`;
+    expect(await bucketText(key)).not.toBeNull();
+    // Now 256 records. A 257th is a second save at another id: the walk's first send names the table `wire` in its
+    // TABLE text alone (the record carries no id — `replaceOnce` over it would throw), so rewrite the table only.
+    const second = JSON.stringify({
+      record: (ARCHIVE_WALK[0]!.body as { record: string }).record,
+      table: replaceOnce((ARCHIVE_WALK[0]!.body as { table: string }).table, '"id": "wire"', '"id": "wire-257"'),
+    });
+    const refused = await archiveStub(who).fetch("https://yokohama.test/api/archive", { method: "POST", headers: { "X-Yokohama-User": who, "content-type": "application/json" }, body: second });
+    expect(refused.status).toBe(507);
+    expect(JSON.parse(await refused.text())).toEqual({ error: "your archive here is full — 256 records or 128 MiB; nothing was written, and the game is kept on this device" });
+    expect(await bucketText(`${prefix}rev7/over/wire-257.json`), "nothing uploaded").toBeNull();
+    expect(await bucketText(`${prefix}rev7/over/wire-257.table.json`), "not even the table").toBeNull();
+  });
+
+  it("refuses a save whose share could not be listed, in the layer's 500 with the module's sentence, uploading nothing", async () => {
+    const who = "unlisted@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), failingList());
+    try {
+      const { result, lines } = await logsDuring(() => browserSave(stub, who));
+      expect(result.status).toBe(500);
+      expect(await result.text()).toContain("the caller's share was not counted before this save");
+      expect(lines.some((l) => (l as { event: string }).event === "archive-count-failed")).toBe(true);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
+
+  // The S2 stack review (lens 1, Minor 1): the listing's failure is logged through `redactKey`, as the put path's
+  // lines are (`logOutcome`). R2's real list error is not knowable offline, so the bucket here rejects with a message
+  // that spells the share's prefix, the shape S2b's premise gives R2's put messages. Mutant: `String(e)` logged bare
+  // (the readable half `listed_at_t.test` persists).
+  it("logs a listing failure that spells the share's prefix with the prefix's readable half dropped", async () => {
+    const who = "listed@t.test";
+    const stub = archiveStub(who);
+    const segment = await segmentOf(who);
+    const digest = segment.slice(segment.lastIndexOf("-") + 1);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), (_real, options) => Promise.reject(new Error(`list: invalid prefix ${options?.prefix}`)));
+    try {
+      const { result, lines } = await logsDuring(() => browserSave(stub, who));
+      expect(result.status).toBe(500);
+      const failed = lines.filter((l) => (l as { event: string }).event === "archive-count-failed") as { error: string }[];
+      expect(failed.map((l) => l.error), "the prefix by its digest alone").toEqual([`Error: list: invalid prefix test/browser/${digest}/`]);
+      expect(JSON.stringify(lines), "the readable half nowhere in the object's lines").not.toContain("listed_at_t.test");
+    } finally {
+      await swapped.restore();
+    }
+  });
+
+  // The SHELL forwarding `truncated` (M32 covers the module ignoring it): no pool listing exceeds 1,000 objects, so
+  // a bucket whose `list` answers truncated is swapped in through `swapBucket`'s list parameter (Task 4's run: the
+  // comment's mutant survived 242/242 without this cell; measured red under it — `expected 201 to be 507`).
+  it("a listing R2 reports truncated is a full share: the 507, nothing uploaded", async () => {
+    const who = "truncated@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), truncated: true, cursor: "more" }) as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
+  });
+
+  // The SHELL forwarding `size` (the review of Task 4: the shell forwards three values per listing in one statement
+  // — `truncated`, `key`, `size` — and the lesson is a mutant per value class; `size: 0` survived 243/243 without
+  // this cell, measured red under it — `expected 201 to be 507`). The sizes alone reach the bytes bound.
+  it("a listing whose sizes reach 128 MiB is a full share: the 507, nothing uploaded", async () => {
+    const who = "sized@t.test";
+    const stub = archiveStub(who);
+    const swapped = await swapBucket(stub, (real, k, v, o) => real.put(k, v, o), async (real, options) => ({ ...(await real.list(options)), objects: [{ key: `${options!.prefix}rev7/over/big.json`, size: 128 * 1024 * 1024 }] }) as unknown as R2Objects);
+    try {
+      const res = await browserSave(stub, who);
+      expect(res.status, await res.clone().text()).toBe(507);
+    } finally {
+      await swapped.restore();
+    }
+    expect(await bucketText(`test/browser/${await segmentOf(who)}/rev7/over/wire.json`)).toBeNull();
   });
 });
 

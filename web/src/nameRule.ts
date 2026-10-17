@@ -56,6 +56,20 @@ export function normalizeName(raw: string): NameVerdict {
   return typed.includes("@") ? address(typed) : plainName(typed);
 }
 
+/** The open door's own refusal of an address (security S2b, finding C1; decision D-2), in this client's words:
+ *  the server's `ADDRESS_NOT_A_NAME` says the same thing in its own. */
+export const ADDRESS_NOT_A_NAME_HERE = "Under the open door a name is a name — an address is not accepted here. Choose a plain name.";
+
+/** The name step's verdict (it exists under the open door alone): any `@` in the RAW input is refused FIRST, in the
+ *  door's own words — before the key grammar, whose sentence for a malformed address would tell an open-door
+ *  player how to write one — and then the key grammar's verdict (the server's `ClaimPolicy::NamesOnly` refuses the
+ *  same key with its own sentence). `normalizeName` itself stays the KEY grammar, pinned to `identity_cases.json`,
+ *  which still lists addresses as valid KEYS: they are, under Access. */
+export function openDoorVerdict(raw: string): NameVerdict {
+  if (raw.includes("@")) return { ok: false, reason: ADDRESS_NOT_A_NAME_HERE };
+  return normalizeName(raw);
+}
+
 /** The email shape `User::parse` has always taken: exactly one `@` with
  *  something on both sides, no whitespace or control character, at most 254
  *  bytes. */

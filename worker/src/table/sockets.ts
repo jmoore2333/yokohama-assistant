@@ -1,4 +1,14 @@
-import { closeReason, END_DELETED, END_GONE, endAtAdmission, frame, sentenceOf } from "../frames";
+import {
+  CLOSE_TOO_MANY,
+  closeReason,
+  END_DELETED,
+  END_GONE,
+  endAtAdmission,
+  frame,
+  sentenceOf,
+  TOO_MANY_OWN_TABLE,
+  TOO_MANY_TABLE,
+} from "../frames";
 import type { Bump, Replied } from "../module";
 import { log, respond } from "../respond";
 import type { TableParts } from "../table";
@@ -6,6 +16,32 @@ import type { TableParts } from "../table";
 /** The close reason of a deleted table's sockets: short and fixed, because
  *  the `end` frame before the close carries the meaning. */
 const DELETED_REASON = "this table was deleted";
+
+/** How many sockets one caller may hold on one table (security S2b, finding D3; decision D-4): the client holds
+ *  one per VISIBLE tab and none in a background tab (R-P8), and only OPEN sockets count (`openCount`: a socket in
+ *  CLOSING stays there as long as its client declines to answer the close), so eight is tabs plus a reconnect's
+ *  overlap, never a budget a feature may lean on. */
+export const SOCKETS_PER_CALLER = 8;
+/** How many sockets one table object holds in all: four seats and their spectators at eight each. The review's
+ *  reproduction held 300 and paid 301 module calls per bump; the platform's own ceiling is 32,768. */
+export const SOCKETS_PER_TABLE = 64;
+
+/** Which cap a new socket would cross — `own` for the caller's, `total` for the object's — or `undefined` to admit.
+ *  The total is judged first: at both, closing one's own tab would not help. */
+export function capVerdict(own: number, total: number, caps: { perCaller: number; total: number }): "own" | "total" | undefined {
+  if (total >= caps.total) return "total";
+  if (own >= caps.perCaller) return "own";
+  return undefined;
+}
+
+/** How many of `sockets` are OPEN — the count both caps read (Task 3's review). A refused or ended socket stays
+ *  CLOSING for as long as its client declines to answer the close (an unaccepted pool client never does; a hostile
+ *  one need not), and a count that included it would let a stranger's refusals lock a table's seated players out and
+ *  one identity fill the lobby (measured). The CLOSING sockets still occupy the object until the platform tears them
+ *  down: the pre-S2b shape, under the platform's 32,768. */
+export function openCount(sockets: WebSocket[]): number {
+  return sockets.filter((ws) => ws.readyState === WebSocket.OPEN).length;
+}
 
 /** The two transport routes this object answers itself rather than through
  *  `dispatch`, whose route table has no row for either (spec §2.3). */
@@ -33,7 +69,9 @@ export function withSockets<T extends TableParts>(Base: T) {
      * frames (spec §2.4, "Sockets"):
      *
      * - **200**: the socket is accepted, hibernatable, with the caller as its
-     *   attachment, and sent that reading at once — M6.3's first frame;
+     *   attachment, and sent that reading at once — M6.3's first frame; or, when
+     *   it would cross a cap (`capVerdict`; security S2b, D3), accepted, sent an
+     *   `end` that carries the cap's sentence and closed 4429;
      * - **403 or 404**: the socket is ACCEPTED, sent an `end` that carries the
      *   layer's sentence (the objects spec's §10.3 row, "Task 8's review,
      *   escalation 2", `docs/plans/2026-09-22-web-frontend-m6.5c-objects-spec.md`),
@@ -48,19 +86,35 @@ export function withSockets<T extends TableParts>(Base: T) {
      * The socket is accepted after the request's frames were sent, so it is
      * sent only its first frame, which already reads whatever those frames
      * announced. Every socket accepted here is tagged with the table's id (spec
-     * §2.4); nothing in this object reads the tag, since `sendFrames` frames
-     * every socket the object holds.
+     * §2.4); the cap reads the caller's tag (`getWebSockets(callerTag)`);
+     * `sendFrames` still frames every socket the object holds.
      */
-    protected admit(id: string, user: string | undefined, reply: Replied): Response {
+    protected admit(id: string, user: string | undefined, callerTag: string | undefined, reply: Replied): Response {
       const { status, body } = reply;
       if (status !== 200 && status !== 403 && status !== 404) return respond(status, body);
       const pair = new WebSocketPair();
       const [client, server] = [pair[0], pair[1]];
-      this.ctx.acceptWebSocket(server, [id]);
       if (status === 200) {
+        // **The caps** (security S2b, finding D3; decision D-4): the caller's own count under their tag, and the
+        // object's in all. A refused socket is ACCEPTED all the same, sent `end` with the sentence and closed
+        // 4429 — the shape `signal.ts` reads as `ended`; every screen that opens a table socket — the game screen,
+        // the dealing screen and the open table — takes the `end` frame's sentence through `usePolled`'s `onEnd`, as
+        // the lobby takes its own socket's (`house.ts`; on its strip since S2c Task 5). Answered unupgraded, the
+        // client's ladder would reconnect and hammer. A tag outlives hibernation, so the count does too; OPEN
+        // sockets alone are counted (`openCount`: a dangling close must not lock anyone out).
+        const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
+        const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
+        this.ctx.acceptWebSocket(server, callerTag === undefined ? [id] : [id, callerTag]);
+        if (over !== undefined) {
+          const sentence = over === "own" ? TOO_MANY_OWN_TABLE : TOO_MANY_TABLE;
+          server.send(frame("end", endAtAdmission(sentence)));
+          server.close(CLOSE_TOO_MANY, closeReason(sentence));
+          return new Response(null, { status: 101, webSocket: client });
+        }
         server.serializeAttachment({ user } satisfies Attachment);
         server.send(frame("signal", body));
       } else {
+        this.ctx.acceptWebSocket(server, [id]);
         const sentence = sentenceOf(body);
         server.send(frame("end", endAtAdmission(sentence)));
         server.close(status === 403 ? 4403 : 4404, closeReason(sentence ?? ""));

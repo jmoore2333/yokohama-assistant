@@ -6,6 +6,7 @@ import { createModule, type Reply } from "../gen/factory.js";
 import * as configModule from "../src/config";
 import { closeReason, frame } from "../src/frames";
 import { readReply, type Bump } from "../src/module";
+import { callerTag } from "../src/redact";
 import { ensureTables, upsertDoc } from "../src/storage";
 import { Table } from "../src/table";
 import { OWED_PUMP_JSON, OWED_PUMP_TABLE_JSON } from "./fixtures.gen";
@@ -194,17 +195,20 @@ describe("the table's sockets (spec §2.4)", () => {
     expect(blueFirst).toBe(frame("signal", blueEvents));
   });
 
-  // Spec §2.4: a socket is accepted with the table's id as its tag. Nothing
-  // reads the tag today — `sendFrames` frames every socket the object holds —
-  // so this cell keeps a later `getWebSockets(id)` honest. Mutant: any other
-  // tag.
+  // Spec §2.4: a socket is accepted with the table's id as its tag — and,
+  // since security S2b's caps (D3), the caller's tag beside it, which the cap
+  // reads (`test/caps.test.ts`). Nothing reads the id's tag today —
+  // `sendFrames` frames every socket the object holds — so this cell keeps a
+  // later `getWebSockets(id)` honest. The tags are compared as a SET:
+  // `getWebSockets()` is not in acceptance order (measured: blue's socket
+  // listed before red's). Mutant: any other tag.
   it("every socket is accepted under the table's id as its tag", async () => {
     const id = "tagged";
     const stub = await seedPlaying(id);
     const tabs = [await openTab(stub, RED, id), await openTab(stub, BLUE, id)];
     await Promise.all(tabs.map((tab) => tab.until(1)));
     const tags = await runInDurableObject(stub, (_o, state) => state.getWebSockets().map((ws) => state.getTags(ws)));
-    expect(tags).toEqual([[id], [id]]);
+    expect(tags.map((t) => t.join("|")).sort()).toEqual([`${id}|${await callerTag(RED)}`, `${id}|${await callerTag(BLUE)}`].sort());
     expect(await runInDurableObject(stub, (_o, state) => state.getWebSockets(id).length)).toBe(2);
   });
 

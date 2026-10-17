@@ -91,9 +91,10 @@ async fn main() {
     //
     // - Under `open` the header is whatever the caller sends. It
     //   authenticates the DOOR, not the seat: two callers sending two different
-    //   emails ARE two different people to this server, seated and scoped
+    //   NAMES ARE two different people to this server, seated and scoped
     //   separately — it simply cannot verify that either is who they say, so
-    //   anyone past the door can be anyone.
+    //   anyone past the door can be any name. (An address is no caller here:
+    //   the production key rule refuses one, security S2b, C1.)
     // - Under `cf-access` and `worker` the trusted header is one only that
     //   deployment's own edge can set — which is worth exactly nothing if the
     //   port is reachable without going through the edge, since anyone who can
@@ -184,6 +185,15 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    // **No header set** (security S2a, decision D-1): a dist without `headers.json` — a client build older than
+    // 0.6.2, or none — still serves, and says so once here, where the layer's own prints do not go.
+    if state.headers.is_empty() {
+        eprintln!(
+            "{} has no {} — no security header is served; the client build is older than 0.6.2 or absent",
+            state.dist.display(),
+            yokohama_web::assets::HEADERS_FILE
+        );
+    }
     // Hourly, the first pass a minute after start (spec §2.4).
     if state.ttls.table.is_some() {
         tokio::spawn(yokohama_web::sweep::run(

@@ -6,13 +6,22 @@ import type { Env } from "./env";
 // in for one; node has no R2.
 const BUCKET = {} as R2Bucket;
 
-/** An `Env` with `vars` set and, when asked, the bucket bound — at the WORKER
- *  door unless `vars` names another, or `undefined` for none (M6.5c2): the
- *  door has no default, and every other cell here is about another variable.
- *  The variables are `unknown` here because a wrangler `vars` entry can be a
- *  number or a boolean, and those are cells too. */
+// The two Rate Limiting bindings (security S2b, C2), which `shellConfig`
+// requires: TWO objects, so the uncrossed cell below can see a crossing — one
+// shared fake could not. The `RateLimit` annotation is what keeps `env`'s
+// `as Env` cast from TS2352.
+const FAKE_CREATE: RateLimit = { limit: async () => ({ success: true }) };
+const FAKE_WRITE: RateLimit = { limit: async () => ({ success: true }) };
+const LIMITS = { CREATE_LIMIT: FAKE_CREATE, WRITE_LIMIT: FAKE_WRITE };
+
+/** An `Env` with `vars` set, the two rate-limit bindings bound and, when
+ *  asked, the bucket bound — at the WORKER door unless `vars` names another,
+ *  or `undefined` for none (M6.5c2): the door has no default, and every other
+ *  cell here is about another variable. `vars` may unbind a binding by naming
+ *  it `undefined`. The variables are `unknown` here because a wrangler `vars`
+ *  entry can be a number or a boolean, and those are cells too. */
 function env(vars: Record<string, unknown> = {}, bucket = false): Env {
-  return { ASSETS: {} as Fetcher, ...(bucket ? { ARCHIVE: BUCKET } : {}), YOKOHAMA_WEB_IDENTITY: "worker", ...vars } as Env;
+  return { ASSETS: {} as Fetcher, ...LIMITS, ...(bucket ? { ARCHIVE: BUCKET } : {}), YOKOHAMA_WEB_IDENTITY: "worker", ...vars } as Env;
 }
 
 /** The configuration, or the cell fails with the refusal it got instead. */
@@ -284,6 +293,30 @@ describe("YOKOHAMA_TURNSTILE (cycle F, R-FP2): a deploy declaration the shell ne
     const declared: Env["YOKOHAMA_TURNSTILE"] = "on";
     const absent: Env["YOKOHAMA_TURNSTILE"] = undefined;
     expect([declared, absent]).toEqual(["on", undefined]);
+  });
+});
+
+// Security S2b, finding C2 (decision D-3): the two Rate Limiting bindings are
+// both required — a configuration lacking either is refused by name, the
+// Worker's form of the NAS refusing to start, so no deployment runs
+// unthrottled by omission (fail closed, as `ARCHIVE` under `r2`). Mutants:
+// `limits()` not refusing an absent binding; the two bindings handed through
+// crossed.
+describe("the two Rate Limiting bindings (security S2b, C2)", () => {
+  it("refuses a configuration lacking WRITE_LIMIT, naming it", () => {
+    expect(refused(env({ WRITE_LIMIT: undefined }))).toBe(
+      "the WRITE_LIMIT rate-limit binding is missing — every deployable configuration binds it in its ratelimits block (security S2b)",
+    );
+  });
+  it("names CREATE_LIMIT first when both are missing", () => {
+    expect(refused(env({ CREATE_LIMIT: undefined, WRITE_LIMIT: undefined }))).toBe(
+      "the CREATE_LIMIT rate-limit binding is missing — every deployable configuration binds it in its ratelimits block (security S2b)",
+    );
+  });
+  it("hands both bindings through by identity, uncrossed", () => {
+    const c = accepted(env());
+    expect(c.limits.create).toBe(FAKE_CREATE);
+    expect(c.limits.write).toBe(FAKE_WRITE);
   });
 });
 

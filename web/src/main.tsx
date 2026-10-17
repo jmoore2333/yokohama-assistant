@@ -4,6 +4,7 @@ import { App } from "./App";
 import { turnstileSiteKey } from "./buildValues";
 import { Challenge } from "./Challenge";
 import { Footer } from "./Footer";
+import { FRAMED_SENTENCE, framed } from "./framed";
 import { captureInstallPrompt } from "./install";
 import "./styles.css";
 
@@ -23,10 +24,16 @@ const challenge = Boolean(turnstileSiteKey());
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html must carry a #root element");
-createRoot(root).render(
-  <StrictMode>
-    <App />
-    <Footer />
-    {challenge && <Challenge />}
-  </StrictMode>,
-);
+// **Inside another page's frame, nothing renders** (security S2a, finding B4): the host's `X-Frame-Options`
+// keeps the page out of a frame, and this is the page's own word for the frame that got through.
+if (framed(window)) {
+  root.textContent = FRAMED_SENTENCE;
+} else {
+  createRoot(root).render(
+    <StrictMode>
+      <App />
+      <Footer />
+      {challenge && <Challenge />}
+    </StrictMode>,
+  );
+}

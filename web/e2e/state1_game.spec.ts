@@ -2,10 +2,10 @@
 // row 114: "a plain two-person game never measured"). Two PLAIN contexts — no
 // credential, no claimed header — each named at the client's own name step
 // (`signIn`), so on a host running `YOKOHAMA_WEB_IDENTITY=open` (the door
-// window's state 1, or the local binary) the typed address IS the identity.
-// The names are address-shaped, `state1-a@window.test` and
-// `state1-b@window.test`: the name step takes an address as well as a plain
-// name (`nameRule.ts`), and an address is the shape the tally's other walks use.
+// window's state 1, or the local binary) the typed name IS the identity.
+// The names are plain, `state1-a` and `state1-b`, on every target: under the
+// open door a name is a name (security S2b, C1), and the name step refuses an
+// address before any request (`openDoorVerdict`, `nameRule.ts`).
 //
 // A opens "Window game" (Blue seat open, no password); B opens the link and
 // joins as Blue; both keep a card; the pages then play until EACH player has
@@ -55,8 +55,8 @@ import { expect, newContextWithoutWorker, test } from "./sw";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
-const NAME_A = "state1-a@window.test";
-const NAME_B = "state1-b@window.test";
+const NAME_A = "state1-a";
+const NAME_B = "state1-b";
 const TABLE = "Window game";
 /** Applied moves each player must make. */
 const EACH = 10;

@@ -35,7 +35,11 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  *
  * Console ERRORS and uncaught exceptions only. Warnings are not collected: a
  * warning that is not a defect would make this a list nobody reads, and React's
- * own development warnings do not reach a production build anyway.
+ * own development warnings do not reach a production build anyway. **The one
+ * line read at ANY console type is a CSP violation** (security S2a, decision
+ * D-9): Chromium logs a Report-Only violation at `info` and an enforced one at
+ * `error`, so a gate on the type alone would read nothing of a Report-Only
+ * release.
  *
  * **Failed responses are filtered to THIS ORIGIN.** The reason this was written
  * has since been REMOVED — `index.html` pulled two font families from
@@ -66,13 +70,17 @@ export const DEAL_ANSWERS_PER_PAGE = 1;
  * `/result` is expected only where a test opens that panel mid-game, and
  * anywhere else it is still a finding.
  *
- * **Under `LIVE`, and only there, TWO more errors are forgiven**, each COUNTED
+ * **Under `LIVE`, and only there, TWO more lines are forgiven**, each COUNTED
  * apart so a live run says which allow-list it spent: the Web Analytics
- * beacon's CORS block ([`isBeaconCorsError`]) in `forgiven`, and, since cycle
+ * beacon's CORS block ([`isBeaconCorsError`]) in `forgiven`; and, since cycle
  * F, the release feed's failure while the repository is private
  * ([`isReleaseFeedError`]) in `feedForgiven` — its own counter, because the live
  * specs print `forgiven` as the beacon's (Task 8's review, Important 1).
- * Locally the switch is off and the lines below it never run.
+ * Locally the switch is off and the lines below it never run. **And since
+ * security S2c every CSP line is breakage on every tier**: the enforced policy
+ * carries the fixed nonce Cloudflare copies onto the script it injects, so
+ * nothing is forgiven, and a CSP line at the live tier is a finding (R-6's
+ * fallback restores the forgiveness at `error`).
  *
  * **And in BOTH modes, the dealing screen's designed 409** ([`isDealAnswer`],
  * M6.5c's live tier, finding 3): both of its lines — the response and
@@ -94,9 +102,9 @@ export function watchForBreakage(
     // Chromium logs its own `Failed to load resource … (409 Conflict)` for the
     // same response, so an allowed status has to be forgiven in both channels
     // or the allowlist only half works.
-    if (m.type() !== "error") return;
     const text = m.text();
-    if (expected.some((e) => text.includes(String(e.status)))) return;
+    if (m.type() !== "error" && !CSP_VIOLATION.test(text)) return;
+    if (!CSP_VIOLATION.test(text) && expected.some((e) => text.includes(String(e.status)))) return;
     // The CONSOLE arm is the only one the beacon reaches: its load fails
     // cross-origin, so nothing under `BASE_URL` answers it and the response
     // arm below never sees it.
@@ -113,7 +121,7 @@ export function watchForBreakage(
       watch.dealAnswers += 1;
       return;
     }
-    failures.push(`console.error: ${text}`);
+    failures.push(`console.${m.type()}: ${text}`);
   });
   page.on("pageerror", (e) => failures.push(`uncaught: ${e.message}`));
   page.on("response", (r) => {
@@ -221,6 +229,14 @@ function fromTheBeacon(url: string): boolean {
   return url === BEACON_PREFIX || url.startsWith(`${BEACON_PREFIX}/`) || url.startsWith(`${BEACON_PREFIX}?`);
 }
 
+/** Any CSP violation line, enforced or Report-Only, as Chromium 143–153 words it (MEASURED, the S2a plan review):
+ *  "… violates the following [report-only ]Content Security Policy directive …". Report-Only logs at `info`
+ *  (`frame-src`'s and `frame-ancestors`' at `error`), an enforced INLINE or SOURCE refusal at `error` (an enforced
+ *  `eval` refusal prints no console line, only an EvalError — the built client has neither `eval(` nor
+ *  `new Function(`) — so the console handler reads a CSP line at ANY type: the type gate alone would read nothing
+ *  of a Report-Only release. */
+const CSP_VIOLATION = /\bviolates the following (?:report-only )?Content Security Policy directive\b/;
+
 /**
  * The release feed's address as a production build derives it from a GitHub
  * project link (`web/scripts/build-values.mjs`'s `defaultFeedFor`):
@@ -292,8 +308,20 @@ export interface Game {
   id: string;
 }
 
+/** An identity, as the target names one: under the open door the local tier's binary is `production`, `NamesOnly`
+ *  (security S2b, C1): a caller is a plain NAME; the live tier's dev door names a `.test` ADDRESS (B6), so an
+ *  identity follows the target. `domain` keeps a spec's own live domain — `exit_game`'s `x@exit.test`,
+ *  `readme_shots`' `ben@readme.test`, whose README alt text a live re-shot must still match. */
+export const who = (name: string, domain = "e2e"): string => (LIVE ? `${name}@${domain}.test` : name);
+
 /** Who the walk plays as. */
-export const WALKER = "walker@e2e.test";
+export const WALKER = who("walker");
+
+/** `text` with every regular-expression metacharacter escaped, for a pattern that must match it literally: a name,
+ *  or a `.test` address and its dots, inside a sentence the page draws. */
+export function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /**
  * Go to the app and get through the door, exactly as a player does.
@@ -303,12 +331,16 @@ export const WALKER = "walker@e2e.test";
  * stand-in and said so. It is a form now, so the walk types into it — which is
  * the only thing that also tests the screen that puts the name there.
  *
- * The form is the NAME STEP since M6.5c2 (the open door): it takes an address
- * as well as a name, and the walk types the address it has always used.
+ * The form is the NAME STEP since M6.5c2 (the open door), and since security
+ * S2b (C1) it refuses an address: under the open door a name is a name. So the
+ * walk types an identity as [`who`] spells it for the target — a plain name on
+ * the local tier, a `.test` address live, where the dev door names the context
+ * and the step is not drawn.
  *
- * **`email` is a parameter because two browsers are two people.** Every walk but
+ * **`name` is a parameter because two browsers are two people** — a plain name
+ * on the local tier, a `.test` address live. Every walk but
  * one signs in as [`WALKER`], which is why it is the default; `two_browsers`
- * signs its two contexts in under two different addresses, and the identity a
+ * signs its two contexts in under two different identities, and the identity a
  * context holds is the whole subject there.
  *
  * Idempotent, because several specs navigate more than once in a test and the
@@ -324,19 +356,18 @@ export const WALKER = "walker@e2e.test";
  * own door stands on the lobby, which is where every caller of this helper is
  * headed anyway.
  */
-export async function signIn(page: Page, email: string = WALKER, url = "/#/lobby"): Promise<void> {
+export async function signIn(page: Page, name: string = WALKER, url = "/#/lobby"): Promise<void> {
   await page.goto(url);
   const step = page.getByRole("heading", { name: "Choose a name" });
   // Signed in reads two ways: the lobby's corner, whose title is the identity
   // (M6.5c2), and the "You are …" strip every other screen still draws.
-  const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const signedIn = page
     .locator(".identity-corner")
-    .getByTitle(email, { exact: true })
-    .or(page.getByText(new RegExp(`^You are ${escaped}$`)));
+    .getByTitle(name, { exact: true })
+    .or(page.getByText(new RegExp(`^You are ${escaped(name)}$`)));
   await expect(step.or(signedIn).first()).toBeVisible();
   if (await step.count()) {
-    await page.getByLabel("Name", { exact: true }).fill(email);
+    await page.getByLabel("Name", { exact: true }).fill(name);
     await page.getByRole("button", { name: "Continue" }).click();
   }
   await expect(signedIn.first()).toBeVisible();

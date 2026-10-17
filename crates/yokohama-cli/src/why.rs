@@ -384,18 +384,23 @@ fn account(
     Ok(render(a.reconstruction, a.mv, a.explain, &a.state, rules))
 }
 
-/// [`account`] without the wording — see [`WhyAccount`].
-///
-/// Every refusal in this module is raised here, so the two surfaces cannot
-/// disagree about what is explainable: the screen is this function's output
-/// with words on it, and nothing else consults the record.
-pub fn account_parts(
-    mode: TrackingMode,
-    record: &GameRecord,
-    rules: &Rules,
-    bots: &BotSeats,
-    arg: Option<usize>,
-) -> Result<WhyAccount, Refusal> {
+/// **Where `why` looks, before any search** (security S2c, decision D-6): the index `arg` names or the last
+/// explainable bot move, the state that move was decided in (`state_at(record, n)`), its mover and the mover's
+/// contestant, with every pre-search refusal in [`account_parts`]'s order — pure replay that runs no search, so a
+/// caller that stops here pays the replay alone, which the old flow paid too. The layer's `why` reads the
+/// requester's visibility on this and reaches [`account_from`] only when the account may be served.
+pub struct Located {
+    pub index: usize,
+    pub seat: PlayerId,
+    pub state: GameState,
+    pub recorded: Move,
+    pub contestant: Contestant,
+    pub recorded_version: Option<u32>,
+    pub current_version: u32,
+}
+
+/// The pre-search half of [`account_parts`]: what it reads and every refusal it raises are [`Located`]'s doc.
+pub fn locate(mode: TrackingMode, record: &GameRecord, rules: &Rules, arg: Option<usize>) -> Result<Located, Refusal> {
     if matches!(mode, TrackingMode::Live) {
         return Err(Refusal::LiveMode);
     }
@@ -408,26 +413,30 @@ pub fn account_parts(
     let RecordedEvent::Move(recorded) = &record.events[index] else {
         return Err(Refusal::NotAMove { index, kind: event_kind(&record.events[index]) });
     };
-
     // The state the mover DECIDED IN — `state_at(record, n)` is the state
     // after the first n events, which is the position event n was chosen at.
     // `index < events` above, so the past-the-end arm of `state_at` is
     // unreachable from here; its message is still never printed raw (its
     // "replay failed at event N" framing would name an event that replayed
     // perfectly).
-    let state = state_at(record, index, rules)
-        .map_err(|e| Refusal::Replay { index, message: e.message })?;
+    let state = state_at(record, index, rules).map_err(|e| Refusal::Replay { index, message: e.message })?;
     let seat = state.current_player;
     let contestant = match read_seat(record, seat) {
         SeatReading::Explainable(contestant) => contestant,
         SeatReading::Human => return Err(Refusal::HumanSeat { index, seat }),
         SeatReading::Rung(rung) => return Err(Refusal::Rung { index, seat, rung }),
         SeatReading::Diagnostic(why) => return Err(Refusal::Diagnostic { index, seat, why }),
-        SeatReading::Unknown { controller, why } => {
-            return Err(Refusal::UnknownController { index, seat, controller, why })
-        }
+        SeatReading::Unknown { controller, why } => return Err(Refusal::UnknownController { index, seat, controller, why }),
     };
+    let (_, current_version, _) = contestant.descriptor();
+    let recorded_version = seat_provenance(record, seat).map(|p| p.version);
+    Ok(Located { index, seat, state, recorded: recorded.clone(), contestant, recorded_version, current_version })
+}
 
+/// The search half: the decision reconstructed from the located state under the pump's own key, gated against the
+/// record, the explanation and the forced fact — [`account_parts`]'s second half, verbatim.
+pub fn account_from(located: Located, bots: &BotSeats, rules: &Rules) -> Result<WhyAccount, Refusal> {
+    let Located { index, seat, state, recorded, contestant, recorded_version, current_version } = located;
     // THE PUMP'S OWN KEY: `BotSeats::decision_seed(n)` over the RECONCILED
     // stream seed — the one `from_provenance` kept (first bot seat's wins, and
     // a conflict has already warned at load). Deliberately not the mover's own
@@ -438,43 +447,39 @@ pub fn account_parts(
     let decision_seed = bots.decision_seed(index);
     let decision = bot::decide(contestant, &state, rules, seat, decision_seed)
         .map_err(|e| Refusal::Reconstruction { index, seat, why: e.to_string() })?;
-
-    let (controller, current_version, _) = contestant.descriptor();
-    let recorded_version = seat_provenance(record, seat).map(|p| p.version);
-    if decision.mv != *recorded {
+    let (controller, _, _) = contestant.descriptor();
+    if decision.mv != recorded {
         return Err(Refusal::Mismatch(Box::new(Mismatch {
             index,
             seat,
             controller: contestant.echo(),
             reconstructed: format!("{:?}", decision.mv),
-            recorded: describe::describe_move(recorded, &state, rules),
+            recorded: describe::describe_move(&recorded, &state, rules),
             recorded_version,
             current_version,
         })));
     }
-    let explain = decision
-        .explain
-        .ok_or_else(|| Refusal::Unaccounted { index, contestant: controller.clone() })?;
-
+    let explain = decision.explain.ok_or_else(|| Refusal::Unaccounted { index, contestant: controller.clone() })?;
     // THE FORCED-POSITION FACT, read off the engine rather than off the search
     // ([`FORCED_LEAD`]). Computed here, past every refusal, so a screen that is
     // never rendered never pays for the exhaustive enumeration.
     let forced = get_legal_moves(&state, rules).len() == 1;
-
     Ok(WhyAccount {
-        reconstruction: Reconstruction {
-            contestant,
-            index,
-            seat,
-            decision_seed,
-            recorded_version,
-            current_version,
-            forced,
-        },
-        mv: decision.mv,
+        reconstruction: Reconstruction { contestant, index, seat, decision_seed, recorded_version, current_version, forced },
+        mv: recorded,
         explain,
         state,
     })
+}
+
+/// [`account`] without the wording — see [`WhyAccount`].
+///
+/// Every refusal in this module is raised here, by its two halves [`locate`] and
+/// [`account_from`], so the two surfaces cannot disagree about what is
+/// explainable: the screen is this function's output with words on it, and
+/// nothing else consults the record.
+pub fn account_parts(mode: TrackingMode, record: &GameRecord, rules: &Rules, bots: &BotSeats, arg: Option<usize>) -> Result<WhyAccount, Refusal> {
+    account_from(locate(mode, record, rules, arg)?, bots, rules)
 }
 
 /// Which grouping line a `counter_rows` name belongs on.
@@ -1799,6 +1804,54 @@ mod tests {
             screen,
             "the rendered parts ARE the screen",
         );
+    }
+
+    /// **`account_parts` is `locate` then `account_from`, and the halves meet exactly** (security S2c, decision
+    /// D-6 — the layer reads the requester's visibility between them, so a withheld answer never reaches
+    /// `decide`): on the module's vs-bot fixture the located index, seat, recorded move and versions equal the
+    /// account's; a record with no bot move refuses from `locate` with `NoBotMoveYet`; an out-of-range index with
+    /// `OutOfRange` — every pre-search refusal is `locate`'s. `locate` is pure replay: this cell holds no bot seats
+    /// at all for its first call.
+    #[test]
+    fn locate_is_the_pre_search_half_of_account_parts_and_the_halves_agree() {
+        // The fixture is `the_account_parts_are_what_the_screen_is_made_of`'s own three lines:
+        let mut r = bot_repl(4, PROVISIONAL_DEFAULT_BOT);
+        let rules = Rules::standard();
+        let branching = play_to_a_branching_bot_move(&mut r);
+        let (session, bots) = (&r.session, &r.bots);
+        let none_yet = human_repl(4);
+        assert!(matches!(locate(TrackingMode::Simulation, none_yet.session.record(), &rules, None), Err(Refusal::NoBotMoveYet)));
+        let located = locate(TrackingMode::Simulation, session.record(), &rules, None).expect("a bot move to locate");
+        let account = account_parts(TrackingMode::Simulation, session.record(), &rules, bots, None).expect("an account");
+        assert_eq!((located.index, located.seat), (account.reconstruction.index, account.reconstruction.seat));
+        assert_eq!(located.recorded, account.mv);
+        assert_eq!(located.recorded_version, account.reconstruction.recorded_version);
+        assert_eq!(located.current_version, account.reconstruction.current_version);
+        assert_eq!(located.contestant.echo(), account.reconstruction.contestant.echo());
+        let again = account_from(locate(TrackingMode::Simulation, session.record(), &rules, None).unwrap(), bots, &rules).unwrap();
+        assert_eq!(again.reconstruction.decision_seed, account.reconstruction.decision_seed);
+        assert_eq!(again.mv, account.mv);
+        assert!(matches!(locate(TrackingMode::Simulation, session.record(), &rules, Some(10_000)), Err(Refusal::OutOfRange { .. })));
+        assert!(matches!(locate(TrackingMode::Live, session.record(), &rules, None), Err(Refusal::LiveMode)));
+        let at = locate(TrackingMode::Simulation, session.record(), &rules, Some(branching)).expect("the branching bot move");
+        let RecordedEvent::Move(recorded) = &session.record().events[branching] else { panic!("fixture: a move") };
+        let version = PROVISIONAL_DEFAULT_BOT.descriptor().1;
+        assert_eq!((at.index, at.seat, at.contestant), (branching, PlayerId::new(1), PROVISIONAL_DEFAULT_BOT));
+        assert_eq!((at.current_version, at.recorded_version), (version, Some(version)));
+        assert_eq!(&at.recorded, recorded);
+        // **M40's full catcher** (M40a, Task 6's probe): ONE human move after the bot's, so the record's last move
+        // is seat 0's while a bot move exists — bare `why` addresses the LAST EXPLAINABLE BOT move, not the last
+        // move. The variant that keeps `last_explainable_bot_move`'s refusal and then takes the last move passed
+        // every other cell in this crate.
+        assert!(!r.bots.is_bot(r.session.state().current_player), "premise: the fixture stops on the human's turn");
+        let human = r.session.legal()[0].clone();
+        r.session.apply(human, vec![]).expect("a move from the engine's own list applies");
+        let record = r.session.record();
+        let last = record.events.len() - 1;
+        assert_eq!(move_indices_of(record, &rules, PlayerId::new(0)).last(), Some(&last), "premise: the record's last event is seat 0's move");
+        let last_bot = *move_indices_of(record, &rules, PlayerId::new(1)).last().expect("fixture: the bot has moved");
+        let bare = locate(TrackingMode::Simulation, record, &rules, None).expect("a bot move to locate");
+        assert_eq!(bare.index, last_bot, "bare `why` addresses the last explainable BOT move, not the last move");
     }
 
     /// A refusal is raised in ONE place. When the parts refuse, the screen

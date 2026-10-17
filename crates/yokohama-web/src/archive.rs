@@ -201,9 +201,16 @@ pub const SEGMENT_READABLE: usize = 48;
 /// forty-eight), and a second preimage on forty-eight bits is about 2^48
 /// hashes, which can be bought. The door is: behind Cloudflare Access a
 /// person's address is the one Access vouched for, off the owner's
-/// allow-list, so no one picks it; and a door that lets a caller claim an
-/// address — the open door, the Worker's dev door — lets them claim the
-/// target's outright, so a collision buys nothing there.
+/// allow-list, so no one picks it; a door that lets a caller claim an
+/// address — the Worker's dev door — lets them claim the target's outright,
+/// so a collision buys nothing there; and the open door admits no address
+/// (security S2b, C1), only a NAME, which no purchase can steer onto an
+/// address's folder: a name's readable half is the name itself with each
+/// space read as `_` (a name holds at most 32 characters and no `@`), so the
+/// names that share any one readable half differ only in which of its
+/// underscores are spaces — fewer than 2^31 of them, against forty-eight
+/// digest bits. Two names colliding buys nothing either: under the open door
+/// a name is claimed outright.
 pub const SEGMENT_DIGEST: usize = 12;
 
 /// The directory a browser's saves are filed under: the address made readable
@@ -658,6 +665,33 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// **A crafted bare name equal to another key's segment names its own folder** (the S1 stack review's
+    /// archive lens; spec §9.6 correction 9): since S1c every segment ends in twelve hex of its OWN key's digest, so
+    /// a name spelled like another key's whole segment gets a segment of its own — the readable half, `-`, its
+    /// own digest — and no legacy folder exists for a name to equal (the window renamed every one). A segment too
+    /// long to be a name (a cut address's, over 32) is no key at all.
+    #[test]
+    fn a_name_spelled_like_another_keys_segment_files_under_its_own_segment() {
+        use crate::identity::User; // the test module does not import it (E0433 ×4–6 without this; measured)
+        // The digest is over the whole KEY, not its readable half: a literal three independent computations agree
+        // on (native, Python, the WASM module). For a crafted NAME the key IS the readable half, so a mutant
+        // digesting the readable half survives the relative assertions below; this literal row is where it dies.
+        assert_eq!(
+            caller_segment(&User::parse("alice@corp.test").unwrap()),
+            "alice_at_corp.test-dde4a5b96f79",
+            "the digest is over the whole KEY (native, Python and the WASM module agree)"
+        );
+        for key in ["ben castle", "alice@corp.test"] {
+            let target = caller_segment(&User::parse(key).unwrap());
+            let crafted = User::parse(&target).unwrap_or_else(|e| panic!("{target} is a legal name: {e}"));
+            let own = caller_segment(&crafted);
+            assert_ne!(own, target, "{key}: the crafted name's folder is not the target's");
+            assert!(own.starts_with(&format!("{target}-")), "{key}: the target is the crafted name's readable half");
+        }
+        let long = caller_segment(&User::parse("a-very-long-local-part-for-the-forty-eight-cut@wire.test").unwrap());
+        assert!(User::parse(&long).is_err(), "a cut address's segment is longer than a name may be: no key at all");
     }
 
     /// **The legacy mapping is what it was, and the new segment differs from it

@@ -22,7 +22,7 @@ import type { Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { DESKTOP, look, noSidewaysScroll, noticeIsDrawn, PHONE, signIn, startGame, WALKER, watchForBreakage } from "./harness";
+import { DESKTOP, look, noSidewaysScroll, noticeIsDrawn, PHONE, signIn, startGame, WALKER, watchForBreakage, who } from "./harness";
 
 // No browser, and `YOKOHAMA_WEB_E2E_OPTIONAL=1`: SKIP, visibly.
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -238,15 +238,15 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
   request,
 }) => {
   const watch = watchForBreakage(page);
-  const as = (who: string) => ({ "x-yokohama-claimed-user": who });
-  /** A table, opened over the API as `who` (the open door reads the header;
+  const as = (name: string) => ({ "x-yokohama-claimed-user": name });
+  /** A table, opened over the API as `name` (the open door reads the header;
    *  `it_explains.spec.ts`'s shape), and its id. */
-  const create = async (who: string, data: Record<string, unknown>): Promise<string> => {
-    const res = await request.post("/api/games", { headers: as(who), data });
+  const create = async (name: string, data: Record<string, unknown>): Promise<string> => {
+    const res = await request.post("/api/games", { headers: as(name), data });
     expect(res.status(), await res.text()).toBe(201);
     return String(((await res.json()) as { id: string }).id);
   };
-  const OTHER = "someone@e2e.test";
+  const OTHER = who("someone");
   const opened: [string, string][] = [];
   try {
     opened.push([
@@ -473,7 +473,7 @@ test("the lobby at 1440 and at 390: rows of name, seats and one action; the chat
   } finally {
     // The run's server is scratch, but a later spec's lobby should not list
     // this cell's tables.
-    for (const [id, who] of opened) await request.delete(`/api/games/${id}`, { headers: as(who) });
+    for (const [id, owner] of opened) await request.delete(`/api/games/${id}`, { headers: as(owner) });
   }
   expect(watch.failures).toEqual([]);
 });
@@ -508,7 +508,7 @@ test("the open table and the device card at 390: every control a thumb presses i
   request,
 }) => {
   const watch = watchForBreakage(page);
-  const OTHER = "someone@e2e.test";
+  const OTHER = who("someone");
   const res = await request.post("/api/games", {
     headers: { "x-yokohama-claimed-user": WALKER },
     data: {
@@ -524,14 +524,14 @@ test("the open table and the device card at 390: every control a thumb presses i
   try {
     // The name step is signed through at desktop width, where the corner shows
     // the identity `signIn` waits for; the phone is the reading that follows.
-    const asAt390 = async (who: string) => {
+    const asAt390 = async (name: string) => {
       await page.setViewportSize(DESKTOP);
       // A different person in the same browser: forget the claimed name and
       // load the page afresh, since a hash-only navigation reloads nothing.
       await page.goto("/");
       await page.evaluate(() => localStorage.removeItem("yokohama.claimed_user"));
       await page.goto("about:blank");
-      await signIn(page, who, `/#/t/${id}`);
+      await signIn(page, name, `/#/t/${id}`);
       await page.setViewportSize(PHONE);
     };
 

@@ -30,6 +30,21 @@
 //! or two swapped ones would rename every folder wrongly, and nothing else
 //! runs the subcommand.
 //!
+//! And since security S2a (decision D-1), the header set on the seed rule's
+//! path: `production` reads the scratch `dist`'s `headers.json`,
+//! so the running binary answers `/` and `/api/health` with its pairs, and
+//! `no-store` beside them under `/api`; a `dist` with no file starts and
+//! says so on stderr; a malformed file exits 1 before it listens, naming
+//! the file.
+//!
+//! And since the S2 stack review (lens 2, Important 1), the stream cap's slot
+//! on the binary: a caller's eight table streams held open over real sockets,
+//! each read past its first frame, make the ninth a 429 in
+//! `TOO_MANY_STREAMS_CALLER`'s words, and closing one socket admits the next.
+//! The slot rides the SSE body, and only a body hyper polls and drops proves
+//! it: the in-process cells hold an unpolled response, so a slot released at
+//! the body's first poll passed every one of them.
+//!
 //! **Every wait is bounded.** Both pipes are read on their own threads into
 //! channels; a start is polled every 50 ms for its listening line or its exit,
 //! up to [`BOUND`], and a reaped child's pipes get [`DRAIN`] to close. A
@@ -42,8 +57,8 @@
 //! `dist`, a store directory under the scratch root, and port 0 — the OS picks
 //! a port nobody holds at the moment of the bind, so the cells run in parallel
 //! with each other and on a busy machine without a collision (the listening
-//! line names the configured port, so it reads `:0`). The one cell that sends
-//! the server a request binds a port it found free a moment before
+//! line names the configured port, so it reads `:0`). The two cells that send
+//! the server a request each bind a port found free a moment before
 //! ([`free_port`]), since a child bound to 0 cannot say where it listens.
 //! `Command::env` sets the CHILD's environment, never this process's, so
 //! nothing here mutates the test runner's environment
@@ -344,6 +359,88 @@ fn post(port: u16, user: &str, path: &str, body: &serde_json::Value) -> (u16, se
     (status, serde_json::from_str(rest).unwrap_or(serde_json::Value::Null))
 }
 
+/// One `GET` to the server at `port` with NO identity header (security S2a, decision D-1), over the same plain
+/// socket [`post`] uses: `Connection: close`, so the response is everything until the server closes, and each
+/// read and write bounded by [`BOUND`]. The status, and the response's head as an [`http::HeaderMap`] — the
+/// headers as the server wrote them, a repeated name kept as both lines; a head line that is no header fails
+/// here by name rather than being dropped, so a header the cell asks for is never missing for a parse's sake.
+#[cfg(feature = "open-door")]
+fn get(port: u16, path: &str) -> (u16, http::HeaderMap) {
+    use std::io::Write;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").expect("the request writes");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("the response reads");
+    let response = String::from_utf8_lossy(&response);
+    let (head, _) = response.split_once("\r\n\r\n").expect("a head and a body");
+    let mut lines = head.split("\r\n");
+    let status = lines.next().and_then(|l| l.split(' ').nth(1)).and_then(|s| s.parse().ok()).expect("a status line");
+    let mut headers = http::HeaderMap::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').unwrap_or_else(|| panic!("a head line that is no header: {line:?}"));
+        let name = http::HeaderName::from_bytes(name.trim().as_bytes()).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+        let value = http::HeaderValue::from_str(value.trim()).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+        headers.append(name, value);
+    }
+    (status, headers)
+}
+
+/// One stream `GET` to the server at `port` as `user` at the open door, over a
+/// plain socket held OPEN (no `Connection: close`), each read and write
+/// bounded by [`BOUND`]. A 200 is read until its first `signal` frame has
+/// arrived — so hyper has polled the body at least once, the moment a slot
+/// released at the first poll would be gone — and the socket is handed back
+/// for the cell to hold; any other status is read to its `Content-Length` and
+/// its body parsed as JSON. The status, the socket and the body (`Null` for a
+/// 200).
+#[cfg(feature = "open-door")]
+fn open_stream(port: u16, user: &str, path: &str) -> (u16, std::net::TcpStream, serde_json::Value) {
+    use std::io::Write;
+    use yokohama_web::identity::CLAIMED_HEADER;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{CLAIMED_HEADER}: {user}\r\nAccept: text/event-stream\r\n\r\n"
+    )
+    .expect("the request writes");
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(at) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        let n = stream.read(&mut chunk).expect("the head reads");
+        assert!(n > 0, "the server closed before a whole head: {:?}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&chunk[..n]);
+    };
+    let head = String::from_utf8_lossy(&seen[..head_end]).into_owned();
+    let status = head.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("a status line");
+    if status == 200 {
+        while !String::from_utf8_lossy(&seen[head_end..]).contains("event: signal") {
+            let n = stream.read(&mut chunk).expect("the first frame reads");
+            assert!(n > 0, "the stream closed before its first frame: {:?}", String::from_utf8_lossy(&seen));
+            seen.extend_from_slice(&chunk[..n]);
+        }
+        return (status, stream, serde_json::Value::Null);
+    }
+    let length: usize = head
+        .lines()
+        .find_map(|l| l.split_once(':').filter(|(name, _)| name.trim().eq_ignore_ascii_case("content-length")))
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .unwrap_or_else(|| panic!("a {status} with no Content-Length, which this reader does not decode: {head}"));
+    while seen.len() < head_end + length {
+        let n = stream.read(&mut chunk).expect("the body reads");
+        assert!(n > 0, "the server closed inside the body: {:?}", String::from_utf8_lossy(&seen));
+        seen.extend_from_slice(&chunk[..n]);
+    }
+    let body = serde_json::from_slice(&seen[head_end..head_end + length]).unwrap_or(serde_json::Value::Null);
+    (status, stream, body)
+}
+
 /// No stamp sentence of any of the rule's three shapes: each names the stamp
 /// file, and each says "Turnstile site key".
 fn assert_no_stamp_sentence(stderr: &str, shown: &str, what: &str) {
@@ -493,6 +590,38 @@ fn the_binary_refuses_a_seed_beside_an_open_seat_and_opens_the_same_table_unseed
     assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }
 
+/// **The binary refuses an address under the open door and admits a name**
+/// (security S2b, finding C1; decision D-2): the catcher of `main` →
+/// `AppState::new` → `production` → `NamesOnly`, which no in-process cell runs
+/// — the seed rule's binary cell's shape. An address claimed at the open door
+/// is the layer's 401 in its one sentence; a plain name creates the table.
+/// Mutants: the production literal building `Diagnostic` (the address reads
+/// 201); the adapter resolving with a literal policy.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_refuses_an_address_claim_at_the_open_door_and_admits_a_name() {
+    use yokohama_web::identity::ADDRESS_NOT_A_NAME;
+
+    let scratch = Scratch::new("claims-open");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the key rule at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let body = |user: &str, id: &str| {
+        serde_json::json!({
+            "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+            "seats": [{ "user": user }, { "open": true }], "id": id, "name": id,
+        })
+    };
+    let (status, refused) = post(port, "red@wire.test", "/api/games", &body("red@wire.test", "addressed"));
+    assert_eq!((status, refused), (401, serde_json::json!({ "error": ADDRESS_NOT_A_NAME })));
+    let (status, opened) = post(port, "ben", "/api/games", &body("ben", "named"));
+    assert_eq!(status, 201, "{opened}");
+    assert!(server.running(), "still serving after both requests");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
+}
+
 /// **The rename's table, read off the binary** (security S1c, finding D26;
 /// the fix round's Minor 3). The deploy window renames every legacy folder from
 /// what `yokohama-web segment` prints, so the line is pinned whole: one line
@@ -527,4 +656,128 @@ fn the_segment_subcommand_prints_address_legacy_and_current_and_exits_1_when_a_v
 
     let (status, stdout, stderr) = Server::segment(&[]).exited("no address");
     assert_eq!((status.code(), stdout.as_str(), stderr.as_str()), (Some(0), "", ""));
+}
+
+/// **The production path reads `dist/headers.json`** (security S2a, decision D-1) — `main → AppState::new →
+/// production → assets::response_headers`, which no in-process cell runs: `/` answers every pair of a scratch
+/// dist's file and `/api/health` the pairs plus `no-store`; with NO file the binary still starts, prints one line
+/// naming `headers.json` on stderr and answers `/api/health` 200 without the set; with a MALFORMED file it exits 1
+/// before it listens, naming the file.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
+    let pairs = r#"[["X-Frame-Options", "DENY"], ["Content-Security-Policy-Report-Only", "default-src 'self'"]]"#;
+    // (1) The file present: both pairs on `/`, and `no-store` beside them on `/api/health`. The scratch dist holds
+    // an `index.html`, else `/` is the 404 page (which carries the set too, but 200 is what this arm reads).
+    let scratch = Scratch::new("headers-present");
+    std::fs::write(scratch.dist().join("headers.json"), pairs).unwrap();
+    std::fs::write(scratch.dist().join("index.html"), "<!doctype html><div id=root></div>").unwrap();
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    server.listening("present");
+    let (status, headers) = get(port, "/");
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(
+        headers.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'")
+    );
+    let (status, headers) = get(port, "/api/health");
+    assert_eq!(status, 200);
+    assert_eq!(headers.get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
+    assert_eq!(
+        headers.get("content-security-policy-report-only").and_then(|v| v.to_str().ok()),
+        Some("default-src 'self'")
+    );
+    assert_eq!(headers.get("cache-control").and_then(|v| v.to_str().ok()), Some("no-store"));
+    // With the file present the start says NOTHING of it: a `main` that printed the no-set line at every start
+    // would pass the absent arm alone (Task 3's review, I-1).
+    let (_, _, stderr) = server.finish();
+    assert!(!stderr.contains("headers.json"), "a present file is not announced: {stderr}");
+    drop(server);
+    // (2) No file: the binary starts, says so once on stderr, serves without the set.
+    let scratch = Scratch::new("headers-absent");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    server.listening("absent");
+    let (status, headers) = get(port, "/api/health");
+    assert_eq!(status, 200);
+    assert!(headers.get("x-frame-options").is_none(), "no file, no set");
+    let (_, _, stderr) = server.finish();
+    assert_eq!(stderr.matches("headers.json").count(), 1, "the start says ONCE what it could not read: {stderr}");
+    drop(server);
+    // (3) A malformed file: exit 1 before the listening line, the file named — read as the keyed-build cell
+    // reads its exit.
+    let scratch = Scratch::new("headers-malformed");
+    std::fs::write(scratch.dist().join("headers.json"), "{}").unwrap();
+    let (status, _, stderr) = Server::spawn("open", &scratch).exited("a malformed headers.json");
+    assert_eq!(status.code(), Some(1));
+    assert!(stderr.contains("headers.json"), "{stderr}");
+}
+
+/// **The stream slot is held by the body hyper serves, and freed when the
+/// socket closes** (the S2 stack review, lens 2, Important 1; security S2c,
+/// D3): the binary `main` runs, at the open door, over real sockets. A
+/// caller's eight table streams, each held open and read past its first
+/// frame, make the ninth a 429 in `TOO_MANY_STREAMS_CALLER`'s words with no
+/// frame; another caller is still admitted beside them, so the refusal is the
+/// caller's figure and not a server that stopped answering; closing one of the
+/// eight sockets admits the caller's next stream, polled every 50 ms up to
+/// [`BOUND`] since the server learns of a close only when hyper reads it.
+/// Mutant (the review's M-slot-early): `Admitted`'s slot an `Option` taken at
+/// the body's first poll — every in-process cell stays green, and here the
+/// ninth reads 200.
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_holds_a_stream_slot_while_its_socket_is_open_and_frees_it_when_the_socket_closes() {
+    use yokohama_web::streams::{STREAMS_PER_CALLER, TOO_MANY_STREAMS_CALLER};
+
+    let scratch = Scratch::new("stream-slots");
+    let port = free_port();
+    let mut server = Server::spawn_on("open", &scratch, port);
+    let line = server.listening("the stream cap at the open door");
+    assert!(line.ends_with(&format!(":{port}")), "listening where it was told to: {line:?}");
+    let created = serde_json::json!({
+        "players": 2, "colors": ["Red", "Blue"], "start_seat": 0,
+        "seats": [{ "user": "red" }, { "open": true }], "id": "slots", "name": "slots",
+    });
+    let (status, body) = post(port, "red", "/api/games", &created);
+    assert_eq!(status, 201, "{body}");
+    let path = "/api/games/slots/stream";
+
+    let mut held = Vec::new();
+    for n in 1..=STREAMS_PER_CALLER {
+        let (status, socket, body) = open_stream(port, "red", path);
+        assert_eq!(status, 200, "stream {n} of {STREAMS_PER_CALLER} is admitted: {body}");
+        held.push(socket);
+    }
+    let (status, _, body) = open_stream(port, "red", path);
+    assert_eq!(
+        (status, &body),
+        (429, &serde_json::json!({ "error": TOO_MANY_STREAMS_CALLER })),
+        "the ninth stream, with eight held open and each past its first frame"
+    );
+    let (status, blue, body) = open_stream(port, "blue", path);
+    assert_eq!(status, 200, "another caller is admitted beside red's eight: {body}");
+    drop(blue);
+
+    drop(held.pop());
+    let deadline = Instant::now() + BOUND;
+    let reopened = loop {
+        let (status, socket, body) = open_stream(port, "red", path);
+        match status {
+            200 => break socket,
+            429 if Instant::now() < deadline => {
+                assert_eq!(body["error"], TOO_MANY_STREAMS_CALLER, "only the caller's figure refuses here: {body}");
+                drop(socket);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => panic!("a closed socket did not free its slot within {BOUND:?}: the last open read {status} {body}"),
+        }
+    };
+    drop(reopened);
+    drop(held);
+    assert!(server.running(), "still serving after every stream");
+    let (status, _, stderr) = server.finish();
+    assert_ne!(status.code(), Some(1), "killed, not refused; stderr {stderr:?}");
 }

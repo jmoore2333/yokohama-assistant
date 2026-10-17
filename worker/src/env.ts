@@ -34,6 +34,12 @@ export interface Env {
   /** The bucket `yokohama-archive` (spec §3.1). `YOKOHAMA_WEB_ARCHIVE=r2` is
    *  refused without it. */
   ARCHIVE?: R2Bucket;
+  /** The two Rate Limiting bindings (security S2b, finding C2; decision D-3): creates, 10 per 60 s, and writes,
+   *  120 per 10 s, in production; the pool binds both with a lenient figure. Optional in the TYPE because a cell
+   *  builds an `Env` by hand; `shellConfig` refuses a configuration lacking either, so no deployment runs without
+   *  them (fail closed, as `ARCHIVE` under `r2`). */
+  CREATE_LIMIT?: RateLimit;
+  WRITE_LIMIT?: RateLimit;
 
   /** `worker` | `open`, with NO default (M6.5c2, spec §2.1; R-6.5c2.5): the
    *  door. `worker` is Cloudflare Access, verified by this shell — this

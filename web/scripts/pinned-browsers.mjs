@@ -63,7 +63,8 @@
 // run broke, 2 for arguments it refuses.
 //
 // **No cookie VALUE is ever written**: a snapshot keeps cookie NAMES and
-// domains. `log.txt` is the run's narrative, `net.jsonl` one line per request
+// domains, and the profile keeps no cookie past `done`: the context clears them before it closes, and a browser
+// that died first is a FAILED check naming the profile (security S2a, D15). `log.txt` is the run's narrative, `net.jsonl` one line per request
 // or response for the shell, the worker, the root and a challenge, the service
 // worker's own flagged.
 
@@ -337,6 +338,22 @@ export function writeVerdict(stateDir, head, checks) {
   const verdict = verdictOf(checks);
   fs.writeFileSync(path.join(stateDir, "verdict.json"), `${JSON.stringify({ ...head, ...verdict, checks }, null, 2)}\n`);
   return verdict;
+}
+
+/** **No session leaves with the profile** (security S2a, finding D15): the context's cookies — the deployment's
+ *  `CF_Authorization` among them — are cleared before the profile is closed, so the gitignored state directory
+ *  holds no credential at rest once a run is done. A browser that died first cannot be cleared: that is a FAILED
+ *  check naming the profile to delete by hand, and the close and the verdict still happen — a throw here would
+ *  lose `verdict.json` exactly when a run broke (measured: a SIGKILLed browser, no verdict). */
+export async function leaveNoSession(context, log, checks, stateDir) {
+  try {
+    await context.clearCookies();
+    log("cookies: cleared before close");
+  } catch (e) {
+    checks.push(check("the profile's cookies were cleared", false, e instanceof Error ? e.message : String(e)));
+    log(`cookies: NOT cleared — delete ${path.join(stateDir, "profile")} by hand`);
+  }
+  await context.close();
 }
 
 /** Thrown to end the run early with its checks already recorded (a door that
@@ -662,7 +679,7 @@ async function run({ label, origin, stateDir, secondTab, goWaitMinutes }) {
       log(`BROKE: ${e instanceof Error ? e.stack : String(e)}`);
     }
   }
-  await context.close();
+  await leaveNoSession(context, log, checks, stateDir);
   const verdict = writeVerdict(stateDir, { label, origin, secondTab, goWaitMinutes }, checks);
   log(`closed: ${verdict.summary}`);
   return verdict.ok;

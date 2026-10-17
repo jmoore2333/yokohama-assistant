@@ -1,5 +1,6 @@
 import type { Env } from "./env";
 import { isAddress } from "./identity";
+import type { Limiter } from "./limits";
 import { openTtlDaysOf, ttlDaysOf } from "./marker";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
@@ -8,6 +9,10 @@ export type Clock = { kind: "wall" } | { kind: "frozen"; at: number } | { kind: 
 
 /** The Worker's door (M6.5c2, spec §2.1; R-6.5c2.5). */
 export type Door = "worker" | "open";
+
+/** The two Rate Limiting bindings as the shell uses them (security S2b, finding C2; decision D-3): each a
+ *  `Limiter` — `limit` and nothing else, so a cell hands in a fake. */
+export interface Limits { create: Limiter; write: Limiter }
 
 /** The Worker's variables as the shell uses them (spec §3.1). */
 export interface ShellConfig {
@@ -28,6 +33,8 @@ export interface ShellConfig {
   devDoor: boolean;
   diagnosticSeeds: boolean;
   clock: Clock;
+  /** `CREATE_LIMIT` and `WRITE_LIMIT` (security S2b, C2), both required. */
+  limits: Limits;
 }
 
 /** Every variable `Env` declares: its string-typed keys, and none of its
@@ -214,6 +221,15 @@ function clock(raw: string | null): Clock {
   return m[1] === "frozen" ? { kind: "frozen", at: seconds } : { kind: "tick", next: seconds };
 }
 
+/** The two bindings, both required (security S2b, C2): a configuration that lacks one is refused by name, the
+ *  Worker's form of the NAS refusing to start, so no deployment runs unthrottled by omission. */
+function limits(env: Env): Limits {
+  for (const name of ["CREATE_LIMIT", "WRITE_LIMIT"] as const) {
+    if (env[name] === undefined) refuse(`the ${name} rate-limit binding is missing — every deployable configuration binds it in its ratelimits block (security S2b)`);
+  }
+  return { create: env.CREATE_LIMIT!, write: env.WRITE_LIMIT! };
+}
+
 /**
  * What the OPEN door refuses beside it (M6.5c2, spec §2.1; review R2.2-M1),
  * each refusal naming BOTH variables — the Worker's form of refusing to start
@@ -271,6 +287,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
       diagnosticSeeds: onOff("YOKOHAMA_DIAGNOSTIC_SEEDS", text(env, "YOKOHAMA_DIAGNOSTIC_SEEDS")),
       clock: clock(text(env, "YOKOHAMA_WEB_TEST_CLOCK")),
+      limits: limits(env),
     };
     openDoorRefusals(config);
     return config;

@@ -420,16 +420,18 @@ pub fn check_shape(doc: &TableDoc) -> Result<(), String> {
     }
     for (i, seat) in doc.seats.iter().enumerate() {
         if let SeatDoc::Human { name: Some(name), .. } = seat {
-            if let Err(why) = check_name(name) {
+            if let Err(why) = check_stored_name(name) {
                 return Err(format!("seat {i}'s name: {why}"));
             }
         }
     }
-    // **The table's own name, by the same rule as a seat's** (security S1b,
-    // finding D25): `create` and `join` apply it on write, and a document that
-    // arrives through the archive route or a restore never passed through them.
+    // **The table's own name, by the same READ rule as a seat's** (security
+    // S1b, finding D25): `create` and `join` apply the stricter write rule,
+    // `check_name`, to every name they store, and a document that arrives
+    // through the archive route or a restore never passed through them — so it
+    // reads here under the rule as it stood, which a pre-S2c name still passes.
     if let Some(name) = &doc.name {
-        if let Err(why) = check_name(name) {
+        if let Err(why) = check_stored_name(name) {
             return Err(format!("the table's name: {why}"));
         }
     }
@@ -514,12 +516,29 @@ impl<'a> ChatAt<'a> {
     }
 }
 
-/// The display-name rule, applied on WRITE (create, join, keep) and on READ
-/// ([`check_shape`]), so a document this server wrote is never one it refuses.
+/// The display-name rule, applied on WRITE (create, join, keep, a watcher's
+/// chat name); a stored document reads under [`check_stored_name`], so a
+/// document this server wrote is never one it refuses.
 ///
 /// Trimmed and returned rather than merely checked: the caller stores what
 /// comes back, so " Red " and "Red" are one name and not two.
 pub(crate) fn check_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("a name is 1 to 64 characters".to_string());
+    }
+    // **Visible whole** (security S2c, finding D8): `is_control` alone let a zero-width space and a bidi override
+    // through, and a watcher posted as a seat holder. The rule is `text::invisible`'s — every host, one table.
+    if crate::text::invisible(name).is_some() {
+        return Err(format!("a name has {}", crate::text::INVISIBLE_RULE));
+    }
+    Ok(name.to_string())
+}
+
+/// **The READ-side name rule: the rule as it stood before S2c** (`is_control` alone). `check_shape` runs on every
+/// stored document, and a document this server wrote under the old rule (a display name with a pasted U+200F, a
+/// watcher posted as "Bob\u{200B}") must still read; the new rule is the WRITE side's ([`check_name`]).
+pub(crate) fn check_stored_name(raw: &str) -> Result<String, String> {
     let name = raw.trim();
     if name.is_empty() || name.chars().count() > 64 {
         return Err("a name is 1 to 64 characters".to_string());
@@ -1056,16 +1075,21 @@ impl Games {
     /// +1 per append and per delete, so `rev - last` moves exactly when a held
     /// message was deleted. The counts come back beside the message for the
     /// caller's cache.
-    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<(Message, ChatCounts), GameError> {
+    fn append_locked(&self, at: ChatAt<'_>, author: Author, text: String) -> Result<(Message, ChatCounts, Option<String>), GameError> {
         let (mut doc, version) = self.read_chat(at)?;
         doc.id = at.key().to_string();
+        if doc.salt.is_none() {
+            // **The first append salts the room** (security S2c, D8; decision D-5) — a read never writes, so a
+            // document from before this cycle carries `None` until somebody posts.
+            doc.salt = Some(self.chat_salt());
+        }
         let message = Message { seq: doc.last + 1, created_at: (self.clock)(), author, text, deleted: false };
         doc.last = message.seq;
         doc.rev += 1;
         doc.messages.push(message.clone());
         doc.trim(self.chat.limits.keep);
         self.write_chat(at, &doc, version)?;
-        Ok((message, doc.counts()))
+        Ok((message, doc.counts(), doc.salt.clone()))
     }
 
     /// **The one writer** (R-6.4.15 (b)): the text rule, the table's own lock,
@@ -1081,25 +1105,32 @@ impl Games {
     /// `a_chat_bump_precedes_no_write`. A bump ahead of its write sends every
     /// browser at the table to fetch a message that has not landed, and the
     /// message that then lands is announced to nobody.
-    pub fn chat_append(
+    pub fn chat_append(&self, id: &str, author: Author, text: &str) -> Result<Message, GameError> {
+        self.chat_append_salted(id, author, text).map(|(message, _)| message)
+    }
+
+    /// [`Self::chat_append`] and the document's salt beside the message — what the POST's reply needs to draw the
+    /// poster's own tag as a later page will (security S2c, D8): the salt is given by this very append on a
+    /// document's first message, so the reply cannot read it off anything the caller holds.
+    pub fn chat_append_salted(
         &self,
         id: &str,
         author: Author,
         text: &str,
-    ) -> Result<Message, GameError> {
+    ) -> Result<(Message, Option<String>), GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         self.require_table(id)?;
         self.with_table_lock(id, || {
             let (table, _) = self
                 .read_table(id)?
                 .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
-            let (message, counts) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
+            let (message, counts, salt) = self.append_locked(ChatAt::Table { id, players: table.players }, author, text)?;
             // `message.seq` IS the document's `last`: the trim drops the oldest and
             // leaves the number alone, which is the whole of R-6.4.9.
             self.chat_counts.lock().expect("games lock").insert(id.to_string(), counts);
             // AFTER the write, never before (the gated cell).
             self.signal.bump_table(id);
-            Ok(message)
+            Ok((message, salt))
         })
     }
 
@@ -1110,12 +1141,17 @@ impl Games {
     /// seat author a refusal here: the house has no seats, and the shape rule
     /// says so rather than this function restating it.
     pub fn house_append(&self, author: Author, text: &str) -> Result<Message, GameError> {
+        self.house_append_salted(author, text).map(|(message, _)| message)
+    }
+
+    /// [`Self::house_append`] and the document's salt (see [`Self::chat_append_salted`]).
+    pub fn house_append_salted(&self, author: Author, text: &str) -> Result<(Message, Option<String>), GameError> {
         let text = check_text(text, &self.chat.limits).map_err(GameError::BadRequest)?;
         // `enter`, poisoned or not: the house's lock guards no data.
         let _serialized = enter(&self.house_lock);
-        let (message, _) = self.append_locked(ChatAt::House, author, text)?;
+        let (message, _, salt) = self.append_locked(ChatAt::House, author, text)?;
         self.signal.bump_house_chat();
-        Ok(message)
+        Ok((message, salt))
     }
 
     /// The delete itself, with the caller's lock ALREADY HELD: read, tombstone,
@@ -3427,6 +3463,22 @@ mod tests {
         assert!(check_shape(&doc).is_ok(), "64 is the bound");
     }
 
+    /// **A name is visible whole** (security S2c, finding D8 — measured in review: `"Bob\u{200B}"` read as the seat
+    /// holder "Bob"): a zero-width space, a bidi override and a BOM are refused with the rule's sentence; the
+    /// control-character refusal keeps that same sentence; a visible name in another script passes. The sentence is
+    /// pinned at its literal.
+    #[test]
+    fn a_name_with_an_invisible_or_direction_changing_character_is_refused_by_the_rule() {
+        for bad in ["Bob\u{200B}", "Re\u{202E}d", "\u{FEFF}Owner", "Jeremy\u{2066}", "a\tb", "two\u{2028}lines"] {
+            assert_eq!(check_name(bad), Err("a name has no control, invisible or direction-changing character".to_string()), "{bad:?}");
+        }
+        assert_eq!(check_name("  Ben   Castle "), Ok("Ben   Castle".to_string()), "trimmed, as before");
+        assert_eq!(check_name("日本語の名前"), Ok("日本語の名前".to_string()));
+        assert_eq!(check_name("🙂 Ben"), Ok("🙂 Ben".to_string()));
+        assert!(check_name(&"n".repeat(65)).unwrap_err().starts_with("a name is 1 to 64 characters"), "the length rule speaks first, as before");
+        assert!(check_name(&format!("{}\u{200B}", "n".repeat(64))).unwrap_err().starts_with("a name is 1 to 64 characters"), "over the cap AND invisible: the length rule speaks first");
+    }
+
     /// **The mirror names the winner once the game is over, and nobody before
     /// then.**
     ///
@@ -4016,6 +4068,20 @@ mod tests {
         r.display_name = Some("\u{7}".into());
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("control"));
         let mut r = req("o");
+        r.display_name = Some("Captain\u{200B}Red".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "display name: a name has no control, invisible or direction-changing character",
+            "create reads a display name through the WRITE rule (S2c Task 3): the read rule admits a zero-width space",
+        );
+        let mut r = req("o");
+        r.name = Some("Thursday\u{200B}game".into());
+        assert_eq!(
+            games.create(&r, &red).unwrap_err().to_string(),
+            "name: a name has no control, invisible or direction-changing character",
+            "create reads a table's name through the WRITE rule: the read rule admits a zero-width space",
+        );
+        let mut r = req("o");
         r.password = Some("   ".into());
         assert!(
             games.create(&r, &red).unwrap_err().to_string().contains("at least one character")
@@ -4025,7 +4091,7 @@ mod tests {
         assert!(games.create(&r, &red).unwrap_err().to_string().contains("not a usable"));
 
         // **The ORDER, and only a probe wrong in TWO ways can see it.** Each of
-        // the six above carries a single defect, so it says a rule EXISTS and
+        // the rows above carries a single defect, so it says a rule EXISTS and
         // nothing about where in the chain it sits: `name` moved above the
         // creator check would leave every one of them green. Each probe below
         // is wrong at two ADJACENT links and asserts that the EARLIER sentence
@@ -5516,7 +5582,7 @@ mod tests {
 
     /// **A stored author is served in the form the shape rule reads it in**
     /// (M6.5c2 cycle D, row 130). The rule parses the address (trimmed and
-    /// lowercased, `User::parse`) and the name (trimmed, `check_name`) and
+    /// lowercased, `User::parse`) and the name (trimmed, `check_stored_name`) and
     /// threw both results away, so a document written by hand or brought back
     /// by a restore served `" RED@T.test "` beside a seat whose key is
     /// `red@t.test` — two people, to a client comparing them. The address no
@@ -5533,6 +5599,7 @@ mod tests {
             id: id.clone(),
             last: 1,
             rev: 1,
+            salt: None,
             messages: vec![message(Author::Seat { seat: 0, user: " RED@T.test ".into(), name: Some("  Red ".into()) })],
         };
         let json = serde_json::to_string(&stored).expect("a chat document");
@@ -5541,6 +5608,22 @@ mod tests {
         assert_eq!(
             page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
             [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red".into()), you: true }],
+        );
+        // **The READ rule's trim reaches a name the WRITE rule refuses** (S2c Task 3): a stored name both padded and
+        // carrying a zero-width space is served trimmed — `normalized` reads through `check_stored_name`; through
+        // `check_name` it would refuse the name and serve it padded.
+        let (_, version) = games.store().read(Doc::Chat, &id).expect("a store").expect("the chat");
+        let padded = ChatDoc {
+            messages: vec![message(Author::Seat { seat: 0, user: "red@t.test".into(), name: Some("  Red\u{200B} ".into()) })],
+            ..stored
+        };
+        let json = serde_json::to_string(&padded).expect("a chat document");
+        games.store().write_if_version(Doc::Chat, &id, &json, Some(version)).expect("stored");
+        let (page, _) = page_of(&games, &id, 0).expect("served");
+        assert_eq!(
+            page.iter().map(|m| m.author.clone()).collect::<Vec<_>>(),
+            [crate::chat::AuthorView::Seat { seat: 0, name: Some("Red\u{200B}".into()), you: true }],
+            "a padded invisible name is served trimmed",
         );
     }
 
@@ -5801,6 +5884,79 @@ mod tests {
         assert_eq!(house.borrow().chat, 1, "and leaves the counter where it was");
         let (page, counts) = games.house_page(&who("g@t.test"), 0).expect("a page");
         assert_eq!((page.len(), counts.last), (1, 1), "and wrote nothing");
+    }
+
+    /// **The first append gives a document its salt, and a second keeps it** (decision D-5): two watchers' tags
+    /// differ, one watcher's two messages share one, and the stored document carries the salt the views were
+    /// derived from. Under `games()` (`Diagnostic`) the salt is the constant, which is what makes the corpus byte-stable.
+    #[test]
+    fn the_first_append_salts_the_document_and_tags_are_stable_within_it() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::Diagnostic);
+        let red = who("red@t.test");
+        let id = games.create(&two_people("salted", CORPUS_SEED), &red).expect("a table").id;
+        let watcher = |user: &str, name: &str| Author::Watcher { user: user.into(), name: Some(name.into()) };
+        // A watcher posts only at an unlocked table, through the route's admission; the writer is reached
+        // directly, as the house cell above reaches `house_append`.
+        games.chat_append(&id, watcher("green@wire.test", "Green"), "first").expect("green's first");
+        games.chat_append(&id, watcher("blue@wire.test", "Blue"), "second").expect("blue's");
+        games.chat_append(&id, watcher("green@wire.test", "Green"), "third").expect("green's second");
+        let (table, _) = games.read_table(&id).expect("a store").expect("the table");
+        let (page, counts) = games.chat_page(&id, &table, &who("red@wire.test"), 0).expect("the page");
+        assert_eq!((page.len(), counts.last), (3, 3), "premise: three messages");
+        let tags: Vec<Option<String>> = page
+            .iter()
+            .map(|m| match &m.author {
+                crate::chat::AuthorView::Watcher { tag, .. } => tag.clone(),
+                other => panic!("every author is a watcher: {other:?}"),
+            })
+            .collect();
+        assert_eq!(tags[0], tags[2], "one watcher's two messages share one tag");
+        assert_ne!(tags[0], tags[1], "two watchers' tags differ");
+        for tag in &tags {
+            let tag = tag.as_deref().expect("every watcher author carries a tag");
+            assert!(tag.len() == crate::chat::TAG_HEX && tag.bytes().all(|b| b.is_ascii_hexdigit()), "{tag}");
+        }
+        let (json, _) = games.store().read(Doc::Chat, &id).expect("a store").expect("the chat");
+        let stored: ChatDoc = serde_json::from_str(&json).expect("a chat document");
+        assert_eq!(stored.salt, Some(crate::games::FIXED_CHAT_SALT.to_string()), "the salt the views were derived from");
+    }
+
+    /// **The POST's reply carries the tag a later page will** (the plan's gap: `view_for` has three call sites, two
+    /// of them the replies, which hold a message and no document): the first message of a fresh room is answered
+    /// with the room's tag, equal to the page's.
+    #[test]
+    fn a_post_reply_carries_the_same_tag_as_the_page_that_follows() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::Diagnostic);
+        let green = who("green@t.test");
+        let author = Author::Watcher { user: "green@t.test".into(), name: Some("Green".into()) };
+        let (message, salt) = games.house_append_salted(author, "first words").expect("a house post");
+        let reply = message.view_for(&green, salt.as_deref());
+        let (page, _) = games.house_page(&green, 0).expect("the house");
+        assert_eq!(page.len(), 1);
+        assert_eq!(reply.author, page[0].author, "reply and page draw the same author, tag included");
+        assert!(matches!(&reply.author, crate::chat::AuthorView::Watcher { tag: Some(_), you: true, .. }), "{reply:?}");
+    }
+
+    /// **A second append KEEPS the salt** (decision D-5's "and a second keeps it", pinned under entropy — Task 4's
+    /// probe): a message a reader already holds keeps its tag when the next message lands; re-salting on every
+    /// append would change every poster's tag at each new message in production, which `Diagnostic`'s constant
+    /// hides.
+    #[test]
+    fn a_held_messages_tag_survives_the_next_append_under_entropy() {
+        let games = games().with_seed_policy(crate::games::SeedPolicy::SoloOnly);
+        let green = who("green@t.test");
+        let post = |user: &str, name: &str| {
+            games.house_append(Author::Watcher { user: user.into(), name: Some(name.into()) }, "words").expect("a post")
+        };
+        post("green@t.test", "Green");
+        let (first, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        let salt = serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt;
+        post("blue@t.test", "Blue");
+        let (second, _) = games.house_page(&green, 0).expect("the house");
+        let (json, _) = games.store().read(Doc::House, HOUSE).expect("a store").expect("the house chat");
+        assert_eq!(serde_json::from_str::<ChatDoc>(&json).expect("a chat document").salt, salt, "the second append keeps the salt");
+        assert_eq!(second[0].author, first[0].author, "a message a reader holds keeps its tag across the next append");
     }
 
     /// **A delete removes the chat document and forgets the count.**

@@ -1,4 +1,4 @@
-import { adminRoute, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
+import { ADMIN_NEEDS_JSON, adminRoute, isJsonEssence, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
 import { shellConfig } from "./config";
 import type { Env } from "./env";
@@ -15,8 +15,9 @@ import {
   type IdentityConfig,
   type KeySource,
 } from "./identity";
+import { limited } from "./limits";
 import { errorBody, log, respond } from "./respond";
-import { routableName, route, type Target } from "./route";
+import { isSafeId, route, type Target } from "./route";
 import { HOUSE_NAME } from "./slot";
 import { isUpgrade, Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
 
@@ -39,14 +40,78 @@ const STRIPPED = "x-yokohama-";
  *  orchestrator's ruling on Task 11's review, escalation 1). */
 const FOREIGN_SOCKET = "this socket is for the site's own pages";
 
+/** The methods a browser sends without a preflight that only READ: `crossSite` never refuses one. */
+const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
+
+/** The 403 an unsafe method from another site answers (security S2b, finding B5; host-written). */
+export const CROSS_SITE = "this request is for the site's own pages";
+
+/**
+ * **Whether an unsafe request is another site's** (security S2b, finding B5; decision D-9). Every layer POST
+ * parses `application/json` by MIME essence, so a cross-site page cannot reach one without a preflight nobody
+ * answers; the operator's expire and force were the shell's own, answered on method, path and query alone, and
+ * a bodyless, form or text/plain POST is a CORS simple request a page sends with ambient authentication — the
+ * `CF_Authorization` cookie, or the owner's WARP identity, which no cookie attribute touches. So, for every method
+ * but GET and HEAD: an `Origin` present and not this origin — `null` included, a sandboxed frame's or a
+ * redirected sender's — or a `Sec-Fetch-Site` of `cross-site` or `same-site` (a sibling `*.moore.nyc` host) is
+ * refused. A request with no `Origin` and no `Sec-Fetch-Site` is not a page's — curl, Node's `fetch`, the live
+ * replay, Playwright's request context — and passes; a page's own `fetch` carries this origin and `same-origin`.
+ * Read BEFORE identity, like the upgrade's own `Origin` check above it: a refused sender learns nothing of who the
+ * cookie names, and a sender that is both another site's and nobody reads this sentence (the order pin).
+ */
+export function crossSite(method: string, headers: Headers, origin: string): boolean {
+  if (SAFE_METHODS.has(method)) return false;
+  const sent = headers.get("Origin");
+  if (sent !== null && sent !== origin) return true;
+  const site = headers.get("Sec-Fetch-Site");
+  return site === "cross-site" || site === "same-site";
+}
+
 /** The 500 of an object whose `fetch` rejected — ONE host-written sentence for
  *  the table, the house and the archive alike (the orchestrator's F-1). */
 export const OBJECT_FAILED = "the server could not answer — try again";
 
 const NO_ONE: Identity = { kind: "none" };
 
+/** The two headers every answer under `/api` carries (security S2a, finding B9's Worker half; the S1 stack
+ *  review's DC-F4). A `_headers` block never applies to a Worker-generated answer — Cloudflare's rule for static
+ *  assets — so the shell sets them itself, ON THE WAY OUT, for its own answers and the objects' alike:
+ *  `no-store`, so no cache in reach keeps an API answer — the browser's, a proxy's, the back/forward cache: a
+ *  routed request reaches this Worker BEFORE the zone's cache, which applies to the Worker's own `fetch`
+ *  subrequests and never to the answer it returns (Cloudflare's rule; the Workers Cache (static-asset requests
+ *  included) is the one setting that could keep a frame, and the guard's check 10 refuses it), while the NAS's one
+ *  `Router::layer` says the same for the host where the zone's extension rule DID keep a private frame at the
+ *  edge (S1c, B9); `nosniff`, so an API body is never read as a script. The whole set the static release carries
+ *  (`_headers`' `/*` block) buys nothing on a JSON body, and the shell holds no copy of it (decision D-3). */
+export const API_HEADERS: ReadonlyArray<readonly [string, string]> = [
+  ["Cache-Control", "no-store"],
+  ["X-Content-Type-Options", "nosniff"],
+];
+
+/** Whether `pathname` is the API's — `/api` exactly, or under `/api/` — and never `startsWith("/api")`, which
+ *  would claim `/apiary` (the NAS's layer and `swRoute.ts` draw the same line). */
+export function isApiPath(pathname: string): boolean {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+/** `res` with [`API_HEADERS`] set — a fresh `Response` over the same body and status, since an object's answer
+ *  may be immutable — or `res` ITSELF for a 101, which carries its socket, cannot be rebuilt (the constructor
+ *  refuses the status) and is sent nothing a cache could keep. */
+export function withApiHeaders(res: Response): Response {
+  if (res.status === 101) return res;
+  const headers = new Headers(res.headers);
+  for (const [name, value] of API_HEADERS) headers.set(name, value);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** The Worker's entry: [`answer`]'s reply, with the API's two headers on every answer under `/api`. */
+export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys: KeySource): Promise<Response> {
+  const res = await answer(req, env, ctx, keys);
+  return isApiPath(new URL(req.url).pathname) ? withApiHeaders(res) : res;
+}
+
 /**
- * **The Worker** (spec §2.3): stateless, and in this order —
+ * **The Worker** (spec §2.3), wrapped by [`handle`]: stateless, and in this order —
  *
  * 1. `route`. A path the asset layer had no file for answers 404 with an
  *    EMPTY body — never `index.html`; any method but GET or HEAD on `/enter`
@@ -59,8 +124,20 @@ const NO_ONE: Identity = { kind: "none" };
  *    browser could open an authenticated socket and read its frames. A
  *    request with no `Origin` — curl, the deploy readings — is not a page's,
  *    and passes.
+ * 1b. Any method but GET or HEAD from another site's page is 403 `this
+ *    request is for the site's own pages`, read BEFORE identity (security
+ *    S2b, finding B5; `crossSite`): an `Origin` present and not this site's
+ *    own — `null` included — or a `Sec-Fetch-Site` of `cross-site` or
+ *    `same-site`. A bodyless, form or text/plain POST is a CORS simple
+ *    request a hostile page could send with a player's ambient
+ *    authentication, and the operator's expire was answered on method, path
+ *    and query alone. A request with neither header — curl, the live replay —
+ *    is not a page's, and passes; a refused sender's assertion is never
+ *    verified.
  * 2. `shellConfig`: a configuration it refuses answers every remaining
- *    request — every `/api/*` — 500 naming the variable (spec §2.6).
+ *    request — every `/api/*` — 500 with its refusal sentence, which names
+ *    the variable, the open door's pair of variables or the Rate Limiting
+ *    binding refused (spec §2.6).
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
@@ -79,7 +156,17 @@ const NO_ONE: Identity = { kind: "none" };
  *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
  *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
- * 6a. `/api/admin` and below — the operator surface (spec §2.9) — pass the
+ * 6a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
+ *    any method but GET or HEAD spends a Rate Limiting binding — the
+ *    creates' for `POST /api/games`, the writes' for every other — counted
+ *    under the caller's digest at the `worker` door, and at the `open` door
+ *    under the connecting IP for a create and IP plus claim for a write; a
+ *    request with no caller under its IP at either. Past the limit it is 429
+ *    `too many requests from you just now — wait a moment and try again`,
+ *    with `Retry-After` the refused kind's own window, and no object is
+ *    reached. A limiter that throws is logged `limiter-failed` and the
+ *    request proceeds: the limit bounds cost, never access (AD-6).
+ * 6b. `/api/admin` and below — the operator surface (spec §2.9) — pass the
  *    gate (`operatorGate`): under the open door, or with
  *    `YOKOHAMA_WEB_ADMINS` absent, they are unrouted `/api/*`, the house's
  *    (M6.5c2: a claimed name is never an operator's rights); a caller who is
@@ -88,8 +175,10 @@ const NO_ONE: Identity = { kind: "none" };
  *    person passes with `X-Yokohama-Operator` set to their address, and the
  *    route names the object (`adminRoute`): the listing is the house's, an
  *    expire the table's, `?force` given a value the 400 `adminRoute` names
- *    (the orchestrator's ruling I-72), and any other path or query the
- *    house's — the layer's own 404.
+ *    (the orchestrator's ruling I-72), an expire whose type is not
+ *    `application/json` the 400 `ADMIN_NEEDS_JSON`, in the layer's own words
+ *    (security S2b, finding B5), and any other path or query the house's —
+ *    the layer's own 404.
  * 7. The object the target names, handed the request with its method, those
  *    headers and those bytes. An upgrade's own headers ride along, and the
  *    object's 101 is returned as it came. An object whose `fetch` REJECTS —
@@ -106,7 +195,7 @@ const NO_ONE: Identity = { kind: "none" };
  * here outlives the reply, so nothing reads it, and it is taken so a pool cell
  * calls `handle` exactly as the runtime's `fetch` does.
  */
-export async function handle(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource): Promise<Response> {
+async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource): Promise<Response> {
   const url = new URL(req.url);
   const target = route(req.method, url.pathname);
   if (target.kind === "missing") return new Response(null, { status: 404 });
@@ -116,6 +205,7 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
   if (isUpgrade(req.headers) && origin !== null && origin !== url.origin) {
     return respond(403, errorBody(FOREIGN_SOCKET));
   }
+  if (crossSite(req.method, req.headers, url.origin)) return respond(403, errorBody(CROSS_SITE));
 
   const config = shellConfig(env);
   if ("error" in config) return respond(500, errorBody(config.error));
@@ -139,6 +229,17 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
   const who = callerName(identity);
   if (who !== undefined) headers.set(identity.kind === "claimed" ? CLAIMED_USER_HEADER : USER_HEADER, who);
 
+  // The rate limit (security S2b, finding C2; decision D-3): after the caller is known, before any object. A
+  // limiter that throws is logged and the request proceeds: the limit bounds cost, never access (AD-6) — a binding
+  // that rejected would otherwise reject `handle`, the platform's own error page, and nothing logged (measured).
+  let refused: Response | undefined;
+  try {
+    refused = await limited(req, target, identity, config.door, config.limits);
+  } catch (e) {
+    log("limiter-failed", { error: String(e) });
+  }
+  if (refused !== undefined) return refused;
+
   let forwarded: Forwarded;
   if (target.kind === "admin") {
     const gate = operatorGate(config.door, config.admins, identity);
@@ -148,15 +249,21 @@ export async function handle(req: Request, env: Env, _ctx: ExecutionContext, key
       headers.set(OPERATOR_HEADER, gate.email);
       const admin = adminRoute(req.method, url.pathname, url.search.slice(1));
       if (admin.kind === "refused") return respond(400, errorBody(admin.sentence));
+      if (admin.kind === "expire" && !isJsonEssence(req.headers.get("content-type"))) return respond(400, errorBody(ADMIN_NEEDS_JSON));
       if (admin.kind === "expire") forwarded = { kind: "table", name: admin.name };
     }
   } else {
     forwarded = target;
   }
 
+  // An open-door upgrade's claim rode its URL, and the header above now carries it: the object's request drops the
+  // parameter, so its URL names no caller (`forwardedCaller` reads the header alone; the S2 stack review, lens 1,
+  // Minor 2). Every other parameter rides through.
+  const forwardedUrl = new URL(req.url);
+  if (config.door === "open" && isUpgrade(req.headers)) forwardedUrl.searchParams.delete(CLAIMED_PARAM);
   const object = objectFor(forwarded, env, identity, body, headers);
   try {
-    return await object.fetch(new Request(req.url, { method: req.method, headers, body }));
+    return await object.fetch(new Request(forwardedUrl, { method: req.method, headers, body }));
   } catch (e) {
     log("object-failed", { target: forwarded.kind, path: url.pathname, error: String(e) });
     return respond(500, errorBody(OBJECT_FAILED));
@@ -301,7 +408,7 @@ function objectFor(
       // refuses it as the layer does (the orchestrator's ruling, Task 9's
       // review): the name never makes a table object.
       const named = createId(body);
-      if (named !== undefined && !routableName(named)) return house();
+      if (named !== undefined && !isSafeId(named)) return house();
       const name = named ?? drawName();
       // Percent-encoded (spec §2.3), so the name travels as ASCII whatever
       // it holds; the table object decodes it.
@@ -314,18 +421,18 @@ function objectFor(
       // Named by the caller's name — an address, or an open-door claim —
       // exactly as `resolveIdentity` or `claimedIdentity` answered it: judged
       // raw, then trimmed and ASCII-lowercased as the layer's `User::parse`
-      // reads a caller — so one SPELLING is one object. Under `worker` that is
-      // one caller; under `open` a claim's space runs are left for the key
-      // grammar, so two spellings of one key name two objects
-      // (`claimedIdentity`'s doc, `identity.ts`). With no caller, or a name
-      // longer than the longest address the layer accepts (which it
-      // refuses), the house's `dispatch` answers the layer's 401: no archive
-      // object's name passes 262 bytes, far inside the 1,024 past which the
-      // platform would give it none. Under `open` a claim is held only to what
-      // a header can carry (spec §2.1), so a claim the key grammar refuses —
-      // `..`, a name of 40 letters — still names an object, whose `init`
-      // refuses it: that object answers the layer's own 401 for the caller,
-      // as the NAS does (M6.5c2 cycle D, row 8; `Archive.callerRefused`).
+      // reads a caller — so one SPELLING is one object. Under `worker` that
+      // is one caller; under `open` a claim's space runs are collapsed
+      // (`claimedIdentity`), so every spelling of one key names ONE object.
+      // With no caller, or a name longer than the longest address the layer
+      // accepts (which it refuses), the house's `dispatch` answers the
+      // layer's 401: no archive object's name passes 262 bytes, far inside
+      // the 1,024 past which the platform would give it none. Under `open` a
+      // claim is held only to what a header can carry (spec §2.1), so a claim
+      // the key grammar refuses — `..`, a name of 40 letters — still names an
+      // object, whose `init` refuses it: that object answers the layer's own
+      // 401 for the caller, as the NAS does (M6.5c2 cycle D, row 8;
+      // `Archive.callerRefused`).
       const who = callerName(identity);
       if (who === undefined || new TextEncoder().encode(who).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + who));

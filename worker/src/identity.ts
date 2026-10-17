@@ -65,6 +65,19 @@ export function isAddress(email: string): boolean {
   return new TextEncoder().encode(email).length <= 254 && /^[^@\s\p{Cc}]+@[^@\s\p{Cc}]+$/u.test(email);
 }
 
+/** The reserved domain every test identity's address ends in — `crates/yokohama-worker/src/receipt.rs`'s
+ *  `TEST_DOMAIN`, restated. */
+const TEST_DOMAIN = ".test";
+
+/** Whether a normalized address is a TEST identity's (security S2b, finding B6; R-SEC8(d)): an `@` and the suffix
+ *  `.test` — the rule is exactly the bucket's, the receipt archive's own rule for the `test/` root; what the dev
+ *  door can name is narrower still (`isAddress` judges it first), so every name it can produce lands in the root
+ *  the bucket keeps apart from the owner's training data. A plain name ending `.test` (`a.test`) is not one, as
+ *  the module reads it. */
+export function isTestAddress(email: string): boolean {
+  return email.includes("@") && email.endsWith(TEST_DOMAIN);
+}
+
 /**
  * The address a raw value names — or, at the open door, the name a caller
  * claimed (`claimedIdentity`, M6.5c2): `raw` judged by `forwardable` BEFORE
@@ -85,7 +98,8 @@ function address(raw: string): string | undefined {
  *  and, at the dev door, a claimed value that is no address (`isAddress`;
  *  R1's L-2), which would otherwise be forwarded as a caller the layer
  *  refuses, and at `POST /api/archive` name an Archive object whose `init`
- *  refuses it.
+ *  refuses it — and, at the dev door, a claimed address outside `.test` (B6): the
+ *  credential names test identities and nobody else.
  *
  *  The brief's text, with ONE change the orchestrator ruled at Task 11's
  *  review (I1 — the spec over the brief): the address, the `email` claim or
@@ -126,7 +140,7 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
   }
   if (c.devDoor && claims.common_name === c.devDoorClientId) {
     const claimed = address(h.get(CLAIMED_USER_HEADER) ?? "");
-    if (claimed !== undefined && isAddress(claimed)) return { kind: "dev", email: claimed };
+    if (claimed !== undefined && isAddress(claimed) && isTestAddress(claimed)) return { kind: "dev", email: claimed };
   }
   return { kind: "none" };
 }
@@ -137,19 +151,18 @@ export async function resolveIdentity(h: Headers, keys: JwkSet, c: IdentityConfi
  * parameter on an upgrade — judged by `address`: RAW by `forwardable` first,
  * so a percent-decoded parameter holding a character no header can carry is
  * no caller, rather than a `headers.set` that throws into the platform's plain
- * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson).
- * The shell never judges a name beyond what a header can carry: the layer's
- * key grammar does, in the objects. A blank or absent claim is no one.
- *
- * Space runs are NOT collapsed here — that is the key grammar's, and there is
- * one. So a hand-typed `ben   castle` names the Archive object
- * `archive:ben   castle` where the client's own `ben castle` names another; the
- * two hold nothing of their own and file under one key, because the module
- * normalizes both, so the only cost is a second object.
+ * 500 (review R2.2-m3); then trimmed and ASCII-lowercased (the Kelvin lesson),
+ * and each run of spaces collapsed to one — the key grammar's `typed_form`, so
+ * every spelling of a key names ONE Archive object (security S2b). The shell
+ * never judges a name beyond what a header can carry: the layer's key grammar
+ * does, in the objects. A blank or absent claim is no one.
  */
 export function claimedIdentity(raw: string | null): Identity {
-  const name = raw === null ? undefined : address(raw);
-  return name === undefined ? { kind: "none" } : { kind: "claimed", name };
+  const lowered = raw === null ? undefined : address(raw);
+  // The key grammar's own `typed_form`: each run of spaces is one, so every spelling of a key names ONE Archive object
+  // (security S2b, D-5's race) and spends ONE write-limiter key (D-3).
+  const name = lowered?.split(" ").filter((part) => part !== "").join(" ");
+  return name === undefined || name === "" ? { kind: "none" } : { kind: "claimed", name };
 }
 
 /** The value an identity is forwarded as, and names its archive object by —

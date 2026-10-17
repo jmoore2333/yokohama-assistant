@@ -182,7 +182,7 @@ interface Harness {
  *  aborts — a real `fetch` rejects on abort, and a fake that did not would make
  *  a hung lane look like a healthy one. */
 async function boot(
-  answer: (path: string) => { status: number; body: string; type: string } = (path) => {
+  answer: (path: string) => { status: number; body: string; type: string; headers?: Record<string, string> } = (path) => {
     const known = BODIES[path];
     // A path the origin does not have answers as the origin does after a
     // release dropped the file: a 404, which is what makes "answered from the
@@ -252,7 +252,7 @@ async function boot(
     const said = answer(path);
     return new Response(said.body, {
       status: said.status,
-      headers: { "content-type": said.type },
+      headers: { "content-type": said.type, ...(said.headers ?? {}) },
     });
   });
 
@@ -706,6 +706,47 @@ describe("the worker's fetch", () => {
     expect(stored.headers.get("content-type")).toBe("application/octet-stream");
     expect(await stored.text()).toBe(BODIES["/shell.bin"]!.body);
     expect(worker.asked.length, "and neither did the stored entry's read").toBe(installed);
+  });
+
+  // **D13 (security S2a; decision D-5): a navigation the worker synthesizes carries the headers the host set on
+  // `/shell.bin`** — the policy, `X-Frame-Options` and the rest — else every header the host sends protects a
+  // first visit only, and the service worker undoes B4 on every returning visit a SAME-site page frames (a
+  // cross-site framer meets the network's `X-Frame-Options` in default Chrome, which partitions the worker away
+  // from it). Three are NOT carried: the type, which is the worker's HTML; and `content-length` and
+  // `content-encoding`, which describe the ENCODED bytes the server sent, where the stored body is the decoded
+  // bytes the install digested. A header no cell names is carried too: the pass-through is not an allow-list.
+  it("carries the stored shell's headers onto a navigation, the HTML type over them, and not the three the bytes no longer match", async () => {
+    const worker = await boot((path) => {
+      const known = BODIES[path];
+      if (!known) return { status: 404, body: NOT_ON_THE_ORIGIN, type: "text/plain" };
+      const headers: Record<string, string> =
+        path === "/shell.bin"
+          ? {
+              "x-frame-options": "DENY",
+              "content-security-policy-report-only": "default-src 'self'",
+              "cache-control": "no-store",
+              "x-a-header-the-set-has-not-got-yet": "kept",
+              "content-encoding": "br",
+              "content-length": "9999",
+            }
+          : {};
+      return { status: 200, body: known.body, type: known.type, headers };
+    });
+    await worker.install();
+    const page = (await worker.request("https://yokohama.test/t/anything", "navigate"))!;
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(page.headers.get("x-frame-options")).toBe("DENY");
+    expect(page.headers.get("content-security-policy-report-only")).toBe("default-src 'self'");
+    expect(page.headers.get("cache-control")).toBe("no-store");
+    expect(page.headers.get("x-a-header-the-set-has-not-got-yet"), "carried although no cell names it: not an allow-list").toBe("kept");
+    expect(page.headers.get("content-encoding"), "the stored body is decoded bytes").toBeNull();
+    expect(page.headers.get("content-length")).toBeNull();
+    expect(await page.text()).toBe(BODIES["/shell.bin"]!.body);
+    // Anti-vacuity: the stored entry DOES carry the three, so their absence above is the worker's doing.
+    const stored = (await worker.request("https://yokohama.test/shell.bin", "cors"))!;
+    expect(stored.headers.get("content-encoding")).toBe("br");
+    expect(stored.headers.get("content-type")).toBe("application/octet-stream");
   });
 
   // Not intercepted AT ALL: no `respondWith`, so the browser makes exactly the

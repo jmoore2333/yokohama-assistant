@@ -251,6 +251,87 @@ describe("the signal, over the stream", () => {
     }
   });
 
+  it("ends on a 429 — the stream cap's refusal — with the server's sentence, and never backs off over it", async () => {
+    // **The NAS's stream cap and the Worker's socket cap end a signal alike** (security S2c, D3; decision D-2):
+    // a 429 at admission is an answer about THIS caller's open streams, and asking again every few seconds would be
+    // a retry storm against the very cap. The consumer draws the sentence: the table screens land in the lobby with
+    // it (Review Focus 1).
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    const stub = stubApi(() => ({ status: 429, body: { error: sentence } }));
+    const { unmount } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    unmount();
+  });
+
+  it("opens nothing after an end, even when the tab is shown again", async () => {
+    // **An end ENDS the run** (security S2c, the Task 5 review's I-1): the lobby is the one consumer that stays on
+    // screen after an end, and a tab hidden and shown again — what the cap's sentence asks the player to do with
+    // another tab — must not open the stream behind the ended sentence.
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    const stub = stubApi(() => ({ status: 429, body: { error: sentence } }));
+    const { unmount } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKOFF_MS[0]! * 4);
+    });
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    unmount();
+  });
+
+  it("says nothing beside an ended signal", async () => {
+    // **The link describes a signal that is RUNNING** (the hook's own rule; the Task 5 review's I-1): a tab shown
+    // again says "refreshing…", and when that reopen is refused the word is let go with the run, rather than
+    // standing beside the ended sentence for ever.
+    const ends: End[] = [];
+    const sentence = "too many open streams from you at this table — close one and try again";
+    let refuse = false;
+    const { stream, stub } = streamed(undefined, (call) =>
+      refuse && call.path.endsWith("/stream") ? { status: 429, body: { error: sentence } } : undefined,
+    );
+    const { result } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await until(() => stream.opens() > 0, "the stream was opened");
+    await settle();
+    expect(result.current).toBe("live");
+    refuse = true;
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await until(() => ends.length > 0, "the reopen was refused");
+    expect(ends).toEqual([{ reason: "refused", sentence }]);
+    expect(stub.matching("GET", "/stream")).toHaveLength(2);
+    expect(result.current).toBe("live");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current, "no word stands beside the ended sentence").toBe("live");
+  });
+
+  it("says nothing after an end when the tab is hidden and shown again", async () => {
+    const ends: End[] = [];
+    stubApi(() => ({ status: 429, body: { error: "too many" } }));
+    const { result } = renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    await settle();
+    expect(ends).toHaveLength(1);
+    act(() => visibility("hidden"));
+    act(() => visibility("visible"));
+    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(result.current, "no word stands beside the ended sentence").toBe("live");
+  });
+
   it("ends on the EDGE's expired session, with the sentence the door links from", async () => {
     // **Important 2 of the whole-branch review, and the false sentence under
     // it.** `readStream` classifies Access's 401 and throws `ACCESS_CHALLENGE`
@@ -708,6 +789,28 @@ describe("the two frame modes (R-7.1)", () => {
     await settle();
     expect(result.current).toBe("live");
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
+  });
+
+  it("keeps the stream when a woken re-read is refused 429 (AD-6: the cap answers at admission, never at a listing read)", async () => {
+    const { stream, stub } = streamed(undefined, (call) =>
+      call.path.endsWith("/table") ? { status: 429, body: { error: "too many requests" } } : undefined,
+    );
+    const ends: End[] = [];
+    const { result } = renderHook(() =>
+      usePolled<TableView>(
+        { key: "wire", once: () => api.table("wire"), stream: "/api/games/wire/stream" },
+        true,
+        () => {},
+        (e) => ends.push(e),
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("signal", at(1));
+    await settle();
+    expect(ends).toEqual([]);
+    expect(result.current).toBe("reconnecting");
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(stub.matching("GET", "/stream")[0]!.signal!.aborted).toBe(false);
   });
 });
 

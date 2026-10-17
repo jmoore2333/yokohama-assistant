@@ -315,7 +315,10 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
 - **The dev door** (§7.6) is this repository's test instrument under this door: the `yokohama-worker`
   Service Auth credential with `YOKOHAMA_DEV_DOOR=on`, naming its caller in
   `X-Yokohama-Claimed-User`. The live Playwright tier and the live replay play as several people
-  through it.
+  through it. It names a `.test` address only, and it is OFF in production since security S2b
+  (finding B6): `wrangler.jsonc` sets `YOKOHAMA_DEV_DOOR` to `off`, and `wrangler.dev.jsonc`,
+  production with that one variable `on`, opens it around a live tier (`npm run deploy:dev`,
+  reverted by the plain `npm run deploy`; `RUNBOOK.md` §7).
 - The dev door's client id, `DEV_DOOR_CLIENT_ID`, is a Worker SECRET since M6.5c2, put at that
   cycle's close (the twenty-first deployment, 2026-09-28; `RUNBOOK.md` §15), and the guard refuses
   it in `vars`. The dev door goes off before any public door: it is one of the public door's
@@ -326,6 +329,11 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
 - Players choose a name on the first screen, and the name is who they are. `/api/me` names this door
   `open`, and the layer keys a name exactly as the NAS's open door does
   ([`deploy/README.md`](../deploy/README.md#2-the-open-door-a-home-network-a-lan-or-a-vpn)).
+- **A name, never an address** (security S2b, finding C1): a claim with the email shape is refused —
+  by the layer's 401 `under the open door a name is a name — an address is not accepted here: choose
+  a plain name`, here and on the NAS alike, and by the client's name step before any request — so an
+  `@` always means a verified address, on every other door. A deployment that holds tables or saves
+  never changes its door, and a public deployment starts empty: the rule is `RUNBOOK.md` §3's.
 - The Worker reads no Access assertion. It still removes every client `x-yokohama-*` header, and it
   forwards the caller's name as `X-Yokohama-Claimed-User`, the one header the objects read at this
   door. The name rides ONE carrier per request:
@@ -334,12 +342,18 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
     an upgrade. The client adds it under this door only.
 - The Worker holds a name only to what a header can carry: visible ASCII, a tab or a space, judged
   before anything is trimmed or lowercased. A name outside that is no one, never a platform error.
-  Every other rule a name meets is the layer's key grammar, in the objects.
+  Every other rule a name meets is the layer's key grammar, in the objects. The Worker collapses
+  each run of spaces to one, the grammar's own typed form, so every spelling of a name is ONE
+  Archive object (security S2b).
 - The Origin check on upgrades stays.
 - **The trust model:** anyone who can reach the Worker may use any name. A name is a label and a key,
   never a credential, and tables stay with the name you sat down as.
-- **The quota is the deployer's.** On Workers Free, anyone who can reach an open Worker can spend its
-  100,000 requests a day (§3.1). Cloudflare's rate-limiting rules are the tool.
+- **The quota is the deployer's, and the Worker bounds what one caller spends** (security S2b,
+  finding C2). On Workers Free, anyone who can reach an open Worker can spend its 100,000 requests a
+  day (§3.1). The Worker's own two Rate Limiting bindings answer 429 before any object: creates
+  counted by the connecting IP, 10 a minute, and writes by the IP and the name, 120 per 10 s
+  (`src/limits.ts`). A name is free, so the write limit is per name and no IP ceiling; the zone's
+  rate-limiting and edge rules stay the deployer's tools for that.
 - **The operator surface is refused.** A claimed name is never an operator's rights, so under `open`,
   `/api/admin/…` answers the layer's 404 — as if no operator were configured — whatever name is
   claimed. An open deployment is operated through `wrangler` and the dashboard.
@@ -347,31 +361,42 @@ layer reads the same variable on the NAS, so `Open` is refused by name. There ar
   beside `open` makes the API answer a 500 naming both variables (`src/config.ts`). The guard cannot
   see the first, which is a secret.
 - **What the guard allows under `open`:**
-  - a `workers.dev` URL, since there is no door to go around;
+  - a `workers.dev` URL, since there is no door to go around; *(Corrected 2026-10-11, security S2a,
+    finding C3: the guard refuses it under `open` too, where it would go around the edge rule, the
+    rate limit and Bot Fight Mode — §9.3, check 3.)*
   - never `preview_urls`, because a preview version is not the deployed code, whatever the door;
   - never `YOKOHAMA_DEV_DOOR=on` in `vars`.
 - **Saves:** a plain name never files its saves under the bucket's `test/` root. That root takes
-  only an address ending `.test`, and R-6.5c2.12's lifecycle rule `expire-test-after-30-days`, set at
-  the M6.5c2 close (2026-09-28, `RUNBOOK.md` §15), expires its objects after 30 days.
-- **One refusal reads differently from the NAS's** (ruling R-C10): a claim the layer's grammar
+  only an address ending `.test`, which no claim under `open` can be since security S2b, so an open
+  deployment's saves file at its bucket's top root; R-6.5c2.12's lifecycle rule
+  `expire-test-after-30-days`, set at the M6.5c2 close (2026-09-28, `RUNBOOK.md` §15), expires the
+  `test/` root's objects after 30 days.
+- **One refusal costs an object the NAS does not make** (ruling R-C10): a claim the layer's grammar
   refuses, such as `..`, sent to `POST /api/archive`, names an Archive object before the layer can
-  judge it, and that object's `init` answers a 500 carrying the layer's own sentence where the NAS
-  answers its 401. The client's name step never sends such a claim.
+  judge it; that object's `init` refuses the caller, and it answers the layer's own 401, as the NAS
+  does. *(Corrected 2026-10-12: this said the object answered a 500 where the NAS answers its 401 —
+  so it did until M6.5c2 cycle D, whose `callerRefused` answers the layer's 401.)* Its `init-refused`
+  log line names the refused claim by its digest (S2b's after review, `4814c999`; the echo's cut and
+  escaped forms since security S2c, `291b9e35`), and keeps a configuration refusal's value as it is.
+  The client's name step never sends such a claim.
 
 **The open door is deployed for a window and never left live** (R-6.5c2.39; the window's record is
-`RUNBOOK.md` §19). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
+`RUNBOOK.md` §19). **Since security S2b a window on THIS Worker is one of the review's known exercises, and after the security
+process the door stays steady** (the owner's clarification of 2026-10-12; C1; `RUNBOOK.md` §3). The open deployment is `wrangler.open.jsonc`, which is `wrangler.jsonc` with the
 open door and no Access values or dev door. The recipe: delete the two Worker secrets first
 (`YOKOHAMA_WEB_ADMINS` and `DEV_DOOR_CLIENT_ID`), since the shell refuses `open` beside an operator
 list; run `npm run deploy:open`, which runs the guard over that file (`node scripts/deploy-guard.mjs
---config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on) and
-then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first screen and the
-lobby with no login and a name of their own choosing, and the operator surface answers 404. The revert
-is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
+--config wrangler.open.jsonc`, holding it to production's blocks and refusing the dev door on), then
+the secrets guard over the same file (`node scripts/secrets-guard.mjs --config wrangler.open.jsonc`,
+§9.3), and then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first
+screen and the lobby with no login and a name of their own choosing, and the operator surface
+answers 404. The revert is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
 the state in between come from `node scripts/access-paths.mjs`, derived from the routers.
-`wrangler.gate.jsonc` is production with the dev door shut (`npm run deploy:gate`), for a window where
-the door must be Access alone. The open door is also proven in the test pool's second project
-(`wrangler.open.test.jsonc`, whose cells are `test/open/`), where the shell runs in workerd with real
-sockets.
+Since security S2b production itself is Access alone, with the dev door shut — the shape a self-hoster
+behind their own application copies — and `wrangler.dev.jsonc` is production with the dev door open
+(`npm run deploy:dev`), deployed around a live tier and reverted by the plain `npm run deploy`. The
+open door is also proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells
+are `test/open/`), where the shell runs in workerd with real sockets.
 
 **The two doors do not share one client build.** `cd web && npm run build` reads five build values when
 they are set (R-6.5c2.40, cycle F; `web/scripts/build-values.mjs` checks them and a bad one fails the
@@ -854,14 +879,22 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    | `/api/admin` and below | the operator gate (§7.7) |
    | every other `/api/*` path | the `House` |
 
-   A segment that cannot name a table (empty, holding a lone UTF-16 surrogate, or over the layer's
-   64-byte id limit) goes to the house instead, whose `dispatch` answers the layer's own refusal.
-   So no request ever makes a table object for a name the layer would never use.
+   A segment the store's id grammar refuses goes to the house instead, whose `dispatch` answers the
+   layer's own refusal: since security S2b the route holds a name to `isSafeId`, the store's
+   `is_safe_id` restated (not empty, at most 64 bytes, a letter or digit first, then letters, digits,
+   `.`, `_` and `-`, and no `.table` or `.chat` suffix) and held both ways to
+   `web/src/wire/id_cases.json`, and a create's named `id` and an operator's `{id}` the same. So no
+   request makes a table object for a name the store would never keep. *(Corrected 2026-10-12: until
+   S2b any segment of at most 64 bytes named a table object.)*
 2. **Refuse a foreign WebSocket.** An upgrade whose `Origin` header is present and is not the
    site's own origin is answered 403 `this socket is for the site's own pages`. A WebSocket is
    outside CORS, and without this check a hostile page in a signed-in player's browser could open an
    authenticated socket and read a table's frames. A request with no `Origin`, such as curl's,
-   passes.
+   passes. **And refuse another site's write** (security S2b, finding B5): any method but GET or
+   HEAD with an `Origin` present and not the site's own, `null` included, or a `Sec-Fetch-Site` of
+   `cross-site` or `same-site`, is answered 403 `this request is for the site's own pages`. A
+   request with neither header, curl's or the live replay's, passes. Both checks come before the
+   caller is read, so a refused sender's assertion is never verified.
 3. **Read the configuration** (`shellConfig` in `src/config.ts`). A variable it refuses answers
    every remaining request 500, naming the variable: the Worker's form of the NAS refusing to start.
    Every variable must be a string or absent, so a `wrangler.jsonc` value written without quotes is
@@ -872,7 +905,13 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    forwarded is exactly the bytes that were bounded.
 5. **Answer `/api/art`**: the static art manifest, projected onto the nine maps the layer's
    `ArtManifest` declares, because the file carries two generator keys the NAS's typed route drops.
-6. **Resolve the caller** by verifying Access's assertion (§7.6).
+6. **Resolve the caller** by verifying Access's assertion (§7.6). Then **the rate limit** (security
+   S2b, finding C2; `src/limits.ts`): any method but GET or HEAD spends a Rate Limiting binding —
+   `CREATE_LIMIT`, 10 per 60 s, on `POST /api/games`, and `WRITE_LIMIT`, 120 per 10 s, on every
+   other — keyed by the caller's digest, or by the connecting IP for a request with no caller. Past
+   it the answer is 429 `too many requests from you just now — wait a moment and try again`, with
+   `Retry-After` the refused kind's own window, `60` or `10`, and no object is reached; a limiter
+   that throws is logged `limiter-failed`, and the request proceeds.
 7. **Strip and forward.** A fresh set of headers is built without ANY client header whose name
    starts `x-yokohama-`, and `X-Yokohama-User` is set when there is a caller. Those names are the
    ones the objects trust, and only the Worker can reach the objects, so no client can speak for
@@ -890,7 +929,10 @@ Worker (spec §0.6), and the Worker does only this, in this order (`handle` in `
    Steps 6 and 7 are the `worker` door's. Under `open` (§1.5) the Worker verifies no assertion: step
    6 reads the claimed name, from the `X-Yokohama-Claimed-User` header on a fetch and from the
    `claimed=` parameter on an upgrade, and step 7 forwards it as `X-Yokohama-Claimed-User`, which
-   also names the caller's Archive object. *(Added 2026-09-28, M6.5c2.)*
+   also names the caller's Archive object, each run of its spaces collapsed to one (security S2b),
+   and drops the parameter from the URL it hands the object (since the S2 stack review);
+   there the rate limit keys a create by the connecting IP and a write by the IP and the claim's
+   digest. *(Added 2026-09-28, M6.5c2.)*
 
 The deployment readings put the Worker's own CPU, JWT verification included, at 0–2 ms a request
 (1 ms typical), inside Free's 10 ms.
@@ -923,13 +965,15 @@ own `identity::resolve` in its `worker` mode, so the literal `anonymous`, like a
 no caller. *(Since M6.5c2 both follow the door `init` is given: under `open`, `identity_name` is
 `open` and the caller is read from `X-Yokohama-Claimed-User` in the layer's `open` mode, §1.5.)*
 
-**The exports**, sixteen in the release build (`src/lib.rs`): `init`, `dispatch`, `create`,
+**The exports**, eighteen in the release build (`src/lib.rs`): `init`, `dispatch`, `create`,
 `events`, `identity`, `load`, `read`, `set_clock`, `house_copy`, `put_copy`, `remove_copy`,
-`house_frame`, `restore_picker`, `receipt`, `stamp_archive` and `expire`, plus `debug_trap` in the
-test pool's debug build. All but `set_clock` and `debug_trap` are thin wrappers over plain Rust
-functions (`dispatch_inner` and so on), which is where the logic lives, so `cargo test -p
-yokohama-worker` reaches all of it natively. The calls that reach the layer answer a `Reply`: the
-layer's `status` and `body`; the `bumps`, every signal call made during the call, in order, as JSON
+`house_frame`, `restore_picker`, `receipt`, `share_prefix`, `set_share`, `stamp_archive` and
+`expire`, plus `debug_trap` in the test pool's debug build. *(Corrected 2026-10-12, security S2b:
+sixteen until `share_prefix` and `set_share`, which count a browser save's share, §7.5.)* All but
+`set_clock` and `debug_trap` are thin wrappers over plain Rust functions (`dispatch_inner` and so
+on), which is where the logic lives, so `cargo test -p yokohama-worker` reaches all of it natively.
+The calls that reach the layer answer a `Reply`: the layer's `status` and `body`; the `bumps`, every
+signal call made during the call, in order, as JSON
 (`{"bump": id}`, `{"bump_table": id}`, `{"bump_house_chat": null}`, `{"end": id}`); an `archive`
 plan when a put was deferred (§7.5); the `picker` row, or a `dropped` one, when it changed
 (§7.3); and `logs`, the lines the layer logged during the call (§10.2). *(Corrected 2026-09-28:
@@ -1265,7 +1309,22 @@ sequenceDiagram
   `identical` or a 409. One object per caller serializes that caller's saves, and it confines the
   strict replay of an untrusted record to that caller's object, behind Access and the 2 MiB bound:
   a hostile record can at worst trap one instance of it. The object writes nothing to its own
-  storage.
+  storage. **Before its first dispatch it counts the caller's share** (security S2b, B12's Worker
+  half; decision D-5) — the receipt loop's step 0: the module's `share_prefix` names the share,
+  `browser/<the caller's segment>/`, under `test/` for a `.test` address and nothing for an object
+  with no caller; the object lists it in R2 (`list({ prefix, limit: 1000 })`, one Class A
+  operation) and hands the listing — `truncated` and every object's key and size — to the module's
+  `set_share`. The put's quota arm then counts records and bytes over the listing less its own two
+  keys, as the NAS's `DirArchive::usage` does, and applies `Quota::PRODUCTION`, the NAS's 256
+  records and 128 MiB and its 507 sentence, before any plan is deferred, so a full share uploads
+  nothing; a truncated listing is full by construction, and a server game's own save (the empty
+  prefix) is never counted. A listing that fails is logged `archive-count-failed` and not handed
+  over, and the put refuses the save uncounted, `the caller's share was not counted before this
+  save`, inside the layer's 500, which the outbox retries; every save begins with no count, since
+  `share_prefix` clears whatever an earlier request left. One object per caller serializes the
+  count and the write, so the check-then-write race the NAS needed a lock for cannot open: an
+  address is canonical under `worker`, and under `open` the shell collapses a claim's space runs,
+  so one name is one object.
 - **Game over** cannot be dispatched twice, because a move is not idempotent. The move is answered
   200 as on the NAS. The layer's game-over save meets a deferred put and leaves `archived_at` unset,
   so the shell writes `archive_owed` (the plan and its reading) with the alarm, in the move's batch.
@@ -1329,7 +1388,9 @@ that cannot be fetched means no caller at all.
    `email`, and a `common_name` equal to `DEV_DOOR_CLIENT_ID`), while `YOKOHAMA_DEV_DOOR` is `on`,
    may name its caller in `X-Yokohama-Claimed-User`, on requests and WebSocket upgrades alike. The
    claimed value must be an address by the layer's own rule: one `@` with something on each side,
-   no spaces or control characters, at most 254 bytes.
+   no spaces or control characters, at most 254 bytes. Since security S2b it must be a `.test` one
+   too (`isTestAddress`: an `@` and the suffix `.test`, the receipt archive's own rule for the
+   `test/` root), so the credential reaches no real seat and no training root (finding B6).
 3. **No one**, in every other case.
 
 An address is judged RAW before anything is done to it: only a tab, a space and visible ASCII may
@@ -1343,9 +1404,11 @@ caller from `X-Yokohama-User`, the one header the layer's `worker` identity mode
 the Worker can set it, because only the Worker can reach the objects. `/api/health` and `/api/me`
 report the mode as `cf-access`, the door the client is behind.
 
-**The dev door is a development door, and it is on this cycle.** A holder of the credential can
-claim any identity at any table, the owner's included. That is the trust the open door gives every
-caller (§1.5), narrowed to one secret, and it never grants an operator's rights
+**The dev door is a development door: off in production; `wrangler.dev.jsonc` opens it** (security
+S2b, finding B6), deployed by `npm run deploy:dev` around a live tier and closed by the plain
+`npm run deploy` after it (RUNBOOK §7). A holder of the credential can claim any `.test` identity at
+any table, and no other address. That is the trust the open door gives every caller (§1.5), narrowed
+to one secret and to test identities, and it never grants an operator's rights
 (§7.7). It exists for the test harnesses, and it must be switched off when the site goes public
 (R-6.5c.3). Two facts about the credential matter in practice:
 
@@ -1434,6 +1497,11 @@ sets `X-Yokohama-Operator`, which, like every `x-yokohama-*` header, no client c
   create at the id is 409 meanwhile. `?force` takes no value: `?force=false` is a 400 naming the
   switch (ruling I-72), because a value that forced would drop a save the operator meant to keep.
   The force is also what makes the live corpus replay repeatable (§10.4).
+- **Both POSTs need `Content-Type: application/json`** (security S2b, finding B5): without it the
+  Worker answers the layer's own 400, `` Expected request with `Content-Type: application/json` ``,
+  after the gate, so a page's form or text POST, sent with no preflight under a signed-in
+  operator's cookie, never reaches an expire; and another site's page is refused before the gate
+  (§7.1, step 2).
 
 ### 7.8 The alarm (`src/alarm.ts`, and the alarm paths of `src/table.ts`)
 
@@ -1611,8 +1679,12 @@ in `web/dist`. And after a release build, `npm run build:module:debug` comes bef
 
 ### 9.3 The deploy guard
 
-`npm run deploy` is `node scripts/deploy-guard.mjs && wrangler deploy`, so nothing ships unless all
-twelve checks hold, and every failure is named, not only the first:
+`npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
+scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and
+`npm run deploy:open` and `npm run deploy:dev` the same three steps over `wrangler.open.jsonc` and
+`wrangler.dev.jsonc` — each step told its file, so wrangler deploys exactly what the guard judged
+(security S2a, finding D18). Nothing ships unless all fourteen checks hold, and every failure is
+named, not only the first:
 
 1. **`gen/` holds the RELEASE module**, and no `gen/.unoptimized` marker: a debug or unoptimized
    module never ships.
@@ -1626,15 +1698,26 @@ twelve checks hold, and every failure is named, not only the first:
    under `open`, a `workers.dev` URL is allowed and `YOKOHAMA_DEV_DOOR=on` is refused. Absent is not
    false: with no route, an absent `workers_dev` is a public `workers.dev` URL, and an absent
    `preview_urls` leaves the Worker's version URLs as they were. *(Corrected 2026-09-28: until
-   M6.5c2 this check asked both switches `false`, with no door to read.)*
+   M6.5c2 this check asked both switches `false`, with no door to read.)* *(Corrected 2026-10-11,
+   security S2a, finding C3: `workers_dev` must be explicitly `false` under EVERY door, so the clause
+   allowing a `workers.dev` URL under `open` no longer holds — there it would go around the edge rule,
+   the rate limit and Bot Fight Mode. And every configuration judged by `--config` whose door is
+   `open` is held to production as `wrangler.open.jsonc` is.)* **And 3b** (security S2a, finding
+   D18): no redirect file, `.wrangler/deploy/config.json`, in `worker/` or at the repository root —
+   with no `--config`, wrangler can follow one to a configuration the guard never judged.
+   *(Since security S2b, finding B6: under `worker`, `YOKOHAMA_DEV_DOOR` is `on` in
+   `wrangler.dev.jsonc` alone, which must set it to exactly `on` and is held to production but for
+   that one variable; and every other worker-door file judged by `--config` is held to production
+   exactly, with no allowed difference — the S2a plan review's F-40.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
    R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as
    text whichever file the deploy ships, so a creator's seed is honoured at a table that seats
    somebody else in the pool's two files and nowhere else.
 5. **The `assets` block is exactly spec §2.3's in all five files**: production's, the open window's and
-   the gate's, and the pool's two, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`. The pool reads
-   only its own two files, so without this production's block could drift with every pool cell green,
+   the dev file's (the gate's until security S2b), and the pool's two, `wrangler.test.jsonc` and
+   `wrangler.open.test.jsonc`. The pool reads only its own two files, so without this production's
+   block could drift with every pool cell green,
    and an asset-layer fallback answers a missing file without ever invoking the Worker.
 6. **The `durable_objects`, `migrations` and `r2_buckets` blocks of each pool file equal
    production's**, so the pool never tests a class, a binding, a migration or a bucket that
@@ -1649,7 +1732,9 @@ twelve checks hold, and every failure is named, not only the first:
    find.
 9. **The assets tree was assembled from the current `web/dist` and `worker/static`**: its `sw.js`
    against `web/dist/sw.js`, byte for byte. Check 2 alone passes a stale tree, which verifies
-   against its own `sw.js`.
+   against its own `sw.js`. Since security S2a its `_headers` is held to `worker/static/_headers`
+   followed by the current `web/dist/headers.json`'s `/*` block, the header set as the assembly
+   appends it, and a `web/dist` with no `headers.json` is refused, naming it.
 10. **No `cache` block turns Workers Cache on, at any depth** (cycle F). A block whose `enabled` is
     not `false` is refused wherever it sits, found by walking the parsed configuration: with it on,
     requests served from the Worker's cache, static assets included, are billed like requests that
@@ -1663,10 +1748,36 @@ twelve checks hold, and every failure is named, not only the first:
     exactly when it does. And the identity rule: `on`, and a keyed build, stand only beside
     `YOKOHAMA_WEB_IDENTITY` `open`, because the client reads a site key as the open door and, behind
     Access, would never upload a nameless visitor's games (RUNBOOK §3).
+13. **Production's two Rate Limiting bindings are at their figures** (security S2b, finding C2):
+    `wrangler.jsonc`'s `ratelimits` block is exactly `CREATE_LIMIT` 10 per 60 s and `WRITE_LIMIT`
+    120 per 10 s, namespaces `7301` and `7302`, read as values, and each pool file binds exactly
+    those two names, at a lenient figure of its own, since `test/worker.test.ts` sends more creates
+    through `handle` than production allows. The open and dev files carry production's block by the
+    sibling rule. A `namespace_id` is a string, unique to the account, and a shared id shares
+    counters across Workers.
+14. **Production's logs redact query strings and are not sampled** (security S2b, finding D23):
+    `observability.redact_query_string` is `true`, since an open-door socket's `claimed=` rides the
+    upgrade's URL and an invocation log keeps the URL, and `head_sampling_rate` is absent or `1`, at
+    the top level and under `observability.logs`, whose `invocation_logs` is never `false`, and the logs
+    are never switched off (`enabled`, `logs.enabled`, `logs.persist`): the live readings count
+    invocations through these logs.
 
-Checks 3 to 7 and 10 need no build, and `npm run test:scripts` runs them over the committed files,
-which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, and 11 and 12 read
-the assembled tree and its stamp, so they run only on the workstation that deploys.
+Checks 3 to 7, 10, 13 and 14 need no build, and `npm run test:scripts` runs them over the committed
+files, which is how CI catches a drifted configuration. Checks 1, 2, 8 and 9 need a build, and 11 and
+12 read the assembled tree and its stamp, so they run only on the workstation that deploys.
+
+**Then the secrets guard** (security S2a, decision D-11) asks the account for the Worker's secret
+NAMES, never a value, and refuses a secret named `YOKOHAMA_DIAGNOSTIC_SEEDS`,
+`YOKOHAMA_WEB_TEST_CLOCK` or, since the S2 stack review, `YOKOHAMA_DEV_DOOR`: the guard refuses the
+first two in a committed file and judges the third there, and a secret would carry any of them past
+it. A listing that fails is a refusal, never a pass, so every deploy script is a network
+step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
+`CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
+deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first
+deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that does not exist
+holds no secret, and the deploy guard holds this repository's Worker alone, its name and bucket, until
+S4 gives it the new Worker's identity — and the secrets guard from the second deploy on (security S2b,
+decision D-7 as corrected at Task 9's review; the owner's R-6).
 
 ### 9.4 Configuration and secrets
 
@@ -1680,7 +1791,8 @@ the first deploy, so a class added later needs a tag of its own; and the private
 `wrangler deploy` REPLACES the Worker's variables with the file's `vars`, so that file is the whole
 list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its absence means. In
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
-`ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `on` for the live tiers;
+`ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `off`, and `wrangler.dev.jsonc` sets it
+`on` for the live tiers (security S2b);
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
 chat variables keep the NAS's defaults;
@@ -1715,8 +1827,10 @@ a live Worker (ruling I-84). It is off by default, because on a turn-based table
 written on almost every move. Two deploys open and close the window, with no file edited:
 
 ```sh
-node scripts/deploy-guard.mjs && npx wrangler deploy --var YOKOHAMA_WEB_COUNT_WAKES:on   # open
-npm run deploy                                                                        # close
+# open:
+node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && npx wrangler deploy --config wrangler.jsonc --var YOKOHAMA_WEB_COUNT_WAKES:on
+# close:
+npm run deploy
 ```
 
 `--var` adds one variable beside the file's, and the plain deploy replaces the variables with the
@@ -1777,19 +1891,30 @@ since M6.5c2 the layer's own lines ride each reply to the shell's log under thei
 seam). RUNBOOK §5 is the full vocabulary, with every field. *(Corrected 2026-09-28: this said the
 layer's diagnostics printed nothing on this host, which was true until the log seam.)* The families:
 
-- **The request path:** `object-failed` (logged by the Worker), `trap` (with the `call` that
+- **The request path:** `object-failed` and, since security S2b, `limiter-failed` (both logged by
+  the Worker), `trap` (with the `call` that
   trapped), `load-trap`, `poison`, `init-refused`, `identity-failed`, `frame-failed`,
   `restore-refused`, `picker-dropped`, and `wake` in the exit window.
 - **The house:** `slot-pushed`, `slot-acked`, `slot-failed`, `slot-ignored`, `copy-refused`,
   `house-chat-dropped`, `alarm-failed`.
 - **The archive:** `archive-landed`, `archive-identical`, `archive-conflict`, `archive-failed`, each
   naming its site; `archive-stamped`; `stamp-refused` (since M6.5c2); `archive-owed-kept`;
-  `archive-owed-dropped`.
+  `archive-owed-dropped`; `archive-count-failed` (since security S2b: a share that could not be
+  listed, so its save is refused uncounted).
 - **The endings:** `expired`, `expiry-failed`, `held`, `expiry-blocked`, `marker-ended`, `forced`,
   `removal-ended` (since M6.5c2), and `operator` for every operator action.
 - **The layer's own** (since M6.5c2): `archive-over-unstamped`, `archive-over-table-gone`,
   `archive-kept-earlier-completion`, `listing-skipped`, and `archive-over-refused`, which the module
   drops where it is only its own deferral of a game-over put.
+
+**The lines that carried an address, or a folder that spells one, no longer do since security S2b**
+(finding D23): the `operator` line carries the first twelve hex of SHA-256 over the operator's
+address, every record key is logged with its folder's digest alone (`browser/<12 hex>/`), and an
+Archive object names itself `archive:<12 hex>`. An Archive object's `init-refused` names a claim
+the key grammar refused by its digest (S2b's after review, `4814c999`), the echo's cut and escaped
+forms included (security S2c, `291b9e35`), and keeps a configuration refusal's value as it is. Owed
+to S2b's after review: `limiter-failed`'s `error` may carry the limit key, an IP under `open`, if
+the platform's text echoes it.
 
 Two lines carry a reading rule. A `slot-pushed` without its `slot-acked` is a delivery the alarm
 will retry. An `expiry-failed` that repeats hourly is read by its `body`: one naming a stored
@@ -1811,8 +1936,9 @@ the Worker requests and the rows written; a run that could cross it waits for th
 ### 10.4 The live tiers, and what they leave behind
 
 Both live tiers are the operator's to run, from the owner's workstation over WARP, with the
-credential in `.dev.vars` (RUNBOOK §7). Run one at a time, and never the replay beside the
-Playwright tier: the two share the lobby chat's counter.
+credential in `.dev.vars` (RUNBOOK §7). Since security S2b each run sits between `npm run deploy:dev`,
+which opens the dev door, and the plain `npm run deploy`, which closes it. Run one at a time, and
+never the replay beside the Playwright tier: the two share the lobby chat's counter.
 
 - **The live corpus replay** (`node scripts/live-replay.mjs` in `worker/`) forces its three fixed
   table ids (`wire`, `wire2`, `wire4`) before and after itself, as the operator, so it needs the
@@ -1867,11 +1993,15 @@ the credential, which is never an operator.
 
 - **It is not public.** Access covers the whole hostname (R-6.5c.1). The path-scoped Access door
   that would open the single-player site to the public is built and proven locally but not
-  deployed, the card art is not published, and the dev door is ON in production's variables, for
-  the live tiers; the public door's preconditions are recorded in the M6.5c2 cycle C close (§6). *(Corrected
-  2026-09-28: `DEV_DOOR_CLIENT_ID` is a secret since M6.5c2, where this said it was committed.)*
-  Going public is meant to be a configuration change; on a public door, a scanner's misses would
-  each be a Worker invocation.
+  deployed, the card art is not published, and the dev door is OFF in production's variables since
+  security S2b, opened by `wrangler.dev.jsonc` around a live tier; the public door's preconditions
+  are recorded in the M6.5c2 cycle C close (§6). *(Corrected 2026-09-28: `DEV_DOOR_CLIENT_ID` is a
+  secret since M6.5c2, where this said it was committed.)*
+  Going public is meant to be a NEW Worker that starts empty — after the security process the door of this
+  private Worker stays steady (R-SEC6 as the owner read it on 2026-10-12; RUNBOOK §3) — and a change to the deploy guard, which holds this
+  repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity (D-7 as
+  corrected at S2b Task 9's review); on a public door, a scanner's misses would each be a Worker
+  invocation.
 - **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
   remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
   documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three

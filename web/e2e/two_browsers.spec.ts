@@ -39,7 +39,7 @@ import { type Page } from "@playwright/test";
 // keeps that from being a convention anybody has to remember.
 import { expect, newContextWithoutWorker, test } from "./sw";
 import { BASE_URL, haveBrowser } from "../playwright.config";
-import { act, capReached, deadEnd, openFromList, readScreen, rng, signIn, tally, TALLY_VAR, watchForBreakage } from "./harness";
+import { act, capReached, deadEnd, escaped, openFromList, readScreen, rng, signIn, tally, TALLY_VAR, watchForBreakage, who } from "./harness";
 import type { Affordance, Screen } from "./harness";
 import { CAP } from "./caps";
 import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
@@ -85,8 +85,14 @@ test.afterEach(async () => {
 /** The word the third browser has to present before it may read this table. */
 const WATCH_PASSWORD = "sesame";
 
+/** The two players, as the target names them (`who`: a plain name at the
+ *  local binary's open door, a `.test` address through the dev door live —
+ *  security S2b, C1). */
+const A = who("a");
+const B = who("b");
+
 /** Who watches. Named at no seat, invited by nobody. */
-const WATCHER = "c@e2e.test";
+const WATCHER = who("c");
 
 test("two people at two browsers play to a winner and neither sees the other's hand", async ({
   browser,
@@ -110,8 +116,8 @@ test("two people at two browsers play to a winner and neither sees the other's h
   let streamPath = "";
   // Two people, and live each context is its person (`live.ts`); locally a
   // context is the plain one it always was, and the sign-in form names them.
-  const a = await (await newContextWithoutWorker(browser, await liveContextOptions("a@e2e.test"))).newPage();
-  const b = await (await newContextWithoutWorker(browser, await liveContextOptions("b@e2e.test"))).newPage();
+  const a = await (await newContextWithoutWorker(browser, await liveContextOptions(A))).newPage();
+  const b = await (await newContextWithoutWorker(browser, await liveContextOptions(B))).newPage();
   /** How many times each PLAYER opened this table's stream (R-6.4.4, R-plan-7).
    *  The teardown that closed it at every turn boundary is gone, so this is a
    *  count that stops growing once each screen is up — and a reopen mid-game
@@ -138,7 +144,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // A opens the table and names B in seat 1. The form's default at two players
   // seats the BOT there, so this is also the one walk that exercises the seat
   // row's "a specific person" arm.
-  await signIn(a, "a@e2e.test");
+  await signIn(a, A);
   // The lobby is the first screen since M6.2; the form is one click on.
   await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
   await a.getByRole("button", { name: "New table" }).click();
@@ -147,7 +153,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // open-door server, an ADDRESS behind Access (M6.5c2, spec §2.2) — either way
   // the key B signs in as.
   await a.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("person");
-  await a.getByLabel(/^Blue player's (name|address)$/).fill("b@e2e.test");
+  await a.getByLabel(/^Blue player's (name|address)$/).fill(B);
   // **A password, because the third browser is the one it is for** (spec §9.4).
   // It costs the two players nothing — both hold a seat and a seat holder never
   // presents anything — and it is the only way to reach the unlock face.
@@ -161,11 +167,11 @@ test("two people at two browsers play to a winner and neither sees the other's h
   // A chooses, and is then waiting: the table does not start until B has
   // chosen too, and A's screen says whom it is waiting on by name.
   await a.getByRole("button", { name: /^keep O\d\d/ }).first().click();
-  await expect(a.getByText(/waiting on b@e2e\.test/)).toBeVisible();
+  await expect(a.getByText(new RegExp(`waiting on ${escaped(B)}\\b`))).toBeVisible();
 
   // B finds the table in its OWN saved list — the only way into a table this
   // browser did not open — chooses, and the last keep starts the game.
-  await signIn(b, "b@e2e.test");
+  await signIn(b, B);
   await openFromList(b, id);
   await b.getByRole("button", { name: /^keep O\d\d/ }).first().click();
   await expect(b.getByText(/end triggers:/)).toBeVisible();
@@ -303,7 +309,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
       timeout: 15_000,
     });
     // Asked of the SERVER from A's context — never from C's (`shared_table.ts`).
-    const applied = await appliedEvents(a, id, "a@e2e.test");
+    const applied = await appliedEvents(a, id, A);
     if (applied === lastApplied) return;
     lastApplied = applied;
     await expect(
@@ -442,7 +448,7 @@ test("two people at two browsers play to a winner and neither sees the other's h
 
   // The game's applied events, read once more of the SERVER at the end rather
   // than taken from the last checkpoint: it is the tally report's `--moves`.
-  const appliedAtEnd = await appliedEvents(a, id, "a@e2e.test");
+  const appliedAtEnd = await appliedEvents(a, id, A);
   // eslint-disable-next-line no-console
   console.log(
     `two-browser game ${id} finished in ${moves} moves, ${waits} idle looks, ` +

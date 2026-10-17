@@ -1,6 +1,7 @@
 import { moduleConfig } from "../config";
 import { Instance, pinnedTo, type Bump } from "../module";
 import { executePlan, logOutcome, parsePlan, parseStamp, settledArm, type ArchiveOwed, type Outcome } from "../r2";
+import { redactKey } from "../redact";
 import { log } from "../respond";
 import { nextRetry } from "../slot";
 import { getMeta, setMeta } from "../storage";
@@ -47,7 +48,7 @@ export function withArchiving<T extends TableParts>(Base: T) {
       if (fromRequest && owed.not_before !== undefined && Date.now() < owed.not_before) return;
       if (Number(getMeta(sql, "load_traps") ?? "0") >= 2) return;
       if (!this.archiveOn()) {
-        log("archive-owed-kept", { id, record_key: owed.plan.record_key, attempt: owed.attempt });
+        log("archive-owed-kept", { id, record_key: redactKey(owed.plan.record_key), attempt: owed.attempt });
         return;
       }
       const key = owed.plan.key;
@@ -172,7 +173,7 @@ export function withArchiving<T extends TableParts>(Base: T) {
         // escape the upload, and an alarm with it).
         const stamp = status === 200 ? parseStamp(body) : undefined;
         if (stamp === undefined) log("stamp-refused", { id, status });
-        else log("archive-stamped", { id, record_key: current.plan.record_key, reading: current.reading, ...stamp });
+        else log("archive-stamped", { id, record_key: redactKey(current.plan.record_key), reading: current.reading, ...stamp });
         const arm = settledArm(outcome, stamp);
         const retry = arm === "retry" ? this.retryAt(current) : undefined;
         done = this.commit(

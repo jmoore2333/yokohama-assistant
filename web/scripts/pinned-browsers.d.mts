@@ -98,3 +98,11 @@ export declare function writeVerdict(
   head: { label: string; origin: string; secondTab: boolean; goWaitMinutes: number },
   checks: Check[],
 ): { ok: boolean; complete: boolean; summary: string };
+
+/** The close, with the cookies cleared first; a failed clear is a FAILED check, and the close still happens. */
+export declare function leaveNoSession(
+  context: { clearCookies(): Promise<void>; close(): Promise<void> },
+  log: (line: string) => void,
+  checks: Check[],
+  stateDir: string,
+): Promise<void>;

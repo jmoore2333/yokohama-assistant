@@ -113,6 +113,7 @@ import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
 import identityCases from "./identity_cases.json";
+import idCases from "./id_cases.json";
 import seedCases from "./seed_cases.json";
 import productionBot from "./production_bot.json";
 import tableBot from "./table_bot.json";
@@ -443,6 +444,15 @@ export interface IdentityCase {
   display: string | null;
 }
 const _identityCases: readonly IdentityCase[] = identityCases;
+/** One input of the store's id grammar and the layer's answer (security S2a, Task 5): `raw` as a client could send
+ *  it in a route or a hash, `safe` whether `is_safe_id` admits it. Not a route's payload: a CONTRACT, emitted by
+ *  `wire_fixtures`, which the client's hash router (`tableId.ts`) is pinned to as the name step is pinned to
+ *  `identityCases`. */
+export interface IdCase {
+  raw: string;
+  safe: boolean;
+}
+const _idCases: readonly IdCase[] = idCases;
 const _seedCases: readonly { raw: string; ok: boolean }[] = seedCases;
 const _suggest: Widen<SuggestResponse> = suggest;
 const _why: Widen<WhyResponse> = why;
@@ -565,7 +575,7 @@ void [
   _events, _eventsDealing, _eventsOpen, _houseFrame,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
-  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _seedCases, _feeNonzero,
+  _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _idCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
@@ -731,7 +741,7 @@ const CHAT_MESSAGE = ["seq", "created_at", "author", "text", "deleted"] as const
 // No `user` in either since M6.5c2 cycle D (R-6.5c2.35): an author is a name
 // and a `you`, and the address stays in the server's document.
 const CHAT_AUTHOR_SEAT = ["kind", "seat", "name", "you"] as const;
-const CHAT_AUTHOR_WATCHER = ["kind", "name", "you"] as const;
+const CHAT_AUTHOR_WATCHER = ["kind", "name", "you", "tag"] as const;
 
 // The compile-time half. A list that is not exactly `keyof T` fails HERE, with
 // the offending key names in the message.
@@ -955,6 +965,10 @@ export const wire = {
    *  normalization cannot drift from the server's. See that fixture's doc in
    *  `wire_fixtures.rs`. */
   identityCases: identityCases as readonly IdentityCase[],
+  /** Not a payload either: `store::is_safe_id`'s verdicts over a committed list of ids, frozen so the hash
+   *  router's copy of the grammar (`web/src/tableId.ts`) cannot drift from the server's. See that fixture's doc in
+   *  `wire_fixtures.rs`. */
+  idCases: idCases as readonly IdCase[],
   /** Not a payload either: `WireSeed`'s verdicts over a committed list of
    *  inputs, frozen so the form's as-you-type check cannot drift from the
    *  server's rule. See that fixture's doc in `wire_fixtures.rs`. */

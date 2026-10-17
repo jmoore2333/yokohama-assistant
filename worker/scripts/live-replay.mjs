@@ -36,9 +36,10 @@
 //    `filterLobby` with up to `LOBBY_REREADS` re-reads. The pool replays the
 //    whole walk under its diagnostic switch.
 // 4. **Every row's status, and every named row's body** against its committed
-//    file — the clock frozen first (`freezeClock`), then three named
-//    exemptions (`filterLobby`, `normalizeHouseChat`, `firstSendAccepts`, the
-//    pure functions of `replay/exemptions.mjs`) and `HOST_FIELDS`, each COUNTED when it is
+//    file — the clock frozen first (`freezeClock`), then four named
+//    exemptions (`filterLobby`, `normalizeHouseChat`, `houseWatcherTag`,
+//    `firstSendAccepts`, the pure functions of `replay/exemptions.mjs`) and
+//    `HOST_FIELDS`, each COUNTED when it is
 //    spent; a host field that reads as the axum host's is refused, because an
 //    exemption that differs nowhere is a hole a later host could hide behind.
 //    **The walk's house post is DELETED by the run that made it** (M6.5c2
@@ -137,7 +138,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     log(`  MISMATCH ${label} — ${fixture === null ? "" : `${fixture} `}${diff.path}: ${what}`);
   };
 
-  log(`live-replay: ${ORIGIN} — ${KEYS.join(" and ")} to this origin only; the forces bare (over WARP, the owner's device answers Access)`);
+  log(`live-replay: ${ORIGIN} — ${KEYS.join(" and ")} to this origin only; the forces with only the JSON type (over WARP, the owner's device answers Access)`);
   result.forcedBefore = await forceAll(ids, fetcher);
   log(`force before: ${result.forcedBefore.map((f) => `${f.id} ${f.status ?? "—"}${f.status === 204 ? "" : f.said}`).join(", ")}`);
   if (!result.forcedBefore.every((f) => f.status === 204)) {
@@ -158,8 +159,8 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       // follows it, as on every other road out.
       result.stopped = `the house chat's base could not be read: ${baseReply.status}${said(baseReply)}`;
     }
-    // `houseShift`: set once the run's own house post is answered.
-    const context = { corpus, ids, base: last, baseRev, houseShift: undefined };
+    // `houseShift` and `houseTag`: set once the run's own house post is answered.
+    const context = { corpus, ids, base: last, baseRev, houseShift: undefined, houseTag: undefined };
     const skipped = productionSeedRule(walk);
 
     for (const { script, index, row: scripted } of result.stopped === null ? rows : []) {
@@ -231,10 +232,13 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
         differs(label, null, { path: "status", reason: `committed ${row.status} · got ${reply.status}${said(reply)}` });
         break;
       }
-      // The run's own house post: the number the delete row is carried to.
+      // The run's own house post: the number the delete row is carried to,
+      // and the tag the house page is held to (`houseWatcherTag`).
       if (row.fixture === "house_chat_post") {
-        const seq = parsed(reply)?.seq;
+        const post = parsed(reply);
+        const seq = post?.seq;
         if (typeof seq === "number") context.houseShift = seq - JSON.parse(corpus.house_chat_post).seq;
+        context.houseTag = post?.author?.tag;
       }
       if (row.fixture === null) continue;
 
