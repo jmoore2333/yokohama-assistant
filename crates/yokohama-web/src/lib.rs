@@ -416,7 +416,10 @@ pub const BUSY: &str = "the server is busy replaying — try again in a second";
 /// legitimate body is under 512 KiB and arrives in one burst over the tunnel; ten seconds is a slow phone on a bad
 /// link, and a stall past it is a connection somebody is holding, which this turns from an unbounded hold into a
 /// rate the edge already bounds, and the container's memory bound meets. `axum::serve` sets no timer, so without
-/// this the binary bounds no read at all.
+/// this the binary bounds no read at all. **The header phase and an idle keep-alive connection stay unbounded**:
+/// `axum::serve` offers no timer for either, and the S2c plan's R-7 recorded hyper's header timeout off and put this
+/// deadline on the body alone — a residual left behind the tunnel, where each request's head reaches the binary
+/// whole (the S2 stack review's lens 2 held four such connections open past 45 s; `docs/web-lane.md` §15).
 #[cfg(feature = "server")]
 pub const BODY_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// The 408's sentence.

@@ -16,7 +16,8 @@
 //!
 //! **The per-caller key is the identity the door hands over** — the verified address under Access, the claimed name
 //! under the open door, where a name rotation escapes the per-caller figure and meets the room's total alone (the
-//! Worker's sibling is `docs/web-lane.md` §15's socket-cap row, S2b's finding D3; recorded for S4). The room's total
+//! Worker's sibling is `docs/web-lane.md` §15's socket-cap row, S2b's finding D3, and this module's own is the NAS
+//! stream-cap row beside it; recorded for S4). The room's total
 //! is the bound a process relies on, and it judges a seated player as it judges anyone: a full room refuses them, in
 //! the TABLE's sentence that takes them to the lobby (S2c's D-2), until streams close. Neither figure is a budget a
 //! feature may lean on; a seat-aware admission is S4's.
