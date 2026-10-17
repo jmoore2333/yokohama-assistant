@@ -5885,7 +5885,7 @@ mod tests {
 
     /// **The first append gives a document its salt, and a second keeps it** (decision D-5): two watchers' tags
     /// differ, one watcher's two messages share one, and the stored document carries the salt the views were
-    /// derived from. Under `in_memory()` the salt is the constant, which is what makes the corpus byte-stable.
+    /// derived from. Under `games()` (`Diagnostic`) the salt is the constant, which is what makes the corpus byte-stable.
     #[test]
     fn the_first_append_salts_the_document_and_tags_are_stable_within_it() {
         let games = games().with_seed_policy(crate::games::SeedPolicy::Diagnostic);

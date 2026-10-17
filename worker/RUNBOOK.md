@@ -959,6 +959,12 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   answering the once-rule's 200. **Never beside the Playwright tier**: the two share the house
   chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP
   the owner's own login is the operator (§3).
+
+  **Since 0.6.3 the two house rows' watcher tag is a production value** (security S2c, D8): a
+  deployed Worker salts the house chat from OS entropy, so the judge takes `house_chat_post`'s and
+  `house_chat`'s watcher `author.tag` back to the committed one (`houseWatcherTag`, counted in the
+  exemptions spent) only when it is four lowercase hex and the page's is the post reply's; a
+  dropped, `null` or malformed tag, or a page that disagrees with the reply, fails the row.
 - **The rate limit's live reading — the burst** (security S2b, finding C2; AD-7), over WARP as the
   owner, with the smoke's browser `User-Agent` (the next bullet):
 
