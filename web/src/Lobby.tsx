@@ -779,7 +779,8 @@ export function Lobby({
 
         {/* The lobby's own strip: a reading where EVERY listing was refused
             (one refused listing is said in its own section, `strip`), the
-            pager's, a copy the browser refused, and Abandon's. **Not a second "Can't reach the server"
+            pager's, a copy the browser refused, and Abandon's — else why the house signal STOPPED (`ended`,
+            security S2c). **Not a second "Can't reach the server"
             under state C's card**, which says it already. */}
         {foot && !(serverUp === false && foot === UNREACHED) && <Refusal sentence={foot} />}
       </div>

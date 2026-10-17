@@ -727,6 +727,28 @@ describe("the two frame modes (R-7.1)", () => {
     expect(result.current).toBe("live");
     expect(stub.matching("GET", "/stream")).toHaveLength(1);
   });
+
+  it("keeps the stream when a woken re-read is refused 429 (AD-6: the cap answers at admission, never at a listing read)", async () => {
+    const { stream, stub } = streamed(undefined, (call) =>
+      call.path.endsWith("/table") ? { status: 429, body: { error: "too many requests" } } : undefined,
+    );
+    const ends: End[] = [];
+    const { result } = renderHook(() =>
+      usePolled<TableView>(
+        { key: "wire", once: () => api.table("wire"), stream: "/api/games/wire/stream" },
+        true,
+        () => {},
+        (e) => ends.push(e),
+      ),
+    );
+    await until(() => stream.opens() > 0, "the stream was opened");
+    stream.push("signal", at(1));
+    await settle();
+    expect(ends).toEqual([]);
+    expect(result.current).toBe("reconnecting");
+    expect(stub.matching("GET", "/stream")).toHaveLength(1);
+    expect(stub.matching("GET", "/stream")[0]!.signal!.aborted).toBe(false);
+  });
 });
 
 describe("the hook's own rules, whatever the transport", () => {

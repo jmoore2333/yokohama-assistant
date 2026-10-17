@@ -522,6 +522,16 @@ describe("the chat panel", () => {
     expect(screen.queryByText("\u00b7 spectating")).toBeNull();
   });
 
+  it("draws a house author's tag, with no spectating marker", async () => {
+    localStorage.setItem(OPEN_KEY, JSON.stringify(["house"]));
+    const author = wire.houseChat.messages[0]!.author;
+    if (author.kind !== "watcher" || author.tag === null) throw new Error("the house corpus author is a tagged watcher");
+    stubApi((call) => (call.method === "GET" && call.path.includes("/chat") ? wire.houseChat : undefined));
+    render(<Chat scope={{ kind: "house" }} sendName />);
+    const [row] = await screen.findAllByRole("listitem");
+    expect(row!.querySelector(".chat-who")!.textContent).toBe(`${author.name} · ${author.tag}`);
+  });
+
   it("renders the server's refusal in its own line and keeps the draft", async () => {
     open();
     chatStub((call) => (call.method === "POST" ? { status: 400, body: wire.chat400Long } : undefined));

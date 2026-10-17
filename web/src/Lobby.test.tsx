@@ -407,6 +407,33 @@ describe("the lobby", () => {
     }
   });
 
+  it("draws a refusal that comes after the ended signal in its place on the strip (the strip's order, M35b)", async () => {
+    // **The last refusal, else why the signal stopped** (security S2c, D3): a refusal the player's own action earned
+    // after the end — here a copy the browser refused — is the strip's word while it stands, and the ended sentence
+    // is what the strip says when nothing else does. Reversed, the refusal would hide behind the ended sentence.
+    const sentence = "too many open lobby streams from you — close one and try again";
+    vi.useFakeTimers();
+    try {
+      show((call) => (call.path.endsWith("/api/stream") ? { status: 429, body: { error: sentence } } : undefined));
+      await until(() => screen.queryByText(sentence) !== null, "the sentence was drawn");
+      await until(
+        () => within(section("Your tables")).queryByRole("button", { name: "Copy link: wire2" }) !== null,
+        "the listings landed",
+      );
+      expect(screen.getByText(sentence), "the premise: the ended sentence is on the strip").toBeInTheDocument();
+      const url = new URL("#/t/wire2", window.location.href).href;
+      const refused = `the link could not be copied \u2014 it is ${url}`;
+      vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(
+        new DOMException("Write permission denied.", "NotAllowedError"),
+      );
+      fireEvent.click(within(section("Your tables")).getByRole("button", { name: "Copy link: wire2" }));
+      await until(() => screen.queryByText(refused) !== null, "the copy's refusal was drawn");
+      expect(screen.queryByText(sentence), "the refusal is drawn in place of the ended sentence").toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   // **The repository link** (R-6.5c2.40): a quiet link among the actions where
   // the build names one, in a new tab, and absent where it does not.
   it("draws the project link among the actions only where the build names one", async () => {
