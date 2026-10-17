@@ -1838,6 +1838,19 @@ mod tests {
         assert_eq!((at.index, at.seat, at.contestant), (branching, PlayerId::new(1), PROVISIONAL_DEFAULT_BOT));
         assert_eq!((at.current_version, at.recorded_version), (version, Some(version)));
         assert_eq!(&at.recorded, recorded);
+        // **M40's full catcher** (M40a, Task 6's probe): ONE human move after the bot's, so the record's last move
+        // is seat 0's while a bot move exists — bare `why` addresses the LAST EXPLAINABLE BOT move, not the last
+        // move. The variant that keeps `last_explainable_bot_move`'s refusal and then takes the last move passed
+        // every other cell in this crate.
+        assert!(!r.bots.is_bot(r.session.state().current_player), "premise: the fixture stops on the human's turn");
+        let human = r.session.legal()[0].clone();
+        r.session.apply(human, vec![]).expect("a move from the engine's own list applies");
+        let record = r.session.record();
+        let last = record.events.len() - 1;
+        assert_eq!(move_indices_of(record, &rules, PlayerId::new(0)).last(), Some(&last), "premise: the record's last event is seat 0's move");
+        let last_bot = *move_indices_of(record, &rules, PlayerId::new(1)).last().expect("fixture: the bot has moved");
+        let bare = locate(TrackingMode::Simulation, record, &rules, None).expect("a bot move to locate");
+        assert_eq!(bare.index, last_bot, "bare `why` addresses the last explainable BOT move, not the last move");
     }
 
     /// A refusal is raised in ONE place. When the parts refuse, the screen
