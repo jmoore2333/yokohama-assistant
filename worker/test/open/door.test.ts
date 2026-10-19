@@ -448,6 +448,23 @@ describe("what the open door refuses (M6.5c2, spec §2.1)", () => {
     tab.ws.close(1000, "done");
   });
 
+  // The anonymous archive is the `worker` door's (the auth cycle, Task 5; design §4.4: "Under `open` nothing changes
+  // (a claim is the caller)"): a post with no claim, a device header and a body naming a safe id is the house's answer
+  // exactly as without the header, and no archive object is made for it. Mutant: the anonymous caller formed under
+  // either door (an `archive:anon-…` object answers instead of the house); the device forwarded to the house.
+  it("a post with no claim is the house's answer at the archive, device header or not: no anonymous caller here", async () => {
+    const { record, table } = ARCHIVE_WALK[0]!.body as { record: string; table: string };
+    const body = JSON.stringify({ record, table: replaceOnce(table, '"id": "wire"', '"id": "local-0f0f0f0f0f0f0f0f"') });
+    const bare = await reaching(() => through("/api/archive", { method: "POST", headers: JSON_TYPE, body }));
+    const device = await reaching(() =>
+      through("/api/archive", { method: "POST", headers: { ...JSON_TYPE, "X-Yokohama-Device": "0123456789abcdef" }, body }),
+    );
+    expect(bare.result.status, "premise: no claim is the layer's 401").toBe(401);
+    expect([device.result.status, device.result.text], "the same answer").toEqual([bare.result.status, bare.result.text]);
+    expect([device.house.length, device.archive.length], "the house alone").toEqual([1, 0]);
+    expect(device.house.map(yokohamaHeaders), "handed no device: the header is the archive object's alone").toEqual([{}]);
+  });
+
   // Review R2.2-m4: a plain name ending in `.test` is legal under the key
   // grammar, and the `test/` prefix EXPIRES after 30 days (R-6.5c2.12): an
   // open-door player named `a.test` keeps their saves at the bucket's top, at

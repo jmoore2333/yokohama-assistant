@@ -1,3 +1,4 @@
+import { isAnonymousAddress } from "./identity";
 import { redactKey } from "./redact";
 import { log } from "./respond";
 
@@ -134,8 +135,11 @@ async function textAt(bucket: Bucket, key: string): Promise<string | null> {
  * cross-key atomicity to close, recorded as best-effort (spec §2.5). The
  * conditional form is `onlyIf` with an `If-None-Match: *` header; the first
  * deploy that touches R2 reads it live (spec §3.2).
+ *
+ * With `meta` (a browser's upload; `uploadMetadata`), BOTH puts carry it as R2's custom metadata, the record's beside
+ * its precondition; without it, neither carries any (the auth cycle, design §4.4).
  */
-export async function executePlan(bucket: Bucket, plan: Plan): Promise<Outcome> {
+export async function executePlan(bucket: Bucket, plan: Plan, meta?: Record<string, string>): Promise<Outcome> {
   const at = (outcome: "landed" | "identical"): Outcome => ({ outcome, detail: plan.record_key });
   // What the key holds, against this plan's record — as TEXT: a conflict hands
   // the held text on, for the module to compare (R-6.5c2.11).
@@ -144,8 +148,9 @@ export async function executePlan(bucket: Bucket, plan: Plan): Promise<Outcome> 
   try {
     const held = await textAt(bucket, plan.record_key);
     if (held !== null) return against(held);
-    await bucket.put(plan.table_key, plan.table);
-    const created = await bucket.put(plan.record_key, plan.record, { onlyIf: new Headers({ "If-None-Match": "*" }) });
+    const custom = meta === undefined ? undefined : { customMetadata: meta };
+    await bucket.put(plan.table_key, plan.table, custom);
+    const created = await bucket.put(plan.record_key, plan.record, { onlyIf: new Headers({ "If-None-Match": "*" }), ...custom });
     if (created !== null) return at("landed");
     const raced = await textAt(bucket, plan.record_key);
     if (raced === null) {
@@ -159,6 +164,29 @@ export async function executePlan(bucket: Bucket, plan: Plan): Promise<Outcome> 
   } catch (e) {
     return { outcome: "failed", detail: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** The layout of an archive key's last three segments (`archive::paths`): `rev<N>/<why>/<id>.json`. */
+const KEY_TAIL = /(?:^|\/)rev(\d+)\/(over|abandoned)\/[^/]+\.json$/;
+
+/**
+ * **A browser upload's metadata** (the auth cycle, design §4.4): who sent it — the caller's address, or `anonymous` for
+ * an anonymous upload's synthetic address (`isAnonymousAddress`) — the device the post named (`device`, its header's
+ * value when it was a device id, signed in or not; `none` without one), the rev and why read off the record key's
+ * last three segments (`rev<N>/<why>/<id>.json`, `archive::paths`), so the plan's five fields do not change, and
+ * `uploaded`, whole seconds of the shell's own clock. `null` — and the upload goes on without metadata — for a key
+ * that does not read so, or an object reached by no caller's name.
+ */
+export function uploadMetadata(caller: string | null, device: string | null, recordKey: string, uploaded: number): Record<string, string> | null {
+  const tail = KEY_TAIL.exec(recordKey);
+  if (caller === null || tail === null) return null;
+  return {
+    caller: isAnonymousAddress(caller) ? "anonymous" : caller,
+    device: device ?? "none",
+    rev: tail[1]!,
+    why: tail[2]!,
+    uploaded: String(uploaded),
+  };
 }
 
 /** `stamp_archive`'s 200 body — the module's two booleans and nothing else —

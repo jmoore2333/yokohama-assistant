@@ -4,11 +4,15 @@ import { shellConfig, type Limits, type ShellConfig, type Source } from "./confi
 import type { Env } from "./env";
 import { House } from "./house";
 import {
+  anonymousIdentity,
+  bodyId,
   callerName,
   CLAIMED_PARAM,
   CLAIMED_USER_HEADER,
   claimedIdentity,
+  DEVICE_HEADER,
   identityConfig,
+  isDeviceId,
   keySource,
   keySourceAt,
   resolveIdentity,
@@ -231,16 +235,30 @@ const DAY_SECONDS = 86_400;
  *    `X-Yokohama-Claimed-User` on a `fetch`, the `claimed` query parameter on
  *    an upgrade, where a browser can put no header, and never the other
  *    carrier — held to what a header can carry (`claimedIdentity`).
+ * 5a. The anonymous caller (the auth cycle, design §4.4; R-A4, R-A11): under
+ *    `worker`, a `POST /api/archive` that step 5 left with NO caller is
+ *    `anonymousIdentity`'s — the device header's value when it is a device
+ *    id (`isDeviceId`, read from the request as sent, before the strip),
+ *    else the game's own id from the body's table document when the store
+ *    would accept it, else still no one. `callerName` renders it as the
+ *    synthetic address `anon-<device|game id>@anon.invalid`, which the key
+ *    grammar already accepts. It is formed for this one target alone, so no
+ *    game route ever sees it, and never over a caller step 5 found. Under
+ *    `open` nothing changes: a claim is the caller.
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
- *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
+ *    caller the Worker verified or an anonymous upload's synthetic address,
+ *    `X-Yokohama-Claimed-User` for a claim. For `POST /api/archive` with a
+ *    caller alone, the client's `X-Yokohama-Device` is set again when it is
+ *    a device id, for the archive object's metadata, signed in or not.
  * 6a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
  *    any method but GET or HEAD spends a Rate Limiting binding — the
- *    creates' for `POST /api/games`, the writes' for every other — counted
- *    under the caller's digest at the `worker` door, and at the `open` door
- *    under the connecting IP for a create and IP plus claim for a write; a
- *    request with no caller under its IP at either. Past the limit it is 429
+ *    creates' for `POST /api/games` and for an anonymous caller's `POST
+ *    /api/archive`, the writes' for every other — counted under the caller's
+ *    digest at the `worker` door, and at the `open` door under the connecting
+ *    IP for a create and IP plus claim for a write; a request with no caller,
+ *    or an anonymous one, under its IP at either. Past the limit it is 429
  *    `too many requests from you just now — wait a moment and try again`,
  *    with `Retry-After` the refused kind's own window, and no object is
  *    reached. A limiter that throws is logged `limiter-failed` and the
@@ -308,12 +326,17 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
 
   if (target.kind === "art") return done(await art(req, url, env));
 
-  const identity =
+  let identity =
     config.door === "open"
       ? claimedIdentity(isUpgrade(req.headers) ? url.searchParams.get(CLAIMED_PARAM) : req.headers.get(CLAIMED_USER_HEADER))
       : config.source === "access"
         ? await identify(req.headers, keys, identityConfig(env, config.devDoor, now))
         : await sessionIdentity(req.headers.get("cookie"), config.session, now);
+  // Step 5a: an upload with no caller is filed anonymously, from the request's headers AS SENT — the device header is
+  // an `x-yokohama-*` one, which the strip below drops.
+  if (config.door === "worker" && target.kind === "archive" && callerName(identity) === undefined) {
+    identity = anonymousIdentity(req.headers, body);
+  }
   // Renewed on a 2xx (`handle`); never on the leave's answer, which clears the cookie a renewal would set again.
   const renew: Renewal | null =
     identity.kind === "session" && identity.renew && config.session !== null
@@ -326,6 +349,10 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   }
   const who = callerName(identity);
   if (who !== undefined) headers.set(identity.kind === "claimed" ? CLAIMED_USER_HEADER : USER_HEADER, who);
+  // The device, for the archive object's metadata alone — so only with a caller, which names that object (a caller-less
+  // post is the house's): the raw header, judged before it is set again.
+  const device = req.headers.get(DEVICE_HEADER);
+  if (target.kind === "archive" && who !== undefined && device !== null && isDeviceId(device)) headers.set(DEVICE_HEADER, device);
 
   // The rate limit (security S2b, finding C2; decision D-3): after the caller is known, before any object. A
   // limiter that throws is logged and the request proceeds: the limit bounds cost, never access (AD-6) — a binding
@@ -674,24 +701,6 @@ async function art(req: Request, url: URL, env: Env): Promise<Response> {
   return new Response(req.method === "HEAD" ? null : body, { status: 200, headers: { "content-type": "application/json" } });
 }
 
-/** A body's `id` when it is a JSON object whose `id` is a string (spec
- *  §2.3's create row); otherwise `undefined`. The body is parsed for this one
- *  member and forwarded as the bytes it was: nothing here re-serializes it.
- *  Bytes that are not UTF-8, or that open with a byte-order mark, name no id —
- *  the layer's own parse refuses both. */
-function createId(body: Uint8Array | null): string | undefined {
-  if (body === null) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const id = (parsed as { id?: unknown }).id;
-  return typeof id === "string" ? id : undefined;
-}
-
 /** `sim-` and 16 hex digits from `crypto.getRandomValues`: a create's name
  *  when its body names none — drawn independently of any seed, as the
  *  layer's own default id is. */
@@ -727,7 +736,7 @@ function objectFor(
       // A named id the layer can never use is the house's, whose `create`
       // refuses it as the layer does (the orchestrator's ruling, Task 9's
       // review): the name never makes a table object.
-      const named = createId(body);
+      const named = bodyId(body);
       if (named !== undefined && !isSafeId(named)) return house();
       const name = named ?? drawName();
       // Percent-encoded (spec §2.3), so the name travels as ASCII whatever
@@ -752,7 +761,10 @@ function objectFor(
       // the key grammar refuses — `..`, a name of 40 letters — still names an
       // object, whose `init` refuses it: that object answers the layer's own
       // 401 for the caller, as the NAS does (M6.5c2 cycle D, row 8;
-      // `Archive.callerRefused`).
+      // `Archive.callerRefused`). An anonymous upload's synthetic address
+      // (`anonymousIdentity`; the auth cycle, design §4.4) is ASCII-lowercased
+      // too (`callerName`), so every spelling of one game names one object,
+      // and is at most 82 bytes, so it always names one.
       const who = callerName(identity);
       if (who === undefined || new TextEncoder().encode(who).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + who));

@@ -2,8 +2,9 @@ import { DurableObject } from "cloudflare:workers";
 import { nextReading } from "./clock";
 import { moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
+import { DEVICE_HEADER, isDeviceId } from "./identity";
 import { Instance, pinnedTo, readReply, type Replied } from "./module";
-import { executePlan, logOutcome, parsePlan, type Outcome, type Plan } from "./r2";
+import { executePlan, logOutcome, parsePlan, uploadMetadata, type Outcome, type Plan } from "./r2";
 import { callerDigest, redactKey } from "./redact";
 import { errorBody, log, respond } from "./respond";
 import { forwardedCaller } from "./table";
@@ -24,6 +25,9 @@ interface Incoming {
   query: string;
   contentType: string | undefined;
   body: Uint8Array;
+  /** The post's device (`X-Yokohama-Device`, which the Worker sets again only for a device id), for the upload's
+   *  metadata alone — judged again here (`isDeviceId`), and `null` for anything else or none. Never a caller. */
+  device: string | null;
 }
 
 /**
@@ -49,7 +53,10 @@ interface Incoming {
  *    save uncounted;
  * 1. the save dispatched, pinned to P-2's reading, taken ONCE — the layer's
  *    strict replay and checks, then its put, deferred as a plan;
- * 2. with a plan, the upload (`executePlan`) and its outcome logged, then
+ * 2. with a plan, the upload (`executePlan`) — both keys carrying the upload's
+ *    metadata (`uploadMetadata`: who, which device, rev, why, when; the auth
+ *    cycle, design §4.4), or none, logged `metadata-skipped`, for a key that
+ *    does not read as `archive::paths` writes one — and its outcome logged, then
  *    installed as the receipt and the SAME request dispatched AGAIN at the
  *    SAME reading. That answer is the answer: the layer's 201, its 200
  *    `identical`, its 409, or its refusal naming the archive with R2's
@@ -85,6 +92,7 @@ export class Archive extends DurableObject<Env> {
       query: url.search.slice(1),
       contentType: req.headers.get("content-type") ?? undefined,
       body: new Uint8Array(await req.arrayBuffer()),
+      device: deviceOf(req.headers),
     };
     // Every line this object logs names it by a digest: its name is `archive:<address>`, and a log persists
     // (security S2b, D23). The module still reads the whole name's caller.
@@ -147,9 +155,14 @@ export class Archive extends DurableObject<Env> {
     if (first instanceof Response) return first;
     if (first.archive === undefined) return respond(first.status, first.body);
     const plan = parsePlan(first.archive);
+    // The upload's metadata (the auth cycle, design §4.4), stamped in whole seconds of the platform's clock — the
+    // shell's own time, never the module's pinned reading (`clock.ts`). A key that does not parse loses the metadata,
+    // never the upload.
+    const meta = uploadMetadata(callerOf(name), incoming.device, plan.record_key, Math.floor(Date.now() / 1000));
+    if (meta === null) log("metadata-skipped", { id, record_key: redactKey(plan.record_key) });
     // Only the receipt archive defers, and `shellConfig` refuses `r2` without
     // the bucket bound, so it is bound here.
-    const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan);
+    const outcome = await executePlan(this.env.ARCHIVE as R2Bucket, plan, meta ?? undefined);
     logOutcome(id, "browser", plan, outcome);
     // The same reading, as the table's second dispatch takes it (spec §2.6).
     // No cell can observe this pin: a browser's save puts the table it was
@@ -266,6 +279,12 @@ function echoed(claim: string): string {
  *  L2-F3). */
 function claimRedacted(sentence: string, claim: string, digest: string): string {
   return sentence.replace(QUOTED, (span) => (unescaped(span.slice(1, -1)) === echoed(claim) ? `"${digest}"` : span));
+}
+
+/** A request's device id (`isDeviceId`), or `null`. */
+function deviceOf(headers: Headers): string | null {
+  const device = headers.get(DEVICE_HEADER);
+  return device !== null && isDeviceId(device) ? device : null;
 }
 
 /** The caller an archive object serves: its name less the prefix, or `null`

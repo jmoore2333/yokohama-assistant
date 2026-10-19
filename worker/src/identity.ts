@@ -9,6 +9,7 @@
  * `test/worker.test.ts`).
  */
 import type { Env } from "./env";
+import { isSafeId } from "./route";
 
 export type Identity =
   | { kind: "person"; email: string }
@@ -24,6 +25,11 @@ export type Identity =
    *  one, which sign-out ends. `renew` says the cookie is past half its life (`renewDue`), so a 2xx answer carries a
    *  fresh one. The operator gate admits it exactly as a person (ruling R-27). */
   | { kind: "session"; email: string; sid: string | null; renew: boolean }
+  /** A caller-less upload to `POST /api/archive` under the `worker` door (the auth cycle, design §4.4; `anonymousIdentity`):
+   *  `device` is the post's device id, or with none the game's own id from its table document (R-A11). Formed in
+   *  `answer` for that one target, so no game route ever sees it; `callerName` renders it as a synthetic ADDRESS the
+   *  key grammar already accepts, so the layer and the module are untouched. Never an operator, and counted by IP. */
+  | { kind: "anonymous"; device: string }
   | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }
 export interface IdentityConfig {
@@ -176,8 +182,9 @@ export function claimedIdentity(raw: string | null): Identity {
 }
 
 /** The value an identity is forwarded as, and names its archive object by —
- *  a person's, the dev door's or a session's address, or an open-door claim —
- *  or `undefined` for no one (M6.5c2; the auth cycle). */
+ *  a person's, the dev door's or a session's address, an open-door claim, or
+ *  an anonymous upload's synthetic address — or `undefined` for no one
+ *  (M6.5c2; the auth cycle). */
 export function callerName(identity: Identity): string | undefined {
   switch (identity.kind) {
     case "person":
@@ -186,9 +193,75 @@ export function callerName(identity: Identity): string | undefined {
       return identity.email;
     case "claimed":
       return identity.name;
+    case "anonymous":
+      // ASCII-lowercased as every caller name is (`address`; ruling R-32): a device id is lowercase hex already, and a
+      // game id may carry ASCII capitals, so every spelling of one game names ONE archive object and one prefix.
+      return `${ANON_LOCAL_PREFIX}${asciiLower(identity.device)}@${ANON_DOMAIN}`;
     case "none":
       return undefined;
   }
+}
+
+/** The header a browser's archive post names its device by (the auth cycle, design §4.4): sixteen lowercase hex digits
+ *  the client draws once. Read RAW before the strip rule drops every `x-yokohama-*` header, and set again on the
+ *  archive object's request when it is a device id (`isDeviceId`), for the object's metadata. */
+export const DEVICE_HEADER = "X-Yokohama-Device";
+
+/** The anonymous address's domain: `.invalid` is reserved by RFC 6761, so no player the Worker verifies can hold it. */
+export const ANON_DOMAIN = "anon.invalid";
+
+/** The anonymous address's local part begins so. */
+const ANON_LOCAL_PREFIX = "anon-";
+
+/** Whether `s` is a device id: exactly sixteen LOWERCASE hex digits and nothing else — no capital, no other length, no
+ *  surrounding space, and no case mapping first (so a Kelvin sign is never read as anything). Anything else is an
+ *  absent header. */
+export function isDeviceId(s: string): boolean {
+  return /^[0-9a-f]{16}$/.test(s);
+}
+
+/** Whether `address` is an anonymous upload's synthetic address (`callerName` of the `anonymous` kind): the archive
+ *  object writes `anonymous` in its metadata for one, never the address. */
+export function isAnonymousAddress(address: string): boolean {
+  return address.startsWith(ANON_LOCAL_PREFIX) && address.endsWith(`@${ANON_DOMAIN}`);
+}
+
+/**
+ * **The anonymous caller** of a caller-less `POST /api/archive` (the auth cycle, design §4.4; R-A4, R-A11): the device
+ * header's value when it is a device id (`isDeviceId`); else the GAME's own id, read from the body's table document —
+ * an archive post is `{"record": "…", "table": "…"}`, two strings (the layer's `ArchivePost`), so the id is the
+ * `table` string's own `id`, read as a create's is (`bodyId`) — when the store would accept it (`isSafeId`); else no
+ * one, and the house's `dispatch` answers the layer's 401 as before. `headers` are the request's as sent, before the
+ * strip rule. The body is parsed for this one member and forwarded as the bytes it was.
+ */
+export function anonymousIdentity(headers: Headers, body: Uint8Array | null): Identity {
+  const device = headers.get(DEVICE_HEADER);
+  if (device !== null && isDeviceId(device)) return { kind: "anonymous", device };
+  const table = bodyMember(body, "table");
+  const game = table === undefined ? undefined : bodyId(new TextEncoder().encode(table));
+  return game !== undefined && isSafeId(game) ? { kind: "anonymous", device: game } : { kind: "none" };
+}
+
+/** A body's `id` when it is a JSON object whose `id` is a string (spec §2.3's create row); otherwise `undefined`. It
+ *  READS, and `isSafeId` judges. The body is parsed for this one member and forwarded as the bytes it was: nothing here
+ *  re-serializes it. Bytes that are not UTF-8, or that open with a byte-order mark, name no id — the layer's own parse
+ *  refuses both. */
+export function bodyId(body: Uint8Array | null): string | undefined {
+  return bodyMember(body, "id");
+}
+
+/** The string member `key` of a body that is a JSON object, or `undefined` — `bodyId`'s reading, for any member. */
+function bodyMember(body: Uint8Array | null, key: string): string | undefined {
+  if (body === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const value = (parsed as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 /**
