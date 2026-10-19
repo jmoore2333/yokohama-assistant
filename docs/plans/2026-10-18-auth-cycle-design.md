@@ -148,6 +148,49 @@ Two things the brainstorm found that the record did not know:
   owner and development, the public Worker runs the provider, never both on one Worker; the NAS is untouched.
   Binds §4.7.
 
+**The owner's answers to §5 (2026-10-18, the second round), transcribed:**
+
+- **R-A6 — `yokohama.moore.nyc` is the public site.** "we'll be using yokohama.moore.nyc for the public site — we'll
+  setup a new private one later on another domain but this one is the one we'll be deploying against and getting
+  this live on." So every browser's stored games and outbox rows, the friend's waiting game among them, meet the
+  public deployment at the first visit; the edge rule's existing expression and slot serve it; the private Worker's
+  Access destinations move to the new domain when it exists, and until then the private deployment is the one that
+  moves off this hostname. Binds §4.5, §4.7.
+- **R-A7 — WorkOS, through its own first-party flow, with the generic OIDC arm beside it.** The owner's question:
+  "workos says to not use the custom oauth flow, if that's the case, should we be looking at auth0 instead? … If we
+  are confident we should proceed anyway with workos then we can do that." The reading that answers it: WorkOS's
+  first-party sign-in is its own documented API — `GET /user_management/authorize` with `provider=authkit`, a code,
+  then `POST /user_management/authenticate` with `grant_type=authorization_code`, the client id, the client secret
+  and the code, answering the `user` object (its `email` and `email_verified`) and the session tokens; its standard
+  OIDC endpoints (`/oauth2/authorize`, the discovery document) belong to WorkOS Connect, which is for third-party and
+  MCP clients and shows a consent screen. The skill's "never build a custom OAuth flow" is advice to use the SDK rather
+  than hand-roll against WorkOS; the SDK's `authenticateWithCode` IS that POST. So the design runs WorkOS's own
+  first-party API with two `fetch` calls (the `workos` arm, §4.1), not WorkOS Connect and not a hand-rolled OIDC
+  against it, and keeps the generic `oidc` arm for any issuer with a discovery document, Auth0 included. Auth0 is not
+  taken for the public site: free to 25,000 monthly active users and then priced by tier (its own page: $2,100 a
+  month at 30,000), against "tens of thousands of free users". Confidence rests on the pre-flight: the `workos` arm is
+  exercised live against an unclaimed environment the CLI provisions before any plan task leans on it; the SDK at the
+  callback stays the recorded fallback. Binds §4.1, §4.3.
+- **R-A8 — anonymous uploads never expire.** "Anonymous uploads shouldn't expire". No lifecycle rule; the bucket is
+  synced out as the archive module's header already assumes. Binds §4.4.
+- **R-A9 — the anonymous share keeps S1b's figures.** "share figures — path of less resistance is fine, the goal is
+  to get save files in for the computer player, and more data around it is useful." The per-caller records and bytes
+  apply to an anonymous key unchanged. Binds §4.4.
+- **R-A10 — the calls stand.** "the other notes are in line with what I expected": the methods (email code, Google,
+  GitHub, Apple, passkeys, passwords off), the WorkOS-hosted sign-in domain at launch, the stateless 30-day cookie,
+  both halves on `/enter`, `POST /api/leave`, the keyed-pairing rule, the `.test` minted session.
+- **R-A11 — Bot Fight Mode does not gate the upload, and the design no longer depends on an update.** The owner:
+  "bot fight mode, why would this stop a user from uploading a file — if they are not active in the browser, it
+  wouldn't trigger at all, so in the scenario they go back to the site, and that brings up the task for it to upload,
+  why would bot fight stop it?" Correct: it does not. W-3 (the lane's §8 table, §15) is about a returning browser
+  INSTALLING a new release — Bot Fight Mode challenges a clearance-less browser's precache fetches, `/art/manifest.json`
+  among them, so the install fails — and the design had made the anonymous upload depend on the new client, which
+  alone sends the device header. The upload post itself meets the edge rule's Turnstile, which the shipped client
+  already carries through its "waiting for a human check" overlay (cycle F). So the dependency is removed: a post
+  with no device header files under the game's own id (§4.4), and a browser running today's client lands its waiting
+  games the first time it comes back, with no update. W-3 leaves this cycle and stays the lane's owed decision about
+  updates in general. Binds §4.4, §4.5.
+
 ## 4. The design
 
 ### 4.1 The identity source, shell-side
@@ -157,17 +200,18 @@ variable names the source, with no default and refused at start otherwise, as th
 
 | variable | values | read by |
 |---|---|---|
-| `YOKOHAMA_IDENTITY_SOURCE` | `access` \| `oidc` | `shellConfig`; `open` ignores it; `worker` requires it |
-| `YOKOHAMA_OIDC_ISSUER` | the issuer URL whose `/.well-known/openid-configuration` is fetched | the `oidc` arm |
-| `YOKOHAMA_OIDC_CLIENT_ID` | the client id | the `oidc` arm |
-| `YOKOHAMA_OIDC_CLIENT_SECRET` | a SECRET; absent means a public client with PKCE alone (`none`) | the code exchange |
+| `YOKOHAMA_IDENTITY_SOURCE` | `access` \| `oidc` \| `workos` | `shellConfig`; `open` ignores it; `worker` requires it |
+| `YOKOHAMA_OIDC_ISSUER` | the issuer URL whose `/.well-known/openid-configuration` is fetched | the `oidc` arm; refused under `workos`, whose issuer is `https://api.workos.com` |
+| `YOKOHAMA_OIDC_CLIENT_ID` | the client id | the `oidc` and `workos` arms |
+| `YOKOHAMA_OIDC_CLIENT_SECRET` | a SECRET; under `oidc` absent means a public client with PKCE alone (`none`); under `workos` the API key, required | the code exchange |
 | `YOKOHAMA_SESSION_SECRET` | a SECRET, 32 bytes or more, the cookie's HMAC key | `mint` and `read` |
 | `YOKOHAMA_SESSION_DAYS` | whole days above zero, absent = 30 | `mint` |
 
 Under `access` the Worker runs exactly today's `resolveIdentity` and the dev door, byte for byte; `ACCESS_TEAM_DOMAIN`
-and `ACCESS_AUD` are required under it and ignored under `oidc`, where the OIDC variables are required and the Access
-ones ignored. The deploy guard reads the source as it reads the door and refuses a file naming one source's
-variables under the other (D-7's second identity, below).
+and `ACCESS_AUD` are required under it and ignored under the other two, where the client id and secret are required
+and the Access ones ignored. The deploy guard reads the source as it reads the door and refuses a file naming one
+source's variables under another (D-7's second identity, below). The public deployment runs `workos` (R-A7); a
+self-hoster with any other issuer runs `oidc`.
 
 **The `oidc` arm** verifies an ID token the way the Access arm verifies an assertion — the header's `alg` (RS256; ES256
 accepted too, since issuers vary), a string `kid` matched in the issuer's key set, the signature, `iss` equal to the
@@ -178,6 +222,18 @@ of that names no one. The key set is `keySource`'s closure with the discovery do
 Access certs URL, the same once-a-minute refresh on an unknown `kid`. The discovery document is fetched once per
 isolate and cached as the keys are. **The arm runs at the callback only** (§4.2); no request after it touches the
 issuer.
+
+**The `workos` arm** (R-A7) runs WorkOS's documented first-party flow with two `fetch` calls and no SDK: the
+redirect goes to `https://api.workos.com/user_management/authorize` with `client_id`, `redirect_uri`,
+`response_type=code`, `provider=authkit` and `state`; the callback POSTs `https://api.workos.com/user_management/authenticate`
+as JSON with `client_id`, `client_secret`, `grant_type=authorization_code`, `code`, and the caller's `ip_address` and
+`user_agent` (WorkOS's own sample sends them; Radar reads them). The answer's `user.email` is the address, judged by
+`forwardable` and `address` exactly as an Access claim is, and `user.email_verified` must be `true`; the answer's
+`access_token` is a JWT whose `sid` the session cookie keeps for sign-out (§4.2) and whose signature the arm checks
+against `https://api.workos.com/sso/jwks/<client_id>` as belt and braces (the answer is already authenticated by TLS
+and the secret). Nothing else in the response is kept; no refresh token is stored, since the session is ours. The
+arm is the `oidc` arm less the discovery document, the ID token and the nonce, plus one JSON body; the pre-flight
+runs it live against an unclaimed WorkOS environment (§9.2) before any plan task leans on it.
 
 **The wire does not learn the source.** `/api/me`'s `mode` and `/api/health`'s `identity` are the layer's, written
 from the module's `wire_name`, which says `cf-access` under the `worker` door by a recorded ruling (R2.2-m2;
@@ -224,6 +280,12 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
   session cookie (§4.2), clears the login cookie and answers 302 to `return_to` (anything that is not a hash route on
   this origin is `/#/lobby`). One invocation. A failed exchange, a bad `state` or a token naming no one answers 302
   to `/#/lobby?signin=failed` and sets nothing. Under `access` a `code` on `/enter` is ignored.
+- **Under `workos`** the same two steps run against WorkOS's first-party endpoints (§4.1): the redirect carries
+  `state` and `provider=authkit` and no nonce or PKCE (the exchange is authenticated by the secret), the callback
+  exchanges the code at `/user_management/authenticate` and reads the `user` object; the `state` cookie, the
+  `return_to` rule, the session cookie and every refusal are the `oidc` arm's, shared. Sign-out's `leave` under
+  `workos` is `https://api.workos.com/user_management/sessions/logout?session_id=<sid>&return_to=https://<host>/`,
+  the Sign-out URI the application registers.
 - **What the issuer registers** (first-party: the skill's `workos-authkit-setup.md` and `workos-terms.md`): the
   Redirect URI `https://<host>/enter`, matched exactly, trailing slash included; the Sign-out URI `https://<host>/`,
   where a player lands after the issuer's session ends, and every `return_to` the sign-out may name; and the
@@ -269,7 +331,12 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
   exactly 16 lowercase hex digits (read before the strip, like the claimed header). `callerName` renders it as the
   synthetic address, so `objectFor`'s archive case forwards it as `X-Yokohama-User` and names the object
   `ARCHIVE_PREFIX + <address>` with no new arm; on any other target the kind is never formed, so the twenty-three
-  game routes never see it. With no caller and no device header, the house's 401 as today. Under `open` nothing
+  game routes never see it. **With no caller and no device header** (R-A11: a browser running today's client, whose
+  queue posts without one), the device is the game's own id, read from the body's table document as `createId`
+  reads a create's `id` (`worker/src/index.ts` lines 370–373) and held to `is_safe_id`: the address is then
+  `anon-<game id>@anon.invalid`, one prefix per game, its share trivially met, the IP limiter bounding the rate, and
+  the metadata's `device` reads `none`. A body naming no safe id with no caller and no device header is the house's
+  401 as today. Under `open` nothing
   changes (a claim is the caller). Under `access` the arm exists too, but a caller-less post never reaches the private
   Worker (the edge answers first), so it is live only where the edge lets one through: the public deployment.
 - **The metadata.** Every browser upload's R2 object carries custom metadata the Archive object sets: `caller` (the
@@ -279,15 +346,14 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
   `run.run_id` stays `web/browser`.
 - **The ceilings.** (1) The per-caller share applies to an anonymous key exactly as to an address (records and bytes
   under its prefix, counted live by one listing, the 507 when full) — the builder keeps S1b's figures unless the owner
-  sets anonymous ones lower. (2) `POST /api/archive` from an anonymous caller runs under `CREATE_LIMIT` by connecting
+  sets anonymous ones lower — R-A9: S1b's figures, unchanged. (2) `POST /api/archive` from an anonymous caller runs under `CREATE_LIMIT` by connecting
   IP (10 per 60 s): `limitKey` reads the `anonymous` kind as no caller (an IP key, never a per-device key a device
   could rotate) and `limiterFor` sends the anonymous archive post to the create limiter instead of the write one
-  (`worker/src/limits.ts` lines 30–42), so one machine cannot mint devices faster than that. (3) A lifecycle rule on the
-  bucket expires `browser/anon-` objects after a number of days the owner sets (the `test/` root already expires
-  after 30, the lane's §1 table), OR none, if the owner prefers to keep the data and sync the bucket out. No global
-  live count across every anonymous prefix: a listing of tens of thousands of objects is pages of subrequests inside
-  one request, and the IP limiter plus expiry bound the same thing without it. If the owner wants a hard global
-  ceiling later, it is a counter in the house object under its lock, a separate decision.
+  (`worker/src/limits.ts` lines 30–42), so one machine cannot mint devices faster than that. (3) No expiry (R-A8):
+  anonymous objects stay, and the bucket is synced out as the archive module's header assumes. No global live count
+  across every anonymous prefix: a listing of tens of thousands of objects is pages of subrequests inside one
+  request, and the IP limiter bounds the rate without it. If the owner wants a hard global ceiling later, it is a
+  counter in the house object under its lock, a separate decision.
 - **Under the edge rule** a caller-less post from a browser with no clearance meets the Turnstile's challenge; the
   outbox's rule 6a and the "waiting for a human check" overlay (cycle F) already carry it through.
 
@@ -304,9 +370,10 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
   rule 2: "Reasons are re-evaluated, not frozen"); on the first visit to the public deployment at the same origin the
   drain posts it with the device header and it lands anonymously, or under the caller if the browser has since
   signed in. Browser storage is per origin: a game held in a browser against `yokohama.moore.nyc` reaches the public
-  deployment only if that hostname is the public one (§5, question 1). The drain runs from the SHIPPED client too,
-  since its post is the same post: what the old client lacks is the device header, so a browser that cannot install
-  the new release (W-3) posts caller-less, meets the 401, and keeps waiting until it updates or signs in.
+  deployment at `yokohama.moore.nyc` (R-A6), which is where every such game is. The drain runs from the SHIPPED
+  client too, since its post is the same post: the old client sends no device header, so the Worker files its game
+  under the game's own id (§4.4, R-A11), and the post's Turnstile challenge is carried through the overlay the
+  shipped client already has. No update is needed for a waiting game to land; W-3 is not this cycle's.
 - The device id lives in the outbox's `META` store (`web/src/local/db.ts` line 198), which exists; no IndexedDB
   version moves.
 
@@ -358,7 +425,8 @@ code names a provider.
 
 ## 5. Questions only the owner can answer
 
-(Filled from the builder check; each answer is transcribed into §3 as a ruling.)
+**All five were answered on 2026-10-18 and are transcribed as R-A6–R-A11 in §3**; the questions stay as asked, for the
+record of what the builder check could not settle.
 
 1. **Which hostname is the public deployment's?** `yokohama.moore.nyc` carries every browser's stored games and
    outbox rows today, and the friend's waiting game among them; the public Worker at that hostname inherits them on
@@ -381,7 +449,8 @@ code names a provider.
 
 ## 6. What is left to the builder
 
-The cookie's exact payload and the login cookie's lifetime (minutes); the `route` grammar for the two paths; the
+The cookie's exact payload and the login cookie's lifetime (minutes); the `workos` arm's request and response
+shapes as the pre-flight reads them live; the
 client's landing component and where the sign-out link sits; the discovery and key caches' shapes; the pool cells
 (a fixture issuer with a test key set, as the Access battery has: alg, kid, signature, aud, iss, exp, nonce,
 `email_verified` false, a Kelvin address); the device store's migration; the guard's identity records; the metadata
@@ -459,3 +528,23 @@ follow the docs")
   `iss`, `exp`, `iat` and organization fields (`workos-terms.md`, `workos-api-authkit.md`); the address rides the ID
   token's `email` claim under the `email` scope (the builder check's reading of the discovery document, §9.1), which
   is why the design verifies the ID token and not the access token.
+
+### 9.3 — 2026-10-18, the owner's answers to §5 and one correction (the second round)
+
+The owner answered all five questions in one message (transcribed as R-A6–R-A11, §3). Two things changed the design:
+
+- **The Auth0 question.** The owner read the WorkOS skill's "never build a custom OAuth flow" and asked whether that
+  points at Auth0. The reading taken (R-A7): WorkOS's first-party sign-in is its own documented API, not its Connect
+  OIDC endpoints (those serve third-party and MCP clients, with a consent screen), so the design gains a `workos` arm
+  that runs that API with two `fetch` calls, keeps the generic `oidc` arm for every other issuer, and does not take
+  Auth0 for the public site (its pricing past 25,000 users). The two arms share the state cookie, the session cookie,
+  `/enter`'s two halves and every refusal; the difference is one request body and where the address is read.
+- **The Bot Fight Mode correction.** The owner asked why Bot Fight Mode would stop an upload at all. It does not; the
+  design had let the anonymous upload depend on the new client's device header, and a returning browser can fail to
+  install a new client (W-3). Now a post with no device header files under the game's own id, so a browser running
+  today's client lands its waiting games the first time it comes back, through the Turnstile overlay it already has.
+  W-3 is no longer this cycle's.
+
+The other answers set the hostname (`yokohama.moore.nyc` is the public site; the private one moves to a new domain
+later), no expiry on anonymous uploads, S1b's share figures unchanged, and accepted the calls listed in §9.1 and the
+methods and hosted domain. With them the document has no open question, and the plan is written against it next.
