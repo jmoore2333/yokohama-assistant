@@ -19,6 +19,11 @@ export type Identity =
    *  read it without a special case, and `dev` stays the live tier's kind
    *  under `worker`. */
   | { kind: "claimed"; name: string }
+  /** A signed-in caller under a sign-in arm (`oidc`, `workos`; the auth cycle, design §4.2): the address the
+   *  session cookie carries, which the issuer vouched for at the sign-in, and the issuer's session id when it sent
+   *  one, which sign-out ends. `renew` says the cookie is past half its life (`renewDue`), so a 2xx answer carries a
+   *  fresh one. Its own kind, so the operator gate's person-only rule reads it as no person. */
+  | { kind: "session"; email: string; sid: string | null; renew: boolean }
   | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }
 export interface IdentityConfig {
@@ -171,12 +176,13 @@ export function claimedIdentity(raw: string | null): Identity {
 }
 
 /** The value an identity is forwarded as, and names its archive object by —
- *  a person's or the dev door's address, or an open-door claim — or
- *  `undefined` for no one (M6.5c2). */
+ *  a person's, the dev door's or a session's address, or an open-door claim —
+ *  or `undefined` for no one (M6.5c2; the auth cycle). */
 export function callerName(identity: Identity): string | undefined {
   switch (identity.kind) {
     case "person":
     case "dev":
+    case "session":
       return identity.email;
     case "claimed":
       return identity.name;

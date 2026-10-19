@@ -15,8 +15,8 @@
 // `routes()` table (`health`, `me`, `labels`, `chat`, `games`, `archive`,
 // `art`). The layer's file is read from its `routes()` table only: its test
 // module names paths (`/api/nope`) that are not routes.
-// `access-paths.test.mjs` holds the printed list to the ten destinations
-// written out by hand, so a prefix added to any file fails there until that
+// `access-paths.test.mjs` holds the printed list to the eleven destinations
+// written out by hand (`leave` the eleventh since the auth cycle's Task 4), so a prefix added to any file fails there until that
 // list names it; a second cell holds the assembly (every segment kept,
 // `/enter` in, sorted, host-prefixed) over what the regex finds.
 

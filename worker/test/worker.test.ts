@@ -220,17 +220,19 @@ describe("the Worker's own answers (spec §2.3)", () => {
   });
 
   // Spec §2.6: the Worker's form of the NAS refusing to start, on every
-  // `/api/*` — and after the three routes that need no configuration. The
+  // `/api/*` and on `/enter`, whose sign-in reads the configuration since the
+  // auth cycle (pre-flight note R-4) — and after the routes that need none. The
   // other half (`/` untouched) never reaches `handle` and is the live reading.
   // Mutants: no check (the house, configured by the pool, answers 200); the
-  // check before routing (`/enter` answers 500).
+  // check before routing (`/assets/x.js` answers 500).
   it("a bad YOKOHAMA_WEB_ARCHIVE answers 500 naming it on every /api/* path", async () => {
     const bad = { ...env, YOKOHAMA_WEB_ARCHIVE: "s3" };
     for (const path of ["/api/health", "/api/art", "/api/games/wire/table"]) {
       const res = await worker(path, { env: bad });
       expect([res.status, res.text], path).toEqual([500, '{"error":"YOKOHAMA_WEB_ARCHIVE must be r2 or off — got \\"s3\\""}']);
     }
-    expect((await worker("/enter", { env: bad })).status).toBe(302);
+    const enter = await worker("/enter", { env: bad });
+    expect([enter.status, enter.text], "/enter reads the configuration (R-4)").toEqual([500, '{"error":"YOKOHAMA_WEB_ARCHIVE must be r2 or off — got \\"s3\\""}']);
     expect((await worker("/assets/x.js", { env: bad })).status).toBe(404);
   });
 
@@ -239,7 +241,8 @@ describe("the Worker's own answers (spec §2.3)", () => {
   // — and a cell's override reaches the Worker's own `shellConfig` alone,
   // which is exactly this instrument (review R2.2-M2): the objects read their
   // configuration file's. Mutants: a default door (the absence read as
-  // `worker`); the check before routing (`/enter` answers 500).
+  // `worker`); the check before routing (`/assets/x.js` answers 500). `/enter`
+  // reads the configuration since the auth cycle (R-4), so it answers the 500.
   it("an unset YOKOHAMA_WEB_IDENTITY answers 500 naming it on every /api/* path", async () => {
     const unset = { ...env, YOKOHAMA_WEB_IDENTITY: undefined };
     const body = JSON.stringify({
@@ -249,7 +252,8 @@ describe("the Worker's own answers (spec §2.3)", () => {
       const res = await worker(path, { env: unset, token: await person(RED) });
       expect([res.status, res.text], path).toEqual([500, body]);
     }
-    expect((await worker("/enter", { env: unset })).status).toBe(302);
+    const enter = await worker("/enter", { env: unset });
+    expect([enter.status, enter.text], "/enter reads the configuration (R-4)").toEqual([500, body]);
     expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
   });
 
@@ -293,7 +297,9 @@ describe("the Worker's own answers (spec §2.3)", () => {
         expect(res.result.text, `${path}: the list's value is echoed nowhere`).not.toContain("boss@t.test");
         expect([res.table.length, res.house.length, res.archive.length], `${path}: no object reached`).toEqual([0, 0, 0]);
       }
-      expect((await worker("/enter", { env: overridden })).status).toBe(302);
+      // `/enter` reads the configuration since the auth cycle (R-4): the same 500.
+      const enter = await worker("/enter", { env: overridden });
+      expect([enter.status, enter.text], "/enter").toEqual([500, JSON.stringify({ error: sentence })]);
     }
     const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off", YOKOHAMA_IDENTITY_SOURCE: undefined } });
     expect(accepted.status, accepted.text).toBe(200);
