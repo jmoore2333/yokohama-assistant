@@ -1,0 +1,176 @@
+/**
+ * **The Worker's own session** (the auth cycle, design §4.2; R-A2): the cookie that names a signed-in caller on
+ * every request after the sign-in, and the short login cookie that carries the sign-in's state across the
+ * provider's round trip. Stateless: nothing is stored, the cookie is the whole session, a stolen one is good until
+ * it expires, and rotating `YOKOHAMA_SESSION_SECRET` ends every session at once (the recorded trade).
+ *
+ * **The format, one canonical byte form for each:** `v1.<payload>.<mac>`, where `<payload>` is the base64url of the
+ * UTF-8 JSON `JSON.stringify` writes for an object holding the type's fields in its declared order — `address,
+ * sid, issued, expires` for a `Session` (`sid: null` written out), `state, nonce, verifier, returnTo, expires` for a
+ * `Login` — with no whitespace, and `<mac>` is the base64url of HMAC-SHA256 keyed by the secret's UTF-8 bytes (as
+ * `shellConfig` counts them) over the ASCII bytes `v1.<payload>`. base64url is RFC 4648's url alphabet, unpadded.
+ * The cells pin these bytes to values `openssl` computed, the reference a second minter (the plan's Task 8, under
+ * `node:crypto`) is held to, so a change here is a change there.
+ *
+ * **Reading is verify-then-parse:** the MAC is checked by `crypto.subtle.verify` (constant time) over the bytes the
+ * request carried, and the payload is decoded and parsed only once it verifies. Each segment must be the one
+ * spelling the minter writes (no padding, no whitespace, no standard alphabet, no stray trailing bits), a payload
+ * must hold its type's fields with their types (whole seconds for the times), and any exception on the way —
+ * a bad segment, bad JSON, a key the platform refuses — reads as nobody: a cookie never reaches `answer` as an
+ * exception. The shape check is also what keeps one cookie from reading as the other, since the two share the
+ * secret and the format and each requires a field the other never carries. A reader takes any field order and
+ * drops any field it does not declare; the minters write only the canonical form.
+ *
+ * **The boundaries:** a cookie read at its `expires` second has expired. Renewal is due when the life LEFT is less
+ * than half the configured days (`renewDue`), and exactly half is not yet due. Reading the life left rather than
+ * the life spent keeps one promise across a change of `YOKOHAMA_SESSION_DAYS`: every cookie is due throughout the
+ * last half of today's days before its expiry, whatever days it was minted under. Read by the life spent, a cookie
+ * minted under fewer days than half of today's would expire before it ever came due.
+ *
+ * The days have no upper bound here or in `shellConfig`. Browsers cap a cookie's lifetime (Chrome at 400 days), so
+ * a longer setting dies in the browser first, while the `expires` the MAC stamps still bounds what this reader
+ * accepts.
+ *
+ * The base64url helpers are this module's own: `identity.ts` keeps a private decoder that a later task may export,
+ * and the two may be folded then.
+ */
+
+export const SESSION_COOKIE = "yokohama_session";
+export const LOGIN_COOKIE = "yokohama_login";
+
+/** A signed-in caller: the address the provider vouched for, already normalized by the caller; the provider's
+ *  session id when it sent one (sign-out ends that session too); and the issue and expiry times, whole seconds. */
+export interface Session { address: string; sid: string | null; issued: number; expires: number }
+
+/** The sign-in in flight: the state, the nonce and the PKCE verifier the callback needs, where to land after it,
+ *  and when it stops being honoured, whole seconds. */
+export interface Login { state: string; nonce: string; verifier: string; returnTo: string; expires: number }
+
+const VERSION = "v1";
+const DAY_SECONDS = 86_400;
+const LOGIN_SECONDS = 600;
+const ATTRIBUTES = "Path=/; HttpOnly; Secure; SameSite=Lax";
+
+const utf8 = new TextEncoder();
+
+function encode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** The bytes of a base64url segment, or a throw for any spelling `encode` would not write — so a valid cookie
+ *  has exactly one spelling. `atob` alone is forgiving (it skips whitespace, takes padding and the standard
+ *  alphabet, and drops a last character's unused bits); the round trip is what refuses each of those. */
+function decode(segment: string): Uint8Array {
+  const bytes = Uint8Array.from(atob(segment.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  if (encode(bytes) !== segment) throw new TypeError("not the canonical base64url spelling");
+  return bytes;
+}
+
+function hmacKey(secret: string, usage: "sign" | "verify"): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", utf8.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [usage]);
+}
+
+const whole = (n: unknown): n is number => typeof n === "number" && Number.isInteger(n);
+
+function wholeSeconds(n: number, what: string): void {
+  if (!whole(n)) throw new RangeError(`${what} must be whole seconds — got ${n}`);
+}
+
+/** The cookie value for `payload`, whose own key order is the byte order. */
+async function seal(payload: Session | Login, secret: string): Promise<string> {
+  const signed = `${VERSION}.${encode(utf8.encode(JSON.stringify(payload)))}`;
+  const mac = await crypto.subtle.sign("HMAC", await hmacKey(secret, "sign"), utf8.encode(signed));
+  return `${signed}.${encode(new Uint8Array(mac))}`;
+}
+
+/** The verified payload of the cookie `name` in `header`, or `null`. Throws on a malformed segment; the callers
+ *  catch. */
+async function open(header: string | null, name: string, secret: string): Promise<Record<string, unknown> | null> {
+  const value = cookieValue(header, name);
+  if (value === null) return null;
+  const segments = value.split(".");
+  if (segments.length !== 3) return null;
+  const [version, body, mac] = segments as [string, string, string];
+  if (version !== VERSION) return null;
+  const key = await hmacKey(secret, "verify");
+  if (!(await crypto.subtle.verify("HMAC", key, decode(mac), utf8.encode(`${version}.${body}`)))) return null;
+  const payload: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(decode(body)));
+  // An array passes this and then fails every field its reader asks for.
+  return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
+}
+
+/** The session cookie's VALUE for `s`, expiring `days` after `s.issued`. */
+export async function mintSession(s: Omit<Session, "expires">, days: number, secret: string): Promise<string> {
+  wholeSeconds(s.issued, "issued");
+  wholeSeconds(days, "days");
+  return seal({ address: s.address, sid: s.sid, issued: s.issued, expires: s.issued + days * DAY_SECONDS }, secret);
+}
+
+/** The session the request's `Cookie` header carries, or `null` for none, a forged or malformed one, or one at or
+ *  past its `expires`. Never throws. */
+export async function readSession(cookieHeader: string | null, secret: string, nowSeconds: number): Promise<Session | null> {
+  try {
+    const p = await open(cookieHeader, SESSION_COOKIE, secret);
+    if (p === null) return null;
+    const { address, sid, issued, expires } = p;
+    if (typeof address !== "string" || (sid !== null && typeof sid !== "string")) return null;
+    if (!whole(issued) || !whole(expires) || nowSeconds >= expires) return null;
+    return { address, sid, issued, expires };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a request at `nowSeconds` should carry a fresh session cookie: less than half of `days` is left. */
+export function renewDue(s: Session, nowSeconds: number, days: number): boolean {
+  return s.expires - nowSeconds < (days * DAY_SECONDS) / 2;
+}
+
+/** The login cookie's VALUE for `l`, expiring ten minutes after `nowSeconds`. */
+export async function mintLogin(l: Omit<Login, "expires">, nowSeconds: number, secret: string): Promise<string> {
+  wholeSeconds(nowSeconds, "nowSeconds");
+  const login: Login = {
+    state: l.state, nonce: l.nonce, verifier: l.verifier, returnTo: l.returnTo, expires: nowSeconds + LOGIN_SECONDS,
+  };
+  return seal(login, secret);
+}
+
+/** The sign-in in flight that `cookieHeader` (a `Cookie` header or a `Set-Cookie` line) carries, or `null`.
+ *  Never throws. */
+export async function readLogin(cookieHeader: string | null, secret: string, nowSeconds: number): Promise<Login | null> {
+  try {
+    const p = await open(cookieHeader, LOGIN_COOKIE, secret);
+    if (p === null) return null;
+    const { state, nonce, verifier, returnTo, expires } = p;
+    if (typeof state !== "string" || typeof nonce !== "string" || typeof verifier !== "string") return null;
+    if (typeof returnTo !== "string" || !whole(expires) || nowSeconds >= expires) return null;
+    return { state, nonce, verifier, returnTo, expires };
+  } catch {
+    return null;
+  }
+}
+
+/** A `Set-Cookie` line for `name`, with the attributes both cookies share. */
+export function setCookie(name: string, value: string, maxAgeSeconds: number): string {
+  return `${name}=${value}; Max-Age=${maxAgeSeconds}; ${ATTRIBUTES}`;
+}
+
+/** The `Set-Cookie` line that ends `name` in the browser. */
+export function clearCookie(name: string): string {
+  return setCookie(name, "", 0);
+}
+
+/** The value of the first pair in `cookieHeader` whose name is exactly `name`, or `null`. The header is split on
+ *  `;`, each pair trimmed and split on its FIRST `=`; a pair with no `=` names nothing. It reads a `Set-Cookie`
+ *  line too, whose first pair is the cookie and whose attributes follow. */
+export function cookieValue(cookieHeader: string | null, name: string): string | null {
+  if (cookieHeader === null) return null;
+  for (const raw of cookieHeader.split(";")) {
+    const pair = raw.trim();
+    const eq = pair.indexOf("=");
+    if (eq !== -1 && pair.slice(0, eq) === name) return pair.slice(eq + 1);
+  }
+  return null;
+}
