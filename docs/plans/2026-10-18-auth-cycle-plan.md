@@ -1074,3 +1074,27 @@ it("doorLine names the source", …);
     draws "sign out" behind an edge door (R-37); the device card's `Remedy` no longer reads a site key as the open
     door. **Unverified by the implementer:** where the notice sits in the device card's flex row — a visual reading
     for the after review.
+- **2026-10-19, Task 6's review (at `721ea63b`): one real gap behind R-40, ruled R-44 (Task 4's code).** R-40's
+  first-visit card is UNREACHABLE: under a sign-in arm `/api/me` with no session answers the module's 200
+  `{"mode":"cf-access","user":null}` (C-1), so a first visitor at a shared table link meets the door's state B — "This
+  server couldn't tell who you are … Sign in again … expects Cloudflare Access" — the operator's wording, false for
+  them. **R-44:** under a sign-in arm (source `oidc` | `workos`) a caller-less `GET`/`HEAD /api/me` answers the SHELL's
+  own 401 with the session challenge, at one site in `answer` before the forward (house target, path `/api/me`,
+  identity none, source an arm) — the design's §4.3 intent restored at the shell; C-1's reading stays TRUE under
+  `access`, where the module's 200 `user: null` means the edge named nobody (state B, the operator's screen). Task 4's
+  "names the caller" cell is unchanged; a new cell pins the 401 under the arm and the 200 under `access`. The client
+  then reaches R-40's card with no client change; `Door.tsx`'s three sentences about the path and the card title's
+  period are Task 6's fix round with the review's I-2 (the leaving-guard cell re-sequenced) and minors M-1–M-4, M-6.
+  **M-5 extends C-21 and is recorded forward:** `docs/web-lane.md` lines ~905–907 and ~976–979 and `deploy/README.md`
+  ~173 still say "a keyed build is the open door / asks nothing" (Task 9); the same sentences in RUST —
+  `crates/yokohama-web/src/assets.rs` ~53, ~90–95 (the refusal the NAS operator reads), ~643 and `main.rs` ~122 — are
+  fenced this cycle and a later hotfix rewords them.
+- **2026-10-19, Task 7's `DONE_WITH_CONCERNS` (commit `a9be5bdf`):** the private `DEPLOYMENTS` record carries
+  `source: "access"` (accepted; its own cell requires it); the live guard runs were made over the existing tree and
+  refused only for build state (the debug module, a keyless tree) — the exit-0 readings are the window's (R-43); four
+  doc sites still say the guard holds one Worker "until S4" (`docs/web-lane.md` ~473, `worker/README.md` ~1777 and
+  ~2002, `worker/RUNBOOK.md` ~243) — Task 9; `assets.rs` 90–95 as above. **R-45 (the concern "Task 10 must copy
+  `YOKOHAMA_OIDC_CLIENT_ID` into `wrangler.open.jsonc`"):** no — the open door reads no arm variable (Task 1), so
+  `OPEN_DIFFERS` gains `YOKOHAMA_OIDC_CLIENT_ID: undefined` and `YOKOHAMA_OIDC_ISSUER: undefined` (the open files omit
+  them, as they omit the source), with a cell; Task 7's fix round. A gitignored `web/public/.DS_Store` (Finder's,
+  02:03) turned `edge-rule`'s drift cell red at HEAD; the orchestrator removed it and the cell reads green.
