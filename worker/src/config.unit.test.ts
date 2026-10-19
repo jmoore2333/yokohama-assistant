@@ -289,6 +289,19 @@ describe("YOKOHAMA_IDENTITY_SOURCE (auth cycle, design §3)", () => {
     );
     expect(refused(env({ ...WORKOS, YOKOHAMA_SESSION_SECRET: "short" }, true))).toMatch(/^YOKOHAMA_SESSION_SECRET must be at least 32 bytes/);
   });
+  // `present`: trimmed, and a blank is NOT a value. Mutants: the trim dropped; a blank kept as "".
+  it("reads the client id trimmed and refuses a blank one", () => {
+    expect(accepted(env({ ...OIDC, YOKOHAMA_OIDC_CLIENT_ID: " client_1 " }, true)).signin?.clientId).toBe("client_1");
+    expect(refused(env({ ...OIDC, YOKOHAMA_OIDC_CLIENT_ID: "  " }, true))).toBe(
+      "YOKOHAMA_OIDC_CLIENT_ID must be set under YOKOHAMA_IDENTITY_SOURCE=oidc — the client id the issuer registered for this site",
+    );
+  });
+  it("refuses a blank WorkOS API key, and reads a blank issuer beside workos as none", () => {
+    expect(refused(env({ ...WORKOS, YOKOHAMA_OIDC_CLIENT_SECRET: "" }, true))).toMatch(
+      /^YOKOHAMA_OIDC_CLIENT_SECRET must be set under YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS API key/,
+    );
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_OIDC_ISSUER: "  " }, true)).signin?.issuer).toBeNull();
+  });
   it("open ignores an absent source and refuses a present one", () => {
     expect(accepted(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: undefined }, true))).toMatchObject({ source: null, signin: null, session: null });
     expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "access" }, true))).toBe(
@@ -332,7 +345,11 @@ describe("YOKOHAMA_SESSION_SECRET and YOKOHAMA_SESSION_DAYS (auth cycle, design 
     expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: "7" }, true)).session?.days).toBe(7);
     expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: "365" }, true)).session?.days).toBe(365);
   });
-  it.each(["0", "-1", "2.5", "thirty", "", "1e3", "007", " 7", "99999999999999999999"])("refuses the days %j, quoting it", (value) => {
+  // The TTLs' own rule (`wholeDays`): trimmed, digits only, so a padded or zero-led number reads as the number.
+  it.each(["007", " 7", "7 "])("reads the days %j as 7, as the two TTLs read theirs", (value) => {
+    expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: value }, true)).session?.days).toBe(7);
+  });
+  it.each(["0", "-1", "2.5", "thirty", "", "1e3", "99999999999999999999"])("refuses the days %j, quoting it", (value) => {
     expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: value }, true))).toBe(
       `YOKOHAMA_SESSION_DAYS must be a whole number of days above zero — got ${JSON.stringify(value)}`,
     );
@@ -410,6 +427,9 @@ describe("a variable that is not a string", () => {
     ["YOKOHAMA_WEB_TABLE_TTL_DAYS", 90, "the number 90"],
     ["YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", 7, "the number 7"],
     ["YOKOHAMA_DEV_DOOR", true, "the boolean true"],
+    // The auth cycle's keys (Task 1 review, M-3): the realistic slip is the days written without quotes.
+    ["YOKOHAMA_SESSION_DAYS", 30, "the number 30"],
+    ["YOKOHAMA_IDENTITY_SOURCE", true, "the boolean true"],
     ["YOKOHAMA_WEB_CHAT_KEEP", 500, "the number 500"],
     ["ACCESS_AUD", null, "null"],
     ["YOKOHAMA_WEB_IDENTITY", true, "the boolean true"],

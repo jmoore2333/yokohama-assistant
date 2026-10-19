@@ -215,7 +215,7 @@ const SESSION_SECRET_BYTES = 32;
 
 /**
  * The session variables, read for `oidc` and `workos` alone. The secret is taken as it is set (never trimmed) and
- * counted in UTF-8 bytes; the days are a whole number above zero written as such, 30 when absent.
+ * counted in UTF-8 bytes; the days are the TTLs' own rule (`wholeDays`), 30 when absent.
  */
 function session(env: Env, src: Source | null): ShellConfig["session"] {
   if (src !== "oidc" && src !== "workos") return null;
@@ -226,12 +226,7 @@ function session(env: Env, src: Source | null): ShellConfig["session"] {
     );
   }
   const raw = text(env, "YOKOHAMA_SESSION_DAYS");
-  if (raw === null) return { secret, days: SESSION_DAYS };
-  const days = Number(raw);
-  if (!/^[1-9][0-9]*$/.test(raw) || !Number.isSafeInteger(days)) {
-    refuse(`YOKOHAMA_SESSION_DAYS must be a whole number of days above zero — got ${JSON.stringify(raw)}`);
-  }
-  return { secret, days };
+  return { secret, days: raw === null ? SESSION_DAYS : wholeDays("YOKOHAMA_SESSION_DAYS", raw) };
 }
 
 /** `r2` | `off`, absent = off (R-6.5c.14). The module matches these two
@@ -249,8 +244,11 @@ function archive(env: Env): "r2" | "off" {
 const OPEN_TTL_DAYS = 7;
 
 /** `raw`, trimmed, as whole days above zero — or the refusal naming `name`.
- *  The two TTLs' one rule. */
-function wholeDays(name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", raw: string): number {
+ *  The one rule of the two TTLs and the session's days. */
+function wholeDays(
+  name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS" | "YOKOHAMA_SESSION_DAYS",
+  raw: string,
+): number {
   const value = raw.trim();
   const days = Number(value);
   if (!/^\d+$/.test(value) || days === 0 || !Number.isSafeInteger(days)) {

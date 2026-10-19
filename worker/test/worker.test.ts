@@ -253,16 +253,19 @@ describe("the Worker's own answers (spec §2.3)", () => {
     expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
   });
 
-  // M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it —
-  // an operator list, and the dev door on — answers every `/api/*` the 500
-  // naming both variables, as the unset door does, before any object is
-  // reached. This configuration is the worker door's, whose dev door is ON, so
-  // an override of the door alone meets the dev door's refusal, and one that
-  // also sets a list meets the list's first. The override reaches the Worker's
-  // own `shellConfig` alone (review R2.2-M2), which is where both are read.
-  // The partner: the same override with the dev door off and no list is no
-  // refusal. Mutants: either refusal missing; the list's value echoed.
-  it("an operator list, or the dev door on, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
+  // M6.5c2, spec §2.1 (review R2.2-M1; the third row since the auth cycle's
+  // Task 1): what the OPEN door refuses beside it — an operator list, the dev
+  // door on, and an identity source — answers every `/api/*` the 500 naming
+  // both variables, as the unset door does, before any object is reached. This
+  // configuration is the worker door's, whose dev door is ON and whose source
+  // is `access`, so an override of the door alone meets the dev door's
+  // refusal; one that also sets a list meets the list's first; and one that
+  // turns the dev door off meets the source's, the last of the three. The
+  // override reaches the Worker's own `shellConfig` alone (review R2.2-M2),
+  // which is where all three are read. The partner: the same override with the
+  // dev door off, no list AND the source unset is no refusal. Mutants: any of
+  // the three refusals missing; the list's value echoed.
+  it("an operator list, the dev door on, or an identity source, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
     const opened = { ...env, YOKOHAMA_WEB_IDENTITY: "open" };
     const refusals: Array<[Env, string]> = [
       [
