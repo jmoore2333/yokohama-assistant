@@ -40,9 +40,9 @@ import { signInNotice } from "./buildValues";
 
 /** The build's sign-in notice as a muted line, or nothing where the build set
  *  none (R-A14; the auth cycle, Task 6) — drawn directly under every sign-in
- *  link: the strip's here, the device card's `Remedy` and the front door's
- *  multiplayer card. One component, so the three cannot word or style it
- *  differently. */
+ *  link: the strip's here, the device card's `Remedy`, the front door's
+ *  multiplayer card and the door's own card (`Door.tsx`, states A and B; ruling
+ *  R-40). One component, so the four cannot word or style it differently. */
 export function SignInNotice() {
   const notice = signInNotice();
   return notice === null ? null : <p className="muted">{notice}</p>;

@@ -29,6 +29,13 @@ export function failureOf(e: unknown): DoorFailure {
   return isSessionExpired(e) ? "challenge" : "refused";
 }
 
+/** Access's own logout (the auth cycle, Task 6; ruling R-41): where a sign-out
+ *  goes when a `cf-access` door answers `POST /api/leave` 404 — the NAS, whose
+ *  layer has no such route this cycle and which sits behind Access (B10's one
+ *  rule). Access's edge serves the path; under Access the Worker's own
+ *  `/api/leave` answer names it too (`worker/src/index.ts`'s `ACCESS_LOGOUT`). */
+export const ACCESS_LOGOUT = "/cdn-cgi/access/logout";
+
 /** The door, as the app reads and moves it. */
 export interface Door {
   /** `null` until `/api/me` answers — a real third state, not "signed out". */
@@ -46,9 +53,11 @@ export interface Door {
   /** Ask `/api/me` again. */
   refresh: () => void;
   /** The player asked to sign out: the server is asked where to go to end the
-   *  session (`POST /api/leave`) and the browser goes there; where it answers
-   *  nowhere — the open door's 404, the NAS — the stored name is dropped and
-   *  `/api/me` asked again, the sign-out the open door always had. */
+   *  session (`POST /api/leave`) and the browser goes there; a `cf-access`
+   *  door that answers 404 — the NAS — goes to Access's own logout
+   *  ([`ACCESS_LOGOUT`]); anywhere else it answers nowhere — the open door's
+   *  404 — the stored name is dropped and `/api/me` asked again, the sign-out
+   *  the open door always had. */
   signOut: () => void;
   /** The server refused with a 401: drop the name, carry the sentence, re-ask. */
   signedOut: (sentence: string) => void;
@@ -114,6 +123,8 @@ export function useMe(channel: Channel): Door {
     };
   }, [tick, channel]);
   const refresh = useCallback(() => setTick((t) => t + 1), []);
+  /** The door the server last named — what `signOut`'s 404 is read against. */
+  const mode = me?.mode ?? null;
   /** Both ways out differ only in what they leave on the door. The stored name
    *  is dropped either way: `/api/me` reads the very header `api.ts` attaches
    *  from storage, so a name kept here comes straight back and the form would
@@ -144,6 +155,11 @@ export function useMe(channel: Channel): Door {
     // the layer's 404, and the stored name is dropped and `/api/me` re-read. A
     // reply naming nowhere is that path too. `leaving` is set at the click, so
     // a 401 that lands while the leave is out is the sign-out, not news.
+    // **The one exception is the NAS** (ruling R-41): its layer answers the
+    // route 404 too, but it sits behind Access, so re-reading `/api/me` would
+    // name the same player again — a sign-out that visibly did nothing. A 404
+    // under a `cf-access` door goes to Access's own logout instead; any other
+    // failure there (nothing answered, a 5xx) keeps the open door's path.
     signOut: useCallback(() => {
       leaving.current = true;
       void api.leave().then(
@@ -151,9 +167,12 @@ export function useMe(channel: Channel): Door {
           if (typeof reply?.leave === "string" && reply.leave !== "") window.location.assign(reply.leave);
           else leave(null);
         },
-        () => leave(null),
+        (e: unknown) => {
+          if (e instanceof ApiError && e.status === 404 && mode === "cf-access") window.location.assign(ACCESS_LOGOUT);
+          else leave(null);
+        },
       );
-    }, [leave]),
+    }, [leave, mode]),
     // Ignored while a sign-out that was asked for is still being read back:
     // the name is already dropped and the re-read already out (`leaving`).
     signedOut: useCallback(

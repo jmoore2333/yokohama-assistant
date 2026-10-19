@@ -2810,7 +2810,11 @@ describe("the door", () => {
     window.location.hash = "#/lobby";
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Your sign-in has run out" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/enter");
+    // `/enter` with the screen as `return_to` since the auth cycle (R-40).
+    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute(
+      "href",
+      "/enter?return_to=%2F%23%2Flobby",
+    );
     // **The claimed name is NOT dropped**, which is the half a status-only read
     // would get wrong: the door this browser knocks on is fine, and signing the
     // player out of it would replace an actionable sentence with a form that

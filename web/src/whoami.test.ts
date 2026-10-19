@@ -278,6 +278,55 @@ describe("signOut through /api/leave", () => {
     expect(stub.matching("GET", "/api/me")).toHaveLength(1);
   });
 
+  // **The NAS answers no `/api/leave`** (the auth cycle, Task 6; ruling R-41):
+  // this cycle moves no Rust, and the layer's 404 there would leave the button
+  // re-reading `/api/me` — which Access answers with the same player, a
+  // sign-out that visibly does nothing. The NAS sits behind Access (B10's one
+  // rule), so under a `cf-access` door a 404 goes to Access's own logout; every
+  // other failure keeps the open door's sign-out. Mutants: the fallback taken
+  // on every 404 whatever the door (the open door navigates); the fallback
+  // taken on any failure under `cf-access` (a network failure navigates); the
+  // fallback never taken (the NAS re-reads).
+  it("goes to Access's own logout when a cf-access door answers the leave 404, and keeps today's path otherwise", async () => {
+    const went = countNavigations();
+    const behindAccess = (leave: () => Reply) =>
+      stubApi((call) => {
+        if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
+        if (call.method === "POST" && call.path === "/api/leave") return leave();
+        throw new Error(`unexpected ${call.method} ${call.path}`);
+      });
+
+    // The NAS: behind Access, and no such endpoint.
+    const nas = behindAccess(() => ({ status: 404, body: { error: "no such endpoint: /api/leave" } }));
+    const first = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(first.result.current.me?.user).toBe(wire.me.user));
+    act(() => first.result.current.signOut());
+    await waitFor(() => expect(went).toEqual(["/cdn-cgi/access/logout"]));
+    expect(nas.matching("GET", "/api/me"), "nothing re-read on the way out").toHaveLength(1);
+    first.unmount();
+
+    // The open door: the same 404, and the sign-out it always had.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const open = meFromStorage();
+    const second = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(second.result.current.me?.user).toBe(wire.me.user));
+    act(() => second.result.current.signOut());
+    await waitFor(() => expect(second.result.current.me).toEqual(wire.meSignedOut));
+    expect(open.matching("POST", "/api/leave")).toHaveLength(1);
+    expect(went, "the open door navigates nowhere").toEqual(["/cdn-cgi/access/logout"]);
+    second.unmount();
+
+    // Behind Access, but nothing answered at all: the same path, no navigation.
+    const offline = behindAccess(() => {
+      throw new TypeError("Failed to fetch");
+    });
+    const third = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(third.result.current.me?.user).toBe(wire.me.user));
+    act(() => third.result.current.signOut());
+    await waitFor(() => expect(offline.matching("GET", "/api/me")).toHaveLength(2));
+    expect(went, "a network failure navigates nowhere").toEqual(["/cdn-cgi/access/logout"]);
+  });
+
   // Mutants: the failure path navigating anyway; the stored name kept; the
   // door not re-read; a 200 that names nowhere navigated to.
   it("keeps the open door's sign-out when the leave is refused: the name dropped, /api/me asked again, nothing navigated", async () => {
