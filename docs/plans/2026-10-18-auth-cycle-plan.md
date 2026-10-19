@@ -980,3 +980,30 @@ it("doorLine names the source", …);
   ~230-line sign-in block (a module of its own is a candidate, not a defect); duplicated small helpers (`base64url`
   thrice); `route.ts`'s `enter` doc owes "and the open door"). The reviewer's pool export needed the gitignored
   `test/fixtures.gen.ts`, `test/corpus.gen.ts`, `.test-assets` and `assets` linked in beside `node_modules` and `gen`.
+- **2026-10-19, Task 5's `DONE_WITH_CONCERNS` (commit `eb7d319a`) and the harness's security review of it:**
+  - **R-33 (the security review's "identity spoofing": the device header and the body's game id are raw) — ACCEPTED
+    AS DESIGNED.** R-A4/R-A9 chose a self-declared device id, and R-A3/R-A4 keep the solo page from ever invoking the
+    Worker, so a Worker-signed device token is unavailable by construction. The exposure is the pollution or
+    exhaustion of ONE anonymous prefix, bounded by the per-key share (R-A9), the create limiter by IP and the archive's
+    write-only, replay-verified use (the map's §1.5/§1.6 fence); the game-id fallback keys each game under its own
+    prefix, so no separate quota is owed. Task 9 writes the sentence "the anonymous archive offers no integrity
+    guarantee: a device id is a self-declared label, not a credential" into the hosting documents and the security
+    ledger's AUTH row.
+  - **C-17 (Task 5's interfaces and Step 1; the design's §4.4 is right):** an archive post is `{"record":"…","table":"…"}`
+    — the layer's `ArchivePost` with `deny_unknown_fields`, NO top-level `id` — so the brief's `bodyId(body)` fallback on
+    the body's own `id` would turn every R-A11 post away. The fallback reads the TABLE document's `id` (the `table`
+    string parsed, its `id` through `bodyId`'s rule), as the design says; a create-shaped body `{"id":"…"}` is no one.
+  - **C-18 (Task 5 Step 3's `uploaded`):** `Math.floor(at / 1000)` divides a reading already in SECONDS (`clock.ts`), a
+    1970 date; `uploaded` is `Math.floor(Date.now() / 1000)`, the shell's own clock as `clock.ts` rules.
+  - **C-19 (Task 5 Step 1's stand-ins):** the browser-save cells assert 201 (body `{leaf, path, identical}`), not 204;
+    `LOCAL` in `test/helpers.ts` is the CALLER `local@browser`, not a game id; the cells post `ARCHIVE_WALK[0]`
+    (over) / `[3]` (abandoned) with the table's `"id"` rewritten to a `local-<16 hex>` id.
+  - **R-34 (concern 3):** the anonymous caller is formed under the `worker` door only (§4.4: "under `open` nothing
+    changes"; an open-door visitor with no claimed name stays the layer's refusal, which the client's rule 6b
+    already honours); one open-door cell pins it.
+  - **R-35 (concern 6):** under `access`, an archive post whose assertion fails verification (or whose dev-door
+    claim is not `.test`) now files ANONYMOUSLY when it carries a device or a safe game id, where it was the 401 —
+    accepted: no privilege is gained (the same post with no assertion is anonymous by design), and a forged
+    assertion earns strictly less than a verified caller.
+  - Two files beyond the brief's list carry cells: `worker/src/r2.unit.test.ts` (the metadata put and the
+    `onlyIf` precondition) and `worker/test/open/door.test.ts` (R-34).
