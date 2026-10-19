@@ -72,16 +72,33 @@ export function readSessionCookie(env = process.env) {
   return value;
 }
 
+/** The environment variable that holds the deployment's session secret: an instrument that finds it MINTS a session
+ *  per identity (`mint-session.mjs`'s `cookieLine`, `.test` addresses only; ruling R-50). */
+export const SESSION_SECRET_ENV = "YOKOHAMA_SESSION_SECRET";
+
+/** The session secret in `env`, or `null` when unset or empty. Never printed. */
+export function readSessionSecret(env = process.env) {
+  const value = env[SESSION_SECRET_ENV];
+  return value === undefined || value === "" ? null : value;
+}
+
 /**
- * What an instrument presents: the minted session `cookie` (or `null`) and the Access `credential` (or `null`).
+ * What an instrument presents: the session `secret` it mints per identity from (or `null`), the one minted `cookie`
+ * (or `null`) and the Access `credential` (or `null`). Three modes, in this order of precedence (ruling R-50):
  *
- * With no cookie the credential is required, as ever, and its absence is `readCredential`'s refusal. With a cookie the
- * credential is optional — the Access service credential is the EDGE's pass where Access still stands over a
+ * 1. **the secret** (`YOKOHAMA_SESSION_SECRET`): a cookie MINTED for each identity the run names. It wins over a
+ *    cookie that is also set, which is then not read at all, so `cookie` is `null` here;
+ * 2. **the cookie** (`YOKOHAMA_SESSION_COOKIE`): ONE identity, a line `mint-session.mjs` printed;
+ * 3. **neither**: the dev door's credential and claimed header, as ever.
+ *
+ * With neither the credential is required, as ever, and its absence is `readCredential`'s refusal. Under a secret or a
+ * cookie the credential is optional — the Access service credential is the EDGE's pass where Access still stands over a
  * provider-signed Worker (ruling R-39), not an identity — so it rides when `file` is there and is `null` when it is
  * absent. A file that IS there is read strictly: a malformed one is refused, never read as absent.
  */
 export function readIdentity(env = process.env, file = DEV_VARS) {
-  const cookie = readSessionCookie(env);
-  if (cookie === null) return { cookie, credential: readCredential(file) };
-  return { cookie, credential: existsSync(file) ? readCredential(file) : null };
+  const secret = readSessionSecret(env);
+  const cookie = secret === null ? readSessionCookie(env) : null;
+  if (secret === null && cookie === null) return { secret, cookie, credential: readCredential(file) };
+  return { secret, cookie, credential: existsSync(file) ? readCredential(file) : null };
 }

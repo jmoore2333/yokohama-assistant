@@ -343,6 +343,43 @@ describe("identityHeaders and liveContextOptions", () => {
     vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "");
     expect(identityHeaders("a@e2e.test"), "an empty variable is unset").toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
   });
+  // **The secret** (ruling R-50): a session MINTED per email from the deployment's secret — two emails, two callers.
+  describe("under YOKOHAMA_SESSION_SECRET", () => {
+    const SECRET = "0123456789abcdef0123456789abcdef";
+    const cookieOf = (email: string) => identityHeaders(email).Cookie!;
+    const payload = (line: string) => JSON.parse(Buffer.from(line.split("=")[1]!.split(".")[1]!, "base64url").toString("utf8"));
+    it("is a different Cookie per email, each minted for its own address, with no claimed header", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const a = identityHeaders("a@e2e.test");
+      expect(Object.keys(a)).toEqual(["Cookie"]);
+      const [ca, cb] = [cookieOf("a@e2e.test"), cookieOf("b@e2e.test")];
+      expect(ca).toMatch(/^__Host-yokohama_session=v1\./);
+      expect(ca).not.toBe(cb);
+      expect(payload(ca).address).toBe("a@e2e.test");
+      expect(payload(cb).address).toBe("b@e2e.test");
+      expect(payload(ca).sid).toBeNull();
+      expect(payload(ca).expires - payload(ca).issued).toBe(30 * 86_400);
+    });
+    it("is the same bytes the minting script's own function writes, signed with the secret", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const { cookieLine } = await import("../../worker/scripts/mint-session.mjs");
+      const line = cookieOf("a@e2e.test");
+      expect(line).toBe(cookieLine("a@e2e.test", SECRET, payload(line).issued));
+    });
+    it("refuses an email that is not a .test address, in the script's fence sentence", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      expect(() => identityHeaders("jamoore@gmail.com")).toThrow("mint-session: only a .test address may be minted — got jamoore@gmail.com");
+    });
+    it("wins over the one cookie, which then names nobody", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+      expect(payload(cookieOf("a@e2e.test")).address).toBe("a@e2e.test");
+    });
+    it("an empty secret is unset", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", "");
+      expect(identityHeaders("a@e2e.test")).toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
+    });
+  });
   it("refuses a variable that is not a minted line, naming it and never the value", () => {
     vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "red@t.test");
     expect(() => identityHeaders("a@e2e.test")).toThrow("YOKOHAMA_SESSION_COOKIE");

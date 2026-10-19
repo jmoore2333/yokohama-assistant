@@ -47,7 +47,8 @@
 // prints the call log too — `expect(res.ok())` is the form to use.
 
 import type { BrowserContextOptions, Page } from "@playwright/test";
-import { KEYS, ORIGIN, readCredential, readIdentity, readSessionCookie } from "../../worker/scripts/dev-vars.mjs";
+import { KEYS, ORIGIN, readCredential, readIdentity, readSessionCookie, readSessionSecret } from "../../worker/scripts/dev-vars.mjs";
+import { cookieLine } from "../../worker/scripts/mint-session.mjs";
 
 /** The deployed Worker's origin: `BASE_URL` under `LIVE` — `ORIGIN`, stated
  *  once in `worker/scripts/dev-vars.mjs` beside the credential that is sent
@@ -132,12 +133,18 @@ type Cookie = StorageState["cookies"][number];
  *  calls too (M6.5c2 cycle D, Task 9). */
 export const credential = readCredential;
 
-/** Who a context is: to the dev door, the claimed header, in both modes. Under a sign-in arm (auth cycle, Task 8; ruling
- *  R-39) the Worker names a caller by its own session cookie, so with `YOKOHAMA_SESSION_COOKIE` set — a line
- *  `worker/scripts/mint-session.mjs` printed, for a `.test` address — it is that cookie as `Cookie` and NO claimed
- *  header: a claimed name beside the cookie would be a second identity. The cookie names ONE caller, so every context of
- *  a run under it is that caller. */
+/** Who a context is. Three modes, in this order (auth cycle, Task 8; rulings R-39 and R-50):
+ *
+ *  - **`YOKOHAMA_SESSION_SECRET` set**: a session MINTED for `email` (`worker/scripts/mint-session.mjs`'s `cookieLine`,
+ *    `.test` addresses only — a context whose `email` is not one refuses, with the script's own fence sentence) as
+ *    `Cookie` and NO claimed header. Each email is its own caller, so two contexts are two identities. It wins over a
+ *    cookie that is also set;
+ *  - **`YOKOHAMA_SESSION_COOKIE` set**: that ONE minted line as `Cookie` and no claimed header — every context of the run
+ *    is that caller, whatever `email` says. A claimed name beside the cookie would be a second identity;
+ *  - **neither**: to the dev door, the claimed header, in both modes. */
 export function identityHeaders(email: string): Record<string, string> {
+  const secret = readSessionSecret();
+  if (secret !== null) return { Cookie: cookieLine(email, secret, Math.floor(Date.now() / 1000)) };
   const cookie = readSessionCookie();
   return cookie === null ? { "X-Yokohama-Claimed-User": email } : { Cookie: cookie };
 }

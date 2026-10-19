@@ -72,8 +72,15 @@
 // claimed header, and `.dev.vars`' credential rides beside it, as the edge's
 // pass, when the file is there — Access may still stand over the Worker. The
 // cookie names ONE caller, so a row with a `who` is refused before anything is
-// sent: the committed walk names several, and a run under a cookie needs a
-// walk that names none.
+// sent: the committed walk names several, and a run under the one cookie needs
+// a walk that names none — the secret below is the mode for the committed walk.
+//
+// **Three modes, one identity rule** (ruling R-50). With `YOKOHAMA_SESSION_SECRET` in the environment — the
+// deployment's session secret, which a run under a sign-in arm needs for nothing else — the replay MINTS a session for
+// each row's `who` (`mint-session.mjs`'s one `cookieLine`; `.test` addresses only, so a `who` that is not one refuses the
+// run before anything is sent), sends it as `Cookie` and NO claimed header, and a row with no `who` sends no cookie. That
+// is the mode that runs the committed walk under a sign-in arm. `YOKOHAMA_SESSION_COOKIE` is the ONE-identity mode
+// above, and the secret WINS when both are set. With neither, the dev door: the credential and the claimed header.
 //
 // **The secret.** `.dev.vars` is read by path and its values are never
 // printed, and the credential goes to the Worker's own origin alone — a row
@@ -106,6 +113,7 @@ import {
   skippedUnderProductionSeedRule,
 } from "./replay/exemptions.mjs";
 import { errorText, finish, fmt, judge, parsed, said } from "./replay/judge.mjs";
+import { cookieLine } from "./mint-session.mjs";
 import { loadCorpus, loadScripts, order, tableIds, urlOf } from "./replay/scripts.mjs";
 import { forceAll, send, TWO_IDENTITIES } from "./replay/send.mjs";
 
@@ -117,13 +125,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Answers the run's result; `holds` is whether every force answered 204,
  * every row the production seed rule sends ran, and nothing differed.
  */
-export async function replay({ walk, host, archive, corpus, credential, cookie = null, fetcher = fetch, log = console.log, pause = sleep }) {
+export async function replay({ walk, host, archive, corpus, credential, cookie = null, secret = null, fetcher = fetch, log = console.log, pause = sleep }) {
   const rows = order(walk, host, archive);
   const ids = tableIds(walk);
   const reader = rows.find(({ row }) => row.fixture === "house_chat")?.row;
   if (reader === undefined) throw new Error("no row of the scripts reads the house chat, so there is no base to read");
-  // A run presents a credential, a minted session cookie, or both (the credential then the edge's pass, ruling R-39).
-  if (!credential && !cookie) throw new Error("the run has neither the Access credential nor a session cookie to present");
+  // A run presents a credential, a session cookie (one minted, or a secret to mint each row's from, ruling R-50), or both
+  // (the credential then the edge's pass, ruling R-39). The secret wins over a cookie.
+  if (secret) cookie = null;
+  if (!credential && !cookie && !secret) throw new Error("the run has neither the Access credential nor a session cookie nor a session secret to present");
   // Every row's address, checked BEFORE anything is sent — the forces
   // included: a row that would leave the Worker's origin refuses the run.
   for (const { row } of rows) urlOf(row);
@@ -134,6 +144,23 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
       if (row.who !== null) throw new Error(`${script} row ${index}: ${row.method} ${row.path} names ${row.who} — ${TWO_IDENTITIES}`);
     }
   }
+  // Under the secret each row's `who` is minted a session, `.test` addresses only: judged for EVERY row before anything is
+  // sent, with the fence's own sentence. One cookie per address, minted at the run's start clock.
+  const minted = new Map();
+  if (secret) {
+    const now = Math.floor(Date.now() / 1000);
+    for (const { script, index, row } of rows) {
+      if (row.who === null || minted.has(row.who)) continue;
+      try {
+        minted.set(row.who, cookieLine(row.who, secret, now));
+      } catch (e) {
+        throw new Error(`${script} row ${index}: ${e.message}`);
+      }
+    }
+  }
+  /** One row, sent as who it names: its minted cookie under the secret (and NO claimed header), else as `send` says. */
+  const sendAs = (row) =>
+    secret ? send({ ...row, who: null }, credential ?? null, fetcher, row.who === null ? null : minted.get(row.who)) : send(row, credential ?? null, fetcher, cookie);
   const result = {
     holds: false,
     run: 0,
@@ -157,7 +184,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
     log(`  MISMATCH ${label} — ${fixture === null ? "" : `${fixture} `}${diff.path}: ${what}`);
   };
 
-  const presents = [credential ? KEYS.join(" and ") : null, cookie ? "the session cookie" : null].filter(Boolean).join(" and ");
+  const presents = [credential ? KEYS.join(" and ") : null, cookie ? "the session cookie" : null, secret ? "a session minted per identity" : null].filter(Boolean).join(" and ");
   log(`live-replay: ${ORIGIN} — ${presents} to this origin only; the forces with only the JSON type (over WARP, the owner's device answers Access)`);
   result.forcedBefore = await forceAll(ids, fetcher);
   log(`force before: ${result.forcedBefore.map((f) => `${f.id} ${f.status ?? "—"}${f.status === 204 ? "" : f.said}`).join(", ")}`);
@@ -167,7 +194,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
   }
 
   try {
-    const baseReply = await send(reader, credential ?? null, fetcher, cookie);
+    const baseReply = await sendAs(reader);
     const basePage = baseReply.status === 200 ? parsed(baseReply) : undefined;
     const last = basePage?.last;
     const baseRev = basePage?.rev;
@@ -199,7 +226,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
       }
       let reply;
       try {
-        reply = await send(row, credential ?? null, fetcher, cookie);
+        reply = await sendAs(row);
       } catch (e) {
         result.stopped = label;
         differs(label, null, { path: "status", reason: `no answer: ${errorText(e)}` });
@@ -269,7 +296,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
         // (`LOBBY_REREADS` says why); what still differs after the last read
         // is reported below as a mismatch.
         await pause(LOBBY_PAUSE_MS);
-        const reread = await send(row, credential ?? null, fetcher, cookie);
+        const reread = await sendAs(row);
         result.rereads += 1;
         if (reread.status !== row.status) {
           judged = { diffs: [{ path: "status", reason: `re-read: committed ${row.status} · got ${reread.status}${said(reread)}` }], spent: [] };

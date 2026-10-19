@@ -17,6 +17,10 @@
 // bytes of `JSON.stringify({ address, sid, issued, expires })`, in that key order, `sid` written as `null`;
 // `mac` is the base64url of HMAC-SHA256, keyed by the secret's UTF-8 bytes, over the ASCII bytes `"v1." + payload`.
 //
+// **Who else mints** (ruling R-50): the live replay and the live tier call `cookieLine` below when
+// `YOKOHAMA_SESSION_SECRET` is in their environment, a cookie per identity, so the fence and the bytes are this file's
+// alone — there is no second implementation to drift.
+//
 // **The secret** is read from the environment only — never an argument, never a file, and never printed.
 
 import { createHmac } from "node:crypto";
@@ -33,6 +37,22 @@ const USAGE = "usage: node scripts/mint-session.mjs <address> [--days N]   (YOKO
 /** `src/identity.ts`'s `isTestAddress`, restated: an `@` and the suffix `.test`. */
 export function isTestAddress(email) {
   return email.includes("@") && email.endsWith(".test");
+}
+
+/** The fence's sentence, without the script's `mint-session: ` prefix. */
+export function fenceSentence(address) {
+  return `only a .test address may be minted — got ${address}`;
+}
+
+/**
+ * The whole cookie line for `address` — `__Host-yokohama_session=v1.…` — minted from `secret`, `sid` null, `days`
+ * (default thirty) past `nowSeconds`. **The ONE function every minter calls** (this script, the live replay and the
+ * live tier, ruling R-50): the `.test` fence is here, so no caller can mint a real address. Throws the fence's sentence,
+ * prefixed `mint-session: `.
+ */
+export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {
+  if (!isTestAddress(address)) throw new Error(`mint-session: ${fenceSentence(address)}`);
+  return `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}`;
 }
 
 /** The cookie's VALUE for `s`, expiring `days` after `s.issued`: `session.ts`'s `mintSession`, over `node:crypto`. */
@@ -68,10 +88,10 @@ export function run(argv, env, nowSeconds) {
   if (positional.length !== 1) return refuse(USAGE);
   const [address] = positional;
   // The fence comes before the secret is looked for: a real address is refused whatever the environment holds.
-  if (!isTestAddress(address)) return refuse(`only a .test address may be minted — got ${address}`);
+  if (!isTestAddress(address)) return refuse(fenceSentence(address));
   const secret = env.YOKOHAMA_SESSION_SECRET;
   if (secret === undefined || secret === "") return refuse("YOKOHAMA_SESSION_SECRET is not set");
-  return { code: 0, out: `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}\n`, err: "" };
+  return { code: 0, out: `${cookieLine(address, secret, nowSeconds, days)}\n`, err: "" };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

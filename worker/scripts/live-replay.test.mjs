@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { order } from "./corpus-walk.mjs";
-import { ORIGIN, readCredential, readIdentity, readSessionCookie } from "./dev-vars.mjs";
+import { ORIGIN, readCredential, readIdentity, readSessionCookie, readSessionSecret } from "./dev-vars.mjs";
 import { replay } from "./live-replay.mjs";
 import {
   FROZEN_CREATED_AT,
@@ -497,13 +497,29 @@ describe("readSessionCookie and readIdentity", () => {
     }
   });
   it("with no cookie the credential is required, as ever", () => {
-    expect(readIdentity({}, creds())).toEqual({ cookie: null, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
+    expect(readIdentity({}, creds())).toEqual({ secret: null, cookie: null, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
     expect(() => readIdentity({}, join(dir, "nothing-here"))).toThrow(/credential file/);
   });
   it("with a cookie the credential rides too when the file is there, and is null when the file is absent", () => {
     const env = { YOKOHAMA_SESSION_COOKIE: COOKIE };
-    expect(readIdentity(env, creds())).toEqual({ cookie: COOKIE, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
-    expect(readIdentity(env, join(dir, "nothing-here"))).toEqual({ cookie: COOKIE, credential: null });
+    expect(readIdentity(env, creds())).toEqual({ secret: null, cookie: COOKIE, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
+    expect(readIdentity(env, join(dir, "nothing-here"))).toEqual({ secret: null, cookie: COOKIE, credential: null });
+  });
+  // **The secret** (ruling R-50): the instrument mints a session per identity, and the secret wins over the one cookie.
+  it("reads the session secret from the environment, null when unset or empty", () => {
+    expect(readSessionSecret({})).toBeNull();
+    expect(readSessionSecret({ YOKOHAMA_SESSION_SECRET: "" })).toBeNull();
+    expect(readSessionSecret({ YOKOHAMA_SESSION_SECRET: "fixture-secret-0123456789abcdef0123" })).toBe("fixture-secret-0123456789abcdef0123");
+  });
+  it("with the secret the cookie is not read at all (it wins, even over a malformed one), and the credential is optional", () => {
+    const env = { YOKOHAMA_SESSION_SECRET: "fixture-secret-0123456789abcdef0123", YOKOHAMA_SESSION_COOKIE: COOKIE };
+    expect(readIdentity(env, join(dir, "nothing-here"))).toEqual({ secret: "fixture-secret-0123456789abcdef0123", cookie: null, credential: null });
+    expect(readIdentity(env, creds())).toEqual({
+      secret: "fixture-secret-0123456789abcdef0123",
+      cookie: null,
+      credential: { id: "dummy-id.access", secret: "dummy-secret-value" },
+    });
+    expect(readIdentity({ ...env, YOKOHAMA_SESSION_COOKIE: "not a cookie" }, join(dir, "nothing-here")).cookie).toBeNull();
   });
   it("with a cookie, a file that is there and malformed is still refused, not read as absent", () => {
     const file = join(dir, ".dev.vars");
@@ -799,6 +815,101 @@ describe("replay", () => {
 
     // `send` is the second line behind `replay`'s pre-check: a row with a `who` is refused where it would be sent, so no
     // other caller of `send` can put a claimed name beside a cookie.
+    // **The secret** (ruling R-50): the committed walk's shape — rows naming several callers — runs under a sign-in arm
+    // when the instrument MINTS a session per `who` from the deployment's secret.
+    describe("under the session secret", () => {
+      const SECRET = "0123456789abcdef0123456789abcdef";
+      const named = (who, method, path, status, fixture, body = null) => ({ ...row(method, path, status, fixture, body), who });
+      const TWO_WHOS = {
+        walk: [
+          named("blue@wire.test", "GET", "/api/chat", 200, "house_chat"),
+          named("red@wire.test", "POST", "/api/games", 201, null, { id: "solo" }),
+          named(null, "GET", "/api/health", 200, null),
+          named("red@wire.test", "GET", "/api/health", 200, null),
+          named("blue@wire.test", "GET", "/api/health", 200, null),
+        ],
+        host: [],
+        archive: [],
+      };
+      const decoded = async (cookieHeader) => {
+        const { readSession } = await import("../src/session.ts");
+        return readSession(cookieHeader, SECRET, Math.floor(Date.now() / 1000));
+      };
+
+      it("sends a different cookie per who, each readable as its address, no claimed header, and none for a row with no who", async () => {
+        const host = miniHost();
+        await runAs(host, { credential: null, cookie: null, secret: SECRET }, TWO_WHOS);
+        const sent = rowsSent(host);
+        expect(sent, "the base read and the five rows").toHaveLength(6);
+        // base read (blue), the reader row (blue), create (red), health (no one), health (red), health (blue).
+        const cookies = sent.map((r) => r.headers.Cookie);
+        expect(cookies[3], "a row with no who sends no cookie").toBeUndefined();
+        const addressOf = async (i) => (await decoded(cookies[i]))?.address;
+        expect([await addressOf(0), await addressOf(1), await addressOf(2), await addressOf(4), await addressOf(5)]).toEqual([
+          "blue@wire.test",
+          "blue@wire.test",
+          "red@wire.test",
+          "red@wire.test",
+          "blue@wire.test",
+        ]);
+        expect(new Set(cookies.filter(Boolean)).size, "two identities, two distinct cookies").toBe(2);
+        expect(cookies[0], "one cookie per address, not one per row").toBe(cookies[5]);
+        for (const r of sent) {
+          expect(r.headers["X-Yokohama-Claimed-User"]).toBeUndefined();
+          expect(r.headers["CF-Access-Client-Id"]).toBeUndefined();
+        }
+        for (const f of host.requests.filter((r) => r.url.includes("/api/admin/"))) {
+          expect(f.headers, "a force is still only the JSON type").toEqual({ "content-type": "application/json" });
+        }
+      });
+
+      it("a session is thirty days from the real clock, sid null", async () => {
+        const host = miniHost();
+        const before = Math.floor(Date.now() / 1000);
+        await runAs(host, { credential: null, cookie: null, secret: SECRET }, TWO_WHOS);
+        const s = await decoded(rowsSent(host)[0].headers.Cookie);
+        expect(s.sid).toBeNull();
+        expect(s.issued).toBeGreaterThanOrEqual(before);
+        expect(s.expires - s.issued).toBe(30 * 86_400);
+      });
+
+      it("with the credential too, the Access headers ride beside the minted cookie as the edge's pass", async () => {
+        const host = miniHost();
+        await runAs(host, { credential: { id: "dummy-id.access", secret: "dummy-secret-value" }, cookie: null, secret: SECRET }, TWO_WHOS);
+        for (const r of rowsSent(host)) {
+          expect(r.headers["CF-Access-Client-Id"]).toBe("dummy-id.access");
+          expect(r.headers["CF-Access-Client-Secret"]).toBe("dummy-secret-value");
+          expect(r.headers["X-Yokohama-Claimed-User"]).toBeUndefined();
+        }
+        expect(rowsSent(host).filter((r) => r.headers.Cookie)).toHaveLength(5);
+      });
+
+      it("refuses a who that is not a .test address with the script's own fence sentence, before anything is sent", async () => {
+        const host = miniHost();
+        const real = { ...TWO_WHOS, walk: [...TWO_WHOS.walk.slice(0, 3), named("jamoore@gmail.com", "GET", "/api/health", 200, null)] };
+        await expect(runAs(host, { credential: null, cookie: null, secret: SECRET }, real)).rejects.toThrow(
+          "walk.json row 3: mint-session: only a .test address may be minted — got jamoore@gmail.com",
+        );
+        expect(host.requests, "not even a force").toEqual([]);
+      });
+
+      it("wins over the one cookie: the cookie is not sent, and a who beside it is no refusal", async () => {
+        const host = miniHost();
+        await runAs(host, { credential: null, cookie: COOKIE, secret: SECRET }, TWO_WHOS);
+        const sent = rowsSent(host);
+        expect(sent).toHaveLength(6);
+        for (const r of sent) expect(r.headers.Cookie).not.toBe(COOKIE);
+        expect((await decoded(sent[2].headers.Cookie)).address).toBe("red@wire.test");
+      });
+
+      it("never prints the secret", async () => {
+        const host = miniHost();
+        const { text } = await runAs(host, { credential: null, cookie: null, secret: SECRET }, TWO_WHOS);
+        expect(text).not.toContain(SECRET);
+        expect(text).toContain("a session minted per identity");
+      });
+    });
+
     it("send itself refuses a row with a claimed name beside the cookie, and sends nothing", async () => {
       let calls = 0;
       const fetcher = async () => ((calls += 1), json(200, {}));
