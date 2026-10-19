@@ -141,6 +141,14 @@ describe("the canonical byte form (the reference for Task 8's minter)", () => {
     await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW }, 1.5, SECRET)).rejects.toThrow(RangeError);
     await expect(mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo: "/" }, NOW + 0.5, SECRET)).rejects.toThrow(RangeError);
   });
+
+  it("days below one are refused at the mint, so no cookie is minted dead or expiring before it was issued", async () => {
+    for (const days of [0, -1]) {
+      await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW }, days, SECRET), `${days}`).rejects.toThrow(RangeError);
+    }
+    const one = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 1, SECRET);
+    expect((await readSession(`${SESSION_COOKIE}=${one}`, SECRET, NOW))?.expires).toBe(NOW + 86_400);
+  });
 });
 
 describe("reading a cookie", () => {
@@ -163,22 +171,26 @@ describe("reading a cookie", () => {
       '{"address":"a@b.test","sid":7,"issued":1789000000,"expires":1791592000}',
       '{"address":"a@b.test","issued":1789000000,"expires":1791592000}',
       '{"address":"a@b.test","sid":null,"issued":"1789000000","expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"issued":1789000000.5,"expires":1791592000}',
       '{"address":"a@b.test","sid":null,"issued":1789000000}',
       '{"address":"a@b.test","sid":null,"issued":1789000000,"expires":1791592000.5}',
       '{"address":"a@b.test","sid":null,"issued":1789000000,"expires":"1791592000"}',
       "[]",
       "null",
       '"a@b.test"',
+      "{",
     ];
     for (const json of sessions) {
       expect(await readSession(`${SESSION_COOKIE}=${await signed(json)}`, SECRET, NOW), json).toBeNull();
     }
     const logins = [
       '{"state":"s","nonce":"n","returnTo":"/","expires":1789000600}',
+      '{"state":"s","nonce":5,"verifier":"v","returnTo":"/","expires":1789000600}',
       '{"state":"s","nonce":"n","verifier":"v","returnTo":5,"expires":1789000600}',
       '{"state":"s","nonce":"n","verifier":"v","returnTo":"/","expires":"1789000600"}',
       '{"state":null,"nonce":"n","verifier":"v","returnTo":"/","expires":1789000600}',
       "{}",
+      "{",
     ];
     for (const json of logins) {
       expect(await readLogin(`${LOGIN_COOKIE}=${await signed(json)}`, SECRET, NOW), json).toBeNull();
@@ -190,6 +202,13 @@ describe("reading a cookie", () => {
     expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(json)}`, SECRET, NOW)).not.toBeNull();
     json[json.indexOf(0x3f)] = 0xff; // the "?" becomes a byte that begins no UTF-8 sequence
     expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(json)}`, SECRET, NOW)).toBeNull();
+  });
+
+  it("a verified payload that opens with a byte-order mark reads as nobody: the mark is not stripped", async () => {
+    const json = utf8.encode(GOLDEN_SESSION_JSON);
+    expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(json)}`, SECRET, NOW)).not.toBeNull();
+    const marked = new Uint8Array([0xef, 0xbb, 0xbf, ...json]);
+    expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(marked)}`, SECRET, NOW)).toBeNull();
   });
 
   it("a cookie of another version reads as nobody even when its MAC verifies", async () => {
@@ -232,6 +251,13 @@ describe("reading a cookie", () => {
     expect(await readLogin(`${LOGIN_COOKIE}=${l}`, SECRET, NOW + 600)).toBeNull();
   });
 
+  it("a NaN clock reads every cookie as nobody: the expiry check fails closed", async () => {
+    expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_SESSION}`, SECRET, NOW)).not.toBeNull();
+    expect(await readLogin(`${LOGIN_COOKIE}=${GOLDEN_LOGIN}`, SECRET, NOW)).not.toBeNull();
+    expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_SESSION}`, SECRET, NaN)).toBeNull();
+    expect(await readLogin(`${LOGIN_COOKIE}=${GOLDEN_LOGIN}`, SECRET, NaN)).toBeNull();
+  });
+
   it("another spelling of a valid MAC, or a wrong segment count, reads as nobody", async () => {
     // A cookie whose MAC segment carries `-` or `_`, found by walking the sid (deterministic: the same first hit
     // on every run), so the standard-alphabet spelling below differs from the minted one.
@@ -258,6 +284,23 @@ describe("reading a cookie", () => {
     for (const bad of spellings) {
       expect(await readSession(`${SESSION_COOKIE}=${bad}`, SECRET, NOW), bad).toBeNull();
     }
+  });
+
+  it("a MAC segment of any length but 43 is refused before it is decoded or verified", async () => {
+    const decodes = vi.spyOn(globalThis, "atob");
+    const verify = vi.spyOn(crypto.subtle, "verify");
+    const [p, body, mac] = GOLDEN_SESSION.split(".") as [string, string, string];
+    expect(mac).toHaveLength(43);
+    // 44 characters, none, and an attacker-sized segment: none of them is decoded or verified.
+    for (const bad of [`${mac}A`, "", "A".repeat(128 * 1024)]) {
+      expect(await readSession(`${SESSION_COOKIE}=${p}.${body}.${bad}`, SECRET, NOW), `${bad.length}`).toBeNull();
+    }
+    expect(decodes).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+    // The anti-vacuity half: the spies do see a 43-character MAC decoded and verified.
+    expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_SESSION}`, SECRET, NOW)).not.toBeNull();
+    expect(decodes).toHaveBeenCalled();
+    expect(verify).toHaveBeenCalledTimes(1);
   });
 
   it("a key the platform refuses reads as nobody, with no exception, and refuses to mint", async () => {
