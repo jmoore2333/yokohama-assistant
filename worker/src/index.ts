@@ -111,10 +111,10 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
-/** The challenge every 401 under `/api` carries when a sign-in arm (`oidc`, `workos`) vouches for callers (the auth
- *  cycle, design §4.3): the client's cue to draw its sign-in link beside the refusal, as Access's own
- *  `Cloudflare-Access` challenge is under Access. The wire's only addition; `/api/me`'s `mode` stays `cf-access`
- *  (R2.2-m2). */
+/** The challenge every 401 under `/api` but the archive target's carries when a sign-in arm (`oidc`, `workos`) vouches
+ *  for callers (the auth cycle, design §4.3; ruling R-36): the client's cue to draw its sign-in link beside the
+ *  refusal, as Access's own `Cloudflare-Access` challenge is under Access. The wire's only addition; `/api/me`'s
+ *  `mode` stays `cf-access` (R2.2-m2). */
 export const SESSION_CHALLENGE = 'Yokohama-Session realm="/enter"';
 
 /** `res` with [`API_HEADERS`] set, and with `WWW-Authenticate: SESSION_CHALLENGE` when `challenge` and `res` is a
@@ -130,8 +130,8 @@ export function withApiHeaders(res: Response, challenge: boolean): Response {
 }
 
 /** What [`answer`] hands [`handle`]: the reply; whether a 401 under `/api` carries the session challenge — the
- *  configuration's source is a sign-in arm, read once in `answer` and threaded here rather than read twice; and,
- *  for a session past half its life, what a renewal re-mints. */
+ *  configuration's source is a sign-in arm and the target is not the archive (ruling R-36), read once in `answer` and
+ *  threaded here rather than read twice; and, for a session past half its life, what a renewal re-mints. */
 interface Answered { res: Response; challenge: boolean; renew: Renewal | null }
 
 /** A session to re-mint on a 2xx answer: its address and session id, under the deployment's secret and days. */
@@ -146,8 +146,8 @@ function plain(res: Response): Answered {
  * The Worker's entry: [`answer`]'s reply, renewed and then given the API's headers. A session past half its life
  * gets a fresh cookie on a 2xx answer only — never a 101, which carries its socket and no cookie, and never a
  * refusal — and every answer under `/api` gets [`API_HEADERS`], with the session challenge on a 401 when a sign-in
- * arm is the source. `fetcher` is the sign-in's network — the issuer's discovery document, keys and code exchange —
- * the runtime's `fetch`, or a test's.
+ * arm is the source and the target is not the archive (ruling R-36). `fetcher` is the sign-in's network — the
+ * issuer's discovery document, keys and code exchange — the runtime's `fetch`, or a test's.
  */
 export async function handle(
   req: Request,
@@ -316,7 +316,10 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   if ("error" in config) return plain(respond(500, errorBody(config.error)));
   const now = nowSeconds();
   if (target.kind === "enter") return plain(await enter(req, url, config, fetcher, now));
-  const challenge = config.source !== null && config.source !== "access";
+  // The session challenge rides a 401 under a sign-in arm — but never the archive's (ruling R-36): the anonymous
+  // archive takes a caller-less post (step 5a), so the archive's one remaining 401 is the house refusing a body that
+  // names no device and no safe game id, a defect to surface (design §4.5), never "sign in".
+  const challenge = config.source !== null && config.source !== "access" && target.kind !== "archive";
   const done = (res: Response, renew: Renewal | null = null): Answered => ({ res, challenge, renew });
 
   // GET and HEAD carry no body: the Fetch API refuses one on either.

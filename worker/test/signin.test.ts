@@ -12,7 +12,7 @@ import { callerTag } from "../src/redact";
 import { clearCookie, cookieValue, LOGIN_COOKIE, mintLogin, mintSession, readLogin, readSession, SESSION_COOKIE } from "../src/session";
 import { WORKOS_AUTHENTICATE, WORKOS_AUTHORIZE, WORKOS_JWKS } from "../src/signin";
 import { Table } from "../src/table";
-import { logsDuring, RED, seedPlaying } from "./helpers";
+import { CREATE_BODY, logsDuring, RED, seedPlaying } from "./helpers";
 import { b64url, personClaims, signer, type Signer } from "./tokens";
 
 // **The sign-in on `/enter`, the session cookie on every request, sign-out and the 401 header** (the auth cycle,
@@ -35,7 +35,8 @@ const SECRET = "a-session-secret-of-at-least-32-bytes!";
 const DAYS = 30;
 const DAY = 86_400;
 const JSON_TYPE = { "content-type": "application/json" };
-/** The archive post that names no safe id: the house's 401 with no caller, now and after Task 5 (correction C-1). */
+/** The archive post that names no device and no safe game id: since Task 5 the anonymous archive's one remaining 401,
+ *  the house refusing a malformed body, which carries no session challenge (ruling R-36). */
 const NAMELESS_ARCHIVE = '{"record":"","table":""}';
 const LOBBY = "/#/lobby";
 /** The failed landing (ruling R-30): the query OUTSIDE the hash, so the client's `parseRoute`, which reads the hash
@@ -411,23 +412,39 @@ describe("the session cookie names the caller", () => {
     expect(await (await me(env, { cookie: `${SESSION_COOKIE}=${await session()}` })).json()).toEqual({ mode: "cf-access", user: null });
   });
 
-  // Correction C-1: `/api/me` with no caller is a 200; the 401 is read on the archive post that names no safe id,
-  // and on the lobby stream's upgrade.
+  // Correction C-1 and ruling R-36: `/api/me` with no caller is a 200, and since Task 5 a caller-less archive post is
+  // the anonymous archive's (the next cell), so the challenge is read on two requests that 401 with no caller: the
+  // lobby stream's upgrade (unupgraded) and a create. Each is read under the arm and, on the same request, under access.
+  // Mutant: the challenge under access (the plan's row).
   it("no cookie is the layer's 401 with the session challenge header; under access the header is absent", async () => {
     expect(SESSION_CHALLENGE).toBe('Yokohama-Session realm="/enter"');
-    const archive = () => post("/api/archive", JSON_TYPE, NAMELESS_ARCHIVE);
-    const res = await call(archive());
-    expect(res.status).toBe(401);
-    expect(res.headers.get("WWW-Authenticate")).toBe('Yokohama-Session realm="/enter"');
-    const stream = await call(get("/api/stream", { Upgrade: "websocket" }));
-    expect([stream.status, stream.webSocket, stream.headers.get("WWW-Authenticate")]).toEqual([401, null, SESSION_CHALLENGE]);
-    const under = await handle(archive(), env, createExecutionContext(), keys, issuer());
-    expect(under.status).toBe(401);
-    expect(under.headers.has("WWW-Authenticate")).toBe(false);
+    const requests: Array<[string, () => Request]> = [
+      ["the stream's upgrade", () => get("/api/stream", { Upgrade: "websocket" })],
+      ["a create", () => post("/api/games", JSON_TYPE, CREATE_BODY)],
+    ];
+    for (const [label, req] of requests) {
+      const res = await call(req());
+      expect([res.status, res.webSocket, res.headers.get("WWW-Authenticate")], label).toEqual([401, null, 'Yokohama-Session realm="/enter"']);
+      const under = await handle(req(), env, createExecutionContext(), keys, issuer());
+      expect([under.status, under.headers.has("WWW-Authenticate")], `${label}, under access`).toEqual([401, false]);
+    }
     // On a 401 alone: a 200 and a 403 carry none.
     expect((await call(get("/api/me"))).headers.has("WWW-Authenticate"), "a 200").toBe(false);
-    const foreign = await call(post("/api/archive", { ...JSON_TYPE, Origin: FOREIGN }, NAMELESS_ARCHIVE));
+    const foreign = await call(post("/api/games", { ...JSON_TYPE, Origin: FOREIGN }, CREATE_BODY));
     expect([foreign.status, foreign.headers.has("WWW-Authenticate")], "a 403").toEqual([403, false]);
+  });
+
+  // Ruling R-36: since Task 5 a caller-less archive post files anonymously, so the archive target's one remaining 401
+  // is the house refusing a body that names no device and no safe game id: a defect to surface, never "sign in"
+  // (design §4.5), and no session challenge rides it — with no cookie, or with one that is nobody. Mutant: the
+  // challenge on every 401 under an arm.
+  it("a caller-less archive post whose body names no game is the house's 401 without the session challenge", async () => {
+    const { result: res, house } = await reaching(() => call(post("/api/archive", JSON_TYPE, NAMELESS_ARCHIVE)));
+    expect([res.status, res.headers.has("WWW-Authenticate"), house], "no cookie").toEqual([401, false, 1]);
+    const v = await session();
+    const flipped = v.slice(0, -1) + (v.endsWith("A") ? "B" : "A");
+    const bad = await call(post("/api/archive", { ...JSON_TYPE, cookie: `${SESSION_COOKIE}=${flipped}` }, NAMELESS_ARCHIVE));
+    expect([bad.status, bad.headers.has("WWW-Authenticate")], "a bad-MAC cookie").toEqual([401, false]);
   });
 
   // Mutants: renewal on every status (the 404 row); on a 101 (the upgrade row); a renewal that keeps the old `issued`
@@ -447,10 +464,10 @@ describe("the session cookie names the caller", () => {
     // Not yet due: fifteen days in is not past half.
     expect((await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await session(RED, "s1", 15 * DAY - 60)}` }))).headers.has("Set-Cookie")).toBe(false);
 
-    // A bad MAC is nobody: the 401, with the challenge and no cookie.
+    // A bad MAC is nobody: the stream's upgrade is the 401, unupgraded, with the challenge and no cookie.
     const flipped = old.slice(0, -1) + (old.endsWith("A") ? "B" : "A");
-    const bad = await call(post("/api/archive", { ...JSON_TYPE, cookie: `${SESSION_COOKIE}=${flipped}` }, NAMELESS_ARCHIVE));
-    expect([bad.status, bad.headers.get("WWW-Authenticate"), bad.headers.has("Set-Cookie")]).toEqual([401, SESSION_CHALLENGE, false]);
+    const bad = await call(get("/api/stream", { Upgrade: "websocket", cookie: `${SESSION_COOKIE}=${flipped}` }));
+    expect([bad.status, bad.webSocket, bad.headers.get("WWW-Authenticate"), bad.headers.has("Set-Cookie")]).toEqual([401, null, SESSION_CHALLENGE, false]);
 
     // A due session on an answer that is not 2xx: the table no one made answers 404, and nothing is renewed.
     const missing = await call(get("/api/games/signin-no-such-table/table", { cookie: `${SESSION_COOKIE}=${old}` }));
