@@ -1114,3 +1114,16 @@ it("doorLine names the source", …);
   door"). Task 6's fix round 1 landed at `f27f7944` (R-46: the card's title is a constant without the period; R-47:
   `attempt`'s own `heldForAName` site KEPT — without it a game whose health read outlives the wait is filed "not yet
   known" before "signed-out"; a deterministic cell pins the order).
+- **2026-10-19, Task 8's `DONE_WITH_CONCERNS` (commit `10d32fcf`):** **R-50 (the replay and the live tier under a
+  cookie):** one cookie is one identity, but the committed walk names a `who` on nearly every row (refused beside a
+  cookie under R-39) and the e2e live tier runs TWO contexts (`a@`, `b@`) — so the instruments MINT PER IDENTITY:
+  with `YOKOHAMA_SESSION_SECRET` in the instrument's environment (the deployment's own secret, the same trust as the
+  API key on the operator's workstation), the replay mints a cookie for each row's `who` and the live context for
+  each `email`, through `mint-session.mjs`'s one mint function (the `.test` fence enforced per address — a non-`.test`
+  `who` refuses the run); `YOKOHAMA_SESSION_COOKIE` stays the ONE-identity mode (a `who` beside it refused, R-39);
+  neither set → the credential + claimed header as before; the secret and the cookie both set → the secret wins,
+  stated once. **C-23 (Task 8's Files):** the replay's send lives in `worker/scripts/replay/send.mjs` (and
+  `replay/credential.mjs`), not in `live-replay.mjs`; `docs/web-lane.md` §12 gains a `YOKOHAMA_SESSION_COOKIE` row
+  (the `lane-variables` cell requires it) and `YOKOHAMA_SESSION_SECRET`'s row says the instruments read it too.
+  `liveContextOptions`'s cookie-only branch reads the fixed `.dev.vars` path and has no cell (workstation-bound) —
+  accepted, recorded.
