@@ -1098,3 +1098,19 @@ it("doorLine names the source", …);
   `OPEN_DIFFERS` gains `YOKOHAMA_OIDC_CLIENT_ID: undefined` and `YOKOHAMA_OIDC_ISSUER: undefined` (the open files omit
   them, as they omit the source), with a cell; Task 7's fix round. A gitignored `web/public/.DS_Store` (Finder's,
   02:03) turned `edge-rule`'s drift cell red at HEAD; the orchestrator removed it and the cell reads green.
+- **2026-10-19, Task 4's round 3 (`73e0f825`, R-44) ACCEPTED** — Task 4 is finally closed (one comment-only minor
+  deferred: `test/signin.test.ts` ~417's header still says the caller-less `/api/me` is a 200). **Task 7's review
+  (at `a9be5bdf`): Approved, 0/0/9; two rulings for its fix round:** **R-48 (the review's M-9):** the SECRETS GUARD
+  requires, by the judged file's source, the two secrets in `wrangler secret list` — under `workos` both
+  `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET`, under `oidc` `YOKOHAMA_SESSION_SECRET` (the client
+  secret optional: PKCE) — a missing one refuses the deploy naming it and its `wrangler secret put` line: the one
+  window misconfiguration no gate read (the shell would answer every request 500). **R-49 (M-8):** the private file is
+  held to production's `main`, `rules` and `compatibility_date` as well (the same-code premise). R-45 widens to
+  `YOKOHAMA_SESSION_DAYS` (M-4). **The window's shape, measured by the reviewer:** `deploy` and `deploy:dev` pass
+  over a keyed tree with the door line "source workos"; `deploy:open` prints exactly R-45's one refusal; no rule
+  needs a bypass; and FIVE committed-file cells in `deploy-guard.test.mjs` pin today's `access` state and move in
+  Task 10's own commit ("pass every check … under `--config wrangler.open.jsonc`" (R-45) and "… `wrangler.dev.jsonc`",
+  "declare YOKOHAMA_TURNSTILE off in five …", "pass the whole guard … over a keyless build …", "name the worker
+  door"). Task 6's fix round 1 landed at `f27f7944` (R-46: the card's title is a constant without the period; R-47:
+  `attempt`'s own `heldForAName` site KEPT — without it a game whose health read outlives the wait is filed "not yet
+  known" before "signed-out"; a deterministic cell pins the order).
