@@ -313,14 +313,18 @@ describe("signOut through /api/leave", () => {
     expect(nas.matching("GET", "/api/me"), "nothing re-read on the way out").toHaveLength(1);
     first.unmount();
 
-    // The open door: the same 404, and the sign-out it always had.
+    // The open door: NO post at all (2026-10-19, the owner's ruling on the e2e's red: the server holds no session
+    // there, so there is nothing to end, and the layer's 404 was a console error the whole-game spec's fence
+    // counted) — the sign-out it always had, the name dropped and `/api/me` re-asked. Mutant: the post sent anyway.
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     const open = meFromStorage();
     const second = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(second.result.current.me?.user).toBe(wire.me.user));
     act(() => second.result.current.signOut());
     await waitFor(() => expect(second.result.current.me).toEqual(wire.meSignedOut));
-    expect(open.matching("POST", "/api/leave")).toHaveLength(1);
+    expect(open.matching("POST", "/api/leave"), "the open door posts nothing").toHaveLength(0);
+    expect(open.matching("GET", "/api/me"), "the name dropped and /api/me re-asked").toHaveLength(2);
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
     expect(went, "the open door navigates nowhere").toEqual(["/cdn-cgi/access/logout"]);
     second.unmount();
 
@@ -336,15 +340,27 @@ describe("signOut through /api/leave", () => {
   });
 
   // Mutants: the failure path navigating anyway; the stored name kept; the
-  // door not re-read; a 200 that names nowhere navigated to.
-  it("keeps the open door's sign-out when the leave is refused: the name dropped, /api/me asked again, nothing navigated", async () => {
+  // door not re-read; a 200 that names nowhere navigated to. Under a
+  // `cf-access` door since 2026-10-19 — the open door posts nothing any more
+  // (the cell above) — with a refusal that is not the 404 R-41 reads.
+  it("keeps the fallback sign-out when a cf-access door refuses the leave with anything but a 404: the name dropped, /api/me asked again, nothing navigated", async () => {
     const went = countNavigations();
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-    const stub = meFromStorage();
+    const fromStorage = (leave: Reply) =>
+      stubApi((call) =>
+        call.path.endsWith("/api/me")
+          ? localStorage.getItem(CLAIMED_USER_KEY)
+            ? { ...wire.me, mode: "cf-access" }
+            : { ...wire.meSignedOut, mode: "cf-access" }
+          : call.path === "/api/leave"
+            ? leave
+            : undefined,
+      );
+    const stub = fromStorage({ status: 500, body: wire.error });
     const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
     act(() => result.current.signOut());
-    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    await waitFor(() => expect(result.current.me?.user).toBeNull());
     expect(stub.matching("POST", "/api/leave")).toHaveLength(1);
     expect(stub.matching("GET", "/api/me")).toHaveLength(2);
     expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
@@ -356,19 +372,11 @@ describe("signOut through /api/leave", () => {
     // page instead of signing out (review M-2).
     for (const nowhere of [{}, { leave: "" }]) {
       localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-      stubApi((call) =>
-        call.path.endsWith("/api/me")
-          ? localStorage.getItem(CLAIMED_USER_KEY)
-            ? wire.me
-            : wire.meSignedOut
-          : call.path === "/api/leave"
-            ? nowhere
-            : undefined,
-      );
+      fromStorage(nowhere as Reply);
       act(() => result.current.refresh());
       await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
       act(() => result.current.signOut());
-      await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+      await waitFor(() => expect(result.current.me?.user).toBeNull());
       expect(went, JSON.stringify(nowhere)).toEqual([]);
     }
   });

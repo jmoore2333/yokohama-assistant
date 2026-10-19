@@ -1271,3 +1271,14 @@ it("doorLine names the source", …);
   its next request, one removed re-admits one that still stands) — corrected in the row, §24 and §12; two Minors
   taken: §12's match sentence untangled, and the fact that a standing malformed entry logs `denied-skipped` once per
   request (the configuration is read per request) said in §12, the row and §24. No code moved after `76a7052e`.
+- **2026-10-19, the evening's last change — the open door's sign-out posts nothing (the owner's ruling on the e2e's
+  red, over an allow-listed 404 that would hide a real one later).** Found by the first `npm run e2e` since the auth
+  cycle (80 of 81: the whole-game spec's fence counted the 404 console error that `switch player` → `POST /api/leave`
+  met under the OPEN door the e2e runs on — Task 6's wiring, by design the layer's 404 there; the cycle never ran the
+  e2e). The fix, test-first in `web/src/whoami.ts`: when the server's mode is `open`, `signOut` drops the name and
+  re-asks `/api/me` directly and sends no post; every other mode posts as before. The cells: the open-door arm of
+  "goes to Access's own logout …" now expects NO post (red, then green), and "keeps the fallback sign-out when a
+  cf-access door refuses the leave with anything but a 404" restates the refused-leave path under the door that
+  still posts. The design's R-37 amended in place. Readings: web typecheck clean, vitest 1,553 in 74, `npm run e2e`
+  **81 of 81** (8.9 min). Client-only: it reaches a host with stage 2's build; `web/dist` holds the e2e's DEBUG client
+  until then, `worker/assets` is `0.7.1`'s release client.

@@ -633,7 +633,10 @@ above is edited except §4.2's marked sentence; the rulings are recorded here, e
   stands.
 - **R-37 and R-41 (Task 6):** the sign-out control is drawn under every mode when signed in, and its action is
   `POST /api/leave` then the answer's `leave`; the NAS layer has no `/api/leave`, so under a `cf-access` door a 404
-  from it sends the browser to Access's own logout, `/cdn-cgi/access/logout`.
+  from it sends the browser to Access's own logout, `/cdn-cgi/access/logout`. **Amended 2026-10-19 (the owner's
+  ruling on the whole-game e2e's red): under the OPEN door the control posts nothing — the server holds no session
+  there, and the layer's 404 the post met was a console error the spec's fence counted — and takes the open door's
+  own sign-out directly (the name dropped, `/api/me` asked again); every other mode posts as above.**
 - **R-50 and its fix round (Task 8; R-52, R-53, R-54):** the live instruments MINT a `.test` session per identity from
   the deployment's own `YOKOHAMA_SESSION_SECRET` (`worker/scripts/mint-session.mjs`, the one mint function, the `.test`
   fence enforced per address; the secret is never an argument and never echoed, R-52). The replay sends the session as

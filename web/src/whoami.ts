@@ -170,6 +170,14 @@ export function useMe(channel: Channel): Door {
     signOut: useCallback(() => {
       leaving.current = true;
       clearDisplayName();
+      // **The open door posts nothing** (2026-10-19, the owner's ruling on the whole-game e2e's red): the server
+      // holds no session there, so there is nothing to end, and the layer's 404 the post met was a console error
+      // the spec's fence counted. The sign-out the open door always had, taken directly: the name dropped, `/api/me`
+      // asked again. Every other mode asks the server where to go, as before.
+      if (mode === "open") {
+        leave(null);
+        return;
+      }
       void api.leave().then(
         (reply) => {
           if (typeof reply?.leave === "string" && reply.leave !== "") window.location.assign(reply.leave);
