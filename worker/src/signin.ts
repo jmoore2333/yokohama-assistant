@@ -12,8 +12,11 @@
  *   carries no `email` claim (the pre-flight's reading), so the address is never the token's.
  * - **`oidc`** is a stock OpenID Connect relying party for any issuer with a discovery document: the code flow with
  *   `openid email`, a nonce, and PKCE when no client secret is set (`client_secret_post` when one is). Its ID token
- *   is verified as `resolveIdentity` verifies an Access assertion (`verifyIdToken`), plus the nonce, `azp` and
- *   `email_verified`; the discovery document is held to the configured issuer (`discovery`).
+ *   is verified by `verifyIdToken`, whose doc lists every check: `resolveIdentity`'s for an Access assertion, with
+ *   ES256 beside RS256 and the key held to the header's algorithm, plus `azp`, the nonce, `email_verified`, and
+ *   `isAddress` on the address (stricter than the Access path, which requires only a non-blank address). The
+ *   discovery document is held to the configured issuer, and its URLs to `https` (`http` on a loopback host
+ *   excepted) with no fragment (`discovery`).
  *
  * **The address is judged RAW** by `forwardable` before anything is done to it, then trimmed and lowercased in
  * ASCII, then held to `isAddress`: the Kelvin rule `identity.ts` records, so `\u212Aevin@x.test` is no caller rather
@@ -354,17 +357,23 @@ const discovered = new Map<string, Promise<Discovery>>();
  * **The issuer's discovery document**, from `<issuer>/.well-known/openid-configuration` (trailing slashes on the
  * issuer dropped), cached per isolate as `keySourceAt` caches a key set: the calls that arrive while a fetch is out
  * JOIN it, so one fetch serves them all; a fetch that fails, answers anything but 200, answers a document without
- * the four endpoints, or answers one that names another issuer REJECTS every call that joined it and caches nothing,
- * so the next call fetches again. A document that loaded is kept for the isolate's life (there is no refresh: a key
+ * the four endpoints, with a URL the rule below refuses, or naming another issuer REJECTS every call that joined it
+ * and caches nothing, so the next call fetches again. A document that loaded is kept for the isolate's life (there is no refresh: a key
  * rotation moves the JWKS, not the document). `fetcher` is the first caller's; a call that finds the issuer cached or
  * in flight does not use its own.
  *
  * The document must be a JSON object with `issuer`, `authorization_endpoint`, `token_endpoint` and `jwks_uri` each a
  * string that parses as a URL, and `end_session_endpoint` a URL, `null` or absent (absent reads `null`), so the
- * URLs the arm builds from it never throw. Its `issuer` must be the configured `issuer`, trailing slashes ignored on
- * both sides (OpenID Connect Discovery 1.0 §4.3; ruling R-19): a document served under one issuer that names another
- * is refused, rather than letting its tokens' `iss` stand in for the issuer this deployment trusts. The answer keeps
- * the document's own spelling, since that is what `verifyIdToken` holds a token's `iss` to.
+ * URLs the arm builds from it never throw. Each of those five URLs must be `https:`, or `http:` on a loopback host
+ * (`localhost`, `127.0.0.1`, `[::1]`: the development issuer), and carry no fragment, not even an empty one (RFC 6749
+ * §3.1–§3.2; ruling R-24). An `http:` token endpoint would carry the client secret and the code in cleartext; an
+ * `http:` issuer would let a network attacker serve a document of its own, naming the configured issuer and its own
+ * `jwks_uri`; and a fragment would swallow the parameters `leaveUrl` appends. A refusal names the field.
+ *
+ * Its `issuer` must be the configured `issuer`, trailing slashes ignored on both sides (OpenID Connect Discovery 1.0
+ * §4.3; ruling R-19): a document served under one issuer that names another is refused, rather than letting its
+ * tokens' `iss` stand in for the issuer this deployment trusts. The answer keeps the document's own spelling, since
+ * that is what `verifyIdToken` holds a token's `iss` to.
  */
 export function discovery(issuer: string, fetcher: typeof fetch): Promise<Discovery> {
   const base = withoutTrailingSlashes(issuer);
@@ -394,10 +403,15 @@ async function loadDiscovery(url: string, configured: string, fetcher: typeof fe
     throw new Error(`the discovery document at ${url} is not JSON`);
   }
   if (!isRecord(doc)) throw new Error(`the discovery document at ${url} is not a JSON object`);
+  const held = (name: string, value: string): string => {
+    const why = unsafeEndpoint(value);
+    if (why !== null) throw new Error(`the discovery document at ${url} is refused: its ${name} ${why}`);
+    return value;
+  };
   const endpoint = (name: string): string => {
     const value = doc[name];
     if (typeof value !== "string" || !parsesAsUrl(value)) throw new Error(`the discovery document at ${url} names no ${name}`);
-    return value;
+    return held(name, value);
   };
   const issuer = endpoint("issuer");
   if (withoutTrailingSlashes(issuer) !== withoutTrailingSlashes(configured)) {
@@ -407,13 +421,29 @@ async function loadDiscovery(url: string, configured: string, fetcher: typeof fe
   if (end !== undefined && end !== null && (typeof end !== "string" || !parsesAsUrl(end))) {
     throw new Error(`the discovery document at ${url} names an end_session_endpoint that is no URL`);
   }
+  const endSession = typeof end === "string" ? held("end_session_endpoint", end) : null;
   return Object.freeze({
     issuer,
     authorization_endpoint: endpoint("authorization_endpoint"),
     token_endpoint: endpoint("token_endpoint"),
     jwks_uri: endpoint("jwks_uri"),
-    end_session_endpoint: typeof end === "string" ? end : null,
+    end_session_endpoint: endSession,
   });
+}
+
+/** The hosts whose plain `http:` is accepted (ruling R-24): the machine itself, where a development issuer runs. */
+const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** Why `value`, a URL that parses, may not be one of the discovery document's URLs, or `null` when it may: it must be
+ *  `https:`, or `http:` on a `LOOPBACK` host, and carry no fragment (RFC 6749 §3.1–§3.2; ruling R-24). */
+function unsafeEndpoint(value: string): string | null {
+  const url = new URL(value);
+  if (!(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname)))) {
+    return "is neither https nor http on a loopback host";
+  }
+  // The raw text, not `url.hash`, which reads "" for an empty fragment: `leaveUrl` appends to the text.
+  if (value.includes("#")) return "carries a fragment";
+  return null;
 }
 
 function parsesAsUrl(value: string): boolean {

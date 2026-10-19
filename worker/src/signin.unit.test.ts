@@ -40,6 +40,8 @@ const C = { iss: ISS, aud: AUD, nonce: NONCE, nowSeconds: NOW };
 
 let rsa: Signer;
 let ec: Signer;
+/** A second RSA pair, published beside `rsa` as an issuer does during a key rotation. */
+let rsa2: Signer;
 /** A key pair in no set: what a forger holds. */
 let forger: Signer;
 /** The issuer's published set: the RS256 key and the ES256 key. */
@@ -50,6 +52,7 @@ let keys: KeySource;
 beforeAll(async () => {
   rsa = await signer("k1");
   ec = await ecSigner("e1");
+  rsa2 = await signer("k2");
   forger = await signer("k-forger");
   SET = { keys: [rsa.jwk, ec.jwk] };
   keys = async () => SET;
@@ -166,6 +169,32 @@ describe("verifyIdToken", () => {
     for (const [label, token, set] of cases) {
       expect(await verifyIdToken(token, set, C), label).toBeNull();
     }
+  });
+
+  // The token-substitution defence: a token another issuer, or another client of this one, was given is no caller
+  // here. Every other wrong value in this file also fails a prefix test, so these six pin EQUALITY (review I-1).
+  // Mutants: `iss` by `startsWith` either way round; `aud` by prefix as a string or as an array member; `aud` by
+  // substring of the joined array.
+  it("iss and aud are compared exactly: a longer, shorter or sibling value is another issuer or client", async () => {
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["iss with a path after it", { iss: "https://issuer.test/other" }],
+      ["iss a sibling host", { iss: "https://issuer.test.evil" }],
+      ["iss cut short", { iss: "https://issuer.tes" }],
+      ["aud a longer client id", { aud: "client_10" }],
+      ["aud cut short", { aud: "client_" }],
+      ["aud an array holding a longer client id", { aud: ["client_10"] }],
+    ];
+    for (const [label, over] of cases) {
+      expect(await verifyIdToken(await rsa.sign(claims(over)), SET, C), label).toBeNull();
+    }
+  });
+
+  // An issuer rotating its keys publishes two of one family; the `kid`, not the family, picks the key (review m-1).
+  // Mutant: the first key of the header's family taken, the `kid` ignored.
+  it("a set holding two keys of one family verifies each token under the key its kid names", async () => {
+    const rotating: JwkSet = { keys: [rsa.jwk, rsa2.jwk] };
+    expect(await verifyIdToken(await rsa2.sign(claims()), rotating, C), "signed by the second key").toEqual({ address: "red@t.test", sid: "s1" });
+    expect(await verifyIdToken(await rsa.sign(claims()), rotating, C), "signed by the first key").toEqual({ address: "red@t.test", sid: "s1" });
   });
 
   it("aud: an array containing the client id is accepted; an array without it, or a number, is refused", async () => {
@@ -340,6 +369,7 @@ describe("exchange", () => {
       ["a body that is not JSON", answering(() => new Response("<html>red@t.test</html>", { status: 200 })), "exchange"],
       ["a JSON body that is no object", recording(200, [VERIFIED]), "exchange"],
       ["no user", recording(200, { access_token: token }), "user"],
+      ["a null user", recording(200, { user: null, access_token: token }), "user"],
       ["a user with no email", recording(200, { user: { email_verified: true }, access_token: token }), "user"],
       ["a user whose email is no address", recording(200, { user: { email: "red", email_verified: true }, access_token: token }), "user"],
       [
@@ -637,6 +667,67 @@ describe("discovery's issuer (OpenID Connect Discovery 1.0 §4.3; ruling R-19)",
     await expect(discovery("https://path.discovery.test", recording(200, served("https://path.discovery.test/tenant")))).rejects.toThrow(
       /names issuer https:\/\/path\.discovery\.test\/tenant but the configured issuer is https:\/\/path\.discovery\.test$/,
     );
+  });
+});
+
+describe("discovery's endpoints (RFC 6749 §3.1–§3.2; ruling R-24)", () => {
+  /** A document for `issuer` whose every URL is on `issuer`, with `over` laid on top. */
+  const served = (issuer: string, over: Record<string, unknown> = {}) => ({
+    issuer,
+    authorization_endpoint: `${issuer}/authorize`,
+    token_endpoint: `${issuer}/token`,
+    jwks_uri: `${issuer}/jwks`,
+    end_session_endpoint: `${issuer}/logout`,
+    ...over,
+  });
+
+  // Mutants: the scheme unchecked; the loopback exemption granted to any host, or to a name that only starts like
+  // one; the fragment read from `url.hash` (an empty fragment slips by); the fragment unchecked; the end-session
+  // endpoint left out of the rule; a refusal cached.
+  it("refuses a URL that is not https, or http on a loopback host, or that carries a fragment, naming the field, and caches nothing", async () => {
+    const refused: Array<[string, (issuer: string) => Record<string, unknown>, RegExp]> = [
+      ["an http token_endpoint on a public host", (i) => served(i, { token_endpoint: "http://idp.test/token" }), /its token_endpoint is neither https nor http on a loopback host/],
+      ["an http authorization_endpoint", (i) => served(i, { authorization_endpoint: "http://idp.test/authorize" }), /its authorization_endpoint is neither https/],
+      ["an http jwks_uri", (i) => served(i, { jwks_uri: "http://idp.test/jwks" }), /its jwks_uri is neither https/],
+      ["an http end_session_endpoint", (i) => served(i, { end_session_endpoint: "http://idp.test/logout" }), /its end_session_endpoint is neither https/],
+      ["http on a host that only starts like localhost", (i) => served(i, { token_endpoint: "http://localhost.evil.test/token" }), /its token_endpoint is neither https/],
+      ["a javascript: authorization_endpoint", (i) => served(i, { authorization_endpoint: "javascript:alert(1)" }), /its authorization_endpoint is neither https/],
+      ["a data: jwks_uri", (i) => served(i, { jwks_uri: "data:application/json,{}" }), /its jwks_uri is neither https/],
+      ["a fragment on the end_session_endpoint", (i) => served(i, { end_session_endpoint: `${i}/logout#top` }), /its end_session_endpoint carries a fragment/],
+      ["an empty fragment on the end_session_endpoint", (i) => served(i, { end_session_endpoint: `${i}/logout#` }), /its end_session_endpoint carries a fragment/],
+      ["a fragment on the token_endpoint", (i) => served(i, { token_endpoint: `${i}/token#x` }), /its token_endpoint carries a fragment/],
+    ];
+    let n = 0;
+    for (const [label, document, reason] of refused) {
+      const issuer = `https://endpoints-${n++}.discovery.test`;
+      await expect(discovery(issuer, recording(200, document(issuer))), label).rejects.toThrow(reason);
+    }
+    // An http issuer on a public host: its own name is refused before R-19's comparison could pass it.
+    await expect(discovery("http://plain.discovery.test", recording(200, served("http://plain.discovery.test")))).rejects.toThrow(
+      /its issuer is neither https nor http on a loopback host/,
+    );
+    // A refusal caches nothing: the same issuer, its document corrected, loads on the next call.
+    const issuer = "https://corrected.discovery.test";
+    let document = served(issuer, { token_endpoint: "http://idp.test/token" });
+    const fetcher = answering(() => Response.json(document));
+    await expect(discovery(issuer, fetcher)).rejects.toThrow(/its token_endpoint/);
+    document = served(issuer);
+    expect((await discovery(issuer, fetcher)).token_endpoint).toBe(`${issuer}/token`);
+    expect(fetcher.calls).toHaveLength(2);
+  });
+
+  // Mutant: the loopback exemption dropped (a development issuer would never load).
+  it("accepts a development issuer on http loopback: localhost, 127.0.0.1 and [::1]", async () => {
+    for (const issuer of ["http://localhost:9000", "http://127.0.0.1:9001", "http://[::1]:9002"]) {
+      const doc = await discovery(issuer, recording(200, served(issuer)));
+      expect(doc, issuer).toEqual({
+        issuer,
+        authorization_endpoint: `${issuer}/authorize`,
+        token_endpoint: `${issuer}/token`,
+        jwks_uri: `${issuer}/jwks`,
+        end_session_endpoint: `${issuer}/logout`,
+      });
+    }
   });
 });
 
