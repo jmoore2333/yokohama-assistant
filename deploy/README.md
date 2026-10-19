@@ -73,11 +73,13 @@ for its objects. An identity-aware proxy of your own can play that part. It must
 - be the only path to the port.
 
 **The Cloudflare Worker host has more sources than this server** (the auth cycle; `worker/README.md` §1.5). Its
-`worker` door may also run `oidc` against ANY issuer that publishes a discovery document — a client secret or
-PKCE alone, `https` endpoints (a loopback host is accepted for development) — or `workos`, WorkOS AuthKit's
-first-party API, and mints its own session cookie after the sign-in. **This server stays `cf-access`**: it has
-no `oidc` arm and no `/api/leave` route (a sign-out from this host falls back to Access's own logout,
-`/cdn-cgi/access/logout`), and its `cf-access` door and the one rule it rests on, above, are unchanged.
+`worker` door may also run `oidc` against an issuer that publishes a discovery document and accepts
+`client_secret_post` or PKCE (an issuer that accepts only `client_secret_basic` cannot be configured this cycle,
+R-20), with `https` endpoints (a loopback host is accepted for development) — or `workos`, WorkOS AuthKit's
+first-party API — and mints its own session cookie after the sign-in. **This server gains no sign-in arm and no
+`/api/leave` route**: under `cf-access` a sign-out falls back to Access's own logout, `/cdn-cgi/access/logout`;
+under its other modes the client forgets the name. Its `cf-access` door and the one rule it rests on, above,
+are unchanged.
 
 **Verify** as yourself, through the tunnel: `/api/me` must name you — `{"mode":"cf-access","user":"<your
 address>"}` — and a caller Access admits without an address, such as a service token, must read
@@ -123,12 +125,12 @@ network, a LAN, or a VPN. Never put an open door on the public internet.
 The corner of the lobby and the setup screens reads "Playing as" and the name, and its action is
 **switch player**, which forgets the name and asks for another.
 
-**A Turnstile site key goes with this door and no other.** A client built with
-`YOKOHAMA_TURNSTILE_SITEKEY` (§3) is the open door's: it takes the key to mean no identity provider stands
-in front, so it holds a finished game until its player has chosen a name. Behind Access nobody chooses one,
-and every finished game would stay on its device. So build with a key only for `YOKOHAMA_WEB_IDENTITY=open`;
-the server reads the build's stamp at start and refuses a keyed build under `cf-access` or `worker`, naming
-both.
+**A Turnstile site key goes with this door and no other, on this server.** A client built with
+`YOKOHAMA_TURNSTILE_SITEKEY` (§3) holds a nameless visitor's finished game for a name only where the server's
+facts say `open`; it no longer reads the key as the door (the auth cycle, Task 6). So build with a key only for
+`YOKOHAMA_WEB_IDENTITY=open`: the server reads the build's stamp at start and refuses a keyed build under
+`cf-access` or `worker`, naming both. (The Cloudflare Worker's provider-signed door is the one other place a
+keyed build is accepted, `worker/README.md` §1.5.)
 
 **Changing one origin's door.** A browser keeps the name it typed as a display name, per origin. So an
 operator who flips one origin from `open` to `cf-access` sees that stored display name in the corner

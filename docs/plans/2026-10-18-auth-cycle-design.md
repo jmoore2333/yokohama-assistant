@@ -629,12 +629,26 @@ above is edited except §4.2's marked sentence; the rulings are recorded here, e
 - **R-37 and R-41 (Task 6):** the sign-out control is drawn under every mode when signed in, and its action is
   `POST /api/leave` then the answer's `leave`; the NAS layer has no `/api/leave`, so under a `cf-access` door a 404
   from it sends the browser to Access's own logout, `/cdn-cgi/access/logout`.
-- **R-50 (Task 8):** the live instruments MINT a `.test` session per identity from the deployment's own
-  `YOKOHAMA_SESSION_SECRET` (`worker/scripts/mint-session.mjs`, the one mint function, the `.test` fence enforced per
-  address); `YOKOHAMA_SESSION_COOKIE` stays the one-identity mode, and under "both" (below) the Access credential and
-  the cookie are sent together (R-39).
+- **R-50 and its fix round (Task 8; R-52, R-53, R-54):** the live instruments MINT a `.test` session per identity from
+  the deployment's own `YOKOHAMA_SESSION_SECRET` (`worker/scripts/mint-session.mjs`, the one mint function, the `.test`
+  fence enforced per address; the secret is never an argument and never echoed, R-52). The replay sends the session as
+  `Cookie`; the live tier seeds it into each context's cookie jar, never a header (R-54). `YOKOHAMA_SESSION_COOKIE`
+  stays the one-identity mode, and the secret wins over it; the one-cookie mode enforces the `.test` fence by decoding
+  the cookie's payload, and a row or a context naming any other address than the cookie's is refused (R-53). Under
+  "both" (below) the Access credential and the cookie are sent together (R-39).
+- **§4.7's pairing paragraph (M-9):** it says a keyed build is accepted "under `worker` exactly when
+  `YOKOHAMA_IDENTITY_SOURCE` is `oidc`" and names a `wrangler.public.jsonc`. Both are false as built: Task 7's check 12
+  accepts `oidc` AND `workos` beside `open`, and D-1 made the public deployment `wrangler.jsonc` itself, so no
+  `wrangler.public.jsonc` exists.
+- **R-51 (before the window):** stage 1 ships the KEYLESS build with `YOKOHAMA_TURNSTILE` `off` and the edge rule left
+  DISABLED (`worker/scripts/edge-rule.mjs`: disabled under Access, whose service token cannot pass a challenge),
+  `wrangler.jsonc` at `workos` with the client id set and the Access pair removed, the dev file following; stage 2 is
+  the keyed build with the notice, `YOKOHAMA_TURNSTILE` `on`, the rule ENABLED by its id, THEN the hostname off the
+  Access application. **R-55:** stage 1's keyless build still carries the sign-in notice (six build values, no
+  `YOKOHAMA_TURNSTILE_SITEKEY`), since stage 1 has sign-in links and no guard ties the notice to the key.
 - **The owner's "both" direction (2026-10-19) amends §4.7's window into TWO stages.** Until the public repository is
   cleaned up, Cloudflare Access stays on at the edge over the WorkOS-signed Worker: the Worker at `workos` ignores the
   assertion and Access keeps gating `/api/*` and `/enter`. Stage 1 deploys the WorkOS-signed Worker with Access in
-  front; stage 2, a later session with the owner, takes the hostname off the Access application. The recipe is
-  `worker/RUNBOOK.md` §23.
+  front, as R-51 shapes it; stage 2, a later session with the owner, builds the keyed release, sets
+  `YOKOHAMA_TURNSTILE` `on`, enables the edge rule by its id (the live tiers are out from there, since Access is
+  still on), deploys, and takes the hostname off the Access application LAST. The recipe is `worker/RUNBOOK.md` §23.

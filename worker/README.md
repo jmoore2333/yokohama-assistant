@@ -318,9 +318,9 @@ the secret `YOKOHAMA_SESSION_SECRET` and, optionally, the secret `YOKOHAMA_OIDC_
 R-20), and the issuer and the four endpoints of its discovery document must be `https` — `http` is accepted
 on a loopback host (`localhost`, `127.0.0.1`, `[::1]`), for development (R-24). `workos` is WorkOS AuthKit's
 first-party API, two `fetch` calls and no SDK, with the API key as `YOKOHAMA_OIDC_CLIENT_SECRET`; the public
-deployment runs it. **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
+deployment runs it after the window of `RUNBOOK.md` §23 (today it is still `access`). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
 (`__Host-yokohama_session`, `HttpOnly; Secure; SameSite=Lax; Path=/`), so a browser keeps it only over `https`
-or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days
+or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days by default
 (`YOKOHAMA_SESSION_DAYS`), is renewed on use, and **only rotating `YOKOHAMA_SESSION_SECRET` ends a stolen one**.
 Both halves of the sign-in are on `/enter`, and sign-out is `POST /api/leave`. **A post to the archive with
 no caller files anonymously** under `anon-<device id or the game's own id>@anon.invalid`, limited by IP, and
@@ -438,8 +438,9 @@ from a GitHub project link, a URL is that feed, `off` is none; at most 300). Uns
 the feed's derivation apart. A sixth, `YOKOHAMA_TURNSTILE_SITEKEY` (the public Turnstile site key; at most
 100), belongs with the open door and with a provider-signed worker door (source `oidc` or `workos`), where the
 Turnstile is the bot defence: the Access build is made WITHOUT it and the deploy guard's check 12 refuses a
-keyed build beside `worker` at source `access`, while the open window's build and the public deployment's
-carry it beside `YOKOHAMA_TURNSTILE` `on` (RUNBOOK §3). The client does not read the key as the door: it reads
+keyed build beside `worker` at source `access`, while the open window's build carries it beside
+`YOKOHAMA_TURNSTILE` `on`, and the public deployment's will after the window of `RUNBOOK.md` §23, at its
+stage 2 (RUNBOOK §3). The client does not read the key as the door: it reads
 the server's facts, and holds a nameless visitor's game for a name only where they say `open`. A seventh,
 `YOKOHAMA_SIGNIN_NOTICE` (the transparency notice under every sign-in link; at most 300), is the Worker's
 builds alone. Since `YOKOHAMA_SITE_URL`
