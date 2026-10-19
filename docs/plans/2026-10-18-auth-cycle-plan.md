@@ -1127,3 +1127,23 @@ it("doorLine names the source", …);
   (the `lane-variables` cell requires it) and `YOKOHAMA_SESSION_SECRET`'s row says the instruments read it too.
   `liveContextOptions`'s cookie-only branch reads the fixed `.dev.vars` path and has no cell (workstation-bound) —
   accepted, recorded.
+- **2026-10-19, before the window — R-51 (the window's two stages, from `worker/scripts/edge-rule.mjs`'s own rule:
+  the edge rule is "enabled while the hostname is off Access, DISABLED under Access — the live tiers' service token
+  cannot pass a challenge, and Access already stops every stranger").** STAGE 1 (the orchestrator, Access on) ships
+  the KEYLESS build with `YOKOHAMA_TURNSTILE: "off"` and the edge rule left DISABLED, `wrangler.jsonc` at source
+  `workos` with the client id set and the Access pair removed, the dev file following; the guard accepts keyless +
+  off under any worker door. STAGE 2 (the owner's session) = the keyed build with the notice, `YOKOHAMA_TURNSTILE:
+  "on"`, the rule ENABLED by its id, THEN the hostname off the Access application, in that order, with the readings.
+  Task 9's §23 stage-1 text ("the keyed build … on") is corrected at its fix round. Cloudflare readings: zone
+  `moore.nyc` `7851d4cb…`, the custom-firewall entrypoint ruleset `27fcc0c7…`, the rule `dc4c5d3e…` disabled. WorkOS
+  PRODUCTION configured over the MCP (redirect `https://yokohama.moore.nyc/enter`, logout `https://yokohama.moore.nyc/`,
+  external login `/enter`, magic auth and passkeys on, passwords off, sign-up open, homepage set; branding: Dark,
+  Small radius, Icon, the site's palette, the heading and the transparency legal text; the owner's six image
+  uploads in place) — Google, GitHub, Apple and Discord LEFT OFF: production needs the owner's own provider
+  credentials in the dashboard (the owner checklist).
+- **2026-10-19, Task 9's `DONE_WITH_CONCERNS` (commit `23fc060e`):** "ten destinations" lived only as web-lane §8's
+  "its tenth destination" (now eleven); RUNBOOK §19/§20's "nine paths" are frozen window records, left; no
+  `/api/leave` row in web-lane §13/§16 because a Rust test pins those tables (a later Rust hotfix adds it); §23's
+  stage-1 smoke notes that whether the edge rule or Access answers a cookie-less `/api/health` first is a reading to
+  record, a pass required at stage 2 only; web-lane §1's "both hosts run 0.6.3" goes stale at stage 1's deploy — the
+  window's docs commit updates it.
