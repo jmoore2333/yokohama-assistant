@@ -883,3 +883,33 @@ it("doorLine names the source", …);
   time, so a cap would be a `v2` form after Task 8 pins `v1`. Task 2 closed at `5954b8ee` (review clean after one fix
   round; two minors deferred to the after review: the MAC-length check pre-empts the padded/spaced MAC rows, so two
   hand-signed BODY rows are owed to keep the strict decoder's coverage; one doc phrase).
+- **2026-10-18, Task 3's `DONE_WITH_CONCERNS` (commit `b72269a4`), rulings and corrections:**
+  - **R-18 (C-1; Task 3's `leaveUrl`, Task 4's caller):** the `oidc` leave URL carries `client_id` beside
+    `post_logout_redirect_uri` — RP-Initiated Logout 1.0 §3 lets an issuer refuse the redirect when neither
+    `id_token_hint` nor `client_id` names the client, and the design chose no `id_token_hint`. `leaveUrl` gains a fifth
+    parameter, `clientId: string`, used by the `oidc` shape only: `<end_session_endpoint>?post_logout_redirect_uri=<enc
+    returnTo>&client_id=<enc clientId>` (`&` when the endpoint has a query). The `workos` shape is unchanged.
+  - **R-19 (C-2; `discovery`):** the document's `issuer` must equal the configured issuer (Discovery 1.0 §4.3), trailing
+    slashes ignored; a mismatch rejects with a sentence naming both, caches nothing.
+  - **R-20 (C-3):** `client_secret_post` and PKCE are the two client authentications this cycle supports; an issuer that
+    accepts only `client_secret_basic` is out of scope, and the self-hoster documents (Task 9, `worker/README.md`,
+    `deploy/README.md`) say so in one sentence.
+  - **R-21 (C-4; `verifyIdToken`):** when `azp` is present it must be a string equal to the client id, and when `aud` is
+    an array of more than one audience `azp` must be present (Core 1.0 §3.1.3.7); one cell each.
+  - **R-22 (C-5; every commit):** a `Co-Authored-By` trailer names the model that authored the commit — an
+    implementer's harness names its own model, the orchestrator's its own. `b72269a4` (Opus 5.5) stands; Tasks 1–2's
+    trailers (Mythos 5.1, as their dispatches said) stand as reported SHAs; later dispatches say "the line your own
+    attribution reminder names".
+  - **C-10 (the Mutants table, row 3):** "`exchange("workos")` reads `email` without `forwardable` → Task 3 the Kelvin
+    case" — the brief's own cells hold the Kelvin case under `verifyIdToken` only; the cell that reads red is the task's
+    added `workos: a user.email carrying a non-ASCII character answers null (judged raw by forwardable)`. The after
+    review's battery names it.
+  - **C-11 (Task 3 Step 3's "restated"):** `verifyIdToken` is STRICTER than `resolveIdentity`, which never applies
+    `isAddress` to a person's `email`; the arm's `isAddress` is the right rule under the `worker` door (the layer admits
+    addresses only) and stands.
+  - **Carried to Task 4 (N-1):** the discovery cache is a module-level map keyed by issuer whose FIRST caller's fetcher
+    serves it for the isolate's life, so a pool cell under `oidc` names an issuer no other cell in its file uses (the
+    plan's Task 4 cells run `workos`). The implementer's `keySourceAt` error sentences now name the URL ("the key set at
+    <url> answered <status>", "the answer at <url> holds no key set"); `identity.unit.test.ts` is untouched and green.
+  - **Observed, pre-existing (for the after review):** the pool prints two `uncaught exception … a reply the shell cannot
+    read` lines from the deliberate throw at `test/worker.test.ts:660`, measured identical at the task's base.
