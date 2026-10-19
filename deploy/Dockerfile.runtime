@@ -15,7 +15,7 @@
 #
 # Build the inputs first (see RUNBOOK.md), then:
 #
-#     docker build -f deploy/Dockerfile.runtime -t yokohama-web:0.6.3-s2 <ctx>
+#     docker build -f deploy/Dockerfile.runtime -t yokohama-web:0.7.0-auth <ctx>
 #
 # where <ctx> contains: yokohama-web (the static binary), dist/, art/.
 

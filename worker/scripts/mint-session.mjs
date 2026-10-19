@@ -59,9 +59,10 @@ export function fenceSentence(address) {
  * (default thirty) past `nowSeconds`. **The ONE function every minter calls** (this script, the live replay and the
  * live tier, ruling R-50): the `.test` fence is here, judged on the address exactly as it is minted — never trimmed or
  * lower-cased first, since the Worker's `is_test_identity` is case-sensitive — so no caller can mint a real address.
- * Throws the fence's sentence, prefixed `mint-session: `. Refuses a time that is not a whole number of seconds below
- * `ISSUED_BOUND`, so a millisecond clock is refused, and days that are not whole or are below one, as `session.ts`'s
- * `mintSession` refuses them. Neither refusal echoes the value it was handed (ruling R-52's rule, review I-5's class):
+ * Throws the fence's sentence, prefixed `mint-session: `. Refuses a time that is not a whole number of seconds, or one
+ * at or past `ISSUED_BOUND` (this script's own bound, which `session.ts`'s `mintSession` does not have — so a
+ * millisecond clock is refused here), and days that are not whole or are below one, as `mintSession` refuses them.
+ * Neither refusal echoes the value it was handed (ruling R-52's rule, review I-5's class):
  * a secret passed in the clock's or the days' slot by mistake is never printed.
  */
 export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {

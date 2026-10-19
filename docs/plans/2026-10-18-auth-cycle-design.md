@@ -634,7 +634,8 @@ above is edited except §4.2's marked sentence; the rulings are recorded here, e
   fence enforced per address; the secret is never an argument and never echoed, R-52). The replay sends the session as
   `Cookie`; the live tier seeds it into each context's cookie jar, never a header (R-54). `YOKOHAMA_SESSION_COOKIE`
   stays the one-identity mode, and the secret wins over it; the one-cookie mode enforces the `.test` fence by decoding
-  the cookie's payload, and a row or a context naming any other address than the cookie's is refused (R-53). Under
+  the cookie's payload; a replay row naming any `who` beside the cookie is refused, and a live context's email must be
+  the cookie's own address (R-53). Under
   "both" (below) the Access credential and the cookie are sent together (R-39).
 - **§4.7's pairing paragraph (M-9):** it says a keyed build is accepted "under `worker` exactly when
   `YOKOHAMA_IDENTITY_SOURCE` is `oidc`" and names a `wrangler.public.jsonc`. Both are false as built: Task 7's check 12
