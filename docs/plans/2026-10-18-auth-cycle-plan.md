@@ -1163,3 +1163,14 @@ it("doorLine names the source", …);
   secrets-guard command cells), SIX at stage 2 (`on` adds "declare YOKOHAMA_TURNSTILE off in five"); the open-file
   cell never moves (R-45). **R-55:** stage 1 ships keyless WITH the notice — six build values, no site key (R-A14's
   notice stands beside every sign-in link, and stage 1 has them; no guard ties the notice to the key).
+- **2026-10-19, Tasks 8 and 9 closed** (Task 8 at `31e6da7e`, re-review PASS; Task 9 at `1aec4954`, re-review
+  approved with one minor: three sentences say a row naming "any other address than the cookie's" is refused while the
+  REPLAY refuses every `who` beside the cookie and only the LIVE TIER accepts the cookie's own address — the final
+  wave's). **THE AFTER REVIEW (Task 10 Step 1), the orchestrator's own, over an export of `1aec4954`:** worker
+  typecheck clean; the pool 14 files / 288 passed; the worker scripts 773 of 776 — the three are
+  `lane-variables.test.mjs`'s `git ls-files` on a non-repository export, the known export artifact (the checkout reads
+  776); the web suite 74 files / 1553 passed; **the twelve-mutant battery reads 12 of 12 RED, each on its named cell**
+  (M1 on the verify-then-parse spy cell, as C-8 corrected; M3 on the workos non-ASCII cell, as C-10 corrected; M9 three
+  identity cells; M12 six mint-session cells; the other eight one cell each). The runner and its table are the SDD
+  workspace's `after-review.log`. **The final fix wave** (the deferred minors triaged: sixteen items plus two from the
+  re-reviews; seven recorded forward) is one Opus implementer and one scoped re-review, then the version bump.
