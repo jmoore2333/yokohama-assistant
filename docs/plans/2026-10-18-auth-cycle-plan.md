@@ -1019,4 +1019,58 @@ it("doorLine names the source", …);
   bare 401 as the body's sentence (a defect to surface) and a challenged 401 as "sign in". Task 4's challenge cells,
   which C-1 pointed at `POST /api/archive`, move to the `/api/stream` upgrade with no cookie (401 unupgraded with the
   challenge) or a table route; the bad-MAC renewal row keeps its "no Set-Cookie" assertion on whichever 401 it reads.
-  Built as Task 4's fix round 2 before Task 6 is dispatched.
+  Built as Task 4's fix round 2 before Task 6 is dispatched. **Task 4 finally closed at `1f566820`** (round 2
+  Approved; one coverage note deferred: a table route's 401 under an arm carries the challenge — true by probe,
+  pinned by no committed cell).
+- **2026-10-19, the owner's direction for the evening (transcribed; it binds Task 8 and Task 10):** Task 10's
+  changeover needs the owner and goes to a FOLLOW-UP session — it must not stop Tasks 6–9. Until the public repo is
+  cleaned up ACCESS STAYS ON, and the identity piece runs WITH Access over it ("both"): the Worker at
+  `YOKOHAMA_IDENTITY_SOURCE=workos` ignores the assertion, and Access keeps gating `/api/*` and `/enter` at the edge —
+  tenable as built (the Worker's Access verifier never runs under an arm; the client tells the two challenges apart).
+  "You're free to deploy at any point and mark the release when ready."
+  - **R-39 / C-20 (Task 8's "both set is a refusal"):** under "both" the Access service credential passes the EDGE and
+    the minted session cookie names the caller to the Worker, so the instruments send BOTH when both are set and omit
+    the claimed header; the refusal moves to a claimed name (`who`) beside a cookie — "the cookie names the caller; a
+    claimed name beside it is two identities".
+  - **Task 10 split.** TONIGHT, the orchestrator: Step 1 (the after review and the mutant battery), Step 2 (the
+    `0.7.0` bump and the fifteen-gate roster), Step 3's MCP half against STAGING — the first deployment uses the
+    staging environment as its issuer (its client id in `wrangler.jsonc`; the staging API key as
+    `YOKOHAMA_OIDC_CLIENT_SECRET`, which the owner retires at the wrap; a fresh `YOKOHAMA_SESSION_SECRET`;
+    `https://yokohama.moore.nyc/enter` added to staging's redirect URIs; branding over the MCP as far as it goes),
+    Step 4 (the keyed build with the notice), Step 5 (`wrangler.jsonc` at `workos` with the Access pair removed, the
+    dev file following), Step 6's first half (the edge rule enabled by id, `npm run deploy`, the readings the
+    orchestrator can take without a human sign-in), and the release marked. FOLLOW-UP with the owner: the PRODUCTION
+    WorkOS environment (its API key minted in the dashboard → `wrangler secret put`, the client id, the logos, the
+    branding), the hostname OFF the Access application, the fresh-profile readings, the released-client profile,
+    the friend's game, Steps 7–8's remaining readings and the close's owner items.
+- **2026-10-19, Task 6's `DONE_WITH_CONCERNS` (commit `1dee4ae4`), rulings and corrections:**
+  - **R-40 (concern 1; `Door.tsx` state A and B):** the door card a first visitor meets at a shared table link with
+    no session IS a sign-in link site (R-A14: "beside every sign-in link"), and the brief's fence ("never a second
+    place") was about stray strips, not the door: its link becomes `signInHref()` (so the table link is the
+    `return_to`, design §4.3), `<SignInNotice />` sits under it, and under `SIGN_IN_NEEDED` the wording fits a first
+    visit (the sentence itself, "Sign in to play multiplayer.", with "Sign in" as the link) while `ACCESS_CHALLENGE`
+    keeps "Your sign-in has run out / Sign in again". Built as Task 6's pre-review fix.
+  - **R-41 (concern 2; the NAS):** the NAS layer has no `/api/leave` (this cycle touches no Rust), so under a
+    `cf-access` door a 404 from `POST /api/leave` sends the browser to `/cdn-cgi/access/logout` (Access's own
+    logout; the NAS sits behind Access by B10's one rule); every other failure keeps today's path (drop the name,
+    re-ask). One cell. Task 9's lane doc notes the NAS route as a later nicety.
+  - **R-42 (concern 3):** a BARE 401 on the archive post stays parked `"signed-out"` as it always was: this client
+    always sends a well-formed device header, so only the shipped client can produce it, and it parks there today
+    too — deferred to the after review's record, no change.
+  - **Concern 4 (accepted, recorded):** under the open door's keyed build a fresh context's first game over now makes
+    the health read (which may show the Turnstile once) — design §4.5's explicit choice, narrowing cycle F's zero-
+    request rule.
+  - **C-21 (for Task 7):** two sentences are false since this commit and are Task 7's to rewrite with check 12 and
+    `KEYED_IS_OPEN`: `deploy-guard.mjs` check 12's comment "The client infers the open door from the presence of a
+    site key", and `docs/web-lane.md` §12's `YOKOHAMA_TURNSTILE_SITEKEY` row's "writes a nameless visitor's finished
+    game 'not signed in' with no request … behind Access it would upload nothing" — the client now reads the server
+    facts (`heldForAName`).
+  - **C-22 (Task 6's Files and Interfaces):** six build values existed (cycle F's three joined E's three), so the
+    notice is the SEVENTH; `siteNotice()` reads the Vite define `__YOKOHAMA_SITE_NOTICE__`, not a `VITE_` variable,
+    and so does `signInNotice()` (`__YOKOHAMA_SIGNIN_NOTICE__`, declared in `vite-env.d.ts`); the stamp
+    `dist/build-values.json` is written by `web/vite.config.ts`'s plugin, and the deploy guard reads only its
+    `turnstile_sitekey`; the self-host image takes no `ARG` for the notice and `deploy/update.sh` accepts six names.
+  - Beyond the brief, accepted: `sse.ts`'s stream open reads the session challenge too; the lobby corner (`Band.tsx`)
+    draws "sign out" behind an edge door (R-37); the device card's `Remedy` no longer reads a site key as the open
+    door. **Unverified by the implementer:** where the notice sits in the device card's flex row — a visual reading
+    for the after review.
