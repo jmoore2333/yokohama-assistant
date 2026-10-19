@@ -147,11 +147,11 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
    owing their own pre-registration when a cycle takes them up.
 10. D32 (2026-10-19, Track 4): the previous release's client storming `/api/me` under the WorkOS-signed Worker —
     a per-IP bound on caller-less reads in the Worker (S3), or accepted as the transition's cost.
-11. Passkeys (2026-10-19, Track 4; `worker/RUNBOOK.md` §23's stage-1 record, the passkeys bullet): under Magic
-    Auth alone no account can ever create one — progressive enrollment was tried ON and never prompted, and the
-    hosted page has no self-service screen. Passkeys OFF until an AuthKit custom domain exists (the docs' order; a
-    passkey binds to the hostname it was registered on, today the rented one), or a passkey page of our own against
-    the Widgets API (S4-sized). The progressive-enrollment flag is left ON, inert.
+11. Passkeys — RULED 2026-10-19 (Track 4; `worker/RUNBOOK.md` §23's stage-1 record, the passkeys bullet): under
+    Magic Auth alone no account can ever create one — progressive enrollment was tried ON and never prompted, and
+    the hosted page has no self-service screen — so **passkeys are OFF in production** (both flags, read back).
+    They return together with an AuthKit custom domain (the docs' order; a passkey binds to the hostname it was
+    registered on) and an enrollment path of our own against the Widgets API — a cycle of its own, S4 or later.
 
 ## Entry artifacts by lane
 

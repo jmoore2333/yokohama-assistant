@@ -2541,8 +2541,10 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
   that exist: a page of our own against the Widgets API (`registerPasskey`/`verifyPasskey`/`passkeys`/
   `deletePasskey`, a widget or access token the Worker would mint, elevated access on the writes — no ready widget
   covers passkeys; User Security does MFA and password, User Profile name, picture and email), or passkeys OFF until
-  a custom domain exists. The flag is left ON pending the owner's ruling (the board, rulings 11); it is inert for
-  Magic Auth accounts and would start prompting only if passwords were ever enabled.
+  a custom domain exists. **The owner ruled the same hour: passkeys OFF** — `isPasskeyAuthEnabled` and
+  `isPasskeyProgressiveEnrollmentEnabled` both `false` over the MCP (`updateAuthkitSettings`), read back; the hosted
+  page fetched after it still renders the email form. Passkeys return with an AuthKit custom domain and an enrollment
+  path, which is a cycle of its own.
 
 **What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
 
