@@ -8,7 +8,8 @@
 // `npm run deploy:private` ships it once `node scripts/deploy-guard.mjs --config wrangler.private.jsonc` passes.
 // The guard holds it to its record (`DEPLOYMENTS` in `scripts/deploy-guard.mjs`: the name, the bucket, the
 // namespaces at production's figures, no route and the source `access`), never to production as a sibling, and to
-// production's `assets`, `observability`, `durable_objects` and `migrations` blocks: both Workers run the same code.
+// production's `main`, `rules`, `compatibility_date`, `assets`, `observability`, `durable_objects` and `migrations`:
+// both Workers run the same code.
 // A new Worker's first deploy cannot pass the secrets guard (wrangler answers "Worker not found" for a Worker that
 // does not exist): that deploy runs the deploy guard and then `wrangler deploy --config wrangler.private.jsonc` by
 // hand, and `npm run deploy:private` from the second deploy on (`scripts/secrets-guard.mjs`).
@@ -16,7 +17,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "yokohama-web-private",
   "main": "src/index.ts",
-  // Production's (spec §3.1); the deploy guard does not hold this one, so it moves with production's by hand.
+  // Production's (spec §3.1), held equal to it by the deploy guard (R-49), as `main` and `rules` are.
   "compatibility_date": "2026-09-15",
   // No route until the owner names the private domain: the deploy guard refuses one here until its record names it.
   "workers_dev": false,

@@ -12,6 +12,17 @@ import { cacheBlock, configFailures, configFrom, deployGuard, doorLine } from ".
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
+/** `value` as the guard's sentences show a block: JSON with every object's keys in order, or `nothing`. */
+const canonicalOf = (value) => {
+  const walk = (v) =>
+    Array.isArray(v)
+      ? `[${v.map(walk).join(",")}]`
+      : v !== null && typeof v === "object"
+        ? `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${walk(v[k])}`).join(",")}}`
+        : JSON.stringify(v);
+  return value === undefined ? "nothing" : walk(value);
+};
+
 const INDEX = "<!doctype html>";
 /** A built service worker as `web/scripts/precache.mjs` writes one: its
  *  banner names the release, and its list the one entry. */
@@ -1531,6 +1542,19 @@ describe("the deploy guard", () => {
       `wrangler.jsonc sets YOKOHAMA_TURNSTILE on under identity worker, source WorkOS — ${narrowed}; ${where}`,
       `wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "WorkOS"`,
     ]);
+    // The arm reads the DOOR as well as the source (the review's M-6): a source beside no door, or beside a door the
+    // shell does not know, is no arm, so check 12 names the identity beside check 3's sentence.
+    const doorless = workos("on").replace('"YOKOHAMA_WEB_IDENTITY": "worker",', "");
+    expect(doorless, "premise: no door").not.toContain("YOKOHAMA_WEB_IDENTITY");
+    expect(at(doorless, KEYED), "a source beside no door").toEqual([
+      `wrangler.jsonc sets YOKOHAMA_TURNSTILE on under identity nothing, source workos — ${narrowed}; ${where}`,
+      "wrangler.jsonc names no door — its vars must set YOKOHAMA_WEB_IDENTITY to worker or open, and there is no default",
+    ]);
+    const shoutedDoor = workos("on").replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "Worker"');
+    expect(at(shoutedDoor, KEYED), "a source beside a door the shell does not know").toEqual([
+      `wrangler.jsonc sets YOKOHAMA_TURNSTILE on under identity Worker, source workos — ${narrowed}; ${where}`,
+      `wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — got "Worker"`,
+    ]);
     // The open file, as before.
     expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc"), "the open file, on, a key").toEqual([]);
   });
@@ -1599,6 +1623,14 @@ describe("the deploy guard", () => {
     const objectsDiffer = expect.stringMatching(/^wrangler\.private\.jsonc's durable_objects differs from wrangler\.jsonc's — both Workers run the same code/);
     expect(judged(objects), "durable_objects, judged").toEqual([objectsDiffer]);
     expect(deployGuard(worker({ [PRIV]: objects })), "durable_objects, in the plain run").toEqual([objectsDiffer]);
+
+    // Check 5 reads it in EVERY run (the review's M-3): its run_worker_first drifted is named by the plain deploy,
+    // where production's assets equality is not asked.
+    const narrowed = PRIVATE.replace('"run_worker_first": ["/api/*", "/enter"]', '"run_worker_first": ["/api/*"]');
+    expect(narrowed, "premise: the private file's run_worker_first moved").not.toBe(PRIVATE);
+    expect(deployGuard(worker({ [PRIV]: narrowed })), "run_worker_first, in the plain run").toEqual([
+      `${PRIV}'s assets.run_worker_first must be ["/api/*","/enter"] — got ["/api/*"]`,
+    ]);
 
     // Absent: no failure, unless it is the file named.
     expect(deployGuard(worker({ [PRIV]: null })), "absent, the plain run").toEqual([]);
@@ -1695,6 +1727,72 @@ describe("the deploy guard", () => {
       ]);
     }
   });
+
+  // R-45 (and the review's M-4): the open files OMIT a sign-in arm's variables — the client id, the issuer and the
+  // session's days, none of which the open door reads (Task 1's `config.ts`: `signin` and `session` read nothing
+  // under `open`) — as they omit the source. Production carrying each, at its arm, is no drift for an open file that
+  // omits it; an open file CARRYING one is refused, the sentence naming it as an arm's variable. Mutants: any of the
+  // three `OPEN_DIFFERS` lines dropped (its "omits" rows name the drift); the reason dropped from the sentence.
+  it("holds the open files' sign-in arm variables absent: production may carry each, an open file never (R-45)", () => {
+    const why = "it is a sign-in arm's variable, which the open door never reads (R-45)";
+    for (const [key, value, production] of [
+      ["YOKOHAMA_OIDC_CLIENT_ID", "client_test", atSource(PRODUCTION, "workos", CLIENT)],
+      ["YOKOHAMA_OIDC_ISSUER", "https://issuer.example.test", atSource(PRODUCTION, "oidc", { ...ISSUER, ...CLIENT })],
+      ["YOKOHAMA_SESSION_DAYS", "30", atSource(PRODUCTION, "workos", { ...CLIENT, YOKOHAMA_SESSION_DAYS: "30" })],
+    ]) {
+      expect(production, `premise: production carries ${key}`).toContain(`"${key}": "${value}"`);
+      const carrying = OPEN_FILE.replace('"YOKOHAMA_WEB_IDENTITY": "open"', `"YOKOHAMA_WEB_IDENTITY": "open",\n    "${key}": "${value}"`);
+      for (const file of ["wrangler.open.jsonc", "wrangler.public.jsonc"]) {
+        expect(configFailures(worker({ "wrangler.jsonc": production, [file]: OPEN_FILE }), file), `${file} omits ${key}`).toEqual([]);
+        expect(configFailures(worker({ "wrangler.jsonc": production, [file]: carrying }), file), `${file} carries ${key}`).toEqual([
+          `${file}'s vars.${key} must be absent — got "${value}"; ${why}`,
+        ]);
+      }
+    }
+  });
+
+  // R-49 (the review's M-8): the private file runs production's code, so when it is the file deployed it carries
+  // production's `main`, `rules` and `compatibility_date` as well — compared whether or not production names the key,
+  // since no other check holds production's. One cell per key. Mutants: the key left out of the compared list (its
+  // cell reads green); the key skipped where production lacks it (its "production names none" row).
+  for (const [key, block, other] of [
+    ["main", '"main": "src/index.ts"', '"main": "src/private.ts"'],
+    [
+      "rules",
+      '"rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }]',
+      '"rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": false }]',
+    ],
+    ["compatibility_date", '"compatibility_date": "2026-09-15"', '"compatibility_date": "2026-10-01"'],
+  ]) {
+    it(`holds the private file to production's ${key} when it is deployed (R-49)`, () => {
+      const PRIV = "wrangler.private.jsonc";
+      // The fixture carries `main` already; `rules` and the date are written into both files.
+      const withKey = (text) => (key === "main" ? text : text.replace('"main"', `${block},\n  "main"`));
+      const production = withKey(PRODUCTION);
+      const mine = withKey(PRIVATE);
+      // The private file naming none: the fixture's own `PRIVATE` for the two it lacks, `main`'s line removed.
+      const none = key === "main" ? PRIVATE.replace(`${block},\n`, "") : PRIVATE;
+      expect(production, `premise: production carries ${key}`).toContain(block);
+      expect(none, `premise: the private file names no ${key}`).not.toContain(`"${key}"`);
+      const value = (text) => canonicalOf(parse(text, [], { allowTrailingComma: true, disallowComments: false })?.[key]);
+      const sentence = (got, want) =>
+        `${PRIV}'s ${key} differs from wrangler.jsonc's — both Workers run the same code, so ${PRIV} ships production's ${key}: ${got} against ${want}`;
+      const judged = (files) => configFailures(worker(files), PRIV);
+
+      expect(judged({ "wrangler.jsonc": production, [PRIV]: mine }), "equal").toEqual([]);
+      const moved = mine.replace(block, other);
+      expect(moved, "premise: the private file's value moved").not.toBe(mine);
+      expect(judged({ "wrangler.jsonc": production, [PRIV]: moved }), "another value").toEqual([sentence(value(moved), value(production))]);
+      expect(judged({ "wrangler.jsonc": production, [PRIV]: none }), "the private file names none").toEqual([
+        sentence("nothing", value(production)),
+      ]);
+      if (key !== "main") {
+        expect(judged({ "wrangler.jsonc": PRODUCTION, [PRIV]: mine }), "production names none").toEqual([sentence(value(mine), "nothing")]);
+      }
+      // Asked when the private file is the one deployed, as its assets and logs are: the plain run does not.
+      expect(deployGuard(worker({ "wrangler.jsonc": production, [PRIV]: moved })), "the plain run").toEqual([]);
+    });
+  }
 });
 
 describe("the committed configurations", () => {

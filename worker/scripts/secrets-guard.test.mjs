@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { FORBIDDEN_SECRETS, judgeSecrets } from "./secrets-guard.mjs";
+import { FORBIDDEN_SECRETS, REQUIRED_SECRETS, judgeSecrets } from "./secrets-guard.mjs";
 
 /** `wrangler secret list`'s shape: a pretty-printed array of `{name, type}`, never a value. */
 const listing = (...names) => JSON.stringify(names.map((name) => ({ name, type: "secret_text" })), null, "  ");
@@ -47,6 +47,64 @@ describe("judgeSecrets", () => {
   });
 });
 
+// **An arm's secrets, required** (the auth cycle, ruling R-48; Task 7's review, M-9): under a sign-in arm the shell
+// answers every request 500 without its secrets (`config.ts`'s `signin` and `session`), and neither guard read
+// them. `judgeSecrets` is handed the judged file's door and source and REQUIRES, by the listing's names: under
+// `workos` both `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET`; under `oidc` the session secret alone
+// (the client secret optional: PKCE); under `access` or the open door nothing. Read as the shell reads them: the
+// source counts only beside the worker door. Mutants: either name left out of `workos`'s list; the client secret
+// required under `oidc`; the requirement asked without the door; the requirement asked of an unreadable listing.
+describe("judgeSecrets under a sign-in arm (the auth cycle, R-48)", () => {
+  const put = (name, source, file = "wrangler.jsonc") =>
+    `secrets-guard: ${file}'s Worker holds no secret named ${name}, which YOKOHAMA_IDENTITY_SOURCE=${source} requires — ` +
+    `${name === "YOKOHAMA_SESSION_SECRET" ? "the key that signs every session cookie" : "the WorkOS API key the code exchange is authenticated with"}` +
+    `; without it the shell answers every request 500: npx wrangler secret put ${name} --config ${file}`;
+  const worker = (source, file = "wrangler.jsonc") => ({ file, door: "worker", source });
+
+  it("names the two arms' secrets, and no other", () => {
+    expect(REQUIRED_SECRETS).toEqual({
+      workos: ["YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET"],
+      oidc: ["YOKOHAMA_SESSION_SECRET"],
+    });
+  });
+  it("requires both secrets under workos, naming each missing one and its put line", () => {
+    expect(judgeSecrets(listing("YOKOHAMA_WEB_ADMINS", "YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET"), worker("workos"))).toEqual([]);
+    expect(judgeSecrets(listing("YOKOHAMA_WEB_ADMINS", "YOKOHAMA_SESSION_SECRET"), worker("workos")), "no client secret").toEqual([
+      put("YOKOHAMA_OIDC_CLIENT_SECRET", "workos"),
+    ]);
+    expect(judgeSecrets(listing("YOKOHAMA_OIDC_CLIENT_SECRET"), worker("workos")), "no session secret").toEqual([
+      put("YOKOHAMA_SESSION_SECRET", "workos"),
+    ]);
+    expect(judgeSecrets("[]", worker("workos", "wrangler.dev.jsonc")), "neither, in the file named").toEqual([
+      put("YOKOHAMA_OIDC_CLIENT_SECRET", "workos", "wrangler.dev.jsonc"),
+      put("YOKOHAMA_SESSION_SECRET", "workos", "wrangler.dev.jsonc"),
+    ]);
+  });
+  it("requires the session secret under oidc, and the client secret is optional there (PKCE)", () => {
+    expect(judgeSecrets(listing("YOKOHAMA_SESSION_SECRET"), worker("oidc")), "the session secret alone").toEqual([]);
+    expect(judgeSecrets(listing("YOKOHAMA_SESSION_SECRET", "YOKOHAMA_OIDC_CLIENT_SECRET"), worker("oidc")), "with a client secret").toEqual([]);
+    expect(judgeSecrets(listing("YOKOHAMA_OIDC_CLIENT_SECRET"), worker("oidc")), "no session secret").toEqual([
+      put("YOKOHAMA_SESSION_SECRET", "oidc"),
+    ]);
+  });
+  it("requires nothing new under access, at the open door, or beside a door or source the shell does not know", () => {
+    expect(judgeSecrets("[]", worker("access")), "access").toEqual([]);
+    expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: undefined }), "the open door").toEqual([]);
+    expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: "workos" }), "a stray source beside open").toEqual([]);
+    expect(judgeSecrets("[]", { file: "wrangler.jsonc", door: undefined, source: "workos" }), "no door").toEqual([]);
+    expect(judgeSecrets("[]", worker("WorkOS")), "a source the shell does not know").toEqual([]);
+    expect(judgeSecrets("[]"), "no judged file: the forbidden names alone").toEqual([]);
+  });
+  it("keeps the forbidden-name rules under an arm, and judges nothing of a listing it cannot read", () => {
+    expect(judgeSecrets(listing("YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET", "YOKOHAMA_DEV_DOOR"), worker("workos"))).toEqual([
+      `secrets-guard: the Worker holds a secret named YOKOHAMA_DEV_DOOR — ${FORBIDDEN_SECRETS.YOKOHAMA_DEV_DOOR}; delete it: npx wrangler secret delete YOKOHAMA_DEV_DOOR`,
+    ]);
+    const unread = judgeSecrets("nonsense", worker("workos"));
+    expect(unread, "one sentence, nothing judged").toHaveLength(1);
+    expect(unread[0]).toMatch(/wrangler secret list/);
+  });
+});
+
 describe("as a command — the deploy's step, with a fake npx first on PATH, so no account is asked", () => {
   const SCRIPT = fileURLToPath(new URL("./secrets-guard.mjs", import.meta.url));
   /** The shim directories, removed after each cell (the deploy guard's cells remove theirs the same way). */
@@ -54,15 +112,25 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
-  /** The script run as `npm run deploy` runs it; `npx` is a shell shim that does what the cell says. */
-  const run = (shim, args = ["--config", "wrangler.jsonc"]) => {
+  /** The worker package, where `npm run deploy` runs the script — and where wrangler resolves `--config`. */
+  const WORKER = fileURLToPath(new URL("..", import.meta.url));
+  /** The script run as `npm run deploy` runs it, in `cwd` (the package by default); `npx` is a shell shim that does
+   *  what the cell says. */
+  const run = (shim, args = ["--config", "wrangler.jsonc"], cwd = WORKER) => {
     const dir = mkdtempSync(join(tmpdir(), "secrets-guard-shim-"));
     dirs.push(dir);
     const npx = join(dir, "npx");
     writeFileSync(npx, `#!/bin/sh\n${shim}\n`);
     chmodSync(npx, 0o755);
-    const r = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+    const r = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
     return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+  /** A working directory holding `wrangler.jsonc` with `vars` — the judged file, as the command reads it. */
+  const judgedIn = (vars) => {
+    const cwd = mkdtempSync(join(tmpdir(), "secrets-guard-cwd-"));
+    dirs.push(cwd);
+    writeFileSync(join(cwd, "wrangler.jsonc"), `// a deployment\n{ "name": "yokohama-web", "vars": ${JSON.stringify(vars)} }\n`);
+    return cwd;
   };
   it("passes a clean listing: exit 0 and the sentence", () => {
     const r = run(`echo '${listing("YOKOHAMA_WEB_ADMINS", "DEV_DOOR_CLIENT_ID")}'`);
@@ -82,6 +150,29 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
   });
   it("refuses a banner line before the JSON", () => {
     expect(run(`echo ' wrangler 4.136.3'; echo '${listing("A")}'`).status).toBe(1);
+  });
+  // R-48: the command reads the judged file's door and source where wrangler resolves `--config` — the working
+  // directory, the worker package under `npm run deploy` — and requires the arm's secrets in the listing.
+  it("requires an arm's secrets, reading the judged file's source from the working directory (R-48)", () => {
+    const workos = judgedIn({ YOKOHAMA_WEB_IDENTITY: "worker", YOKOHAMA_IDENTITY_SOURCE: "workos" });
+    const missing = run(`echo '${listing("YOKOHAMA_WEB_ADMINS", "YOKOHAMA_OIDC_CLIENT_SECRET")}'`, undefined, workos);
+    expect(missing.status, "the session secret missing: the && chain stops here").toBe(1);
+    expect(missing.stderr).toContain("holds no secret named YOKOHAMA_SESSION_SECRET, which YOKOHAMA_IDENTITY_SOURCE=workos requires");
+    expect(missing.stderr).toContain("npx wrangler secret put YOKOHAMA_SESSION_SECRET --config wrangler.jsonc");
+    const both = run(`echo '${listing("YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET")}'`, undefined, workos);
+    expect(both.status, both.stderr).toBe(0);
+    expect(both.stdout).toMatch(/2 secrets on wrangler\.jsonc's Worker, none named like a switch, and the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and YOKOHAMA_SESSION_SECRET among them/);
+    // The committed file at source access asks nothing new (the cells above, in the package).
+    const access = run(`echo '[]'`);
+    expect(access.status, access.stderr).toBe(0);
+  });
+  it("refuses a judged file it cannot read, before asking wrangler", () => {
+    const empty = mkdtempSync(join(tmpdir(), "secrets-guard-cwd-"));
+    dirs.push(empty);
+    const r = run(`echo 'npx was asked' >&2; echo '[]'`, undefined, empty);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("secrets-guard: wrangler.jsonc is absent — nothing was judged");
+    expect(r.stderr, "wrangler is never asked").not.toContain("npx was asked");
   });
   it("refuses a bad argument list", () => {
     expect(run(`echo '[]'`, ["--config", "../wrangler.jsonc"]).status).toBe(1);

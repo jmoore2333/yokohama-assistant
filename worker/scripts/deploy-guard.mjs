@@ -60,8 +60,9 @@
 //    and, for the private Worker, its rate-limit namespaces at production's
 //    figures (production's are check 13's) and its source `access`; the
 //    private file is never production's sibling, and is held instead to
-//    production's `assets` and `observability` when judged and to its
-//    `durable_objects` and `migrations` in every run, as check 6 holds the
+//    production's `main`, `rules`, `compatibility_date` (R-49), `assets` and
+//    `observability` when judged and to its `durable_objects` and
+//    `migrations` in every run, as check 6 holds the
 //    open and dev files — absent, it is no failure unless it is the file
 //    named; and every OTHER worker-door file judged by `--config` is held to
 //    production exactly, with no allowed difference (F-40).
@@ -104,9 +105,10 @@
 //    address committed to the repository, `DEV_DOOR_CLIENT_ID` (M6.5c2,
 //    R-6.5c2.5), or the auth cycle's two (Task 7), `YOKOHAMA_OIDC_CLIENT_SECRET`
 //    and `YOKOHAMA_SESSION_SECRET`. Each is set as a secret, which a deploy
-//    leaves alone. Read as
-//    a KEY, so a comment may name either, and read in production's file
-//    alone, so the pool keeps its test client id (review m9).
+//    leaves alone. Read as a KEY, so a comment may name any of them, and read
+//    in the judged file alone, so the pool keeps its test client id (review
+//    m9). That an arm's secrets ARE set is the secrets guard's to read, in
+//    the Worker's listing (R-48: `scripts/secrets-guard.mjs`).
 // 8. `gen/` is the build of the tree as it is now (R3's M-3): `gen/source.json`
 //    — the stamp `npm run build` writes, the digest of what the module is
 //    compiled from, taken before cargo ran (`build-module.mjs`'s
@@ -236,8 +238,9 @@ function position(text, offset) {
 }
 
 /** The configuration named `name` under `root`, parsed — or `undefined`, with
- *  the reason in `failures`. */
-function readConfig(root, name, failures) {
+ *  the reason in `failures`. The secrets guard reads the judged file's door
+ *  and source through it (R-48). */
+export function readConfig(root, name, failures) {
   const file = join(root, name);
   if (!existsSync(file)) {
     failures.push(`${name} is absent`);
@@ -326,8 +329,8 @@ const PRIVATE_FILE = "wrangler.private.jsonc";
  *  source is the window's to move (`access` today, `workos` at the plan's Task 10), so its record names none; the
  *  private Worker keeps Access. Production's namespaces are `RATE_LIMITS`' (check 13). */
 export const DEPLOYMENTS = {
-  "wrangler.jsonc": { name: "yokohama-web", bucket: "yokohama-archive", namespaces: ["7301", "7302"], routes: ["yokohama.moore.nyc"] },
-  "wrangler.private.jsonc": {
+  [PRODUCTION_FILE]: { name: "yokohama-web", bucket: "yokohama-archive", namespaces: ["7301", "7302"], routes: ["yokohama.moore.nyc"] },
+  [PRIVATE_FILE]: {
     name: "yokohama-web-private",
     bucket: "yokohama-archive-private",
     namespaces: ["7303", "7304"],
@@ -408,7 +411,7 @@ function rateLimits(production, pools, failures) {
   }
 }
 
-/** What check 7 refuses among production's `vars`: the SECRETS, and why. */
+/** What check 7 refuses among the judged file's `vars`: the SECRETS, and why. */
 const SECRETS = {
   YOKOHAMA_WEB_ADMINS: "the operator list is a secret (wrangler secret put), never a committed value",
   DEV_DOOR_CLIENT_ID: "the dev door's client id is a secret (wrangler secret put), never a committed value",
@@ -468,7 +471,7 @@ const DOORS = {
  *  environment's names none here — read as the shell reads the variable
  *  (`config.ts`'s `door`): a string trimmed, and nothing else changed. Any
  *  other value is handed back as it is, and `undefined` means none. */
-function doorOf(value) {
+export function doorOf(value) {
   const raw = objectOf(value.vars)?.YOKOHAMA_WEB_IDENTITY;
   return typeof raw === "string" ? raw.trim() : raw;
 }
@@ -501,10 +504,24 @@ const OPEN_DIFFERS = {
   ACCESS_AUD: undefined,
   YOKOHAMA_DEV_DOOR: undefined,
   // The open door has no identity source (auth cycle, Task 1): the shell refuses one beside `open`, so the open
-  // file omits the variable production sets. Task 7 gives the guard the source's own rules.
+  // file omits the variable production sets, and the door rules refuse it there too (Task 7).
   YOKOHAMA_IDENTITY_SOURCE: undefined,
+  // Nor any sign-in arm's variable (R-45; Task 7's review, M-4): the open door reads none of the three, so the
+  // open files omit them, whatever production carries (`ARM_ONLY` names why).
+  YOKOHAMA_OIDC_CLIENT_ID: undefined,
+  YOKOHAMA_OIDC_ISSUER: undefined,
+  YOKOHAMA_SESSION_DAYS: undefined,
   // The window ships a keyed build (cycle F, R-FP4): check 12 holds it there.
   YOKOHAMA_TURNSTILE: "on",
+};
+
+/** Why a sibling must OMIT a variable production may carry, where the door's own rules say nothing (R-45; Task
+ *  7's review, M-4): each of a sign-in arm's variables, which the open door never reads. `siblingDrift`'s refusal
+ *  names it. */
+const ARM_ONLY = {
+  YOKOHAMA_OIDC_CLIENT_ID: "it is a sign-in arm's variable, which the open door never reads (R-45)",
+  YOKOHAMA_OIDC_ISSUER: "it is a sign-in arm's variable, which the open door never reads (R-45)",
+  YOKOHAMA_SESSION_DAYS: "it is a sign-in arm's variable, which the open door never reads (R-45)",
 };
 
 /** T8-a: `sibling` equals `production` (comments are already gone, keys are
@@ -523,7 +540,8 @@ function siblingDrift(name, production, sibling, differs, failures) {
   for (const key of new Set([...Object.keys(p), ...Object.keys(v)])) {
     if (Object.hasOwn(differs, key)) {
       if (canonical(v[key]) !== canonical(differs[key])) {
-        failures.push(`${name}'s vars.${key} must be ${differs[key] === undefined ? "absent" : JSON.stringify(differs[key])} — got ${shown(v[key])}`);
+        const why = differs[key] === undefined && Object.hasOwn(ARM_ONLY, key) ? `; ${ARM_ONLY[key]}` : "";
+        failures.push(`${name}'s vars.${key} must be ${differs[key] === undefined ? "absent" : JSON.stringify(differs[key])} — got ${shown(v[key])}${why}`);
       }
     } else if (canonical(p[key]) !== canonical(v[key])) {
       drift(`vars.${key}`, v[key], p[key]);
@@ -694,16 +712,21 @@ function deploymentRecord(name, value, record, failures) {
   }
 }
 
-/** The blocks a deployment's file carries as PRODUCTION's (the auth cycle, Task 7), read as values: both Workers
- *  run the same code. Each of `keys` that production has is compared; one production lacks is named for production
- *  by checks 5, 6 and 14, and not compared here. */
+/** The four blocks checks 5, 6 and 14 hold PRODUCTION's own file to: one production lacks is named for production
+ *  there, so `productionBlocks` does not compare it. */
+const HELD_IN_PRODUCTION = new Set(["assets", "observability", "durable_objects", "migrations"]);
+
+/** The keys a deployment's file carries as PRODUCTION's (the auth cycle, Task 7; R-49 for `main`, `rules` and
+ *  `compatibility_date`), read as values: both Workers run the same code. Each of `keys` is compared — one of
+ *  `HELD_IN_PRODUCTION` only where production has it; the code's three, which no other check holds, whether or not
+ *  production names them. */
 function productionBlocks(name, production, mine, keys, failures) {
   for (const key of keys) {
-    if (production[key] === undefined) continue;
+    if (production[key] === undefined && HELD_IN_PRODUCTION.has(key)) continue;
     const [p, t] = [canonical(production[key]), canonical(mine[key])];
     if (p !== t) {
       failures.push(
-        `${name}'s ${key} differs from wrangler.jsonc's — both Workers run the same code, so ${name} ships production's ${key}: ${t ?? "nothing"} against ${p}`,
+        `${name}'s ${key} differs from wrangler.jsonc's — both Workers run the same code, so ${name} ships production's ${key}: ${t ?? "nothing"} against ${p ?? "nothing"}`,
       );
     }
   }
@@ -924,8 +947,8 @@ function poolDeclaration(name, value, failures) {
  *  logs redacting query strings, unsampled. And check 3b's records (the auth
  *  cycle, Task 7): a judged file in `DEPLOYMENTS` against its record; the
  *  private Worker's file, whenever it exists, held to check 5 and to
- *  production's object blocks, and to production's assets and logs when it
- *  is the one judged. */
+ *  production's object blocks, and to production's `main`, `rules`,
+ *  compatibility date (R-49), assets and logs when it is the one judged. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -967,13 +990,17 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   // Every deployment but production's (the auth cycle, Task 7; plan decision D-1) — the private Worker's file —
   // whenever it exists: absent is no failure unless it is the file named, which `judged` above has said. Check 5
   // reads it in every run, and check 6's object blocks too, so a production change that leaves it behind is named
-  // at the plain deploy; its assets and logs equal production's when it is the one deployed.
+  // at the plain deploy; its code's keys (`main`, `rules`, the compatibility date: R-49), assets and logs equal
+  // production's when it is the one deployed.
   for (const name of Object.keys(DEPLOYMENTS)) {
     if (name === PRODUCTION_FILE) continue;
     const mine = name === config ? judged : existsSync(join(root, name)) ? readConfig(root, name, failures) : undefined;
     if (!mine) continue;
     assetsBlock(name, mine.value, failures);
-    const keys = name === config ? ["assets", "observability", "durable_objects", "migrations"] : ["durable_objects", "migrations"];
+    const keys =
+      name === config
+        ? ["main", "rules", "compatibility_date", "assets", "observability", "durable_objects", "migrations"]
+        : ["durable_objects", "migrations"];
     if (production) productionBlocks(name, production.value, mine.value, keys, failures);
   }
   if (production) rateLimits(production, others.filter(([n]) => POOLS.includes(n)), failures);
