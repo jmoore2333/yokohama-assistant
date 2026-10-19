@@ -490,9 +490,14 @@ async function attempt(
       return undefined;
     }
     // **Rule 6b: a keyed build whose facts name the open door** refuses a
-    // nameless visitor's upload for certain, and the game waits for a name.
-    // (The F-14 check below holds the same game under any build; this is the
-    // keyed hold's own site, reached through `holdForAName`'s pass.)
+    // nameless visitor's upload for certain, and the game waits for a name —
+    // asked HERE, before the archive fact's "unknown" (ruling R-47). Every
+    // pass's `attempt` reads it, `holdForAName`'s and the ordinary ones' alike.
+    // A pass can be handed `kind === "unknown"` (its health read outlived the
+    // caller's wait) and find the late answer, naming the open door, written
+    // down by the time it reaches this game: the game is then "signed-out",
+    // never "not yet known". The F-14 check below holds the same game under any
+    // build, but only after the "unknown" check.
     if (heldForAName()) {
       await putPending(db, id, "signed-out");
       return undefined;

@@ -3,7 +3,8 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { DISPLAY_NAME_KEY } from "./api";
 import { gameMenu, gamesNamed, isGamesList, renderApp } from "./test/harness";
 import { seatName } from "./tables";
 import { wire } from "./wire/contract";
@@ -221,6 +222,44 @@ describe("the Game menu", () => {
   // server where to go to end the session (`POST /api/leave`) — so the control
   // is no longer the open door's alone. Mutant: the button left behind the
   // `mode === "open"` test.
+  // **And the display name goes with it** (the auth cycle, Task 6 fix round
+  // 1, review M-3): behind an edge door the sign-out is a navigation, so the
+  // name this browser labels seats with must be dropped by the sign-out itself
+  // — the corner's control and this one are ONE wiring (`whoami`'s `signOut`).
+  // Mutant: the drop left in the corner alone (the next person inherits it).
+  it("drops the stored display name on a sign-out from the Game menu behind an edge door", async () => {
+    // The hash is the harness's; `location` is stood in for after it.
+    const went: string[] = [];
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben Castle");
+    await renderApp(wire.options, (call) =>
+      call.path.endsWith("/api/me")
+        ? { ...wire.me, mode: "cf-access" }
+        : call.method === "POST" && call.path === "/api/leave"
+          ? { leave: "/cdn-cgi/access/logout" }
+          : isGamesList(call, "mine")
+            ? gamesNamed(wire.options.id)
+            : undefined,
+    );
+    const real = window.location;
+    vi.stubGlobal(
+      "location",
+      new Proxy(
+        {},
+        {
+          get(_t, key) {
+            if (key === "assign") return (url: string) => went.push(url);
+            const value = Reflect.get(real, key, real);
+            return typeof value === "function" ? value.bind(real) : value;
+          },
+        },
+      ),
+    );
+    await userEvent.setup().click(gameMenu());
+    await userEvent.setup().click(await screen.findByRole("button", { name: "sign out" }));
+    await waitFor(() => expect(went).toEqual(["/cdn-cgi/access/logout"]));
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+  });
+
   it("carries the way out behind an edge door too", async () => {
     await renderApp(wire.options, (call) =>
       call.path.endsWith("/api/me")

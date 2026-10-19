@@ -8,12 +8,14 @@
 //   A. `/api/me` met a DOOR's own challenge: Cloudflare Access saying the
 //      session in front of the server has expired (`WWW-Authenticate:
 //      Cloudflare-Access`, `ACCESS_CHALLENGE`), or — the auth cycle's — a
-//      provider-signed Worker saying nobody holds a session (`Yokohama-Session`,
-//      `SIGN_IN_NEEDED`), which is what a FIRST visitor at a shared table link
-//      meets. FIRST, because the Access application covers the whole hostname,
-//      `/api/health` included — an expired session fails both reads, and the
-//      test below would otherwise call a door the player can walk through
-//      "can't reach".
+//      provider-signed Worker saying nobody holds a session: under a sign-in
+//      arm the Worker answers a caller-less `/api/me` with its own 401 and
+//      `WWW-Authenticate: Yokohama-Session` (ruling R-44), which `call` reads
+//      as `SIGN_IN_NEEDED` and `failureOf` as a challenge. That is the card a
+//      FIRST visitor meets, at a shared table link or the lobby. FIRST, because
+//      the Access application covers the whole hostname, `/api/health`
+//      included — an expired session fails both reads, and the test below
+//      would otherwise call a door the player can walk through "can't reach".
 //   C. Nothing answered: `/api/me` failed with no HTTP answer at all, or the
 //      health read failed while `/api/me` has not answered (the `unreachable`
 //      rule `App.tsx` held until M6.5c2, moved here whole).
@@ -26,7 +28,10 @@
 //   —  The OPEN door, and no name yet: the name step (`SignIn`).
 //   B. The server answered, and no identity reached it, under a door set in
 //      front of it (`cf-access`, `worker`) — a non-email header included, which
-//      the mode rule reads as absent (spec §2.1).
+//      the mode rule reads as absent (spec §2.1). Under Access this is the
+//      module's 200 `user: null` — the edge named nobody, the OPERATOR's
+//      screen; a provider-signed Worker never answers a caller-less `/api/me`
+//      this way since ruling R-44 (that is state A).
 //
 // State E — multiplayer off — is the front door's (`FrontDoor.tsx`).
 //
@@ -34,7 +39,7 @@
 // whose last crumb is the page's `<h2>` (`Band.tsx`).
 
 import type { ReactNode } from "react";
-import { SIGN_IN_NEEDED, signInHref } from "./api";
+import { SIGN_IN_NEEDED, SIGN_IN_TITLE, signInHref } from "./api";
 import { Refusal, SignInNotice } from "./Refusal";
 import { SignIn } from "./SignIn";
 import { doorSentence, type Door as DoorState } from "./whoami";
@@ -114,14 +119,17 @@ export function Door({
   // link lands at that table (design §4.3) — Access ignores the query — and
   // the build's transparency notice is under it ([`SignInNotice`], R-A14).
   if (door.failure === "challenge") {
-    // **A first visit, or a sign-in that ran out.** A provider-signed Worker's
-    // 401 is the server not knowing this browser at all — the card a visitor
-    // meets at a shared table link — so the card IS the refusal's own sentence
-    // (`SIGN_IN_NEEDED`, `api.ts`: the one source), and the link is "Sign in".
-    // Access's challenge is a session that existed and expired.
+    // **A first visit, or a sign-in that ran out.** Under a sign-in arm a
+    // caller-less `/api/me` is the Worker's 401 with the session challenge
+    // (ruling R-44), read as `SIGN_IN_NEEDED`: the server does not know this
+    // browser at all, and this is the card a visitor meets at a shared table
+    // link. So the card says the refusal's own words — its title
+    // `SIGN_IN_TITLE`, the sentence less its period (ruling R-46; `api.ts`, the
+    // one spelling) — and the link is "Sign in". Access's challenge is a
+    // session that existed and expired.
     if (door.error === SIGN_IN_NEEDED) {
       return (
-        <StateCard band="vp" title={SIGN_IN_NEEDED}>
+        <StateCard band="vp" title={SIGN_IN_TITLE}>
           {/* A LINK and never a fetch (`Refusal.tsx`'s reason): `/enter`
               starts the sign-in, whose answer mints the cookie every later
               request carries. */}

@@ -14,6 +14,7 @@ import {
   rememberServerFacts,
   setChatText,
   setLobbyChat,
+  SIGN_IN_TITLE,
 } from "./api";
 import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { IDBFactory, IDBKeyRange as FakeKeyRange } from "fake-indexeddb";
@@ -2790,6 +2791,38 @@ describe("the door", () => {
   // 3): the Access application covers the whole hostname, `/api/health`
   // included, so an expired session fails the health read too — and the card
   // must still be A, not "can't reach the server", once that read has settled.
+  // **A FIRST visitor at a shared table link, end to end** (the auth cycle,
+  // Task 6 fix round 1; rulings R-40, R-44): under a sign-in arm the Worker
+  // answers a caller-less `/api/me` with its own 401 and `WWW-Authenticate:
+  // Yokohama-Session`, which `call` reads as `SIGN_IN_NEEDED`, `failureOf` as a
+  // challenge, and the door draws the first-visit card — its link back to THIS
+  // table. Mutants: the session challenge unread (the API's own refusal card);
+  // the link without `return_to`; the Access card's wording.
+  it("draws the first-visit card at a shared table link when a provider-signed Worker answers /api/me with its session challenge", async () => {
+    stubWorker();
+    const signIn = () =>
+      new Response(JSON.stringify({ error: "no signed-in user — sign in at /enter" }), {
+        status: 401,
+        headers: { "content-type": "application/json", "www-authenticate": 'Yokohama-Session realm="/enter"' },
+      });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return signIn();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "cf-access" };
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/t/abc-123";
+    render(<App />);
+    expect(await screen.findByRole("heading", { level: 3, name: SIGN_IN_TITLE })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/enter?return_to=%2F%23%2Ft%2Fabc-123",
+    );
+    expect(screen.queryByRole("heading", { name: "Your sign-in has run out" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "This server couldn't tell who you are" })).toBeNull();
+  });
+
   it("draws the turnstile's link for an EXPIRED Access session, and keeps the stored name", async () => {
     stubWorker();
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);

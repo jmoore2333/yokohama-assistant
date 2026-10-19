@@ -13,7 +13,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { ACCESS_CHALLENGE, SIGN_IN_NEEDED } from "./api";
+import { ACCESS_CHALLENGE, SIGN_IN_NEEDED, SIGN_IN_TITLE } from "./api";
 import { Door } from "./Door";
 import type { Door as DoorState } from "./whoami";
 import { wire } from "./wire/contract";
@@ -103,15 +103,20 @@ describe("the door's states", () => {
 });
 
 // **The door card is a sign-in link site** (the auth cycle, Task 6; ruling
-// R-40): it is what a FIRST visitor meets at a shared table link with no
-// session, since `failureOf` reads a provider-signed Worker's `SIGN_IN_NEEDED`
-// as a challenge. So its link is `/enter` with the table as `return_to` (design
-// §4.3: the sign-in lands the player at the table they were sent), the build's
-// transparency notice is under the link (R-A14), and under `SIGN_IN_NEEDED` the
-// card says what a first visit needs — the sentence itself, the link "Sign in"
-// — where Access's expired session keeps "Your sign-in has run out". Mutants:
-// the link without `return_to`; the notice drawn when unset, or left off a
-// card; the Access wording drawn for a first visit.
+// R-40). Under a sign-in arm a browser with no session asks `/api/me` and the
+// Worker answers its own 401 with `WWW-Authenticate: Yokohama-Session` (ruling
+// R-44); `call` reads it as `SIGN_IN_NEEDED`, `failureOf` as a challenge, and
+// the door draws state A's first-visit card — what a FIRST visitor meets at a
+// shared table link (the end-to-end cell is `App.test.tsx`'s). Under Access the
+// module's 200 `user: null` still draws state B, the operator's screen. So the
+// link is `/enter` with the table as `return_to` (design §4.3: the sign-in
+// lands the player at the table they were sent), the build's transparency
+// notice is under the link (R-A14), and under `SIGN_IN_NEEDED` the card says
+// what a first visit needs — its title the sentence's words with no period
+// (`SIGN_IN_TITLE`, ruling R-46), the link "Sign in" — where Access's expired
+// session keeps "Your sign-in has run out". Mutants: the link without
+// `return_to`; the notice drawn when unset, or left off a card; the Access
+// wording drawn for a first visit; the title spelled with its period.
 describe("the door card's sign-in link (auth cycle, Task 6; R-40)", () => {
   const NOTICE = "Sign-in is by WorkOS. This site keeps only your verified email address, to seat you.";
   const TABLE = "/enter?return_to=%2F%23%2Ft%2Fabc-123";
@@ -120,7 +125,10 @@ describe("the door card's sign-in link (auth cycle, Task 6; R-40)", () => {
     window.location.hash = "#/t/abc-123";
     vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", NOTICE);
     const { unmount } = draw(state({ failure: "challenge", error: SIGN_IN_NEEDED }), false);
-    expect(screen.getByRole("heading", { level: 3, name: SIGN_IN_NEEDED })).toBeInTheDocument();
+    // The heading is the sentence's words with no period (ruling R-46); the
+    // strips keep the sentence.
+    expect(screen.getByRole("heading", { level: 3, name: SIGN_IN_TITLE })).toBeInTheDocument();
+    expect(`${SIGN_IN_TITLE}.`, "one spelling: the sentence is the title and its period").toBe(SIGN_IN_NEEDED);
     // Nothing on it says a sign-in ran out: there was none.
     expect(screen.queryByRole("heading", { name: "Your sign-in has run out" })).toBeNull();
     expect(screen.queryByText(/Sign in again/)).toBeNull();

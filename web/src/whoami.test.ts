@@ -6,7 +6,7 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY, SIGN_IN_NEEDED } from "./api";
+import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY, DISPLAY_NAME_KEY, SIGN_IN_NEEDED } from "./api";
 import type { Channel } from "./route";
 import { gate, signedOutReply, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
@@ -130,10 +130,17 @@ describe("useMe", () => {
   // leave; the name step must not greet them with the refusal leaving caused.
   // The second half is the guard's other edge: once the server names somebody
   // again, a 401 is news once more and carries its sentence.
+  //
+  // **Sequenced for the asynchronous sign-out** (the auth cycle, Task 6 fix
+  // round 1, review I-2): the leave is asked first, and only its answer (the
+  // open door's 404) drops the name and sends the re-read. A 401 landing while
+  // the leave is still out was cleared by that answer whatever the guard did,
+  // so the cell waits until the re-read is OUT — the window the guard exists
+  // for — before the 401 lands. Mutant: `leaving` not set at the click.
   it("says nothing about a 401 that lands while a deliberate sign-out is re-reading", async () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     let held: { promise: Promise<Reply>; resolve: (v: Reply) => void } | null = null;
-    stubApi((call) => {
+    const stub = stubApi((call) => {
       if (call.path === "/api/leave") return OPEN_DOOR_LEAVE;
       if (!call.path.endsWith("/api/me")) return undefined;
       if (held) return held.promise;
@@ -145,6 +152,7 @@ describe("useMe", () => {
     const reread = gate<Reply>();
     held = reread;
     act(() => result.current.signOut());
+    await waitFor(() => expect(stub.matching("GET", "/api/me")).toHaveLength(2));
     // The re-read is out, and a screen's request, sent with no name, is refused.
     const sentence = signedOutReply().body.error;
     act(() => result.current.signedOut(sentence));
@@ -343,22 +351,48 @@ describe("signOut through /api/leave", () => {
     expect(result.current.notice).toBeNull();
     expect(went).toEqual([]);
 
-    // A 200 that names nowhere is no answer to navigate on: the same path.
-    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
-    stubApi((call) =>
-      call.path.endsWith("/api/me")
-        ? localStorage.getItem(CLAIMED_USER_KEY)
-          ? wire.me
-          : wire.meSignedOut
-        : call.path === "/api/leave"
-          ? {}
-          : undefined,
-    );
-    act(() => result.current.refresh());
+    // A 200 that names nowhere is no answer to navigate on: the same path —
+    // no `leave` at all, and an EMPTY one, which navigated to would reload this
+    // page instead of signing out (review M-2).
+    for (const nowhere of [{}, { leave: "" }]) {
+      localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+      stubApi((call) =>
+        call.path.endsWith("/api/me")
+          ? localStorage.getItem(CLAIMED_USER_KEY)
+            ? wire.me
+            : wire.meSignedOut
+          : call.path === "/api/leave"
+            ? nowhere
+            : undefined,
+      );
+      act(() => result.current.refresh());
+      await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+      act(() => result.current.signOut());
+      await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+      expect(went, JSON.stringify(nowhere)).toEqual([]);
+    }
+  });
+
+  // **The display name goes with the sign-out, in the ONE wiring** (the auth
+  // cycle, Task 6 fix round 1, review M-3): it labels whoever signs in next on
+  // this browser, and behind an edge door the sign-out is a navigation, so
+  // nothing after it runs — it is dropped at the click, whatever the leave
+  // answers. Mutants: the drop left to one control (the game menu's sign-out
+  // keeps the name); the drop after the answer (a navigation leaves it).
+  it("drops the display name at the click, whatever the leave answers", async () => {
+    countNavigations();
+    const answer = gate<Reply>();
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
+      if (call.method === "POST" && call.path === "/api/leave") return answer.promise;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben Castle");
+    const { result } = renderHook(() => useMe("multiplayer"));
     await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
     act(() => result.current.signOut());
-    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
-    expect(went).toEqual([]);
+    expect(localStorage.getItem(DISPLAY_NAME_KEY), "gone before the server answers").toBeNull();
+    answer.resolve({ leave: "/cdn-cgi/access/logout" });
   });
 });
 

@@ -58,16 +58,16 @@ describe("the band", () => {
 
 describe("the identity corner", () => {
   // **Under the open door the name IS the identity** (spec §2.1), so the one
-  // action is to become somebody else: the stored name goes, and the host is
-  // told, which re-asks `/api/me` and lands on the name step.
-  it("offers switch player under the open door, and drops the name before telling the host", async () => {
+  // action is to become somebody else: the host is told, and its sign-out drops
+  // the stored names and re-asks `/api/me`, landing on the name step. **The
+  // display name is the HOST's to drop** since the auth cycle (Task 6 fix round
+  // 1, review M-3): `whoami`'s `signOut` is the one wiring every sign-out
+  // control calls (`whoami.test.ts` pins the drop; `App.test.tsx` the whole
+  // path), so the corner only tells.
+  it("offers switch player under the open door, and tells the host", async () => {
     expect(wire.me.mode).toBe("open");
     localStorage.setItem(DISPLAY_NAME_KEY, "Red");
-    // What storage held at the moment the host was told: the ORDER, which two
-    // assertions after the click cannot see. No `expect` in the handler — it
-    // would throw inside React's event dispatch.
-    const seen: (string | null)[] = [];
-    const onChange = vi.fn(() => seen.push(localStorage.getItem(DISPLAY_NAME_KEY)));
+    const onChange = vi.fn();
     render(<IdentityCorner me={wire.me} onChange={onChange} />);
     // The menu's own words (the pill says them too, unseen, since cycle C).
     expect(screen.getByText("Playing as", { exact: false, selector: ".identity-who" })).toBeInTheDocument();
@@ -75,8 +75,6 @@ describe("the identity corner", () => {
     expect(screen.getByTitle(wire.me.user!)).toHaveTextContent("Red");
     expect(screen.queryByRole("button", { name: "change name" })).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "switch player" }));
-    expect(seen).toEqual([null]);
-    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
@@ -108,21 +106,17 @@ describe("the identity corner", () => {
 
   // **Behind an edge door the player can still leave** (the auth cycle, Task 6;
   // ruling R-37): the identity is the edge's, so nothing offers to switch it,
-  // but "sign out" tells the host — `App`'s `signOut`, which asks the server
-  // where to go to end the session (`POST /api/leave`). The display name goes
-  // first, as switch player drops it: it labels whoever signs in next. Under
-  // the open door switch player IS the way out, and no second control is drawn.
-  // Mutants: no sign-out behind an edge door; the name kept; a second sign-out
-  // under the open door.
-  it("offers sign out behind an edge door, dropping the display name before telling the host", async () => {
-    localStorage.setItem(DISPLAY_NAME_KEY, "Red");
-    const seen: (string | null)[] = [];
-    const onChange = vi.fn(() => seen.push(localStorage.getItem(DISPLAY_NAME_KEY)));
+  // but "sign out" tells the host — `App`'s `signOut`, which drops the display
+  // name and asks the server where to go to end the session (`POST
+  // /api/leave`). Under the open door switch player IS the way out, and no
+  // second control is drawn. Mutants: no sign-out behind an edge door; a second
+  // sign-out under the open door.
+  it("offers sign out behind an edge door, and tells the host", async () => {
+    const onChange = vi.fn();
     const { unmount } = render(<IdentityCorner me={behindAccess} onChange={onChange} />);
     expect(screen.getAllByRole("button", { name: "sign out" })).toHaveLength(1);
     expect(screen.getByRole("button", { name: "change name" })).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "sign out" }));
-    expect(seen).toEqual([null]);
     expect(onChange).toHaveBeenCalledTimes(1);
     unmount();
 

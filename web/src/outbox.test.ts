@@ -47,8 +47,8 @@ import {
   sendNow,
   startOutbox,
 } from "./outbox";
-import { stubWorker, workerAnswersWith } from "./test/fakeWorker";
-import { isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
+import { currentWorker, stubWorker, workerAnswersWith } from "./test/fakeWorker";
+import { gate, isGamesList, stubApi, type ApiCall, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 
 const GAME = "local-7";
@@ -1102,6 +1102,61 @@ describe("rule 6b under a provider-signed door (auth cycle, Task 6)", () => {
   });
   afterEach(() => {
     onUnauthorized(null);
+    vi.useRealTimers();
+    resetDoorAutoApplyForTests();
+  });
+
+  // **The hold's own site in `attempt` orders "signed-out" BEFORE the archive
+  // fact's "not yet known"** (ruling R-47; the review's M-4). A pass can be
+  // handed `kind === "unknown"` — its health read outlived the caller's wait —
+  // and find the late answer, naming the open door, written down by the time
+  // it reaches the game. The game is then written down for its NAME by the
+  // pass that met it, and the late answer's own pass has nothing of it to
+  // re-file: its snapshot is read once. Without the site the game is first
+  // "not yet known", and that later pass reads it again to re-file it.
+  // Mutant: the site removed (the F-14 check below the "unknown" one is then
+  // the only hold).
+  it("writes a nameless game signed-out, never not-yet-known, when the open door's late answer lands during the pass that meets it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    /** A real turn of the event loop: the store runs on `setImmediate`. */
+    const tick = () => new Promise<void>((r) => setImmediate(r));
+    const until = async (ok: () => boolean | Promise<boolean>, what: string) => {
+      for (let i = 0; i < 400; i += 1) {
+        if (await ok()) return;
+        await tick();
+      }
+      throw new Error(`${what} never became true`);
+    };
+    let pairs = 0;
+    stubWorker({
+      pair: () => {
+        pairs += 1;
+        return pairs === 1 ? "pending" : { record: RECORD, table: TABLE };
+      },
+    });
+    const health = gate<Reply>();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return health.promise;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    expect(serverFactsTakenAt(), "the premise: nothing remembered").toBeNull();
+
+    const over = noteGameOver(GAME);
+    await until(() => stub.calls.length === 1, "the health read is out");
+    // The caller's wait ends with the read still out: the pass goes on to the
+    // game with nothing known, and waits on its snapshot.
+    await vi.advanceTimersByTimeAsync(BOUND_MS);
+    await until(() => pairs === 1, "the pass reads the game");
+    // Now the late answer lands, naming the open door.
+    health.resolve({ ...wire.health, identity: "open", archive: "dir" });
+    await until(() => serverFactsTakenAt() !== null, "the late answer is written down");
+    const asked = currentWorker().posted.find((p) => p.kind === "pair") as { seq: number };
+    currentWorker().emit({ seq: asked.seq, record: RECORD, table: TABLE });
+    await over;
+    await until(() => !applyBusy(), "the late answer's own pass is over");
+
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+    expect(pairs, "written down for its name by the pass that met it, and never re-filed").toBe(1);
   });
 
   // The plan's named mutant: `heldForAName` ignores the facts (the cycle-F

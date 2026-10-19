@@ -9,7 +9,7 @@
 // show the game to one whose session has expired.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, clearClaimedUser, isSessionExpired } from "./api";
+import { api, ApiError, clearClaimedUser, clearDisplayName, isSessionExpired } from "./api";
 import type { Channel } from "./route";
 import type { Me } from "./types";
 
@@ -52,8 +52,9 @@ export interface Door {
   notice: string | null;
   /** Ask `/api/me` again. */
   refresh: () => void;
-  /** The player asked to sign out: the server is asked where to go to end the
-   *  session (`POST /api/leave`) and the browser goes there; a `cf-access`
+  /** The player asked to sign out: the display name is dropped at once — it
+   *  labels whoever signs in next — and the server is asked where to go to end
+   *  the session (`POST /api/leave`) and the browser goes there; a `cf-access`
    *  door that answers 404 — the NAS — goes to Access's own logout
    *  ([`ACCESS_LOGOUT`]); anywhere else it answers nowhere — the open door's
    *  404 — the stored name is dropped and `/api/me` asked again, the sign-out
@@ -160,8 +161,15 @@ export function useMe(channel: Channel): Door {
     // name the same player again — a sign-out that visibly did nothing. A 404
     // under a `cf-access` door goes to Access's own logout instead; any other
     // failure there (nothing answered, a 5xx) keeps the open door's path.
+    //
+    // **The display name goes at the click** (the auth cycle, Task 6 fix round
+    // 1, review M-3): it labels whoever signs in next on this browser, and
+    // behind an edge door the sign-out is a navigation, so nothing after the
+    // answer runs. Dropped HERE, in the one wiring every sign-out control
+    // calls — the game menu's button and the lobby corner's alike.
     signOut: useCallback(() => {
       leaving.current = true;
+      clearDisplayName();
       void api.leave().then(
         (reply) => {
           if (typeof reply?.leave === "string" && reply.leave !== "") window.location.assign(reply.leave);

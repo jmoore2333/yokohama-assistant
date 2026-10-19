@@ -356,11 +356,18 @@ export function isSessionChallenge(res: Response): boolean {
   return res.headers.get("www-authenticate")?.startsWith("Yokohama-Session") ?? false;
 }
 
+/** The words of [`SIGN_IN_NEEDED`] with no period: the door card's HEADING,
+ *  which titles a card as every other card title does (ruling R-46). Written
+ *  once, here, and the sentence below is built from it, so there is no second
+ *  spelling. */
+export const SIGN_IN_TITLE = "Sign in to play multiplayer";
+
 /** What the player reads when a provider-signed Worker refused: one sentence
  *  for the table link, the lobby and every refusal strip, and the strip is
  *  where the player reads it (the plan's wording, replacing the design's
- *  §4.3). [`Refusal`](../Refusal) matches on it to draw the sign-in link. */
-export const SIGN_IN_NEEDED = "Sign in to play multiplayer.";
+ *  §4.3). [`Refusal`](../Refusal) matches on it to draw the sign-in link, and
+ *  the door matches on it to draw its first-visit card. */
+export const SIGN_IN_NEEDED = `${SIGN_IN_TITLE}.`;
 
 /** The sentence a 401 carrying a door's own challenge is read as — Access's
  *  expired session, or the Worker's "sign in" — or `null` for a 401 that is the
