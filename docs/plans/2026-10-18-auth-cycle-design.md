@@ -354,8 +354,17 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
   across every anonymous prefix: a listing of tens of thousands of objects is pages of subrequests inside one
   request, and the IP limiter bounds the rate without it. If the owner wants a hard global ceiling later, it is a
   counter in the house object under its lock, a separate decision.
-- **Under the edge rule** a caller-less post from a browser with no clearance meets the Turnstile's challenge; the
-  outbox's rule 6a and the "waiting for a human check" overlay (cycle F) already carry it through.
+- **Under the edge rule** a caller-less post from a browser with no clearance meets the Turnstile's challenge, and
+  the overlay that passes it is the OUTBOX's, not the multiplayer door's: the front door's button and the outbox are
+  two callers of one seam (`passChallenge`, `web/src/turnstile.ts` line 186), so a solo player who never went near
+  multiplayer meets the widget on the solo page itself. `noteGameOver` (`web/src/outbox.ts` lines 700–728, fired by
+  `App.tsx` line 1144 when a local game reaches `over`) runs interactively whenever the tab is visible — "a person is
+  at the game when it ends" — so the health read and the post pass the challenge through the overlay there, usually
+  with no click in `managed` mode; a hidden tab or the `online` event marks the row "challenged" (rule 6a), and the
+  device page's "Check now" or the next visible launch shows the widget and sends (`drainVisible`). What makes this
+  true under the public deployment is §4.5's rewrite of rule 6b: today a keyed build holds a nameless visitor's game
+  for a name and asks the server nothing, "a fresh context's first game over included", which under `worker` would
+  park every solo-only player's game for ever.
 
 ### 4.5 The outbox under the new door
 
