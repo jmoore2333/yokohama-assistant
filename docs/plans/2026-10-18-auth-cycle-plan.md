@@ -1,0 +1,758 @@
+# The auth cycle — the public door's identity: implementation plan (2026-10-18)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> A dispatched implementer reads its own task, §"Global Constraints", §"Names shared across tasks" and the design's
+> §3 rulings; it PROBES every code block and every cited line of its brief before reporting, and a sentence it finds
+> false is a `DONE_WITH_CONCERNS` corrected in THIS PLAN first (the S2 runs' rule). Tiers (the owner's dispatch rule):
+> each task's header names `impl:` sonnet | opus and `review:` fable; the orchestrator (Mythos) runs the pre-flight
+> and the after review itself.
+
+**Goal:** the public Worker at `yokohama.moore.nyc` signs players in through WorkOS AuthKit (or any OpenID Connect
+issuer, by configuration) instead of Cloudflare Access, keeps them signed in with its own cookie, and archives every
+finished browser game — signed in or anonymous — so the site can open to everyone.
+
+**Architecture:** the layer's `worker` door is unchanged; the Worker SHELL gains a second identity source beside
+Access (`YOKOHAMA_IDENTITY_SOURCE`), two sign-in arms (`workos`, WorkOS's own first-party API; `oidc`, any discovery
+document) that run once at the callback on `/enter`, a stateless HMAC session cookie read on every request, and an
+anonymous archive caller formed as a synthetic address the key grammar already accepts. The client learns one new
+header and posts a device id. The deploy guard learns a second deployment identity. No Rust crate changes; no new
+dependency anywhere.
+
+**Tech Stack:** TypeScript (the Worker shell under wrangler 4.136.3, vitest 4 with `@cloudflare/vitest-plugin` 1.2.3
+— "the pool"; the client under Vite, vitest, Playwright), Node 22 for the scripts (vitest `vitest.scripts.config.ts`),
+`crypto.subtle` for HMAC and signature checks, `fetch` for the issuer. No npm package is added to `worker/` or `web/`.
+
+**Spec:** `docs/plans/2026-10-18-auth-cycle-design.md` — the design; its §3 rulings R-A1–R-A11 bind every task, its
+§4 is the mechanism, its §9 the review record. Behind it `docs/plans/2026-10-08-security-remediation-spec.md` §9.7
+(lines 1034–1036) and §6 (the fences), and `docs/web-lane.md` §8 (the public door's preconditions) and §10 (the
+window recipes). The plan argues from the design; an implementer reads both.
+
+## Global Constraints
+
+- The design's §8 fences: `SEMANTICS_REV` 7; `crates/yokohama-core`, `-oracle`, `-difftest`, `-bridge`, `gen-data`,
+  AND `crates/yokohama-web`, `crates/yokohama-worker`, `crates/yokohama-wasm` byte-identical — this cycle touches no
+  Rust. No npm dependency added to `worker/package.json` or `web/package.json`. The review report is never committed.
+- One identity source per deployment: `YOKOHAMA_IDENTITY_SOURCE` is `access` | `oidc` | `workos`, required under
+  the `worker` door, refused under `open` only if set to anything (ignored absent), no default (design §4.1).
+- The session cookie: name `yokohama_session`; `HttpOnly; Secure; SameSite=Lax; Path=/`; 30 days by default
+  (`YOKOHAMA_SESSION_DAYS`), renewed when a request finds it past half its life; stateless; HMAC-SHA256 under
+  `YOKOHAMA_SESSION_SECRET` (32 bytes or more). The login cookie `yokohama_login`: 10 minutes, same attributes.
+- Both halves of the sign-in live on `/enter`; `run_worker_first` stays exactly `["/api/*", "/enter"]` in every
+  wrangler file (the guard's check 5). Sign-out is `POST /api/leave`.
+- The anonymous caller is the address `anon-<16 lowercase hex>@anon.invalid` (the device) or
+  `anon-<game id>@anon.invalid` (no device header; the body's table id, held to `isSafeId`), forwarded as
+  `X-Yokohama-User` on the `archive` target only; limited by IP under `CREATE_LIMIT`.
+- `mode` on the wire stays `cf-access` under the `worker` door (R2.2-m2); the only wire addition is
+  `WWW-Authenticate: Yokohama-Session realm="/enter"` on every 401 under `/api` when the source is not `access`.
+- Every address is judged RAW by `forwardable` before any trim, then ASCII-lowercased by `address` (the Kelvin rule,
+  `worker/src/identity.ts`); `email_verified` must be exactly `true`.
+- Process (the owner's standing rules): implementers write their full report to a transcript file and answer with
+  its path and three lines; no `rm -rf`, `rm -r` or bulk `rm -f` in any dispatch; foreground polling only, no waits
+  on events, no monitors; a reviewer's mutants run in an EXPORT (`git archive`), never in the implementer's tree;
+  fix rounds are new commits; stage with explicit paths, never `git add -A`.
+- Per task: `cd worker && npm run typecheck && npm test && npm run test:scripts` and `cd web && npm run typecheck &&
+  npm test` must pass before the commit; `npm run build:module:debug` first when a task touches `gen/` (none here).
+
+## Review Focus
+
+Inputs the design implies and no task's happy path exercises; each line's test is added to the task that owns it.
+
+1. A `return_to` that is another origin, a path, or a hash outside the router's grammar must land on `/#/lobby`, never
+   be followed (Task 4).
+2. An ID token with `email_verified` absent or `false`, or a WorkOS user object with it `false`, must mint no cookie
+   and redirect to `/#/lobby?signin=failed` (Tasks 3, 4).
+3. A session cookie with one MAC byte changed, a payload with `expires` in the past, or a payload that is not JSON must
+   read as no one, in constant time, with no exception reaching `answer` (Task 2).
+4. A device header of 15 or 17 hex digits, uppercase hex, or a Kelvin sign must be treated as absent, so the post
+   falls to the game id, or to the 401 when the body names no safe id (Task 5).
+5. A browser running TODAY's client (no device header, the table document naming `local-<16 hex>`) must land its
+   game under `browser/anon-local-<16 hex>_at_anon.invalid-<digest>/` (Task 5); and a renewal `Set-Cookie` never rides
+   a 101 or a 401 (Task 4).
+
+## Names shared across tasks
+
+| name | where | value |
+|---|---|---|
+| `Source` | `worker/src/config.ts` | `"access" \| "oidc" \| "workos"` |
+| `ShellConfig.source` | `worker/src/config.ts` | `Source \| null` (`null` under `open`) |
+| `ShellConfig.signin` | `worker/src/config.ts` | `{ issuer: string \| null; clientId: string; clientSecret: string \| null } \| null` |
+| `ShellConfig.session` | `worker/src/config.ts` | `{ secret: string; days: number } \| null` |
+| `SESSION_COOKIE`, `LOGIN_COOKIE` | `worker/src/session.ts` | `"yokohama_session"`, `"yokohama_login"` |
+| `Session` | `worker/src/session.ts` | `{ address: string; sid: string \| null; issued: number; expires: number }` |
+| `Login` | `worker/src/session.ts` | `{ state: string; nonce: string; verifier: string; returnTo: string; expires: number }` |
+| `SignedIn` | `worker/src/signin.ts` | `{ address: string; sid: string \| null }` |
+| `SESSION_CHALLENGE` | `worker/src/index.ts` | `'Yokohama-Session realm="/enter"'` |
+| `DEVICE_HEADER` | `worker/src/identity.ts` | `"X-Yokohama-Device"` |
+| `Identity` kind | `worker/src/identity.ts` | `{ kind: "session"; email: string; sid: string \| null; renew: boolean }` and `{ kind: "anonymous"; device: string }` |
+| `ANON_DOMAIN` | `worker/src/identity.ts` | `"anon.invalid"` |
+| `SIGN_IN_NEEDED` | `web/src/api.ts` | `"Sign in to play multiplayer."` |
+| `DEVICE_KEY` | `web/src/device.ts` | localStorage key `"yokohama.device"` |
+| `handle` | `worker/src/index.ts` | `handle(req, env, ctx, keys, fetcher = fetch)` — the fifth parameter is new, optional, the arms' network |
+
+**Plan decision D-1 (the orchestrator's, flagged to the owner in the hand-off).** The design's §4.7 made the public
+Worker a NEW deployment and kept `yokohama-web` private. With R-A6 (`yokohama.moore.nyc` is the public site, the
+private one comes later on another domain) the roles invert: `wrangler.jsonc` — the Worker `yokohama-web`, the bucket
+`yokohama-archive`, the custom domain — becomes the public deployment by setting `YOKOHAMA_IDENTITY_SOURCE` to
+`workos`, and the LATER private Worker is the new file (`wrangler.private.jsonc`, its own name and bucket, source
+`access`), written when the owner names its domain. Why: a custom domain binds to one Worker, so a new public Worker
+would have to take the domain FROM `yokohama-web` in the window; the existing objects, archive and the owner's
+seats stay where they are; and the key space does not change — Access and WorkOS both vouch for verified addresses,
+which is the C1 finding's whole concern. The guard's identity table (Task 7) is written for both files, with the
+private one's record present and its file optional until it exists.
+
+---
+
+### Task 0: the pre-flight — WorkOS's answer shapes, read live (the orchestrator, with the owner for one sign-in)
+
+**Files:** none in the repository; a scratchpad script; the readings go into this plan's §"Pre-flight record" at
+the end, as key SETS, never values.
+
+- [ ] **Step 1:** the owner has a WorkOS account (or claims an environment per the `workos` skill's `SKILL.md`,
+  "Claiming the environment later") and gives the orchestrator the STAGING environment's client id and API key in
+  the shell environment (`WORKOS_CLIENT_ID`, `WORKOS_API_KEY`), never in a file under the repository. In the WorkOS
+  dashboard the owner registers, for staging, the Redirect URI `http://localhost:8787/enter`, enables Magic Auth and
+  Google, and leaves Email + Password on for now (it is turned off at the window, Task 10).
+- [ ] **Step 2:** the orchestrator writes `/private/tmp/.../scratchpad/workos-probe.mjs`: prints
+  `https://api.workos.com/user_management/authorize?client_id=…&redirect_uri=http://localhost:8787/enter&response_type=code&provider=authkit&state=probe`;
+  the owner opens it, signs in with an email code, and pastes back the `code` from the browser's address bar (nothing
+  listens on 8787; the navigation fails and the URL keeps the code).
+- [ ] **Step 3:** the script POSTs `https://api.workos.com/user_management/authenticate` with
+  `{client_id, client_secret: <API key>, grant_type: "authorization_code", code}` as JSON, and prints: the response
+  status; the top-level key set; `user`'s key set; whether `user.email_verified` is a boolean and its value; whether
+  `access_token` is a three-part JWT and its header's `alg` and `kid` and its payload's key set; whether
+  `refresh_token` is present. Then `GET https://api.workos.com/sso/jwks/<client_id>` and prints the key set's `kid`
+  list and `alg`s. Then prints the logout URL `https://api.workos.com/user_management/sessions/logout?session_id=<sid>`
+  and the owner opens it once to read where it lands.
+- [ ] **Step 4:** record every reading in §"Pre-flight record" (key names, booleans, algorithms; no token, no
+  address). If `user.email_verified` is absent, or the access token's `sid` is absent, Task 3's `workos` arm is
+  corrected IN THIS PLAN before Task 3 is dispatched (design §3 R-A7's fallback stays the SDK at the callback).
+
+---
+
+### Task 1: the identity source and its variables (impl: sonnet · review: fable)
+
+**Files:**
+- Modify: `worker/src/env.ts` (the `Env` interface, lines 49–63 region), `worker/src/config.ts` (`ShellConfig`,
+  lines 18–33; `shellConfig`, lines 277–300; `openDoorRefusals`, lines 250–264)
+- Modify: `worker/wrangler.jsonc`, `worker/wrangler.dev.jsonc`, `worker/wrangler.test.jsonc` (`vars`; the two
+  open files are NOT touched)
+- Modify: `docs/web-lane.md` §12 (six rows, in the table's own format — line 652's `YOKOHAMA_DEV_DOOR` row is the
+  model): `worker/scripts/lane-variables.test.mjs` greps the lane's code for every `YOKOHAMA_*` name and holds §12's
+  table to it both ways, so the rows land in THIS task's commit or `npm run test:scripts` goes red
+- Test: `worker/src/config.unit.test.ts`; `worker/scripts/lane-variables.test.mjs` (unchanged, must stay green)
+
+**Interfaces:**
+- Produces: `export type Source = "access" | "oidc" | "workos"`; `ShellConfig.source: Source | null`;
+  `ShellConfig.signin: { issuer: string | null; clientId: string; clientSecret: string | null } | null`;
+  `ShellConfig.session: { secret: string; days: number } | null`; `Env.YOKOHAMA_IDENTITY_SOURCE?`,
+  `Env.YOKOHAMA_OIDC_ISSUER?`, `Env.YOKOHAMA_OIDC_CLIENT_ID?`, `Env.YOKOHAMA_OIDC_CLIENT_SECRET?`,
+  `Env.YOKOHAMA_SESSION_SECRET?`, `Env.YOKOHAMA_SESSION_DAYS?` (all `string | undefined`).
+
+- [ ] **Step 1: Write the failing tests** in `config.unit.test.ts`, with the file's own fixture builder
+  `env(vars: Record<string, unknown>, bucket = false): Env` (line 23) — `WORKER_ENV` below stands for the file's valid
+  `worker`-door `vars` (the Access pair, the dev door, the archive with `bucket = true`) and `OPEN_ENV` for its valid
+  `open`-door `vars`; spell each test with `env({ ...WORKER_ENV, … }, true)`:
+
+```ts
+it("the worker door requires a source, with no default", () => {
+  expect(shellConfig({ ...WORKER_ENV, YOKOHAMA_IDENTITY_SOURCE: undefined })).toEqual({
+    error: "YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, and there is no default: who vouches for an address is a deployment decision",
+  });
+});
+it("access keeps today's shape", () => {
+  const c = shellConfig({ ...WORKER_ENV, YOKOHAMA_IDENTITY_SOURCE: "access" });
+  expect(c).toMatchObject({ source: "access", signin: null, session: null });
+});
+it("oidc needs the issuer, the client id and the session secret, and ignores the Access pair", () => {
+  const env = { ...WORKER_ENV, ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined, YOKOHAMA_IDENTITY_SOURCE: "oidc",
+    YOKOHAMA_OIDC_ISSUER: "https://issuer.test", YOKOHAMA_OIDC_CLIENT_ID: "client_1", YOKOHAMA_SESSION_SECRET: "s".repeat(32) };
+  expect(shellConfig(env)).toMatchObject({ source: "oidc", signin: { issuer: "https://issuer.test", clientId: "client_1", clientSecret: null }, session: { secret: "s".repeat(32), days: 30 } });
+  expect(shellConfig({ ...env, YOKOHAMA_OIDC_ISSUER: undefined })).toEqual({ error: "YOKOHAMA_OIDC_ISSUER must be set under YOKOHAMA_IDENTITY_SOURCE=oidc — the issuer whose /.well-known/openid-configuration names the endpoints" });
+  expect(shellConfig({ ...env, YOKOHAMA_SESSION_SECRET: "short" })).toEqual({ error: "YOKOHAMA_SESSION_SECRET must be at least 32 bytes — it signs every session cookie (wrangler secret put YOKOHAMA_SESSION_SECRET)" });
+  expect(shellConfig({ ...env, YOKOHAMA_SESSION_DAYS: "0" })).toEqual({ error: 'YOKOHAMA_SESSION_DAYS must be a whole number of days above zero — got "0"' });
+});
+it("workos needs the client id and the API key as the secret, and refuses an issuer", () => {
+  const env = { ...WORKER_ENV, ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined, YOKOHAMA_IDENTITY_SOURCE: "workos",
+    YOKOHAMA_OIDC_CLIENT_ID: "client_1", YOKOHAMA_OIDC_CLIENT_SECRET: "sk_test_x", YOKOHAMA_SESSION_SECRET: "s".repeat(32) };
+  expect(shellConfig(env)).toMatchObject({ source: "workos", signin: { issuer: null, clientId: "client_1", clientSecret: "sk_test_x" } });
+  expect(shellConfig({ ...env, YOKOHAMA_OIDC_CLIENT_SECRET: undefined })).toEqual({ error: "YOKOHAMA_OIDC_CLIENT_SECRET must be set under YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS API key the code exchange is authenticated with (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET)" });
+  expect(shellConfig({ ...env, YOKOHAMA_OIDC_ISSUER: "https://x" })).toEqual({ error: "YOKOHAMA_OIDC_ISSUER is set beside YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS arm's issuer is https://api.workos.com and is not configurable" });
+});
+it("open ignores an absent source and refuses a present one", () => {
+  expect(shellConfig({ ...OPEN_ENV, YOKOHAMA_IDENTITY_SOURCE: undefined })).toMatchObject({ source: null, signin: null, session: null });
+  expect(shellConfig({ ...OPEN_ENV, YOKOHAMA_IDENTITY_SOURCE: "access" })).toEqual({ error: "YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it" });
+});
+it("a source that is none of the three is refused by value", () => {
+  expect(shellConfig({ ...WORKER_ENV, YOKOHAMA_IDENTITY_SOURCE: "Access" })).toEqual({ error: 'YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "Access"' });
+});
+```
+
+  Under `access` the Access pair stays required exactly as today (`doorRules` in the guard mirrors it in Task 7); under
+  `oidc`/`workos` a SET `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is ignored, not refused (a self-hoster may leave them).
+
+- [ ] **Step 2: Run** `cd worker && npx vitest run src/config.unit.test.ts` — Expected: FAIL (`source` undefined; no
+  such sentences).
+- [ ] **Step 3: Implement.** In `config.ts`: `export type Source = "access" | "oidc" | "workos"`; the three fields on
+  `ShellConfig` after `door`; a reader `source(door, raw): Source | null` with the sentences above; `signin(env,
+  source)` and `session(env, source)` readers (secret length counted in UTF-8 bytes with `TextEncoder`, as
+  `isAddress` counts); `shellConfig` builds them in `ShellConfig`'s field order (the door first, then the source, so
+  the first refusal named is the door's); `moduleConfig` is untouched (the module never learns the source). In
+  `env.ts` the six keys with one doc line each.
+- [ ] **Step 4:** add `"YOKOHAMA_IDENTITY_SOURCE": "access"` to the `vars` of `wrangler.jsonc`, `wrangler.dev.jsonc`
+  and `wrangler.test.jsonc`, right after `YOKOHAMA_WEB_IDENTITY` (the two open files do NOT get it — `open` refuses
+  a present one). The deploy guard stays green: the dev file still equals production but for the dev door, and the
+  guard learns the key's rules in Task 7. Write the six §12 rows (kind `Worker var` for the first two and the days,
+  `secret` for the two secrets; the host `the Worker`; the file `worker/src/config.ts`).
+- [ ] **Step 5: Run** `cd worker && npm run typecheck && npx vitest run src/config.unit.test.ts && npm test && npm run test:scripts` —
+  Expected: all PASS (the pool's `worker` project reads `wrangler.test.jsonc`, now with the source; `lane-variables`
+  finds every new name in §12).
+- [ ] **Step 6: Commit** `git add worker/src/env.ts worker/src/config.ts worker/src/config.unit.test.ts worker/wrangler.jsonc worker/wrangler.dev.jsonc worker/wrangler.test.jsonc docs/web-lane.md` —
+  `feat(worker): YOKOHAMA_IDENTITY_SOURCE and the sign-in and session variables, read by the shell with no default (auth cycle, Task 1)`.
+
+---
+
+### Task 2: the session cookie (impl: opus · review: fable)
+
+**Files:**
+- Create: `worker/src/session.ts`
+- Test: `worker/src/session.unit.test.ts`
+
+**Interfaces:**
+- Produces: `SESSION_COOKIE`, `LOGIN_COOKIE`, `Session`, `Login` (the table above);
+  `mintSession(s: Omit<Session, "expires">, days: number, secret: string): Promise<string>` (the cookie VALUE);
+  `readSession(cookieHeader: string | null, secret: string, nowSeconds: number): Promise<Session | null>`;
+  `renewDue(s: Session, nowSeconds: number, days: number): boolean` (true past half the life);
+  `mintLogin(l: Omit<Login, "expires">, nowSeconds: number, secret: string): Promise<string>` (10 minutes);
+  `readLogin(cookieHeader: string | null, secret: string, nowSeconds: number): Promise<Login | null>`;
+  `setCookie(name: string, value: string, maxAgeSeconds: number): string` → `${name}=${value}; Max-Age=…; Path=/; HttpOnly; Secure; SameSite=Lax`;
+  `clearCookie(name: string): string` → the same with `Max-Age=0` and an empty value;
+  `cookieValue(cookieHeader: string | null, name: string): string | null`.
+- Format: `v1.<base64url(JSON payload)>.<base64url(HMAC-SHA256(secret, "v1." + payload))>`; `issued` and `expires`
+  are whole seconds; `address` is already normalized by the caller.
+
+- [ ] **Step 1: Write the failing tests:**
+
+```ts
+const SECRET = "0123456789abcdef0123456789abcdef";
+const NOW = 1_789_000_000;
+it("mints and reads back, with the expiry 30 days out", async () => {
+  const v = await mintSession({ address: "red@t.test", sid: "session_01", issued: NOW }, 30, SECRET);
+  expect(v.startsWith("v1.")).toBe(true);
+  expect(await readSession(`other=1; ${SESSION_COOKIE}=${v}`, SECRET, NOW + 5)).toEqual({ address: "red@t.test", sid: "session_01", issued: NOW, expires: NOW + 30 * 86_400 });
+});
+it("a changed MAC byte, an expired payload, a non-JSON payload, another secret and a v0 prefix each read as nobody", async () => {
+  const v = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
+  const [p, body, mac] = v.split(".");
+  const flipped = mac[0] === "A" ? "B" : "A";
+  for (const bad of [`${p}.${body}.${flipped}${mac.slice(1)}`, `v0.${body}.${mac}`, `${p}.!!!.${mac}`, v.slice(0, -1)]) {
+    expect(await readSession(`${SESSION_COOKIE}=${bad}`, SECRET, NOW)).toBeNull();
+  }
+  expect(await readSession(`${SESSION_COOKIE}=${v}`, "x".repeat(32), NOW)).toBeNull();
+  expect(await readSession(`${SESSION_COOKIE}=${v}`, SECRET, NOW + 30 * 86_400 + 1)).toBeNull();
+  expect(await readSession(null, SECRET, NOW)).toBeNull();
+  expect(await readSession("a=b", SECRET, NOW)).toBeNull();
+});
+it("renewal is due past half the life and not before", async () => {
+  const s = { address: "a@b.test", sid: null, issued: NOW, expires: NOW + 30 * 86_400 };
+  expect(renewDue(s, NOW + 15 * 86_400 - 1, 30)).toBe(false);
+  expect(renewDue(s, NOW + 15 * 86_400 + 1, 30)).toBe(true);
+});
+it("the login cookie lives ten minutes and carries the four fields", async () => {
+  const v = await mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo: "/#/t/sim-1" }, NOW, SECRET);
+  expect(await readLogin(`${LOGIN_COOKIE}=${v}`, SECRET, NOW + 599)).toEqual({ state: "st", nonce: "no", verifier: "ve", returnTo: "/#/t/sim-1", expires: NOW + 600 });
+  expect(await readLogin(`${LOGIN_COOKIE}=${v}`, SECRET, NOW + 601)).toBeNull();
+});
+it("the Set-Cookie lines carry the attributes verbatim", () => {
+  expect(setCookie(SESSION_COOKIE, "v", 60)).toBe("yokohama_session=v; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=Lax");
+  expect(clearCookie(LOGIN_COOKIE)).toBe("yokohama_login=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax");
+});
+```
+
+- [ ] **Step 2: Run** `npx vitest run src/session.unit.test.ts` — Expected: FAIL (module missing).
+- [ ] **Step 3: Implement `session.ts`.** HMAC via `crypto.subtle.importKey("raw", …, {name:"HMAC", hash:"SHA-256"})`
+  and `crypto.subtle.verify` (constant time, so no manual compare); the payload parsed only after the MAC verifies;
+  every exception inside `readSession`/`readLogin` is caught and answers `null`; `cookieValue` splits on `;`, trims,
+  and takes the first pair whose name matches exactly.
+- [ ] **Step 4: Run** the file and `npm run typecheck` — Expected: PASS.
+- [ ] **Step 5: Commit** `git add worker/src/session.ts worker/src/session.unit.test.ts` —
+  `feat(worker): the Worker's own session and login cookies — HMAC-SHA256, stateless, 30 days renewed past half-life (auth cycle, Task 2)`.
+
+---
+
+### Task 3: the two sign-in arms (impl: opus · review: fable)
+
+**Files:**
+- Create: `worker/src/signin.ts`
+- Modify: `worker/src/identity.ts` (export the private helpers `bytes` and `json`, lines 39–42, unchanged in body)
+- Test: `worker/src/signin.unit.test.ts`
+
+**Interfaces:**
+- Consumes: `ShellConfig.signin` (Task 1); `forwardable`, `asciiLower`, `isAddress` from `identity.ts`; a
+  `fetcher: typeof fetch`.
+- Produces: `SignedIn`; `authorizeUrl(source: Exclude<Source,"access">, signin: NonNullable<ShellConfig["signin"]>, p: { redirectUri: string; state: string; nonce: string; challenge: string | null }, discovery: Discovery | null): string`;
+  `exchange(source, signin, p: { code: string; redirectUri: string; verifier: string; nonce: string; ip: string | null; userAgent: string | null }, net: { fetcher: typeof fetch; keys: KeySource; discovery: Discovery | null; nowSeconds: number }): Promise<SignedIn | null>`;
+  `discovery(issuer: string, fetcher: typeof fetch): Promise<Discovery>` with `Discovery = { issuer: string; authorization_endpoint: string; token_endpoint: string; jwks_uri: string; end_session_endpoint: string | null }`, cached per isolate exactly as `keySource` caches (one in flight, a failed fetch rejects every joiner and caches nothing);
+  `keySourceAt(url: string, fetcher?: typeof fetch, clock?: () => number): KeySource` — `keySource`'s body with the URL a parameter; `keySource(teamDomain, …)` becomes `keySourceAt(`https://${teamDomain}/cdn-cgi/access/certs`, …)` with its tests untouched;
+  `verifyIdToken(token: string, keys: JwkSet, c: { iss: string; aud: string; nonce: string; nowSeconds: number }): Promise<SignedIn | null>`;
+  `WORKOS_AUTHORIZE = "https://api.workos.com/user_management/authorize"`, `WORKOS_AUTHENTICATE = "https://api.workos.com/user_management/authenticate"`, `WORKOS_JWKS = (clientId) => `https://api.workos.com/sso/jwks/${clientId}``, `WORKOS_LOGOUT = (sid) => `https://api.workos.com/user_management/sessions/logout?session_id=${encodeURIComponent(sid)}``;
+  `leaveUrl(source, signedInSid: string | null, discovery: Discovery | null, returnTo: string): string` — `workos`: `WORKOS_LOGOUT(sid)` + `&return_to=` when `sid`; `oidc`: `end_session_endpoint` + `?id_token_hint`-less `post_logout_redirect_uri=` when the document has one; else `returnTo`.
+
+- [ ] **Step 1: Write the failing tests** (the RS256 key pair and signing helper from `identity.unit.test.ts` lines
+  18–50, copied into this file — the pool isolates per file and a shared helper module is what the house avoids):
+
+```ts
+describe("verifyIdToken", () => {
+  it("accepts RS256 and ES256 tokens with iss, aud, exp, nonce and a verified email, lowercased in ASCII", …);
+  // sign { iss: "https://issuer.test", aud: "client_1", exp: NOW+60, nonce: "n1", email: "Red@T.test", email_verified: true, sid: "s1" }
+  // expect { address: "red@t.test", sid: "s1" }
+  it("refuses: wrong iss, aud missing the client, exp past, nonce mismatch, email_verified false or absent, a Kelvin-sign email, alg none, kid unknown, bad signature", …);
+  // each a null; the Kelvin case: "Kevin@x.test" → null (forwardable refuses it RAW)
+});
+describe("authorizeUrl", () => {
+  it("workos: the five parameters and provider=authkit, no nonce, no code_challenge", () => {
+    const u = new URL(authorizeUrl("workos", { issuer: null, clientId: "c", clientSecret: "k" }, { redirectUri: "https://h/enter", state: "st", nonce: "no", challenge: null }, null));
+    expect(u.origin + u.pathname).toBe(WORKOS_AUTHORIZE);
+    expect(Object.fromEntries(u.searchParams)).toEqual({ client_id: "c", redirect_uri: "https://h/enter", response_type: "code", provider: "authkit", state: "st" });
+  });
+  it("oidc: the discovery document's endpoint with scope, nonce, and code_challenge S256 only when given", …);
+  // { client_id, redirect_uri, response_type: "code", scope: "openid email", state, nonce, code_challenge, code_challenge_method: "S256" }
+});
+describe("exchange", () => {
+  it("workos: POSTs the JSON body with client_secret and returns the user's lowercased address and the access token's sid", async () => {
+    const fetcher = recording(200, { user: { email: "Red@T.test", email_verified: true }, access_token: await sign({ sid: "session_01", exp: NOW + 60 }), refresh_token: "r" });
+    expect(await exchange("workos", SIGNIN, { code: "c1", redirectUri: "https://h/enter", verifier: "", nonce: "", ip: "1.2.3.4", userAgent: "ua" }, { fetcher, keys, discovery: null, nowSeconds: NOW })).toEqual({ address: "red@t.test", sid: "session_01" });
+    expect(fetcher.calls[0]).toMatchObject({ url: WORKOS_AUTHENTICATE, method: "POST", body: { client_id: "c", client_secret: "k", grant_type: "authorization_code", code: "c1", ip_address: "1.2.3.4", user_agent: "ua" } });
+  });
+  it("workos: email_verified false, a non-200, a body that is not JSON, or a user with no email each answer null", …);
+  it("workos: an access token whose signature fails the JWKS still answers the address, with sid null", …); // belt and braces, never a refusal of a TLS-authenticated answer
+  it("oidc: POSTs form-encoded grant_type=authorization_code with client_secret_post, or with code_verifier and no secret, and verifies the id_token", …);
+  it("oidc: a token response with no id_token answers null", …);
+});
+describe("discovery", () => {
+  it("fetches /.well-known/openid-configuration once per isolate and rejects every joiner on a non-200", …);
+});
+```
+
+  `recording(status, body)` is a test fetcher returning `Response.json(body, {status})` and recording
+  `{url, method, body}` of each call.
+
+- [ ] **Step 2: Run** `npx vitest run src/signin.unit.test.ts src/identity.unit.test.ts` — Expected: FAIL (module
+  missing); identity's own suite PASS.
+- [ ] **Step 3: Implement `signin.ts`.** `verifyIdToken` is `resolveIdentity`'s verification steps (lines 112–139)
+  restated for a token in hand: `alg` RS256 (`RSASSA-PKCS1-v1_5`) or ES256 (`ECDSA` with `P-256`, `SHA-256`), string
+  `kid`, the key found, the signature, `iss` exact, `aud` as string or array containing the client id, `exp > now`,
+  `nbf <= now + 60` when present, `nonce` exact, `email_verified === true`, `email` through `forwardable` then
+  `asciiLower(trim)`, `isAddress`; `sid` a string or `null`. The `workos` exchange POSTs JSON, reads `user.email` and
+  `user.email_verified` the same way, and reads `sid` from the access token's payload only after `verifyJwtSignature`
+  (the signature half of the above, no claims) passes against `WORKOS_JWKS(clientId)` — on failure, `sid` is `null`
+  and the address stands. The `oidc` exchange POSTs `application/x-www-form-urlencoded` with `grant_type`, `code`,
+  `redirect_uri`, `client_id`, and either `client_secret` or `code_verifier`. Every network or parse failure answers
+  `null` after `log("signin-failed", { source, step, error })` (no body, no token in the log).
+- [ ] **Step 4: Run** both files and `npm run typecheck` — Expected: PASS; `identity.unit.test.ts` unchanged and PASS.
+- [ ] **Step 5: Commit** `git add worker/src/signin.ts worker/src/signin.unit.test.ts worker/src/identity.ts` —
+  `feat(worker): the workos and oidc sign-in arms — authorize URL, code exchange, ID token verification, discovery and a key source by URL (auth cycle, Task 3)`.
+
+---
+
+### Task 4: `/enter`'s two halves, the session on every request, sign-out and the 401 header (impl: opus · review: fable)
+
+**Files:**
+- Modify: `worker/src/route.ts` (the `Target` union, lines 15–35; `route`, line 82), `worker/src/index.ts`
+  (`handle`, line 108; `answer`, lines 198–262; `withApiHeaders`, lines 100–105; `identify`, line 286),
+  `worker/src/identity.ts` (the `Identity` union, lines 13–22; `callerName`, lines 165–176)
+- Test: `worker/src/route.unit.test.ts`, `worker/test/signin.test.ts` (new pool file)
+
+**Interfaces:**
+- Consumes: Tasks 1–3.
+- Produces: `Target` gains `{ kind: "leave" }` for `POST /api/leave` (`GET`/`HEAD` on it: `not-allowed`; any other
+  method: `not-allowed`); `Identity` gains `{ kind: "session"; email: string; sid: string | null; renew: boolean }`,
+  `callerName` answers its `email`; `handle(req, env, ctx, keys, fetcher = fetch)`;
+  `SESSION_CHALLENGE = 'Yokohama-Session realm="/enter"'`; `withApiHeaders(res, challenge: boolean)` adds
+  `WWW-Authenticate: <SESSION_CHALLENGE>` when `challenge` and `res.status === 401`.
+
+- [ ] **Step 1: Write the failing tests.** In `route.unit.test.ts`: `POST /api/leave` → `{kind:"leave"}`;
+  `GET /api/leave` → `{kind:"not-allowed"}`; `POST /api/leaver` → `{kind:"house"}`. In `test/signin.test.ts` (pool,
+  `worker` project, modelled on `test/door.test.ts` line 49: `handle(req, sent.env ?? env, createExecutionContext(),
+  keys)`; every `handle` call here passes an env override `{ ...env, YOKOHAMA_IDENTITY_SOURCE: "workos",
+  YOKOHAMA_OIDC_CLIENT_ID: "c", YOKOHAMA_OIDC_CLIENT_SECRET: "k", YOKOHAMA_SESSION_SECRET: SECRET,
+  ACCESS_TEAM_DOMAIN: undefined, ACCESS_AUD: undefined }` and a recording fetcher as the fifth argument; the pool's
+  own `wrangler.test.jsonc` stays `access`, so the file's "under access" cells pass the plain `env`):
+
+```ts
+it("GET /enter starts the sign-in: a 302 to WorkOS carrying state, a login cookie, and return_to kept", async () => {
+  const res = await handle(get("/enter?return_to=%2F%23%2Ft%2Fsim-1"), ENV, ctx, keys, fetcher);
+  expect(res.status).toBe(302);
+  const to = new URL(res.headers.get("Location")!);
+  expect(to.origin + to.pathname).toBe(WORKOS_AUTHORIZE);
+  const login = await readLogin(res.headers.get("Set-Cookie"), SECRET, NOW);
+  expect(login).toMatchObject({ state: to.searchParams.get("state"), returnTo: "/#/t/sim-1" });
+});
+it("a return_to that is another origin, a plain path, or an unsafe hash becomes /#/lobby", …);
+// "https://evil.test/#/t/x", "/api/me", "/#/t/../x", "#/t/sim-1" (no slash), "" → returnTo "/#/lobby"
+it("GET /enter?code&state completes it: the exchange runs once, the session cookie is set, the login cookie cleared, and the 302 lands on return_to", async () => {
+  // mint a login cookie for state "st"; fetcher answers the WorkOS exchange with a verified user
+  expect(res.status).toBe(302); expect(res.headers.get("Location")).toBe("/#/t/sim-1");
+  const cookies = res.headers.getSetCookie();
+  expect(cookies.some((c) => c.startsWith("yokohama_session=v1."))).toBe(true);
+  expect(cookies.some((c) => c.startsWith("yokohama_login=; Max-Age=0"))).toBe(true);
+  expect(fetcher.calls.filter((c) => c.url === WORKOS_AUTHENTICATE)).toHaveLength(1);
+});
+it("a state mismatch, a missing login cookie, or an exchange answering nobody lands on /#/lobby?signin=failed with no session cookie and no exchange where the state failed", …);
+it("GET /enter under access stays the 302 to /#/lobby, code or no code, with no cookie", …);
+it("a session cookie names the caller on /api/me, with no header and no issuer call", async () => {
+  const v = await mintSession({ address: "red@t.test", sid: "s1", issued: NOW }, 30, SECRET);
+  const res = await handle(get("/api/me", { cookie: `yokohama_session=${v}` }), ENV, ctx, keys, fetcher);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ mode: "cf-access", user: "red@t.test" });
+  expect(fetcher.calls).toHaveLength(0);
+});
+it("no cookie is the layer's 401 with the session challenge header; under access the header is absent", async () => {
+  const res = await handle(get("/api/me"), ENV, ctx, keys, fetcher);
+  expect(res.status).toBe(401);
+  expect(res.headers.get("WWW-Authenticate")).toBe('Yokohama-Session realm="/enter"');
+  const under = await handle(get("/api/me"), env /* access, as wrangler.test.jsonc has it */, ctx, keys, fetcher);
+  expect(under.status).toBe(401); expect(under.headers.has("WWW-Authenticate")).toBe(false);
+});
+it("a cookie past half its life is renewed on a 200, never on a 401, and never on a 101", …);
+// mint with issued = NOW - 16 days; /api/me → Set-Cookie yokohama_session=v1.… with Max-Age=2592000; a bad-MAC cookie → 401 and no Set-Cookie; a stream upgrade with the cookie → 101 and no Set-Cookie
+it("POST /api/leave clears the cookie and answers the leave URL; under access it answers Access's logout and clears nothing", async () => {
+  const res = await handle(post("/api/leave", { cookie: `yokohama_session=${v}`, origin: ORIGIN }), ENV, ctx, keys, fetcher);
+  expect(res.status).toBe(200);
+  expect(await res.json()).toEqual({ leave: "https://api.workos.com/user_management/sessions/logout?session_id=s1&return_to=https%3A%2F%2F…%2F" });
+  expect(res.headers.get("Set-Cookie")).toBe("yokohama_session=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax");
+  const under = await handle(post("/api/leave", { origin: ORIGIN }), env, ctx, keys, fetcher);
+  expect(await under.json()).toEqual({ leave: "/cdn-cgi/access/logout" }); expect(under.headers.has("Set-Cookie")).toBe(false);
+});
+it("POST /api/leave from another site is the cross-site 403 before anything else", …);
+```
+
+- [ ] **Step 2: Run** `npx vitest run src/route.unit.test.ts test/signin.test.ts` — Expected: FAIL.
+- [ ] **Step 3: Implement.** In `answer`, after `shellConfig`: when `target.kind === "enter"` and
+  `config.source !== "access"` and `config.source !== null`, branch on `url.searchParams.has("code")`: the START draws
+  `state`, `nonce` and `verifier` (32 random bytes each, base64url; `challenge` = base64url(SHA-256(verifier)) under
+  `oidc` with no secret, else `null`), computes `returnTo` by `safeReturnTo(url.searchParams.get("return_to"))`
+  (accepts exactly `/#/` followed by a route `parseRoute` in `web/src/route.ts` would accept — restated as the
+  regex `^/#/(lobby|new|new/local|t/[A-Za-z0-9_-]{1,64})$`; else `/#/lobby`), answers 302 to `authorizeUrl(...)` with
+  `Set-Cookie: setCookie(LOGIN_COOKIE, await mintLogin(...), 600)`; the CALLBACK reads `readLogin`, compares `state`
+  in constant time (`crypto.subtle.timingSafeEqual` on equal-length buffers, else false), calls `exchange(...)` with
+  `ip = req.headers.get("cf-connecting-ip")` and `userAgent = req.headers.get("user-agent")`, and on success answers
+  302 `returnTo` with `Set-Cookie` for the session (Max-Age `days*86400`) and the login cookie cleared; on any failure
+  302 `/#/lobby?signin=failed` with the login cookie cleared and no session cookie. Under `access`, `enter` stays
+  line 203's 302. The identity: when `config.door === "worker"` and `config.source !== "access"`, `identity` is
+  `readSession(req.headers.get("cookie"), …)` mapped to `{ kind: "session", email, sid, renew: renewDue(...) }`, else
+  `NO_ONE`; `identify` (the Access path) runs only under `access`. `leave`: a target under `/api`, so the cross-site
+  check (line 212) runs first; then `{ leave }` JSON by `leaveUrl` with `returnTo = ${url.origin}/`, the session cookie
+  cleared when the source is not `access`, the Access logout path under `access`. Renewal: when the identity is a
+  `session` with `renew` and the final response's status is 2xx and not 101, append `Set-Cookie` with a fresh mint.
+  `withApiHeaders(res, challenge)`: `challenge = config.source !== null && config.source !== "access"`, read in
+  `handle` from `shellConfig(env)` (a second call is cheap and pure; or thread it from `answer` by returning the
+  pair — the implementer's choice, stated in the report). The 405 for `GET /api/leave` is `not-allowed`'s existing
+  empty 405. **The arms' key sources** live beside the Access `keys` closure the default export holds ("ONE key
+  source per isolate, made at the first request", `index.ts` line 445): a module-level `Map<string, KeySource>` from
+  JWKS URL to `keySourceAt(url, fetcher)`, so a forged `kid` costs one fetch a minute per URL exactly as it does for
+  Access; the `workos` arm's URL is `WORKOS_JWKS(clientId)`, the `oidc` arm's the discovery document's `jwks_uri`.
+- [ ] **Step 4: Run** `npm run typecheck && npm test` — Expected: PASS, every existing pool cell included (the
+  `worker` project's env is `access`; nothing moves for it).
+- [ ] **Step 5: Commit** `git add worker/src/route.ts worker/src/index.ts worker/src/identity.ts worker/src/route.unit.test.ts worker/test/signin.test.ts` —
+  `feat(worker): /enter starts and completes the sign-in, the session cookie names the caller, POST /api/leave, and the Yokohama-Session challenge on 401s (auth cycle, Task 4)`.
+
+---
+
+### Task 5: the anonymous archive (impl: opus · review: fable)
+
+**Files:**
+- Modify: `worker/src/identity.ts` (the `Identity` union; `callerName`), `worker/src/index.ts` (`answer`, the
+  identity and the forward, lines 220–231; `objectFor`'s `archive` arm, lines 420–439), `worker/src/limits.ts`
+  (`limitKey`, lines 29–35; `limiterFor`, lines 39–42; `limited`, line 50), `worker/src/archive.ts` (`Incoming`,
+  lines 20–27; `fetch`, lines 79–100; `save`, lines 146–156), `worker/src/r2.ts` (`executePlan`, lines 138–163)
+- Test: `worker/src/identity.unit.test.ts`, `worker/src/limits.unit.test.ts`, `worker/test/archive.test.ts`
+
+**Interfaces:**
+- Consumes: `createId` (`index.ts` line 362) generalized to `bodyId(body)` — the same function, exported.
+- Produces: `DEVICE_HEADER = "X-Yokohama-Device"`; `ANON_DOMAIN = "anon.invalid"`; `isDeviceId(s: string): boolean`
+  (exactly `/^[0-9a-f]{16}$/`); `Identity` gains `{ kind: "anonymous"; device: string }` where `device` is the 16 hex
+  or a safe game id; `callerName` answers `anon-${device}@anon.invalid`; `anonymousIdentity(headers: Headers, body:
+  Uint8Array | null): Identity` — the header if `isDeviceId`, else the body's id if `isSafeId`, else `NO_ONE`;
+  `limitKey` answers the IP key for `anonymous`; `limiterFor(method, target, limits, anonymous: boolean)` sends an
+  anonymous `archive` POST to `limits.create` with kind `create`; `executePlan(bucket, plan, meta?: Record<string,
+  string>)` puts both keys with `{ customMetadata: meta }` when given; `Incoming.device: string | null`.
+
+- [ ] **Step 1: Write the failing tests.** `identity.unit.test.ts`: `callerName({kind:"anonymous", device:
+  "0123456789abcdef"})` → `"anon-0123456789abcdef@anon.invalid"`; `anonymousIdentity` with headers
+  `{"X-Yokohama-Device": "0123456789ABCDEF"}` (uppercase), `"0123456789abcde"` (15), `"0123456789abcdef0"` (17),
+  `"K123456789abcde"` → falls to the body: body `{"id":"local-aaaaaaaaaaaaaaaa"}` → device `local-aaaaaaaaaaaaaaaa`;
+  body `{"id":"../x"}` or no body → `{kind:"none"}`. `limits.unit.test.ts`: `limitKey("worker", anonymous, "9.9.9.9",
+  "create")` → `"ip:9.9.9.9"` (never the caller tag); `limiterFor("POST", {kind:"archive"}, limits, true)` →
+  `{limiter: limits.create, kind: "create"}`; with `false` → the write limiter as today. `test/archive.test.ts` (the
+  pool, the `worker` project, env `access` as it is): the anonymous cells go THROUGH THE SHELL — `handle(req, env,
+  createExecutionContext(), keys)` as `test/worker.test.ts` line 79 drives it — because the anonymous identity is
+  formed in `answer`; the file's `save(caller, body)` helper (line 197) reaches the archive object directly and
+  serves the signed-in variant. `LOCAL_PAIR` is the body the file's browser-save cells post (a `{record, table}` pair
+  whose table id is `LOCAL`) and `SAVE_STATUS` the status those cells assert — read them, do not guess:
+
+```ts
+it("a caller-less post with a device header lands under the device's anonymous prefix with the metadata", async () => {
+  const res = await handle(post("/api/archive", LOCAL_PAIR, { "X-Yokohama-Device": "0123456789abcdef", "content-type": "application/json" }), env, createExecutionContext(), keys);
+  expect(res.status).toBe(SAVE_STATUS /* the status the browser-save cells assert */);
+  const seg = await segmentOf("anon-0123456789abcdef@anon.invalid");
+  const head = await env.ARCHIVE.head(`browser/${seg}/rev7/over/${LOCAL}.json`);
+  expect(head?.customMetadata).toEqual({ caller: "anonymous", device: "0123456789abcdef", rev: "7", why: "over", uploaded: expect.stringMatching(/^\d+$/) });
+});
+it("a caller-less post with NO device header files under the game's own id", async () => {
+  // body's table id LOCAL (local-…): the key is browser/<segmentOf(`anon-${LOCAL}@anon.invalid`)>/rev7/over/<LOCAL>.json; metadata.device === "none"
+});
+it("a signed-in post keeps the caller's prefix and carries the device in the metadata", …);
+// dev-door credential + X-Yokohama-Claimed-User red@t.test + X-Yokohama-Device → test/browser/<seg>/…; metadata { caller: "red@t.test", device: "0123456789abcdef", … }
+it("a caller-less post whose body names no safe id is the layer's 401", …);
+it("an anonymous post spends the create limiter by IP", …);
+// a fake create limiter counting keys: two posts from cf-connecting-ip 1.1.1.1 with different device headers count ONE key "ip:1.1.1.1"; the write limiter sees nothing
+it("the anonymous caller never reaches a table route", …);
+// POST /api/games with X-Yokohama-Device and no caller → the layer's 401, and no X-Yokohama-User forwarded (read the house's answer as today's no-caller cell does)
+```
+
+- [ ] **Step 2: Run** `npx vitest run src/identity.unit.test.ts src/limits.unit.test.ts test/archive.test.ts` —
+  Expected: FAIL on the new cells.
+- [ ] **Step 3: Implement.** In `answer`, after the identity is resolved and only when `target.kind === "archive"`
+  and `callerName(identity) === undefined`: `identity = anonymousIdentity(req.headers, body)` (the header read BEFORE
+  the strip loop, which drops every `x-yokohama-*`). After the strip: when `target.kind === "archive"` and the raw
+  device header `isDeviceId`, `headers.set(DEVICE_HEADER, raw)` so the object reads it. `objectFor` is unchanged:
+  `callerName` of the anonymous kind is the synthetic address, within `ADDRESS_MAX_BYTES`. In `archive.ts`,
+  `Incoming.device = req.headers.get(DEVICE_HEADER)` when `isDeviceId`, else `null`; `save` passes
+  `executePlan(bucket, plan, { caller: callerOf(name) is anonymous (starts with "anon-" and ends with "@anon.invalid") ? "anonymous" : callerOf(name), device: incoming.device ?? "none", rev: <from plan.record_key, the "rev<N>" segment's digits>, why: <the "over"|"abandoned" segment>, uploaded: String(Math.floor(at / 1000)) })`.
+  `rev` and `why` parse off `plan.record_key` by splitting on `/` (the layout `<prefix>rev<N>/<why>/<id>.json`,
+  `archive::paths`); a key that does not parse answers no metadata and logs `metadata-skipped` rather than failing
+  the upload.
+- [ ] **Step 4: Run** `npm run typecheck && npm test` — Expected: PASS.
+- [ ] **Step 5: Commit** `git add worker/src/identity.ts worker/src/index.ts worker/src/limits.ts worker/src/archive.ts worker/src/r2.ts worker/src/identity.unit.test.ts worker/src/limits.unit.test.ts worker/test/archive.test.ts` —
+  `feat(worker): the anonymous archive — a caller-less upload files under anon-<device|game>@anon.invalid, limited by IP, with metadata on the object (auth cycle, Task 5)`.
+
+---
+
+### Task 6: the client — the device header, rule 6b, the sign-in refusal and sign-out (impl: opus · review: fable)
+
+**Files:**
+- Create: `web/src/device.ts`
+- Modify: `web/src/api.ts` (`isAccessChallenge`/`ACCESS_CHALLENGE`, lines 326–350; `call`'s 401 handling, lines
+  129–176; `api.archive`, line 1014; the `api` object), `web/src/outbox.ts` (`namelessUnderKey`, line 512;
+  `noteGameOver`, lines 700–728; `attempt`, lines 450–500; `reconsiderAll`, line 863; the head comment, rule 6b),
+  `web/src/Refusal.tsx`, `web/src/whoami.ts` (`failureOf`, `signOut`), `web/src/OnThisDevice.tsx` (`Remedy`, lines
+  472–500: the link gains `?return_to=`), `web/src/types.ts` (an `ArchiveReply` unchanged; a `LeaveReply = { leave: string }`)
+- Test: `web/src/device.test.ts`, `web/src/api.test.ts`, `web/src/outbox.test.ts`, `web/src/Refusal.test.tsx`,
+  `web/src/whoami.test.ts` (the existing files, extended)
+
+**Interfaces:**
+- Consumes: the Worker's `WWW-Authenticate: Yokohama-Session realm="/enter"` (Task 4), `X-Yokohama-Device` (Task 5),
+  `POST /api/leave` → `{ leave }` (Task 4).
+- Produces: `deviceId(): string` — 16 lowercase hex from `crypto.getRandomValues(new Uint8Array(8))`, kept under
+  `localStorage["yokohama.device"]`, drawn once, re-drawn when the stored value is not 16 hex, and a per-page value
+  when storage throws (a private window) — **the plan's correction of the design's §4.4 "the outbox's IndexedDB
+  store": the `META` store is keyed by GAME id and swept by `forgetGame` and the backups, so a device row there would
+  be swept or exported; localStorage is per origin and survives republishes, which is all the id needs**;
+  `isSessionChallenge(res: Response): boolean` (`WWW-Authenticate` starts with `Yokohama-Session`);
+  `SIGN_IN_NEEDED = "Sign in to play multiplayer."` (**the plan's wording, replacing the design's §4.3 "This table is
+  multiplayer. Sign in to take your seat.": one sentence serves the table link, the lobby and every refusal strip,
+  and the strip is where the player reads it**); `isSessionExpired(e)` true for either sentence;
+  `api.leave(): Promise<LeaveReply>`; `api.archive` sends `X-Yokohama-Device: deviceId()`;
+  `signInHref(): string` → `/enter?return_to=${encodeURIComponent(location.hash || "/#/lobby")}` with the hash
+  prefixed `/` (so `#/t/x` → `/#/t/x`).
+
+- [ ] **Step 1: Write the failing tests.**
+
+```ts
+// device.test.ts
+it("draws sixteen lowercase hex once and keeps it", …); // two calls equal; matches /^[0-9a-f]{16}$/; localStorage holds it
+it("re-draws a stored value that is not sixteen hex, and survives a storage that throws", …);
+// api.test.ts
+it("a 401 with WWW-Authenticate Yokohama-Session throws ApiError(SIGN_IN_NEEDED, 401); Cloudflare-Access still throws ACCESS_CHALLENGE; a bare 401 throws the body's sentence", …);
+it("api.archive sends X-Yokohama-Device with the device id", …);
+it("api.leave POSTs /api/leave and returns the body", …);
+// outbox.test.ts
+it("rule 6b holds a nameless game for a name ONLY when the server facts say open", …);
+// keyed build + facts.identity "open" + no name → row "signed-out", no post; keyed build + facts.identity "cf-access" + no name → the post is made (the device header present); keyed build + facts unread → the post is made
+it("a 401 carrying the session challenge parks the row as signed-out, whose remedy is the door", …);
+// Refusal.test.tsx
+it("draws the /enter link beside SIGN_IN_NEEDED, with return_to the current hash", …);
+// whoami.test.ts
+it("failureOf reads SIGN_IN_NEEDED as a challenge", …);
+it("signOut POSTs /api/leave and navigates to the answer's leave", …);
+```
+
+- [ ] **Step 2: Run** `cd web && npx vitest run src/device.test.ts src/api.test.ts src/outbox.test.ts src/Refusal.test.tsx src/whoami.test.ts` — Expected: FAIL on the new cells.
+- [ ] **Step 3: Implement.** `namelessUnderKey` becomes `heldForAName = () => Boolean(turnstileSiteKey()) &&
+  serverFacts().identity === "open" && claimedUser() === null` and the head comment's rule 6b is rewritten to say
+  so (and why: a keyed build under `worker` is the public deployment since the auth cycle, design §4.5). `call`
+  checks `isSessionChallenge` beside `isAccessChallenge` and throws `new ApiError(SIGN_IN_NEEDED, 401)`. `Refusal`
+  draws `<a href={signInHref()}>Sign in</a>` beside `SIGN_IN_NEEDED` and keeps "Sign in again" beside
+  `ACCESS_CHALLENGE`; the `Remedy`'s link becomes `signInHref()`. `whoami.signOut` calls `api.leave()` then
+  `window.location.assign(reply.leave)`; its failure path keeps today's behaviour (clear the name, re-ask).
+- [ ] **Step 4: Run** `cd web && npm run typecheck && npm test` — Expected: PASS (the `Refusal.test.tsx` directory
+  scan still finds no stray strip).
+- [ ] **Step 5: Commit** the listed files —
+  `feat(web): the device id on archive posts, rule 6b held to the open door, the sign-in refusal with its link, and sign-out through /api/leave (auth cycle, Task 6)`.
+
+---
+
+### Task 7: the deploy guard's second identity, the keyed pairing and the deployable files (impl: opus · review: fable)
+
+**Files:**
+- Modify: `worker/scripts/deploy-guard.mjs` (`doorRules`, lines 472–515; `SECRETS` (the map `secretsInVars`
+  reads); `turnstileConsistency`, lines 637–697; `configFailures`, lines 717–802; `DOORS`/`doorLine`, lines 397–527;
+  the identity constants, lines 273–302), `worker/scripts/deploy-guard.test.mjs`, `worker/wrangler.jsonc` (the
+  source becomes `workos` ONLY at the window, Task 10 — this task leaves it `access`), new
+  `worker/wrangler.private.jsonc` (D-1: the later private Worker, source `access`, name `yokohama-web-private`,
+  bucket `yokohama-archive-private`, rate-limit namespaces `7303`/`7304`, NO `routes` yet — the owner names the
+  domain later; `workers_dev: false`), `worker/package.json` (`deploy:private` script), `web/src/outbox.ts` (none),
+  the client's `check_build_stamp` (none — the self-host does not move)
+- Test: `worker/scripts/deploy-guard.test.mjs`
+
+**Interfaces:**
+- Produces: `const DEPLOYMENTS = { "wrangler.jsonc": { name: "yokohama-web", bucket: "yokohama-archive", namespaces: ["7301", "7302"], routes: ["yokohama.moore.nyc"] }, "wrangler.private.jsonc": { name: "yokohama-web-private", bucket: "yokohama-archive-private", namespaces: ["7303", "7304"], routes: null } }`;
+  `SOURCES = { access: "Cloudflare Access, verified by the shell", oidc: "an OpenID Connect issuer, verified by the shell at the callback", workos: "WorkOS AuthKit, through its first-party API at the callback" }`;
+  `sourceOf(value)`; `doorLine` prints `… deploys the worker door, source <source> — <SOURCES[source]>`.
+
+- [ ] **Step 1: Write the failing tests** (the file's fixture style: a temp root with the five files copied and one
+  edited):
+
+```js
+it("a worker-door file names a source, with no default", …); // remove YOKOHAMA_IDENTITY_SOURCE from wrangler.jsonc → one failure naming it
+it("access requires the Access pair; oidc requires the issuer and client id and forbids the pair; workos requires the client id and forbids the issuer", …);
+it("the two secrets are refused in any vars block", …); // YOKOHAMA_OIDC_CLIENT_SECRET, YOKOHAMA_SESSION_SECRET in vars → failures naming them as secrets
+it("a keyed build is accepted under worker with source oidc or workos, and refused under worker with access, and on an open file as before", …);
+// check 12: wrangler.jsonc with YOKOHAMA_TURNSTILE on + source workos + a keyed stamp → no failure; + source access → the existing KEYED_IS_OPEN sentence reworded to name the source
+it("wrangler.private.jsonc is held to its own record: name, bucket, namespaces, source access, no route, and production's other blocks", …);
+// change its name → failure; give it production's bucket → failure; add a route → failure "no route until the owner names the private domain"
+it("the dev file still differs from production in the dev door alone, with the source copied", …);
+it("doorLine names the source", …);
+```
+
+- [ ] **Step 2: Run** `cd worker && npm run test:scripts` — Expected: FAIL on the new cells.
+- [ ] **Step 3: Implement.** `doorRules`: read `sourceOf`; under `worker` require one of the three with Task 1's
+  sentence; per source the variable rules (Task 1's table), refusing `ACCESS_*` under `oidc`/`workos` only when a
+  value is non-empty (the shell ignores them; the guard, which writes the deploy, refuses the confusion). `SECRETS`
+  gains the two names with `"a secret — wrangler secret put <name>; never a var"`. `turnstileConsistency`: `open =
+  door === "open" || (door === "worker" && (source === "oidc" || source === "workos"))` for the identity rule, with
+  the sentence `KEYED_IS_OPEN` reworded: "a keyed build is the open door or a provider-signed worker door (R-FP4,
+  narrowed by the auth cycle's R-A3/R-A4): under Access the edge is the bot defence". `configFailures`: a judged file
+  in `DEPLOYMENTS` is held to its record (name, bucket, namespaces, routes) and to production's `assets`,
+  `observability`, `durable_objects` and `migrations` blocks; `wrangler.private.jsonc` is optional (absent is not a
+  failure) and never a sibling of production. `DEV_DIFFERS` and `OPEN_DIFFERS` unchanged except `OPEN_DIFFERS`
+  gains `YOKOHAMA_IDENTITY_SOURCE: undefined`. `package.json`: `"deploy:private": "node scripts/deploy-guard.mjs --config wrangler.private.jsonc && node scripts/secrets-guard.mjs --config wrangler.private.jsonc && wrangler deploy --config wrangler.private.jsonc"`.
+- [ ] **Step 4: Run** `npm run test:scripts && node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/deploy-guard.mjs --config wrangler.dev.jsonc && node scripts/deploy-guard.mjs --config wrangler.open.jsonc && node scripts/deploy-guard.mjs --config wrangler.private.jsonc` — Expected: PASS; each guard run prints its door line and exits 0 (an assembled tree may be required by checks 2, 9, 11, 12 — run `npm run build` first if so, as the window does).
+- [ ] **Step 5: Commit** `git add worker/scripts/deploy-guard.mjs worker/scripts/deploy-guard.test.mjs worker/wrangler.private.jsonc worker/package.json` —
+  `feat(worker): the deploy guard reads the identity source, holds two deployment identities and accepts a keyed build under a provider-signed worker door (auth cycle, Task 7)`.
+
+---
+
+### Task 8: the minted test session and the live instruments (impl: sonnet · review: fable)
+
+**Files:**
+- Create: `worker/scripts/mint-session.mjs`, `worker/scripts/mint-session.test.mjs`
+- Modify: `worker/scripts/dev-vars.mjs` (`KEYS = ["CF-Access-Client-Id", "CF-Access-Client-Secret"]`, line 24: the
+  credential's headers, which the replay sends with `X-Yokohama-Claimed-User`, `live-replay.mjs` line 28),
+  `worker/scripts/live-replay.mjs`, `web/e2e/live.ts` (line 137 returns the claimed header for the live context)
+- Test: `worker/scripts/mint-session.test.mjs` (new), `worker/scripts/live-replay.test.mjs`, `web/e2e/harness.node.test.ts` (extended)
+
+**Interfaces:**
+- Produces: `node scripts/mint-session.mjs <address> [--days N]` prints `yokohama_session=v1.…` for `.test`
+  addresses ONLY, reading `YOKOHAMA_SESSION_SECRET` from the environment, exit 2 with
+  `mint-session: only a .test address may be minted — got <address>` otherwise, exit 2 with
+  `mint-session: YOKOHAMA_SESSION_SECRET is not set` when absent; the instruments read `YOKOHAMA_SESSION_COOKIE`
+  from the environment and, when set, send it as `Cookie` INSTEAD of the Access credential headers (both set is a
+  refusal: `… both YOKOHAMA_SESSION_COOKIE and the service credential are set — one identity per run`).
+- The script is `.mjs` run by plain `node`, so it does not import `session.ts`: it re-implements the mint with
+  `node:crypto`'s `createHmac("sha256", secret)` over the same `v1.<payload>` bytes, and `mint-session.test.mjs`
+  (vitest, which transpiles) imports BOTH and pins them byte-identical on one fixed payload — the cross-check cell,
+  so the two can never drift unseen.
+
+- [ ] **Step 1: Write the failing tests:** the `.test` fence; the missing secret; the cross-check against
+  `session.ts` (dynamic `import("../src/session.ts")` under vitest, which transpiles); `live-replay` with
+  `YOKOHAMA_SESSION_COOKIE` set sends `Cookie` and no `CF-Access-Client-Id`; with both set, refuses.
+- [ ] **Step 2: Run** `npm run test:scripts` — Expected: FAIL.
+- [ ] **Step 3: Implement** as the interfaces say.
+- [ ] **Step 4: Run** `npm run test:scripts` — Expected: PASS.
+- [ ] **Step 5: Commit** —
+  `feat(worker): a minted .test session for the live instruments on a provider-signed Worker (auth cycle, Task 8)`.
+
+---
+
+### Task 9: the documents (impl: sonnet · review: fable)
+
+**Files:**
+- Modify: `docs/web-lane.md` (§12's six rows were Task 1's; here §8: a paragraph under "Still owed before the door
+  opens for real" moving the provider items to "met by the auth cycle"; §4: one bullet, "three identity sources
+  under the worker door"; §15:
+  W-3's bullet gains the sentence that the anonymous upload no longer depends on an update), `worker/RUNBOOK.md`
+  (§3's table: the six rows; a new §23 "The public door opens — the switch to WorkOS" RECIPE: the WorkOS production
+  environment's three URLs, the methods on and passwords off, the two secrets put, the keyed build, the edge rule
+  ENABLED by its id FIRST, `npm run deploy` with `wrangler.jsonc` at `workos`, the hostname OFF the Access application
+  LAST, the readings, the rollback = the previous `wrangler.jsonc` redeployed, the hostname back on Access, the rule
+  disabled), `worker/README.md` (§1.5 "The two doors" → the two doors and the worker door's three sources, one
+  paragraph), `deploy/README.md` (§1: a sentence that the Worker may also run `oidc` against any issuer; the NAS
+  stays `cf-access`), `docs/security-ledger.md` (the C-tier rows' cycle column where the auth cycle met them;
+  a row `AUTH` noting the anonymous archive's caps), `docs/plans/2026-10-18-auth-cycle-design.md` (§9.4 appended:
+  this plan's D-1 and the device-store correction), `CLAUDE.md` (ONE standing-rule sentence in the browser-lane
+  paragraph: the three sources, one per deployment, the cookie the Worker's, both halves on `/enter`).
+- Test: `cd worker && npm run test:scripts` (the `lane-variables` cell still green; the §3 runbook rows are not
+  pinned by a test and are read by the reviewer against `config.ts`).
+
+- [ ] **Step 1:** write the paragraphs and the recipe; the recipe's order is the design's §4.7 and the lane's §10.
+- [ ] **Step 2: Run** `cd worker && npm run test:scripts` — Expected: PASS.
+- [ ] **Step 3: Commit** —
+  `docs: the auth cycle's variables, the switch recipe, the sources and the standing rule (auth cycle, Task 9)`.
+
+---
+
+### Task 10: the window — the public door opens (the orchestrator and the owner; no implementer)
+
+- [ ] **Step 1 — the after review first** (the orchestrator's own, over an export of the branch head): every task's
+  cells re-run; the mutation battery (§"Mutants" below) each reverted; the per-edit suites and the lane's rows
+  (`docs/web-lane.md` §2); the roster is OWED because the workspace version moves (Step 2).
+- [ ] **Step 2 — the version**: `0.7.0` (the lane's §7 rule: the identity model changes); the bump commit; the
+  fifteen release gates measured as one sequence and recorded in the close.
+- [ ] **Step 3 — WorkOS production**: the owner, in the dashboard: the production environment; Redirect URI
+  `https://yokohama.moore.nyc/enter`; Sign-out URI `https://yokohama.moore.nyc/`; Initiate login URI
+  `https://yokohama.moore.nyc/enter`; Magic Auth, Google, GitHub, Apple, passkeys ON; Email + Password OFF; branding
+  (logo, colours) as the owner likes; the client id into `wrangler.jsonc`'s `YOKOHAMA_OIDC_CLIENT_ID`, the API key
+  `wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET`, `openssl rand -base64 48 | wrangler secret put YOKOHAMA_SESSION_SECRET`.
+- [ ] **Step 4 — the build**: `cd web && YOKOHAMA_TURNSTILE_SITEKEY=<key> YOKOHAMA_SITE_URL=https://yokohama.moore.nyc … npm run build`
+  (the keyed build, as the F window's recipe lists the five values), `cd worker && npm run build`.
+- [ ] **Step 5 — `wrangler.jsonc`**: `YOKOHAMA_IDENTITY_SOURCE: "workos"`, `YOKOHAMA_TURNSTILE: "on"`, the Access pair
+  REMOVED, the client id set; committed as the window's commit (the guard accepts it: Task 7).
+- [ ] **Step 6 — the order** (the lane's §10): the edge rule ENABLED by its id `dc4c5d3e986144649617cbbaea58cd8a`;
+  `npm run deploy`; the owner signs in from a fresh profile (the readings: the overlay, the WorkOS page, the
+  redirect back, `/api/me` naming them, a table dealt, a WebSocket opened under the cookie, two invocations for the
+  sign-in in the logs, and the console clean of any CSP line at every level — the design's §4.3 claim that the header
+  set does not move, read live); THEN the hostname `yokohama.moore.nyc` taken off the Access application (the NAS and CLI
+  hostnames stay); a second fresh profile reads the whole path with no Access anywhere; a third profile, with
+  today's RELEASED client still installed and a finished local game waiting, opens the site and the game lands
+  anonymously under the game's id (the first real reading of R-A11); the friend's game, when they visit.
+- [ ] **Step 7 — the readings** into `worker/RUNBOOK.md` §23 (the record), the ledger's live column, the lane's §1
+  and §8; rollback bullets beside them.
+- [ ] **Step 8 — the close**: the design's §9.5 (the window), the spec's §9.9 (this cycle's rulings, decisions and
+  corrections verbatim), guidingpath's row and current state, the board's Track 4, the memory.
+
+## Mutants (the after review's battery; each must turn a named cell red, then is reverted)
+
+| mutant | the cell that reads red |
+|---|---|
+| `readSession` compares the MAC with `===` on strings | Task 2 "a changed MAC byte …" (still red: the flipped byte) — and the review notes constant time is `crypto.subtle.verify`'s, not a cell's |
+| `verifyIdToken` accepts `email_verified` absent | Task 3 "refuses … email_verified false or absent" |
+| `exchange("workos")` reads `email` without `forwardable` | Task 3 the Kelvin case |
+| `safeReturnTo` accepts any string starting with `/` | Task 4 "a return_to that is another origin …" |
+| the renewal `Set-Cookie` is appended on every 2xx including 101 | Task 4 "never on a 101" |
+| `withApiHeaders` sets the challenge under `access` | Task 4 "under access the header is absent" |
+| `anonymousIdentity` is formed on every target | Task 5 "never reaches a table route" |
+| `limitKey` keys an anonymous caller by its tag | Task 5 "spends the create limiter by IP" |
+| `isDeviceId` accepts uppercase | Task 5 the uppercase case |
+| `heldForAName` ignores the facts | Task 6 "rule 6b holds … ONLY when the server facts say open" |
+| the guard accepts a keyed build under `access` | Task 7 check-12 cell |
+| `mint-session.mjs` mints a non-`.test` address | Task 8 the fence |
+
+## Pre-flight record
+
+(Task 0's readings, filled before Task 3 is dispatched.)
+
+## Review record
+
+(The plan review's corrections, each task's `DONE_WITH_CONCERNS` and its correction in this plan, the after review.)
