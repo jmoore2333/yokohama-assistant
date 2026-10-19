@@ -110,6 +110,9 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
   it("reads the TTL from the configuration, null when unset, and the waiting-table TTL beside it", () => {
     const config = (ttlDays: number | null, openTtlDays = 7): ShellConfig => ({
       door: "worker",
+      source: "access",
+      signin: null,
+      session: null,
       archive: "r2",
       ttlDays,
       openTtlDays,

@@ -102,6 +102,8 @@
     // deployment with no identity provider, where anyone who reaches the Worker
     // may play under any name; this repository runs it only for the door window (`wrangler.open.jsonc`).
     "YOKOHAMA_WEB_IDENTITY": "worker",
+    // Who vouches for an address (auth cycle, design §3), with no default: Cloudflare Access, as today.
+    "YOKOHAMA_IDENTITY_SOURCE": "access",
     // The `yokohama` Access application: its team's domain and its audience.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
     "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",

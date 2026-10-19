@@ -57,6 +57,8 @@
     // Production's door (M6.5c2, spec §2.1). The pool's `open` project runs the
     // other door, over `wrangler.open.test.jsonc`.
     "YOKOHAMA_WEB_IDENTITY": "worker",
+    // Who vouches for an address (auth cycle, design §3), with no default: Cloudflare Access, as today.
+    "YOKOHAMA_IDENTITY_SOURCE": "access",
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud",
     "DEV_DOOR_CLIENT_ID": "test-client.access",

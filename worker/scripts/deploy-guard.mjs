@@ -413,6 +413,9 @@ const OPEN_DIFFERS = {
   ACCESS_TEAM_DOMAIN: undefined,
   ACCESS_AUD: undefined,
   YOKOHAMA_DEV_DOOR: undefined,
+  // The open door has no identity source (auth cycle, Task 1): the shell refuses one beside `open`, so the open
+  // file omits the variable production sets. Task 7 gives the guard the source's own rules.
+  YOKOHAMA_IDENTITY_SOURCE: undefined,
   // The window ships a keyed build (cycle F, R-FP4): check 12 holds it there.
   YOKOHAMA_TURNSTILE: "on",
 };

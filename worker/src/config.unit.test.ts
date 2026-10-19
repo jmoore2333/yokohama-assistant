@@ -21,7 +21,14 @@ const LIMITS = { CREATE_LIMIT: FAKE_CREATE, WRITE_LIMIT: FAKE_WRITE };
  *  it `undefined`. The variables are `unknown` here because a wrangler `vars`
  *  entry can be a number or a boolean, and those are cells too. */
 function env(vars: Record<string, unknown> = {}, bucket = false): Env {
-  return { ASSETS: {} as Fetcher, ...LIMITS, ...(bucket ? { ARCHIVE: BUCKET } : {}), YOKOHAMA_WEB_IDENTITY: "worker", ...vars } as Env;
+  const e: Record<string, unknown> = { ASSETS: {} as Fetcher, ...LIMITS, ...(bucket ? { ARCHIVE: BUCKET } : {}), YOKOHAMA_WEB_IDENTITY: "worker", ...vars };
+  // The identity source (auth cycle, Task 1) has no default either, and the worker door requires it: every cell
+  // here that is about another variable gets `access`, today's shape, unless `vars` names the variable — `undefined`
+  // included, which unbinds it — or the door is `open`, which refuses a source beside it.
+  if (!("YOKOHAMA_IDENTITY_SOURCE" in vars) && typeof e.YOKOHAMA_WEB_IDENTITY === "string" && e.YOKOHAMA_WEB_IDENTITY.trim() !== "open") {
+    e.YOKOHAMA_IDENTITY_SOURCE = "access";
+  }
+  return e as unknown as Env;
 }
 
 /** The configuration, or the cell fails with the refusal it got instead. */
@@ -197,6 +204,155 @@ describe("YOKOHAMA_WEB_IDENTITY (M6.5c2, spec §2.1)", () => {
     expect(refused(env({ YOKOHAMA_WEB_IDENTITY: value }))).toBe(
       `YOKOHAMA_WEB_IDENTITY must be worker or open — got ${JSON.stringify(value)}`,
     );
+  });
+});
+
+// The auth cycle, Task 1 (design §3): who vouches for an address is a deployment decision, so the source has NO
+// default under the worker door, and the sign-in and session variables are read only for the sources that use them.
+// Mutants: a default source; the source ignored (every source read as access); either reader run under access; the
+// open door's refusal missing, or made whatever the door; a secret's length counted in characters; a days value
+// that is not a whole number let through; the source read before the door.
+describe("YOKOHAMA_IDENTITY_SOURCE (auth cycle, design §3)", () => {
+  const OIDC = {
+    ACCESS_TEAM_DOMAIN: undefined,
+    ACCESS_AUD: undefined,
+    YOKOHAMA_IDENTITY_SOURCE: "oidc",
+    YOKOHAMA_OIDC_ISSUER: "https://issuer.test",
+    YOKOHAMA_OIDC_CLIENT_ID: "client_1",
+    YOKOHAMA_SESSION_SECRET: "s".repeat(32),
+  };
+  const WORKOS = {
+    ACCESS_TEAM_DOMAIN: undefined,
+    ACCESS_AUD: undefined,
+    YOKOHAMA_IDENTITY_SOURCE: "workos",
+    YOKOHAMA_OIDC_CLIENT_ID: "client_1",
+    YOKOHAMA_OIDC_CLIENT_SECRET: "sk_test_x",
+    YOKOHAMA_SESSION_SECRET: "s".repeat(32),
+  };
+
+  it("the worker door requires a source, with no default", () => {
+    expect(refused(env({ YOKOHAMA_IDENTITY_SOURCE: undefined }, true))).toBe(
+      "YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, and there is no default: who vouches for an address is a deployment decision",
+    );
+  });
+  it("access keeps today's shape", () => {
+    expect(accepted(env({ YOKOHAMA_IDENTITY_SOURCE: "access" }, true))).toMatchObject({ source: "access", signin: null, session: null });
+  });
+  it("access ignores the sign-in and session variables when they happen to be set", () => {
+    expect(
+      accepted(env({ YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_OIDC_ISSUER: "https://issuer.test", YOKOHAMA_OIDC_CLIENT_ID: "c", YOKOHAMA_SESSION_SECRET: "short", YOKOHAMA_SESSION_DAYS: "0" }, true)),
+    ).toMatchObject({ source: "access", signin: null, session: null });
+  });
+  it("oidc needs the issuer, the client id and the session secret, and ignores the Access pair", () => {
+    expect(accepted(env(OIDC, true))).toMatchObject({
+      source: "oidc",
+      signin: { issuer: "https://issuer.test", clientId: "client_1", clientSecret: null },
+      session: { secret: "s".repeat(32), days: 30 },
+    });
+    // A SET Access pair is ignored, never refused: a self-hoster may leave it.
+    expect(accepted(env({ ...OIDC, ACCESS_TEAM_DOMAIN: "t.cloudflareaccess.com", ACCESS_AUD: "aud" }, true))).toMatchObject({ source: "oidc" });
+    expect(refused(env({ ...OIDC, YOKOHAMA_OIDC_ISSUER: undefined }, true))).toBe(
+      "YOKOHAMA_OIDC_ISSUER must be set under YOKOHAMA_IDENTITY_SOURCE=oidc — the issuer whose /.well-known/openid-configuration names the endpoints",
+    );
+    expect(refused(env({ ...OIDC, YOKOHAMA_OIDC_CLIENT_ID: undefined }, true))).toBe(
+      "YOKOHAMA_OIDC_CLIENT_ID must be set under YOKOHAMA_IDENTITY_SOURCE=oidc — the client id the issuer registered for this site",
+    );
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_SECRET: "short" }, true))).toBe(
+      "YOKOHAMA_SESSION_SECRET must be at least 32 bytes — it signs every session cookie (wrangler secret put YOKOHAMA_SESSION_SECRET)",
+    );
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_SECRET: undefined }, true))).toBe(
+      "YOKOHAMA_SESSION_SECRET must be at least 32 bytes — it signs every session cookie (wrangler secret put YOKOHAMA_SESSION_SECRET)",
+    );
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: "0" }, true))).toBe(
+      'YOKOHAMA_SESSION_DAYS must be a whole number of days above zero — got "0"',
+    );
+  });
+  it("oidc passes a client secret through when one is set, and does not need one", () => {
+    expect(accepted(env({ ...OIDC, YOKOHAMA_OIDC_CLIENT_SECRET: "shh" }, true))).toMatchObject({
+      signin: { issuer: "https://issuer.test", clientId: "client_1", clientSecret: "shh" },
+    });
+  });
+  it("workos needs the client id and the API key as the secret, and refuses an issuer", () => {
+    expect(accepted(env(WORKOS, true))).toMatchObject({
+      source: "workos",
+      signin: { issuer: null, clientId: "client_1", clientSecret: "sk_test_x" },
+      session: { secret: "s".repeat(32), days: 30 },
+    });
+    expect(refused(env({ ...WORKOS, YOKOHAMA_OIDC_CLIENT_SECRET: undefined }, true))).toBe(
+      "YOKOHAMA_OIDC_CLIENT_SECRET must be set under YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS API key the code exchange is authenticated with (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET)",
+    );
+    expect(refused(env({ ...WORKOS, YOKOHAMA_OIDC_CLIENT_ID: undefined }, true))).toBe(
+      "YOKOHAMA_OIDC_CLIENT_ID must be set under YOKOHAMA_IDENTITY_SOURCE=workos — the client id the issuer registered for this site",
+    );
+    expect(refused(env({ ...WORKOS, YOKOHAMA_OIDC_ISSUER: "https://x" }, true))).toBe(
+      "YOKOHAMA_OIDC_ISSUER is set beside YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS arm's issuer is https://api.workos.com and is not configurable",
+    );
+    expect(refused(env({ ...WORKOS, YOKOHAMA_SESSION_SECRET: "short" }, true))).toMatch(/^YOKOHAMA_SESSION_SECRET must be at least 32 bytes/);
+  });
+  it("open ignores an absent source and refuses a present one", () => {
+    expect(accepted(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: undefined }, true))).toMatchObject({ source: null, signin: null, session: null });
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "access" }, true))).toBe(
+      "YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it",
+    );
+    // Whatever it says: a present source is refused beside open, a bad value included.
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "oidc" }, true))).toMatch(/^YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open/);
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "bogus" }, true))).toMatch(/^YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open/);
+  });
+  it("open ignores the sign-in and session variables, as it ignores the Access pair", () => {
+    expect(
+      accepted(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: undefined, YOKOHAMA_OIDC_CLIENT_ID: "c", YOKOHAMA_SESSION_SECRET: "short" }, true)),
+    ).toMatchObject({ source: null, signin: null, session: null });
+  });
+  it("a source that is none of the three is refused by value", () => {
+    expect(refused(env({ YOKOHAMA_IDENTITY_SOURCE: "Access" }, true))).toBe(
+      'YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "Access"',
+    );
+    expect(refused(env({ YOKOHAMA_IDENTITY_SOURCE: "" }, true))).toBe('YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got ""');
+  });
+  it("is read trimmed, as the door is", () => {
+    expect(accepted(env({ YOKOHAMA_IDENTITY_SOURCE: " access " }, true))).toMatchObject({ source: "access" });
+  });
+});
+
+describe("YOKOHAMA_SESSION_SECRET and YOKOHAMA_SESSION_DAYS (auth cycle, design §3)", () => {
+  const OIDC = {
+    YOKOHAMA_IDENTITY_SOURCE: "oidc",
+    YOKOHAMA_OIDC_ISSUER: "https://issuer.test",
+    YOKOHAMA_OIDC_CLIENT_ID: "client_1",
+    YOKOHAMA_SESSION_SECRET: "s".repeat(32),
+  };
+  // Mutant: the length counted in characters (`.length`), not UTF-8 bytes.
+  it("counts the secret in UTF-8 bytes: sixteen two-byte characters pass, fifteen do not", () => {
+    expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_SECRET: "\u00e9".repeat(16) }, true)).session?.secret).toBe("\u00e9".repeat(16));
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_SECRET: "\u00e9".repeat(15) }, true))).toMatch(/^YOKOHAMA_SESSION_SECRET must be at least 32 bytes/);
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_SECRET: "s".repeat(31) }, true))).toMatch(/^YOKOHAMA_SESSION_SECRET must be at least 32 bytes/);
+  });
+  it("reads the days as a whole number above zero, 30 when absent", () => {
+    expect(accepted(env(OIDC, true)).session?.days).toBe(30);
+    expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: "7" }, true)).session?.days).toBe(7);
+    expect(accepted(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: "365" }, true)).session?.days).toBe(365);
+  });
+  it.each(["0", "-1", "2.5", "thirty", "", "1e3", "007", " 7", "99999999999999999999"])("refuses the days %j, quoting it", (value) => {
+    expect(refused(env({ ...OIDC, YOKOHAMA_SESSION_DAYS: value }, true))).toBe(
+      `YOKOHAMA_SESSION_DAYS must be a whole number of days above zero — got ${JSON.stringify(value)}`,
+    );
+  });
+});
+
+describe("which of two refusals is named, with the source (auth cycle, Task 1)", () => {
+  it("the door before the source", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: undefined, YOKOHAMA_IDENTITY_SOURCE: "bogus" }, true))).toMatch(/^YOKOHAMA_WEB_IDENTITY must be worker or open/);
+  });
+  it("the source before the sign-in variables, and those before the session's", () => {
+    expect(refused(env({ YOKOHAMA_IDENTITY_SOURCE: "bogus", YOKOHAMA_SESSION_SECRET: "short" }, true))).toMatch(/^YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got/);
+    expect(refused(env({ YOKOHAMA_IDENTITY_SOURCE: "oidc", YOKOHAMA_SESSION_SECRET: "short" }, true))).toMatch(/^YOKOHAMA_OIDC_ISSUER must be set/);
+    expect(
+      refused(env({ YOKOHAMA_IDENTITY_SOURCE: "oidc", YOKOHAMA_OIDC_ISSUER: "https://i", YOKOHAMA_OIDC_CLIENT_ID: "c", YOKOHAMA_SESSION_SECRET: "short", YOKOHAMA_SESSION_DAYS: "0" }, true)),
+    ).toMatch(/^YOKOHAMA_SESSION_SECRET must be at least 32 bytes/);
+  });
+  it("the open door's older refusals before a source set beside it", () => {
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_WEB_ADMINS: "boss@t.test" }, true))).toMatch(/^YOKOHAMA_WEB_ADMINS is set beside/);
+    expect(refused(env({ YOKOHAMA_WEB_IDENTITY: "open", YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_DEV_DOOR: "on" }, true))).toMatch(/^YOKOHAMA_DEV_DOOR=on beside/);
   });
 });
 

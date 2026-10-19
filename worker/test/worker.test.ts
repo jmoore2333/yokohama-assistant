@@ -275,6 +275,12 @@ describe("the Worker's own answers (spec §2.3)", () => {
         "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
           "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
       ],
+      // The identity source (auth cycle, Task 1): this configuration's `access`, left beside the open door once
+      // the dev door is off, is the last of the three refused.
+      [
+        { ...opened, YOKOHAMA_DEV_DOOR: "off" },
+        "YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it",
+      ],
     ];
     expect(env.YOKOHAMA_DEV_DOOR, "premise: this configuration's dev door is on").toBe("on");
     for (const [overridden, sentence] of refusals) {
@@ -286,7 +292,7 @@ describe("the Worker's own answers (spec §2.3)", () => {
       }
       expect((await worker("/enter", { env: overridden })).status).toBe(302);
     }
-    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off" } });
+    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off", YOKOHAMA_IDENTITY_SOURCE: undefined } });
     expect(accepted.status, accepted.text).toBe(200);
   });
 

@@ -47,6 +47,23 @@ export interface Env {
    *  provider, where the name a caller claims is who they are. Unset, every
    *  `/api/*` answers the 500 naming it. */
   YOKOHAMA_WEB_IDENTITY?: string;
+  /** `access` | `oidc` | `workos`, with NO default under the `worker` door (auth cycle, design §3): who vouches
+   *  for an address — Cloudflare Access, a generic OpenID Connect issuer, or WorkOS's first-party flow. Refused
+   *  beside `open`, where a name is a claim. */
+  YOKOHAMA_IDENTITY_SOURCE?: string;
+  /** The OpenID Connect issuer, whose `/.well-known/openid-configuration` names the endpoints: required under
+   *  `oidc`, refused beside `workos`, ignored otherwise. */
+  YOKOHAMA_OIDC_ISSUER?: string;
+  /** The client id the issuer (or WorkOS) registered for this site: required under `oidc` and `workos`. */
+  YOKOHAMA_OIDC_CLIENT_ID?: string;
+  /** A SECRET (`wrangler secret put`): the client secret under `oidc`, optional (absent = the PKCE flow); the
+   *  WorkOS API key under `workos`, required. */
+  YOKOHAMA_OIDC_CLIENT_SECRET?: string;
+  /** A SECRET (`wrangler secret put`): at least 32 UTF-8 bytes, signing every session cookie; required under
+   *  `oidc` and `workos`. */
+  YOKOHAMA_SESSION_SECRET?: string;
+  /** Whole days above zero, absent = 30: how long a session cookie stands under `oidc` and `workos`. */
+  YOKOHAMA_SESSION_DAYS?: string;
   /** The Access team's domain; its keys are
    *  `https://<domain>/cdn-cgi/access/certs` (spec §2.3). */
   ACCESS_TEAM_DOMAIN?: string;
