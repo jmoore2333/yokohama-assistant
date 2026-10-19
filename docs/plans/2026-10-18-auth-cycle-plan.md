@@ -789,7 +789,24 @@ it("doorLine names the source", …);
   `maxSessionTime` 31536000, `inactivityTimeout` 172800, `accessTokenExpiry` 300. The MCP's name for the redirect-URI
   operation is `setRedirectUris` (`setAuthkitApplicationRedirectUris` targets an application by id; the environment form
   targets the default application), and `updateAuthkitSettings` answers as `updateUserlandSettings`.
-- (Task 0's readings of the authenticate answer, filled before Task 3 is dispatched.)
+- 2026-10-18, Task 0 Steps 2–3 (the owner's one sign-in against Staging, the probe run in the owner's own shell; key
+  SETS only): `POST /user_management/authenticate` answered 200 `application/json` with the top-level keys
+  `access_token`, `authentication_method`, `refresh_token`, `user` (no `organization_id`); `authentication_method` was
+  `GoogleOAuth` (the owner signed in with Google rather than the email code — the shape is the same). `user` carries
+  `created_at`, `email`, `email_verified`, `external_id`, `first_name`, `id`, `last_name`, `last_sign_in_at`, `locale`,
+  `name`, `object`, `profile_picture_url`, `updated_at`; `user.email_verified` is a BOOLEAN and read `true`; `user.email`
+  is a string. `access_token` is a three-part JWT, header `alg` `RS256` with a string `kid`, payload keys `auth_time`
+  (number), `client_id`, `exp` (number), `iat` (number), `iss`, `jti`, `sid` (string), `sub` — NO `email` claim, so the
+  address is `user.email`'s as Task 3 reads it. `refresh_token` present. `GET /sso/jwks/<client_id>` answered 200
+  `{ keys: [ { kid, alg: "RS256", kty: "RSA", use: "sig" } ] }` — one key. **Task 0 Step 4's gate: `user.email_verified`
+  present and the access token's `sid` present — Task 3's `workos` arm stands unchanged.** The logout URL
+  `…/user_management/sessions/logout?session_id=<sid>` opened once by the owner (no `return_to`, the staging
+  environment's `appHomepageUrl` null) landed on `https://error.workos.com/user_management/app-homepage-url-not-found`,
+  a generic WorkOS error page: so `leaveUrl`'s `return_to` (Task 3) is load-bearing, and Task 10 sets `appHomepageUrl`
+  on production as its Step 3 already says. The staging API key was pasted into the orchestrating session's
+  transcript rather than the shell alone; the owner retires it at the wrap (Task 10 Step 8).
+- 2026-10-18, the pool at Task 1's head (`4a727698`) after `npm run build:module:debug`: 13 files, 252 tests passed
+  (the seven cells that failed in the implementer's run were the stale release module, C-5 below).
 
 ## Review record
 
@@ -809,3 +826,20 @@ it("doorLine names the source", …);
 - **Pre-flight note (Task 6):** the five build values are stamped by `web/scripts/build-values.mjs` (the task text
   names `presence.mjs`/`precache.mjs` as the files to read; they consume it). Line citations elsewhere drift by a few
   lines; every brief's "probe every cited line" covers it.
+- **2026-10-18, Task 1's `DONE_WITH_CONCERNS` (commit `4a727698`), four corrections:**
+  - **C-2 (Task 1 Step 4 and Task 7 Step 3):** "the deploy guard stays green … the two open files do NOT get it" was
+    half true: the guard holds each open file to production on every `vars` key not in `OPEN_DIFFERS`, so production
+    gaining the key turned two `deploy-guard.test.mjs` cells red. The line Task 7 Step 3 assigns — `OPEN_DIFFERS` gains
+    `YOKOHAMA_IDENTITY_SOURCE: undefined` — landed in Task 1's commit instead (one line in
+    `worker/scripts/deploy-guard.mjs`, no guard cell of its own); Task 7 adds the cell and the rest of the rules.
+  - **C-3 (every task's `npx vitest run src/<file>.unit.test.ts` line):** the `src/*.unit.test.ts` files run under the
+    scripts config, not the pool — the command is `npx vitest run -c vitest.scripts.config.ts src/<file>.unit.test.ts`
+    (a bare `npx vitest run src/…` matches nothing). Tasks 2, 3, 4 and 5 read their Step 2/4 lines so.
+  - **C-4 (Task 1 Step 1):** `WORKER_ENV`/`OPEN_ENV` exist under no name; the file's `env(vars, bucket)` builder now
+    defaults `YOKOHAMA_IDENTITY_SOURCE` to `access` for a worker-door fixture unless `vars` names the key (`undefined`
+    included) or the door is `open`, so every older cell keeps its meaning; `marker.unit.test.ts`'s typed `ShellConfig`
+    literal and the pool's open-door cell in `test/worker.test.ts` (the pool env now carries `access`) moved with it.
+  - **C-5 (the Global Constraints' per-task line):** the pool runs over the DEBUG module in `worker/gen/`; a tree whose
+    `gen/` holds a release build (the last window's) fails seven cells in `factory`, `sockets` and `table` with
+    "the pool runs over the DEBUG module" at HEAD, before any change. `npm run build:module:debug` (cargo, run by the
+    orchestrator once at the cycle's start) is the remedy, after which no task of this cycle touches `gen/`.
