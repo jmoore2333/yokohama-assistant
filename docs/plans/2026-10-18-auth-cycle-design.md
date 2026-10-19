@@ -397,14 +397,20 @@ Under `access` no cookie is minted and none is read: Access's own cookie and ass
 
 ### 4.7 The second deployment, and the guard
 
-The public Worker is its own deployment: its own name, Durable Object namespaces, R2 bucket and rate-limit
-namespaces, deployed from `wrangler.public.jsonc` (`worker`, `oidc`, the archive `r2`, the Turnstile `on`,
-`workers_dev: false`, the dev door `off`, no `DEV_DOOR_CLIENT_ID`), under the edge rule the lane's §10 recipe
-enables by its id before the hostname leaves Access. The private Worker keeps `wrangler.jsonc` with `access`, on a
-hostname the Access application keeps. The deploy guard, which "holds this repository's Worker by name and bucket
-until S4" (S2b's D-7), learns a second identity: each deployable file names which of the two it is, and the guard
-refuses a file whose name, bucket, source and door do not match that identity's record. The `cf-access` NAS is not
-touched. The operator secret `YOKOHAMA_WEB_ADMINS` is set on both.
+**(Amended 2026-10-18 by R-A12, the plan's decision D-1 accepted by the owner.)** The public deployment is
+`yokohama-web` ITSELF — `wrangler.jsonc`, the bucket `yokohama-archive`, the custom domain `yokohama.moore.nyc` —
+re-pointed from `access` to `workos` by its `YOKOHAMA_IDENTITY_SOURCE` (the Turnstile `on`, `workers_dev: false`, the
+dev door `off`, `DEV_DOOR_CLIENT_ID` deleted, the Access pair removed), under the edge rule the lane's §10 recipe
+enables by its id before the hostname leaves Access. The LATER private Worker is the new deployment —
+`wrangler.private.jsonc`, its own name, Durable Object namespaces, bucket and rate-limit namespaces, source `access`,
+on the domain the owner names when it exists. Why the inversion: a custom domain binds to one Worker, so a new
+public Worker would have had to take the domain from `yokohama-web` inside the window; the existing objects, the
+archive and the owner's seats stay where they are; and the key space does not change, since Access and WorkOS both
+vouch for verified addresses, which is the C1 finding's whole concern. The deploy guard, which "holds this
+repository's Worker by name and bucket until S4" (S2b's D-7), learns a second identity: each deployable file names
+which of the two it is, and the guard refuses a file whose name, bucket, source and door do not match that
+identity's record; the private file is optional until its domain is named. The `cf-access` NAS is not touched. The
+operator secret `YOKOHAMA_WEB_ADMINS` is set on both.
 
 **The keyed-build pairing (R-FP4, "one client build per door state", narrowed by R-A3 and R-A4).** Today the guard's
 check 12 refuses `YOKOHAMA_TURNSTILE=on` or a keyed stamp under any door but `open` (`deploy-guard.mjs` lines
@@ -557,3 +563,27 @@ The owner answered all five questions in one message (transcribed as R-A6–R-A1
 The other answers set the hostname (`yokohama.moore.nyc` is the public site; the private one moves to a new domain
 later), no expiry on anonymous uploads, S1b's share figures unchanged, and accepted the calls listed in §9.1 and the
 methods and hosted domain. With them the document has no open question, and the plan is written against it next.
+
+### 9.4 — 2026-10-18, the plan's hand-off: three rulings from the owner's review of the plan
+
+- **R-A12 — D-1 accepted: `yokohama-web` itself becomes the public deployment.** "D-1, we want to have the eventual
+  public site be yokohama.moore.nyc so I think we should update the previous plans, and take it that route. Whether
+  through redeploy or whatever else, is not a problem." §4.7 is amended in place above (this cycle is open; the
+  amendment is marked and dated); the private Worker is the later `wrangler.private.jsonc`.
+- **R-A13 — no Fable reviewers per task; the tiers are the orchestrator's discretion between Sonnet/Opus and
+  Opus/Opus.** "For the plan, we can use sonnet/opus or opus/opus — your discretion, but we don't need fable reviewers
+  at each task." Taken as: Opus implementers on the judgment tasks, Sonnet on the three mechanical ones, an Opus
+  reviewer on every task, the orchestrator's own pre-flight and after review unchanged.
+- **R-A14 — branding and transparency are important.** "branding and transparency are important". Taken as two
+  additions the plan carries: the AuthKit hosted page carries the project's branding (the logos, light and dark, and
+  the theme, set through the WorkOS workspace at the window), and the client shows a one-sentence transparency notice
+  beside every sign-in link — who signs the player in, that this site keeps only the verified address to seat them,
+  and that finished games are archived — as a per-host build value (`YOKOHAMA_SIGNIN_NOTICE`), since the client is
+  provider-agnostic and the wire does not name the source (§4.1). The hosting documents say the same in a paragraph.
+- **The owner's WorkOS workspace exists** (team `yokohama-assistant`, one project with a Staging and a Production
+  environment) and the WorkOS MCP is connected to this repository's sessions, so the pre-flight registers the staging
+  redirect URI and reads the settings through it rather than by hand; the API key alone is pasted into the shell by
+  the owner (the MCP mints none).
+- **One correction to §3's provider table:** WorkOS DOES offer Discord as a social provider (`updateAuthkitSettings`
+  lists `isDiscordOauthEnabled`, read over the MCP on 2026-10-18); the table's "no Discord" was wrong, and R-A10's
+  methods may include it at the owner's word (the plan's Task 10 carries the option).

@@ -4,9 +4,9 @@
 > superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > A dispatched implementer reads its own task, §"Global Constraints", §"Names shared across tasks" and the design's
 > §3 rulings; it PROBES every code block and every cited line of its brief before reporting, and a sentence it finds
-> false is a `DONE_WITH_CONCERNS` corrected in THIS PLAN first (the S2 runs' rule). Tiers (the owner's dispatch rule):
-> each task's header names `impl:` sonnet | opus and `review:` fable; the orchestrator (Mythos) runs the pre-flight
-> and the after review itself.
+> false is a `DONE_WITH_CONCERNS` corrected in THIS PLAN first (the S2 runs' rule). Tiers (the owner's R-A13, design §9.4:
+> no Fable per task): each task's header names `impl:` sonnet | opus and `review:` opus; the orchestrator (Mythos)
+> runs the pre-flight and the after review itself.
 
 **Goal:** the public Worker at `yokohama.moore.nyc` signs players in through WorkOS AuthKit (or any OpenID Connect
 issuer, by configuration) instead of Cloudflare Access, keeps them signed in with its own cookie, and archives every
@@ -90,7 +90,7 @@ Inputs the design implies and no task's happy path exercises; each line's test i
 | `DEVICE_KEY` | `web/src/device.ts` | localStorage key `"yokohama.device"` |
 | `handle` | `worker/src/index.ts` | `handle(req, env, ctx, keys, fetcher = fetch)` — the fifth parameter is new, optional, the arms' network |
 
-**Plan decision D-1 (the orchestrator's, flagged to the owner in the hand-off).** The design's §4.7 made the public
+**Plan decision D-1 — ACCEPTED by the owner on 2026-10-18 (R-A12; the design's §4.7 amended in place, §9.4).** The design's §4.7 made the public
 Worker a NEW deployment and kept `yokohama-web` private. With R-A6 (`yokohama.moore.nyc` is the public site, the
 private one comes later on another domain) the roles invert: `wrangler.jsonc` — the Worker `yokohama-web`, the bucket
 `yokohama-archive`, the custom domain — becomes the public deployment by setting `YOKOHAMA_IDENTITY_SOURCE` to
@@ -108,13 +108,16 @@ private one's record present and its file optional until it exists.
 **Files:** none in the repository; a scratchpad script; the readings go into this plan's §"Pre-flight record" at
 the end, as key SETS, never values.
 
-- [ ] **Step 1:** the owner has a WorkOS account (or claims an environment per the `workos` skill's `SKILL.md`,
-  "Claiming the environment later") and gives the orchestrator the STAGING environment's client id and API key in
-  the shell environment (`WORKOS_CLIENT_ID`, `WORKOS_API_KEY`), never in a file under the repository. In the WorkOS
-  dashboard the owner registers, for staging, the Redirect URI `http://localhost:8787/enter`, enables Magic Auth and
-  Google, and leaves Email + Password on for now (it is turned off at the window, Task 10).
+- [ ] **Step 1:** the owner's WorkOS workspace exists (team `yokohama-assistant`; project `project_01M58WM4WC8XFJJCG7DXR9EJQY`;
+  Staging `environment_01M58WM4WYQD0JRC0W78E566ZZ`, client `client_01M58WM57D340A6BXYPBP52F6K`; Production
+  `environment_01M58WM6E8GTQH4YVZRCY7SFPV`, client `client_01M58WM6MNRQPY96302487DQF7` — read with the WorkOS MCP's
+  `whoami` on 2026-10-18) and the MCP is connected. The orchestrator, through the MCP against STAGING: `query
+  redirectUris`, then `mutate setRedirectUris` with the existing list plus `http://localhost:8787/enter` (dry-run
+  first); `mutate updateAuthkitSettings` with `isMagicAuthEnabled: true, isGoogleOauthEnabled: true` and nothing
+  else changed; `query environmentAppBranding` recorded. The owner pastes the staging API key into the shell
+  environment (`WORKOS_API_KEY`; the MCP mints none), never into a file under the repository.
 - [ ] **Step 2:** the orchestrator writes `/private/tmp/.../scratchpad/workos-probe.mjs`: prints
-  `https://api.workos.com/user_management/authorize?client_id=…&redirect_uri=http://localhost:8787/enter&response_type=code&provider=authkit&state=probe`;
+  `https://api.workos.com/user_management/authorize?client_id=client_01M58WM57D340A6BXYPBP52F6K&redirect_uri=http://localhost:8787/enter&response_type=code&provider=authkit&state=probe`;
   the owner opens it, signs in with an email code, and pastes back the `code` from the browser's address bar (nothing
   listens on 8787; the navigation fails and the URL keeps the code).
 - [ ] **Step 3:** the script POSTs `https://api.workos.com/user_management/authenticate` with
@@ -130,7 +133,7 @@ the end, as key SETS, never values.
 
 ---
 
-### Task 1: the identity source and its variables (impl: sonnet · review: fable)
+### Task 1: the identity source and its variables (impl: sonnet · review: opus)
 
 **Files:**
 - Modify: `worker/src/env.ts` (the `Env` interface, lines 49–63 region), `worker/src/config.ts` (`ShellConfig`,
@@ -212,7 +215,7 @@ it("a source that is none of the three is refused by value", () => {
 
 ---
 
-### Task 2: the session cookie (impl: opus · review: fable)
+### Task 2: the session cookie (impl: opus · review: opus)
 
 **Files:**
 - Create: `worker/src/session.ts`
@@ -280,7 +283,7 @@ it("the Set-Cookie lines carry the attributes verbatim", () => {
 
 ---
 
-### Task 3: the two sign-in arms (impl: opus · review: fable)
+### Task 3: the two sign-in arms (impl: opus · review: opus)
 
 **Files:**
 - Create: `worker/src/signin.ts`
@@ -355,7 +358,7 @@ describe("discovery", () => {
 
 ---
 
-### Task 4: `/enter`'s two halves, the session on every request, sign-out and the 401 header (impl: opus · review: fable)
+### Task 4: `/enter`'s two halves, the session on every request, sign-out and the 401 header (impl: opus · review: opus)
 
 **Files:**
 - Modify: `worker/src/route.ts` (the `Target` union, lines 15–35; `route`, line 82), `worker/src/index.ts`
@@ -459,7 +462,7 @@ it("POST /api/leave from another site is the cross-site 403 before anything else
 
 ---
 
-### Task 5: the anonymous archive (impl: opus · review: fable)
+### Task 5: the anonymous archive (impl: opus · review: opus)
 
 **Files:**
 - Modify: `worker/src/identity.ts` (the `Identity` union; `callerName`), `worker/src/index.ts` (`answer`, the
@@ -529,10 +532,16 @@ it("the anonymous caller never reaches a table route", …);
 
 ---
 
-### Task 6: the client — the device header, rule 6b, the sign-in refusal and sign-out (impl: opus · review: fable)
+### Task 6: the client — the device header, rule 6b, the sign-in refusal and sign-out (impl: opus · review: opus)
 
 **Files:**
 - Create: `web/src/device.ts`
+- Modify: `web/src/buildValues.ts` (a sixth build value, `signInNotice(): string | null`, read from
+  `VITE_YOKOHAMA_SIGNIN_NOTICE` exactly as `siteNotice()` reads its own, line 32), `web/src/FrontDoor.tsx` (the
+  multiplayer card, lines 159–175: the notice under the `/enter` link when set), `docs/web-lane.md` §12 (ONE row,
+  `YOKOHAMA_SIGNIN_NOTICE`, kind *build value*: the lane-variables cell requires it in this commit), `web/scripts/`
+  (wherever the five build values are stamped into `build-values.json` — read `presence.mjs`/`precache.mjs`; the
+  notice joins them as the sixth, so the guard's stamp cell and the README's build-values list move together)
 - Modify: `web/src/api.ts` (`isAccessChallenge`/`ACCESS_CHALLENGE`, lines 326–350; `call`'s 401 handling, lines
   129–176; `api.archive`, line 1014; the `api` object), `web/src/outbox.ts` (`namelessUnderKey`, line 512;
   `noteGameOver`, lines 700–728; `attempt`, lines 450–500; `reconsiderAll`, line 863; the head comment, rule 6b),
@@ -555,7 +564,10 @@ it("the anonymous caller never reaches a table route", …);
   and the strip is where the player reads it**); `isSessionExpired(e)` true for either sentence;
   `api.leave(): Promise<LeaveReply>`; `api.archive` sends `X-Yokohama-Device: deviceId()`;
   `signInHref(): string` → `/enter?return_to=${encodeURIComponent(location.hash || "/#/lobby")}` with the hash
-  prefixed `/` (so `#/t/x` → `/#/t/x`).
+  prefixed `/` (so `#/t/x` → `/#/t/x`); **the transparency notice (R-A14)**: `signInNotice()` drawn as a `<p
+  className="muted">` directly under every sign-in link `Refusal` and `Remedy` draw and under the front door's
+  multiplayer link, nothing drawn when the value is unset (a self-host with no provider), so a player reads who signs
+  them in and what is kept before they click. The public build's text is Task 10's.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -593,7 +605,7 @@ it("signOut POSTs /api/leave and navigates to the answer's leave", …);
 
 ---
 
-### Task 7: the deploy guard's second identity, the keyed pairing and the deployable files (impl: opus · review: fable)
+### Task 7: the deploy guard's second identity, the keyed pairing and the deployable files (impl: opus · review: opus)
 
 **Files:**
 - Modify: `worker/scripts/deploy-guard.mjs` (`doorRules`, lines 472–515; `SECRETS` (the map `secretsInVars`
@@ -644,7 +656,7 @@ it("doorLine names the source", …);
 
 ---
 
-### Task 8: the minted test session and the live instruments (impl: sonnet · review: fable)
+### Task 8: the minted test session and the live instruments (impl: sonnet · review: opus)
 
 **Files:**
 - Create: `worker/scripts/mint-session.mjs`, `worker/scripts/mint-session.test.mjs`
@@ -676,7 +688,7 @@ it("doorLine names the source", …);
 
 ---
 
-### Task 9: the documents (impl: sonnet · review: fable)
+### Task 9: the documents (impl: sonnet · review: opus)
 
 **Files:**
 - Modify: `docs/web-lane.md` (§12's six rows were Task 1's; here §8: a paragraph under "Still owed before the door
@@ -710,13 +722,24 @@ it("doorLine names the source", …);
   (`docs/web-lane.md` §2); the roster is OWED because the workspace version moves (Step 2).
 - [ ] **Step 2 — the version**: `0.7.0` (the lane's §7 rule: the identity model changes); the bump commit; the
   fifteen release gates measured as one sequence and recorded in the close.
-- [ ] **Step 3 — WorkOS production**: the owner, in the dashboard: the production environment; Redirect URI
-  `https://yokohama.moore.nyc/enter`; Sign-out URI `https://yokohama.moore.nyc/`; Initiate login URI
-  `https://yokohama.moore.nyc/enter`; Magic Auth, Google, GitHub, Apple, passkeys ON; Email + Password OFF; branding
-  (logo, colours) as the owner likes; the client id into `wrangler.jsonc`'s `YOKOHAMA_OIDC_CLIENT_ID`, the API key
-  `wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET`, `openssl rand -base64 48 | wrangler secret put YOKOHAMA_SESSION_SECRET`.
-- [ ] **Step 4 — the build**: `cd web && YOKOHAMA_TURNSTILE_SITEKEY=<key> YOKOHAMA_SITE_URL=https://yokohama.moore.nyc … npm run build`
-  (the keyed build, as the F window's recipe lists the five values), `cd worker && npm run build`.
+- [ ] **Step 3 — WorkOS production** (the orchestrator through the MCP against `environment_01M58WM6E8GTQH4YVZRCY7SFPV`,
+  the owner at the keyboard for what the MCP cannot do): `setRedirectUris` → `https://yokohama.moore.nyc/enter`;
+  `updateAuthkitExternalLoginUri` → `https://yokohama.moore.nyc/enter`; the Sign-out URI `https://yokohama.moore.nyc/`
+  (the dashboard's Redirects page if no operation names it — `list_operations` with "logout"/"sign-out" first);
+  `updateAuthkitSettings` → `isMagicAuthEnabled`, `isGoogleOauthEnabled`, `isGithubOauthEnabled`,
+  `isAppleOauthEnabled`, `isPasskeyAuthEnabled` true, `isDiscordOauthEnabled` true if the owner wants it (the MCP's
+  settings list it, correcting the design's "no Discord"; the provider apps for Google/GitHub/Apple/Discord need the
+  owner's credentials in the dashboard first), `isPasswordAuthEnabled` false, `allowSignUp` true, `maxSessionTime`
+  and `inactivityTimeout` at their long settings (the Worker's cookie governs ours; these govern the silent re-auth),
+  `appHomepageUrl` `https://yokohama.moore.nyc/`; **branding (R-A14)**: `updateAppBranding` with `displayName`
+  "Yokohama", `theme` `System`, the light and dark page/button/link colours from the client's palette, `radius`,
+  `authkitSignInHeadingText`, `authkitSignInLegalText` (the transparency sentence: the verified address is kept to
+  seat you; finished games are archived), `authkitSignInPrivacyPolicyUrl` to the repository's privacy page once it
+  exists — and the logos by hand in the dashboard (`Upload` fields are not settable over the MCP). The client id
+  into `wrangler.jsonc`'s `YOKOHAMA_OIDC_CLIENT_ID`, the API key `wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET`,
+  `openssl rand -base64 48 | wrangler secret put YOKOHAMA_SESSION_SECRET`.
+- [ ] **Step 4 — the build**: `cd web && YOKOHAMA_TURNSTILE_SITEKEY=<key> YOKOHAMA_SITE_URL=https://yokohama.moore.nyc YOKOHAMA_SIGNIN_NOTICE="Sign-in is handled by WorkOS. This site keeps your verified email address to seat you at your tables, and archives finished games for the computer player." … npm run build`
+  (the keyed build, as the F window's recipe lists the five values, plus the notice), `cd worker && npm run build`.
 - [ ] **Step 5 — `wrangler.jsonc`**: `YOKOHAMA_IDENTITY_SOURCE: "workos"`, `YOKOHAMA_TURNSTILE: "on"`, the Access pair
   REMOVED, the client id set; committed as the window's commit (the guard accepts it: Task 7).
 - [ ] **Step 6 — the order** (the lane's §10): the edge rule ENABLED by its id `dc4c5d3e986144649617cbbaea58cd8a`;
@@ -751,7 +774,13 @@ it("doorLine names the source", …);
 
 ## Pre-flight record
 
-(Task 0's readings, filled before Task 3 is dispatched.)
+- 2026-10-18 (this plan's hand-off): the WorkOS workspace read through the MCP — team `yokohama-assistant`, role
+  ADMIN; Staging `environment_01M58WM4WYQD0JRC0W78E566ZZ` / `client_01M58WM57D340A6BXYPBP52F6K`; Production
+  `environment_01M58WM6E8GTQH4YVZRCY7SFPV` / `client_01M58WM6MNRQPY96302487DQF7`. `updateAuthkitSettings` lists
+  `isDiscordOauthEnabled` (Discord is available; the design's table said otherwise), `maxSessionTime` and
+  `inactivityTimeout`; `updateAppBranding` sets colours, theme, radius, headings, legal text and policy URLs over
+  the MCP and takes logos only through the dashboard; no operation mints an environment API key.
+- (Task 0's readings of the authenticate answer, filled before Task 3 is dispatched.)
 
 ## Review record
 
