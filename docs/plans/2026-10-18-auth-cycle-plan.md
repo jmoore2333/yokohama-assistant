@@ -724,7 +724,9 @@ it("doorLine names the source", …);
   fifteen release gates measured as one sequence and recorded in the close.
 - [ ] **Step 3 — WorkOS production** (the orchestrator through the MCP against `environment_01M58WM6E8GTQH4YVZRCY7SFPV`,
   the owner at the keyboard for what the MCP cannot do): `setRedirectUris` → `https://yokohama.moore.nyc/enter`;
-  `updateAuthkitExternalLoginUri` → `https://yokohama.moore.nyc/enter`; the Sign-out URI `https://yokohama.moore.nyc/`
+  `updateInitiateLoginUrl` (`url`) → `https://yokohama.moore.nyc/enter` (**C-24: NOT `updateAuthkitExternalLoginUri` —
+  that sets the ENVIRONMENT's external login URI, to which the hosted page sends every unauthenticated visitor; the
+  run set it and stage 1 looped**); the Sign-out URI `https://yokohama.moore.nyc/`
   (the dashboard's Redirects page if no operation names it — `list_operations` with "logout"/"sign-out" first);
   `updateAuthkitSettings` → `isMagicAuthEnabled`, `isGoogleOauthEnabled`, `isGithubOauthEnabled`,
   `isAppleOauthEnabled`, `isPasskeyAuthEnabled` true, `isDiscordOauthEnabled` true if the owner wants it (the MCP's
@@ -1137,7 +1139,8 @@ it("doorLine names the source", …);
   Task 9's §23 stage-1 text ("the keyed build … on") is corrected at its fix round. Cloudflare readings: zone
   `moore.nyc` `7851d4cb…`, the custom-firewall entrypoint ruleset `27fcc0c7…`, the rule `dc4c5d3e…` disabled. WorkOS
   PRODUCTION configured over the MCP (redirect `https://yokohama.moore.nyc/enter`, logout `https://yokohama.moore.nyc/`,
-  external login `/enter`, magic auth and passkeys on, passwords off, sign-up open, homepage set; branding: Dark,
+  external login `/enter` (the WRONG field — C-24, below), magic auth and passkeys on, passwords off, sign-up open,
+  homepage set; branding: Dark,
   Small radius, Icon, the site's palette, the heading and the transparency legal text; the owner's six image
   uploads in place) — Google, GitHub, Apple and Discord LEFT OFF: production needs the owner's own provider
   credentials in the dashboard (the owner checklist).
@@ -1188,3 +1191,22 @@ it("doorLine names the source", …);
   two invocations — the owner's checklist on the board. One trap for the close: the pool's race cell and the secrets
   guard's command cells read red beside a concurrent cargo build and green alone — never measure the npm suites
   beside the Rust ones. Stage 2 is the owner's session.
+- **2026-10-19, the owner's first read of stage 1 — C-24 (Step 3's WorkOS operation), and one finding (the ledger's
+  D32).** `ERR_TOO_MANY_REDIRECTS` on the multiplayer card, WARP on or off. Root cause: Step 3 named
+  `updateAuthkitExternalLoginUri` for the docs' sign-in endpoint; that operation sets the ENVIRONMENT's external login
+  URI, to which the hosted AuthKit page sends EVERY unauthenticated visit (a 307 with no `code` and no `error`), and
+  `/enter` reads such a visit as a fresh start — a loop between the hosted page and the Worker. The docs' sign-in
+  endpoint is the APPLICATION's Initiate login URI (`updateInitiateLoginUrl`, `url`). Read by `curl -L` with a cookie
+  jar: twelve hops in production; the identical request against the staging client id, which has no external login
+  URI, renders the page. Fixed in the environment over the MCP with the owner's go-ahead, one variable at a time, each
+  read back: the external login URI cleared (the chain ends at the page, 200, "Sign in to Yokohama"), then the
+  Initiate login URI set (a direct visit to the hosted root goes `initiate_login` → `/enter` → the page, no loop). No
+  code moved; the Worker's halves behaved as written. Step 3 is corrected at the source above; `worker/RUNBOOK.md`
+  §23 step 2 and its stage-1 record carry the correction and the readings. What the run did not do: read the
+  mechanism the sentence "external login URI (the sign-in endpoint)" promised — after the deploy only `/enter`'s first
+  302 was fetched, never the page behind it (`CLAUDE.md`'s lesson: try the mechanism a sentence promises). **The
+  finding, D32:** a PREVIOUSLY RELEASED client (0.6.3, cached by the service worker) opened at `/#/lobby` under this
+  Worker storms `/api/me` — it has no reader for the `Yokohama-Session` challenge, so the 401 takes the layer's-own
+  path and `unauthorized` → `refresh` re-asks at about 80 requests a second behind "Connecting to the server…" until
+  the door applies the release; the new client makes one request and draws the sign-in card. The owner rules its
+  handling: a per-IP bound on caller-less `/api/me` (S3), or accepted as the transition's cost.

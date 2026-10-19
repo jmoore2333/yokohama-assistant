@@ -2421,7 +2421,7 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 ### Stage 1 — the WorkOS-signed Worker, Access still in front, the rule disabled
 
 1. **Before.** The quota guard (§7); the zone read as §20's step 1 reads it (Challenge Passage, Bot Fight Mode, managed `robots.txt`); the edge rule read BY ID — `dc4c5d3e986144649617cbbaea58cd8a`, at position 1 of the zone's `http_request_firewall_custom` ruleset `27fcc0c7398f42e3abbf549a917e5fa7`, DISABLED, five of five — and the Turnstile widget read (mode `managed`, pre-clearance `managed`, the zone's domain among its hostnames).
-2. **The production WorkOS environment** (the dashboard, or the WorkOS MCP's `mutate` with a dry run first). Its URL settings: the **redirect URI** `https://yokohama.moore.nyc/enter`; the **external login URI** (the sign-in endpoint, `initiate_login_uri`) the same, `https://yokohama.moore.nyc/enter`; the **sign-out redirect** `https://yokohama.moore.nyc/` AND the **App homepage URL** (`appHomepageUrl`) the same (the leave URL names the site's root as `return_to`, and a logout against an environment without a homepage lands on a WorkOS error page, read on staging on 2026-10-18). The sign-in **methods**: the email code (Magic Auth) and passkeys on; each social provider — Google, GitHub, Apple, and Discord if the owner wants it — on only after the owner's own provider credentials are in the dashboard; **passwords off**. The **branding** (the transparency the owner asked for, R-A14): the theme and colours, and the logos, light and dark, which are uploaded in the dashboard (the MCP does not take the files). Read each setting back; record the environment's client id.
+2. **The production WorkOS environment** (the dashboard, or the WorkOS MCP's `mutate` with a dry run first). Its URL settings: the **redirect URI** `https://yokohama.moore.nyc/enter`; the application's **Initiate login URI** (the docs' sign-in endpoint; `updateInitiateLoginUrl` with `url`, read back as the application's `initiateLoginUri`) the same, `https://yokohama.moore.nyc/enter` — **and the ENVIRONMENT-level external login URI (`updateAuthkitExternalLoginUri`, read as `userlandSettings.externalLoginUri`) EMPTY: a different field under a near-identical name, and with it set the hosted AuthKit page answers EVERY unauthenticated visit with a 307 to it, which `/enter` reads as a fresh start — a redirect loop, read on 2026-10-19 (the stage-1 record's last bullet)**; the **sign-out redirect** `https://yokohama.moore.nyc/` AND the **App homepage URL** (`appHomepageUrl`) the same (the leave URL names the site's root as `return_to`, and a logout against an environment without a homepage lands on a WorkOS error page, read on staging on 2026-10-18). The sign-in **methods**: the email code (Magic Auth) and passkeys on; each social provider — Google, GitHub, Apple, and Discord if the owner wants it — on only after the owner's own provider credentials are in the dashboard; **passwords off**. The **branding** (the transparency the owner asked for, R-A14): the theme and colours, and the logos, light and dark, which are uploaded in the dashboard (the MCP does not take the files). Read each setting back; record the environment's client id.
 3. **The two secrets, put BEFORE the deploy** — the secrets guard REFUSES `npm run deploy` without them (R-48):
    ```sh
    cd worker
@@ -2452,7 +2452,8 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 
 - **Before** (steps 1–3): the production WorkOS environment configured over the MCP — the redirect URI
   `https://yokohama.moore.nyc/enter` (`redir_01M59G8YCJPZB5NNW2FZYXWVEN`), the logout URI `https://yokohama.moore.nyc/`,
-  the external login URI `/enter`, magic auth and passkeys on, passwords off, sign-up open, `appHomepageUrl` set; the
+  the external login URI `/enter` (the WRONG field — corrected the same afternoon, this record's last bullet), magic
+  auth and passkeys on, passwords off, sign-up open, `appHomepageUrl` set; the
   branding (`displayName` Yokohama, theme Dark, radius Small, logo style Icon over the owner's six uploads, page
   `#0d1013`, buttons `#6f9bff` on `#0d1013`, links `#6f9bff`, the heading "Sign in to Yokohama", the legal text = the
   transparency sentence); Google, GitHub, Apple and Discord LEFT OFF (production needs the owner's own provider
@@ -2490,6 +2491,39 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
   owner's checklist (`docs/handover.md`, Track 4) takes them first thing.
 - **Rollback** (step 9): `git revert 18d63f28` (both wrangler files and the five cells), `npm run deploy` of the same
   keyless tree; the four secrets may stay. The rule was never enabled; the Access application was never touched.
+- **The owner's first read, the same afternoon (2026-10-19 ~15:00Z, this workstation, WARP on and off alike):
+  `ERR_TOO_MANY_REDIRECTS` on the multiplayer card, the address bar on the WorkOS host.** Traced from the shell with
+  `curl -L` and a cookie jar over WARP: `/enter` 302 → `api.workos.com/user_management/authorize` 302 →
+  `heroic-peak-11.authkit.app/bootstrap` 307 (its `__Host-state-<sid>` cookie set) → its `/` with that cookie sent →
+  **307 to `https://yokohama.moore.nyc/enter` with no `code` and no `error`** → a fresh start, and so on until curl
+  gave up at twelve hops. The identical request against the STAGING client id rendered the sign-in page (200), so the
+  difference was the production environment's configuration: the run had set the ENVIRONMENT's external login URI
+  (`updateAuthkitExternalLoginUri`; Step 3 of the plan and this record's first bullet) for what the docs call the
+  sign-in endpoint, which is the APPLICATION's Initiate login URI (`updateInitiateLoginUrl`), left null. **Fixed in
+  the environment over the MCP with the owner's go-ahead, one variable at a time, each read back:** (A) the external
+  login URI cleared (`externalLoginUri: null`) — the chain ends at the hosted page, 200, "Sign in to Yokohama",
+  "Continue with email"; (B) the Initiate login URI set (`url` = `https://yokohama.moore.nyc/enter`) — the chain
+  unchanged, and a DIRECT visit to the hosted page's root now goes `/` 307 → `api.workos.com/user_management/
+  initiate_login` 302 → `/enter` → a fresh start → the page, no loop. No code moved: the Worker's two halves behaved
+  as written throughout (a callback never redirects to the issuer, so an HTTP loop could only be the issuer's doing).
+  Read after the fix in the owner's Chrome: the lobby's state-A card, its link `/enter?return_to=%2F%23%2Flobby`, the
+  branded page with the icon, the heading and the email field. **Still not read:** the email code and everything after
+  it (the owner's checklist, item 1). The production API key's `lastUsedAt` was null before this read — no callback
+  had ever reached an exchange.
+- **A second finding from the same read (the ledger's D32) — a PREVIOUSLY RELEASED client storms `/api/me` under this
+  Worker.** The owner's Chrome profile held the 0.6.3 shell in its service worker's cache
+  (`yokohama-release-ef0f946478c75a51`) beside the new release's; a tab opened straight at `/#/lobby` ran it, and that
+  client has no reader for `WWW-Authenticate: Yokohama-Session` (the string is absent from `v0.6.3`'s `api.ts`), so
+  the Worker's caller-less 401 (R-44) took the layer's-own-401 path — `settle` fires `unauthorized`, `signedOut` →
+  `leave` → `refresh` → `/api/me` again, the `leaving` guard holding only for a sign-out the player asked for:
+  **1,000+ `GET /api/me` 401 in under a minute (the tracker's cap), about 80 a second, "Connecting to the server…" on
+  screen and no update line within the first ten seconds.** The same URL under the new bundle (`index-D30P-rVA.js`,
+  after a visit to the door applied the waiting release) made ONE `/api/me` and one `/api/health` and drew the sign-in
+  card. The bundle name was not captured during the storm itself; the reading rests on the two caches, the mechanism
+  in `v0.6.3`, and the new client's one request. Every invocation is paid, and nothing on the API bounds a caller-less
+  read. Who it reaches: any player with the 0.6.3 shell cached who opens the lobby or a table link before the door —
+  the Access allow-list today, everyone after stage 2. For the owner's ruling (the board): a per-IP bound on
+  caller-less `/api/me` in the Worker (S3), or accepted as the transition's cost since the door applies the release.
 
 **What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
 
