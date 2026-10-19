@@ -356,6 +356,48 @@ describe("YOKOHAMA_SESSION_SECRET and YOKOHAMA_SESSION_DAYS (auth cycle, design 
   });
 });
 
+// The absolute cap and the red button (2026-10-19, the owner's rulings after stage 1's read). Mutants: the cap
+// defaulted to the days or to none; the cap read under access; the deny-list read under access; an entry not
+// lowercased or not trimmed; a newline not a separator; an empty entry refused, or a malformed one let through; a
+// refusal echoing the value.
+describe("YOKOHAMA_SESSION_MAX_DAYS and YOKOHAMA_DENIED (the absolute cap and the red button)", () => {
+  const WORKOS = {
+    ACCESS_TEAM_DOMAIN: undefined,
+    ACCESS_AUD: undefined,
+    YOKOHAMA_IDENTITY_SOURCE: "workos",
+    YOKOHAMA_OIDC_CLIENT_ID: "client_1",
+    YOKOHAMA_OIDC_CLIENT_SECRET: "sk_test_x",
+    YOKOHAMA_SESSION_SECRET: "s".repeat(32),
+  };
+  it("reads the cap as whole days above zero, 90 when absent, under a sign-in arm alone", () => {
+    expect(accepted(env(WORKOS, true)).session?.maxDays).toBe(90);
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_SESSION_MAX_DAYS: " 007 " }, true)).session?.maxDays).toBe(7);
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_SESSION_MAX_DAYS: "0" }, true)).session).toBeNull();
+  });
+  it.each(["0", "-1", "2.5", "ninety", ""])("refuses the cap %j, quoting it", (value) => {
+    expect(refused(env({ ...WORKOS, YOKOHAMA_SESSION_MAX_DAYS: value }, true))).toBe(
+      `YOKOHAMA_SESSION_MAX_DAYS must be a whole number of days above zero — got ${JSON.stringify(value)}`,
+    );
+  });
+  it("reads the deny-list as addresses and @domains, split on commas and newlines, trimmed and lowercased, empties dropped; null when absent or under access", () => {
+    expect(accepted(env(WORKOS, true)).denied).toBeNull();
+    const d = accepted(env({ ...WORKOS, YOKOHAMA_DENIED: " Spam@T.test ,\n@Bad.Example\n\n,c@d.test,\n" }, true)).denied;
+    expect(d).toEqual({ addresses: ["spam@t.test", "c@d.test"], domains: ["bad.example"] });
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_DENIED: "\n, ,\n" }, true)).denied).toEqual({ addresses: [], domains: [] });
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_DENIED: "not an address" }, true)).denied).toBeNull();
+  });
+  it("refuses an entry that is neither an address nor an @domain, by its position among the entries kept and never by its value", () => {
+    expect(refused(env({ ...WORKOS, YOKOHAMA_DENIED: "a@b.test,\n\nnot an address, @ok.example" }, true))).toBe(
+      "YOKOHAMA_DENIED entry 2 of 3 is neither an address nor an @domain — " +
+        "an address is one @ with something on both sides, no spaces or control characters, and at most 254 bytes; " +
+        "an @domain is @ followed by a domain with no @, no spaces or control characters, and at most 253 bytes",
+    );
+    for (const bad of ["@", "@ spaced.example", "two@at@signs.test", "@a@b"]) {
+      expect(refused(env({ ...WORKOS, YOKOHAMA_DENIED: bad }, true)), bad).toMatch(/^YOKOHAMA_DENIED entry 1 of 1 is neither an address nor an @domain/);
+    }
+  });
+});
+
 describe("which of two refusals is named, with the source (auth cycle, Task 1)", () => {
   it("the door before the source", () => {
     expect(refused(env({ YOKOHAMA_WEB_IDENTITY: undefined, YOKOHAMA_IDENTITY_SOURCE: "bogus" }, true))).toMatch(/^YOKOHAMA_WEB_IDENTITY must be worker or open/);

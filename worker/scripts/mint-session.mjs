@@ -5,7 +5,7 @@
 //
 //   YOKOHAMA_SESSION_SECRET=<the deployment's session secret> node scripts/mint-session.mjs <address> [--days N]
 //
-// prints one line, `__Host-yokohama_session=v1.<payload>.<mac>`, and nothing else.
+// prints one line, `__Host-yokohama_session=v2.<payload>.<mac>`, and nothing else.
 //
 // **The fence: `.test` addresses ONLY.** Whoever holds the secret can mint a cookie for any address, so a script that
 // minted a real one would be a forged login with a convenient interface. The rule restates `src/identity.ts`'s
@@ -14,8 +14,9 @@
 // golden in `session.unit.test.ts`.
 //
 // **The bytes** (`src/session.ts`'s `seal`; Task 2): `payload` is the base64url (RFC 4648 §5, no padding) of the UTF-8
-// bytes of `JSON.stringify({ address, sid, issued, expires })`, in that key order, `sid` written as `null`;
-// `mac` is the base64url of HMAC-SHA256, keyed by the secret's UTF-8 bytes, over the ASCII bytes `"v1." + payload`.
+// bytes of `JSON.stringify({ address, sid, first, issued, expires })`, in that key order, `sid` written as `null` and
+// `first` the issue time (the absolute cap's field, 2026-10-19: an instrument's session is first issued when minted);
+// `mac` is the base64url of HMAC-SHA256, keyed by the secret's UTF-8 bytes, over the ASCII bytes `"v2." + payload`.
 //
 // **Who else mints** (ruling R-50): the live replay and the live tier call `cookieLine` below when
 // `YOKOHAMA_SESSION_SECRET` is in their environment, a cookie per identity, so the fence and the bytes are this file's
@@ -29,7 +30,7 @@ import { pathToFileURL } from "node:url";
 /** The cookie's name: `src/session.ts`'s `SESSION_COOKIE`, restated (the `__Host-` prefix is what the Worker reads). */
 export const COOKIE_NAME = "__Host-yokohama_session";
 
-const VERSION = "v1";
+const VERSION = "v2";
 const DAY_SECONDS = 86_400;
 const DEFAULT_DAYS = 30;
 /** The first second `cookieLine` refuses as a clock: 2286-11-20, so a millisecond clock (thirteen digits today) is
@@ -74,9 +75,11 @@ export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {
   return `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}`;
 }
 
-/** The cookie's VALUE for `s`, expiring `days` after `s.issued`: `session.ts`'s `mintSession`, over `node:crypto`. */
+/** The cookie's VALUE for `s`, expiring `days` after `s.issued` and first issued then (`s.first` when given):
+ *  `session.ts`'s `mintSession` under a cap no lower than the days, over `node:crypto`. */
 export function mintValue(s, days, secret) {
-  const payload = Buffer.from(JSON.stringify({ address: s.address, sid: s.sid, issued: s.issued, expires: s.issued + days * DAY_SECONDS }), "utf8").toString("base64url");
+  const first = s.first ?? s.issued;
+  const payload = Buffer.from(JSON.stringify({ address: s.address, sid: s.sid, first, issued: s.issued, expires: s.issued + days * DAY_SECONDS }), "utf8").toString("base64url");
   const mac = createHmac("sha256", secret).update(`${VERSION}.${payload}`).digest("base64url");
   return `${VERSION}.${payload}.${mac}`;
 }

@@ -5,13 +5,22 @@
  * until it expires, and renewal extends it, so only rotating `YOKOHAMA_SESSION_SECRET` ends a stolen session, and
  * the rotation ends every session at once (the recorded trade, R-A2; ruling R-16).
  *
- * **The format, one canonical byte form for each:** `v1.<payload>.<mac>`, where `<payload>` is the base64url of the
+ * **The format, one canonical byte form for each:** `v2.<payload>.<mac>`, where `<payload>` is the base64url of the
  * UTF-8 JSON `JSON.stringify` writes for an object holding the type's fields in its declared order — `address,
- * sid, issued, expires` for a `Session` (`sid: null` written out), `state, nonce, verifier, returnTo, expires` for a
- * `Login` — with no whitespace, and `<mac>` is the base64url of HMAC-SHA256 keyed by the secret's UTF-8 bytes (as
- * `shellConfig` counts them) over the ASCII bytes `v1.<payload>`. base64url is RFC 4648's url alphabet, unpadded.
- * The cells pin these bytes to values `openssl` computed, the reference a second minter (the plan's Task 8, under
- * `node:crypto`) is held to, so a change here is a change there.
+ * sid, first, issued, expires` for a `Session` (`sid: null` written out), `state, nonce, verifier, returnTo, expires`
+ * for a `Login` — with no whitespace, and `<mac>` is the base64url of HMAC-SHA256 keyed by the secret's UTF-8 bytes
+ * (as `shellConfig` counts them) over the ASCII bytes `v2.<payload>`. base64url is RFC 4648's url alphabet,
+ * unpadded. The cells pin these bytes to values `openssl` computed, the reference a second minter (the plan's Task
+ * 8, under `node:crypto`) is held to, so a change here is a change there. The version moved from `v1` to `v2` with
+ * the absolute cap (2026-10-19): a `v1` cookie reads as nobody whatever its MAC says — no legacy branch.
+ *
+ * **The absolute cap** (2026-10-19, the owner's ruling after stage 1's read; ruling R-16 amended): a session carries
+ * `first`, the time it was FIRST issued, which a renewal keeps while re-stamping `issued`, and no mint or renewal
+ * expires later than `first` plus `YOKOHAMA_SESSION_MAX_DAYS` — the expiry is the EARLIER of `issued` plus the
+ * sliding days and `first` plus the cap (`mintSession`), and a renewal is sent only when it would extend the expiry
+ * (`renewalExpiry`). So the sliding days are the idle timeout and the cap the absolute one: a session used without
+ * end still ends, and the player signs in again by the issuer. The minter refuses a mint at or past the cap (it
+ * would be dead when written), a `first` after `issued`, and a cap below one day.
  *
  * **Both names take the `__Host-` prefix** (ruling R-14). A cookie a sibling subdomain sets for the parent domain is
  * sent to this host too, so under a bare name a site elsewhere on the domain could fix a session it signed in
@@ -50,14 +59,15 @@ export const SESSION_COOKIE = "__Host-yokohama_session";
 export const LOGIN_COOKIE = "__Host-yokohama_login";
 
 /** A signed-in caller: the address the provider vouched for, already normalized by the caller; the provider's
- *  session id when it sent one (sign-out ends that session too); and the issue and expiry times, whole seconds. */
-export interface Session { address: string; sid: string | null; issued: number; expires: number }
+ *  session id when it sent one (sign-out ends that session too); the time the session was FIRST issued (kept across
+ *  renewals — the cap counts from it), the time this cookie was issued, and the expiry, whole seconds. */
+export interface Session { address: string; sid: string | null; first: number; issued: number; expires: number }
 
 /** The sign-in in flight: the state, the nonce and the PKCE verifier the callback needs, where to land after it,
  *  and when it stops being honoured, whole seconds. */
 export interface Login { state: string; nonce: string; verifier: string; returnTo: string; expires: number }
 
-const VERSION = "v1";
+const VERSION = "v2";
 const DAY_SECONDS = 86_400;
 const LOGIN_SECONDS = 600;
 /** The unpadded base64url of HMAC-SHA256's 32 bytes. */
@@ -115,24 +125,43 @@ async function open(header: string | null, name: string, secret: string): Promis
   return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : null;
 }
 
-/** The session cookie's VALUE for `s`, expiring `days` after `s.issued`. Refuses a time that is not whole seconds
- *  and days that are not whole or are below one, so it never writes a cookie that is dead when minted. */
-export async function mintSession(s: Omit<Session, "expires">, days: number, secret: string): Promise<string> {
-  wholeSeconds(s.issued, "issued");
-  if (!whole(days) || days < 1) throw new RangeError(`days must be whole and at least one — got ${days}`);
-  return seal({ address: s.address, sid: s.sid, issued: s.issued, expires: s.issued + days * DAY_SECONDS }, secret);
+/** Whole days above zero, or the refusal naming `what`. */
+function wholeDays(n: number, what: string): void {
+  if (!whole(n) || n < 1) throw new RangeError(`${what} must be whole and at least one — got ${n}`);
 }
 
-/** The session the request's `Cookie` header carries, or `null` for none, a forged or malformed one, or one at or
- *  past its `expires`. Never throws. */
+/** The expiry of a cookie issued at `issued` for a session first issued at `first`: the earlier of `issued` plus
+ *  `days` and `first` plus `maxDays` — the one arithmetic `mintSession` writes and `renewalExpiry` answers, exported
+ *  so a `Set-Cookie`'s `Max-Age` is the life the cookie really has. */
+export function sessionExpiry(first: number, issued: number, days: number, maxDays: number): number {
+  return Math.min(issued + days * DAY_SECONDS, first + maxDays * DAY_SECONDS);
+}
+
+/** The session cookie's VALUE for `s`, expiring at the earlier of `s.issued` plus `days` and `s.first` plus
+ *  `maxDays`. Refuses a time that is not whole seconds, days or a cap that are not whole or are below one, a `first`
+ *  after `issued`, and an expiry that would not be after `issued` (a mint at or past the cap), so it never writes a
+ *  cookie that is dead when minted. */
+export async function mintSession(s: Omit<Session, "expires">, days: number, maxDays: number, secret: string): Promise<string> {
+  wholeSeconds(s.first, "first");
+  wholeSeconds(s.issued, "issued");
+  wholeDays(days, "days");
+  wholeDays(maxDays, "maxDays");
+  if (s.first > s.issued) throw new RangeError(`first must not be after issued — got ${s.first} after ${s.issued}`);
+  const expires = sessionExpiry(s.first, s.issued, days, maxDays);
+  if (!(expires > s.issued)) throw new RangeError(`the session reached its cap: issued at ${s.issued}, capped at ${expires}`);
+  return seal({ address: s.address, sid: s.sid, first: s.first, issued: s.issued, expires }, secret);
+}
+
+/** The session the request's `Cookie` header carries, or `null` for none, a forged or malformed one, one whose
+ *  `first` is after its `issued`, or one at or past its `expires`. Never throws. */
 export async function readSession(cookieHeader: string | null, secret: string, nowSeconds: number): Promise<Session | null> {
   try {
     const p = await open(cookieHeader, SESSION_COOKIE, secret);
     if (p === null) return null;
-    const { address, sid, issued, expires } = p;
+    const { address, sid, first, issued, expires } = p;
     if (typeof address !== "string" || (sid !== null && typeof sid !== "string")) return null;
-    if (!whole(issued) || !whole(expires) || !(nowSeconds < expires)) return null;
-    return { address, sid, issued, expires };
+    if (!whole(first) || !whole(issued) || !whole(expires) || first > issued || !(nowSeconds < expires)) return null;
+    return { address, sid, first, issued, expires };
   } catch {
     return null;
   }
@@ -141,6 +170,17 @@ export async function readSession(cookieHeader: string | null, secret: string, n
 /** Whether a request at `nowSeconds` should carry a fresh session cookie: less than half of `days` is left. */
 export function renewDue(s: Session, nowSeconds: number, days: number): boolean {
   return s.expires - nowSeconds < (days * DAY_SECONDS) / 2;
+}
+
+/** The expiry a renewal at `nowSeconds` would set — `sessionExpiry` over `s.first` and now — when one is due
+ *  (`renewDue`) AND it would be later than the expiry `s` already has; `null` otherwise, which is also what a cookie
+ *  sitting at its cap answers: due by the days, but a renewal would set the same expiry, so none is sent. The value
+ *  is exactly what `mintSession` writes for a mint at that second, which keeps the answer and the cookie one
+ *  arithmetic. */
+export function renewalExpiry(s: Session, nowSeconds: number, days: number, maxDays: number): number | null {
+  if (!renewDue(s, nowSeconds, days)) return null;
+  const expires = sessionExpiry(s.first, nowSeconds, days, maxDays);
+  return expires > s.expires ? expires : null;
 }
 
 /** The login cookie's VALUE for `l`, expiring ten minutes after `nowSeconds`. */

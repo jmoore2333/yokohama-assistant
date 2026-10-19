@@ -117,6 +117,7 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
       ttlDays,
       openTtlDays,
       admins: null,
+      denied: null,
       countWakes: false,
       devDoor: false,
       diagnosticSeeds: false,

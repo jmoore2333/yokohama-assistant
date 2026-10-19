@@ -342,7 +342,7 @@ describe("identityHeaders and liveContextOptions", () => {
   const payload = (line: string) => JSON.parse(Buffer.from(line.split("=")[1]!.split(".")[1]!, "base64url").toString("utf8"));
   /** A minted-shaped cookie line for `address` (a fake mac: the instrument reads its own cookie, the Worker verifies). */
   const lineFor = (address: string) =>
-    `__Host-yokohama_session=v1.${Buffer.from(JSON.stringify({ address, sid: null, issued: 1_789_000_000, expires: 1_791_592_000 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    `__Host-yokohama_session=v2.${Buffer.from(JSON.stringify({ address, sid: null, first: 1_789_000_000, issued: 1_789_000_000, expires: 1_791_592_000 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
 
   describe("under YOKOHAMA_SESSION_COOKIE", () => {
     it("is the cookie's own address and no other: its jar cookie, and no header at all", () => {
@@ -383,7 +383,7 @@ describe("identityHeaders and liveContextOptions", () => {
       vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
       expect(identityHeaders("a@e2e.test")).toEqual({});
       const [ca, cb] = [lineOf("a@e2e.test"), lineOf("b@e2e.test")];
-      expect(ca).toMatch(/^__Host-yokohama_session=v1\./);
+      expect(ca).toMatch(/^__Host-yokohama_session=v2\./);
       expect(ca).not.toBe(cb);
       expect(payload(ca).address).toBe("a@e2e.test");
       expect(payload(cb).address).toBe("b@e2e.test");

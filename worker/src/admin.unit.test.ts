@@ -18,8 +18,8 @@ describe("the operator gate (spec §2.9)", () => {
   // as a person is. Mutants: the gate still person-only (the listed session refused); a session passed whatever the
   // list (the unlisted one passes).
   it("passes a listed session, with its address, and refuses an unlisted one (R-27)", () => {
-    expect(operatorGate("worker", ADMINS, { kind: "session", email: "boss@t.test", sid: "s1", renew: false })).toEqual({ kind: "operator", email: "boss@t.test" });
-    expect(operatorGate("worker", ADMINS, { kind: "session", email: "red@t.test", sid: null, renew: true })).toEqual({ kind: "refused" });
+    expect(operatorGate("worker", ADMINS, { kind: "session", email: "boss@t.test", sid: "s1", first: 1, renew: false })).toEqual({ kind: "operator", email: "boss@t.test" });
+    expect(operatorGate("worker", ADMINS, { kind: "session", email: "red@t.test", sid: null, first: 1, renew: true })).toEqual({ kind: "refused" });
   });
 
   it("refuses a dev-door identity claiming a listed address (battery 32)", () => {
@@ -35,7 +35,7 @@ describe("the operator gate (spec §2.9)", () => {
     for (const identity of [
       { kind: "person", email: "boss@t.test" },
       { kind: "dev", email: "boss@t.test" },
-      { kind: "session", email: "boss@t.test", sid: null, renew: false },
+      { kind: "session", email: "boss@t.test", sid: null, first: 1, renew: false },
       { kind: "none" },
     ] as const) {
       expect(operatorGate("worker", null, identity), identity.kind).toEqual({ kind: "off" });

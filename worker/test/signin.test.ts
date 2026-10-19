@@ -34,6 +34,8 @@ const FOREIGN = "https://evil.example";
 const SECRET = "a-session-secret-of-at-least-32-bytes!";
 const DAYS = 30;
 const DAY = 86_400;
+/** The absolute cap the cells mint under: `YOKOHAMA_SESSION_MAX_DAYS`' default. */
+const MAX = 90;
 const JSON_TYPE = { "content-type": "application/json" };
 /** The archive post that names no device and no safe game id: since Task 5 the anonymous archive's one remaining 401,
  *  the house refusing a malformed body, which carries no session challenge (ruling R-36). */
@@ -137,9 +139,10 @@ async function call(req: Request, e: Env = ENV, fetcher: typeof fetch = issuer()
   return handle(req, e, createExecutionContext(), keys, fetcher);
 }
 
-/** A session cookie's VALUE for `address`, issued `ago` seconds before now. */
-function session(address = RED, sid: string | null = "s1", ago = 0): Promise<string> {
-  return mintSession({ address, sid, issued: now() - ago }, DAYS, SECRET);
+/** A session cookie's VALUE for `address`, issued `ago` seconds before now, and first issued then too unless
+ *  `firstAgo` says earlier. */
+function session(address = RED, sid: string | null = "s1", ago = 0, firstAgo = ago): Promise<string> {
+  return mintSession({ address, sid, first: now() - firstAgo, issued: now() - ago }, DAYS, MAX, SECRET);
 }
 
 /** A login cookie's VALUE, minted now unless `at` says otherwise. */
@@ -190,7 +193,7 @@ describe("/enter starts the sign-in", () => {
       state,
     });
     const line = res.headers.get("Set-Cookie")!;
-    expect(line).toMatch(new RegExp(`^${LOGIN_COOKIE}=v1\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}; Max-Age=600; Path=/; HttpOnly; Secure; SameSite=Lax$`));
+    expect(line).toMatch(new RegExp(`^${LOGIN_COOKIE}=v2\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}; Max-Age=600; Path=/; HttpOnly; Secure; SameSite=Lax$`));
     const kept = await readLogin(line, SECRET, now());
     expect(kept).toMatchObject({ state, returnTo: "/#/t/sim-1", verifier: "" });
     expect(kept!.nonce, "a nonce is drawn too").toMatch(/^[A-Za-z0-9_-]{43}$/);
@@ -278,7 +281,7 @@ describe("/enter completes the sign-in", () => {
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("/#/t/sim-1");
     const cookies = res.headers.getSetCookie();
-    expect(cookies.some((c) => c.startsWith(`${SESSION_COOKIE}=v1.`))).toBe(true);
+    expect(cookies.some((c) => c.startsWith(`${SESSION_COOKIE}=v2.`))).toBe(true);
     expect(cookies.some((c) => c.startsWith(`${LOGIN_COOKIE}=; Max-Age=0`))).toBe(true);
     expect(cookies).toHaveLength(2);
     const exchanges = fetcher.calls.filter((c) => c.url === WORKOS_AUTHENTICATE);
@@ -310,7 +313,7 @@ describe("/enter completes the sign-in", () => {
     expect(minted).toContain(`; Max-Age=${7 * DAY}; `);
     const s = await readSession(minted, SECRET, now());
     expect(s!.expires - s!.issued).toBe(7 * DAY);
-    const week7 = (ago: number) => mintSession({ address: RED, sid: "s1", issued: now() - ago }, 7, SECRET);
+    const week7 = (ago: number) => mintSession({ address: RED, sid: "s1", first: now() - ago, issued: now() - ago }, 7, MAX, SECRET);
     const due = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await week7(3.5 * DAY + 60)}` }), week);
     const renewal = due.headers.getSetCookie();
     expect([due.status, renewal.length], "due: one renewal").toEqual([200, 1]);
@@ -319,6 +322,37 @@ describe("/enter completes the sign-in", () => {
     expect(r!.expires - r!.issued).toBe(7 * DAY);
     const early = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await week7(3.5 * DAY - 60)}` }), week);
     expect([early.status, early.headers.has("Set-Cookie")], "not yet due").toEqual([200, false]);
+  });
+
+  // The absolute cap (2026-10-19; the auth cycle's R-16 amended): the callback writes `first` at the real clock, the
+  // cookie's `Max-Age` is its real life, and under `YOKOHAMA_SESSION_MAX_DAYS` 7 beside 30 days it lives seven.
+  // Mutants: `first` not written, or not the clock; the cap not read at the callback's mint; `Max-Age` the days.
+  it("the callback writes first at the clock, and under YOKOHAMA_SESSION_MAX_DAYS 7 beside 30 days mints a seven-day cookie", async () => {
+    const capped: Env = { ...ENV, YOKOHAMA_SESSION_MAX_DAYS: "7" };
+    const res = await call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login()}` }), capped);
+    expect([res.status, res.headers.get("Location")]).toEqual([302, "/#/t/sim-1"]);
+    const minted = res.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`))!;
+    expect(minted).toContain(`; Max-Age=${7 * DAY}; `);
+    const s = await readSession(minted, SECRET, now());
+    expect(s!.first).toBe(s!.issued);
+    expect(Math.abs(s!.first - now()), "first at the real clock").toBeLessThanOrEqual(2);
+    expect(s!.expires - s!.first).toBe(7 * DAY);
+  });
+
+  // A renewal keeps `first` and reaches the cap, with `Max-Age` the life it really has; a cookie already sitting at
+  // the cap is due by the days but gains nothing, so no cookie is sent. Mutants: `first` re-stamped at the renewal;
+  // the cap not read at the renewal's mint; a renewal sent that sets the same expiry; `Max-Age` the days.
+  it("a renewal keeps first and stops at the cap, and a cookie at its cap is not renewed", async () => {
+    const renewed = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await session(RED, "s1", 20 * DAY, 70 * DAY)}` }));
+    const lines = renewed.headers.getSetCookie();
+    expect([renewed.status, lines.length]).toEqual([200, 1]);
+    const r = await readSession(lines[0]!, SECRET, now());
+    expect(Math.abs(r!.first - (now() - 70 * DAY)), "first kept").toBeLessThanOrEqual(2);
+    expect(r!.expires - r!.first, "the cap").toBe(MAX * DAY);
+    expect(lines[0]).toContain(`; Max-Age=${r!.expires - r!.issued}; `);
+    expect(r!.expires - r!.issued).toBeLessThan(DAYS * DAY);
+    const atCap = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await session(RED, "s1", 5 * DAY, 80 * DAY)}` }));
+    expect([atCap.status, atCap.headers.has("Set-Cookie")]).toEqual([200, false]);
   });
 
   // The arms' key sources are one per isolate and JWKS URL (`armKeys`), so a second callback reads the issuer's keys
@@ -330,7 +364,7 @@ describe("/enter completes the sign-in", () => {
     const fetcher = issuer({ nonce: () => "n" });
     for (let i = 0; i < 2; i++) {
       const res = await call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login()}` }), once, fetcher);
-      expect([res.headers.get("Location"), res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=v1.`))], `callback ${i + 1}`).toEqual(["/#/t/sim-1", true]);
+      expect([res.headers.get("Location"), res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=v2.`))], `callback ${i + 1}`).toEqual(["/#/t/sim-1", true]);
     }
     const asked = (path: string) => fetcher.calls.filter((c) => c.url === `${issuerUrl}${path}`).length;
     expect([asked("/token"), asked("/jwks")], "two exchanges, one key fetch").toEqual([2, 1]);
@@ -343,7 +377,7 @@ describe("/enter completes the sign-in", () => {
     for (const returnTo of ["https://evil.test/", "/api/me", "//evil.test/#/lobby"]) {
       const res = await call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login({ returnTo })}` }));
       expect([res.status, res.headers.get("Location")], returnTo).toEqual([302, LOBBY]);
-      expect(res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=v1.`)), "and the sign-in still completes").toBe(true);
+      expect(res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=v2.`)), "and the sign-in still completes").toBe(true);
     }
   });
 
@@ -546,7 +580,7 @@ describe("the session cookie names the caller", () => {
     expect([renewed.status, await renewed.json()]).toEqual([200, { mode: "cf-access", user: RED }]);
     const lines = renewed.headers.getSetCookie();
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(new RegExp(`^${SESSION_COOKIE}=v1\\.[^;]+; Max-Age=${DAYS * DAY}; Path=/; HttpOnly; Secure; SameSite=Lax$`));
+    expect(lines[0]).toMatch(new RegExp(`^${SESSION_COOKIE}=v2\\.[^;]+; Max-Age=${DAYS * DAY}; Path=/; HttpOnly; Secure; SameSite=Lax$`));
     const fresh = await readSession(lines[0]!, SECRET, now());
     expect(fresh).toMatchObject({ address: RED, sid: "s1" });
     expect(Math.abs(fresh!.issued - now()), "renewal re-stamps the time (R-16)").toBeLessThanOrEqual(2);
@@ -734,6 +768,39 @@ describe("the callback spends the create limiter by IP (R-31)", () => {
 });
 
 // Ruling R-27: a session is an operator candidate exactly as a person is. Mutant: the gate still person-only.
+// The red button (2026-10-19, the owner's ruling): `YOKOHAMA_DENIED`, a secret, names addresses and `@domains` that
+// are nobody here — a denied session is answered as a caller-less request is, the 401 with the sign-in challenge,
+// its cookie cleared with it, and the callback refuses the address after the exchange so the sign-in cannot mint
+// another. Mutants: the list not read at the session; a domain entry not matched; the address compared without
+// folding; the cookie not cleared; the callback minting for a denied address; the refusal logging the address.
+describe("the red button: YOKOHAMA_DENIED", () => {
+  const DENIED: Env = { ...ENV, YOKOHAMA_DENIED: "Spam@T.test,\n@bad.example\n" };
+
+  it("a denied address's session, or a denied domain's, is nobody: the 401 with the challenge and the cookie cleared; another address is untouched", async () => {
+    for (const address of ["spam@t.test", "Spam@T.test", "anyone@bad.example", "Anyone@Bad.Example"]) {
+      const res = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await session(address)}` }), DENIED);
+      expect([res.status, res.headers.get("WWW-Authenticate"), res.headers.getSetCookie()], address).toEqual([401, SESSION_CHALLENGE, [clearCookie(SESSION_COOKIE)]]);
+    }
+    const ok = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await session(RED)}` }), DENIED);
+    expect([ok.status, await ok.json(), ok.headers.has("Set-Cookie")]).toEqual([200, { mode: "cf-access", user: RED }, false]);
+    const up = await call(get("/api/stream", { Upgrade: "websocket", cookie: `${SESSION_COOKIE}=${await session("spam@t.test")}` }), DENIED);
+    expect([up.status, up.webSocket, up.headers.getSetCookie()]).toEqual([401, null, [clearCookie(SESSION_COOKIE)]]);
+    const create = await call(post("/api/games", { ...JSON_TYPE, cookie: `${SESSION_COOKIE}=${await session("spam@t.test")}`, Origin: ORIGIN }, CREATE_BODY), DENIED);
+    expect([create.status, create.headers.getSetCookie()]).toEqual([401, [clearCookie(SESSION_COOKIE)]]);
+  });
+
+  it("the callback refuses a denied address after the exchange: signin-refused denied, the failed landing, no session cookie, the address unlogged", async () => {
+    const { result: res, lines } = await signinLines(async () =>
+      call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login()}` }), { ...ENV, YOKOHAMA_DENIED: `@${RED.split("@")[1]}` }),
+    );
+    expect([res.status, res.headers.get("Location")]).toEqual([302, FAILED]);
+    expect(res.headers.getSetCookie()).toEqual([clearCookie(LOGIN_COOKIE)]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ event: "signin-refused", source: "workos", reason: "denied" });
+    expect(JSON.stringify(lines[0])).not.toContain(RED);
+  });
+});
+
 describe("a session caller and the operator surface (R-27)", () => {
   const OPS_ENV: Env = { ...ENV, YOKOHAMA_WEB_ADMINS: "chief@t.test, Boss@T.test" };
   it("a session caller on the list reaches the operator route; one off the list is the operator 403", async () => {

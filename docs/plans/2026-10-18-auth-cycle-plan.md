@@ -1210,3 +1210,30 @@ it("doorLine names the source", …);
   path and `unauthorized` → `refresh` re-asks at about 80 requests a second behind "Connecting to the server…" until
   the door applies the release; the new client makes one request and draws the sign-in card. The owner rules its
   handling: a per-IP bound on caller-less `/api/me` (S3), or accepted as the transition's cost.
+- **2026-10-19, the afternoon's two changes on the branch — the absolute cap and the red button (the owner's rulings
+  after stage 1's read; R-16 amended).** Gap 1: the session payload carries `first`, the time of first issue, kept
+  across renewals; the version moved `v1` → `v2` (a `v1` cookie reads as nobody — no legacy branch, the one account
+  of the day signs in once more); `YOKOHAMA_SESSION_MAX_DAYS` (90 when absent) caps every mint and renewal at `first`
+  plus the cap — the expiry is the earlier of `issued` plus the days and `first` plus the cap (`sessionExpiry`), a
+  renewal is sent only when it would extend the expiry (`renewalExpiry`), a cookie's `Max-Age` is the life it really
+  has, and the minter refuses a mint at or past the cap, a `first` after `issued` and a cap below one day. The
+  instrument's minter (`mint-session.mjs`) writes the same shape with `first` = the issue time. Gap 2:
+  `YOKOHAMA_DENIED`, a SECRET read under the sign-in arms — addresses and `@domain` entries, split on commas and
+  newlines, folded, empties dropped, any other entry the 500 naming its position; a session naming a denied address
+  or at a denied domain is nobody (`answer`, before the anonymous archive's step and R-44's 401), its cookie cleared
+  on the way out (`Answered.clear`, `handle`), and the callback refuses the address after the exchange
+  (`signin-refused`, reason `denied`, the address unlogged); the deploy guard's check 7 refuses it in any `vars`
+  block. Written test-first: the session unit cells (the goldens recomputed by openssl for the `v2` shape, three of
+  them), the configuration cells, the pool's sign-in cells (the callback's `first` and cap, the renewal reaching and
+  stopping at the cap, the denied session and domain, the denied callback), the instrument's cells; the fixtures of
+  three unit files gained the field. Readings at the commit: typecheck clean; `test:scripts` 793 in 32 files; the
+  pool 297 in 14 files over the debug module. Records: `docs/web-lane.md` §12 (two rows), `worker/README.md`'s
+  session paragraph, `worker/RUNBOOK.md`'s variable rows, the operator playbook's `workos` note and the new §24, the
+  design's R-16 and §4.2 amended in place with the date. Not done: the owner's "two commits" became one, the two
+  changes sharing `session.ts`, `config.ts` and `index.ts` line for line. Found by the suites, not by the plan: the
+  instruments' shared cookie reader (`worker/scripts/dev-vars.mjs`, `MINTED_LINE`) pinned `v1`, so the live harness built
+  no jar cookie from a `v2` line (web `test:wasm` 8 red in `e2e/harness.node.test.ts`); moved to `v2` test-first, with the
+  replay's and the harness's own pins (`v1` now among the refused shapes). The version bumped to `0.7.1` by the lane's §7
+  steps (the wire fixtures and the backup envelope regenerated: the version and nothing else in the diff). Readings after
+  the bump: web typecheck clean, vitest 1,553 in 74 files, `test:wasm` 391 in 16; worker typecheck clean, `test:scripts`
+  793 in 32, the pool 297 in 14 over the debug module; the three web-lane cargo suites and clippy in the record below.

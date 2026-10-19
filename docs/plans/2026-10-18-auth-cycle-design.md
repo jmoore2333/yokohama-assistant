@@ -257,7 +257,9 @@ nothing added to the client, which is the whole reason it exists (the specificat
 WebSocket upgrade carry no header"). A stolen cookie is valid until it expires (amended 2026-10-19, R-16: and a
 renewal extends it — `mintSession` derives `expires` from `issued`, so a renewal re-stamps the time and a stolen cookie
 lives as long as it is used); rotating the secret ends every session at once and is the only revoke; both are the
-recorded trade (R-A2).
+recorded trade (R-A2). (Amended 2026-10-19: a session now ends at an absolute cap counted from its first issue,
+`YOKOHAMA_SESSION_MAX_DAYS`, whatever its use, and `YOKOHAMA_DENIED` — a secret — ends one address's sessions and
+refuses its sign-in; rotation remains the global revoke. R-16's amendment in the Review record.)
 
 Under `access` no cookie is minted and none is read: Access's own cookie and assertion do that job, as today.
 
@@ -613,7 +615,10 @@ above is edited except §4.2's marked sentence; the rulings are recorded here, e
   names the unprefixed `yokohama_session`).
 - **R-16 (Task 2):** a renewal re-stamps the time, so a stolen cookie lives as long as it is used and only rotating the
   secret ends it; §4.2's sentence is amended in place above. No absolute session cap this cycle: the payload keeps no
-  sign-in time, so a cap would be a `v2` form.
+  sign-in time, so a cap would be a `v2` form. **Amended 2026-10-19 (the owner's ruling after stage 1's read): the
+  cap exists — the payload carries `first`, the `v2` form, and `YOKOHAMA_SESSION_MAX_DAYS` (90 when absent) bounds
+  every renewal; beside it `YOKOHAMA_DENIED`, a secret, ends one address's sessions and sign-in (the red button).
+  The plan's Review record, its 2026-10-19 afternoon entries.**
 - **R-18 (Task 3):** the `oidc` sign-out URL carries `client_id` beside `post_logout_redirect_uri` (RP-Initiated
   Logout 1.0 §3: an issuer may refuse the redirect when neither `id_token_hint` nor `client_id` names the client).
 - **R-24 (Task 3):** the discovery document's issuer and four endpoints must be `https` with no fragment, `http`

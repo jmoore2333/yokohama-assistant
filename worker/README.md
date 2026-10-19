@@ -321,7 +321,10 @@ first-party API, two `fetch` calls and no SDK, with the API key as `YOKOHAMA_OID
 deployment runs it after the window of `RUNBOOK.md` §23 (today it is still `access`). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
 (`__Host-yokohama_session`, `HttpOnly; Secure; SameSite=Lax; Path=/`), so a browser keeps it only over `https`
 or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days by default
-(`YOKOHAMA_SESSION_DAYS`), is renewed on use, and **only rotating `YOKOHAMA_SESSION_SECRET` ends a stolen one**.
+(`YOKOHAMA_SESSION_DAYS`), is renewed on use, and ends at an absolute cap of 90 days from its first issue
+(`YOKOHAMA_SESSION_MAX_DAYS`, 2026-10-19) however much it is used; **rotating `YOKOHAMA_SESSION_SECRET` ends every
+session at once**, and **`YOKOHAMA_DENIED` — a secret naming addresses and `@domains` — ends one player's: their
+session is nobody and their sign-in is refused (the red button, `RUNBOOK.md` §24)**.
 Both halves of the sign-in are on `/enter`, and sign-out is `POST /api/leave`. **A post to the archive with
 no caller files anonymously** under `anon-<device id or the game's own id>@anon.invalid`, limited by IP, and
 **offers no integrity guarantee: a device id is a self-declared label, not a credential** — so a finished

@@ -9,12 +9,16 @@ import {
   readLogin,
   readSession,
   renewDue,
+  renewalExpiry,
   setCookie,
   type Session,
 } from "./session";
 
 const SECRET = "0123456789abcdef0123456789abcdef";
 const NOW = 1_789_000_000;
+const DAY = 86_400;
+/** The absolute cap every cell mints under unless it says otherwise: 90 days, `YOKOHAMA_SESSION_MAX_DAYS`' default. */
+const MAX = 90;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -26,15 +30,15 @@ afterEach(() => {
 // literal-name cell under "reading a cookie" pins them on the reading side, and every other cell uses the constants.
 describe("the session and login cookies (auth cycle, Task 2)", () => {
   it("mints and reads back, with the expiry 30 days out", async () => {
-    const v = await mintSession({ address: "red@t.test", sid: "session_01", issued: NOW }, 30, SECRET);
-    expect(v.startsWith("v1.")).toBe(true);
-    expect(await readSession(`other=1; ${SESSION_COOKIE}=${v}`, SECRET, NOW + 5)).toEqual({ address: "red@t.test", sid: "session_01", issued: NOW, expires: NOW + 30 * 86_400 });
+    const v = await mintSession({ address: "red@t.test", sid: "session_01", first: NOW, issued: NOW }, 30, MAX, SECRET);
+    expect(v.startsWith("v2.")).toBe(true);
+    expect(await readSession(`other=1; ${SESSION_COOKIE}=${v}`, SECRET, NOW + 5)).toEqual({ address: "red@t.test", sid: "session_01", first: NOW, issued: NOW, expires: NOW + 30 * 86_400 });
   });
-  it("a changed MAC byte, an expired payload, a non-JSON payload, another secret and a v0 prefix each read as nobody", async () => {
-    const v = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
+  it("a changed MAC byte, an expired payload, a non-JSON payload, another secret and a v1 prefix each read as nobody", async () => {
+    const v = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, SECRET);
     const [p, body, mac] = v.split(".") as [string, string, string];
     const flipped = mac[0] === "A" ? "B" : "A";
-    for (const bad of [`${p}.${body}.${flipped}${mac.slice(1)}`, `v0.${body}.${mac}`, `${p}.!!!.${mac}`, v.slice(0, -1)]) {
+    for (const bad of [`${p}.${body}.${flipped}${mac.slice(1)}`, `v1.${body}.${mac}`, `${p}.!!!.${mac}`, v.slice(0, -1)]) {
       expect(await readSession(`${SESSION_COOKIE}=${bad}`, SECRET, NOW)).toBeNull();
     }
     expect(await readSession(`${SESSION_COOKIE}=${v}`, "x".repeat(32), NOW)).toBeNull();
@@ -43,7 +47,7 @@ describe("the session and login cookies (auth cycle, Task 2)", () => {
     expect(await readSession("a=b", SECRET, NOW)).toBeNull();
   });
   it("renewal is due past half the life and not before", async () => {
-    const s = { address: "a@b.test", sid: null, issued: NOW, expires: NOW + 30 * 86_400 };
+    const s = { address: "a@b.test", sid: null, first: NOW, issued: NOW, expires: NOW + 30 * 86_400 };
     expect(renewDue(s, NOW + 15 * 86_400 - 1, 30)).toBe(false);
     expect(renewDue(s, NOW + 15 * 86_400 + 1, 30)).toBe(true);
   });
@@ -60,18 +64,23 @@ describe("the session and login cookies (auth cycle, Task 2)", () => {
 
 // The two goldens were computed OUTSIDE this module, by `openssl` alone (the payload through `openssl base64 -A`
 // with `+/` mapped to `-_` and `=` dropped, the MAC through `openssl dgst -sha256 -hmac "$SECRET" -binary` over
-// the bytes `v1.<payload>`), so a cell comparing a minted value to one compares two implementations, not one with
+// the bytes `v2.<payload>`), so a cell comparing a minted value to one compares two implementations, not one with
 // itself. They are the reference the plan's Task 8 holds its `node:crypto` minter to.
-const GOLDEN_SESSION_JSON = '{"address":"red@t.test","sid":null,"issued":1789000000,"expires":1791592000}';
+const GOLDEN_SESSION_JSON = '{"address":"red@t.test","sid":null,"first":1789000000,"issued":1789000000,"expires":1791592000}';
 const GOLDEN_SESSION =
+  "v2.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiZmlyc3QiOjE3ODkwMDAwMDAsImlzc3VlZCI6MTc4OTAwMDAwMCwiZXhwaXJlcyI6MTc5MTU5MjAwMH0" +
+  ".K0WU2ebkRpdAANZYMCy0OKdP9y3Q9a2ZvDacRsFObEM";
+/** The v1 golden the auth cycle shipped (`address, sid, issued, expires`, no `first`), kept as the cookie the cap's
+ *  version change must refuse: its MAC still verifies under `SECRET`. */
+const GOLDEN_V1_SESSION =
   "v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiaXNzdWVkIjoxNzg5MDAwMDAwLCJleHBpcmVzIjoxNzkxNTkyMDAwfQ" +
   ".C7Evl68QvNoLo7oHRHSQ0zUgg7untTb2bxOrXqFIsSo";
 /** A `returnTo` chosen so the payload's encoding carries both `-` and `_` and its standard base64 would pad. */
 const GOLDEN_RETURN_TO = "/#/t/sim-0?x=>>>???";
 const GOLDEN_LOGIN_JSON = `{"state":"st","nonce":"no","verifier":"ve","returnTo":"${GOLDEN_RETURN_TO}","expires":1789000600}`;
 const GOLDEN_LOGIN =
-  "v1.eyJzdGF0ZSI6InN0Iiwibm9uY2UiOiJubyIsInZlcmlmaWVyIjoidmUiLCJyZXR1cm5UbyI6Ii8jL3Qvc2ltLTA_eD0-Pj4_Pz8iLCJleHBpcmVzIjoxNzg5MDAwNjAwfQ" +
-  ".4V9jIj0ehl56iNIJCoKbtN4vxz7qSQNEycVw1wg5buc";
+  "v2.eyJzdGF0ZSI6InN0Iiwibm9uY2UiOiJubyIsInZlcmlmaWVyIjoidmUiLCJyZXR1cm5UbyI6Ii8jL3Qvc2ltLTA_eD0-Pj4_Pz8iLCJleHBpcmVzIjoxNzg5MDAwNjAwfQ" +
+  ".YW48Sq94TvcmsZ08b1W8G_HPTyBekKPq3mzDsaAKJHQ";
 
 const utf8 = new TextEncoder();
 const b64url = (b: Uint8Array): string =>
@@ -85,12 +94,12 @@ const payloadText = (value: string): string => {
  *  ac`), computed by openssl as above: the key is the secret's UTF-8 bytes, as `shellConfig` counts them. */
 const WIDE_SECRET = `日本${SECRET}`;
 const GOLDEN_WIDE_SESSION =
-  "v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiaXNzdWVkIjoxNzg5MDAwMDAwLCJleHBpcmVzIjoxNzkxNTkyMDAwfQ" +
-  ".-3A7m_T9bmoqo3f00D02OtuX3w3UdXzSbVa89Ph6rvc";
+  "v2.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiZmlyc3QiOjE3ODkwMDAwMDAsImlzc3VlZCI6MTc4OTAwMDAwMCwiZXhwaXJlcyI6MTc5MTU5MjAwMH0" +
+  ".SgOnUO5ckTunIXGihwC1lZpE8Oeucurr0m9Bp1apDLs";
 
 /** The cells' own signer, for payloads the minter must never produce. The first cell under "reading" checks it
  *  against the openssl golden, so every hand-signed cell below rests on a signer that agrees with openssl. */
-async function signedBytes(payload: Uint8Array, secret = SECRET, version = "v1"): Promise<string> {
+async function signedBytes(payload: Uint8Array, secret = SECRET, version = "v2"): Promise<string> {
   const body = b64url(payload);
   const key = await crypto.subtle.importKey("raw", utf8.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(`${version}.${body}`)));
@@ -100,7 +109,7 @@ const signed = (json: string, secret = SECRET): Promise<string> => signedBytes(u
 
 describe("the canonical byte form (the reference for Task 8's minter)", () => {
   it("a minted session is exactly the bytes openssl computes, with sid null written out", async () => {
-    const v = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
+    const v = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, SECRET);
     expect(v).toBe(GOLDEN_SESSION);
     expect(payloadText(v)).toBe(GOLDEN_SESSION_JSON);
   });
@@ -115,38 +124,38 @@ describe("the canonical byte form (the reference for Task 8's minter)", () => {
   });
 
   it("the key is the secret's UTF-8 bytes", async () => {
-    expect(await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, WIDE_SECRET)).toBe(GOLDEN_WIDE_SESSION);
+    expect(await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, WIDE_SECRET)).toBe(GOLDEN_WIDE_SESSION);
     expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_WIDE_SESSION}`, WIDE_SECRET, NOW)).not.toBeNull();
   });
 
   it("neither the input's field order nor a stray field reaches the bytes", async () => {
-    expect(await mintSession({ issued: NOW, sid: null, address: "red@t.test" }, 30, SECRET)).toBe(GOLDEN_SESSION);
-    const stray = { address: "red@t.test", sid: null, issued: NOW, expires: 1, extra: 1 } as Omit<Session, "expires">;
-    expect(await mintSession(stray, 30, SECRET)).toBe(GOLDEN_SESSION);
+    expect(await mintSession({ issued: NOW, first: NOW, sid: null, address: "red@t.test" }, 30, MAX, SECRET)).toBe(GOLDEN_SESSION);
+    const stray = { address: "red@t.test", sid: null, first: NOW, issued: NOW, expires: 1, extra: 1 } as Omit<Session, "expires">;
+    expect(await mintSession(stray, 30, MAX, SECRET)).toBe(GOLDEN_SESSION);
     expect(
       await mintLogin({ returnTo: GOLDEN_RETURN_TO, verifier: "ve", nonce: "no", state: "st" }, NOW, SECRET),
     ).toBe(GOLDEN_LOGIN);
   });
 
   it("sid null and a non-ASCII value round-trip", async () => {
-    const v = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
-    expect(await readSession(`${SESSION_COOKIE}=${v}`, SECRET, NOW)).toEqual({ address: "red@t.test", sid: null, issued: NOW, expires: NOW + 30 * 86_400 });
+    const v = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, SECRET);
+    expect(await readSession(`${SESSION_COOKIE}=${v}`, SECRET, NOW)).toEqual({ address: "red@t.test", sid: null, first: NOW, issued: NOW, expires: NOW + 30 * 86_400 });
     const returnTo = "/#/t/日本";
     const l = await mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo }, NOW, SECRET);
     expect((await readLogin(`${LOGIN_COOKIE}=${l}`, SECRET, NOW))?.returnTo).toBe(returnTo);
   });
 
   it("a time that is not whole seconds is refused at the mint, never written", async () => {
-    await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW + 0.5 }, 30, SECRET)).rejects.toThrow(RangeError);
-    await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW }, 1.5, SECRET)).rejects.toThrow(RangeError);
+    await expect(mintSession({ address: "red@t.test", sid: null, first: NOW + 0.5, issued: NOW + 0.5 }, 30, MAX, SECRET)).rejects.toThrow(RangeError);
+    await expect(mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 1.5, MAX, SECRET)).rejects.toThrow(RangeError);
     await expect(mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo: "/" }, NOW + 0.5, SECRET)).rejects.toThrow(RangeError);
   });
 
   it("days below one are refused at the mint, so no cookie is minted dead or expiring before it was issued", async () => {
     for (const days of [0, -1]) {
-      await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW }, days, SECRET), `${days}`).rejects.toThrow(RangeError);
+      await expect(mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, days, MAX, SECRET), `${days}`).rejects.toThrow(RangeError);
     }
-    const one = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 1, SECRET);
+    const one = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 1, MAX, SECRET);
     expect((await readSession(`${SESSION_COOKIE}=${one}`, SECRET, NOW))?.expires).toBe(NOW + 86_400);
   });
 });
@@ -158,23 +167,28 @@ describe("reading a cookie", () => {
   });
 
   it("a payload signed with its fields in another order reads, and only the declared fields come back", async () => {
-    const s = await signed('{"expires":1791592000,"extra":1,"issued":1789000000,"sid":"s1","address":"a@b.test"}');
-    expect(await readSession(`${SESSION_COOKIE}=${s}`, SECRET, NOW)).toEqual({ address: "a@b.test", sid: "s1", issued: NOW, expires: 1_791_592_000 });
+    const s = await signed('{"expires":1791592000,"extra":1,"issued":1789000000,"first":1788000000,"sid":"s1","address":"a@b.test"}');
+    expect(await readSession(`${SESSION_COOKIE}=${s}`, SECRET, NOW)).toEqual({ address: "a@b.test", sid: "s1", first: 1_788_000_000, issued: NOW, expires: 1_791_592_000 });
     const l = await signed('{"expires":1789000600,"returnTo":"/","verifier":"v","nonce":"n","state":"s","extra":1}');
     expect(await readLogin(`${LOGIN_COOKIE}=${l}`, SECRET, NOW)).toEqual({ state: "s", nonce: "n", verifier: "v", returnTo: "/", expires: NOW + 600 });
   });
 
   it("a verified payload of any other shape reads as nobody", async () => {
+    // Each row is the golden shape with ONE defect (the cap, 2026-10-19: `first` joins the shape, so the rows carry it,
+    // and the last three are its own defects — absent, a string, and after `issued`).
     const sessions = [
-      '{"address":5,"sid":null,"issued":1789000000,"expires":1791592000}',
-      '{"sid":null,"issued":1789000000,"expires":1791592000}',
-      '{"address":"a@b.test","sid":7,"issued":1789000000,"expires":1791592000}',
-      '{"address":"a@b.test","issued":1789000000,"expires":1791592000}',
-      '{"address":"a@b.test","sid":null,"issued":"1789000000","expires":1791592000}',
-      '{"address":"a@b.test","sid":null,"issued":1789000000.5,"expires":1791592000}',
-      '{"address":"a@b.test","sid":null,"issued":1789000000}',
-      '{"address":"a@b.test","sid":null,"issued":1789000000,"expires":1791592000.5}',
-      '{"address":"a@b.test","sid":null,"issued":1789000000,"expires":"1791592000"}',
+      '{"address":5,"sid":null,"first":1789000000,"issued":1789000000,"expires":1791592000}',
+      '{"sid":null,"first":1789000000,"issued":1789000000,"expires":1791592000}',
+      '{"address":"a@b.test","sid":7,"first":1789000000,"issued":1789000000,"expires":1791592000}',
+      '{"address":"a@b.test","first":1789000000,"issued":1789000000,"expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"first":1789000000,"issued":"1789000000","expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"first":1789000000,"issued":1789000000.5,"expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"first":1789000000,"issued":1789000000}',
+      '{"address":"a@b.test","sid":null,"first":1789000000,"issued":1789000000,"expires":1791592000.5}',
+      '{"address":"a@b.test","sid":null,"first":1789000000,"issued":1789000000,"expires":"1791592000"}',
+      '{"address":"a@b.test","sid":null,"issued":1789000000,"expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"first":"1789000000","issued":1789000000,"expires":1791592000}',
+      '{"address":"a@b.test","sid":null,"first":1789000001,"issued":1789000000,"expires":1791592000}',
       "[]",
       "null",
       '"a@b.test"',
@@ -198,7 +212,7 @@ describe("reading a cookie", () => {
   });
 
   it("a verified payload that is not UTF-8 reads as nobody, rather than as its replacement characters", async () => {
-    const json = utf8.encode('{"address":"a?@b.test","sid":null,"issued":1789000000,"expires":1791592000}');
+    const json = utf8.encode('{"address":"a?@b.test","sid":null,"first":1789000000,"issued":1789000000,"expires":1791592000}');
     expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(json)}`, SECRET, NOW)).not.toBeNull();
     json[json.indexOf(0x3f)] = 0xff; // the "?" becomes a byte that begins no UTF-8 sequence
     expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(json)}`, SECRET, NOW)).toBeNull();
@@ -213,8 +227,8 @@ describe("reading a cookie", () => {
 
   it("a cookie of another version reads as nobody even when its MAC verifies", async () => {
     const payload = utf8.encode(GOLDEN_SESSION_JSON);
-    expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(payload, SECRET, "v1")}`, SECRET, NOW)).not.toBeNull();
-    for (const version of ["v2", "V1", "v1 ", ""]) {
+    expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(payload, SECRET, "v2")}`, SECRET, NOW)).not.toBeNull();
+    for (const version of ["v1", "v3", "V2", "v2 ", ""]) {
       expect(await readSession(`${SESSION_COOKIE}=${await signedBytes(payload, SECRET, version)}`, SECRET, NOW), version).toBeNull();
     }
   });
@@ -233,7 +247,7 @@ describe("reading a cookie", () => {
   });
 
   it("a session is no login and a login no session, under either name", async () => {
-    const s = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
+    const s = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, SECRET);
     const l = await mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo: "/" }, NOW, SECRET);
     expect(await readLogin(`${LOGIN_COOKIE}=${s}`, SECRET, NOW)).toBeNull();
     expect(await readSession(`${SESSION_COOKIE}=${l}`, SECRET, NOW)).toBeNull();
@@ -243,7 +257,7 @@ describe("reading a cookie", () => {
   });
 
   it("the expiry second itself reads as nobody and the second before it reads", async () => {
-    const s = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
+    const s = await mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, SECRET);
     const expires = NOW + 30 * 86_400;
     expect((await readSession(`${SESSION_COOKIE}=${s}`, SECRET, expires - 1))?.expires).toBe(expires);
     expect(await readSession(`${SESSION_COOKIE}=${s}`, SECRET, expires)).toBeNull();
@@ -263,7 +277,7 @@ describe("reading a cookie", () => {
     // on every run), so the standard-alphabet spelling below differs from the minted one.
     let v = "";
     for (let n = 0; !/[-_]/.test(v.split(".")[2] ?? ""); n++) {
-      v = await mintSession({ address: "red@t.test", sid: `s${n}`, issued: NOW }, 30, SECRET);
+      v = await mintSession({ address: "red@t.test", sid: `s${n}`, first: NOW, issued: NOW }, 30, MAX, SECRET);
     }
     expect(await readSession(`${SESSION_COOKIE}=${v}`, SECRET, NOW)).not.toBeNull();
     const [p, body, mac] = v.split(".") as [string, string, string];
@@ -291,7 +305,7 @@ describe("reading a cookie", () => {
     // the spelling in the BODY and sign over it, so only the decoder's own strictness can refuse them.
     const signedBody = async (body: string): Promise<string> => {
       const key = await crypto.subtle.importKey("raw", utf8.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-      return `v1.${body}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(`v1.${body}`))))}`;
+      return `v2.${body}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(`v2.${body}`))))}`;
     };
     const body = GOLDEN_SESSION.split(".")[1] ?? "";
     // The anti-vacuity half: the helper signs the canonical body into the golden, which reads.
@@ -326,7 +340,7 @@ describe("reading a cookie", () => {
   it("a key the platform refuses reads as nobody, with no exception, and refuses to mint", async () => {
     await expect(readSession(`${SESSION_COOKIE}=${GOLDEN_SESSION}`, "", NOW)).resolves.toBeNull();
     await expect(readLogin(`${LOGIN_COOKIE}=${GOLDEN_LOGIN}`, "", NOW)).resolves.toBeNull();
-    await expect(mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, "")).rejects.toThrow();
+    await expect(mintSession({ address: "red@t.test", sid: null, first: NOW, issued: NOW }, 30, MAX, "")).rejects.toThrow();
   });
 
   it("the MAC is crypto.subtle.verify's, and the payload is parsed only once it verifies", async () => {
@@ -347,18 +361,68 @@ describe("reading a cookie", () => {
 
 describe("renewal", () => {
   it("exactly half the life left is not yet due", () => {
-    const s = { address: "a@b.test", sid: null, issued: NOW, expires: NOW + 30 * 86_400 };
+    const s = { address: "a@b.test", sid: null, first: NOW, issued: NOW, expires: NOW + 30 * 86_400 };
     expect(renewDue(s, NOW + 15 * 86_400, 30)).toBe(false);
   });
 
   it("is read from the life LEFT against the configured days, so a cookie minted under other days still comes due", () => {
     // Minted under 7 days, read under 30: less than 15 days are left, so it renews at once rather than lapse.
-    const short = { address: "a@b.test", sid: null, issued: NOW, expires: NOW + 7 * 86_400 };
+    const short = { address: "a@b.test", sid: null, first: NOW, issued: NOW, expires: NOW + 7 * 86_400 };
     expect(renewDue(short, NOW + 1, 30)).toBe(true);
     // Minted under 30 days, read under 7: it renews once less than three and a half days are left.
-    const long = { address: "a@b.test", sid: null, issued: NOW, expires: NOW + 30 * 86_400 };
+    const long = { address: "a@b.test", sid: null, first: NOW, issued: NOW, expires: NOW + 30 * 86_400 };
     expect(renewDue(long, NOW + 1, 7)).toBe(false);
     expect(renewDue(long, NOW + 30 * 86_400 - 3.5 * 86_400 + 1, 7)).toBe(true);
+  });
+});
+
+// **The absolute cap** (2026-10-19, the owner's ruling after stage 1's read; the auth cycle's R-16 amended): a cookie
+// carries the time it was FIRST issued, and no mint or renewal expires later than `first` plus the cap, so a session
+// that is used without end still ends — at the cap the player signs in again. The sliding days stay the idle
+// timeout; the cap is the absolute one. The payload's version moved to `v2` with the field, and a `v1` cookie reads
+// as nobody whatever its MAC says (no legacy branch: the one account of the day signs in once more).
+describe("the absolute cap (YOKOHAMA_SESSION_MAX_DAYS)", () => {
+  const red = (first: number, issued: number) => ({ address: "red@t.test", sid: null, first, issued });
+
+  it("the expiry is the earlier of issued plus the days and first plus the cap", async () => {
+    const early = await mintSession(red(NOW, NOW + 10 * DAY), 30, MAX, SECRET);
+    expect((await readSession(`${SESSION_COOKIE}=${early}`, SECRET, NOW + 10 * DAY))?.expires).toBe(NOW + 40 * DAY);
+    const late = await mintSession(red(NOW, NOW + 70 * DAY), 30, MAX, SECRET);
+    expect((await readSession(`${SESSION_COOKIE}=${late}`, SECRET, NOW + 70 * DAY))?.expires).toBe(NOW + 90 * DAY);
+    const capped = await mintSession(red(NOW, NOW), 30, 7, SECRET);
+    expect((await readSession(`${SESSION_COOKIE}=${capped}`, SECRET, NOW))?.expires).toBe(NOW + 7 * DAY);
+  });
+
+  it("a mint at or past the cap is refused, so no cookie is minted dead; a first after issued is refused too", async () => {
+    await expect(mintSession(red(NOW, NOW + 90 * DAY), 30, MAX, SECRET)).rejects.toThrow(RangeError);
+    await expect(mintSession(red(NOW, NOW + 91 * DAY), 30, MAX, SECRET)).rejects.toThrow(RangeError);
+    await expect(mintSession(red(NOW + 1, NOW), 30, MAX, SECRET)).rejects.toThrow(RangeError);
+    await expect(mintSession(red(NOW + 0.5, NOW + 1), 30, MAX, SECRET)).rejects.toThrow(RangeError);
+    for (const max of [0, -1, 1.5]) await expect(mintSession(red(NOW, NOW), 30, max, SECRET), `${max}`).rejects.toThrow(RangeError);
+    expect(await readSession(`${SESSION_COOKIE}=${await mintSession(red(NOW, NOW + 90 * DAY - 1), 30, MAX, SECRET)}`, SECRET, NOW + 90 * DAY - 1)).not.toBeNull();
+  });
+
+  it("renewalExpiry is null before half the life, the capped expiry after it, and null once the cookie sits at the cap", async () => {
+    const fresh: Session = { ...red(NOW, NOW), expires: NOW + 30 * DAY };
+    expect(renewalExpiry(fresh, NOW + 15 * DAY, 30, MAX)).toBeNull();
+    expect(renewalExpiry(fresh, NOW + 15 * DAY + 1, 30, MAX)).toBe(NOW + 15 * DAY + 1 + 30 * DAY);
+    // Due, and the cap binds: the renewal reaches the cap and no further.
+    const old: Session = { ...red(NOW, NOW + 50 * DAY), expires: NOW + 80 * DAY };
+    expect(renewalExpiry(old, NOW + 70 * DAY, 30, MAX)).toBe(NOW + 90 * DAY);
+    // At the cap already: due by the days, but a renewal would set the same expiry, so none is sent.
+    const atCap: Session = { ...red(NOW, NOW + 70 * DAY), expires: NOW + 90 * DAY };
+    expect(renewalExpiry(atCap, NOW + 80 * DAY, 30, MAX)).toBeNull();
+    expect(renewalExpiry(atCap, NOW + 90 * DAY - 1, 30, MAX)).toBeNull();
+    // The expiry it names is the one a mint at that second writes.
+    const minted = await mintSession(red(NOW, NOW + 70 * DAY), 30, MAX, SECRET);
+    expect((await readSession(`${SESSION_COOKIE}=${minted}`, SECRET, NOW + 70 * DAY))?.expires).toBe(renewalExpiry(old, NOW + 70 * DAY, 30, MAX));
+  });
+
+  it("the auth cycle's v1 cookie reads as nobody though its MAC verifies, and the reader carries first back", async () => {
+    expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_V1_SESSION}`, SECRET, NOW)).toBeNull();
+    expect(await readSession(`${SESSION_COOKIE}=${GOLDEN_SESSION}`, SECRET, NOW)).toEqual({
+      address: "red@t.test", sid: null, first: NOW, issued: NOW, expires: NOW + 30 * DAY,
+    });
   });
 });
 

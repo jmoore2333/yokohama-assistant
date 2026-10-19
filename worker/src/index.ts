@@ -1,6 +1,6 @@
 import { ADMIN_NEEDS_JSON, adminRoute, isJsonEssence, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
-import { shellConfig, type Limits, type ShellConfig, type Source } from "./config";
+import { isDenied, shellConfig, type Denied, type Limits, type ShellConfig, type Source } from "./config";
 import type { Env } from "./env";
 import { House } from "./house";
 import {
@@ -30,8 +30,9 @@ import {
   mintSession,
   readLogin,
   readSession,
-  renewDue,
+  renewalExpiry,
   SESSION_COOKIE,
+  sessionExpiry,
   setCookie,
 } from "./session";
 import { authorizeUrl, discovery, exchange, leaveUrl, WORKOS_JWKS, type Discovery } from "./signin";
@@ -136,15 +137,17 @@ export function withApiHeaders(res: Response, challenge: boolean): Response {
 
 /** What [`answer`] hands [`handle`]: the reply; whether a 401 under `/api` carries the session challenge — the
  *  configuration's source is a sign-in arm and the target is not the archive (ruling R-36), read once in `answer` and
- *  threaded here rather than read twice; and, for a session past half its life, what a renewal re-mints. */
-interface Answered { res: Response; challenge: boolean; renew: Renewal | null }
+ *  threaded here rather than read twice; for a session due for one, what a renewal re-mints; and whether the session
+ *  cookie the request sent is cleared on the way out — a denied address's (the red button, 2026-10-19). */
+interface Answered { res: Response; challenge: boolean; renew: Renewal | null; clear: boolean }
 
-/** A session to re-mint on a 2xx answer: its address and session id, under the deployment's secret and days. */
-interface Renewal { address: string; sid: string | null; secret: string; days: number }
+/** A session to re-mint on a 2xx answer: its address, session id and first issue, under the deployment's secret,
+ *  days and cap. */
+interface Renewal { address: string; sid: string | null; first: number; secret: string; days: number; maxDays: number }
 
 /** An answer given before the configuration is read, or one that takes neither the challenge nor a renewal. */
 function plain(res: Response): Answered {
-  return { res, challenge: false, renew: null };
+  return { res, challenge: false, renew: null, clear: false };
 }
 
 /**
@@ -161,17 +164,26 @@ export async function handle(
   keys: KeySource,
   fetcher: typeof fetch = fetch,
 ): Promise<Response> {
-  const { res, challenge, renew } = await answer(req, env, ctx, keys, fetcher);
-  const out = renew !== null && res.status >= 200 && res.status < 300 ? await renewed(res, renew) : res;
+  const { res, challenge, renew, clear } = await answer(req, env, ctx, keys, fetcher);
+  const kept = renew !== null && res.status >= 200 && res.status < 300 ? await renewed(res, renew) : res;
+  const out = clear ? withCookie(kept, clearCookie(SESSION_COOKIE)) : kept;
   return isApiPath(new URL(req.url).pathname) ? withApiHeaders(out, challenge) : out;
 }
 
-/** `res` with a fresh session cookie appended, issued NOW — a renewal re-stamps the time (ruling R-16) — over the
- *  same body and status, since an object's answer may be immutable. */
+/** `res` with a fresh session cookie appended, issued NOW — a renewal re-stamps the time (ruling R-16) while keeping
+ *  the session's first issue, from which the cap counts (2026-10-19) — its `Max-Age` the life it really has, over
+ *  the same body and status, since an object's answer may be immutable. */
 async function renewed(res: Response, r: Renewal): Promise<Response> {
-  const value = await mintSession({ address: r.address, sid: r.sid, issued: nowSeconds() }, r.days, r.secret);
+  const issued = nowSeconds();
+  const value = await mintSession({ address: r.address, sid: r.sid, first: r.first, issued }, r.days, r.maxDays, r.secret);
+  return withCookie(res, setCookie(SESSION_COOKIE, value, sessionExpiry(r.first, issued, r.days, r.maxDays) - issued));
+}
+
+/** `res` with the `Set-Cookie` line `cookie` appended, over the same body and status. Never asked of a 101: a
+ *  renewal is a 2xx's alone, and a cleared session is nobody, who gets no socket. */
+function withCookie(res: Response, cookie: string): Response {
   const headers = new Headers(res.headers);
-  headers.append("Set-Cookie", setCookie(SESSION_COOKIE, value, r.days * DAY_SECONDS));
+  headers.append("Set-Cookie", cookie);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
@@ -180,7 +192,6 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-const DAY_SECONDS = 86_400;
 
 /**
  * **The Worker** (spec §2.3), wrapped by [`handle`], which renews a session
@@ -339,7 +350,9 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   // archive takes a caller-less post (step 5a), so the archive's one remaining 401 is the house refusing a body that
   // names no device and no safe game id, a defect to surface (design §4.5), never "sign in".
   const challenge = config.source !== null && config.source !== "access" && target.kind !== "archive";
-  const done = (res: Response, renew: Renewal | null = null): Answered => ({ res, challenge, renew });
+  // Set when the request's session cookie names a denied address (the red button), read by `handle`.
+  let clear = false;
+  const done = (res: Response, renew: Renewal | null = null): Answered => ({ res, challenge, renew, clear });
 
   // GET and HEAD carry no body: the Fetch API refuses one on either.
   const carries = req.method !== "GET" && req.method !== "HEAD";
@@ -354,6 +367,14 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
       : config.source === "access"
         ? await identify(req.headers, keys, identityConfig(env, config.devDoor, now))
         : await sessionIdentity(req.headers.get("cookie"), config.session, now);
+  // **The red button** (2026-10-19, the owner's ruling): a session naming a denied address, or one at a denied
+  // domain (`YOKOHAMA_DENIED`), is nobody — answered exactly as a caller-less request is, and the cookie it sent is
+  // cleared on the way out (`clear`), so the browser stops sending it. Read before step 5a, so a denied player's
+  // upload files anonymously as a stranger's does, and before step 5b's 401, which a denied `/api/me` then meets.
+  if (identity.kind === "session" && isDenied(config.denied, identity.email)) {
+    clear = true;
+    identity = NO_ONE;
+  }
   // Step 5a: an upload with no caller is filed anonymously, from the request's headers AS SENT — the device header is
   // an `x-yokohama-*` one, which the strip below drops.
   if (config.door === "worker" && target.kind === "archive" && callerName(identity) === undefined) {
@@ -369,7 +390,14 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   // Renewed on a 2xx (`handle`); never on the leave's answer, which clears the cookie a renewal would set again.
   const renew: Renewal | null =
     identity.kind === "session" && identity.renew && config.session !== null
-      ? { address: identity.email, sid: identity.sid, secret: config.session.secret, days: config.session.days }
+      ? {
+          address: identity.email,
+          sid: identity.sid,
+          first: identity.first,
+          secret: config.session.secret,
+          days: config.session.days,
+          maxDays: config.session.maxDays,
+        }
       : null;
 
   const headers = new Headers();
@@ -473,7 +501,7 @@ async function enter(req: Request, url: URL, config: ShellConfig, fetcher: typeo
   const arm = armOf(config);
   if (arm === null) return redirect("/#/lobby", []);
   const isCallback = url.searchParams.has("code") || url.searchParams.has("error");
-  return isCallback ? callback(req, url, arm, config.limits, fetcher, now) : start(url, arm, fetcher, now);
+  return isCallback ? callback(req, url, arm, config.limits, config.denied, fetcher, now) : start(url, arm, fetcher, now);
 }
 
 /** The redirect URI the issuer registered: this origin's `/enter`, the one path both halves live on. */
@@ -518,7 +546,15 @@ async function start(url: URL, arm: Arm, fetcher: typeof fetch, now: number): Pr
  * anything that throws is the failed landing. On success: a 302 to the login cookie's landing, held to
  * `safeReturnTo` once more, setting the session cookie for the configured days. Every outcome clears the login cookie.
  */
-async function callback(req: Request, url: URL, arm: Arm, limits: Limits, fetcher: typeof fetch, now: number): Promise<Response> {
+async function callback(
+  req: Request,
+  url: URL,
+  arm: Arm,
+  limits: Limits,
+  denied: Denied | null,
+  fetcher: typeof fetch,
+  now: number,
+): Promise<Response> {
   const refused = (reason: string): Response => {
     log("signin-refused", { source: arm.source, reason });
     return failedSignin();
@@ -547,9 +583,13 @@ async function callback(req: Request, url: URL, arm: Arm, limits: Limits, fetche
       { fetcher, keys: armKeys(jwks, fetcher), discovery: doc, nowSeconds: now },
     );
     if (who === null) return failedSignin();
-    const value = await mintSession({ address: who.address, sid: who.sid, issued: now }, arm.session.days, arm.session.secret);
+    // The red button: a denied address is refused AFTER the exchange — the issuer vouched, this site declines — by
+    // reason alone, never the address (the list is a secret and the log is not).
+    if (isDenied(denied, who.address)) return refused("denied");
+    const { days, maxDays, secret } = arm.session;
+    const value = await mintSession({ address: who.address, sid: who.sid, first: now, issued: now }, days, maxDays, secret);
     return redirect(safeReturnTo(login.returnTo), [
-      setCookie(SESSION_COOKIE, value, arm.session.days * DAY_SECONDS),
+      setCookie(SESSION_COOKIE, value, sessionExpiry(now, now, days, maxDays) - now),
       clearCookie(LOGIN_COOKIE),
     ]);
   } catch (e) {
@@ -627,12 +667,14 @@ async function leave(url: URL, arm: Arm, identity: Identity, fetcher: typeof fet
   return res;
 }
 
-/** The caller a sign-in arm's session cookie names, or no one (`readSession` never throws), with `renew` set when the
- *  cookie is past half its life (`renewDue`). */
+/** The caller a sign-in arm's session cookie names, or no one (`readSession` never throws), with `renew` set when a
+ *  renewal is due and would extend the cookie (`renewalExpiry`: past half the sliding days, and not yet at the cap). */
 async function sessionIdentity(cookie: string | null, session: ShellConfig["session"], now: number): Promise<Identity> {
   if (session === null) return NO_ONE;
   const s = await readSession(cookie, session.secret, now);
-  return s === null ? NO_ONE : { kind: "session", email: s.address, sid: s.sid, renew: renewDue(s, now, session.days) };
+  if (s === null) return NO_ONE;
+  const renew = renewalExpiry(s, now, session.days, session.maxDays) !== null;
+  return { kind: "session", email: s.address, sid: s.sid, first: s.first, renew };
 }
 
 const utf8 = new TextEncoder();

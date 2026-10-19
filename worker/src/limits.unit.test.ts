@@ -46,7 +46,7 @@ describe("limitKey (security S2b, C2; decision D-3)", () => {
     expect(await limitKey("worker", byGame, "9.9.9.9", "create"), "a game id is no budget of its own").toBe("ip:9.9.9.9");
     expect(await limitKey("worker", anonymous, null, "create")).toBe(`ip:${UNKNOWN_IP}`);
     expect(await limitKey("open", anonymous, "9.9.9.9", "write"), "never the IP-plus-claim key").toBe("ip:9.9.9.9");
-    const session = { kind: "session", email: "red@wire.test", sid: null, renew: false } as const;
+    const session = { kind: "session", email: "red@wire.test", sid: null, first: 1, renew: false } as const;
     expect(await limitKey("worker", session, "9.9.9.9", "write"), "a session is its own budget").toBe(await callerTag("red@wire.test"));
 
     const create = { limit: async () => ({ success: true }) };

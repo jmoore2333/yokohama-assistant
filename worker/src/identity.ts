@@ -22,9 +22,10 @@ export type Identity =
   | { kind: "claimed"; name: string }
   /** A signed-in caller under a sign-in arm (`oidc`, `workos`; the auth cycle, design §4.2): the address the
    *  session cookie carries, which the issuer vouched for at the sign-in, and the issuer's session id when it sent
-   *  one, which sign-out ends. `renew` says the cookie is past half its life (`renewDue`), so a 2xx answer carries a
-   *  fresh one. The operator gate admits it exactly as a person (ruling R-27). */
-  | { kind: "session"; email: string; sid: string | null; renew: boolean }
+   *  one, which sign-out ends; `first`, when the session was first issued, which a renewal keeps (the absolute cap
+   *  counts from it, 2026-10-19). `renew` says a renewal is due AND would extend the cookie (`renewalExpiry`), so
+   *  a 2xx answer carries a fresh one. The operator gate admits it exactly as a person (ruling R-27). */
+  | { kind: "session"; email: string; sid: string | null; first: number; renew: boolean }
   /** A caller-less upload to `POST /api/archive` under the `worker` door (the auth cycle, design §4.4; `anonymousIdentity`):
    *  `device` is the post's device id, or with none the game's own id from its table document (R-A11). Formed in
    *  `answer` for that one target, so no game route ever sees it; `callerName` renders it as a synthetic ADDRESS the

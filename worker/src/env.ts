@@ -64,6 +64,13 @@ export interface Env {
   YOKOHAMA_SESSION_SECRET?: string;
   /** Whole days above zero, absent = 30: how long a session cookie stands under `oidc` and `workos`. */
   YOKOHAMA_SESSION_DAYS?: string;
+  /** Whole days above zero, absent = 90: the ABSOLUTE cap on a session under `oidc` and `workos` — no renewal
+   *  expires later than the session's first issue plus this (2026-10-19, the owner's ruling; R-16 amended). */
+  YOKOHAMA_SESSION_MAX_DAYS?: string;
+  /** A SECRET (`wrangler secret put`), read under `oidc` and `workos`: the red button (2026-10-19). Addresses and
+   *  `@domain` entries, separated by commas or newlines, whose sessions are nobody here and whose sign-in the
+   *  callback refuses. A secret, so no address enters the repository or a configuration file. */
+  YOKOHAMA_DENIED?: string;
   /** The Access team's domain; its keys are
    *  `https://<domain>/cdn-cgi/access/certs` (spec §2.3). */
   ACCESS_TEAM_DOMAIN?: string;

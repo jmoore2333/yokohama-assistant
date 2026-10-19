@@ -103,8 +103,9 @@
 //    environment's — names a SECRET: `YOKOHAMA_WEB_ADMINS` (the plan's ruling
 //    P-1, as the orchestrator ruled at Task 14's review), whose value is an
 //    address committed to the repository, `DEV_DOOR_CLIENT_ID` (M6.5c2,
-//    R-6.5c2.5), or the auth cycle's two (Task 7), `YOKOHAMA_OIDC_CLIENT_SECRET`
-//    and `YOKOHAMA_SESSION_SECRET`. Each is set as a secret, which a deploy
+//    R-6.5c2.5), the auth cycle's two (Task 7), `YOKOHAMA_OIDC_CLIENT_SECRET`
+//    and `YOKOHAMA_SESSION_SECRET`, or the red button's `YOKOHAMA_DENIED`
+//    (2026-10-19). Each is set as a secret, which a deploy
 //    leaves alone. Read as a KEY, so a comment may name any of them, and read
 //    in the judged file alone, so the pool keeps its test client id (review
 //    m9). That an arm's secrets ARE set is the secrets guard's to read, in
@@ -420,6 +421,8 @@ const SECRETS = {
     "the sign-in client secret (the WorkOS API key under workos) is a secret (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET), never a var",
   YOKOHAMA_SESSION_SECRET:
     "the key that signs every session cookie is a secret (wrangler secret put YOKOHAMA_SESSION_SECRET), never a var",
+  // The red button (2026-10-19): the deny-list names people, and the repository is public.
+  YOKOHAMA_DENIED: "the deny-list names people and is a secret (wrangler secret put YOKOHAMA_DENIED), never a committed value",
 };
 
 /** `value` when it is an object that is not an array — a `vars` block or an

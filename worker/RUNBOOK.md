@@ -339,6 +339,8 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_OIDC_CLIENT_SECRET` | *not a variable at the seventeenth; added 2026-10-19 (the auth cycle, Task 1; design §4.1):* a SECRET (`wrangler secret put`), never a `vars` entry (check 7) — under `workos` the WorkOS API key the code exchange is authenticated with, from the production environment | **under `workos` required**: absent is the 500 naming it, and the secrets guard refuses the deploy first (R-48). **Under `oidc` optional**: absent is a public client — PKCE alone, the challenge sent only when no secret is set (R-25); with one, the provider is asked for `client_secret_post`, and an issuer that accepts only `client_secret_basic` is out of scope (R-20) |
 | `YOKOHAMA_SESSION_SECRET` | *not a variable at the seventeenth; added 2026-10-19 (the auth cycle, Task 1; design §4.1):* a SECRET (`wrangler secret put`): the HMAC key of both cookies, 32 UTF-8 bytes or more, taken exactly as set (never trimmed) — `openssl rand -base64 48` | under `oidc` and `workos` absent or shorter than 32 bytes is the 500 naming it, and the secrets guard refuses the deploy on its absence (R-48). **Rotating it ends every session at once, and it is the only way to end a stolen one** (renewal re-stamps the time; R-16); the live instruments read it from their own environment (never an argument, never echoed) to mint `.test` sessions only — the replay sends the cookie, the live tier seeds each context's cookie jar — and it wins over `YOKOHAMA_SESSION_COOKIE`, the one-identity mode (`scripts/mint-session.mjs`, R-50, R-52–R-54; §23) |
 | `YOKOHAMA_SESSION_DAYS` | *not a variable at the seventeenth; added 2026-10-19 (the auth cycle, Task 1; design §4.1):* `30` when absent — whole days the session cookie stands (renewed on a 2xx answer once less than half the configured days are left) | 30 days; a value that is not a whole number of days above zero (the TTLs' own rule) is the 500 naming it; read under `oidc` and `workos` only |
+| `YOKOHAMA_SESSION_MAX_DAYS` | *not a variable at the seventeenth; added 2026-10-19 (the owner's ruling after stage 1's read; the auth cycle's R-16 amended):* `90` when absent — whole days of the ABSOLUTE cap on a session, counted from its first issue, which every renewal keeps: a cookie's expiry is the earlier of its issue plus `YOKOHAMA_SESSION_DAYS` and the first issue plus this, a renewal is sent only when it would extend the expiry, and at the cap the player signs in again. The cookie's version moved to `v2` with the field; a `v1` cookie reads as nobody | 90 days; a value that is not a whole number of days above zero is the 500 naming it; a cap below the days is not refused (such a session lives the cap); read under `oidc` and `workos` only |
+| `YOKOHAMA_DENIED` | *not a variable at the seventeenth; added 2026-10-19 (the red button, the owner's ruling):* a SECRET (`wrangler secret put`, never a `vars` entry — check 7) — addresses and `@domain` entries separated by commas or newlines, trimmed and lowercased, empty entries dropped: a session naming one, or at a denied domain, is nobody (the 401 with the sign-in challenge, its cookie cleared with it), and the callback refuses the address after the exchange (`signin-refused`, reason `denied`, the address never logged). §24 is the recipe | absent: nobody is denied; an entry that is neither an address nor an `@domain` is the 500 naming its POSITION, never its value — on every `/api/*` request until the secret is put again; read under `oidc` and `workos` only |
 | `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` — **required at source `access` only**; at `oidc` and `workos` the deploy guard refuses a file that sets it (the shell would ignore it) | no assertion can be verified: every caller is no one, and no key is fetched |
 | `ACCESS_AUD` | the `yokohama` application's audience — required at source `access` only, as above | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
@@ -521,6 +523,15 @@ sides, no spaces, at most 254 bytes — and the list must hold no empty entry. T
 by its POSITION and never its value, which is an address (R3's M-6): `YOKOHAMA_WEB_ADMINS entry 2 of
 3 is not an address — …`, or `… entry 3 of 3 is empty` for a trailing comma. Put the list again,
 corrected.
+
+**Since stage 1 (source `workos`, 2026-10-19) the three calls need the SESSION COOKIE, not WARP:** the Worker names
+a caller by its own `__Host-yokohama_session` cookie and nothing else, so a bare curl over WARP is nobody and meets
+the 401 (§23's first read). Two ways: from the site's own DevTools console, signed in as the operator — the page's
+`fetch` carries the cookie and passes the same-origin fence — `await (await fetch('/api/admin/tables')).json()` and
+`await fetch('/api/admin/tables/<id>/expire', { method: 'POST', headers: { 'content-type': 'application/json' } })`;
+or from the shell with the cookie's value copied from DevTools' cookie panel, `-b '__Host-yokohama_session=<value>'`
+on each curl below (a request with no `Origin` passes the fence, §4). While the hostname is on Access (stage 1) the
+curl still runs over WARP for the edge; after stage 2 WARP plays no part. The block below is the `access`-era text.
 
 **The three calls**, over WARP as the operator:
 
@@ -2549,3 +2560,51 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 **What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
 
 ---
+
+## 24. The red button — `YOKOHAMA_DENIED` (2026-10-19; a recipe, read once in the cells, not yet live)
+
+**What it is.** One secret on the Worker naming the addresses, and the `@domains`, that are nobody here: a session
+naming one is answered as a caller-less request is — the 401 with the sign-in challenge, the client's sign-in card,
+and the cookie it sent cleared on that answer — and the sign-in's callback refuses the address after the exchange,
+so WorkOS vouching for it mints nothing (`signin-refused`, reason `denied`; the address is never logged). Their
+tables stay until their TTL or your expire (step 3). **The owner's ruling (2026-10-19, after stage 1's read):** a
+red button for the spammer, the insulting address and the reported player, with no moderation workflow and no
+reputation record; if abuse turns out systemic the mechanics are revisited against the real need. **A secret, never
+a variable:** the list is personal data and the repository is public, so it enters no committed file (the deploy
+guard's check 7 refuses it in any `vars` block), and `wrangler secret list` prints names only.
+
+**Who it does not reach.** Under `access` the list is not read (Access names the caller). The anonymous archive is
+untouched: a denied player's finished local game still files anonymously, as a stranger's does. A denied operator is
+denied. The browser's passkey button, the WorkOS session and the WorkOS user record are not touched by it — the
+deny-list is this site's; deleting the user at WorkOS is optional and does not keep them out, since sign-up is open
+and the same address can be minted again, which is exactly what the callback's refusal is for.
+
+**The recipe.** Entries one per line (or comma-separated), each an address or `@domain`; a trailing newline is fine
+(empty entries are dropped). The value is read from stdin and never echoed; the file is yours to remove after.
+
+```sh
+cd worker
+printf '%s\n' 'spammer@example.com' '@disposable.example' > /tmp/denied.txt
+npx wrangler secret put YOKOHAMA_DENIED --config wrangler.jsonc < /tmp/denied.txt   # a put is live at once: it deploys a new version
+npx wrangler secret list --config wrangler.jsonc                                    # the name among them; never a value
+npx wrangler deployments list --config wrangler.jsonc | head -5                     # the new version id — the read-back that it took
+rm /tmp/denied.txt
+```
+
+Cloudflare's own rule: `wrangler secret put` "creates a new version of the Worker and deploys it immediately" (only a
+Worker on gradual deployments needs `wrangler versions secret put` and a `versions deploy`; this one is not). If a
+put ever fails to take here, `npm run deploy` of the current tree carries it. **A malformed entry takes every
+`/api/*` down** with the 500 naming the entry's position (§3's first bullet), exactly as `YOKOHAMA_WEB_ADMINS` does:
+put the list again, corrected. To clear the button: `npx wrangler secret delete YOKOHAMA_DENIED --config
+wrangler.jsonc`, or a put with the entries you keep.
+
+**Reading that it works.** The denied player's next request is the 401; in Workers Logs a sign-in they attempt reads
+`signin-refused` with `reason: denied` and no address. The cells pin the rest (`test/signin.test.ts`, "the red
+button"; `src/config.unit.test.ts`, the deny-list's parse).
+
+**Their tables (step 3).** As the listed operator, with your session cookie (the operator playbook's `workos` note
+above §"The three calls"): list the tables, expire theirs — `POST /api/admin/tables/<id>/expire` archives the table
+first and ends it, 204; `?force` drops a save that cannot be made. Players still seated receive the ended signal.
+
+**An automation worth having** (the owner, 2026-10-19): a skill that walks an agent through the sign-in in a
+browser, takes the cookie from the owner, and runs the three calls — recorded here, not built.

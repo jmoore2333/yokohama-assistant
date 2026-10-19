@@ -466,7 +466,7 @@ describe("readCredential", () => {
 });
 
 describe("readSessionCookie and readIdentity", () => {
-  const COOKIE = "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  const COOKIE = "__Host-yokohama_session=v2.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
   let dir;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "live-replay-identity-"));
@@ -484,7 +484,8 @@ describe("readSessionCookie and readIdentity", () => {
     expect(readSessionCookie({ YOKOHAMA_SESSION_COOKIE: COOKIE })).toBe(COOKIE);
   });
   it("refuses a value that is not a minted session line, naming the variable and never the value", () => {
-    for (const bad of ["red@t.test", "yokohama_session=v1.a.b", `${COOKIE}\r\nX-Evil: 1`, `${COOKIE}; other=1`, "__Host-yokohama_session=v2.a.b"]) {
+    // `v1` is the auth cycle's form, refused since the absolute cap moved the cookie to `v2` (2026-10-19).
+    for (const bad of ["red@t.test", "yokohama_session=v2.a.b", `${COOKIE}\r\nX-Evil: 1`, `${COOKIE}; other=1`, "__Host-yokohama_session=v1.a.b", "__Host-yokohama_session=v3.a.b"]) {
       let said = "";
       try {
         readSessionCookie({ YOKOHAMA_SESSION_COOKIE: bad });
@@ -499,7 +500,7 @@ describe("readSessionCookie and readIdentity", () => {
   // **The `.test` fence applies to a cookie handed in** (review I-1): a copied browser cookie for a real address would run
   // the instruments as that person. The payload is base64url JSON, read without the secret.
   const lineFor = (address) =>
-    `__Host-yokohama_session=v1.${Buffer.from(JSON.stringify({ address, sid: null, issued: 1, expires: 2 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    `__Host-yokohama_session=v2.${Buffer.from(JSON.stringify({ address, sid: null, first: 1, issued: 1, expires: 2 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
   it("refuses a cookie for an address that is not a .test one, naming the variable and the address and the fence", () => {
     for (const address of ["jamoore@gmail.com", "RED@T.TEST", "red@t.test "]) {
       expect(() => readSessionCookie({ YOKOHAMA_SESSION_COOKIE: lineFor(address) }), address).toThrow(
@@ -511,7 +512,7 @@ describe("readSessionCookie and readIdentity", () => {
     expect(readSessionCookie({ YOKOHAMA_SESSION_COOKIE: lineFor("red@t.test") })).toBe(lineFor("red@t.test"));
   });
   it("refuses a cookie whose payload is not JSON with an address, as no minted line", () => {
-    const line = (json) => `__Host-yokohama_session=v1.${Buffer.from(json, "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    const line = (json) => `__Host-yokohama_session=v2.${Buffer.from(json, "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
     for (const bad of ["not json", "[]", "{}", '{"address":5}', "null"]) {
       expect(() => readSessionCookie({ YOKOHAMA_SESSION_COOKIE: line(bad) }), bad).toThrow("is not a minted session cookie line");
     }
@@ -771,7 +772,7 @@ describe("replay", () => {
   // cookie, so the instruments send the minted one — and, when Access still stands at the edge, the credential too, as the
   // EDGE's pass and not as an identity. A walk row's `who` is a claimed name, which the cookie makes a second identity.
   describe("under a minted session cookie", () => {
-    const COOKIE = "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const COOKIE = "__Host-yokohama_session=v2.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     // The committed walk names a `who` on its house reader and on the rows that decide the production seed rule, so it
     // cannot run under a cookie: these cells run a three-row walk that names no one, against a fetcher of their own.
     const row = (method, path, status, fixture, body = null) => ({ who: null, method, path, query: "", body, status, fixture });

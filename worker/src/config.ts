@@ -31,9 +31,10 @@ export interface ShellConfig {
    *  are ignored. `issuer` is `null` under `workos` (its issuer is fixed and not configurable) and
    *  `clientSecret` is `null` under `oidc` when none is set (the PKCE flow); under `workos` it is the API key. */
   signin: { issuer: string | null; clientId: string; clientSecret: string | null } | null;
-  /** The session cookie's signing secret (at least 32 bytes) and its lifetime in days, 30 when
-   *  `YOKOHAMA_SESSION_DAYS` is absent; `null` under `access` and `open`. */
-  session: { secret: string; days: number } | null;
+  /** The session cookie's signing secret (at least 32 bytes), its sliding lifetime in days, 30 when
+   *  `YOKOHAMA_SESSION_DAYS` is absent, and its absolute cap in days from the first issue, 90 when
+   *  `YOKOHAMA_SESSION_MAX_DAYS` is absent (2026-10-19); `null` under `access` and `open`. */
+  session: { secret: string; days: number; maxDays: number } | null;
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
@@ -44,12 +45,26 @@ export interface ShellConfig {
   /** `null`: the operator routes are the layer's 404 (spec §2.9). Always
    *  `null` under `open`, where a list is refused (`openDoorRefusals`). */
   admins: string[] | null;
+  /** The red button (2026-10-19): `YOKOHAMA_DENIED`, read under `oidc` and `workos` alone — `null` when absent or
+   *  under another source. Addresses and domains are folded (trimmed, ASCII-lowercased), domains without their `@`. */
+  denied: Denied | null;
   countWakes: boolean;
   devDoor: boolean;
   diagnosticSeeds: boolean;
   clock: Clock;
   /** `CREATE_LIMIT` and `WRITE_LIMIT` (security S2b, C2), both required. */
   limits: Limits;
+}
+
+/** The deny-list (the red button, 2026-10-19): the addresses and the domains, each folded as `denied` folds them. */
+export interface Denied { addresses: string[]; domains: string[] }
+
+/** Whether `address` — a session's, folded here — is on the deny-list: its whole self among the addresses, or
+ *  the part after its last `@` among the domains. `null` denies nobody. */
+export function isDenied(denied: Denied | null, address: string): boolean {
+  if (denied === null) return false;
+  const a = folded(address);
+  return denied.addresses.includes(a) || denied.domains.includes(a.slice(a.lastIndexOf("@") + 1));
 }
 
 /** Every variable `Env` declares: its string-typed keys, and none of its
@@ -74,6 +89,8 @@ const ROWS: { readonly [K in Variable]: true } = {
   YOKOHAMA_OIDC_CLIENT_SECRET: true,
   YOKOHAMA_SESSION_SECRET: true,
   YOKOHAMA_SESSION_DAYS: true,
+  YOKOHAMA_SESSION_MAX_DAYS: true,
+  YOKOHAMA_DENIED: true,
   ACCESS_TEAM_DOMAIN: true,
   ACCESS_AUD: true,
   DEV_DOOR_CLIENT_ID: true,
@@ -207,15 +224,19 @@ function signin(env: Env, src: Source | null): ShellConfig["signin"] {
   return { issuer, clientId, clientSecret };
 }
 
-/** A session cookie's lifetime when `YOKOHAMA_SESSION_DAYS` is absent. */
+/** A session cookie's sliding lifetime when `YOKOHAMA_SESSION_DAYS` is absent. */
 const SESSION_DAYS = 30;
+
+/** A session's absolute cap, from its first issue, when `YOKOHAMA_SESSION_MAX_DAYS` is absent (2026-10-19). */
+const SESSION_MAX_DAYS = 90;
 
 /** The signing secret's floor, in UTF-8 bytes (counted as `isAddress` counts). */
 const SESSION_SECRET_BYTES = 32;
 
 /**
  * The session variables, read for `oidc` and `workos` alone. The secret is taken as it is set (never trimmed) and
- * counted in UTF-8 bytes; the days are the TTLs' own rule (`wholeDays`), 30 when absent.
+ * counted in UTF-8 bytes; the days and the cap are the TTLs' own rule (`wholeDays`), 30 and 90 when absent. A cap
+ * below the days is not refused: the expiry is the earlier of the two, so such a session simply lives the cap.
  */
 function session(env: Env, src: Source | null): ShellConfig["session"] {
   if (src !== "oidc" && src !== "workos") return null;
@@ -226,7 +247,44 @@ function session(env: Env, src: Source | null): ShellConfig["session"] {
     );
   }
   const raw = text(env, "YOKOHAMA_SESSION_DAYS");
-  return { secret, days: raw === null ? SESSION_DAYS : wholeDays("YOKOHAMA_SESSION_DAYS", raw) };
+  const cap = text(env, "YOKOHAMA_SESSION_MAX_DAYS");
+  return {
+    secret,
+    days: raw === null ? SESSION_DAYS : wholeDays("YOKOHAMA_SESSION_DAYS", raw),
+    maxDays: cap === null ? SESSION_MAX_DAYS : wholeDays("YOKOHAMA_SESSION_MAX_DAYS", cap),
+  };
+}
+
+/** An `@domain` entry's domain: `@` then a domain — no `@`, no spaces or control characters, at most 253 bytes. */
+function isDomainEntry(entry: string): boolean {
+  return entry.startsWith("@") && new TextEncoder().encode(entry).length <= 254 && /^@[^@\s\p{Cc}]+$/u.test(entry);
+}
+
+/**
+ * The deny-list (the red button, 2026-10-19), read for `oidc` and `workos` alone: entries split on commas and
+ * newlines, each folded as a caller's address is read (`folded`), the empty ones dropped — a put from a file ends in
+ * a newline, and a trailing comma is no reason to refuse every request — and each kept entry an address
+ * (`isAddress`) or an `@domain` (`isDomainEntry`). A refusal names the entry by its POSITION among the kept entries
+ * and never echoes a value, as `admins` does (R3's M-6): the list is a secret, and the refusal is the 500 body of
+ * every `/api/*` request and the `init-refused` line.
+ */
+function denied(raw: string | null, src: Source | null): Denied | null {
+  if (raw === null || (src !== "oidc" && src !== "workos")) return null;
+  const entries = raw.split(/[,\n]/).map(folded).filter((entry) => entry !== "");
+  const addresses: string[] = [];
+  const domains: string[] = [];
+  entries.forEach((entry, i) => {
+    if (isDomainEntry(entry)) domains.push(entry.slice(1));
+    else if (isAddress(entry)) addresses.push(entry);
+    else {
+      refuse(
+        `YOKOHAMA_DENIED entry ${i + 1} of ${entries.length} is neither an address nor an @domain — ` +
+          "an address is one @ with something on both sides, no spaces or control characters, and at most 254 bytes; " +
+          "an @domain is @ followed by a domain with no @, no spaces or control characters, and at most 253 bytes",
+      );
+    }
+  });
+  return { addresses, domains };
 }
 
 /** `r2` | `off`, absent = off (R-6.5c.14). The module matches these two
@@ -246,7 +304,7 @@ const OPEN_TTL_DAYS = 7;
 /** `raw`, trimmed, as whole days above zero — or the refusal naming `name`.
  *  The one rule of the two TTLs and the session's days. */
 function wholeDays(
-  name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS" | "YOKOHAMA_SESSION_DAYS",
+  name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS" | "YOKOHAMA_SESSION_DAYS" | "YOKOHAMA_SESSION_MAX_DAYS",
   raw: string,
 ): number {
   const value = raw.trim();
@@ -401,6 +459,7 @@ export function shellConfig(env: Env): ShellConfig | { error: string } {
       ttlDays: ttlDays(text(env, "YOKOHAMA_WEB_TABLE_TTL_DAYS")),
       openTtlDays: openTtlDays(text(env, "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS")),
       admins: admins(text(env, "YOKOHAMA_WEB_ADMINS")),
+      denied: denied(text(env, "YOKOHAMA_DENIED"), src),
       countWakes: onOff("YOKOHAMA_WEB_COUNT_WAKES", text(env, "YOKOHAMA_WEB_COUNT_WAKES")),
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
       diagnosticSeeds: onOff("YOKOHAMA_DIAGNOSTIC_SEEDS", text(env, "YOKOHAMA_DIAGNOSTIC_SEEDS")),

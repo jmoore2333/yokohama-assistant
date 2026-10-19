@@ -55,9 +55,10 @@ export function readCredential(file = DEV_VARS) {
 export const SESSION_COOKIE_ENV = "YOKOHAMA_SESSION_COOKIE";
 
 /** The line a minted cookie reads as: `src/session.ts`'s `SESSION_COOKIE` name (`mint-session.mjs`'s `COOKIE_NAME`,
- *  which a cell pins to it), `=`, `v1.<payload>.<mac>` in the url alphabet. Anything else is no minted cookie — and a
- *  value with a control character or a `;` in it is no header value an instrument should send. */
-const MINTED_LINE = new RegExp(`^${COOKIE_NAME}=v1\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+$`);
+ *  which a cell pins to it), `=`, `v2.<payload>.<mac>` in the url alphabet (`v2` since the absolute cap, 2026-10-19;
+ *  the auth cycle's `v1` is no minted cookie any more). Anything else is no minted cookie — and a value with a
+ *  control character or a `;` in it is no header value an instrument should send. */
+const MINTED_LINE = new RegExp(`^${COOKIE_NAME}=v2\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+$`);
 
 /** The sentence a run is refused in when a claimed name — a row's `who`, a context's email — sits beside a session
  *  cookie that names someone else (ruling R-39): the live replay's and the live tier's one text. */

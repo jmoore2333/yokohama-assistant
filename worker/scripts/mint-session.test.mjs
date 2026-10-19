@@ -12,10 +12,10 @@ import { COOKIE_NAME, cookieLine, fenceSentence, isTestAddress, mintValue } from
 const SCRIPT = fileURLToPath(new URL("./mint-session.mjs", import.meta.url));
 const SECRET = "0123456789abcdef0123456789abcdef";
 /** `session.unit.test.ts`'s `GOLDEN_SESSION`, copied verbatim: the bytes openssl computes for `red@t.test`, sid null,
- *  issued 1789000000, 30 days, under `SECRET`. */
+ *  first and issued 1789000000, 30 days, under `SECRET` (the `v2` shape of the absolute cap, 2026-10-19). */
 const GOLDEN_SESSION =
-  "v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiaXNzdWVkIjoxNzg5MDAwMDAwLCJleHBpcmVzIjoxNzkxNTkyMDAwfQ" +
-  ".C7Evl68QvNoLo7oHRHSQ0zUgg7untTb2bxOrXqFIsSo";
+  "v2.eyJhZGRyZXNzIjoicmVkQHQudGVzdCIsInNpZCI6bnVsbCwiZmlyc3QiOjE3ODkwMDAwMDAsImlzc3VlZCI6MTc4OTAwMDAwMCwiZXhwaXJlcyI6MTc5MTU5MjAwMH0" +
+  ".K0WU2ebkRpdAANZYMCy0OKdP9y3Q9a2ZvDacRsFObEM";
 
 /** The script as a process, with exactly the environment a cell names. */
 function mint(args, env = { YOKOHAMA_SESSION_SECRET: SECRET }) {
@@ -54,7 +54,7 @@ describe("the cookie's bytes", () => {
       [{ address: "b@b.test", sid: "s-1", issued: 1_789_000_000 }, 7],
     ];
     for (const [s, days] of cases) {
-      expect(mintValue(s, days, SECRET), `${s.address} ${days}d`).toBe(await mintSession(s, days, SECRET));
+      expect(mintValue(s, days, SECRET), `${s.address} ${days}d`).toBe(await mintSession({ ...s, first: s.issued }, days, 365, SECRET));
     }
     // Another secret is another mac and the same payload.
     expect(mintValue(cases[0][0], 30, "another-secret-value-0123456789ab")).not.toBe(GOLDEN_SESSION);
@@ -64,16 +64,17 @@ describe("the cookie's bytes", () => {
   it("writes the url alphabet with no padding, the key order the module writes, and sid as null", () => {
     // A payload whose standard base64 would pad and carry + or /.
     const v = mintValue({ address: "???>>>@pad.test", sid: null, issued: 1_789_000_000 }, 30, SECRET);
-    expect(v).toMatch(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
-    expect(Object.keys(payloadOf(v))).toEqual(["address", "sid", "issued", "expires"]);
+    expect(v).toMatch(/^v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/);
+    expect(Object.keys(payloadOf(v))).toEqual(["address", "sid", "first", "issued", "expires"]);
+    expect(payloadOf(v).first).toBe(1_789_000_000);
     expect(payloadOf(v).sid).toBeNull();
     expect(payloadOf(v).expires).toBe(1_789_000_000 + 30 * 86_400);
   });
 
-  it("is signed over 'v1.' and the payload, so the mac is not the payload's alone", async () => {
+  it("is signed over 'v2.' and the payload, so the mac is not the payload's alone", async () => {
     const { createHmac } = await import("node:crypto");
     const [, payload, mac] = GOLDEN_SESSION.split(".");
-    expect(mac).toBe(createHmac("sha256", SECRET).update(`v1.${payload}`).digest("base64url"));
+    expect(mac).toBe(createHmac("sha256", SECRET).update(`v2.${payload}`).digest("base64url"));
     expect(mac).not.toBe(createHmac("sha256", SECRET).update(payload).digest("base64url"));
   });
 });
@@ -235,7 +236,7 @@ describe("the printed line", () => {
     expect(r.code).toBe(0);
     expect(r.err).toBe("");
     expect(COOKIE_NAME).toBe("__Host-yokohama_session");
-    expect(r.out).toMatch(/^__Host-yokohama_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\n$/);
+    expect(r.out).toMatch(/^__Host-yokohama_session=v2\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}\n$/);
     const value = r.out.trim().slice(`${COOKIE_NAME}=`.length);
     const p = payloadOf(value);
     expect(p.address).toBe("red@t.test");
@@ -243,7 +244,8 @@ describe("the printed line", () => {
     expect(p.issued, "the real clock").toBeGreaterThanOrEqual(before);
     expect(p.issued).toBeLessThanOrEqual(after);
     expect(p.expires - p.issued, "thirty days by default").toBe(30 * 86_400);
-    expect(value).toBe(await mintSession({ address: "red@t.test", sid: null, issued: p.issued }, 30, SECRET));
+    expect(p.first, "first issued when minted").toBe(p.issued);
+    expect(value).toBe(await mintSession({ address: "red@t.test", sid: null, first: p.issued, issued: p.issued }, 30, 90, SECRET));
     expect(r.out, "the secret is never printed").not.toContain(SECRET);
   });
 

@@ -1471,7 +1471,7 @@ describe("the deploy guard", () => {
   // `workos` — and the key that signs every session cookie. Each is `wrangler secret put`, never a committed var, in
   // ANY vars block, read as a key, in whichever file is deployed. Mutants: either key missing from `SECRETS`; an
   // environment's vars not read.
-  it("the two secrets are refused in any vars block", () => {
+  it("the auth cycle's two secrets, and the red button's list, are refused in any vars block", () => {
     for (const [key, why] of [
       [
         "YOKOHAMA_OIDC_CLIENT_SECRET",
@@ -1480,6 +1480,11 @@ describe("the deploy guard", () => {
       [
         "YOKOHAMA_SESSION_SECRET",
         "the key that signs every session cookie is a secret (wrangler secret put YOKOHAMA_SESSION_SECRET), never a var",
+      ],
+      // The red button (2026-10-19): the deny-list is personal data in a public repository, so it is a secret alone.
+      [
+        "YOKOHAMA_DENIED",
+        "the deny-list names people and is a secret (wrangler secret put YOKOHAMA_DENIED), never a committed value",
       ],
     ]) {
       const top = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "${key}": "not-a-secret"`);
