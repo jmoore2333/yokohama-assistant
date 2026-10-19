@@ -1264,3 +1264,10 @@ it("doorLine names the source", …);
   Mutants on the new cells, each applied and reverted byte-identical: M17 comma-only split, M10 domain by `endsWith`,
   M9 no folding, M6 `first` re-stamped, M11 the deny rule after step 5a, the refusal back, the value logged — seven of
   seven red.
+- **2026-10-19, the scoped re-review of `76a7052e`:** FIX ROUND, docs only — the code and the cells close all four
+  Important items, nine of nine mutants red (the five re-run and four for the skip rule); one clause the round
+  introduced was false — the runbook's `YOKOHAMA_DENIED` row said shortening the list reaches no cookie already
+  minted, while the list is read on every request and reaches every standing session (an entry added denies one at
+  its next request, one removed re-admits one that still stands) — corrected in the row, §24 and §12; two Minors
+  taken: §12's match sentence untangled, and the fact that a standing malformed entry logs `denied-skipped` once per
+  request (the configuration is read per request) said in §12, the row and §24. No code moved after `76a7052e`.
