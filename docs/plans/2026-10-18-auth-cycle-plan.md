@@ -1147,3 +1147,19 @@ it("doorLine names the source", …);
   stage-1 smoke notes that whether the edge rule or Access answers a cookie-less `/api/health` first is a reading to
   record, a pass required at stage 2 only; web-lane §1's "both hosts run 0.6.3" goes stale at stage 1's deploy — the
   window's docs commit updates it.
+- **2026-10-19, Task 8's review (at `da94b089`): spec ❌ on two items, six Important — all real, three ruled:**
+  **R-52:** a refusal echoes its value only when it is address-shaped (exactly one `@`), else "got a value that is not
+  an address", and a non-digit `--days` value is never echoed (a misplaced secret must never reach stderr).
+  **R-53:** under the one-cookie mode a context's `email` must equal the cookie's own payload address (decoded without
+  the secret), else the two-identities refusal before any context opens — the §12 sentence made true. **R-54:** the
+  live tier seeds the minted session into the context's `storageState` as a host-only cookie on `LIVE_ORIGIN`;
+  `extraHTTPHeaders` carries the claimed header alone (Chromium adds those headers to the analytics beacon's
+  cross-origin load — the module's own rule). The other three: the one-cookie mode enforces the `.test` fence by
+  decoding the payload; the raw-argument fence and the real clock are pinned in both minters. Fix round 1 landed at
+  `31e6da7e`. **Task 9's review (at `23fc060e`): spec ❌ on two items (§23's stage 1 contradicted R-51; R-20's
+  `client_secret_basic` sentence missing), four Important, sixteen Minor — all document truths; its fix round follows
+  Task 8's. The moving committed-file cells, MEASURED by the reviewer: FIVE at stage 1 (`workos`, the client id, the
+  Access pair removed, `off`: the dev-file check, the whole-guard loop's sentence, "name the worker door", both
+  secrets-guard command cells), SIX at stage 2 (`on` adds "declare YOKOHAMA_TURNSTILE off in five"); the open-file
+  cell never moves (R-45). **R-55:** stage 1 ships keyless WITH the notice — six build values, no site key (R-A14's
+  notice stands beside every sign-in link, and stage 1 has them; no guard ties the notice to the key).
