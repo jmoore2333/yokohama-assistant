@@ -2524,6 +2524,25 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
   read. Who it reaches: any player with the 0.6.3 shell cached who opens the lobby or a table link before the door —
   the Access allow-list today, everyone after stage 2. For the owner's ruling (the board): a per-IP bound on
   caller-less `/api/me` in the Worker (S3), or accepted as the transition's cost since the door applies the release.
+- **The owner's sign-in, read the same afternoon (15:33–15:41Z): the rest of checklist item 1 but the table and the
+  socket.** The sign-up by email code created the one production user; the Worker's API key `yokohama-worker` was
+  used at the same second (its first use ever — the callback's exchange ran); three Magic Auth sessions from Chrome
+  over WARP, each ended at a sign-out through `POST /api/leave` (WorkOS reads them `UserlandSessionRevoked`), the
+  sign-out landing on the site's root. **Passkeys — the enrollment gap, read against the docs
+  (`https://workos.com/docs/authkit/passkeys`):** a passkey is created at sign-up or by progressive enrollment, and
+  the hosted page has no self-service screen for one afterwards; the docs word progressive enrollment for users
+  "still using password-based authentication". Production has passkeys ON, passwords OFF and Magic Auth alone, and
+  no AuthKit custom domain (the hosted page is `heroic-peak-11.authkit.app`; the docs want the custom domain BEFORE
+  passkeys in production, since a passkey binds to the domain it was registered on). Tried with the owner's go-ahead:
+  `isPasskeyProgressiveEnrollmentEnabled` ON (`updateAuthkitSettings`), a fresh hosted page, the owner's third
+  sign-in at 15:40Z — **no prompt; straight to the lobby**; the sign-up at 15:33Z went from creation to session in 17
+  seconds, so no enrollment step there either. So under this configuration an account can never create a passkey,
+  and the passkey button a player sees at sign-in is the browser's side of WebAuthn with nothing to use. The paths
+  that exist: a page of our own against the Widgets API (`registerPasskey`/`verifyPasskey`/`passkeys`/
+  `deletePasskey`, a widget or access token the Worker would mint, elevated access on the writes — no ready widget
+  covers passkeys; User Security does MFA and password, User Profile name, picture and email), or passkeys OFF until
+  a custom domain exists. The flag is left ON pending the owner's ruling (the board, rulings 11); it is inert for
+  Magic Auth accounts and would start prompting only if passwords were ever enabled.
 
 **What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
 
