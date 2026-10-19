@@ -123,7 +123,7 @@
 //    (cycle F, R-FP3, R-FP4; spec §2.6): the judged configuration's top-level
 //    `vars.YOKOHAMA_TURNSTILE` — `on`, `off`, or absent, which is `off`; any
 //    other value is refused rather than read as `off` — against the tree's
-//    `build-values.json`, the stamp the client build writes (six booleans
+//    `build-values.json`, the stamp the client build writes (seven booleans
 //    naming which build values were set, never a value), whose
 //    `turnstile_sitekey` says whether the bundle carries a site key. `on`
 //    exactly when it does: `on` over a keyless build is a door whose

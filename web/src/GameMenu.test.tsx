@@ -216,6 +216,24 @@ describe("the Game menu", () => {
     expect(out.closest(".game-menu")).not.toBeNull();
   });
 
+  // **And behind an edge door too** (the auth cycle, Task 6; ruling R-37): the
+  // public deployment's wire mode is `cf-access`, and sign-out there asks the
+  // server where to go to end the session (`POST /api/leave`) — so the control
+  // is no longer the open door's alone. Mutant: the button left behind the
+  // `mode === "open"` test.
+  it("carries the way out behind an edge door too", async () => {
+    await renderApp(wire.options, (call) =>
+      call.path.endsWith("/api/me")
+        ? { ...wire.me, mode: "cf-access" }
+        : isGamesList(call, "mine")
+          ? gamesNamed(wire.options.id)
+          : undefined,
+    );
+    await userEvent.setup().click(gameMenu());
+    const out = await screen.findByRole("button", { name: "sign out" });
+    expect(out.closest(".game-menu")).not.toBeNull();
+  });
+
   // **The same defect the app guards at its two other mutation controls**, in the
   // one place M5 added: `App`'s `inFlight` and `NewGame`'s carry the reasoning.
   // React batches, so two clicks in the same tick both read the guard's STATE as

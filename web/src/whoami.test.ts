@@ -5,25 +5,54 @@
 // answer is "nobody" under a door this browser cannot knock on.
 
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY } from "./api";
+import { describe, expect, it, vi } from "vitest";
+import { ACCESS_CHALLENGE, ApiError, CLAIMED_USER_KEY, SIGN_IN_NEEDED } from "./api";
 import type { Channel } from "./route";
 import { gate, signedOutReply, stubApi, type Reply } from "./test/harness";
 import { wire } from "./wire/contract";
 import { doorSentence, failureOf, useMe } from "./whoami";
 
+/** What the OPEN door answers `POST /api/leave`: the house's 404, since no
+ *  source signs anyone in there (the auth cycle, Task 4) — which is what sends
+ *  `signOut` down its failure path, the sign-out the open door always had. */
+const OPEN_DOOR_LEAVE = { status: 404, body: wire.error };
+
 /** `/api/me` answered the way the SERVER answers it: from the header this
  *  browser is sending, which `api.ts` attaches from storage. A stub that
  *  answered `wire.me` regardless would model a server that ignores its own
- *  header, and nothing about signing out could then be tested. */
+ *  header, and nothing about signing out could then be tested. And
+ *  `/api/leave` as the open door answers it. */
 const meFromStorage = () =>
   stubApi((call) =>
     call.path.endsWith("/api/me")
       ? localStorage.getItem(CLAIMED_USER_KEY)
         ? wire.me
         : wire.meSignedOut
-      : undefined,
+      : call.path === "/api/leave"
+        ? OPEN_DOOR_LEAVE
+        : undefined,
   );
+
+/** `location`, standing in for jsdom's — whose `assign` is not implemented —
+ *  and recording every navigation it is asked for (`FrontDoor.test.tsx`'s). */
+function countNavigations(): string[] {
+  const real = window.location;
+  const went: string[] = [];
+  vi.stubGlobal(
+    "location",
+    new Proxy(
+      {},
+      {
+        get(_t, key) {
+          if (key === "assign") return (url: string) => went.push(url);
+          const value = Reflect.get(real, key, real);
+          return typeof value === "function" ? value.bind(real) : value;
+        },
+      },
+    ),
+  );
+  return went;
+}
 
 describe("useMe", () => {
   // **The hook takes the CHANNEL since M6.5b2** (R-6.5b2.7, spec §2.2). Every
@@ -105,6 +134,7 @@ describe("useMe", () => {
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
     let held: { promise: Promise<Reply>; resolve: (v: Reply) => void } | null = null;
     stubApi((call) => {
+      if (call.path === "/api/leave") return OPEN_DOOR_LEAVE;
       if (!call.path.endsWith("/api/me")) return undefined;
       if (held) return held.promise;
       return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
@@ -200,6 +230,86 @@ describe("failureOf", () => {
     // This API's OWN 401 is a refusal, not the edge's challenge.
     expect(failureOf(new ApiError("no identity reached the server", 401))).toBe("refused");
     expect(failureOf(new TypeError("Failed to fetch"))).toBe("network");
+  });
+
+  // **A provider-signed Worker's 401 is a challenge too** (the auth cycle, Task
+  // 6): `call` reads its `WWW-Authenticate: Yokohama-Session` as
+  // `SIGN_IN_NEEDED`, and the door draws the way in rather than the server's
+  // refusal. Mutants: `isSessionExpired` reading the Access sentence alone; the
+  // status unread (the sentence on a 403 is no sign-in).
+  it("failureOf reads SIGN_IN_NEEDED as a challenge", () => {
+    expect(failureOf(new ApiError(SIGN_IN_NEEDED, 401))).toBe("challenge");
+    expect(failureOf(new ApiError(ACCESS_CHALLENGE, 401))).toBe("challenge");
+    expect(failureOf(new ApiError(SIGN_IN_NEEDED, 403))).toBe("refused");
+    expect(failureOf(new ApiError("no signed-in user", 401))).toBe("refused");
+  });
+});
+
+// **Sign-out is the server's to end** (the auth cycle, Task 6; ruling R-37):
+// `POST /api/leave` answers where the player goes to end the session that
+// signed them in — the issuer's logout under a sign-in arm, Access's own under
+// Access — and the client goes there. Under the open door there is no server
+// session: the route is the house's 404, and the sign-out is the one the open
+// door always had — the stored name dropped, `/api/me` asked again.
+describe("signOut through /api/leave", () => {
+  const LEAVE =
+    "https://api.workos.com/user_management/sessions/logout?session_id=s&return_to=https%3A%2F%2Fyokohama.example%2F";
+
+  // Mutants: the navigation made before the answer lands (or to anything but
+  // the answer's `leave`); `/api/me` asked again on the way out; the leave
+  // never asked.
+  it("signOut POSTs /api/leave and navigates to the answer's leave", async () => {
+    const went = countNavigations();
+    const answer = gate<Reply>();
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
+      if (call.method === "POST" && call.path === "/api/leave") return answer.promise;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    const { result } = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+
+    act(() => result.current.signOut());
+    await waitFor(() => expect(stub.matching("POST", "/api/leave")).toHaveLength(1));
+    expect(went, "not before the server has said where").toEqual([]);
+    answer.resolve({ leave: LEAVE });
+    await waitFor(() => expect(went).toEqual([LEAVE]));
+    // The navigation IS the sign-out: nothing is asked again on the way out.
+    expect(stub.matching("GET", "/api/me")).toHaveLength(1);
+  });
+
+  // Mutants: the failure path navigating anyway; the stored name kept; the
+  // door not re-read; a 200 that names nowhere navigated to.
+  it("keeps the open door's sign-out when the leave is refused: the name dropped, /api/me asked again, nothing navigated", async () => {
+    const went = countNavigations();
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    const stub = meFromStorage();
+    const { result } = renderHook(() => useMe("multiplayer"));
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    act(() => result.current.signOut());
+    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    expect(stub.matching("POST", "/api/leave")).toHaveLength(1);
+    expect(stub.matching("GET", "/api/me")).toHaveLength(2);
+    expect(localStorage.getItem(CLAIMED_USER_KEY)).toBeNull();
+    expect(result.current.notice).toBeNull();
+    expect(went).toEqual([]);
+
+    // A 200 that names nowhere is no answer to navigate on: the same path.
+    localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
+    stubApi((call) =>
+      call.path.endsWith("/api/me")
+        ? localStorage.getItem(CLAIMED_USER_KEY)
+          ? wire.me
+          : wire.meSignedOut
+        : call.path === "/api/leave"
+          ? {}
+          : undefined,
+    );
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.me?.user).toBe(wire.me.user));
+    act(() => result.current.signOut());
+    await waitFor(() => expect(result.current.me).toEqual(wire.meSignedOut));
+    expect(went).toEqual([]);
   });
 });
 

@@ -35,11 +35,20 @@ const RELEASE_FACTORY =
   "export function createModule(compiled) {\n  initSync({ module: compiled });\n" +
   '  return { init, debug_trap: typeof debug_trap === "function" ? debug_trap : undefined };\n}\n';
 
-/** The client build's stamp (R-FP3): six booleans naming which build values
- *  were set, `turnstile_sitekey` as given. */
+/** The client build's stamp (R-FP3): seven booleans naming which build values
+ *  were set (the auth cycle's `signin_notice` among them), `turnstile_sitekey`
+ *  as given. */
 const STAMP = (sitekey) =>
   `${JSON.stringify(
-    { project_url: false, blurb: false, notice: false, release_feed: false, site_url: false, turnstile_sitekey: sitekey },
+    {
+      project_url: false,
+      blurb: false,
+      notice: false,
+      signin_notice: false,
+      release_feed: false,
+      site_url: false,
+      turnstile_sitekey: sitekey,
+    },
     null,
     2,
   )}\n`;

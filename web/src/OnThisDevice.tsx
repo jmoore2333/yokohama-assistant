@@ -17,13 +17,13 @@
 // release is ready offline (moved here from the door), Back up and Restore.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, ApiError, useIdentityMode } from "./api";
+import { api, ApiError, signInHref, useIdentityMode } from "./api";
 import { unplayableIds } from "./backup";
-import { turnstileSiteKey } from "./buildValues";
 import { BackUpEverything, Restore, Unplayable } from "./BackupControls";
 import { onLocalFault, onLocalWrite } from "./local/client";
 import { dismissInstall, promptInstall, useInstallState } from "./install";
 import { drainVisible, reasonWords, sendNow, useOutbox, type Pending } from "./outbox";
+import { SignInNotice } from "./Refusal";
 import { hashOf } from "./route";
 import { humanBytes, onPersistenceAsked, storageReport, type StorageReport } from "./storage";
 import { setApplyBusy, type ReadinessStatus } from "./swRegister";
@@ -478,23 +478,31 @@ function OutboxRow({ row }: { row: Pending }): React.ReactNode {
  * own JSON shape until the lobby's name step ("Choose a name", `SignIn.tsx`,
  * since M6.5c2 — the open door takes a NAME, not an email) has supplied
  * `X-Yokohama-Claimed-User`. Under `cf-access` and
- * `worker` the turnstile is the whole of it, and a second step named there
+ * `worker` the sign-in is the whole of it, and a second step named there
  * would send a player looking for a form that does not exist.
  *
- * **A door this browser has never been told about gets the turnstile alone**,
+ * **A door this browser has never been told about gets the sign-in alone**,
  * which is the first step under every mode: it is the instruction that is true
- * whatever the answer turns out to be — **except in a build with a Turnstile
- * site key**, which IS the open door (R-FP4; cycle F's fix wave). There a
- * nameless visitor's game is written "not signed in" before any read has said
- * which door this is (`outbox.ts`'s rule 6b), and the name step is the
- * remedy, so it is named whatever this browser has been told.
+ * whatever the answer turns out to be. **A Turnstile site key no longer names
+ * the open door** (the auth cycle, Task 6; design §4.5): the public deployment
+ * is a keyed build under `worker`, and `outbox.ts`'s rule 6b holds a nameless
+ * game for a name only where the facts already say `open` — which this reads.
+ *
+ * **The link is `/enter` with this screen as `return_to`** ([`signInHref`]): a
+ * provider-signed Worker starts its sign-in there and lands the player back
+ * here; Access and the open door ignore the query. **And under it, the build's
+ * transparency notice** ([`SignInNotice`], R-A14), beside the row's other
+ * words, so who signs the player in is read before the click.
  */
 function Remedy(): React.ReactNode {
-  const open = useIdentityMode() === "open" || Boolean(turnstileSiteKey());
+  const open = useIdentityMode() === "open";
   return (
-    <span className="muted remedy">
-      <a href="/enter">Sign in at the door</a>
-      {open ? ", then choose a name in the lobby." : "."}
-    </span>
+    <>
+      <span className="muted remedy">
+        <a href={signInHref()}>Sign in at the door</a>
+        {open ? ", then choose a name in the lobby." : "."}
+      </span>
+      <SignInNotice />
+    </>
   );
 }

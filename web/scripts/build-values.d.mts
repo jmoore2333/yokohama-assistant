@@ -9,11 +9,12 @@ export declare const SITE_KEY_VAR: "YOKOHAMA_TURNSTILE_SITEKEY";
 export declare const SITE_KEY_MAX: number;
 export declare const SITE_URL_VAR: "YOKOHAMA_SITE_URL";
 export declare const SITE_URL_MAX: number;
-/** The six build values and their caps. */
+/** The seven build values and their caps. */
 export declare const BUILD_VALUES: {
   YOKOHAMA_PROJECT_URL: number;
   YOKOHAMA_SITE_BLURB: number;
   YOKOHAMA_SITE_NOTICE: number;
+  YOKOHAMA_SIGNIN_NOTICE: number;
   YOKOHAMA_RELEASE_FEED: number;
   YOKOHAMA_TURNSTILE_SITEKEY: number;
   YOKOHAMA_SITE_URL: number;

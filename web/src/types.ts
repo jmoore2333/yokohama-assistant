@@ -1153,3 +1153,12 @@ export interface ArchiveReply {
   path: string;
   identical: boolean;
 }
+
+/** Where to go to sign out — `POST /api/leave` (the auth cycle, Task 4; design
+ *  §4.3). The WORKER's own answer, never the layer's: under a sign-in arm the
+ *  issuer's logout URL returning to this site's root, with the session cookie
+ *  cleared by the same answer; under Access, `/cdn-cgi/access/logout`. The open
+ *  door answers no such thing (the layer's 404), and nor does the NAS. */
+export interface LeaveReply {
+  leave: string;
+}

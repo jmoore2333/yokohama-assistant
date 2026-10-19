@@ -258,7 +258,9 @@ The settings a player notices, as cycle F's release set them (2026-10-01) and se
   `YOKOHAMA_SITE_NOTICE` ("Not affiliated with Asmodee"), `YOKOHAMA_SITE_BLURB` (the door's paragraph,
   quoted in the lane document), `YOKOHAMA_RELEASE_FEED` (unset, so derived from the project link) and
   `YOKOHAMA_SITE_URL`, which names the host, so each host serves its own client build. Neither host's
-  build carries a Turnstile site key: both run behind Access.
+  build carries a Turnstile site key: both run behind Access. The auth cycle adds
+  `YOKOHAMA_SIGNIN_NOTICE`, the sentence under every sign-in link saying who signs a player in and what
+  the site keeps; neither host's build sets it yet.
 
 ### What a public deployment gets for free
 

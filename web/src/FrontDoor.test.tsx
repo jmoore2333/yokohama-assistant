@@ -334,6 +334,38 @@ describe("the door's lobby button under a site key (cycle F)", () => {
     delete (window as Platform).turnstile;
   });
 
+  // **R-A14, the transparency notice** (the auth cycle, Task 6): who signs the
+  // player in and what this site keeps, under the multiplayer card's way in —
+  // the plain link and the keyed button alike — so it is read before the click.
+  // A build with none draws nothing. Mutants: the notice under one shape only;
+  // the notice drawn when unset; a class other than `muted`.
+  it("draws the build's sign-in notice under the way to the lobby, keyed or not, and nothing when the build sets none", () => {
+    const NOTICE = "Sign-in is by WorkOS. This site keeps only your verified email address, to seat you.";
+    const card = () => screen.getByRole("heading", { name: "Play with friends" }).closest("section")!;
+    vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", NOTICE);
+
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
+    const plain = render(<FrontDoor multiplayer />);
+    let notice = within(card()).getByText(NOTICE);
+    expect(notice.tagName).toBe("P");
+    expect(notice).toHaveClass("muted");
+    const link = screen.getByRole("link", { name: "Go to the lobby" });
+    expect(link.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    plain.unmount();
+
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    const keyed = render(<FrontDoor multiplayer />);
+    notice = within(card()).getByText(NOTICE);
+    expect(notice).toHaveClass("muted");
+    const button = screen.getByRole("button", { name: "Go to the lobby" });
+    expect(button.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    keyed.unmount();
+
+    vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", null);
+    render(<FrontDoor multiplayer />);
+    expect(card().querySelector("p.muted"), "no notice set, nothing drawn").toBeNull();
+  });
+
   it("keeps the plain link and asks for no script where the build has no key", () => {
     vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", null);
     render(<FrontDoor multiplayer />);

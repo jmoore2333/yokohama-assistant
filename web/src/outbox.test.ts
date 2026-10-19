@@ -27,7 +27,7 @@ import {
   serverFactsTakenAt,
 } from "./local/facts";
 import { resetLocalHostForTests } from "./local/client";
-import { BOUND_MS, CLAIMED_USER_KEY } from "./api";
+import { BOUND_MS, CLAIMED_USER_KEY, onUnauthorized } from "./api";
 import { applyBusy, resetDoorAutoApplyForTests } from "./swRegister";
 import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { DB_NAME, openDb, readOutboxRow } from "./local/db";
@@ -977,14 +977,13 @@ describe("the edge's challenge (cycle F)", () => {
 
 // ---- Task 6 fix round 1 ------------------------------------------------------
 //
-// **A keyed build IS the open door** (R-FP4, one build per door state:
-// production, behind Access, is built WITHOUT the site key, and only the open
-// configuration deploys a build with one; the deploy guard's check 12 holds the
-// declaration to the stamp and, from Task 7, to the open identity). So under a keyed build a
-// visitor who has chosen no name is refused an upload for CERTAIN, and nothing
-// needs to be asked to know it: no health read, no widget, no post — at game
-// over, at a launch, in a drain. A keyless build (the Access builds, the NAS)
-// cannot know its door without the read, and makes it as E did.
+// **A keyed build whose server facts name the open door** (cycle F's R-FP4, as
+// the auth cycle narrowed it: since then a keyed build under `worker` is the
+// public deployment too, design §4.5). There a visitor who has chosen no name is
+// refused an upload for CERTAIN, and nothing needs to be asked to know it: no
+// health read, no widget, no post — at game over, at a launch, in a drain.
+// Facts not yet read are no grounds to hold: the read is made, and its answer
+// decides. A keyless build (the Access builds, the NAS) makes it as E did.
 describe("a nameless visitor under a keyed build (Task 6 fix round 1, Important 1)", () => {
   const SECOND = "local-8";
   const challenged = () =>
@@ -1003,14 +1002,19 @@ describe("a nameless visitor under a keyed build (Task 6 fix round 1, Important 
     stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
   });
 
-  it("makes NO request at a fresh context's game over, and marks the game signed-out", async () => {
-    const handler = vi.fn(() => Promise.resolve());
-    setChallengeHandler(handler);
-    const stub = stubApi(() => challenged());
+  // **A fresh context READS the door before it holds** (the auth cycle, design
+  // §4.5): the build alone no longer says which door this is. The read names
+  // the open door, so the post the layer would refuse is still not made (F-14),
+  // and the game waits for a name. Mutant: the hold read off the key alone (no
+  // request at all, the cycle-F shape).
+  it("reads the door at a fresh context's game over, and holds the game for a name once it says open", async () => {
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "open", archive: "dir" };
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
     expect(serverFactsTakenAt(), "the premise: nothing has ever been read").toBeNull();
     await noteGameOver(GAME);
-    expect(stub.calls, "no health read and no post").toHaveLength(0);
-    expect(handler).not.toHaveBeenCalled();
+    expect(stub.calls.map((c) => `${c.method} ${c.path}`), "the read, and no post").toEqual(["GET /api/health"]);
     expect(await reasons()).toEqual([[GAME, "signed-out"]]);
   });
 
@@ -1070,6 +1074,116 @@ describe("a nameless visitor under a keyed build (Task 6 fix round 1, Important 
     // The read named the open door, and the post it would refuse is not made
     // (F-14, the first commit's rule).
     expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+  });
+});
+
+// ---- the auth cycle, Task 6: rule 6b held to the open door ------------------
+//
+// **The public deployment is a keyed build under `worker`** (design §4.5): the
+// Turnstile key no longer means the open door, so a keyed build holds a
+// nameless visitor's game for a name ONLY where the server facts say `open`.
+// Under any other door the post is made — anonymously, the device header on it
+// (Task 5) — and a browser that has not read the facts reads them and posts.
+// A 401 that names a door (`WWW-Authenticate`) parks the row "signed-out", and
+// its remedy is the door's link (`OnThisDevice`'s `Remedy`).
+describe("rule 6b under a provider-signed door (auth cycle, Task 6)", () => {
+  const SECOND = "local-8";
+  const THIRD = "local-9";
+  const DEVICE = /^[0-9a-f]{16}$/;
+  const reasons = async () => (await pending()).map((r) => [r.id, r.reason]).sort();
+  /** The remembered facts, a minute old (fresh: no read), naming `identity`. */
+  const remembered = (identity: string) =>
+    rememberServerFacts({ ...wire.health, identity, archive: "dir" }, Date.now() - 60_000);
+
+  beforeEach(() => {
+    localStorage.removeItem(CLAIMED_USER_KEY);
+    vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
+    stubWorker({ pair: () => ({ record: RECORD, table: TABLE }) });
+  });
+  afterEach(() => {
+    onUnauthorized(null);
+  });
+
+  // The plan's named mutant: `heldForAName` ignores the facts (the cycle-F
+  // `namelessUnderKey`) — the second and third games are then held, unposted.
+  // And: the facts read as open while unread (the third game held).
+  it("rule 6b holds a nameless game for a name ONLY when the server facts say open", async () => {
+    const handler = vi.fn(() => Promise.resolve());
+    setChallengeHandler(handler);
+
+    // The facts say open: held, and nothing asked — no read, no widget, no post.
+    remembered("open");
+    const quiet = stubApi((call) => {
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    expect(quiet.calls, "nothing asked of the server").toHaveLength(0);
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+
+    // The facts name another door: the post is made, and the device rides it.
+    remembered("cf-access");
+    const posted = stubApi((call) =>
+      call.method === "POST" && call.path === "/api/archive" ? wire.archivePost : undefined,
+    );
+    await noteGameOver(SECOND);
+    const [second] = posted.matching("POST", "/api/archive");
+    expect(second, "the post was made").toBeDefined();
+    expect(second!.headers["x-yokohama-device"]).toMatch(DEVICE);
+    expect(posted.calls, "and nothing else was asked").toHaveLength(1);
+
+    // The facts unread: the read is made, and its answer posts.
+    resetFactsForTest();
+    const fresh = stubApi((call) => {
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "cf-access", archive: "dir" };
+      if (call.method === "POST" && call.path === "/api/archive") return wire.archivePost;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    expect(serverFactsTakenAt(), "the premise: nothing remembered").toBeNull();
+    await noteGameOver(THIRD);
+    expect(fresh.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /api/health", "POST /api/archive"]);
+    expect(fresh.calls[1]!.headers["x-yokohama-device"]).toBe(second!.headers["x-yokohama-device"]);
+
+    // Only the open door's game waits; the other two landed.
+    expect(await reasons()).toEqual([[GAME, "signed-out"]]);
+    expect(handler, "no widget was needed").not.toHaveBeenCalled();
+  });
+
+  // Mutants: the session challenge left unread by `call` (the API's 401 handler
+  // fires — the door moves, a claimed name is dropped — and the row reads the
+  // body's sentence's status alone); the row held for a name under a door that
+  // reads none (the drain never posts it again); the device header left off.
+  it("a 401 carrying the session challenge parks the row as signed-out, whose remedy is the door", async () => {
+    remembered("cf-access");
+    const door = vi.fn();
+    onUnauthorized(door);
+    let session = false;
+    const stub = stubApi((call) => {
+      if (call.method === "POST" && call.path === "/api/archive") {
+        if (session) return wire.archivePost;
+        return new Response(JSON.stringify({ error: "no identity reached the server" }), {
+          status: 401,
+          headers: { "content-type": "application/json", "www-authenticate": 'Yokohama-Session realm="/enter"' },
+        });
+      }
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    await noteGameOver(GAME);
+    const [post] = stub.matching("POST", "/api/archive");
+    expect(post!.headers["x-yokohama-device"]).toMatch(DEVICE);
+    expect(await pending()).toEqual([expect.objectContaining({ id: GAME, reason: "signed-out" })]);
+    expect(reasonWords("signed-out")).toBe("not signed in");
+    // The remedy is the sign-in link the row draws, never the API's own 401
+    // handler — which would drop a stored name and move the door for a refusal
+    // the strip already says what to do about.
+    expect(door).not.toHaveBeenCalled();
+
+    // Re-evaluated, not frozen (rule 2): the row is not held for a name, which
+    // is not what this door reads, so the next drain posts it again — and once
+    // the browser holds a session, it lands.
+    session = true;
+    await drain();
+    expect(stub.matching("POST", "/api/archive")).toHaveLength(2);
+    expect(await pending()).toEqual([]);
   });
 });
 

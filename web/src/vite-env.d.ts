@@ -41,6 +41,11 @@ declare const __YOKOHAMA_SITE_BLURB__: string | null;
 /** The footer's one-line notice: the checked `YOKOHAMA_SITE_NOTICE`, or
  *  `null` — read by `buildValues.ts` alone. */
 declare const __YOKOHAMA_SITE_NOTICE__: string | null;
+/** The sentence under every sign-in link (the auth cycle, Task 6; R-A14): the
+ *  checked `YOKOHAMA_SIGNIN_NOTICE` — who signs the player in, and what this
+ *  site keeps — or `null`, and nothing is drawn. Read by `buildValues.ts`
+ *  alone. */
+declare const __YOKOHAMA_SIGNIN_NOTICE__: string | null;
 /** The release feed the door and the lobby read for the latest release (cycle
  *  F, R-F2): the checked `YOKOHAMA_RELEASE_FEED` — a URL, or one derived from a
  *  GitHub project link — or `null` for `off` and for no feed. Read by

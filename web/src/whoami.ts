@@ -14,7 +14,9 @@ import type { Channel } from "./route";
 import type { Me } from "./types";
 
 /** How the door's own read failed (M6.5c2, spec §2.1's discriminators):
- *  `challenge` — the EDGE refused with Access's challenge (state A);
+ *  `challenge` — a DOOR refused with its own challenge: Access's expired
+ *  session, or a provider-signed Worker's "sign in" (the auth cycle's
+ *  `SIGN_IN_NEEDED`) — state A;
  *  `network` — nothing answered at all, a network error or offline (state C);
  *  `refused` — the server answered with a refusal of its own. */
 export type DoorFailure = "challenge" | "network" | "refused";
@@ -43,7 +45,10 @@ export interface Door {
   notice: string | null;
   /** Ask `/api/me` again. */
   refresh: () => void;
-  /** The player asked to sign out. */
+  /** The player asked to sign out: the server is asked where to go to end the
+   *  session (`POST /api/leave`) and the browser goes there; where it answers
+   *  nowhere — the open door's 404, the NAS — the stored name is dropped and
+   *  `/api/me` asked again, the sign-out the open door always had. */
   signOut: () => void;
   /** The server refused with a 401: drop the name, carry the sentence, re-ask. */
   signedOut: (sentence: string) => void;
@@ -129,9 +134,25 @@ export function useMe(channel: Channel): Door {
     refresh,
     // Asked for, so the door says nothing — a notice left standing from an
     // earlier refusal would explain a screen the player chose.
+    //
+    // **The SERVER ends the session it holds** (the auth cycle, Task 6; ruling
+    // R-37): `POST /api/leave` answers where to go — the issuer's logout under
+    // a sign-in arm, its answer clearing the session cookie; Access's own
+    // `/cdn-cgi/access/logout` under Access — and the navigation IS the
+    // sign-out, so nothing is asked again. **Its failure path is the open
+    // door's sign-out exactly**: there is no server session there, the route is
+    // the layer's 404, and the stored name is dropped and `/api/me` re-read. A
+    // reply naming nowhere is that path too. `leaving` is set at the click, so
+    // a 401 that lands while the leave is out is the sign-out, not news.
     signOut: useCallback(() => {
       leaving.current = true;
-      leave(null);
+      void api.leave().then(
+        (reply) => {
+          if (typeof reply?.leave === "string" && reply.leave !== "") window.location.assign(reply.leave);
+          else leave(null);
+        },
+        () => leave(null),
+      );
     }, [leave]),
     // Ignored while a sign-out that was asked for is still being read back:
     // the name is already dropped and the re-read already out (`leaving`).

@@ -1541,10 +1541,14 @@ export function App() {
   // the strip is handed to them as a node rather than restated there: two copies
   // would be two places for the sign-out wiring to drift.
   //
-  // The button exists under `open` ONLY. Under the two edge doors there is
-  // nothing stored to clear, and a control that looked like it logged you out
-  // while Access kept letting you in would be a lie on screen.
-  const signOutButton = signedIn && door.me?.mode === "open" && (
+  // **Under every door since the auth cycle** (Task 6; ruling R-37): the
+  // public deployment's wire mode is `cf-access`, and sign-out there is the
+  // SERVER's — `door.signOut` asks `POST /api/leave` where to go to end the
+  // session (the issuer's logout, or Access's own) and goes. The ONE wiring,
+  // with the lobby corner's (`IdentityCorner`'s `onChange`). Under the open
+  // door the route is the layer's 404, and the stored name is dropped as it
+  // always was.
+  const signOutButton = signedIn && (
     <button type="button" className="ghost" onClick={signOut}>
       sign out
     </button>

@@ -64,8 +64,9 @@ afterAll(() => {
  *  agree wrongly. */
 const NOT_PRECACHED = ["404.html", "robots.txt", "llms.txt", "sitemap.xml", "build-values.json", "headers.json"];
 
-/** The stamp's six keys, in the order the build writes them (R-FP3). */
-const STAMP_KEYS = ["project_url", "blurb", "notice", "release_feed", "site_url", "turnstile_sitekey"];
+/** The stamp's seven keys, in the order the build writes them (R-FP3; the
+ *  auth cycle's `signin_notice`, Task 6). */
+const STAMP_KEYS = ["project_url", "blurb", "notice", "signin_notice", "release_feed", "site_url", "turnstile_sitekey"];
 
 /** Every build value the stamp reports on, so a cell can clear the
  *  developer's own environment before it sets the ones it means. */
@@ -73,6 +74,7 @@ const BUILD_VALUE_VARS = [
   "YOKOHAMA_PROJECT_URL",
   "YOKOHAMA_SITE_BLURB",
   "YOKOHAMA_SITE_NOTICE",
+  "YOKOHAMA_SIGNIN_NOTICE",
   "YOKOHAMA_RELEASE_FEED",
   "YOKOHAMA_TURNSTILE_SITEKEY",
   "YOKOHAMA_SITE_URL",
@@ -237,7 +239,7 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
       "exactly the three files the build emits and the release never lists are left out",
     ).toBe(3);
 
-    // **The stamp is exactly the six booleans** (R-FP3), in the build's order:
+    // **The stamp is exactly the seven booleans** (R-FP3), in the build's order:
     // which values were set, never a value.
     const stamp = JSON.parse(readFileSync(join(built, "build-values.json"), "utf8")) as Record<string, unknown>;
     expect(Object.keys(stamp)).toEqual(STAMP_KEYS);
@@ -279,7 +281,7 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
         stdio: "pipe",
       });
       const stamp = JSON.parse(readFileSync(join(out, "build-values.json"), "utf8")) as Record<string, unknown>;
-      expect(Object.keys(stamp), "the six keys, in order").toEqual(STAMP_KEYS);
+      expect(Object.keys(stamp), "the seven keys, in order").toEqual(STAMP_KEYS);
       // The build's header set, read off the SAME build: the served 404 page's style, hashed into it (after the
       // parser's newline normalization, as the generator hashes) — style-src EXACTLY `'self'` and that hash, and
       // no `'unsafe-…'` anywhere in the BUILT policy: a source appended in `vite.config.ts`'s call would pass a
@@ -299,11 +301,20 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
         YOKOHAMA_PROJECT_URL: link,
         YOKOHAMA_SITE_BLURB: "A blurb for the stamp cell.",
         YOKOHAMA_SITE_NOTICE: "A notice for the stamp cell.",
+        YOKOHAMA_SIGNIN_NOTICE: "A sign-in notice for the stamp cell.",
         YOKOHAMA_TURNSTILE_SITEKEY: "stamp-cell-not-a-real-key",
         YOKOHAMA_SITE_URL: "https://yokohama.example.org",
       }),
       "every value set, the feed derived from the GitHub link",
-    ).toEqual({ project_url: true, blurb: true, notice: true, release_feed: true, site_url: true, turnstile_sitekey: true });
+    ).toEqual({
+      project_url: true,
+      blurb: true,
+      notice: true,
+      signin_notice: true,
+      release_feed: true,
+      site_url: true,
+      turnstile_sitekey: true,
+    });
     expect(connect(), "the site's socket host and the derived feed's origin").toEqual([
       "'self'",
       "wss://yokohama.example.org",
@@ -313,12 +324,21 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     expect(
       stampOf({ YOKOHAMA_PROJECT_URL: link, YOKOHAMA_RELEASE_FEED: "off" }),
       "the same link with the feed off",
-    ).toEqual({ project_url: true, blurb: false, notice: false, release_feed: false, site_url: false, turnstile_sitekey: false });
+    ).toEqual({
+      project_url: true,
+      blurb: false,
+      notice: false,
+      signin_notice: false,
+      release_feed: false,
+      site_url: false,
+      turnstile_sitekey: false,
+    });
     expect(connect(), "no site, no feed").toEqual(["'self'", "https://cloudflareinsights.com"]);
     expect(stampOf({}), "nothing set").toEqual({
       project_url: false,
       blurb: false,
       notice: false,
+      signin_notice: false,
       release_feed: false,
       site_url: false,
       turnstile_sitekey: false,

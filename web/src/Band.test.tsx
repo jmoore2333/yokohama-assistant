@@ -106,6 +106,31 @@ describe("the identity corner", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  // **Behind an edge door the player can still leave** (the auth cycle, Task 6;
+  // ruling R-37): the identity is the edge's, so nothing offers to switch it,
+  // but "sign out" tells the host — `App`'s `signOut`, which asks the server
+  // where to go to end the session (`POST /api/leave`). The display name goes
+  // first, as switch player drops it: it labels whoever signs in next. Under
+  // the open door switch player IS the way out, and no second control is drawn.
+  // Mutants: no sign-out behind an edge door; the name kept; a second sign-out
+  // under the open door.
+  it("offers sign out behind an edge door, dropping the display name before telling the host", async () => {
+    localStorage.setItem(DISPLAY_NAME_KEY, "Red");
+    const seen: (string | null)[] = [];
+    const onChange = vi.fn(() => seen.push(localStorage.getItem(DISPLAY_NAME_KEY)));
+    const { unmount } = render(<IdentityCorner me={behindAccess} onChange={onChange} />);
+    expect(screen.getAllByRole("button", { name: "sign out" })).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "change name" })).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "sign out" }));
+    expect(seen).toEqual([null]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    unmount();
+
+    render(<IdentityCorner me={wire.me} onChange={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "switch player" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "sign out" })).toBeNull();
+  });
+
   it("clears the display name when the field is emptied, and cancels without writing", async () => {
     localStorage.setItem(DISPLAY_NAME_KEY, "Red");
     render(<IdentityCorner me={behindAccess} onChange={vi.fn()} />);
