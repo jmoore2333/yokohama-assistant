@@ -94,7 +94,7 @@ export function readSessionCookie(env = process.env) {
   if (value === undefined || value === "") return null;
   const parts = sessionCookieParts(value);
   if (parts === null) {
-    throw new Error(`${SESSION_COOKIE_ENV} is not a minted session cookie line (__Host-yokohama_session=v1.<payload>.<mac>) — scripts/mint-session.mjs prints one`);
+    throw new Error(`${SESSION_COOKIE_ENV} is not a minted session cookie line (__Host-yokohama_session=v2.<payload>.<mac>) — scripts/mint-session.mjs prints one`);
   }
   // **The `.test` fence applies to a cookie handed in too** (review I-1): a copied browser cookie for a real address
   // would run the instruments as that person, on production. The address is not a secret, so the sentence names it.

@@ -386,7 +386,9 @@ describe("the absolute cap (YOKOHAMA_SESSION_MAX_DAYS)", () => {
 
   it("the expiry is the earlier of issued plus the days and first plus the cap", async () => {
     const early = await mintSession(red(NOW, NOW + 10 * DAY), 30, MAX, SECRET);
-    expect((await readSession(`${SESSION_COOKIE}=${early}`, SECRET, NOW + 10 * DAY))?.expires).toBe(NOW + 40 * DAY);
+    const read = await readSession(`${SESSION_COOKIE}=${early}`, SECRET, NOW + 10 * DAY);
+    expect(read?.expires).toBe(NOW + 40 * DAY);
+    expect(read?.first, "first written through, not re-stamped as issued (review m-5)").toBe(NOW);
     const late = await mintSession(red(NOW, NOW + 70 * DAY), 30, MAX, SECRET);
     expect((await readSession(`${SESSION_COOKIE}=${late}`, SECRET, NOW + 70 * DAY))?.expires).toBe(NOW + 90 * DAY);
     const capped = await mintSession(red(NOW, NOW), 30, 7, SECRET);

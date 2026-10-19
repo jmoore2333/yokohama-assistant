@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { isAddress } from "./identity";
 import type { Limiter } from "./limits";
 import { openTtlDaysOf, ttlDaysOf } from "./marker";
+import { log } from "./respond";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
  *  frozen reading, or a reading that ticks one second per use. */
@@ -264,9 +265,11 @@ function isDomainEntry(entry: string): boolean {
  * The deny-list (the red button, 2026-10-19), read for `oidc` and `workos` alone: entries split on commas and
  * newlines, each folded as a caller's address is read (`folded`), the empty ones dropped — a put from a file ends in
  * a newline, and a trailing comma is no reason to refuse every request — and each kept entry an address
- * (`isAddress`) or an `@domain` (`isDomainEntry`). A refusal names the entry by its POSITION among the kept entries
- * and never echoes a value, as `admins` does (R3's M-6): the list is a secret, and the refusal is the 500 body of
- * every `/api/*` request and the `init-refused` line.
+ * (`isAddress`) or an `@domain` (`isDomainEntry`). **An entry that is neither is SKIPPED, never a refusal** (the
+ * owner's ruling the same day, on a side agent's note: a typo in the ban list must never take the API down): the
+ * line `denied-skipped` names its POSITION among the kept entries and never its value — the list is a secret and the
+ * log is not — and the rest stand. `admins` keeps its refusal: an operator list with a typo admits nobody, which the
+ * operator sees at once; a ban list with one denies everybody else just the same.
  */
 function denied(raw: string | null, src: Source | null): Denied | null {
   if (raw === null || (src !== "oidc" && src !== "workos")) return null;
@@ -276,13 +279,7 @@ function denied(raw: string | null, src: Source | null): Denied | null {
   entries.forEach((entry, i) => {
     if (isDomainEntry(entry)) domains.push(entry.slice(1));
     else if (isAddress(entry)) addresses.push(entry);
-    else {
-      refuse(
-        `YOKOHAMA_DENIED entry ${i + 1} of ${entries.length} is neither an address nor an @domain — ` +
-          "an address is one @ with something on both sides, no spaces or control characters, and at most 254 bytes; " +
-          "an @domain is @ followed by a domain with no @, no spaces or control characters, and at most 253 bytes",
-      );
-    }
+    else log("denied-skipped", { position: i + 1, of: entries.length });
   });
   return { addresses, domains };
 }

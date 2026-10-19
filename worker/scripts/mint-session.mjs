@@ -56,7 +56,7 @@ export function fenceSentence(address) {
 }
 
 /**
- * The whole cookie line for `address` — `__Host-yokohama_session=v1.…` — minted from `secret`, `sid` null, `days`
+ * The whole cookie line for `address` — `__Host-yokohama_session=v2.…` — minted from `secret`, `sid` null, `days`
  * (default thirty) past `nowSeconds`. **The ONE function every minter calls** (this script, the live replay and the
  * live tier, ruling R-50): the `.test` fence is here, judged on the address exactly as it is minted — never trimmed or
  * lower-cased first, since the Worker's `is_test_identity` is case-sensitive — so no caller can mint a real address.
@@ -75,10 +75,10 @@ export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {
   return `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}`;
 }
 
-/** The cookie's VALUE for `s`, expiring `days` after `s.issued` and first issued then (`s.first` when given):
- *  `session.ts`'s `mintSession` under a cap no lower than the days, over `node:crypto`. */
+/** The cookie's VALUE for `s`, expiring `days` after `s.issued` and first issued then — an instrument's session is
+ *  first issued when it is minted: `session.ts`'s `mintSession` under a cap no lower than the days, over `node:crypto`. */
 export function mintValue(s, days, secret) {
-  const first = s.first ?? s.issued;
+  const first = s.issued;
   const payload = Buffer.from(JSON.stringify({ address: s.address, sid: s.sid, first, issued: s.issued, expires: s.issued + days * DAY_SECONDS }), "utf8").toString("base64url");
   const mac = createHmac("sha256", secret).update(`${VERSION}.${payload}`).digest("base64url");
   return `${VERSION}.${payload}.${mac}`;

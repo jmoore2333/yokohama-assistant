@@ -2,8 +2,9 @@
  * **The Worker's own session** (the auth cycle, design §4.2; R-A2): the cookie that names a signed-in caller on
  * every request after the sign-in, and the short login cookie that carries the sign-in's state across the
  * provider's round trip. Stateless: nothing is stored and the cookie is the whole session. A stolen one is good
- * until it expires, and renewal extends it, so only rotating `YOKOHAMA_SESSION_SECRET` ends a stolen session, and
- * the rotation ends every session at once (the recorded trade, R-A2; ruling R-16).
+ * until it expires, and renewal extends it up to the absolute cap below, so rotating `YOKOHAMA_SESSION_SECRET`
+ * (every session at once) and the deny-list (one address's) are the revokes (the recorded trade, R-A2; ruling R-16
+ * as amended 2026-10-19).
  *
  * **The format, one canonical byte form for each:** `v2.<payload>.<mac>`, where `<payload>` is the base64url of the
  * UTF-8 JSON `JSON.stringify` writes for an object holding the type's fields in its declared order — `address,

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { moduleConfig, shellConfig, type ShellConfig } from "./config";
+import { describe, expect, it, vi } from "vitest";
+import { isDenied, moduleConfig, shellConfig, type ShellConfig } from "./config";
 import type { Env } from "./env";
 
 // `shellConfig` asks only WHETHER a bucket is bound, so an empty object stands
@@ -384,17 +384,47 @@ describe("YOKOHAMA_SESSION_MAX_DAYS and YOKOHAMA_DENIED (the absolute cap and th
     const d = accepted(env({ ...WORKOS, YOKOHAMA_DENIED: " Spam@T.test ,\n@Bad.Example\n\n,c@d.test,\n" }, true)).denied;
     expect(d).toEqual({ addresses: ["spam@t.test", "c@d.test"], domains: ["bad.example"] });
     expect(accepted(env({ ...WORKOS, YOKOHAMA_DENIED: "\n, ,\n" }, true)).denied).toEqual({ addresses: [], domains: [] });
+    // Newlines ALONE separate (review I-1): §24's recipe writes the secret one entry per line, with no comma anywhere.
+    expect(accepted(env({ ...WORKOS, YOKOHAMA_DENIED: "a@b.test\nc@d.test\n@x.example\n" }, true)).denied).toEqual({
+      addresses: ["a@b.test", "c@d.test"],
+      domains: ["x.example"],
+    });
     expect(accepted(env({ ...WORKOS, YOKOHAMA_IDENTITY_SOURCE: "access", YOKOHAMA_DENIED: "not an address" }, true)).denied).toBeNull();
   });
-  it("refuses an entry that is neither an address nor an @domain, by its position among the entries kept and never by its value", () => {
-    expect(refused(env({ ...WORKOS, YOKOHAMA_DENIED: "a@b.test,\n\nnot an address, @ok.example" }, true))).toBe(
-      "YOKOHAMA_DENIED entry 2 of 3 is neither an address nor an @domain — " +
-        "an address is one @ with something on both sides, no spaces or control characters, and at most 254 bytes; " +
-        "an @domain is @ followed by a domain with no @, no spaces or control characters, and at most 253 bytes",
-    );
-    for (const bad of ["@", "@ spaced.example", "two@at@signs.test", "@a@b"]) {
-      expect(refused(env({ ...WORKOS, YOKOHAMA_DENIED: bad }, true)), bad).toMatch(/^YOKOHAMA_DENIED entry 1 of 1 is neither an address nor an @domain/);
+  // The owner's ruling (2026-10-19, on a side agent's note): a typo in the ban list must never be an outage. So an
+  // entry that is neither shape is SKIPPED with a log line naming its position among the entries kept — never its
+  // value — and the rest stand; `YOKOHAMA_WEB_ADMINS` keeps its refusal. Mutants: the refusal back; the value logged;
+  // the entry kept; the rest dropped with it.
+  it("skips an entry that is neither an address nor an @domain, logging its position and never its value, and keeps the rest", () => {
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const d = accepted(env({ ...WORKOS, YOKOHAMA_DENIED: "a@b.test,\n\nnot an address, @ok.example" }, true)).denied;
+      expect(d).toEqual({ addresses: ["a@b.test"], domains: ["ok.example"] });
+      expect(spy.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([{ event: "denied-skipped", position: 2, of: 3 }]);
+      expect(JSON.stringify(spy.mock.calls)).not.toContain("not an address");
+      for (const bad of ["@", "@ spaced.example", "two@at@signs.test", "@a@b"]) {
+        spy.mockClear();
+        expect(accepted(env({ ...WORKOS, YOKOHAMA_DENIED: bad }, true)).denied, bad).toEqual({ addresses: [], domains: [] });
+        expect(spy.mock.calls.map(([line]) => JSON.parse(String(line))), bad).toEqual([{ event: "denied-skipped", position: 1, of: 1 }]);
+      }
+    } finally {
+      spy.mockRestore();
     }
+  });
+  // The match's SHAPE (review I-3): the whole address, folded, among the addresses; the part after its last `@`, folded,
+  // EXACTLY among the domains — a subdomain is not its parent's (list it as its own entry), and a domain is never
+  // matched as a suffix of a longer one. Mutants: no folding; the domain by `endsWith`; a domain entry matched against
+  // the whole address; `null` denying.
+  it("isDenied matches the folded address exactly, or the folded domain after the last @ exactly, and never a suffix or a subdomain", () => {
+    const list = { addresses: ["spam@t.test"], domains: ["bad.example"] };
+    for (const denied of ["spam@t.test", "SPAM@T.test", " spam@t.test ", "x@bad.example", "X@Bad.Example", "a@b@bad.example"]) {
+      expect(isDenied(list, denied), denied).toBe(true);
+    }
+    for (const allowed of ["evil@notbad.example", "spam@t.test.example", "red@t.test", "bad.example@t.test", "a@mail.bad.example", "a@bad.example.evil", "spam@t.tes"]) {
+      expect(isDenied(list, allowed), allowed).toBe(false);
+    }
+    expect(isDenied(null, "spam@t.test")).toBe(false);
+    expect(isDenied({ addresses: [], domains: [] }, "spam@t.test")).toBe(false);
   });
 });
 

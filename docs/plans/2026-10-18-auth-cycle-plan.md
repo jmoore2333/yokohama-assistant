@@ -1237,3 +1237,30 @@ it("doorLine names the source", …);
   steps (the wire fixtures and the backup envelope regenerated: the version and nothing else in the diff). Readings after
   the bump: web typecheck clean, vitest 1,553 in 74 files, `test:wasm` 391 in 16; worker typecheck clean, `test:scripts`
   793 in 32, the pool 297 in 14 over the debug module; the three web-lane cargo suites and clippy in the record below.
+- **2026-10-19, the scoped review of `24728653`+`617377af` (Fable, on an export; the owner's hotfix rule) and its fix
+  round.** Verdict FIX ROUND: 0 Critical, 4 Important, 10 Minor; 21 of 25 mutants red on the export, the four green
+  ones each a missing catcher. **I-1** "separated by commas or newlines" had no newline-only cell (the comma did the
+  splitting in every fixture, while §24's recipe is one entry per line) — a newline-only cell added, the pool's fixture
+  made newline-only. **I-2** "read before step 5a" had no cell — `test/archive.test.ts` gains a denied session's post
+  with a device header filing under the device's anonymous object, the cookie cleared on the answer, with the
+  anti-vacuity half (the same post, no deny-list, files under the address); `through` returns the answer's cookies.
+  **I-3** `isDenied` had no unit cell and the domain match's SHAPE no catcher (a suffix match would deny
+  `evil@notbad.example`) — a cell over the folded address, the exact domain after the last `@`, and the non-matches,
+  with the subdomain question settled as the orchestrator's call: an `@domain` entry denies that exact domain and no
+  subdomain (list one as its own entry), said in §12, the runbook's row and §24. **I-4** the pre-change revocation
+  sentence stood in `docs/web-lane.md` §4, the runbook's `YOKOHAMA_SESSION_SECRET` row and `CLAUDE.md`'s browser-lane
+  bullet — each amended with the cap and the deny-list. Minors taken: the stale `v1` and "only rotating" comments
+  (`session.ts`, `dev-vars.mjs`'s refusal sentence, `mint-session.mjs`), `mintValue`'s dead `s.first` branch dropped
+  (an instrument's session is first issued when minted), the `first` write-through pinned in the unit cell (m-5), §24's
+  "exactly as `YOKOHAMA_WEB_ADMINS`" corrected, the `YOKOHAMA_SESSION_DAYS` row's "re-mints … when that would extend
+  it" (m-10). Recorded, not changed: m-6 (a denied session's leave clears twice and ends no WorkOS session — harmless,
+  by §24's own words); m-7 (`renewed` re-reads the clock after the object's answer and could meet the cap second the
+  decision did not — a few parts in 10^7 of a session's last seconds; a clock seam would be the honest fix and is not
+  this round's); m-8 (the cap is enforced at mint and renewal, never at read — lowering it shortens no cookie already
+  minted; said in the runbook's row). **The owner's ruling during the round (on a side agent's note): a typo in the
+  ban list must never be an outage** — a malformed entry is now SKIPPED with the log line `denied-skipped` naming its
+  position among the entries kept and never its value, and the rest stand; `YOKOHAMA_WEB_ADMINS` keeps its refusal;
+  test-first (the refusal cell rewritten as the skip cell, red then green), §12, the runbook's row and §24 rewritten.
+  Mutants on the new cells, each applied and reverted byte-identical: M17 comma-only split, M10 domain by `endsWith`,
+  M9 no folding, M6 `first` re-stamped, M11 the deny rule after step 5a, the refusal back, the value logged — seven of
+  seven red.

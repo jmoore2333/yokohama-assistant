@@ -774,7 +774,7 @@ describe("the callback spends the create limiter by IP (R-31)", () => {
 // another. Mutants: the list not read at the session; a domain entry not matched; the address compared without
 // folding; the cookie not cleared; the callback minting for a denied address; the refusal logging the address.
 describe("the red button: YOKOHAMA_DENIED", () => {
-  const DENIED: Env = { ...ENV, YOKOHAMA_DENIED: "Spam@T.test,\n@bad.example\n" };
+  const DENIED: Env = { ...ENV, YOKOHAMA_DENIED: "Spam@T.test\n@bad.example\n" };
 
   it("a denied address's session, or a denied domain's, is nobody: the 401 with the challenge and the cookie cleared; another address is untouched", async () => {
     for (const address of ["spam@t.test", "Spam@T.test", "anyone@bad.example", "Anyone@Bad.Example"]) {

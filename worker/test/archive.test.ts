@@ -11,6 +11,7 @@ import type { Limiter } from "../src/limits";
 import * as r2Module from "../src/r2";
 import type { ArchiveOwed } from "../src/r2";
 import { callerDigest, callerTag, redactKey } from "../src/redact";
+import { mintSession, SESSION_COOKIE } from "../src/session";
 import { HOUSE_NAME } from "../src/slot";
 import { Table } from "../src/table";
 import { credentialClaims, signer } from "./tokens";
@@ -1566,6 +1567,7 @@ describe("the anonymous archive (the auth cycle, Task 5; design §4.4, R-A4, R-A
       return {
         status: res.status,
         text: await res.text(),
+        setCookie: res.headers.getSetCookie(),
         archive: archive.mock.calls.map(([r], i) => ({ name: (archive.mock.contexts[i] as unknown as { ctx: DurableObjectState }).ctx.id.name, headers: trusted(r) })),
         house: house.mock.calls.map(([r]) => trusted(r)),
         table: table.mock.calls.map(([r]) => trusted(r)),
@@ -1625,6 +1627,36 @@ describe("the anonymous archive (the auth cycle, Task 5; design §4.4, R-A4, R-A
       stamped(await metaOf(key), { caller: "anonymous", device: DEVICE, rev: "7", why: "over" }, from, to, key);
     }
     expect(await bucketText(path), "the record as sent").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
+  });
+
+  // The red button (2026-10-19; review I-2): a DENIED session's post files anonymously exactly as a stranger's does —
+  // the deny rule runs BEFORE step 5a forms the anonymous caller — and the clear of the session cookie rides the
+  // answer. Mutant: the deny rule after step 5a (the post filed under the denied address, in that address's object).
+  it("a denied session's post with a device header files anonymously, under the device, with the session cookie cleared", async () => {
+    const id = "local-b1b1b1b1b1b1b1b1";
+    const address = `anon-${DEVICE}@anon.invalid`;
+    const secret = "a-session-secret-of-at-least-32-bytes!";
+    const denied: Env = {
+      ...env,
+      YOKOHAMA_IDENTITY_SOURCE: "workos",
+      YOKOHAMA_OIDC_CLIENT_ID: "c",
+      YOKOHAMA_OIDC_CLIENT_SECRET: "k",
+      YOKOHAMA_SESSION_SECRET: secret,
+      ACCESS_TEAM_DOMAIN: undefined,
+      ACCESS_AUD: undefined,
+      YOKOHAMA_DENIED: "spam@t.test\n",
+    };
+    const now = seconds();
+    const cookie = await mintSession({ address: "spam@t.test", sid: null, first: now, issued: now }, 30, 90, secret);
+    const res = await through("/api/archive", { headers: { [DEVICE_HEADER]: DEVICE, cookie: `${SESSION_COOKIE}=${cookie}` }, body: pairAs(id), env: denied });
+    expect([res.status, JSON.parse(res.text).leaf]).toEqual([201, "over"]);
+    expect(res.archive, "the device's anonymous object, never the denied address's").toEqual([
+      { name: `archive:${address}`, headers: { "x-yokohama-user": address, "x-yokohama-device": DEVICE } },
+    ]);
+    expect(res.setCookie, "the denied session's cookie cleared on the way out").toEqual([`${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`]);
+    // The anti-vacuity half: the same post under the same session with NO deny-list files under the address.
+    const kept = await through("/api/archive", { headers: { [DEVICE_HEADER]: DEVICE, cookie: `${SESSION_COOKIE}=${cookie}` }, body: pairAs("local-b2b2b2b2b2b2b2b2"), env: { ...denied, YOKOHAMA_DENIED: undefined } });
+    expect([kept.status, kept.archive[0]?.name, kept.setCookie]).toEqual([201, "archive:spam@t.test", []]);
   });
 
   // R-A11: a browser running TODAY's released client sends no device header, and its waiting games land the first
