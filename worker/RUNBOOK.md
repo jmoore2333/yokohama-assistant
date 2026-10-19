@@ -2412,7 +2412,7 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 
 ---
 
-## 23. The public door opens — the switch to WorkOS (a plan, not a record)
+## 23. The public door opens — the switch to WorkOS (stage 1 a record, 2026-10-19; stage 2 a plan)
 
 **The recipe for the window that moves `yokohama.moore.nyc` from the Access door to the WorkOS-signed Worker.** Its code is the auth cycle's (`docs/plans/2026-10-18-auth-cycle-design.md`, its plan beside it; the Worker's three identity sources are `docs/web-lane.md` §4's bullet); it keeps the fence of the lane's §10 public window's order — the edge rule is in front BEFORE the hostname leaves Access, so the API is never open and unchallenged — but not its steps, because the rule is DISABLED while Access is on (below). Orchestrator-only, through `wrangler`, the WorkOS dashboard or MCP and the Cloudflare API, each step a dated line in the cycle's ledger. **A plan, not a record: no step below has run.** It runs in TWO stages (the owner's "both" direction of 2026-10-19, rulings R-51 and R-55): until the public repository is cleaned up Cloudflare Access stays on at the edge over the WorkOS-signed Worker, and the Worker at `workos` never reads Access's assertion. **The window runs against the PRODUCTION WorkOS environment**; the staging environment is not an issuer here.
 
@@ -2448,6 +2448,49 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 8. **The dev door's secret.** `DEV_DOOR_CLIENT_ID` deleted (`npx wrangler secret delete DEV_DOOR_CLIENT_ID --config wrangler.jsonc`): the dev door is inert at `workos` and its secret is one of the public door's preconditions (`docs/web-lane.md` §8). The scratch key file removed.
 9. **Rollback.** The hostname back on the Access application FIRST (the saved shape: `domain` `yokohama.moore.nyc`, the three hostnames, the policies by id, the `aud` unchanged); THEN the rule DISABLED by its id (`enabled: false`, nothing else changed — under Access it must be); then stage 1's keyless build and `off` redeployed, which is stage 2's commit reverted; then, if the Worker is to leave `workos` as well, stage 1's rollback. A rollback that reaches `access` also puts `DEV_DOOR_CLIENT_ID` back, or the dev door names no one at the next live tier.
 
-**What this recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
+### Stage 1 — the record: the thirty-sixth deployment, 2026-10-19 (the orchestrator, the owner away)
+
+- **Before** (steps 1–3): the production WorkOS environment configured over the MCP — the redirect URI
+  `https://yokohama.moore.nyc/enter` (`redir_01M59G8YCJPZB5NNW2FZYXWVEN`), the logout URI `https://yokohama.moore.nyc/`,
+  the external login URI `/enter`, magic auth and passkeys on, passwords off, sign-up open, `appHomepageUrl` set; the
+  branding (`displayName` Yokohama, theme Dark, radius Small, logo style Icon over the owner's six uploads, page
+  `#0d1013`, buttons `#6f9bff` on `#0d1013`, links `#6f9bff`, the heading "Sign in to Yokohama", the legal text = the
+  transparency sentence); Google, GitHub, Apple and Discord LEFT OFF (production needs the owner's own provider
+  credentials). The two secrets put (the API key piped from the owner's gitignored root `.dev.vars`, never printed;
+  the session secret `openssl rand -base64 48`): `wrangler secret list` reads FOUR names. The edge rule
+  `dc4c5d3e986144649617cbbaea58cd8a` read by id: `enabled: false`, left so.
+- **The build** (step 4; ~08:50 local, from `3991feb3`, the `0.7.0` bump): `web/dist` with the SIX values — the
+  project link, the 226-character blurb, `Not affiliated with Asmodee`, `YOKOHAMA_SITE_URL=https://yokohama.moore.nyc`,
+  the feed derived, **`YOKOHAMA_SIGNIN_NOTICE`** the transparency sentence — and NO site key: **the release
+  `yokohama-release-8a45949bc58fdd41`**, 153 precache entries, 10,093,013 B, the module 1,250,304 B (`wasm-opt 133`,
+  1,892,714 → 1,250,304 B, −33.9 %), `debug_trap` 0, the stamp `signin_notice: true`, `turnstile_sitekey: false`;
+  `npm run build`: `factory-glue: 18 exports (a release module: no debug_trap)`, `assemble-assets: 153 precache entries
+  verified` (162 files, 10,132,797 B), `smoke:release` **200 with `server_version 0.7.0`**.
+- **The commit** (step 5): `18d63f28` — `wrangler.jsonc` and `wrangler.dev.jsonc` at `YOKOHAMA_IDENTITY_SOURCE`
+  `"workos"` with `YOKOHAMA_OIDC_CLIENT_ID` `client_01M58WM6MNRQPY96302487DQF7` and the Access pair removed,
+  `YOKOHAMA_TURNSTILE` still `"off"`; the five moving cells (`test:scripts` 781/781 after). The guard's four runs:
+  `wrangler.jsonc`, `.dev` and `.private` exit 0 — the door line **`source workos — WorkOS AuthKit, through its
+  first-party API at the callback`**; `wrangler.open.jsonc` exit 1 over the keyless tree with its own Turnstile-on
+  sentence (expected: it deploys over a keyed tree alone).
+- **The deploy** (step 7; ~09:05 local): `npm run deploy` — the deploy guard clean, the secrets guard **"4 secrets on
+  wrangler.jsonc's Worker, none named like a switch, and the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and
+  YOKOHAMA_SESSION_SECRET among them"**, 8 assets uploaded (152 already there), **Worker version
+  `ddedbb86-5502-4005-9912-a0fa85d527c5`**. The roster at the bump: 15/15 green, 497 s as one sequence (MacBook Air,
+  Apple M5; the evaluator gate 253 s). Tagged `v0.7.0` on `18d63f28`.
+- **The readings, from the owner's workstation over WARP — the OWNER's Access identity, so no Access login appears
+  here:** `/` 200 with `sw.js` naming `yokohama-release-8a45949bc58fdd41`, the enforced policy with its nonce,
+  `X-Frame-Options: DENY`; `/build-values.json` the seven booleans; `/api/health` 200 (`server_version 0.7.0`);
+  **`/enter` 302 to `https://api.workos.com/user_management/authorize?client_id=client_01M58WM6MNRQPY96302487DQF7&
+  redirect_uri=https%3A%2F%2Fyokohama.moore.nyc%2Fenter&response_type=code&provider=authkit&state=<43 chars>`** — the
+  WorkOS start, live. The Access application `yokohama` (`11cbcf68-96cd-4310-baee-f2ade812155d`) read over the API:
+  `self_hosted_domains` the three hostnames, five policies (four allows and the service-token bypass) — Access is ON
+  over the public hostname. **NOT read, for want of a stranger's device and the owner's inbox:** Access's login as a
+  stranger meets it, the WorkOS page's branding, the email code, the redirect back with the cookie, `/api/me` naming
+  the player, a dealt table, the socket under the cookie, the sign-out, two invocations per sign-in in the logs — the
+  owner's checklist (`docs/handover.md`, Track 4) takes them first thing.
+- **Rollback** (step 9): `git revert 18d63f28` (both wrangler files and the five cells), `npm run deploy` of the same
+  keyless tree; the four secrets may stay. The rule was never enabled; the Access application was never touched.
+
+**What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
 
 ---

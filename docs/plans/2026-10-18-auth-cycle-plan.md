@@ -1174,3 +1174,17 @@ it("doorLine names the source", …);
   identity cells; M12 six mint-session cells; the other eight one cell each). The runner and its table are the SDD
   workspace's `after-review.log`. **The final fix wave** (the deferred minors triaged: sixteen items plus two from the
   re-reviews; seven recorded forward) is one Opus implementer and one scoped re-review, then the version bump.
+- **2026-10-19, the final wave landed at `abcc3b7c` (re-review approved, 18 of 18; two comment nits folded into the
+  bump), the bump at `3991feb3` (`0.7.0`; the Rust per-edit suites and clippy clean; the pool 293, the scripts 781,
+  the web 1,553; the roster 15 of 15 as one sequence, **497 s** on the MacBook Air (Apple M5) — above the 420 s
+  target, the evaluator gate 253 s of it), and THE WINDOW'S STAGE 1 at `18d63f28`, Worker version
+  `ddedbb86-5502-4005-9912-a0fa85d527c5`, tagged `v0.7.0`** — the record is `worker/RUNBOOK.md` §23 (stage 1): the
+  production WorkOS environment configured over the MCP (Google/GitHub/Apple/Discord left off for the owner's
+  credentials), the two secrets put, the keyless release `yokohama-release-8a45949bc58fdd41` with the notice, both
+  worker files at `workos` with the client id and no Access pair, the five cells moved, the edge rule left disabled,
+  Access still on the hostname. Read from the owner's workstation: the shell, the stamp, `/api/health` 200,
+  **`/enter` → the WorkOS authorize URL**; NOT read (a stranger's device and the owner's inbox): the Access login as a
+  stranger, the branded WorkOS page, the email code, the cookie, `/api/me`, a table, the socket, the sign-out, the
+  two invocations — the owner's checklist on the board. One trap for the close: the pool's race cell and the secrets
+  guard's command cells read red beside a concurrent cargo build and green alone — never measure the npm suites
+  beside the Rust ones. Stage 2 is the owner's session.
