@@ -780,8 +780,32 @@ it("doorLine names the source", …);
   `isDiscordOauthEnabled` (Discord is available; the design's table said otherwise), `maxSessionTime` and
   `inactivityTimeout`; `updateAppBranding` sets colours, theme, radius, headings, legal text and policy URLs over
   the MCP and takes logos only through the dashboard; no operation mints an environment API key.
+- 2026-10-18, Task 0 Step 1 (the orchestrator, over the MCP against Staging): `redirectUris` was empty;
+  `setRedirectUris` dry-run then real registered `http://localhost:8787/enter` as the default
+  (`redir_01M58XC7GKW2EY2SJH5WDXQ6SK`); `updateAuthkitSettings` set `isMagicAuthEnabled` true and `isGoogleOauthEnabled`
+  true (Google was already on; magic auth was off; password auth on, email verification required, Apple, GitHub and
+  Microsoft on — none touched; `isEmailVerificationRequired` is account-gated and was not passed). `environmentAppBranding`
+  reads every field null. The default application is `app_01M58WM5BMEFEDZ4635C479PH1` with one never-used API key,
+  `maxSessionTime` 31536000, `inactivityTimeout` 172800, `accessTokenExpiry` 300. The MCP's name for the redirect-URI
+  operation is `setRedirectUris` (`setAuthkitApplicationRedirectUris` targets an application by id; the environment form
+  targets the default application), and `updateAuthkitSettings` answers as `updateUserlandSettings`.
 - (Task 0's readings of the authenticate answer, filled before Task 3 is dispatched.)
 
 ## Review record
 
 (The plan review's corrections, each task's `DONE_WITH_CONCERNS` and its correction in this plan, the after review.)
+
+- **2026-10-18, the orchestrator's pre-flight scan, correction C-1 (Task 4):** `/api/me` with no caller answers 200
+  `{"mode":"cf-access","user":null}` today (`worker/test/worker.test.ts` lines 409–410), never a 401, so Task 4's cells
+  "no cookie is the layer's 401 with the session challenge header; under access the header is absent" and the renewal
+  cell's "a bad-MAC cookie → 401 and no Set-Cookie" cannot be read on `/api/me`. Those cells use a request that answers
+  401 with no caller: `POST /api/archive` with the body `{"record":"","table":""}` (it names no safe id, so it stays
+  the house's 401 after Task 5's anonymous arm) or the `/api/stream` upgrade with no cookie (401 unupgraded). `/api/me`
+  serves the "names the caller" cell and the renewal-on-200 cell only. The mutant row "`withApiHeaders` sets the
+  challenge under `access`" reads red on the same archive post under the plain `access` env.
+- **Pre-flight note (Task 4):** `answer` answers `enter`'s 302 before `shellConfig(env)` today (`index.ts` lines 203
+  and 210); the new branch reads the config first, so the `enter` arm moves below it — under `access` the 302 is
+  unchanged, and a misconfigured deployment answers the config 500 on `/enter` as it does under `/api`.
+- **Pre-flight note (Task 6):** the five build values are stamped by `web/scripts/build-values.mjs` (the task text
+  names `presence.mjs`/`precache.mjs` as the files to read; they consume it). Line citations elsewhere drift by a few
+  lines; every brief's "probe every cited line" covers it.
