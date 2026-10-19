@@ -913,3 +913,22 @@ it("doorLine names the source", …);
     <url> answered <status>", "the answer at <url> holds no key set"); `identity.unit.test.ts` is untouched and green.
   - **Observed, pre-existing (for the after review):** the pool prints two `uncaught exception … a reply the shell cannot
     read` lines from the deliberate throw at `test/worker.test.ts:660`, measured identical at the task's base.
+- **2026-10-18, Task 3's review (at `1642ba7d`), two rulings and one correction for Task 4:**
+  - **R-24 (the reviewer's m-2; `loadDiscovery`):** the issuer and the four endpoints of a discovery document must be
+    `https:` URLs with no fragment — RFC 6749 §3.1–§3.2 require TLS on the authorization and token endpoints and forbid
+    a fragment, and an `http:` issuer would let a network attacker serve a document of its own with its own `jwks_uri`
+    — EXCEPT that `http:` is accepted when the host is loopback (`localhost`, `127.0.0.1`, `[::1]`), the development
+    issuer. A document failing the rule rejects with a sentence naming the field and nothing is cached. The
+    `YOKOHAMA_OIDC_ISSUER` variable itself stays as Task 1 reads it: the document check covers the issuer URL at the
+    first fetch, and Task 9's self-hoster documents say "https, or loopback for development".
+  - **R-25 (the reviewer's m-3; Task 4):** the PKCE decision has ONE site — `answer`'s start half derives the challenge
+    from `config.signin.clientSecret === null` (a challenge with a secret configured would make the issuer refuse every
+    sign-in, silently fail-closed) and a Task 4 cell pins both shapes (secret → no `code_challenge`; no secret →
+    `code_challenge` + `S256`, and the verifier sent at the exchange).
+  - **C-12 (Task 4 Step 3's `safeReturnTo`; ruling R-23):** the regex `^/#/(lobby|new|new/local|t/[A-Za-z0-9_-]{1,64})$`
+    misstates the client's `parseRoute`: a table hash is `/t/<one segment, no "/">` whose id passes `isSafeId`
+    (`^[A-Za-z0-9][A-Za-z0-9._-]*$`, at most 64, reserved suffixes refused), which the Worker exports from `route.ts`.
+    `safeReturnTo` accepts exactly `/#/lobby`, `/#/new`, `/#/new/local` and `/#/t/<seg>` where the RAW segment passes
+    `isSafeId` (a percent-encoded segment lands on the lobby: `%` is outside the grammar); anything else → `/#/lobby`.
+  - For Task 4's review (the reviewer's m-4b): `keySourceAt`'s doc commits to "ONE closure per isolate and URL"; Task 4's
+    module-level map is what makes it true for the sign-in URLs.
