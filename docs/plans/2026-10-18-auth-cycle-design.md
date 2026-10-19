@@ -254,8 +254,10 @@ from another site): under `oidc` the shell clears the cookie and answers `{"leav
 JSON answer is the shape `errorBody` already has. Because
 `SameSite=Lax` cookies ride same-site requests, an `EventSource` and a WebSocket upgrade from the page carry it with
 nothing added to the client, which is the whole reason it exists (the specification's "an `EventSource` and a
-WebSocket upgrade carry no header"). A stolen cookie is valid until it expires; rotating the secret ends every session
-at once; both are the recorded trade (R-A2).
+WebSocket upgrade carry no header"). A stolen cookie is valid until it expires (amended 2026-10-19, R-16: and a
+renewal extends it — `mintSession` derives `expires` from `issued`, so a renewal re-stamps the time and a stolen cookie
+lives as long as it is used); rotating the secret ends every session at once and is the only revoke; both are the
+recorded trade (R-A2).
 
 Under `access` no cookie is minted and none is read: Access's own cookie and assertion do that job, as today.
 
@@ -587,3 +589,52 @@ methods and hosted domain. With them the document has no open question, and the 
 - **One correction to §3's provider table:** WorkOS DOES offer Discord as a social provider (`updateAuthkitSettings`
   lists `isDiscordOauthEnabled`, read over the MCP on 2026-10-18); the table's "no Discord" was wrong, and R-A10's
   methods may include it at the owner's word (the plan's Task 10 carries the option).
+
+**Appended 2026-10-19 at the plan's Task 9 — what the build changed in this design.** The build (Tasks 1–8, on
+`security-auth`) found sentences of this design wrong or incomplete, and the plan's review record rules each. Nothing
+above is edited except §4.2's marked sentence; the rulings are recorded here, each with its number in the plan's
+§"Review record" (`docs/plans/2026-10-18-auth-cycle-plan.md`):
+
+- **D-1 and R-A12 stand as built.** `wrangler.jsonc` (`yokohama-web`, the bucket `yokohama-archive`, the custom domain)
+  is the public deployment; the later private Worker is `wrangler.private.jsonc` (`yokohama-web-private`, its own
+  bucket, objects and rate-limit namespaces, source `access`, `npm run deploy:private`), and the deploy guard's
+  `DEPLOYMENTS` table holds each file to its own record (Task 7; R-49 holds the private file to production's `main`,
+  `rules` and `compatibility_date`).
+- **The device-store correction (§4.4 and §4.5).** The design put the device id in the outbox's IndexedDB `META` store.
+  It lives in `localStorage` under `yokohama.device` (`web/src/device.ts`, Task 6): `META` is keyed by GAME id and swept
+  by `forgetGame` and the backups, so a device row there would be swept or exported with a game; `localStorage` is per
+  origin and survives a release, which is all the id needs. A page whose storage throws uses one id drawn for its
+  life.
+- **R-9 (Task 1):** a `YOKOHAMA_IDENTITY_SOURCE` that is present under the open door is REFUSED (the house's pattern
+  for the dev door and the operator list beside `open`), so §4.1's table row "`open` ignores it" reads "`open` reads
+  no source".
+- **R-14 (Task 2):** both cookies take the `__Host-` prefix — `__Host-yokohama_session` and `__Host-yokohama_login` —
+  with the attributes unchanged (`Secure; Path=/`, no `Domain`), so a sibling subdomain cannot toss a cookie (§4.2
+  names the unprefixed `yokohama_session`).
+- **R-16 (Task 2):** a renewal re-stamps the time, so a stolen cookie lives as long as it is used and only rotating the
+  secret ends it; §4.2's sentence is amended in place above. No absolute session cap this cycle: the payload keeps no
+  sign-in time, so a cap would be a `v2` form.
+- **R-18 (Task 3):** the `oidc` sign-out URL carries `client_id` beside `post_logout_redirect_uri` (RP-Initiated
+  Logout 1.0 §3: an issuer may refuse the redirect when neither `id_token_hint` nor `client_id` names the client).
+- **R-24 (Task 3):** the discovery document's issuer and four endpoints must be `https` with no fragment, `http`
+  accepted on a loopback host for development (§4.1 names no such rule).
+- **R-30 (Task 4):** the failure landing is `/?signin=failed#/lobby`, not `/#/lobby?signin=failed`: the `?` inside the
+  hash parses as the client's DOOR route; the hash route is the lobby and the query sits outside it.
+- **R-36 (ruled at Task 5's close, built in Task 4's fix round 2) and R-44 (Task 4's round 3):** the session challenge `WWW-Authenticate:
+  Yokohama-Session realm="/enter"` rides every 401 under `/api` when the source is an arm EXCEPT the archive target's
+  (a caller-less archive post is accepted since Task 5, so that 401 is a malformed body, a defect to surface, as §4.5
+  says), and a caller-less `GET` or `HEAD /api/me` under an arm is the shell's own 401 with the challenge, so a first
+  visitor at a shared table link reaches the sign-in card (§4.3's intent); under `access` the module's 200 `user: null`
+  stands.
+- **R-37 and R-41 (Task 6):** the sign-out control is drawn under every mode when signed in, and its action is
+  `POST /api/leave` then the answer's `leave`; the NAS layer has no `/api/leave`, so under a `cf-access` door a 404
+  from it sends the browser to Access's own logout, `/cdn-cgi/access/logout`.
+- **R-50 (Task 8):** the live instruments MINT a `.test` session per identity from the deployment's own
+  `YOKOHAMA_SESSION_SECRET` (`worker/scripts/mint-session.mjs`, the one mint function, the `.test` fence enforced per
+  address); `YOKOHAMA_SESSION_COOKIE` stays the one-identity mode, and under "both" (below) the Access credential and
+  the cookie are sent together (R-39).
+- **The owner's "both" direction (2026-10-19) amends §4.7's window into TWO stages.** Until the public repository is
+  cleaned up, Cloudflare Access stays on at the edge over the WorkOS-signed Worker: the Worker at `workos` ignores the
+  assertion and Access keeps gating `/api/*` and `/enter`. Stage 1 deploys the WorkOS-signed Worker with Access in
+  front; stage 2, a later session with the owner, takes the hostname off the Access application. The recipe is
+  `worker/RUNBOOK.md` §23.

@@ -37,8 +37,9 @@ What answers what:
 - **A few answers are this host's own words** (spec §4's host-written class, and this cycle's
   additions). Everything else a client reads is the layer's.
   - a path with no file: **404** with an empty body — never `index.html`;
-  - any method but GET or HEAD on `/enter` or `/api/art`: **405**, empty; `/enter`: **302** to
-    `/#/lobby`;
+  - any method but GET or HEAD on `/enter` or `/api/art`, and any method but POST on `/api/leave`:
+    **405**, empty; `/enter`: **302** to `/#/lobby` at source `access` and under `open`, and under
+    `oidc` or `workos` BOTH halves of the sign-in (the auth cycle; §23);
   - a body over 2 MiB: **400** `the body could not be read: length limit exceeded` — the NAS's own
     sentence, read off it on 2026-09-23;
   - a bad variable: **500** naming it (§3);
@@ -118,8 +119,10 @@ Prerequisites: the pinned toolchain with its `wasm32-unknown-unknown` target, `w
 # it; unset or empty draws nothing, the release feed's derivation from a GitHub
 # project link apart; the limits are in README.md §1.5). YOKOHAMA_SITE_URL names THIS
 # host, so each host serves its own client build. YOKOHAMA_TURNSTILE_SITEKEY stays
-# unset for the worker door's build: a keyed build is the open door's (the guard's
-# check 12; §3's YOKOHAMA_TURNSTILE bullet)
+# unset for the Access build (source `access`): a keyed build is for the open door and for
+# a provider-signed worker door (source `oidc` or `workos`), whose build also carries
+# YOKOHAMA_SIGNIN_NOTICE, the seventh value (the guard's check 12; §3's YOKOHAMA_TURNSTILE
+# bullet; §23)
 cd web && YOKOHAMA_PROJECT_URL=https://example.org/yokohama YOKOHAMA_SITE_BLURB="A few words." YOKOHAMA_SITE_NOTICE="A notice." YOKOHAMA_SITE_URL=https://yokohama.example.org npm run build
 cd ../worker && npm run build    # build:module → build:assets → smoke:release
 ```
@@ -157,6 +160,7 @@ npm run deploy
 #   node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc
 npm run deploy:open                # the same three steps, each with --config wrangler.open.jsonc (§19, §20) — on THIS Worker only as a known exercise of the review; steady after it (§3's C1 rule)
 npm run deploy:dev                 # the same three steps, each with --config wrangler.dev.jsonc: the dev door on, around a live tier (§7)
+npm run deploy:private             # the same three steps, each with --config wrangler.private.jsonc: the LATER private Worker (`yokohama-web-private`, source `access`), once the owner names its domain (the auth cycle, Task 7; plan decision D-1)
 ```
 
 **The deploy guard** refuses, naming every failure: a missing, DEBUG or unoptimized module; a
@@ -235,15 +239,30 @@ there, which a secret would carry past it: `secrets-guard: the Worker holds a se
 is a refusal, never a pass; a clean one prints `secrets-guard: <n> secrets on <file>'s Worker, none
 named like a switch`.
 
+**It also REQUIRES an arm's secrets, by the judged file's source** (the auth cycle's R-48, Task 7's
+review): the shell answers every request 500 without them (`config.ts`'s `signin` and `session`), and the
+deploy guard, which reads files, cannot see a secret. The command reads the judged file's door and source
+with the deploy guard's own reader, from the working directory where wrangler resolves `--config`, and
+beside the `worker` door requires in the listing: under `workos` BOTH `YOKOHAMA_OIDC_CLIENT_SECRET` (the
+WorkOS API key) and `YOKOHAMA_SESSION_SECRET`; under `oidc` `YOKOHAMA_SESSION_SECRET` alone (the client
+secret is optional there: PKCE); under `access` and at the open door nothing. A missing one refuses the
+deploy, naming it and its line, `secrets-guard: <file>'s Worker holds no secret named <name>, which
+YOKOHAMA_IDENTITY_SOURCE=<source> requires — <why>; without it the shell answers every request 500: npx
+wrangler secret put <name> --config <file>`; a clean run then ends `…, and the <source> arm's <names> among
+them`. The listing names secrets and never holds a value, so the session secret's 32-byte floor stays the
+shell's to refuse.
+
 **What the secrets guard costs.** Every deploy script is a network step from here on — the plain
 `deploy`, the safe direction since security S2b, included. A logged-out clone runs `npx wrangler login`
 once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them
 and caches nothing). A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found"
 for a Worker that does not exist yet. **So a NEW Worker's first deploy runs `wrangler deploy --config
 <file>` by hand with neither guard — a Worker that does not exist holds no secret, and the deploy guard
-holds this repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity —
-and the secrets guard from the second deploy on** (security S2b, decision D-7 as corrected at Task 9's
-review; the owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
+holds each file to its own deployment identity — production's `yokohama-web` with the bucket
+`yokohama-archive`, and the later private Worker's `yokohama-web-private` with its own bucket and
+rate-limit namespaces (`DEPLOYMENTS`, the auth cycle's Task 7; plan decision D-1) — and the secrets
+guard from the second deploy on** (security S2b, decision D-7 as corrected at Task 9's review; the
+owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
 whatever its door: C3's sibling rule holds every open-door file to production, and F-40 every unlisted
 worker-door file (measured at the review: a renamed open file and a renamed production file, each with
 its own bucket, both refused). S4's public Worker's first-deploy path is this recipe, and no guard code
@@ -310,8 +329,14 @@ the whole list; it leaves secrets alone.
 | Variable | At the seventeenth deployment | Absent means |
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | *not a variable at the seventeenth; added 2026-09-28 (M6.5c2) and first deployed at the twenty-first (§15):* the door, `worker` in `wrangler.jsonc` (R-6.5c2.5); `open` is the other door — no deployed Worker runs it, and a door window opens it on THIS Worker only as one of the review's known exercises — operationally the door stays steady after the security process (the C1 rule below; `wrangler.open.jsonc` deployed it for twelve minutes on 2026-09-30, §19's state 1, reverted the same hour, before the rule) | there is no default: the API answers the host-written 500 naming it, as it answers any bad value (the first bullet below), and the static release is still served; the deploy guard refuses a `wrangler.jsonc` that names no door |
-| `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` | no assertion can be verified: every caller is no one, and no key is fetched |
-| `ACCESS_AUD` | the `yokohama` application's audience | the same |
+| `YOKOHAMA_IDENTITY_SOURCE` | *not a variable at the seventeenth; added 2026-10-19 (the auth cycle, Task 1; design §4.1):* who vouches for an address under the `worker` door — `access`, `oidc` or `workos`, matched exactly after a trim, ONE per deployment. `wrangler.jsonc` and `wrangler.private.jsonc` ship `access`; the window moves `wrangler.jsonc` to `workos` (§23). Under `access` the Worker runs exactly the Access assertion's reading as before; under `oidc` and `workos` it reads its own session cookie and no assertion | there is no default: under the `worker` door the API and `/enter` answer the host-written 500 naming it, and the deploy guard refuses a worker-door file that names none; **set beside `open` it is the 500 too** (a name is a claim there and no source vouches for it) |
+| `YOKOHAMA_OIDC_ISSUER` | the issuer URL whose `/.well-known/openid-configuration` names the endpoints — an `oidc` deployment's, and nobody's in this repository's files | under `oidc` absent is the 500 naming it; **set beside `workos` is the 500** (WorkOS's issuer is `https://api.workos.com`, fixed); ignored under `access`, and the deploy guard requires it at `oidc` and refuses it at `workos`. The issuer and the four endpoints of its discovery document must be `https:` with no fragment, `http:` accepted only on a loopback host (`localhost`, `127.0.0.1`, `[::1]`, for development; R-24) |
+| `YOKOHAMA_OIDC_CLIENT_ID` | the client id the provider registered for this site — under `workos` the production environment's `client_…` id | under `oidc` and `workos` absent is the 500 naming it; ignored under `access`; the deploy guard requires it at both arms |
+| `YOKOHAMA_OIDC_CLIENT_SECRET` | a SECRET (`wrangler secret put`), never a `vars` entry (check 7) — under `workos` the WorkOS API key the code exchange is authenticated with, from the production environment | **under `workos` required**: absent is the 500 naming it, and the secrets guard refuses the deploy first (R-48). **Under `oidc` optional**: absent is a public client — PKCE alone, the challenge sent only when no secret is set (R-25); with one, the provider is asked for `client_secret_post`, and an issuer that accepts only `client_secret_basic` is out of scope (R-20) |
+| `YOKOHAMA_SESSION_SECRET` | a SECRET (`wrangler secret put`): the HMAC key of both cookies, 32 UTF-8 bytes or more, taken exactly as set (never trimmed) — `openssl rand -base64 48` | under `oidc` and `workos` absent or shorter than 32 bytes is the 500 naming it, and the secrets guard refuses the deploy on its absence (R-48). **Rotating it ends every session at once, and it is the only way to end a stolen one** (renewal re-stamps the time; R-16); the live instruments read it from their own environment to mint `.test` sessions (`scripts/mint-session.mjs`, R-50; §23) |
+| `YOKOHAMA_SESSION_DAYS` | `30` when absent — whole days the session cookie stands (renewed on a 2xx answer once less than half the configured days are left) | 30 days; a value that is not a whole number of days above zero (the TTLs' own rule) is the 500 naming it; read under `oidc` and `workos` only |
+| `ACCESS_TEAM_DOMAIN` | `bdvc.cloudflareaccess.com` — **required at source `access` only**; at `oidc` and `workos` the deploy guard refuses a file that sets it (the shell would ignore it) | no assertion can be verified: every caller is no one, and no key is fetched |
+| `ACCESS_AUD` | the `yokohama` application's audience — required at source `access` only, as above | the same |
 | `DEV_DOOR_CLIENT_ID` | the `yokohama-worker` credential's client id, its public half. *(Corrected 2026-09-28, M6.5c2: a Worker SECRET since the twenty-first deployment (§15), put in the same deploy that dropped the variable, and refused in `wrangler.jsonc`'s `vars` by the deploy guard; it was a committed variable until then, and stays in the history.)* | the dev door is shut, whatever `YOKOHAMA_DEV_DOOR` says |
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests. *(Corrected 2026-10-12, security S2b, finding B6: `off` in `wrangler.jsonc` — the standing state is Access alone, the shape a self-hoster copies; `wrangler.dev.jsonc`, production with this one variable `on`, opens it around a live tier — `npm run deploy:dev` before it, the plain `npm run deploy` after it (§7) — and the deploy guard refuses `on` in any other worker-door file. The dev door names a `.test` address only.)* | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
@@ -322,7 +347,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
 | `YOKOHAMA_WEB_CHAT_KEEP` | `500` | 500 messages |
 | `YOKOHAMA_WEB_CHAT_TEXT` | `500` | 500 characters |
-| `YOKOHAMA_TURNSTILE` | *not a variable at the seventeenth; added 2026-10-01 (M6.5c2 cycle F, R-FP2, R-FP4):* a DEPLOY DECLARATION, `off` in `wrangler.jsonc`, the dev file (the gate's until security S2b) and the pool's two, `on` in `wrangler.open.jsonc` alone. It rides into the Worker's variables like every `vars` entry, and nothing in the Worker reads it but the check that every variable is a string. The deploy guard's check 12 and the smoke's live mode read it (the bullet below) | off: the guard refuses a keyed build beside it, and the smoke's live mode owes no edge line |
+| `YOKOHAMA_TURNSTILE` | *not a variable at the seventeenth; added 2026-10-01 (M6.5c2 cycle F, R-FP2, R-FP4):* a DEPLOY DECLARATION, `off` in `wrangler.jsonc`, the dev file (the gate's until security S2b) and the pool's two, `on` in `wrangler.open.jsonc` alone. It rides into the Worker's variables like every `vars` entry, and nothing in the Worker reads it but the check that every variable is a string. The deploy guard's check 12 and the smoke's live mode read it (the bullet below). *(Forward note, the auth cycle: the window of §23 sets it `on` in `wrangler.jsonc` and `wrangler.dev.jsonc` too, beside source `workos` and a keyed build.)* | off: the guard refuses a keyed build beside it, and the smoke's live mode owes no edge line |
 | `YOKOHAMA_WEB_TEST_CLOCK` | **never set in production** — the pool's files only, `wrangler.test.jsonc` and, since M6.5c2, `wrangler.open.test.jsonc` *(corrected 2026-09-28)*; the deploy guard refuses `wrangler.jsonc` if it names it | the wall clock |
 | `YOKOHAMA_DIAGNOSTIC_SEEDS` | *not a variable at the seventeenth; added 2026-10-09 (security S1a, finding B3; R-SEC8(b)):* **never set in production** — `on` in the pool's two files only, `wrangler.test.jsonc` and `wrangler.open.test.jsonc`, so the corpus walk's seeded tables with an open seat are honoured there; the deploy guard refuses any deployed configuration that names it (rule 4b, beside the clock's check 4) | off, the production rule: a creator's seed is honoured only at a table whose every human seat is the creator's, and refused otherwise in the layer's sentence ("a seed is honoured only at a table whose every human seat is yours — leave it blank and the server draws one") |
 
@@ -365,7 +390,7 @@ the whole list; it leaves secrets alone.
   windows of cycles E and F (§19, §20) flipped this Worker for minutes, as the review's windows may still: the
   owner's clarification (2026-10-12) — a flip is fine in development and inside the known exercises (the
   remediation's instruments and their windows); operationally, once the security process is through and the
-  repository is public, the doors stay steady, and a flip after that is an owner decision, not an operating step.
+  repository is public, the doors stay steady, and a flip after that is an owner decision, not an operating step. *(Added 2026-10-19, the auth cycle: this rule is about the DOOR. Moving `yokohama-web` from source `access` to `workos` (§23) changes who vouches for an address, not the door — Access and WorkOS both vouch for verified addresses, so the key space does not move and the Worker keeps every table, seat and archive folder — which is why the public deployment is `yokohama-web` itself and not a new Worker, plan decision D-1, the owner's R-A12.)*
 - **To deploy with no archive** (R-6.5c.14): set `"YOKOHAMA_WEB_ARCHIVE": "off"` in `wrangler.jsonc`
   and deploy (§2). The `ARCHIVE` binding stays as it is — the deploy guard holds it equal in the
   two files — and nothing is removed from the bucket. With the switch off:
@@ -2378,5 +2403,43 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 
 ### Rollback
 - `wrangler rollback` to **`fd34c477-f429-4123-acb4-b1d0bf13e96d`** (2026-10-11, S1's gate deployment, `worker/RUNBOOK.md` §21) restores 0.6.1 with the dev door off; §6's bullets stand — the headers are stateless, the replay's four keys are re-created by the next first sends, and nothing in this window is one-way.
+
+---
+
+## 23. The public door opens — the switch to WorkOS (a plan, not a record)
+
+**The recipe for the window that moves `yokohama.moore.nyc` from the Access door to the WorkOS-signed Worker.** Its code is the auth cycle's (`docs/plans/2026-10-18-auth-cycle-design.md`, its plan beside it; the Worker's three identity sources are `docs/web-lane.md` §4's bullet); its order is the lane's §10 public window's, because the same fence is at stake: the edge rule is in front BEFORE the hostname leaves Access, so the API is never open and unchallenged. Orchestrator-only, through `wrangler`, the WorkOS dashboard or MCP and the Cloudflare API, each step a dated line in the cycle's ledger. **A plan, not a record: no step below has run.** It runs in TWO stages, by the owner's "both" direction of 2026-10-19 — until the public repository is cleaned up Cloudflare Access stays on at the edge over the WorkOS-signed Worker, and the Worker at `workos` never reads Access's assertion.
+
+**Why two stages work.** At source `workos` the shell names a caller by its own session cookie and nothing else (`answer`, step 5); Access's verifier never runs. Access, hostname-wide on `yokohama.moore.nyc`, still gates every request — `/api/*` and `/enter` included — at the edge, so a visitor passes Access's login, then `/enter` redirects to WorkOS, then the Worker's cookie names the player. The client tells the two challenges apart (`WWW-Authenticate: Yokohama-Session realm="/enter"` against Access's own). Being hostname-wide, the application already covers `/api/leave`; only a PATH-scoped application (the door window's state 2, §19) needs `node scripts/access-paths.mjs`'s eleven lines.
+
+### Stage 1 — the WorkOS-signed Worker, Access still in front
+
+1. **Before.** The quota guard (§7); the zone read as §20's step 1 reads it (Challenge Passage, Bot Fight Mode, managed `robots.txt`); the edge rule read BY ID — `dc4c5d3e986144649617cbbaea58cd8a`, at position 1 of the zone's `http_request_firewall_custom` ruleset `27fcc0c7398f42e3abbf549a917e5fa7`, DISABLED, five of five — and the Turnstile widget read (mode `managed`, pre-clearance `managed`, the zone's domain among its hostnames).
+2. **The production WorkOS environment** (the dashboard, or the WorkOS MCP's `mutate` with a dry run first). Its three URLs: the **redirect URI** `https://yokohama.moore.nyc/enter`; the **external login URI** (the sign-in endpoint, `initiate_login_uri`) the same, `https://yokohama.moore.nyc/enter`; the **sign-out / return URI** `https://yokohama.moore.nyc/` (the environment's App homepage URL, `appHomepageUrl`; the leave URL names it as `return_to`, and a logout against an environment without it lands on a WorkOS error page, read on staging on 2026-10-18). The sign-in **methods on**: the email code (Magic Auth), Google, GitHub, Apple and passkeys, and Discord if the owner wants it; **passwords off**. The **branding** (the transparency the owner asked for, R-A14): the theme and colours, and the logos, light and dark, which are uploaded in the dashboard (the MCP does not take the files). Read each setting back; record the environment's client id.
+3. **The two secrets, put BEFORE the deploy** — the secrets guard REFUSES `npm run deploy` without them (R-48):
+   ```sh
+   cd worker
+   npx wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET --config wrangler.jsonc    # paste the production environment's API key at the prompt
+   openssl rand -base64 48 | npx wrangler secret put YOKOHAMA_SESSION_SECRET --config wrangler.jsonc
+   ```
+   The API key is minted in the dashboard, pasted at the prompt, and never written to a file under the repository, a command line or a log. The session secret is generated and piped, never shown. Neither is a `vars` entry (the deploy guard's check 7).
+4. **The keyed build with the notice** (§1's order, the web client FIRST): `cd web && npm run build` with the SEVEN build values — `YOKOHAMA_PROJECT_URL`, `YOKOHAMA_SITE_BLURB`, `YOKOHAMA_SITE_NOTICE`, `YOKOHAMA_SITE_URL=https://yokohama.moore.nyc`, `YOKOHAMA_RELEASE_FEED` (unset derives it from a GitHub project link), **`YOKOHAMA_TURNSTILE_SITEKEY`** (read once; kept in a mode-0600 scratch file the build sources, and removed at the end — the key is public by Cloudflare's design and no document spells it) and **`YOKOHAMA_SIGNIN_NOTICE`** (at most 300 characters: who signs the player in, that this site keeps only the verified address to seat them, and that finished games are archived — R-A14). Then `cd worker && npm run build`. The stamp must read `turnstile_sitekey` and `signin_notice` true, and `node scripts/edge-rule.mjs` from the keyed tree must print the production tree's rule byte for byte.
+5. **The configuration files and the committed-file cells that pin today's state — ONE commit.** `wrangler.jsonc`: `YOKOHAMA_IDENTITY_SOURCE` `"workos"`, `YOKOHAMA_OIDC_CLIENT_ID` the production client id, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` REMOVED (the guard refuses them beside an arm), no `YOKOHAMA_OIDC_ISSUER` (refused at `workos`), `YOKOHAMA_TURNSTILE` `"on"`, the dev door still `off`. `wrangler.dev.jsonc` the same but for its dev door `on`. **The open files stay as they are**: they omit the arm's variables (R-45) and `wrangler.private.jsonc` stays at `access`. Then `npm run test:scripts` goes red on the cells that pin today's `access` state, and they move in this commit: in `worker/scripts/deploy-guard.test.mjs` the five the Task 7 review measured — "pass every check that needs no build under --config wrangler.open.jsonc, and name the open door", "pass every check that needs no build under --config wrangler.dev.jsonc", "declare YOKOHAMA_TURNSTILE off in five and on in the open file alone", "pass the whole guard: production, the dev file and the private file over a keyless build, the open file over a keyed one" and "name the worker door" — and in `worker/scripts/secrets-guard.test.mjs` the two command cells that run over the committed `wrangler.jsonc`, "passes a clean listing: exit 0 and the sentence" and the last assertion of "requires an arm's secrets, reading the judged file's source from the working directory (R-48)". Whatever else reads red moves with them; each change is read, not regenerated.
+6. **The edge rule ENABLED by its id, FIRST** — before the deploy: `PATCH /zones/{zone}/rulesets/27fcc0c7398f42e3abbf549a917e5fa7/rules/dc4c5d3e986144649617cbbaea58cd8a` with `enabled: true` and nothing else changed (§20's revert disabled it the same way); the ruleset's version moves by one and the rule stays at position 1. Read the zone's copy back and pipe it to `node scripts/edge-rule.mjs --verify`: exit 0, the line beside it naming the tree's release and its `site_url`. Access is still in front, so the rule challenges what Access has already admitted.
+7. **`npm run deploy`.** The guard's door line must read `wrangler.jsonc deploys the worker door, source workos — WorkOS AuthKit, through its first-party API at the callback`, with `YOKOHAMA_TURNSTILE ("on")` in its sentence, and the secrets guard `…, and the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and YOKOHAMA_SESSION_SECRET among them`. Record the version id. Read `node scripts/smoke-release.mjs --live https://yokohama.moore.nyc --config wrangler.jsonc` over WARP, or from any client Bot Fight Mode trusts (§20, W-1): with Access still in front, record what it reads (whether the rule or Access answers a cookie-less `/api/health` first is not yet known here) rather than treating a miss as the deploy's failure — it must PASS at stage 2's step 2.
+8. **The readings**, each in its own named minute for the query API (§7's counting): the Turnstile overlay (and, a navigation's, the edge's challenge page) and the WorkOS page after it, branded; the redirect back to `/#/lobby` with the session cookie set; **`/api/me` naming the player**; a table dealt; a WebSocket opened under the cookie; **two invocations per sign-in in the logs** — the start and the callback, and nothing else of the sign-in; a refused sign-in landing on `/?signin=failed#/lobby`; a sign-out through `POST /api/leave` that clears the cookie and lands on the site's root; a local game's finished upload landing anonymously under a browser with no session; the console of a fresh profile clean of any CSP line (the policy is enforced, S2c); **one live replay HOLDS** — with `YOKOHAMA_SESSION_SECRET` in the instrument's environment the replay mints a `.test` session per row's identity (`worker/scripts/mint-session.mjs`, R-50), and with the Access credential beside it the edge admits it (R-39). The operator surface reads as a listed address signed in through WorkOS (`/api/admin/tables` 200).
+9. **Rollback.** The previous `wrangler.jsonc` (source `access`, the Access pair, `YOKOHAMA_TURNSTILE` `off`) redeployed with the keyless build the production release came from, so the guard's check 12 holds; the edge rule DISABLED by its id; the two WorkOS secrets left in place (a deploy leaves secrets alone, and the secrets guard asks nothing of them at `access`). Access never left, so nothing else moves.
+
+### Stage 2 — the hostname off the Access application (a later session, with the owner)
+
+1. **Before.** Stage 1 deployed and read; the owner present; the rule enabled and verified again; the quota guard.
+2. **`yokohama.moore.nyc` OFF the Access application** (§10's step 5, the Cloudflare API): the application's `self_hosted_domains` and `destinations` keep the NAS and CLI hostnames — **`yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` stay on Access** — the primary `domain` moved to the NAS's hostname, the policies by id, the `aud` read back unchanged. The rule is already in front, so the API is never open and unchallenged. The smoke's live mode must pass again.
+3. **The readings, as a stranger:** a fresh profile off WARP reads the whole path with no Access — the overlay, the WorkOS page, the lobby, a dealt table, the socket, the sign-out; a profile with the PREVIOUSLY RELEASED client (a pinned profile at `0.6.3`, `web/scripts/pinned-browsers.mjs`; W-3 applies to its install, §20) lands a waiting game anonymously under the game's own id, with no update installed (the lane's §15, W-3's upload half); and **the friend's game** (`local-03bf781aa067cf0a`, the design's §1: played signed in to Access, never uploaded, since a solo game makes no server call to keep the 24-hour session alive) — whether the friend's browser still holds its waiting row, and whether the anonymous landing above is what lands it, is the reading; if the browser no longer holds it, the game is not recoverable by this switch.
+4. **The dev door's secret.** `DEV_DOOR_CLIENT_ID` deleted (`npx wrangler secret delete DEV_DOOR_CLIENT_ID --config wrangler.jsonc`): the dev door is inert at `workos` and its secret is one of the public door's preconditions (`docs/web-lane.md` §8). The scratch key file removed.
+5. **Rollback.** The hostname back on the Access application FIRST (the saved shape: `domain` `yokohama.moore.nyc`, the three hostnames, the policies by id, the `aud` unchanged); then, if the Worker is to leave `workos` as well, stage 1's rollback. The rule stays enabled while any stage-1 Worker is live, and is disabled by its id only after the Worker is back at source `access`.
+
+**If the first deployment ran against WorkOS STAGING** (the owner's evening direction of 2026-10-19: staging as the issuer, its client id in `wrangler.jsonc`, the staging API key as `YOKOHAMA_OIDC_CLIENT_SECRET`, a fresh `YOKOHAMA_SESSION_SECRET`, `https://yokohama.moore.nyc/enter` added to staging's redirect URIs), moving to production is steps 2 and 3 above, the production client id in `wrangler.jsonc`, a production-key `secret put`, and `npm run deploy` again; the staging API key is retired by the owner at the wrap.
+
+**What this recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (§3's `YOKOHAMA_SESSION_SECRET` row and `README.md` §1.5), which the deployed host always is.
 
 ---

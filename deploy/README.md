@@ -72,6 +72,13 @@ for its objects. An identity-aware proxy of your own can play that part. It must
 - remove any copy of the header the client sent;
 - be the only path to the port.
 
+**The Cloudflare Worker host has more sources than this server** (the auth cycle; `worker/README.md` §1.5). Its
+`worker` door may also run `oidc` against ANY issuer that publishes a discovery document — a client secret or
+PKCE alone, `https` endpoints (a loopback host is accepted for development) — or `workos`, WorkOS AuthKit's
+first-party API, and mints its own session cookie after the sign-in. **This server stays `cf-access`**: it has
+no `oidc` arm and no `/api/leave` route (a sign-out from this host falls back to Access's own logout,
+`/cdn-cgi/access/logout`), and its `cf-access` door and the one rule it rests on, above, are unchanged.
+
 **Verify** as yourself, through the tunnel: `/api/me` must name you — `{"mode":"cf-access","user":"<your
 address>"}` — and a caller Access admits without an address, such as a service token, must read
 `"user":null` ([`RUNBOOK.md`](RUNBOOK.md) §3.2 is the recipe). `/api/health` answers the same whether the
@@ -170,7 +177,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 | `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
-| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door, naming both. **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2) on this server, and the server refuses to start a keyed build under any other door, naming both. The browser does not read the key as the door: it reads the server's facts, and holds a visitor with no name of their own for a name only where those facts say `open`; with the facts unread it asks the server's health first and may show the widget once, at a fresh context's first game over (the Cloudflare Worker's provider-signed door is the other place a keyed build is accepted, `worker/README.md` §1.5). **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
 | `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
