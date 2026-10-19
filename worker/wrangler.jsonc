@@ -102,11 +102,15 @@
     // deployment with no identity provider, where anyone who reaches the Worker
     // may play under any name; this repository runs it only for the door window (`wrangler.open.jsonc`).
     "YOKOHAMA_WEB_IDENTITY": "worker",
-    // Who vouches for an address (auth cycle, design §3), with no default: Cloudflare Access, as today.
-    "YOKOHAMA_IDENTITY_SOURCE": "access",
-    // The `yokohama` Access application: its team's domain and its audience.
-    "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
-    "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
+    // Who vouches for an address (auth cycle, design §3), with no default: WorkOS AuthKit through its first-party
+    // API, since the window's stage 1 (2026-10-19, `worker/RUNBOOK.md` §23) — the Worker reads its own session
+    // cookie and never an Access assertion. Cloudflare Access still gates `/api/*` and `/enter` at the EDGE until
+    // stage 2 takes the hostname off the application (the owner's "both" shape); the shell ignores it.
+    "YOKOHAMA_IDENTITY_SOURCE": "workos",
+    // The WorkOS production environment's client id (not a secret; the API key is the SECRET
+    // `YOKOHAMA_OIDC_CLIENT_SECRET`, and the cookie's key `YOKOHAMA_SESSION_SECRET` — both `wrangler secret put`,
+    // and the secrets guard refuses a deploy without them).
+    "YOKOHAMA_OIDC_CLIENT_ID": "client_01M58WM6MNRQPY96302487DQF7",
     // OFF (security S2b, finding B6; R-SEC8(d)): the standing state is Access alone, the shape a self-hoster behind
     // their own application runs. The dev door — the `yokohama-worker` credential naming a `.test` address — is the
     // live tiers' instrument and opens for them alone: `npm run deploy:dev` ships `wrangler.dev.jsonc`, this file

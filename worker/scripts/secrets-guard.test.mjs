@@ -152,10 +152,12 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
     writeFileSync(join(cwd, "wrangler.jsonc"), `// a deployment\n{ "name": "yokohama-web", "vars": ${JSON.stringify(vars)} }\n`);
     return cwd;
   };
+  // The committed file is at source `workos` since the window's stage 1, so a clean listing carries the arm's two
+  // secrets beside the Worker's own two (R-48).
   it("passes a clean listing: exit 0 and the sentence", () => {
-    const r = run(`echo '${listing("YOKOHAMA_WEB_ADMINS", "DEV_DOOR_CLIENT_ID")}'`);
-    expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/2 secrets on wrangler\.jsonc's Worker/);
+    const r = run(`echo '${listing("YOKOHAMA_WEB_ADMINS", "DEV_DOOR_CLIENT_ID", "YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET")}'`);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/4 secrets on wrangler\.jsonc's Worker/);
   });
   it("refuses a forbidden name: exit 1, the name on stderr — the && chain stops here", () => {
     const r = run(`echo '${listing("YOKOHAMA_DIAGNOSTIC_SEEDS")}'`);
@@ -182,9 +184,14 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
     const both = run(`echo '${listing("YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET")}'`, undefined, workos);
     expect(both.status, both.stderr).toBe(0);
     expect(both.stdout).toMatch(/2 secrets on wrangler\.jsonc's Worker, none named like a switch, and the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and YOKOHAMA_SESSION_SECRET among them/);
-    // The committed file at source access asks nothing new (the cells above, in the package).
-    const access = run(`echo '[]'`);
+    // A file at source access asks nothing new; the COMMITTED file (source workos since the window's stage 1) with an
+    // empty listing names both missing secrets.
+    const access = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "worker", YOKOHAMA_IDENTITY_SOURCE: "access" }));
     expect(access.status, access.stderr).toBe(0);
+    const committed = run(`echo '[]'`);
+    expect(committed.status, "the committed file at workos, no secrets").toBe(1);
+    expect(committed.stderr).toContain("YOKOHAMA_OIDC_CLIENT_SECRET");
+    expect(committed.stderr).toContain("YOKOHAMA_SESSION_SECRET");
   });
   // Run alone, the command refuses a worker-door file it cannot judge an arm for (the deploy guard refuses it first in
   // every deploy script); the open door asks nothing new.

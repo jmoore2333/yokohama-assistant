@@ -1813,7 +1813,9 @@ describe("the committed configurations", () => {
   it("pass every check that needs no build under --config wrangler.dev.jsonc", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     expect(configFailures(root, "wrangler.dev.jsonc")).toEqual([]);
-    expect(doorLine(root, "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
+    expect(doorLine(root, "wrangler.dev.jsonc")).toBe(
+      "wrangler.dev.jsonc deploys the worker door, source workos — WorkOS AuthKit, through its first-party API at the callback",
+    );
   });
   // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the six
   // committed files are held to it here, parsed as the guard parses them.
@@ -1900,19 +1902,27 @@ describe("the committed configurations", () => {
       "wrangler.open.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
         "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
     ]);
-    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc", "wrangler.private.jsonc"]) {
+    // Production and the dev file are provider-signed since the window's stage 1 (source `workos`, Turnstile still
+    // `off` under Access): a keyed tree is a DECLARATION mismatch there, not a door mismatch; the private file keeps
+    // Access, where the key itself is refused.
+    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
       expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([
-        `${file} leaves YOKOHAMA_TURNSTILE off under identity worker, source access but the assets tree's build carries ` +
-          "a site key — a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth " +
-          "cycle's R-A3/R-A4): under Access the edge is the bot defence; build the client without the key, and deploy the " +
-          "key only at the open door or under source oidc or workos",
+        `${file} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at ` +
+          "the open door or a provider-signed worker door declares on: set the var on, or build the client without the key",
       ]);
     }
+    expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.private.jsonc"), "the private file, keyed").toEqual([
+      "wrangler.private.jsonc leaves YOKOHAMA_TURNSTILE off under identity worker, source access but the assets tree's build carries " +
+        "a site key — a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth " +
+        "cycle's R-A3/R-A4): under Access the edge is the bot defence; build the client without the key, and deploy the " +
+        "key only at the open door or under source oidc or workos",
+    ]);
   });
-  // M6.5c2 (R-6.5c2.5): production's door is the worker door.
+  // M6.5c2 (R-6.5c2.5): production's door is the worker door — at source `workos` since the window's stage 1
+  // (the auth cycle; `worker/RUNBOOK.md` §23).
   it("name the worker door", () => {
     expect(doorLine(fileURLToPath(new URL("..", import.meta.url)))).toBe(
-      "wrangler.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell",
+      "wrangler.jsonc deploys the worker door, source workos — WorkOS AuthKit, through its first-party API at the callback",
     );
   });
   // The auth cycle, Task 7 (plan decision D-1): the private Worker's file passes the checks that need no build under
