@@ -34,11 +34,16 @@ export const CLAIMED_USER_HEADER = "X-Yokohama-Claimed-User";
  *  a browser can put no header on (M6.5c2, spec §2.1; `web/src/ws.ts`). */
 export const CLAIMED_PARAM = "claimed";
 
-const bytes = (b64url: string): Uint8Array => {
+/** A JWT segment's bytes: base64url, padding restored. Throws on a character
+ *  outside the alphabet (`atob`). Shared with the sign-in arms (`signin.ts`). */
+export const bytes = (b64url: string): Uint8Array => {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64url.length / 4) * 4, "=");
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 };
-const json = (b64url: string): Record<string, unknown> => JSON.parse(new TextDecoder().decode(bytes(b64url)));
+/** A JWT segment parsed as JSON. Throws on bytes that are not JSON. The
+ *  return type is not checked: `null`, a number or an array parse too, so a
+ *  caller that needs an object tests for one. */
+export const json = (b64url: string): Record<string, unknown> => JSON.parse(new TextDecoder().decode(bytes(b64url)));
 
 /** ASCII letters lowercased and nothing else — `User::parse`'s
  *  `to_ascii_lowercase`, never JavaScript's `toLowerCase()`, which maps U+212A
@@ -181,9 +186,10 @@ export function callerName(identity: Identity): string | undefined {
 }
 
 /**
- * The team's keys: `refresh: false` for the cached set, `refresh: true` when
- * an assertion names a `kid` the cached set lacks. Rejects when the keys
- * cannot be had, and the caller reads that as no caller at all.
+ * A key set — the team's, or a sign-in arm's issuer's: `refresh: false` for
+ * the cached set, `refresh: true` when a token names a `kid` the cached set
+ * lacks. Rejects when the keys cannot be had, and the caller reads that as no
+ * caller at all.
  */
 export type KeySource = (refresh: boolean) => Promise<JwkSet>;
 
@@ -197,9 +203,17 @@ export function refreshDue(lastRefreshAt: number | null, now: number): boolean {
 }
 
 /**
- * The team's keys, from `https://<teamDomain>/cdn-cgi/access/certs`, cached in
- * this closure — ONE per isolate, which is how the Worker's default export
- * holds it (plan review m14; re-review m-d).
+ * The team's keys, from `https://<teamDomain>/cdn-cgi/access/certs`: the
+ * Access certs URL handed to `keySourceAt`, which says how they are cached.
+ */
+export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
+  return keySourceAt(`https://${teamDomain}/cdn-cgi/access/certs`, fetcher, clock);
+}
+
+/**
+ * The key set at `url`, cached in this closure: the Access certs (`keySource`)
+ * or a sign-in arm's issuer's JWKS (the auth cycle, Task 3). The Worker holds
+ * ONE closure per isolate and URL (plan review m14; re-review m-d).
  *
  * - `false` answers the cache; with none, it joins the fetch in flight, or
  *   starts one.
@@ -215,16 +229,16 @@ export function refreshDue(lastRefreshAt: number | null, now: number): boolean {
  * - A fetch that fails, answers anything but 200, or answers no key set
  *   REJECTS every call that joined it, and the cache is left as it was.
  */
-export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
+export function keySourceAt(url: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
   let cached: JwkSet | undefined;
   let lastRefreshAt: number | null = null;
   let inflight: Promise<JwkSet> | undefined;
   const load = async (): Promise<JwkSet> => {
-    const res = await fetcher(`https://${teamDomain}/cdn-cgi/access/certs`);
-    if (res.status !== 200) throw new Error(`the Access certs answered ${res.status}`);
+    const res = await fetcher(url);
+    if (res.status !== 200) throw new Error(`the key set at ${url} answered ${res.status}`);
     const body: unknown = await res.json();
     const keys = (body as { keys?: unknown } | null)?.keys;
-    if (!Array.isArray(keys)) throw new Error("the Access certs hold no key set");
+    if (!Array.isArray(keys)) throw new Error(`the answer at ${url} holds no key set`);
     cached = { keys: keys as JwkSet["keys"] };
     return cached;
   };

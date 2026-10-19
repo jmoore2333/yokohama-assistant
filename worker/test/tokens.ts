@@ -1,7 +1,9 @@
 /**
  * **Access assertions for the cells** (spec §5.2's identity cells): an RSA key
  * pair made with WebCrypto, its public half as a JWK under a `kid`, and tokens
- * signed with it — so identity is tested with no network and no backdoor.
+ * signed with it — so identity is tested with no network and no backdoor. The
+ * sign-in arms' cells (the auth cycle, Task 3; `src/signin.unit.test.ts`) add
+ * a P-256 pair, since an OpenID Connect issuer may sign ES256 instead.
  *
  * Nothing here is node's or workerd's alone — WebCrypto, `btoa` and
  * `TextEncoder` only — so the node cells (`src/identity.unit.test.ts`) and the
@@ -26,8 +28,9 @@ export interface Signer {
   set(): JwkSet;
   /**
    * A token over `claims`, signed with this key. The header is
-   * `{"alg":"RS256","kid":<kid>,"typ":"JWT"}` unless `header` replaces it —
-   * which is how a cell forges another key's `kid` or `alg: "none"`.
+   * `{"alg":<the pair's alg>,"kid":<kid>,"typ":"JWT"}` — `RS256` for
+   * `signer`, `ES256` for `ecSigner` — unless `header` replaces it, which is
+   * how a cell forges another key's `kid` or `alg: "none"`.
    */
   sign(claims: Record<string, unknown>, header?: Record<string, unknown>): Promise<string>;
 }
@@ -41,15 +44,36 @@ export async function signer(kid: string): Promise<Signer> {
     true,
     ["sign", "verify"],
   )) as CryptoKeyPair;
+  return signerOf(pair, kid, "RS256", RSA.name);
+}
+
+/** A fresh P-256 ES256 key pair under `kid`. WebCrypto's ECDSA signature is
+ *  already the raw `r || s` (64 bytes) a JWS carries, so it is encoded as is. */
+export async function ecSigner(kid: string): Promise<Signer> {
+  const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+    "sign",
+    "verify",
+  ])) as CryptoKeyPair;
+  return signerOf(pair, kid, "ES256", { name: "ECDSA", hash: "SHA-256" });
+}
+
+/** The `Signer` over `pair`: its public half under `kid`, and tokens whose
+ *  default header names `alg`, signed by WebCrypto's `signWith`. */
+async function signerOf(
+  pair: CryptoKeyPair,
+  kid: string,
+  alg: string,
+  signWith: Parameters<SubtleCrypto["sign"]>[0],
+): Promise<Signer> {
   const exported = (await crypto.subtle.exportKey("jwk", pair.publicKey)) as JsonWebKey;
   const jwk = { ...exported, kid };
   return {
     kid,
     jwk,
     set: () => ({ keys: [jwk] }),
-    async sign(claims, header = { alg: "RS256", kid, typ: "JWT" }) {
+    async sign(claims, header = { alg, kid, typ: "JWT" }) {
       const signed = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
-      const signature = await crypto.subtle.sign(RSA.name, pair.privateKey, new TextEncoder().encode(signed));
+      const signature = await crypto.subtle.sign(signWith, pair.privateKey, new TextEncoder().encode(signed));
       return `${signed}.${b64url(new Uint8Array(signature))}`;
     },
   };
