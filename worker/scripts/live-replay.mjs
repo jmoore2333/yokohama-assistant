@@ -65,6 +65,16 @@
 // a `npx wrangler r2 object delete` for each (`resetRecipe`), run in `worker/`
 // with wrangler's own login: the owner's R2 key is read-only (spec §7).
 //
+// **Under a sign-in arm** (auth cycle, Task 8; ruling R-39) the Worker names a
+// caller by its own session cookie, which a row's `X-Yokohama-Claimed-User`
+// cannot. With `YOKOHAMA_SESSION_COOKIE` set (`scripts/mint-session.mjs` prints
+// the line, for a `.test` address only) every row sends it as `Cookie` and NO
+// claimed header, and `.dev.vars`' credential rides beside it, as the edge's
+// pass, when the file is there — Access may still stand over the Worker. The
+// cookie names ONE caller, so a row with a `who` is refused before anything is
+// sent: the committed walk names several, and a run under a cookie needs a
+// walk that names none.
+//
 // **The secret.** `.dev.vars` is read by path and its values are never
 // printed, and the credential goes to the Worker's own origin alone — a row
 // whose path would leave it is refused before anything is sent, and no
@@ -83,7 +93,7 @@
 // is the one place they meet.
 
 import { pathToFileURL } from "node:url";
-import { KEYS, LOBBY_PAUSE_MS, LOBBY_REREADS, ORIGIN, readCredential } from "./replay/credential.mjs";
+import { KEYS, LOBBY_PAUSE_MS, LOBBY_REREADS, ORIGIN, readIdentity } from "./replay/credential.mjs";
 import {
   FIRST_SENDS,
   firstSendAccepts,
@@ -97,7 +107,7 @@ import {
 } from "./replay/exemptions.mjs";
 import { errorText, finish, fmt, judge, parsed, said } from "./replay/judge.mjs";
 import { loadCorpus, loadScripts, order, tableIds, urlOf } from "./replay/scripts.mjs";
-import { forceAll, send } from "./replay/send.mjs";
+import { forceAll, send, TWO_IDENTITIES } from "./replay/send.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -107,14 +117,23 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Answers the run's result; `holds` is whether every force answered 204,
  * every row the production seed rule sends ran, and nothing differed.
  */
-export async function replay({ walk, host, archive, corpus, credential, fetcher = fetch, log = console.log, pause = sleep }) {
+export async function replay({ walk, host, archive, corpus, credential, cookie = null, fetcher = fetch, log = console.log, pause = sleep }) {
   const rows = order(walk, host, archive);
   const ids = tableIds(walk);
   const reader = rows.find(({ row }) => row.fixture === "house_chat")?.row;
   if (reader === undefined) throw new Error("no row of the scripts reads the house chat, so there is no base to read");
+  // A run presents a credential, a minted session cookie, or both (the credential then the edge's pass, ruling R-39).
+  if (!credential && !cookie) throw new Error("the run has neither the Access credential nor a session cookie to present");
   // Every row's address, checked BEFORE anything is sent — the forces
   // included: a row that would leave the Worker's origin refuses the run.
   for (const { row } of rows) urlOf(row);
+  // And, under a session cookie, every row's claimed name: the cookie names the caller, so a `who` beside it is a
+  // second identity — refused before anything is sent, not sent without its name.
+  if (cookie) {
+    for (const { script, index, row } of rows) {
+      if (row.who !== null) throw new Error(`${script} row ${index}: ${row.method} ${row.path} names ${row.who} — ${TWO_IDENTITIES}`);
+    }
+  }
   const result = {
     holds: false,
     run: 0,
@@ -138,7 +157,8 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
     log(`  MISMATCH ${label} — ${fixture === null ? "" : `${fixture} `}${diff.path}: ${what}`);
   };
 
-  log(`live-replay: ${ORIGIN} — ${KEYS.join(" and ")} to this origin only; the forces with only the JSON type (over WARP, the owner's device answers Access)`);
+  const presents = [credential ? KEYS.join(" and ") : null, cookie ? "the session cookie" : null].filter(Boolean).join(" and ");
+  log(`live-replay: ${ORIGIN} — ${presents} to this origin only; the forces with only the JSON type (over WARP, the owner's device answers Access)`);
   result.forcedBefore = await forceAll(ids, fetcher);
   log(`force before: ${result.forcedBefore.map((f) => `${f.id} ${f.status ?? "—"}${f.status === 204 ? "" : f.said}`).join(", ")}`);
   if (!result.forcedBefore.every((f) => f.status === 204)) {
@@ -147,7 +167,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
   }
 
   try {
-    const baseReply = await send(reader, credential, fetcher);
+    const baseReply = await send(reader, credential ?? null, fetcher, cookie);
     const basePage = baseReply.status === 200 ? parsed(baseReply) : undefined;
     const last = basePage?.last;
     const baseRev = basePage?.rev;
@@ -179,7 +199,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
       }
       let reply;
       try {
-        reply = await send(row, credential, fetcher);
+        reply = await send(row, credential ?? null, fetcher, cookie);
       } catch (e) {
         result.stopped = label;
         differs(label, null, { path: "status", reason: `no answer: ${errorText(e)}` });
@@ -249,7 +269,7 @@ export async function replay({ walk, host, archive, corpus, credential, fetcher 
         // (`LOBBY_REREADS` says why); what still differs after the last read
         // is reported below as a mismatch.
         await pause(LOBBY_PAUSE_MS);
-        const reread = await send(row, credential, fetcher);
+        const reread = await send(row, credential ?? null, fetcher, cookie);
         result.rereads += 1;
         if (reread.status !== row.status) {
           judged = { diffs: [{ path: "status", reason: `re-read: committed ${row.status} · got ${reread.status}${said(reread)}` }], spent: [] };
@@ -275,7 +295,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.exit(2);
   }
   try {
-    const result = await replay({ ...loadScripts(), corpus: loadCorpus(), credential: readCredential() });
+    const result = await replay({ ...loadScripts(), corpus: loadCorpus(), ...readIdentity() });
     process.exit(result.holds ? 0 : 1);
   } catch (e) {
     console.error(`live-replay: ${errorText(e)}`);

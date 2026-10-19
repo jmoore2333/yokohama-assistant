@@ -8,7 +8,7 @@
 // `.mjs` import reads no `.d.ts` (TS7016). It imports nothing but node's own
 // modules, so neither package installs anything for it.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /** The deployed Worker's origin: the only one the credential is presented
@@ -47,4 +47,41 @@ export function readCredential(file = DEV_VARS) {
     return value;
   };
   return { id: read(KEYS[0]), secret: read(KEYS[1]) };
+}
+
+/** The environment variable that holds a minted session cookie line (`mint-session.mjs`'s output). */
+export const SESSION_COOKIE_ENV = "YOKOHAMA_SESSION_COOKIE";
+
+/** The line a minted cookie reads as: `src/session.ts`'s `SESSION_COOKIE` name, `=`, `v1.<payload>.<mac>` in the url
+ *  alphabet. Anything else is no minted cookie — and a value with a control character or a `;` in it is no header
+ *  value an instrument should send. */
+const MINTED_LINE = /^__Host-yokohama_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/**
+ * The minted session cookie in `env`, as the `Cookie` header's value — or `null` when the variable is unset or empty.
+ * Under a sign-in arm the Worker names a caller by its own session cookie (auth cycle, Task 8), so an instrument that
+ * holds one sends it as the caller's identity. A value that is not a minted line is refused by the variable's NAME,
+ * never its value.
+ */
+export function readSessionCookie(env = process.env) {
+  const value = env[SESSION_COOKIE_ENV];
+  if (value === undefined || value === "") return null;
+  if (!MINTED_LINE.test(value)) {
+    throw new Error(`${SESSION_COOKIE_ENV} is not a minted session cookie line (__Host-yokohama_session=v1.<payload>.<mac>) — scripts/mint-session.mjs prints one`);
+  }
+  return value;
+}
+
+/**
+ * What an instrument presents: the minted session `cookie` (or `null`) and the Access `credential` (or `null`).
+ *
+ * With no cookie the credential is required, as ever, and its absence is `readCredential`'s refusal. With a cookie the
+ * credential is optional — the Access service credential is the EDGE's pass where Access still stands over a
+ * provider-signed Worker (ruling R-39), not an identity — so it rides when `file` is there and is `null` when it is
+ * absent. A file that IS there is read strictly: a malformed one is refused, never read as absent.
+ */
+export function readIdentity(env = process.env, file = DEV_VARS) {
+  const cookie = readSessionCookie(env);
+  if (cookie === null) return { cookie, credential: readCredential(file) };
+  return { cookie, credential: existsSync(file) ? readCredential(file) : null };
 }

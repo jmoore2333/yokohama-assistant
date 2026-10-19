@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { order } from "./corpus-walk.mjs";
-import { ORIGIN, readCredential } from "./dev-vars.mjs";
+import { ORIGIN, readCredential, readIdentity, readSessionCookie } from "./dev-vars.mjs";
 import { replay } from "./live-replay.mjs";
 import {
   FROZEN_CREATED_AT,
@@ -19,6 +19,7 @@ import {
   skippedUnderProductionSeedRule,
 } from "./replay/exemptions.mjs";
 import { loadCorpus, loadScripts, urlOf } from "./replay/scripts.mjs";
+import { send } from "./replay/send.mjs";
 
 // **The live corpus replay's cells** (spec §5.3's live half; the plan's Task
 // 15). Every reply body a cell compares is a COMMITTED payload, or one derived
@@ -464,6 +465,53 @@ describe("readCredential", () => {
   });
 });
 
+describe("readSessionCookie and readIdentity", () => {
+  const COOKIE = "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  let dir;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "live-replay-identity-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const creds = () => {
+    const file = join(dir, ".dev.vars");
+    writeFileSync(file, "CF-Access-Client-Id=dummy-id.access\nCF-Access-Client-Secret=dummy-secret-value\n");
+    return file;
+  };
+
+  it("is null for an unset or empty variable, and the minted line verbatim otherwise", () => {
+    expect(readSessionCookie({})).toBeNull();
+    expect(readSessionCookie({ YOKOHAMA_SESSION_COOKIE: "" })).toBeNull();
+    expect(readSessionCookie({ YOKOHAMA_SESSION_COOKIE: COOKIE })).toBe(COOKIE);
+  });
+  it("refuses a value that is not a minted session line, naming the variable and never the value", () => {
+    for (const bad of ["red@t.test", "yokohama_session=v1.a.b", `${COOKIE}\r\nX-Evil: 1`, `${COOKIE}; other=1`, "__Host-yokohama_session=v2.a.b"]) {
+      let said = "";
+      try {
+        readSessionCookie({ YOKOHAMA_SESSION_COOKIE: bad });
+      } catch (e) {
+        said = String(e);
+      }
+      expect(said, JSON.stringify(bad)).toContain("YOKOHAMA_SESSION_COOKIE");
+      expect(said, "no value is ever in the sentence").not.toContain("Evil");
+      expect(said).not.toContain("red@t.test");
+    }
+  });
+  it("with no cookie the credential is required, as ever", () => {
+    expect(readIdentity({}, creds())).toEqual({ cookie: null, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
+    expect(() => readIdentity({}, join(dir, "nothing-here"))).toThrow(/credential file/);
+  });
+  it("with a cookie the credential rides too when the file is there, and is null when the file is absent", () => {
+    const env = { YOKOHAMA_SESSION_COOKIE: COOKIE };
+    expect(readIdentity(env, creds())).toEqual({ cookie: COOKIE, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
+    expect(readIdentity(env, join(dir, "nothing-here"))).toEqual({ cookie: COOKIE, credential: null });
+  });
+  it("with a cookie, a file that is there and malformed is still refused, not read as absent", () => {
+    const file = join(dir, ".dev.vars");
+    writeFileSync(file, "CF-Access-Client-Id=dummy-id.access\n");
+    expect(() => readIdentity({ YOKOHAMA_SESSION_COOKIE: COOKIE }, file)).toThrow("holds no CF-Access-Client-Secret= line");
+  });
+});
+
 describe("order and urlOf", () => {
   it("runs each host row after the walk row it names, and the archive rows last", () => {
     const walk = [{ n: "w0" }, { n: "w1" }, { n: "w2" }];
@@ -681,6 +729,105 @@ describe("replay", () => {
       expect(sent[i].headers["X-Yokohama-Claimed-User"], `${row.method} ${row.path}`).toBe(row.who ?? undefined);
     });
     expect(sentRows.some(({ row }) => row.who === null), "the premise: a sent row with no who exists").toBe(true);
+  });
+
+  // **The minted session** (auth cycle, Task 8; ruling R-39). Under a sign-in arm the Worker names a caller by its own
+  // cookie, so the instruments send the minted one — and, when Access still stands at the edge, the credential too, as the
+  // EDGE's pass and not as an identity. A walk row's `who` is a claimed name, which the cookie makes a second identity.
+  describe("under a minted session cookie", () => {
+    const COOKIE = "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    // The committed walk names a `who` on its house reader and on the rows that decide the production seed rule, so it
+    // cannot run under a cookie: these cells run a three-row walk that names no one, against a fetcher of their own.
+    const row = (method, path, status, fixture, body = null) => ({ who: null, method, path, query: "", body, status, fixture });
+    const MINI = {
+      walk: [row("GET", "/api/chat", 200, "house_chat"), row("POST", "/api/games", 201, null, { id: "solo" }), row("GET", "/api/health", 200, null)],
+      host: [],
+      archive: [],
+    };
+    const miniHost = () => {
+      const requests = [];
+      const fetcher = async (url, init) => {
+        requests.push({ url, method: init.method, headers: { ...init.headers } });
+        if (url.includes("/api/admin/")) return json(204, null);
+        if (url.endsWith("/api/chat")) return json(200, { ...committed("house_chat"), last: BASE, rev: BASE_REV, messages: [] });
+        return json(url.endsWith("/api/games") ? 201 : 200, {});
+      };
+      return { fetcher, requests };
+    };
+    const runAs = async (host, extra, scripts = MINI) => {
+      const lines = [];
+      const result = await replay({ ...scripts, corpus: CORPUS, fetcher: host.fetcher, log: (l) => lines.push(l), pause: async () => {}, ...extra });
+      return { result, text: lines.join("\n") };
+    };
+    const rowsSent = (host) => host.requests.filter((r) => !r.url.includes("/api/admin/"));
+
+    it("cookie alone: every row carries the Cookie and nothing of Access's, and no claimed name; the forces are unchanged", async () => {
+      const host = miniHost();
+      await runAs(host, { credential: null, cookie: COOKIE });
+      const sent = rowsSent(host);
+      expect(sent, "the base read and the three rows").toHaveLength(4);
+      for (const r of sent) {
+        expect(r.headers.Cookie).toBe(COOKIE);
+        expect(r.headers["CF-Access-Client-Id"]).toBeUndefined();
+        expect(r.headers["CF-Access-Client-Secret"]).toBeUndefined();
+        expect(r.headers["X-Yokohama-Claimed-User"]).toBeUndefined();
+      }
+      for (const f of host.requests.filter((r) => r.url.includes("/api/admin/"))) {
+        expect(f.headers, "a force is still only the JSON type").toEqual({ "content-type": "application/json" });
+      }
+    });
+
+    it("cookie with the credential: both ride, the credential as the edge's pass, and still no claimed name", async () => {
+      const host = miniHost();
+      await runAs(host, { credential: { id: "dummy-id.access", secret: "dummy-secret-value" }, cookie: COOKIE });
+      expect(rowsSent(host)).toHaveLength(4);
+      for (const r of rowsSent(host)) {
+        expect(r.headers.Cookie).toBe(COOKIE);
+        expect(r.headers["CF-Access-Client-Id"]).toBe("dummy-id.access");
+        expect(r.headers["CF-Access-Client-Secret"]).toBe("dummy-secret-value");
+        expect(r.headers["X-Yokohama-Claimed-User"]).toBeUndefined();
+      }
+    });
+
+    it("refuses a row with a claimed name beside the cookie, before anything is sent, in the sentence", async () => {
+      const host = miniHost();
+      await expect(runAs(host, { credential: null, cookie: COOKIE }, SCRIPTS)).rejects.toThrow(
+        "the session cookie names the caller — a claimed name beside it is two identities",
+      );
+      expect(host.requests, "not even a force").toEqual([]);
+    });
+
+    // `send` is the second line behind `replay`'s pre-check: a row with a `who` is refused where it would be sent, so no
+    // other caller of `send` can put a claimed name beside a cookie.
+    it("send itself refuses a row with a claimed name beside the cookie, and sends nothing", async () => {
+      let calls = 0;
+      const fetcher = async () => ((calls += 1), json(200, {}));
+      const named = { ...row("GET", "/api/health", 200, null), who: "red@t.test" };
+      await expect(send(named, null, fetcher, COOKIE)).rejects.toThrow("a claimed name beside it is two identities");
+      await expect(send(named, { id: "i", secret: "s" }, fetcher, COOKIE)).rejects.toThrow("a claimed name beside it is two identities");
+      expect(calls).toBe(0);
+      // And the same row without a cookie is the dev door's: the claimed header beside the credential.
+      await send(named, { id: "i", secret: "s" }, async (url, init) => ((calls += 1), expect(init.headers["X-Yokohama-Claimed-User"]).toBe("red@t.test"), json(200, {})), null);
+      expect(calls).toBe(1);
+    });
+
+    it("names the row it refuses and never prints the cookie", async () => {
+      let said = "";
+      try {
+        await runAs(miniHost(), { credential: null, cookie: COOKIE }, SCRIPTS);
+      } catch (e) {
+        said = String(e);
+      }
+      expect(said).toMatch(/walk\.json row \d+/);
+      expect(said).not.toContain(COOKIE);
+      expect(said).not.toContain("eyJ");
+    });
+
+    it("with no cookie a run still needs its credential, and sends the claimed names as before", async () => {
+      const host = miniHost();
+      await expect(runAs(host, { credential: null, cookie: null }, SCRIPTS)).rejects.toThrow(/credential/);
+      expect(host.requests).toEqual([]);
+    });
   });
 
   it("refuses to start unless all three forces answer 204, and sends no row", async () => {

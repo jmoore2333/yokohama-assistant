@@ -334,6 +334,20 @@ describe("identityHeaders and liveContextOptions", () => {
   it("is the claimed header alone — the one header a page's socket cannot set, and no secret", () => {
     expect(identityHeaders("a@e2e.test")).toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
   });
+  // **The minted session** (auth cycle, Task 8; ruling R-39): under a sign-in arm the Worker names a caller by its own
+  // cookie, so the live context carries that cookie and NO claimed name — a second identity beside it.
+  it("under YOKOHAMA_SESSION_COOKIE it is the cookie alone, with no claimed header", () => {
+    const cookie = "__Host-yokohama_session=v1.eyJhZGRyZXNzIjoicmVkQHQudGVzdCJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    vi.stubEnv("YOKOHAMA_SESSION_COOKIE", cookie);
+    expect(identityHeaders("a@e2e.test")).toEqual({ Cookie: cookie });
+    vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "");
+    expect(identityHeaders("a@e2e.test"), "an empty variable is unset").toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
+  });
+  it("refuses a variable that is not a minted line, naming it and never the value", () => {
+    vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "red@t.test");
+    expect(() => identityHeaders("a@e2e.test")).toThrow("YOKOHAMA_SESSION_COOKIE");
+    expect(() => identityHeaders("a@e2e.test")).not.toThrow("red@t.test");
+  });
   // Locally a context is exactly today's: the walk signs in through the form,
   // and the client attaches the header itself.
   it("adds nothing to a context unless the run is live", async () => {

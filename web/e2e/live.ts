@@ -47,7 +47,7 @@
 // prints the call log too — `expect(res.ok())` is the form to use.
 
 import type { BrowserContextOptions, Page } from "@playwright/test";
-import { KEYS, ORIGIN, readCredential } from "../../worker/scripts/dev-vars.mjs";
+import { KEYS, ORIGIN, readCredential, readIdentity, readSessionCookie } from "../../worker/scripts/dev-vars.mjs";
 
 /** The deployed Worker's origin: `BASE_URL` under `LIVE` — `ORIGIN`, stated
  *  once in `worker/scripts/dev-vars.mjs` beside the credential that is sent
@@ -132,9 +132,14 @@ type Cookie = StorageState["cookies"][number];
  *  calls too (M6.5c2 cycle D, Task 9). */
 export const credential = readCredential;
 
-/** Who a context is, to the dev door: the claimed header, in both modes. */
+/** Who a context is: to the dev door, the claimed header, in both modes. Under a sign-in arm (auth cycle, Task 8; ruling
+ *  R-39) the Worker names a caller by its own session cookie, so with `YOKOHAMA_SESSION_COOKIE` set — a line
+ *  `worker/scripts/mint-session.mjs` printed, for a `.test` address — it is that cookie as `Cookie` and NO claimed
+ *  header: a claimed name beside the cookie would be a second identity. The cookie names ONE caller, so every context of
+ *  a run under it is that caller. */
 export function identityHeaders(email: string): Record<string, string> {
-  return { "X-Yokohama-Claimed-User": email };
+  const cookie = readSessionCookie();
+  return cookie === null ? { "X-Yokohama-Claimed-User": email } : { Cookie: cookie };
 }
 
 /**
@@ -236,8 +241,13 @@ let seeded: Promise<StorageState> | undefined;
  */
 export async function liveContextOptions(email: string): Promise<BrowserContextOptions> {
   if (!LIVE) return {};
-  seeded ??= (async () => accessState(credential()))();
-  return { storageState: await seeded, extraHTTPHeaders: identityHeaders(email) };
+  const headers = identityHeaders(email);
+  // The credential is the EDGE's pass where Access stands; under a session cookie it is optional (`readIdentity`), and a
+  // run with none seeds no Access state.
+  const { credential: cred } = readIdentity();
+  if (cred === null) return { extraHTTPHeaders: headers };
+  seeded ??= (async () => accessState(cred))();
+  return { storageState: await seeded, extraHTTPHeaders: headers };
 }
 
 /**
