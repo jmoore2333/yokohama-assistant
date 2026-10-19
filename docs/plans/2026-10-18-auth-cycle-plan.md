@@ -843,3 +843,28 @@ it("doorLine names the source", …);
     `gen/` holds a release build (the last window's) fails seven cells in `factory`, `sockets` and `table` with
     "the pool runs over the DEBUG module" at HEAD, before any change. `npm run build:module:debug` (cargo, run by the
     orchestrator once at the cycle's start) is the remedy, after which no task of this cycle touches `gen/`.
+- **2026-10-18, Task 2's `DONE_WITH_CONCERNS` (commit `f653a288`) and the harness's security review of it:**
+  - **C-6 (the Global Constraints' cookie line, Task 2, Task 4's cell strings, Task 8's printed line, Task 9's docs) —
+    the orchestrator's ruling R-14:** both cookies take the `__Host-` prefix — `SESSION_COOKIE = "__Host-yokohama_session"`,
+    `LOGIN_COOKIE = "__Host-yokohama_login"` — with the attributes unchanged (`Secure; Path=/`, no `Domain`: exactly what
+    the prefix requires), so a browser refuses the cookie when a sibling subdomain sets it (cookie tossing / session
+    fixation, flagged by the harness's background security review at the commit; `moore.nyc` carries the NAS and CLI
+    hosts, a self-hoster's domain whatever else it runs). A `Secure` cookie is already dropped over plain http, so the
+    prefix adds no failure mode; localhost is a secure context. First-match parsing stays: under `__Host-` a duplicate
+    name cannot arrive from another origin or path. Every later cell reads the name through the constants.
+  - **C-7 (Task 2 Step 1, cell 2):** `const [p, body, mac] = v.split(".")` does not typecheck under the project's
+    `noUncheckedIndexedAccess` (TS18048, `mac` possibly undefined); the cell carries the cast `as [string, string,
+    string]`. Vitest alone passes it (esbuild does not typecheck); `npm run typecheck` is what catches it.
+  - **C-8 (the Mutants table, row 1):** a `readSession` that compares the MAC with `===` on strings still REFUSES a
+    flipped byte, so "a changed MAC byte …" stays green under that mutant — the row's parenthetical had it backwards.
+    The cell that reads red is the task's added spy cell, "the MAC is `crypto.subtle.verify`'s, and the payload is
+    parsed only once it verifies" (it asserts `verify` is called and `sign` never is on the read path, and that no
+    `JSON.parse` of the payload happens under a flipped MAC). The after review's battery names that cell.
+  - **Pre-flight note (Task 4):** `Headers.get("Set-Cookie")` joins two lines with `", "`, so
+    `readLogin(res.headers.get("Set-Cookie"), …)` holds for the START answer (one cookie) only; the callback's cells,
+    which read two cookies, use `res.headers.getSetCookie()` (measured by the Task 2 implementer).
+  - **Recorded choice (Task 2, ruling R-15):** `renewDue` is "the life LEFT is less than half the CONFIGURED days"
+    (`s.expires - now < days * 86400 / 2`; exactly half is not due) — the brief's "past half the life" when the
+    cookie's life equals `days`, and after a change of `YOKOHAMA_SESSION_DAYS` every cookie is still due throughout
+    the last half of today's days before its expiry (read by the life SPENT instead, a cookie minted under fewer days
+    than half of today's would expire before it ever came due — measured). Two cells pin it.
