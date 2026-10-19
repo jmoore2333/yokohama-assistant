@@ -15,8 +15,9 @@
 export type Target =
   /** No file, no route: 404 with an empty body, never `index.html`. */
   | { kind: "missing" }
-  /** `GET|HEAD /enter`: under `access`, the turnstile's 302 to `/#/lobby`; under `oidc` and `workos`, the sign-in's
-   *  start, or with a `code` (or an issuer's `error`) its callback (the auth cycle, design §4.3; `index.ts`, `enter`). */
+  /** `GET|HEAD /enter`: under `access` and the open door, the turnstile's 302 to `/#/lobby`; under `oidc` and `workos`,
+   *  the sign-in's start, or with a `code` (or an issuer's `error`) its callback (the auth cycle, design §4.3;
+   *  `index.ts`, `enter`). */
   | { kind: "enter" }
   /** `GET|HEAD /api/art`: the static art manifest, projected onto the
    *  layer's nine maps (`index.ts`, `art`). */

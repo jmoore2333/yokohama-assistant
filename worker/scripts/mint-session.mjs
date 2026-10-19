@@ -32,6 +32,9 @@ export const COOKIE_NAME = "__Host-yokohama_session";
 const VERSION = "v1";
 const DAY_SECONDS = 86_400;
 const DEFAULT_DAYS = 30;
+/** The first second `cookieLine` refuses as a clock: 2286-11-20, so a millisecond clock (thirteen digits today) is
+ *  refused rather than minting a cookie that stands for millennia. */
+const ISSUED_BOUND = 10_000_000_000;
 const USAGE = "usage: node scripts/mint-session.mjs <address> [--days N]   (YOKOHAMA_SESSION_SECRET in the environment)";
 
 /** `src/identity.ts`'s `isTestAddress`, restated: an `@` and the suffix `.test`. */
@@ -56,14 +59,17 @@ export function fenceSentence(address) {
  * (default thirty) past `nowSeconds`. **The ONE function every minter calls** (this script, the live replay and the
  * live tier, ruling R-50): the `.test` fence is here, judged on the address exactly as it is minted — never trimmed or
  * lower-cased first, since the Worker's `is_test_identity` is case-sensitive — so no caller can mint a real address.
- * Throws the fence's sentence, prefixed `mint-session: `. Refuses a time that is not whole seconds and days that are
- * not whole or are below one, as `session.ts`'s `mintSession` does: a millisecond clock would mint a cookie that
- * stands for millennia.
+ * Throws the fence's sentence, prefixed `mint-session: `. Refuses a time that is not a whole number of seconds below
+ * `ISSUED_BOUND`, so a millisecond clock is refused, and days that are not whole or are below one, as `session.ts`'s
+ * `mintSession` refuses them. Neither refusal echoes the value it was handed (ruling R-52's rule, review I-5's class):
+ * a secret passed in the clock's or the days' slot by mistake is never printed.
  */
 export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {
   if (!isTestAddress(address)) throw new Error(`mint-session: ${fenceSentence(address)}`);
-  if (!Number.isInteger(nowSeconds)) throw new RangeError(`mint-session: issued must be whole seconds — got ${nowSeconds}`);
-  if (!Number.isInteger(days) || days < 1) throw new RangeError(`mint-session: days must be whole and at least one — got ${days}`);
+  if (!Number.isInteger(nowSeconds) || nowSeconds >= ISSUED_BOUND) {
+    throw new RangeError(`mint-session: issued must be a whole number of seconds below ${ISSUED_BOUND} — a millisecond clock is refused`);
+  }
+  if (!Number.isInteger(days) || days < 1) throw new RangeError("mint-session: days must be a whole number above zero");
   return `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}`;
 }
 
@@ -72,6 +78,17 @@ export function mintValue(s, days, secret) {
   const payload = Buffer.from(JSON.stringify({ address: s.address, sid: s.sid, issued: s.issued, expires: s.issued + days * DAY_SECONDS }), "utf8").toString("base64url");
   const mac = createHmac("sha256", secret).update(`${VERSION}.${payload}`).digest("base64url");
   return `${VERSION}.${payload}.${mac}`;
+}
+
+/** An unknown flag, named by its NAME alone — the text before any `=`, with a glued value shown as `…` — and only when
+ *  the name is shaped like one: lowercase letters and hyphens, at most 24 past the dashes, shorter than any session
+ *  secret the shell accepts. Anything else is "an unknown argument". So a value glued on (`--days=<secret>`) or a
+ *  secret handed over as a flag is never printed (ruling R-52). */
+function unknownFlag(arg) {
+  const eq = arg.indexOf("=");
+  const name = eq === -1 ? arg : arg.slice(0, eq);
+  if (!/^--[a-z]+(?:-[a-z]+)*$/.test(name) || name.length > 26) return "an unknown argument";
+  return `unknown flag ${name}${eq === -1 ? "" : "=…"}`;
 }
 
 /**
@@ -95,7 +112,7 @@ export function run(argv, env, nowSeconds) {
       }
       days = Number(value);
     } else if (argv[i].startsWith("--")) {
-      return refuse(`unknown flag ${argv[i]} — ${USAGE}`);
+      return refuse(`${unknownFlag(argv[i])} — ${USAGE}`);
     } else {
       positional.push(argv[i]);
     }

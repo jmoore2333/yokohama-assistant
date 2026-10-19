@@ -248,8 +248,12 @@ const DAY_SECONDS = 86_400;
  *    would accept it, else still no one. `callerName` renders it as the
  *    synthetic address `anon-<device|game id>@anon.invalid`, which the key
  *    grammar already accepts. It is formed for this one target alone, so no
- *    game route ever sees it, and never over a caller step 5 found. Under
- *    `open` nothing changes: a claim is the caller.
+ *    game route ever sees it, and never over a caller step 5 found. With no
+ *    device id, its fallback parses the body (up to `BODY_LIMIT`, step 3's
+ *    bound) and then the `table` string inside it BEFORE the limiter (6a) is
+ *    asked, since the limiter's kind depends on the caller: a refused post
+ *    still pays for that parse, bounded by `BODY_LIMIT`. Under `open`
+ *    nothing changes: a claim is the caller.
  * 5b. Under a sign-in arm (`oidc`, `workos`), a `GET` or `HEAD` of `/api/me`
  *    (the path alone: a query changes nothing) with NO caller is the shell's
  *    own 401 `NOT_SIGNED_IN`, which `handle` gives the session challenge, and

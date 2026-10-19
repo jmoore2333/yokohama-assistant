@@ -23,6 +23,19 @@ function mint(args, env = { YOKOHAMA_SESSION_SECRET: SECRET }) {
   return { code: r.status, out: r.stdout, err: r.stderr };
 }
 
+/** The script's usage line, as `run` prints it. */
+const USAGE = "usage: node scripts/mint-session.mjs <address> [--days N]   (YOKOHAMA_SESSION_SECRET in the environment)";
+
+/** What `f` throws, as its class's name and its message; `null` when it throws nothing. */
+function thrown(f) {
+  try {
+    f();
+  } catch (e) {
+    return [e.constructor.name, e.message];
+  }
+  return null;
+}
+
 /** The payload a cookie value carries, parsed. */
 const payloadOf = (value) => JSON.parse(Buffer.from(value.split(".")[1], "base64url").toString("utf8"));
 
@@ -98,11 +111,18 @@ describe("the .test fence", () => {
     expect(cookieLine("red@t.test", SECRET, 1_789_000_000)).toBe(`${COOKIE_NAME}=${GOLDEN_SESSION}`);
   });
 
-  it("refuses a time that is not whole seconds and days that are not whole or below one, as mintSession does", () => {
-    expect(() => cookieLine("red@t.test", SECRET, 1_789_000_000_000.5)).toThrow("issued must be whole seconds");
-    expect(() => cookieLine("red@t.test", SECRET, Number.NaN)).toThrow("issued must be whole seconds");
-    for (const days of [0, -1, 1.5, Number.NaN]) {
-      expect(() => cookieLine("red@t.test", SECRET, 1_789_000_000, days), String(days)).toThrow("days must be whole and at least one");
+  // The clock and the days refuse without echoing what they were handed (review I-5's class; ruling R-52): a secret
+  // passed in either slot by mistake is never printed. The clock is held below 10,000,000,000 seconds (2286-11-20),
+  // so a millisecond clock, which would mint a cookie that stands for millennia, is refused. Mutants: either value
+  // echoed; the bound dropped, or made inclusive.
+  it("refuses a time that is not a whole number of seconds below the bound, and days that are not whole or below one, echoing neither", () => {
+    const issued = "mint-session: issued must be a whole number of seconds below 10000000000 — a millisecond clock is refused";
+    for (const bad of [1_789_000_000.5, Number.NaN, 1_789_000_000_000, 10_000_000_000, SECRET]) {
+      expect(thrown(() => cookieLine("red@t.test", SECRET, bad)), String(bad)).toEqual(["RangeError", issued]);
+    }
+    expect(thrown(() => cookieLine("red@t.test", SECRET, 9_999_999_999)), "the last second below the bound").toBeNull();
+    for (const bad of [0, -1, 1.5, Number.NaN, SECRET]) {
+      expect(thrown(() => cookieLine("red@t.test", SECRET, 1_789_000_000, bad)), String(bad)).toEqual(["RangeError", "mint-session: days must be a whole number above zero"]);
     }
   });
 
@@ -145,6 +165,20 @@ describe("a misplaced secret", () => {
     expect(r.code).toBe(2);
     expect(r.err).toBe("mint-session: --days must be a whole number above zero — got a value that is not a whole number\n");
     expect(fragments(r.err)).toEqual([]);
+  });
+
+  // An unknown flag is named by its NAME alone, and only when it is shaped like one (lowercase letters and hyphens, at
+  // most 24 past the dashes, shorter than any session secret): a value glued on, `--days=<secret>`, or a secret handed
+  // over as a flag is never printed. Mutant: the unknown argument echoed whole.
+  it("is not echoed when it is glued to a flag, or handed over as one", () => {
+    const glued = mint(["red@t.test", `--days=${SECRET}`]);
+    expect([glued.code, glued.out, glued.err]).toEqual([2, "", `mint-session: unknown flag --days=… — ${USAGE}\n`]);
+    const flag = mint(["red@t.test", `--${SECRET}`]);
+    expect([flag.code, flag.out, flag.err]).toEqual([2, "", `mint-session: an unknown argument — ${USAGE}\n`]);
+    const lettered = mint(["red@t.test", `--${"x".repeat(25)}`]);
+    expect(lettered.err, "a name longer than 24 is not shown").toBe(`mint-session: an unknown argument — ${USAGE}\n`);
+    for (const r of [glued, flag]) expect(fragments(r.err)).toEqual([]);
+    expect(mint(["red@t.test", "--forever"]).err, "a flag's name is still named").toBe(`mint-session: unknown flag --forever — ${USAGE}\n`);
   });
 
   it("an address-shaped value is still echoed, as the brief's sentence reads, and a non-address is not", () => {

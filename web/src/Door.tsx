@@ -29,7 +29,7 @@
 //   B. The server answered, and no identity reached it, under a door set in
 //      front of it (`cf-access`, `worker`) — a non-email header included, which
 //      the mode rule reads as absent (spec §2.1). Under Access this is the
-//      module's 200 `user: null` — the edge named nobody, the OPERATOR's
+//      layer's 200 `user: null` — the edge named nobody, the OPERATOR's
 //      screen; a provider-signed Worker never answers a caller-less `/api/me`
 //      this way since ruling R-44 (that is state A).
 //

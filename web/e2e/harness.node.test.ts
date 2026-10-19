@@ -465,6 +465,31 @@ describe("identityHeaders and liveContextOptions", () => {
       expect(options.extraHTTPHeaders).toEqual({});
       expect(JSON.stringify(options.extraHTTPHeaders ?? {})).not.toMatch(/cookie/i);
     });
+    // Ruling R-39: the credential RIDES beside a minted session — Access's cookie is the edge's pass where Access
+    // stands — so a context seeded with a session keeps every cookie Access set. The credential's one request is a fake
+    // `fetch`: no cell reaches the network. Mutant: Access's cookies dropped when a session is seeded.
+    it("keeps Access's cookies beside the session when a credential is present (R-39)", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const asked: string[] = [];
+      vi.stubGlobal("fetch", async (url: string | URL) => {
+        asked.push(String(url));
+        const headers = new Headers();
+        headers.append("set-cookie", "CF_Authorization=dummy.jwt.value; Path=/; HttpOnly; Secure; SameSite=None");
+        headers.append("set-cookie", "__cf_bm=x; Path=/; Domain=moore.nyc");
+        return new Response("{}", { status: 200, headers });
+      });
+      try {
+        const live = await liveWith({ id: "dummy-id.access", secret: "dummy-secret-value" });
+        const options = await live.liveContextOptions("a@e2e.test");
+        const state = options.storageState as { cookies: Array<{ name: string; value: string }> };
+        expect(state.cookies.map((c) => c.name)).toEqual(["CF_Authorization", "__cf_bm", "__Host-yokohama_session"]);
+        expect(payload(`${state.cookies[2]!.name}=${state.cookies[2]!.value}`).address).toBe("a@e2e.test");
+        expect(asked, "the credential presented once, to the health route").toEqual([`${LIVE_ORIGIN}/api/health`]);
+        expect(options.extraHTTPHeaders, "and no header names a caller").toEqual({});
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
     it("two emails, two contexts, two distinct cookies", async () => {
       vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
       const live = await liveWith(null);

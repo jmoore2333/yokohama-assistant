@@ -286,6 +286,26 @@ describe("reading a cookie", () => {
     }
   });
 
+  it("another spelling of the payload segment reads as nobody even when the MAC is signed over that spelling", async () => {
+    // The MAC rows above are 44 characters, so the length check refuses them before `decode` runs; these rows put
+    // the spelling in the BODY and sign over it, so only the decoder's own strictness can refuse them.
+    const signedBody = async (body: string): Promise<string> => {
+      const key = await crypto.subtle.importKey("raw", utf8.encode(SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+      return `v1.${body}.${b64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(`v1.${body}`))))}`;
+    };
+    const body = GOLDEN_SESSION.split(".")[1] ?? "";
+    // The anti-vacuity half: the helper signs the canonical body into the golden, which reads.
+    expect(await signedBody(body)).toBe(GOLDEN_SESSION);
+    expect(await readSession(`${SESSION_COOKIE}=${await signedBody(body)}`, SECRET, NOW)).not.toBeNull();
+    // The body's length is not a multiple of four, so the padded row is the padding standard base64 writes.
+    expect(body.length % 4).not.toBe(0);
+    const padded = `${body}${"=".repeat(4 - (body.length % 4))}`;
+    const spaced = `${body.slice(0, 20)} ${body.slice(20)}`;
+    for (const bad of [padded, spaced]) {
+      expect(await readSession(`${SESSION_COOKIE}=${await signedBody(bad)}`, SECRET, NOW), bad).toBeNull();
+    }
+  });
+
   it("a MAC segment of any length but 43 is refused before it is decoded or verified", async () => {
     const decodes = vi.spyOn(globalThis, "atob");
     const verify = vi.spyOn(crypto.subtle, "verify");

@@ -377,10 +377,12 @@ describe("signOut through /api/leave", () => {
   // cycle, Task 6 fix round 1, review M-3): it labels whoever signs in next on
   // this browser, and behind an edge door the sign-out is a navigation, so
   // nothing after it runs — it is dropped at the click, whatever the leave
-  // answers. Mutants: the drop left to one control (the game menu's sign-out
-  // keeps the name); the drop after the answer (a navigation leaves it).
+  // answers. The cell waits for the navigation the answer triggers, so nothing
+  // it started runs after its last assertion. Mutants: the drop left to one
+  // control (the game menu's sign-out keeps the name); the drop after the
+  // answer (a navigation leaves it).
   it("drops the display name at the click, whatever the leave answers", async () => {
-    countNavigations();
+    const went = countNavigations();
     const answer = gate<Reply>();
     stubApi((call) => {
       if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
@@ -393,6 +395,8 @@ describe("signOut through /api/leave", () => {
     act(() => result.current.signOut());
     expect(localStorage.getItem(DISPLAY_NAME_KEY), "gone before the server answers").toBeNull();
     answer.resolve({ leave: "/cdn-cgi/access/logout" });
+    await waitFor(() => expect(went).toEqual(["/cdn-cgi/access/logout"]));
+    expect(localStorage.getItem(DISPLAY_NAME_KEY), "and still gone once it has").toBeNull();
   });
 });
 

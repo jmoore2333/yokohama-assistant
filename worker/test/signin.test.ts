@@ -202,6 +202,19 @@ describe("/enter starts the sign-in", () => {
     expect(accessAsked).toBe(0);
   });
 
+  // The redirect URI is the request's own origin (`url.origin`), never a header a caller or a proxy may set; the
+  // `oidc` issuer is this cell's own. Mutants: `Host` or `X-Forwarded-Host` read when present.
+  it("a start carrying Host and X-Forwarded-Host headers still names this origin's /enter as the redirect URI", async () => {
+    const forged = { Host: "evil.test", "X-Forwarded-Host": "evil.test" };
+    const sent = get("/enter", forged);
+    expect([sent.headers.get("Host"), sent.headers.get("X-Forwarded-Host")], "both headers ride the request").toEqual(["evil.test", "evil.test"]);
+    const oidc: Env = { ...ENV, YOKOHAMA_IDENTITY_SOURCE: "oidc", YOKOHAMA_OIDC_ISSUER: "https://host.issuer.test" };
+    for (const [label, e] of [["workos", ENV], ["oidc", oidc]] as const) {
+      const res = await call(get("/enter", forged), e);
+      expect([res.status, new URL(res.headers.get("Location")!).searchParams.get("redirect_uri")], label).toEqual([302, `${ORIGIN}/enter`]);
+    }
+  });
+
   it("a return_to that is another origin, a plain path, or an unsafe hash becomes /#/lobby", async () => {
     const landing = async (query: string) =>
       (await readLogin((await call(get(`/enter${query}`))).headers.get("Set-Cookie"), SECRET, now()))?.returnTo;
@@ -284,6 +297,43 @@ describe("/enter completes the sign-in", () => {
     expect(s).toMatchObject({ address: RED, sid: "s1" });
     expect(s!.expires - s!.issued).toBe(DAYS * DAY);
     expect(Math.abs(s!.issued - now()), "issued at the real clock").toBeLessThanOrEqual(2);
+  });
+
+  // The configured lifetime (`YOKOHAMA_SESSION_DAYS`) is what the callback mints, what renewal is read due against and
+  // what a renewal re-mints. Mutants: 30 days hard-coded at the callback's mint or its `Max-Age`, at the reader's
+  // `renewDue`, or at the renewal's mint.
+  it("under YOKOHAMA_SESSION_DAYS 7 the callback mints a seven-day cookie, and renewal is due past three and a half days and not before", async () => {
+    const week: Env = { ...ENV, YOKOHAMA_SESSION_DAYS: "7" };
+    const res = await call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login()}` }), week);
+    expect([res.status, res.headers.get("Location")]).toEqual([302, "/#/t/sim-1"]);
+    const minted = res.headers.getSetCookie().find((c) => c.startsWith(`${SESSION_COOKIE}=`))!;
+    expect(minted).toContain(`; Max-Age=${7 * DAY}; `);
+    const s = await readSession(minted, SECRET, now());
+    expect(s!.expires - s!.issued).toBe(7 * DAY);
+    const week7 = (ago: number) => mintSession({ address: RED, sid: "s1", issued: now() - ago }, 7, SECRET);
+    const due = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await week7(3.5 * DAY + 60)}` }), week);
+    const renewal = due.headers.getSetCookie();
+    expect([due.status, renewal.length], "due: one renewal").toEqual([200, 1]);
+    expect(renewal[0]).toContain(`; Max-Age=${7 * DAY}; `);
+    const r = await readSession(renewal[0]!, SECRET, now());
+    expect(r!.expires - r!.issued).toBe(7 * DAY);
+    const early = await call(get("/api/me", { cookie: `${SESSION_COOKIE}=${await week7(3.5 * DAY - 60)}` }), week);
+    expect([early.status, early.headers.has("Set-Cookie")], "not yet due").toEqual([200, false]);
+  });
+
+  // The arms' key sources are one per isolate and JWKS URL (`armKeys`), so a second callback reads the issuer's keys
+  // from the first one's cache. The issuer is this cell's own, so no earlier cell warmed its entry. Mutant: a fresh
+  // `keySourceAt` per callback.
+  it("two callbacks under one oidc issuer fetch its JWKS once", async () => {
+    const issuerUrl = "https://jwks-once.issuer.test";
+    const once: Env = { ...ENV, YOKOHAMA_IDENTITY_SOURCE: "oidc", YOKOHAMA_OIDC_ISSUER: issuerUrl };
+    const fetcher = issuer({ nonce: () => "n" });
+    for (let i = 0; i < 2; i++) {
+      const res = await call(get("/enter?code=x&state=st", { cookie: `${LOGIN_COOKIE}=${await login()}` }), once, fetcher);
+      expect([res.headers.get("Location"), res.headers.getSetCookie().some((c) => c.startsWith(`${SESSION_COOKIE}=v1.`))], `callback ${i + 1}`).toEqual(["/#/t/sim-1", true]);
+    }
+    const asked = (path: string) => fetcher.calls.filter((c) => c.url === `${issuerUrl}${path}`).length;
+    expect([asked("/token"), asked("/jwks")], "two exchanges, one key fetch").toEqual([2, 1]);
   });
 
   // The landing is held to `safeReturnTo` again at the callback: a login cookie this deployment mints holds a safe
@@ -414,15 +464,19 @@ describe("the session cookie names the caller", () => {
     expect(await (await me(env, { cookie: `${SESSION_COOKIE}=${await session()}` })).json()).toEqual({ mode: "cf-access", user: null });
   });
 
-  // Correction C-1 and ruling R-36: `/api/me` with no caller is a 200, and since Task 5 a caller-less archive post is
-  // the anonymous archive's (the next cell), so the challenge is read on two requests that 401 with no caller: the
-  // lobby stream's upgrade (unupgraded) and a create. Each is read under the arm and, on the same request, under access.
-  // Mutant: the challenge under access (the plan's row).
+  // Under an arm a caller-less `/api/me` is the shell's own 401 (ruling R-44; the next cell), and since Task 5 a
+  // caller-less archive post is the anonymous archive's (ruling R-36; the cell after it), so the challenge on the
+  // layer's own 401 is read on three requests that reach an object with no caller: the lobby stream's upgrade
+  // (unupgraded), a create, and a table's frame. Each is read under the arm and, on the same request, under access.
+  // Mutants: the challenge under access (the plan's row); the archive's exemption widened to the table target.
   it("no cookie is the layer's 401 with the session challenge header; under access the header is absent", async () => {
     expect(SESSION_CHALLENGE).toBe('Yokohama-Session realm="/enter"');
+    const id = "signin-challenge-table";
+    await seedPlaying(id);
     const requests: Array<[string, () => Request]> = [
       ["the stream's upgrade", () => get("/api/stream", { Upgrade: "websocket" })],
       ["a create", () => post("/api/games", JSON_TYPE, CREATE_BODY)],
+      ["a table's frame", () => get(`/api/games/${id}/table`)],
     ];
     for (const [label, req] of requests) {
       const res = await call(req());
@@ -572,6 +626,21 @@ describe("POST /api/leave", () => {
     const { result: left, lines } = await signinLines(() => call(post("/api/leave", { Origin: ORIGIN, cookie: `${SESSION_COOKIE}=${v}` }), down));
     expect([left.status, await left.json(), left.headers.getSetCookie()]).toEqual([200, { leave: `${ORIGIN}/` }, [clearCookie(SESSION_COOKIE)]]);
     expect(lines.map((l) => [l.event, l.step])).toEqual([["signin-failed", "leave"]]);
+  });
+
+  // The leave is a POST under `/api`, so it spends the write limiter (step 6a) under the caller's key before it is
+  // answered: the limiter is its only cost bound (an `oidc` issuer that is down is asked again on every leave).
+  // Mutant: the leave answered before `limited`.
+  it("a session's leave spends the write limiter once under its address's digest, and a refusal is the 429 that clears nothing", async () => {
+    const write = limiter();
+    const counted: Env = { ...ENV, WRITE_LIMIT: write as unknown as RateLimit };
+    const cookie = `${SESSION_COOKIE}=${await session()}`;
+    const res = await call(post("/api/leave", { cookie, Origin: ORIGIN }), counted);
+    expect([res.status, res.headers.getSetCookie()]).toEqual([200, [clearCookie(SESSION_COOKIE)]]);
+    expect(write.asked).toEqual([await callerTag(RED)]);
+    const shut: Env = { ...ENV, WRITE_LIMIT: { limit: async () => ({ success: false }) } as unknown as RateLimit };
+    const refused = await call(post("/api/leave", { cookie, Origin: ORIGIN }), shut);
+    expect([refused.status, refused.headers.has("Set-Cookie")]).toEqual([429, false]);
   });
 
   // Under the open door no source signs anyone in, so there is nothing of the Worker's to end: the request is the

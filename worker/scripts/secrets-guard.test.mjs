@@ -87,13 +87,33 @@ describe("judgeSecrets under a sign-in arm (the auth cycle, R-48)", () => {
       put("YOKOHAMA_SESSION_SECRET", "oidc"),
     ]);
   });
-  it("requires nothing new under access, at the open door, or beside a door or source the shell does not know", () => {
+  it("requires nothing new under access, at the open door, or beside a door the shell does not know", () => {
     expect(judgeSecrets("[]", worker("access")), "access").toEqual([]);
     expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: undefined }), "the open door").toEqual([]);
     expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: "workos" }), "a stray source beside open").toEqual([]);
     expect(judgeSecrets("[]", { file: "wrangler.jsonc", door: undefined, source: "workos" }), "no door").toEqual([]);
-    expect(judgeSecrets("[]", worker("WorkOS")), "a source the shell does not know").toEqual([]);
     expect(judgeSecrets("[]"), "no judged file: the forbidden names alone").toEqual([]);
+  });
+  // A worker-door file whose source the shell refuses (`config.ts`'s `source`) names no arm to judge the secrets
+  // against, and a guard that passes on a reading it cannot make is a hole: it refuses, in the shell's words with the
+  // file named, as the deploy guard does. Mutants: the source unjudged (both rows pass); only an absent source refused;
+  // only an unknown one refused.
+  it("refuses a worker-door file with no source, or one the shell does not know, quoting the shell's sentence", () => {
+    const none = "the secrets it requires cannot be judged without one of the three";
+    expect(judgeSecrets("[]", worker(undefined)), "no source").toEqual([
+      "secrets-guard: wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, " +
+        `and there is no default: who vouches for an address is a deployment decision; ${none}`,
+    ]);
+    for (const [bad, shown] of [["WorkOS", '"WorkOS"'], ["", '""'], [5, "5"], [null, "null"]]) {
+      expect(judgeSecrets("[]", worker(bad, "wrangler.dev.jsonc")), JSON.stringify(bad)).toEqual([
+        `secrets-guard: wrangler.dev.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got ${shown}; ${none}`,
+      ]);
+    }
+    // Beside a forbidden name, both sentences, the forbidden one first; a listing that cannot be read judges neither.
+    const both = judgeSecrets(listing("YOKOHAMA_DEV_DOOR"), worker(undefined));
+    expect([both.length, both[0]]).toEqual([2, expect.stringContaining("YOKOHAMA_DEV_DOOR")]);
+    expect(both[1]).toContain("it is not set");
+    expect(judgeSecrets("nonsense", worker(undefined))).toHaveLength(1);
   });
   it("keeps the forbidden-name rules under an arm, and judges nothing of a listing it cannot read", () => {
     expect(judgeSecrets(listing("YOKOHAMA_OIDC_CLIENT_SECRET", "YOKOHAMA_SESSION_SECRET", "YOKOHAMA_DEV_DOOR"), worker("workos"))).toEqual([
@@ -165,6 +185,20 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
     // The committed file at source access asks nothing new (the cells above, in the package).
     const access = run(`echo '[]'`);
     expect(access.status, access.stderr).toBe(0);
+  });
+  // Run alone, the command refuses a worker-door file it cannot judge an arm for (the deploy guard refuses it first in
+  // every deploy script); the open door asks nothing new.
+  it("refuses a worker-door file with no source or an unknown one, and passes the open door", () => {
+    const unset = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "worker" }));
+    expect(unset.status, "no source").toBe(1);
+    expect(unset.stderr).toContain(
+      "secrets-guard: wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, and there is no default",
+    );
+    const unknown = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "worker", YOKOHAMA_IDENTITY_SOURCE: "WorkOS" }));
+    expect(unknown.status, "an unknown source").toBe(1);
+    expect(unknown.stderr).toContain(`secrets-guard: wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "WorkOS"`);
+    const open = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "open" }));
+    expect([open.status, open.stderr], "the open door").toEqual([0, ""]);
   });
   it("refuses a judged file it cannot read, before asking wrangler", () => {
     const empty = mkdtempSync(join(tmpdir(), "secrets-guard-cwd-"));

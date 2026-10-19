@@ -232,7 +232,8 @@ export function isAnonymousAddress(address: string): boolean {
  * an archive post is `{"record": "…", "table": "…"}`, two strings (the layer's `ArchivePost`), so the id is the
  * `table` string's own `id`, read as a create's is (`bodyId`) — when the store would accept it (`isSafeId`); else no
  * one, and the house's `dispatch` answers the layer's 401 as before. `headers` are the request's as sent, before the
- * strip rule. The body is parsed for this one member and forwarded as the bytes it was.
+ * strip rule. With no device id it parses twice: the body for its `table` member, then that string, encoded again as
+ * UTF-8, for its own `id`. Nothing re-serializes the body, which is forwarded as the bytes it was.
  */
 export function anonymousIdentity(headers: Headers, body: Uint8Array | null): Identity {
   const device = headers.get(DEVICE_HEADER);

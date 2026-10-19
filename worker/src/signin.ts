@@ -357,10 +357,10 @@ const discovered = new Map<string, Promise<Discovery>>();
  * **The issuer's discovery document**, from `<issuer>/.well-known/openid-configuration` (trailing slashes on the
  * issuer dropped), cached per isolate as `keySourceAt` caches a key set: the calls that arrive while a fetch is out
  * JOIN it, so one fetch serves them all; a fetch that fails, answers anything but 200, answers a document without
- * the four endpoints, with a URL the rule below refuses, or naming another issuer REJECTS every call that joined it
- * and caches nothing, so the next call fetches again. A document that loaded is kept for the isolate's life (there is no refresh: a key
- * rotation moves the JWKS, not the document). `fetcher` is the first caller's; a call that finds the issuer cached or
- * in flight does not use its own.
+ * the four endpoints, with a URL the rules below refuse, or naming another issuer REJECTS every call that joined it
+ * and caches nothing, so the next call fetches again. A document that loaded is kept for the isolate's life (there is
+ * no refresh: a key rotation moves the JWKS, not the document). `fetcher` is the first caller's; a call that finds the
+ * issuer cached or in flight does not use its own.
  *
  * The document must be a JSON object with `issuer`, `authorization_endpoint`, `token_endpoint` and `jwks_uri` each a
  * string that parses as a URL, and `end_session_endpoint` a URL, `null` or absent (absent reads `null`), so the
@@ -369,6 +369,9 @@ const discovered = new Map<string, Promise<Discovery>>();
  * §3.1–§3.2; ruling R-24). An `http:` token endpoint would carry the client secret and the code in cleartext; an
  * `http:` issuer would let a network attacker serve a document of its own, naming the configured issuer and its own
  * `jwks_uri`; and a fragment would swallow the parameters `leaveUrl` appends. A refusal names the field.
+ *
+ * Its `issuer` carries no query either, not even an empty one (OpenID Connect Discovery 1.0 §3: an issuer has no query
+ * and no fragment), read off the raw text as the fragment is; an endpoint may carry a query. A refusal names it.
  *
  * Its `issuer` must be the configured `issuer`, trailing slashes ignored on both sides (OpenID Connect Discovery 1.0
  * §4.3; ruling R-19): a document served under one issuer that names another is refused, rather than letting its
@@ -414,6 +417,8 @@ async function loadDiscovery(url: string, configured: string, fetcher: typeof fe
     return held(name, value);
   };
   const issuer = endpoint("issuer");
+  // The raw text, not `new URL(issuer).search`, which reads "" for an empty query.
+  if (issuer.includes("?")) throw new Error(`the discovery document at ${url} is refused: its issuer carries a query`);
   if (withoutTrailingSlashes(issuer) !== withoutTrailingSlashes(configured)) {
     throw new Error(`the discovery document at ${url} names issuer ${issuer} but the configured issuer is ${configured}`);
   }

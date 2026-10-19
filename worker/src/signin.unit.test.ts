@@ -643,6 +643,26 @@ describe("discovery's issuer (OpenID Connect Discovery 1.0 §4.3; ruling R-19)",
     jwks_uri: "https://idp.test/jwks",
   });
 
+  // OpenID Connect Discovery 1.0 §3: an issuer is a URL with no query and no fragment. The fragment is every URL's rule
+  // here (R-24); the query is the issuer's own, since an endpoint may carry one. Each row's configured issuer is the
+  // document's, so R-19's comparison passes and the refusal is the issuer's own. Mutants: the query check dropped; the
+  // check read off the parsed URL's `search`, which is "" for an empty query; the check made every URL's rule.
+  it("refuses an issuer that carries a query, even an empty one, or a fragment, naming it; an endpoint's query stays", async () => {
+    const rows: Array<[string, string]> = [
+      ["https://query.discovery.test?tenant=a", "its issuer carries a query"],
+      ["https://empty-query.discovery.test?", "its issuer carries a query"],
+      ["https://fragment.discovery.test#x", "its issuer carries a fragment"],
+    ];
+    for (const [issuer, why] of rows) {
+      await expect(discovery(issuer, recording(200, served(issuer))), issuer).rejects.toThrow(
+        `the discovery document at ${issuer}/.well-known/openid-configuration is refused: ${why}`,
+      );
+    }
+    const clean = "https://endpoint-query.discovery.test";
+    const withQuery = { ...served(clean), authorization_endpoint: `${clean}/authorize?tenant=a` };
+    expect((await discovery(clean, recording(200, withQuery))).authorization_endpoint).toBe(`${clean}/authorize?tenant=a`);
+  });
+
   // Mutants: the comparison dropped; trailing slashes ignored on one side only; a mismatch cached.
   it("refuses a document naming another issuer, naming both, and caches nothing; a trailing slash on either side is no difference", async () => {
     const configured = "https://mixup.discovery.test";

@@ -1714,6 +1714,26 @@ describe("the anonymous archive (the auth cycle, Task 5; design §4.4, R-A4, R-A
     }
   });
 
+  // The shell's own device check for a NAMED caller: the object re-judges (the next cell), so the metadata alone cannot
+  // tell whether the shell checked; what the archive object was handed can. Mutant: the shell forwarding a header that
+  // is no device id raw whenever the caller is not anonymous (a signed-in or claimed caller).
+  it("a signed-in post whose device header is no device id hands the object no device, and the metadata reads none", async () => {
+    const { token, keys } = await devDoor();
+    const who = "undeviced@t.test";
+    const id = "local-c3c3c3c3c3c3c3c3";
+    const path = `browser/${await segmentOf(who)}/rev7/over/${id}.json`;
+    const from = seconds();
+    const res = await through("/api/archive", {
+      headers: { "Cf-Access-Jwt-Assertion": token, "X-Yokohama-Claimed-User": who, [DEVICE_HEADER]: "0123456789ABCDEF" },
+      body: pairAs(id),
+      keys,
+    });
+    const to = seconds();
+    expect([res.status, JSON.parse(res.text)]).toEqual([201, { leaf: "over", path, identical: false }]);
+    expect(res.archive, "the caller's own object, handed no device").toEqual([{ name: `archive:${who}`, headers: { "x-yokohama-user": who } }]);
+    stamped(await metaOf(`test/${path}`), { caller: who, device: "none", rev: "7", why: "over" }, from, to, path);
+  });
+
   // The archive object judges the device again (`deviceOf`): the shell sets the header for a device id alone, and the
   // object reads nothing else as one. Driven directly, as the Worker would never send it. Mutant: `Incoming.device` the
   // raw header (the metadata reads the uppercase value).

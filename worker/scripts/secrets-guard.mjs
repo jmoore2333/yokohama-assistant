@@ -12,7 +12,10 @@
 // directory, where wrangler resolves the same `--config` — and requires, beside the worker door: under `workos`
 // both `YOKOHAMA_OIDC_CLIENT_SECRET` (the WorkOS API key) and `YOKOHAMA_SESSION_SECRET`; under `oidc` the session
 // secret alone (the client secret is optional there: PKCE); under `access`, and at the open door, nothing. A
-// missing one refuses the deploy, naming it and its `npx wrangler secret put <name> --config <file>` line. The
+// missing one refuses the deploy, naming it and its `npx wrangler secret put <name> --config <file>` line. A worker
+// door with no source, or one the shell does not know, names no arm to judge the secrets against, so it refuses too,
+// in the shell's words with the file named, as the deploy guard's own refusal of the same file reads (the deploy
+// guard refuses it first in every deploy script; this guard run alone must not pass a reading it cannot make). The
 // listing names secrets and never holds a value, so the session secret's 32-byte floor stays the shell's to refuse.
 // A judged file the command cannot read refuses before wrangler is asked.
 //
@@ -30,7 +33,7 @@
 // refusal, never a pass.
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { doorOf, readConfig, sourceOf } from "./deploy-guard.mjs";
+import { doorOf, readConfig, SOURCES, sourceOf } from "./deploy-guard.mjs";
 
 /** The names a secret must never have, and why. */
 export const FORBIDDEN_SECRETS = Object.freeze({
@@ -67,10 +70,22 @@ export function requiredSecrets(judged) {
   return REQUIRED_SECRETS[judged.source];
 }
 
-/** `wrangler secret list`'s output judged: `[]` when no secret is forbidden and none the judged file requires is
- *  missing (`judged`: `{ file, door, source }`, R-48; absent, the forbidden names alone); one sentence per forbidden
- *  name, then one per missing secret; ONE sentence when the listing cannot be read — a listing that does not parse
- *  is not a pass, and nothing else is judged of it. */
+/** The refusal of a worker-door file whose source the shell refuses (`config.ts`'s `source`: absent, or not one of
+ *  the deploy guard's `SOURCES`), in the shell's sentence with the file named; `[]` for any other door, or no file. */
+function sourceRefusal(judged) {
+  if (judged?.door !== "worker" || (typeof judged.source === "string" && Object.hasOwn(SOURCES, judged.source))) return [];
+  const shell =
+    judged.source === undefined
+      ? "must be access, oidc or workos under the worker door — it is not set, and there is no default: who vouches for an address is a deployment decision"
+      : `must be access, oidc or workos — got ${JSON.stringify(judged.source)}`;
+  return [`secrets-guard: ${judged.file}'s YOKOHAMA_IDENTITY_SOURCE ${shell}; the secrets it requires cannot be judged without one of the three`];
+}
+
+/** `wrangler secret list`'s output judged against the judged file (`judged`: `{ file, door, source }`, R-48; absent,
+ *  the forbidden names alone): one sentence per forbidden name, then the refusal of a worker-door file whose source
+ *  the shell refuses (`sourceRefusal`), then one per secret the file requires that the listing lacks, and `[]` when
+ *  there is none of the three; ONE sentence when the listing cannot be read — a listing that does not parse is not a
+ *  pass, and nothing else is judged of it. */
 export function judgeSecrets(listingJson, judged) {
   let listing;
   try {
@@ -92,7 +107,7 @@ export function judgeSecrets(listingJson, judged) {
         `secrets-guard: ${judged.file}'s Worker holds no secret named ${name}, which YOKOHAMA_IDENTITY_SOURCE=${judged.source} requires — ` +
         `${REQUIRED_WHY[name]}; without it the shell answers every request 500: npx wrangler secret put ${name} --config ${judged.file}`,
     );
-  return [...forbidden, ...missing];
+  return [...forbidden, ...sourceRefusal(judged), ...missing];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

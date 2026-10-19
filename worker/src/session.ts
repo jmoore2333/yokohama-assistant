@@ -22,8 +22,9 @@
  * **Reading is verify-then-parse:** the MAC is checked by `crypto.subtle.verify` (constant time) over the bytes the
  * request carried, and the payload is decoded and parsed only once it verifies. The MAC segment must be 43
  * characters, refused on its length before anything decodes it, so no decoding or verifying is spent on an
- * attacker-sized segment. Each segment must be the one spelling the minter writes (no padding, no
- * whitespace, no standard alphabet, no stray trailing bits), the payload's bytes must be exactly UTF-8 with no
+ * attacker-sized MAC segment (a long body under a 43-character MAC is still hashed once, by the verify). Each
+ * segment must be the one spelling the minter writes (no padding, no whitespace, no standard alphabet, no stray
+ * trailing bits), the payload's bytes must be exactly UTF-8 with no
  * byte-order mark, and a payload must hold its type's fields with their types (whole seconds for the times). Any
  * exception on the way (a bad segment, bad JSON, a key the platform refuses) reads as nobody: a cookie never
  * reaches `answer` as an exception. The shape check is also what keeps one cookie from reading as the other, since
