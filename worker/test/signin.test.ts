@@ -6,7 +6,7 @@ import type { Env } from "../src/env";
 import { House } from "../src/house";
 import type { KeySource } from "../src/identity";
 import { NOT_AN_OPERATOR } from "../src/admin";
-import { CROSS_SITE, handle, SESSION_CHALLENGE } from "../src/index";
+import { CROSS_SITE, handle, NOT_SIGNED_IN, SESSION_CHALLENGE } from "../src/index";
 import type { Limiter } from "../src/limits";
 import { callerTag } from "../src/redact";
 import { clearCookie, cookieValue, LOGIN_COOKIE, mintLogin, mintSession, readLogin, readSession, SESSION_COOKIE } from "../src/session";
@@ -407,7 +407,9 @@ describe("the session cookie names the caller", () => {
     // Premise: the same assertion names RED under access.
     expect(await (await me(env, { "Cf-Access-Jwt-Assertion": assertion })).json()).toEqual({ mode: "cf-access", user: RED });
     asked = 0;
-    expect(await (await me(withAccess, { "Cf-Access-Jwt-Assertion": assertion })).json()).toEqual({ mode: "cf-access", user: null });
+    // Under workos the assertion names no one, so `/api/me` is the shell's 401 with the challenge (ruling R-44).
+    const named = await me(withAccess, { "Cf-Access-Jwt-Assertion": assertion });
+    expect([named.status, named.headers.get("WWW-Authenticate")]).toEqual([401, SESSION_CHALLENGE]);
     expect(asked, "the Access keys are never asked under workos").toBe(0);
     expect(await (await me(env, { cookie: `${SESSION_COOKIE}=${await session()}` })).json()).toEqual({ mode: "cf-access", user: null });
   });
@@ -428,10 +430,45 @@ describe("the session cookie names the caller", () => {
       const under = await handle(req(), env, createExecutionContext(), keys, issuer());
       expect([under.status, under.headers.has("WWW-Authenticate")], `${label}, under access`).toEqual([401, false]);
     }
-    // On a 401 alone: a 200 and a 403 carry none.
-    expect((await call(get("/api/me"))).headers.has("WWW-Authenticate"), "a 200").toBe(false);
+    // On a 401 alone: a 200 and a 403 carry none. (`/api/me` with no caller is a 401 under an arm since R-44.)
+    const health = await call(get("/api/health"));
+    expect([health.status, health.headers.has("WWW-Authenticate")], "a 200").toEqual([200, false]);
     const foreign = await call(post("/api/games", { ...JSON_TYPE, Origin: FOREIGN }, CREATE_BODY));
     expect([foreign.status, foreign.headers.has("WWW-Authenticate")], "a 403").toEqual([403, false]);
+  });
+
+  // Ruling R-44, reversing C-1 for `/api/me` under a sign-in arm ONLY: a caller-less `GET`/`HEAD /api/me` is the shell's
+  // own 401 with the session challenge, so a first visitor at a shared table link meets the client's sign-in card,
+  // never the door's "This server couldn't tell who you are" card, which is for an operator. The path alone is read,
+  // so a query changes nothing; any other method stays the house's. Under access nothing moves: the module's 200
+  // `user: null` (the row here, and `test/worker.test.ts`'s "no identity: /api/me reads user null…"). A session cookie
+  // on the same route is the 200 naming the caller (the cells above and below). Mutants: the rule dropped (the arm
+  // rows); the rule under access too (the access row); the rule on any method (the POST row); the rule over a session
+  // too (the "names the caller" cell above).
+  it("under a sign-in arm a caller-less /api/me is the shell's 401 with the challenge; under access it stays the 200 naming nobody", async () => {
+    const v = await session();
+    const flipped = v.slice(0, -1) + (v.endsWith("A") ? "B" : "A");
+    const rows: Array<[string, Request]> = [
+      ["no cookie", get("/api/me")],
+      ["a query", get("/api/me?fresh=1")],
+      ["a bad-MAC cookie", get("/api/me", { cookie: `${SESSION_COOKIE}=${flipped}` })],
+    ];
+    for (const [label, req] of rows) {
+      const { result: res, reached } = await reaching(() => call(req));
+      expect([res.status, await res.text()], label).toEqual([401, JSON.stringify({ error: NOT_SIGNED_IN })]);
+      expect([res.headers.get("WWW-Authenticate"), res.headers.has("Set-Cookie"), res.headers.get("Cache-Control")], label).toEqual([
+        'Yokohama-Session realm="/enter"',
+        false,
+        "no-store",
+      ]);
+      expect(reached, `${label}: the shell answers, no object`).toBe(0);
+    }
+    const head = await call(new Request(`${ORIGIN}/api/me`, { method: "HEAD" }));
+    expect([head.status, head.headers.get("WWW-Authenticate"), await head.text()], "HEAD").toEqual([401, SESSION_CHALLENGE, ""]);
+    const posted = await reaching(() => call(post("/api/me", JSON_TYPE, "{}")));
+    expect([posted.house, await posted.result.text() === JSON.stringify({ error: NOT_SIGNED_IN })], "a POST is the house's").toEqual([1, false]);
+    const under = await handle(get("/api/me"), env, createExecutionContext(), keys, issuer());
+    expect([under.status, await under.json(), under.headers.has("WWW-Authenticate")], "under access").toEqual([200, { mode: "cf-access", user: null }, false]);
   });
 
   // Ruling R-36: since Task 5 a caller-less archive post files anonymously, so the archive target's one remaining 401

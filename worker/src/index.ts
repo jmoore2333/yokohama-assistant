@@ -117,6 +117,11 @@ export function isApiPath(pathname: string): boolean {
  *  `mode` stays `cf-access` (R2.2-m2). */
 export const SESSION_CHALLENGE = 'Yokohama-Session realm="/enter"';
 
+/** The 401 a caller-less `GET`/`HEAD /api/me` answers under a sign-in arm (ruling R-44; host-written): the shell's
+ *  own, since the layer's sentence names the edge Worker's internal header. The challenge beside it is what the
+ *  client reads. */
+export const NOT_SIGNED_IN = "no signed-in user — sign in at /enter";
+
 /** `res` with [`API_HEADERS`] set, and with `WWW-Authenticate: SESSION_CHALLENGE` when `challenge` and `res` is a
  *  401 — a fresh `Response` over the same body and status, since an object's answer may be immutable — or `res`
  *  ITSELF for a 101, which carries its socket, cannot be rebuilt (the constructor refuses the status) and is sent
@@ -245,6 +250,16 @@ const DAY_SECONDS = 86_400;
  *    grammar already accepts. It is formed for this one target alone, so no
  *    game route ever sees it, and never over a caller step 5 found. Under
  *    `open` nothing changes: a claim is the caller.
+ * 5b. Under a sign-in arm (`oidc`, `workos`), a `GET` or `HEAD` of `/api/me`
+ *    (the path alone: a query changes nothing) with NO caller is the shell's
+ *    own 401 `NOT_SIGNED_IN`, which `handle` gives the session challenge, and
+ *    no object is reached (ruling R-44). The module would answer 200 with
+ *    `user: null`, which the client's door draws as "This server couldn't
+ *    tell who you are" with a note for the operator (`web/src/Door.tsx`),
+ *    false for a first visitor; the 401 is its cue for the sign-in card.
+ *    Under `access` nothing changes: the module's 200 `user: null` stands
+ *    (correction C-1), since there "nobody" means the edge named nobody, the
+ *    operator's matter. Any other method is the house's.
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
@@ -339,6 +354,13 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   // an `x-yokohama-*` one, which the strip below drops.
   if (config.door === "worker" && target.kind === "archive" && callerName(identity) === undefined) {
     identity = anonymousIdentity(req.headers, body);
+  }
+  // Step 5b (ruling R-44): under a sign-in arm, "who am I" with no caller is "sign in", never the module's 200 naming
+  // nobody, which the client's door reads as a server that could not tell who you are. C-1's 200 stays under `access`.
+  const whoAmI = target.kind === "house" && url.pathname === "/api/me" && SAFE_METHODS.has(req.method);
+  if (whoAmI && armOf(config) !== null && identity.kind === "none") {
+    const body401 = req.method === "HEAD" ? null : errorBody(NOT_SIGNED_IN);
+    return done(new Response(body401, { status: 401, headers: { "content-type": "application/json" } }));
   }
   // Renewed on a 2xx (`handle`); never on the leave's answer, which clears the cookie a renewal would set again.
   const renew: Renewal | null =
