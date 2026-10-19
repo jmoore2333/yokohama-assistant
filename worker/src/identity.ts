@@ -15,14 +15,14 @@ export type Identity =
   | { kind: "dev"; email: string }
   /** The open door's caller (M6.5c2, spec §2.1; review R2.2-m6): a name a
    *  caller claimed, held only to what a header can carry. Its own kind, so
-   *  the operator gate's person-only rule and the archive object's naming
-   *  read it without a special case, and `dev` stays the live tier's kind
+   *  the operator gate (a person or a session only) and the archive object's
+   *  naming read it without a special case, and `dev` stays the live tier's kind
    *  under `worker`. */
   | { kind: "claimed"; name: string }
   /** A signed-in caller under a sign-in arm (`oidc`, `workos`; the auth cycle, design §4.2): the address the
    *  session cookie carries, which the issuer vouched for at the sign-in, and the issuer's session id when it sent
    *  one, which sign-out ends. `renew` says the cookie is past half its life (`renewDue`), so a 2xx answer carries a
-   *  fresh one. Its own kind, so the operator gate's person-only rule reads it as no person. */
+   *  fresh one. The operator gate admits it exactly as a person (ruling R-27). */
   | { kind: "session"; email: string; sid: string | null; renew: boolean }
   | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }

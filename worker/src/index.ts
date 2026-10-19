@@ -1,6 +1,6 @@
 import { ADMIN_NEEDS_JSON, adminRoute, isJsonEssence, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
-import { shellConfig, type ShellConfig, type Source } from "./config";
+import { shellConfig, type Limits, type ShellConfig, type Source } from "./config";
 import type { Env } from "./env";
 import { House } from "./house";
 import {
@@ -16,7 +16,7 @@ import {
   type IdentityConfig,
   type KeySource,
 } from "./identity";
-import { limited } from "./limits";
+import { IP_HEADER, limited, limitKey } from "./limits";
 import { errorBody, log, respond } from "./respond";
 import { isSafeId, route, safeReturnTo, type Target } from "./route";
 import {
@@ -210,8 +210,9 @@ const DAY_SECONDS = 86_400;
  *    issuer's authorize URL, setting the login cookie; with either, its
  *    CALLBACK: the state checked against the login cookie, the code
  *    exchanged, and a 302 to the cookie's `return_to` setting the session
- *    cookie — or `/#/lobby?signin=failed` — with the login cookie cleared
- *    either way.
+ *    cookie — or `/?signin=failed#/lobby` — with the login cookie cleared
+ *    either way. The callback spends the create limiter by IP before any
+ *    network call (ruling R-31); the start spends none.
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
@@ -256,10 +257,10 @@ const DAY_SECONDS = 86_400;
  *    gate (`operatorGate`): under the open door, or with
  *    `YOKOHAMA_WEB_ADMINS` absent, they are unrouted `/api/*`, the house's
  *    (M6.5c2: a claimed name is never an operator's rights); a caller who is
- *    not a PERSON on the list is 403 `this address is not an operator here`,
- *    a dev-door identity among them whatever address it claims; a listed
- *    person passes with `X-Yokohama-Operator` set to their address, and the
- *    route names the object (`adminRoute`): the listing is the house's, an
+ *    not a PERSON or a SESSION on the list (ruling R-27) is 403 `this address
+ *    is not an operator here`, a dev-door identity among them whatever address
+ *    it claims; a listed one passes with `X-Yokohama-Operator` set to their
+ *    address, and the route names the object (`adminRoute`): the listing is the house's, an
  *    expire the table's, `?force` given a value the 400 `adminRoute` names
  *    (the orchestrator's ruling I-72), an expire whose type is not
  *    `application/json` the 400 `ADMIN_NEEDS_JSON`, in the layer's own words
@@ -395,8 +396,10 @@ function armOf(config: ShellConfig): Arm | null {
   return source === null || source === "access" || signin === null || session === null ? null : { source, signin, session };
 }
 
-/** Every failed sign-in's landing (the auth cycle, design §4.3). */
-export const SIGNIN_FAILED = "/#/lobby?signin=failed";
+/** Every failed sign-in's landing (the auth cycle, design §4.3; ruling R-30): the query OUTSIDE the hash, so the
+ *  client's `parseRoute`, which reads the hash alone, draws the lobby, and the query still shows in the address bar.
+ *  Inside the hash (`/#/lobby?signin=failed`) the route would be the door. */
+export const SIGNIN_FAILED = "/?signin=failed#/lobby";
 
 /** Access's own sign-out path: it ends the Access session and its cookie. */
 const ACCESS_LOGOUT = "/cdn-cgi/access/logout";
@@ -414,7 +417,7 @@ async function enter(req: Request, url: URL, config: ShellConfig, fetcher: typeo
   const arm = armOf(config);
   if (arm === null) return redirect("/#/lobby", []);
   const isCallback = url.searchParams.has("code") || url.searchParams.has("error");
-  return isCallback ? callback(req, url, arm, fetcher, now) : start(url, arm, fetcher, now);
+  return isCallback ? callback(req, url, arm, config.limits, fetcher, now) : start(url, arm, fetcher, now);
 }
 
 /** The redirect URI the issuer registered: this origin's `/enter`, the one path both halves live on. */
@@ -453,12 +456,13 @@ async function start(url: URL, arm: Arm, fetcher: typeof fetch, now: number): Pr
  * carries no live login cookie this deployment signed (`no-login`: absent, forged, expired, or already cleared by an
  * earlier callback, which is what makes a replayed callback fail), when the issuer answered an `error`
  * (`issuer-error`), when the `code` is empty (`no-code`), or when the `state` is not the login cookie's, compared in
- * constant time (`state`). Then ONE exchange (`exchange`, with the caller's IP and user agent, which WorkOS's Radar
+ * constant time (`state`) — each costing a MAC and nothing else. Then the create limiter (`callbackLimited`; ruling
+ * R-31), refused as `limited`. Then ONE exchange (`exchange`, with the caller's IP and user agent, which WorkOS's Radar
  * reads, the stored verifier and nonce, and the arm's key source); a `null` from it — logged by the arm itself — or
  * anything that throws is the failed landing. On success: a 302 to the login cookie's landing, held to
  * `safeReturnTo` once more, setting the session cookie for the configured days. Every outcome clears the login cookie.
  */
-async function callback(req: Request, url: URL, arm: Arm, fetcher: typeof fetch, now: number): Promise<Response> {
+async function callback(req: Request, url: URL, arm: Arm, limits: Limits, fetcher: typeof fetch, now: number): Promise<Response> {
   const refused = (reason: string): Response => {
     log("signin-refused", { source: arm.source, reason });
     return failedSignin();
@@ -469,6 +473,7 @@ async function callback(req: Request, url: URL, arm: Arm, fetcher: typeof fetch,
   const code = url.searchParams.get("code");
   if (code === null || code === "") return refused("no-code");
   if (!sameState(url.searchParams.get("state"), login.state)) return refused("state");
+  if (await callbackLimited(req, limits)) return refused("limited");
   try {
     const doc = await documentOf(arm, fetcher);
     const jwks = doc === null ? WORKOS_JWKS(arm.signin.clientId) : doc.jwks_uri;
@@ -480,7 +485,7 @@ async function callback(req: Request, url: URL, arm: Arm, fetcher: typeof fetch,
         redirectUri: redirectUri(url),
         verifier: login.verifier,
         nonce: login.nonce,
-        ip: req.headers.get("cf-connecting-ip"),
+        ip: req.headers.get(IP_HEADER),
         userAgent: req.headers.get("user-agent"),
       },
       { fetcher, keys: armKeys(jwks, fetcher), discovery: doc, nowSeconds: now },
@@ -494,6 +499,25 @@ async function callback(req: Request, url: URL, arm: Arm, fetcher: typeof fetch,
   } catch (e) {
     log("signin-failed", { source: arm.source, step: "callback", error: String(e) });
     return failedSignin();
+  }
+}
+
+/**
+ * Whether the create limiter refuses this callback (ruling R-31). The login cookie is stateless, so for its ten minutes
+ * any number of callbacks could each drive one code exchange under the deployment's API key: the callback spends
+ * `limits.create` under the key `limitKey` gives a request with no caller — `ip:<cf-connecting-ip>`, or `ip:unknown`
+ * without the header — the key a caller-less request is counted under at either door, so the limiter keeps one key
+ * format. A limiter that throws is logged `limiter-failed` and the callback proceeds, as `limited` does (AD-6: the
+ * limit bounds cost, never access).
+ */
+async function callbackLimited(req: Request, limits: Limits): Promise<boolean> {
+  try {
+    // The door is `worker` wherever a sign-in arm runs; with no caller `limitKey` reads the IP alone either way.
+    const key = await limitKey("worker", NO_ONE, req.headers.get(IP_HEADER), "create");
+    return !(await limits.create.limit({ key })).success;
+  } catch (e) {
+    log("limiter-failed", { error: String(e) });
+    return false;
   }
 }
 

@@ -53,19 +53,24 @@ export function isJsonEssence(contentType: string | null): boolean {
  *   gate reads the door first rather than lean on that refusal — and under
  *   `worker` with `YOKOHAMA_WEB_ADMINS` absent. The routes are then unrouted
  *   `/api/*`: the house's `dispatch`, which answers the layer's own 404;
- * - `operator`: a PERSON — an Access assertion that names an address — whose
- *   address the list holds. Both are trimmed and ASCII-lowercased as the
- *   layer's `User::parse` reads an address (`resolveIdentity`, `shellConfig`),
- *   so they compare as the layer would;
- * - `refused`: anyone else — a person not listed, no one, an identity reached
- *   through the dev door, which NEVER counts, even when the address it claims
- *   is on the list, and a claimed name.
+ * - `operator`: a PERSON — an Access assertion that names an address — or a
+ *   SESSION — a sign-in arm's cookie, whose address the issuer vouched for
+ *   (the auth cycle's ruling R-27: the trust the design gives a seat and an
+ *   archive; whoever holds the session secret already owns the deployment) —
+ *   whose address the list holds. Both are trimmed and ASCII-lowercased as the
+ *   layer's `User::parse` reads an address (`resolveIdentity`, the sign-in
+ *   arms, `shellConfig`), so they compare as the layer would;
+ * - `refused`: anyone else — a person or a session not listed, no one, an
+ *   identity reached through the dev door, which NEVER counts, even when the
+ *   address it claims is on the list, and a claimed name.
  */
 export type Gate = { kind: "off" } | { kind: "refused" } | { kind: "operator"; email: string };
 
 export function operatorGate(door: Door, admins: string[] | null, identity: Identity): Gate {
   if (door === "open" || admins === null) return { kind: "off" };
-  if (identity.kind === "person" && admins.includes(identity.email)) return { kind: "operator", email: identity.email };
+  if ((identity.kind === "person" || identity.kind === "session") && admins.includes(identity.email)) {
+    return { kind: "operator", email: identity.email };
+  }
   return { kind: "refused" };
 }
 

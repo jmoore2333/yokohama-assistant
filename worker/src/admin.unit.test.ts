@@ -14,6 +14,14 @@ describe("the operator gate (spec §2.9)", () => {
     expect(operatorGate("worker", ADMINS, { kind: "person", email: "boss@t.test" })).toEqual({ kind: "operator", email: "boss@t.test" });
   });
 
+  // The auth cycle's ruling R-27: a sign-in arm's session is a provider-verified address, an operator candidate exactly
+  // as a person is. Mutants: the gate still person-only (the listed session refused); a session passed whatever the
+  // list (the unlisted one passes).
+  it("passes a listed session, with its address, and refuses an unlisted one (R-27)", () => {
+    expect(operatorGate("worker", ADMINS, { kind: "session", email: "boss@t.test", sid: "s1", renew: false })).toEqual({ kind: "operator", email: "boss@t.test" });
+    expect(operatorGate("worker", ADMINS, { kind: "session", email: "red@t.test", sid: null, renew: true })).toEqual({ kind: "refused" });
+  });
+
   it("refuses a dev-door identity claiming a listed address (battery 32)", () => {
     expect(operatorGate("worker", ADMINS, { kind: "dev", email: "boss@t.test" })).toEqual({ kind: "refused" });
   });
@@ -24,7 +32,12 @@ describe("the operator gate (spec §2.9)", () => {
   });
 
   it("is off with no list, whoever calls", () => {
-    for (const identity of [{ kind: "person", email: "boss@t.test" }, { kind: "dev", email: "boss@t.test" }, { kind: "none" }] as const) {
+    for (const identity of [
+      { kind: "person", email: "boss@t.test" },
+      { kind: "dev", email: "boss@t.test" },
+      { kind: "session", email: "boss@t.test", sid: null, renew: false },
+      { kind: "none" },
+    ] as const) {
       expect(operatorGate("worker", null, identity), identity.kind).toEqual({ kind: "off" });
     }
   });

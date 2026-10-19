@@ -5,6 +5,7 @@ import { Archive } from "../src/archive";
 import type { Env } from "../src/env";
 import { House } from "../src/house";
 import type { KeySource } from "../src/identity";
+import { NOT_AN_OPERATOR } from "../src/admin";
 import { CROSS_SITE, handle, SESSION_CHALLENGE } from "../src/index";
 import type { Limiter } from "../src/limits";
 import { callerTag } from "../src/redact";
@@ -37,7 +38,9 @@ const JSON_TYPE = { "content-type": "application/json" };
 /** The archive post that names no safe id: the house's 401 with no caller, now and after Task 5 (correction C-1). */
 const NAMELESS_ARCHIVE = '{"record":"","table":""}';
 const LOBBY = "/#/lobby";
-const FAILED = "/#/lobby?signin=failed";
+/** The failed landing (ruling R-30): the query OUTSIDE the hash, so the client's `parseRoute`, which reads the hash
+ *  alone, draws the lobby. */
+const FAILED = "/?signin=failed#/lobby";
 
 /** The shell as a `workos` deployment (the brief's override): Access's pair dropped, the arm's three set. */
 const ENV: Env = {
@@ -317,7 +320,7 @@ describe("/enter completes the sign-in", () => {
 
   // Mutants: the state compared on a prefix or not at all; the exchange run before the state check; a failure that
   // sets the session cookie or leaves the login cookie; the landing another place.
-  it("a state mismatch, a missing login cookie, or an exchange answering nobody lands on /#/lobby?signin=failed with no session cookie and no exchange where the state failed", async () => {
+  it("a state mismatch, a missing login cookie, or an exchange answering nobody lands on /?signin=failed#/lobby with no session cookie and no exchange where the state failed", async () => {
     const cookie = { cookie: `${LOGIN_COOKIE}=${await login()}` };
     const rows: Array<[string, Request, Answers, number, string]> = [
       ["a state mismatch", get("/enter?code=x&state=su", cookie), {}, 0, "state"],
@@ -543,5 +546,86 @@ describe("POST /api/leave", () => {
     const write403 = await call(post(`/api/games/${id}/input`, { ...JSON_TYPE, Origin: FOREIGN, cookie }, '{"line":"1"}'), limited, fetcher);
     expect([write403.status, write403.headers.has("Set-Cookie")]).toEqual([403, false]);
     expect([write.asked, fetcher.calls], "no limiter spent, no issuer asked").toEqual([[], []]);
+  });
+});
+
+// Ruling R-31: the login cookie is stateless, so the CALLBACK — each one an `authenticate` POST under the deployment's
+// API key — spends the create limiter by IP, the key a caller-less request gets (`limitKey`), AFTER the checks that
+// cost only a MAC and BEFORE any network call. The start spends nothing. A refusal is the failed landing, never a
+// JSON 429 on a navigation; a limiter that throws is logged and the callback proceeds (AD-6). Mutants: the limiter
+// skipped on the callback; spent on the start too; spent before the state check (a refused callback counts); its
+// answer not read; a throwing limiter that refuses.
+describe("the callback spends the create limiter by IP (R-31)", () => {
+  /** A fake binding that records every key and answers `answer`'s verdict. */
+  function creates(answer: () => boolean): Limiter & { asked: string[] } {
+    const asked: string[] = [];
+    return { asked, limit: async ({ key: k }) => { asked.push(k); return { success: answer() }; } };
+  }
+  const from = (ip: string | null, cookie: string): Record<string, string> => (ip === null ? { cookie } : { cookie, "cf-connecting-ip": ip });
+
+  it("two callbacks from one IP count one key twice; a start and a refused callback count nothing; a refusal lands the failure with no exchange", async () => {
+    const create = creates(() => true);
+    const write = limiter();
+    const counted: Env = { ...ENV, CREATE_LIMIT: create as unknown as RateLimit, WRITE_LIMIT: write as unknown as RateLimit };
+    const fetcher = issuer();
+    expect((await call(get("/enter", { "cf-connecting-ip": "1.1.1.1" }), counted, fetcher)).status).toBe(302);
+    expect(create.asked, "a start spends nothing").toEqual([]);
+    for (let i = 0; i < 2; i++) {
+      const res = await call(get("/enter?code=x&state=st", from("1.1.1.1", `${LOGIN_COOKIE}=${await login()}`)), counted, fetcher);
+      expect(res.headers.get("Location"), `callback ${i + 1}`).toBe("/#/t/sim-1");
+    }
+    expect(create.asked, "both callbacks under the one IP key").toEqual(["ip:1.1.1.1", "ip:1.1.1.1"]);
+    expect(new Set(create.asked).size).toBe(1);
+    const mismatch = await call(get("/enter?code=x&state=su", from("1.1.1.1", `${LOGIN_COOKIE}=${await login()}`)), counted, fetcher);
+    expect(mismatch.headers.get("Location")).toBe(FAILED);
+    expect(create.asked, "a callback refused on its state costs no limiter").toHaveLength(2);
+    await call(get("/enter?code=x&state=st", from(null, `${LOGIN_COOKIE}=${await login()}`)), counted, fetcher);
+    expect(create.asked.at(-1), "no connecting IP reads unknown").toBe("ip:unknown");
+    expect(write.asked, "the write limiter is never asked").toEqual([]);
+    expect(fetcher.calls.filter((c) => c.url === WORKOS_AUTHENTICATE)).toHaveLength(3);
+
+    const refusing = creates(() => false);
+    const shut: Env = { ...ENV, CREATE_LIMIT: refusing as unknown as RateLimit };
+    const refusedFetcher = issuer();
+    const loginValue = await login();
+    const { result: res, lines } = await signinLines(() =>
+      call(get("/enter?code=x&state=st", from("1.1.1.1", `${LOGIN_COOKIE}=${loginValue}`)), shut, refusedFetcher),
+    );
+    expect([res.status, res.headers.get("Location"), res.headers.getSetCookie()]).toEqual([302, FAILED, [clearCookie(LOGIN_COOKIE)]]);
+    expect(res.headers.get("Retry-After"), "a navigation, never the JSON 429").toBeNull();
+    expect(refusedFetcher.calls, "no exchange").toEqual([]);
+    expect(lines.map((l) => [l.event, l.source, l.reason])).toEqual([["signin-refused", "workos", "limited"]]);
+  });
+
+  it("a limiter that throws is logged and the callback proceeds", async () => {
+    const broken = { limit: async () => { throw new Error("binding unavailable"); } };
+    const e: Env = { ...ENV, CREATE_LIMIT: broken as unknown as RateLimit };
+    const fetcher = issuer();
+    const { result: res, lines } = await logsDuring(async () =>
+      call(get("/enter?code=x&state=st", from("1.1.1.1", `${LOGIN_COOKIE}=${await login()}`)), e, fetcher),
+    );
+    expect(res.headers.get("Location"), "the sign-in completes").toBe("/#/t/sim-1");
+    expect(fetcher.calls.filter((c) => c.url === WORKOS_AUTHENTICATE)).toHaveLength(1);
+    expect((lines as Array<{ event: string }>).filter((l) => l.event === "limiter-failed"), "logged once").toHaveLength(1);
+  });
+});
+
+// Ruling R-27: a session is an operator candidate exactly as a person is. Mutant: the gate still person-only.
+describe("a session caller and the operator surface (R-27)", () => {
+  const OPS_ENV: Env = { ...ENV, YOKOHAMA_WEB_ADMINS: "chief@t.test, Boss@T.test" };
+  it("a session caller on the list reaches the operator route; one off the list is the operator 403", async () => {
+    const house = vi.spyOn(House.prototype, "fetch");
+    try {
+      const listed = await call(get("/api/admin/tables", { cookie: `${SESSION_COOKIE}=${await session("boss@t.test")}` }), OPS_ENV);
+      expect(listed.status).toBe(200);
+      expect(Array.isArray((await listed.json<{ tables: unknown }>()).tables), "the house's listing").toBe(true);
+      expect(house.mock.calls.map(([r]) => (r as Request).headers.get("x-yokohama-operator")), "the gate's word, the address").toEqual(["boss@t.test"]);
+    } finally {
+      house.mockRestore();
+    }
+    const unlisted = await call(get("/api/admin/tables", { cookie: `${SESSION_COOKIE}=${await session(RED)}` }), OPS_ENV);
+    expect([unlisted.status, await unlisted.text()]).toEqual([403, JSON.stringify({ error: NOT_AN_OPERATOR })]);
+    const nobody = await call(get("/api/admin/tables"), OPS_ENV);
+    expect(nobody.status, "no session is no operator").toBe(403);
   });
 });
