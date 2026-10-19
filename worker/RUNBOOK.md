@@ -2613,3 +2613,47 @@ first and ends it, 204; `?force` drops a save that cannot be made. Players still
 
 **An automation worth having** (the owner, 2026-10-19): a skill that walks an agent through the sign-in in a
 browser, takes the cookie from the owner, and runs the three calls — recorded here, not built.
+
+## 25. The thirty-seventh deployment — `0.7.1`, the absolute session cap and the red button (2026-10-19, a record)
+
+- **The code:** `security-auth` at `f47909d4` — the change `24728653`, the bump `617377af`, the review's fix round
+  `76a7052e`, the re-review's docs round `f47909d4`; the Worker's TypeScript and module are `76a7052e`'s, since the
+  last commit moved documents alone. The design's R-16 and §4.2 are amended in place; the plan's Review record carries
+  the review (Fable, scoped, on an export: 0 Critical, 4 Important, 10 Minor, 21 of 25 mutants red), the fix round
+  (seven of seven mutants red) and the re-review (nine of nine, docs only). The owner's rulings of the afternoon:
+  gap 1 and gap 2 built now; a malformed deny-list entry skipped with a log line, never a refusal.
+- **What changed for a player:** the session cookie is `v2` with `first`, capped at 90 days from its first issue
+  (`YOKOHAMA_SESSION_MAX_DAYS`, absent — 90 applies), its `Max-Age` the life it has; every `v1` cookie reads as
+  nobody, so the one signed-in account (the owner's) meets the sign-in card and signs in once more. **The red button
+  `YOKOHAMA_DENIED` is wired and NOT SET** — the secret does not exist on the Worker (`wrangler secret list` reads
+  four), so nobody is denied: armed, unpressed; §24 is the recipe.
+- **The build (~17:20Z):** `cd web && npm run build` with the SIX values read from the stage-1 bundle (the project
+  link, the blurb, `Not affiliated with Asmodee`, the site URL, the feed derived, the sign-in notice) and no site key:
+  the release `yokohama-release-8769ddacec481321`, 153 precache entries, 10,093,133 B, the module 1,250,424 B
+  (`wasm-opt 133`), the stamp `signin_notice: true`, `turnstile_sitekey: false`. `cd worker && npm run build`:
+  `factory-glue: 18 exports (a release module: no debug_trap)`, `assemble-assets: 153 precache entries verified`
+  (162 files, 10,132,917 B), `smoke-release: … GET /api/health 200: {"server_version":"0.7.1", …}`.
+- **The deploy:** `npm run deploy` — the deploy guard's door line `wrangler.jsonc deploys the worker door, source
+  workos — WorkOS AuthKit, through its first-party API at the callback`; the secrets guard `4 secrets on
+  wrangler.jsonc's Worker, none named like a switch, and the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and
+  YOKOHAMA_SESSION_SECRET among them`; 6 assets uploaded (154 already there, `index-D32RRaUa.js` among the new);
+  **Worker version `d78b48f8-20a1-4e39-a1ac-c723073d094d`**. Both wrangler files unchanged since stage 1 (source
+  `workos`, the client id, `YOKOHAMA_TURNSTILE` off; no days or cap variable, so 30 and 90 apply). Access still in
+  front of the hostname and the edge rule still disabled: stage 2 (§23) untouched.
+- **The readings, from the owner's workstation over WARP with the browser UA:** `/api/health` 200 `server_version
+  0.7.1` (`identity cf-access`, `archive r2`, the TTLs 90 and 7); `/enter` 302 to the WorkOS authorize URL with
+  `__Host-yokohama_login=v2.…; Max-Age=600`; the owner's Chrome at `/#/lobby`: `/api/me` 401 with
+  `Yokohama-Session realm="/enter"` and the "Sign in to play multiplayer" card — the service worker still serving
+  the stage-1 bundle until a door visit applies the new release. **Not read:** the owner's new `v2` session end to end
+  (the sign-in, the cookie's `first`, a renewal's `Max-Age`); the cap at its 90 days, by its nature; the button
+  pressed (no secret put). The e2e's one red (the whole-game spec on the open door's `/api/leave` 404 — the auth
+  cycle's Task 6; the board's rulings outstanding 12) is a test-fence matter, not this deploy's.
+- **The suites at `f47909d4`** (the Rust crates byte-identical to `0.7.0` but the version): `cargo test` web 559,
+  wasm 10, worker 81; clippy clean; web typecheck clean, vitest 1,553 in 74, `test:wasm` 391 in 16, `npm run e2e`
+  80 of 81 (above); worker typecheck clean, `test:scripts` 794 in 32, the pool 298 in 14 over the debug module. The
+  roster was NOT run: no Rust logic moved; the lane's §2 names the three web-lane crates for a version move, which
+  ran. The tag `v0.7.1` on `f47909d4`, pushed with the branch.
+- **Rollback:** `git revert f47909d4 76a7052e 617377af 24728653` is the full undo of the code; the cheaper one is a
+  redeploy of stage 1's tree (`18d63f28`'s build) with `npm run deploy` — every `v2` cookie then reads as nobody in
+  turn, one re-sign-in each way. The secrets are untouched either way; the deny-list, if ever put, stays put and is
+  read by nothing at stage 1's code.
