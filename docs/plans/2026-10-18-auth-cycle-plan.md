@@ -874,3 +874,12 @@ it("doorLine names the source", …);
   an RS256 pair; `b64url`; `personClaims`; `credentialClaims`), and a shared helper is the house's pattern. Task 3's
   unit file imports from `../test/tokens` and ADDS an ES256 signer there (`P-256`, `ECDSA`/`SHA-256`, the `alg`/`kid`
   header shape the RS256 signer has) for its ES256 cell; nothing is copied. The pre-flight scan's R-2 is withdrawn.
+- **2026-10-18, Task 2's review, ruling R-16 (the design's §4.2 sentence, for Task 9):** `mintSession` derives `expires`
+  from `issued`, so a renewal re-stamps the time and a stolen cookie lives as long as it is used — only rotating the
+  secret ends it. This is R-A2 as the owner accepted it (no session store, renewed on use, rotation the emergency
+  revoke), so the behaviour STANDS and the module doc says it plainly ("… and renewal extends it, so only rotating the
+  secret ends a stolen session"); Task 9 aligns the design's §4.2 "a stolen one is good until it expires" in place,
+  marked and dated, and appends the ruling to §9.4. No absolute session cap this cycle: the payload keeps no sign-in
+  time, so a cap would be a `v2` form after Task 8 pins `v1`. Task 2 closed at `5954b8ee` (review clean after one fix
+  round; two minors deferred to the after review: the MAC-length check pre-empts the padded/spaced MAC rows, so two
+  hand-signed BODY rows are owed to keep the strict decoder's coverage; one doc phrase).
