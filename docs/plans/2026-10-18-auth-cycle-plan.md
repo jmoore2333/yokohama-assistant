@@ -868,3 +868,9 @@ it("doorLine names the source", …);
     cookie's life equals `days`, and after a change of `YOKOHAMA_SESSION_DAYS` every cookie is still due throughout
     the last half of today's days before its expiry (read by the life SPENT instead, a cookie minted under fewer days
     than half of today's would expire before it ever came due — measured). Two cells pin it.
+- **2026-10-18, before Task 3 — C-9 (Task 3 Step 1):** "the RS256 key pair and signing helper from `identity.unit.test.ts`
+  lines 18–50, copied into this file — the pool isolates per file and a shared helper module is what the house avoids"
+  is false on both counts: `identity.unit.test.ts` IMPORTS its signer from the shared `worker/test/tokens.ts` (`signer(kid)`,
+  an RS256 pair; `b64url`; `personClaims`; `credentialClaims`), and a shared helper is the house's pattern. Task 3's
+  unit file imports from `../test/tokens` and ADDS an ES256 signer there (`P-256`, `ECDSA`/`SHA-256`, the `alg`/`kid`
+  header shape the RS256 signer has) for its ES256 cell; nothing is copied. The pre-flight scan's R-2 is withdrawn.
