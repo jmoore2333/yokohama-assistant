@@ -973,3 +973,10 @@ it("doorLine names the source", …);
     the eleventh destination by design; the four moved in Task 4's commit. The brief's renewal row "never on a 401" is
     vacuous (a valid session never meets a 401; a bad-MAC cookie is nobody); the non-2xx guard is pinned by a due
     session on a 404 instead, and the bad-MAC row stays for the header and the absent cookie.
+- **2026-10-19, Task 4 closed at `43e71d84`** (review Approved, 0 Critical / 0 Important / 7 Minor deferred to the after
+  review: four properties the code honours but no cell pins — the leave's write-limiter spend, the configured session
+  lifetime read from `arm.session.days`, the arms' key-source map used rather than bypassed, `redirect_uri` from
+  `url.origin` never a request header — each with the reviewer's cell; `index.ts` at 788 lines with a cohesive
+  ~230-line sign-in block (a module of its own is a candidate, not a defect); duplicated small helpers (`base64url`
+  thrice); `route.ts`'s `enter` doc owes "and the open door"). The reviewer's pool export needed the gitignored
+  `test/fixtures.gen.ts`, `test/corpus.gen.ts`, `.test-assets` and `assets` linked in beside `node_modules` and `gen`.
