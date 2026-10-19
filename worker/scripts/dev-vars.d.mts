@@ -14,3 +14,5 @@ export declare function readIdentity(
   env?: Record<string, string | undefined>,
   file?: string,
 ): { secret: string | null; cookie: string | null; credential: { id: string; secret: string } | null };
+export declare const TWO_IDENTITIES: string;
+export declare function sessionCookieParts(line: string): { name: string; value: string; address: string; expires: number } | null;

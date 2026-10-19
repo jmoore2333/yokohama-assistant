@@ -200,7 +200,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
     const baseRev = basePage?.rev;
     if (typeof last === "number" && typeof baseRev === "number") {
       result.base = last;
-      log(`the house chat's base: last ${last}, rev ${baseRev}, read as ${reader.who}`);
+      log(`the house chat's base: last ${last}, rev ${baseRev}, read as ${reader.who ?? "no one"}`);
     } else {
       // No base, no rows: the `finally` forces the ids again, and the report
       // follows it, as on every other road out.
@@ -318,7 +318,7 @@ export async function replay({ walk, host, archive, corpus, credential, cookie =
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.length > 2) {
-    console.error("usage: node scripts/live-replay.mjs   (no arguments: the origin is the deployed Worker's, and the credential is .dev.vars')");
+    console.error("usage: node scripts/live-replay.mjs   (no arguments: the origin is the deployed Worker's; the identity is .dev.vars' credential, or YOKOHAMA_SESSION_COOKIE, or a session minted per row from YOKOHAMA_SESSION_SECRET)");
     process.exit(2);
   }
   try {

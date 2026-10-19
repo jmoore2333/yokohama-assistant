@@ -3,12 +3,11 @@
 // credential to the one origin, its answer read whole, and the operator's
 // force, sent with only the JSON type.
 
-import { KEYS, ORIGIN, REQUEST_TIMEOUT_MS } from "./credential.mjs";
+import { KEYS, ORIGIN, REQUEST_TIMEOUT_MS, TWO_IDENTITIES } from "./credential.mjs";
 import { errorText, said } from "./judge.mjs";
 import { urlOf } from "./scripts.mjs";
 
-/** The sentence a row with a claimed name is refused in, beside a session cookie (ruling R-39). */
-export const TWO_IDENTITIES = "the session cookie names the caller — a claimed name beside it is two identities";
+export { TWO_IDENTITIES };
 
 /**
  * One row, and its answer read whole. Its headers are who it is sent as:

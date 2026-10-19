@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { COOKIE_NAME, isTestAddress, mintValue } from "./mint-session.mjs";
+import { COOKIE_NAME, cookieLine, fenceSentence, isTestAddress, mintValue } from "./mint-session.mjs";
 
 // **The minted `.test` session's cells** (auth cycle, Task 8). The script re-implements `src/session.ts`'s
 // `mintSession` with `node:crypto`, since plain `node` cannot import TypeScript; this file is where vitest, which
@@ -80,6 +80,37 @@ describe("the .test fence", () => {
     expect(r.out).toBe("");
   });
 
+  // **The fence judges the raw argument** (review I-3): a fence judged after `trim()` or `toLowerCase()` while the raw
+  // value is minted would let `RED@T.TEST` out of the `test/` root, since the Worker's `is_test_identity` is
+  // case-sensitive. Both call sites — the script and `cookieLine`, which the replay and the live tier call — are held.
+  it("refuses an address that is a .test one only once trimmed or lower-cased, as the process and as cookieLine", () => {
+    for (const a of ["RED@T.TEST", "red@t.test ", "red@t.test\n", "Red@T.Test"]) {
+      const r = mint([a]);
+      expect(r.code, JSON.stringify(a)).toBe(2);
+      expect(r.out, JSON.stringify(a)).toBe("");
+      expect(r.err, JSON.stringify(a)).toContain("only a .test address may be minted");
+      expect(() => cookieLine(a, SECRET, 1_789_000_000), JSON.stringify(a)).toThrow("mint-session: only a .test address may be minted");
+    }
+    expect(() => cookieLine("red@t.test", SECRET, 1_789_000_000)).not.toThrow();
+  });
+
+  it("cookieLine is the printed line's own function: the name, '=', and the golden value", () => {
+    expect(cookieLine("red@t.test", SECRET, 1_789_000_000)).toBe(`${COOKIE_NAME}=${GOLDEN_SESSION}`);
+  });
+
+  it("refuses a time that is not whole seconds and days that are not whole or below one, as mintSession does", () => {
+    expect(() => cookieLine("red@t.test", SECRET, 1_789_000_000_000.5)).toThrow("issued must be whole seconds");
+    expect(() => cookieLine("red@t.test", SECRET, Number.NaN)).toThrow("issued must be whole seconds");
+    for (const days of [0, -1, 1.5, Number.NaN]) {
+      expect(() => cookieLine("red@t.test", SECRET, 1_789_000_000, days), String(days)).toThrow("days must be whole and at least one");
+    }
+  });
+
+  it("names the cookie as the session module does", async () => {
+    const { SESSION_COOKIE } = await import("../src/session.ts");
+    expect(COOKIE_NAME).toBe(SESSION_COOKIE);
+  });
+
   it("refuses a .test name with no @, and an address that merely contains .test", () => {
     for (const a of ["a.test", "a@b.test.com", "a@test"]) {
       const r = mint([a]);
@@ -92,6 +123,34 @@ describe("the .test fence", () => {
   it("is judged before the secret is looked for", () => {
     const r = mint(["jamoore@gmail.com"], {});
     expect(r.err).toContain("only a .test address may be minted");
+  });
+});
+
+// **A misplaced secret is never printed** (review I-5; ruling R-52): handed over as the address or as the `--days` value,
+// by mistake, it would land in a terminal, a transcript or a report. A value is echoed only when it is address-shaped
+// (one `@`), and a `--days` value only when it is digits.
+describe("a misplaced secret", () => {
+  const fragments = (err) => [SECRET, SECRET.slice(0, 8), SECRET.slice(-8)].filter((f) => err.includes(f));
+
+  it("is not echoed when it is the only argument", () => {
+    const r = mint([SECRET]);
+    expect(r.code).toBe(2);
+    expect(r.out).toBe("");
+    expect(r.err).toBe("mint-session: only a .test address may be minted — got a value that is not an address\n");
+    expect(fragments(r.err)).toEqual([]);
+  });
+
+  it("is not echoed when it is the --days value", () => {
+    const r = mint(["red@t.test", "--days", SECRET]);
+    expect(r.code).toBe(2);
+    expect(r.err).toBe("mint-session: --days must be a whole number above zero — got a value that is not a whole number\n");
+    expect(fragments(r.err)).toEqual([]);
+  });
+
+  it("an address-shaped value is still echoed, as the brief's sentence reads, and a non-address is not", () => {
+    expect(fenceSentence("jamoore@gmail.com")).toBe("only a .test address may be minted — got jamoore@gmail.com");
+    expect(fenceSentence("a.test")).toBe("only a .test address may be minted — got a value that is not an address");
+    expect(fenceSentence("x@y@z")).toBe("only a .test address may be minted — got a value that is not an address");
   });
 });
 
@@ -108,10 +167,12 @@ describe("the secret", () => {
 
 describe("--days", () => {
   it("refuses anything but a whole number above zero, exit 2", () => {
-    for (const days of ["0", "-1", "1.5", "abc", "", "30x", " 30", "1e2", "0x10", "+5"]) {
+    for (const days of ["0", "00", "-1", "1.5", "abc", "", "30x", " 30", "1e2", "0x10", "+5"]) {
       const r = mint(["red@t.test", "--days", days]);
       expect(r.code, JSON.stringify(days)).toBe(2);
-      expect(r.err, JSON.stringify(days)).toBe(`mint-session: --days must be a whole number above zero — got ${days}\n`);
+      // Only digits are echoed (ruling R-52).
+      const got = /^[0-9]+$/.test(days) ? days : "a value that is not a whole number";
+      expect(r.err, JSON.stringify(days)).toBe(`mint-session: --days must be a whole number above zero — got ${got}\n`);
       expect(r.out).toBe("");
     }
   });

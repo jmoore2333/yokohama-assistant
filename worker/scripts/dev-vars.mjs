@@ -6,10 +6,12 @@
 // (`worker/scripts/live-replay.mjs`) and the live tier (`web/e2e/live.ts`) —
 // and `dev-vars.d.mts` beside it is what TypeScript reads for the second: an
 // `.mjs` import reads no `.d.ts` (TS7016). It imports nothing but node's own
-// modules, so neither package installs anything for it.
+// modules and `mint-session.mjs`, which imports nothing else, so neither package
+// installs anything for it.
 
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { COOKIE_NAME, fenceSentence, isTestAddress } from "./mint-session.mjs";
 
 /** The deployed Worker's origin: the only one the credential is presented
  *  to — every request the live replay sends, and the live tier's `BASE_URL`
@@ -52,10 +54,33 @@ export function readCredential(file = DEV_VARS) {
 /** The environment variable that holds a minted session cookie line (`mint-session.mjs`'s output). */
 export const SESSION_COOKIE_ENV = "YOKOHAMA_SESSION_COOKIE";
 
-/** The line a minted cookie reads as: `src/session.ts`'s `SESSION_COOKIE` name, `=`, `v1.<payload>.<mac>` in the url
- *  alphabet. Anything else is no minted cookie — and a value with a control character or a `;` in it is no header
- *  value an instrument should send. */
-const MINTED_LINE = /^__Host-yokohama_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+/** The line a minted cookie reads as: `src/session.ts`'s `SESSION_COOKIE` name (`mint-session.mjs`'s `COOKIE_NAME`,
+ *  which a cell pins to it), `=`, `v1.<payload>.<mac>` in the url alphabet. Anything else is no minted cookie — and a
+ *  value with a control character or a `;` in it is no header value an instrument should send. */
+const MINTED_LINE = new RegExp(`^${COOKIE_NAME}=v1\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+$`);
+
+/** The sentence a run is refused in when a claimed name — a row's `who`, a context's email — sits beside a session
+ *  cookie that names someone else (ruling R-39): the live replay's and the live tier's one text. */
+export const TWO_IDENTITIES = "the session cookie names the caller — a claimed name beside it is two identities";
+
+/**
+ * What a minted cookie line carries, read WITHOUT the secret — its payload is base64url JSON: the cookie's `name`,
+ * `value`, the `address` it names and its `expires` (seconds). `null` when the payload is not JSON with a string
+ * address. The signature is not checked: this is the instrument reading its own cookie, never the Worker's trust.
+ */
+export function sessionCookieParts(line) {
+  const match = MINTED_LINE.exec(line);
+  if (match === null) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof payload !== "object" || payload === null || typeof payload.address !== "string") return null;
+  const expires = Number.isInteger(payload.expires) ? payload.expires : -1;
+  return { name: COOKIE_NAME, value: line.slice(COOKIE_NAME.length + 1), address: payload.address, expires };
+}
 
 /**
  * The minted session cookie in `env`, as the `Cookie` header's value — or `null` when the variable is unset or empty.
@@ -66,9 +91,13 @@ const MINTED_LINE = /^__Host-yokohama_session=v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+
 export function readSessionCookie(env = process.env) {
   const value = env[SESSION_COOKIE_ENV];
   if (value === undefined || value === "") return null;
-  if (!MINTED_LINE.test(value)) {
+  const parts = sessionCookieParts(value);
+  if (parts === null) {
     throw new Error(`${SESSION_COOKIE_ENV} is not a minted session cookie line (__Host-yokohama_session=v1.<payload>.<mac>) — scripts/mint-session.mjs prints one`);
   }
+  // **The `.test` fence applies to a cookie handed in too** (review I-1): a copied browser cookie for a real address
+  // would run the instruments as that person, on production. The address is not a secret, so the sentence names it.
+  if (!isTestAddress(parts.address)) throw new Error(`${SESSION_COOKIE_ENV}: mint-session: ${fenceSentence(parts.address)}`);
   return value;
 }
 

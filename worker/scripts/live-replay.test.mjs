@@ -496,6 +496,26 @@ describe("readSessionCookie and readIdentity", () => {
       expect(said).not.toContain("red@t.test");
     }
   });
+  // **The `.test` fence applies to a cookie handed in** (review I-1): a copied browser cookie for a real address would run
+  // the instruments as that person. The payload is base64url JSON, read without the secret.
+  const lineFor = (address) =>
+    `__Host-yokohama_session=v1.${Buffer.from(JSON.stringify({ address, sid: null, issued: 1, expires: 2 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+  it("refuses a cookie for an address that is not a .test one, naming the variable and the address and the fence", () => {
+    for (const address of ["jamoore@gmail.com", "RED@T.TEST", "red@t.test "]) {
+      expect(() => readSessionCookie({ YOKOHAMA_SESSION_COOKIE: lineFor(address) }), address).toThrow(
+        `YOKOHAMA_SESSION_COOKIE: mint-session: only a .test address may be minted — got ${address}`,
+      );
+      // The same through the one reader both instruments call.
+      expect(() => readIdentity({ YOKOHAMA_SESSION_COOKIE: lineFor(address) }, join(dir, "nothing-here")), address).toThrow("YOKOHAMA_SESSION_COOKIE");
+    }
+    expect(readSessionCookie({ YOKOHAMA_SESSION_COOKIE: lineFor("red@t.test") })).toBe(lineFor("red@t.test"));
+  });
+  it("refuses a cookie whose payload is not JSON with an address, as no minted line", () => {
+    const line = (json) => `__Host-yokohama_session=v1.${Buffer.from(json, "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+    for (const bad of ["not json", "[]", "{}", '{"address":5}', "null"]) {
+      expect(() => readSessionCookie({ YOKOHAMA_SESSION_COOKIE: line(bad) }), bad).toThrow("is not a minted session cookie line");
+    }
+  });
   it("with no cookie the credential is required, as ever", () => {
     expect(readIdentity({}, creds())).toEqual({ secret: null, cookie: null, credential: { id: "dummy-id.access", secret: "dummy-secret-value" } });
     expect(() => readIdentity({}, join(dir, "nothing-here"))).toThrow(/credential file/);
@@ -867,9 +887,12 @@ describe("replay", () => {
         const host = miniHost();
         const before = Math.floor(Date.now() / 1000);
         await runAs(host, { credential: null, cookie: null, secret: SECRET }, TWO_WHOS);
+        const after = Math.floor(Date.now() / 1000);
         const s = await decoded(rowsSent(host)[0].headers.Cookie);
         expect(s.sid).toBeNull();
+        // Seconds, from the real clock: a millisecond clock would stand for millennia, a fixed one for nothing.
         expect(s.issued).toBeGreaterThanOrEqual(before);
+        expect(s.issued).toBeLessThanOrEqual(after);
         expect(s.expires - s.issued).toBe(30 * 86_400);
       });
 

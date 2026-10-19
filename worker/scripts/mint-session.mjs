@@ -39,19 +39,31 @@ export function isTestAddress(email) {
   return email.includes("@") && email.endsWith(".test");
 }
 
-/** The fence's sentence, without the script's `mint-session: ` prefix. */
+/** Whether `value` is shaped like an address — exactly one `@` — and so safe to echo in a refusal. */
+const addressShaped = (value) => value.split("@").length === 2;
+
+/**
+ * The fence's sentence, without the script's `mint-session: ` prefix. **The value is echoed only when it is
+ * address-shaped** (ruling R-52): a secret handed over as the address, by mistake, is not printed into a terminal, a
+ * transcript or a report.
+ */
 export function fenceSentence(address) {
-  return `only a .test address may be minted — got ${address}`;
+  return `only a .test address may be minted — got ${addressShaped(address) ? address : "a value that is not an address"}`;
 }
 
 /**
  * The whole cookie line for `address` — `__Host-yokohama_session=v1.…` — minted from `secret`, `sid` null, `days`
  * (default thirty) past `nowSeconds`. **The ONE function every minter calls** (this script, the live replay and the
- * live tier, ruling R-50): the `.test` fence is here, so no caller can mint a real address. Throws the fence's sentence,
- * prefixed `mint-session: `.
+ * live tier, ruling R-50): the `.test` fence is here, judged on the address exactly as it is minted — never trimmed or
+ * lower-cased first, since the Worker's `is_test_identity` is case-sensitive — so no caller can mint a real address.
+ * Throws the fence's sentence, prefixed `mint-session: `. Refuses a time that is not whole seconds and days that are
+ * not whole or are below one, as `session.ts`'s `mintSession` does: a millisecond clock would mint a cookie that
+ * stands for millennia.
  */
 export function cookieLine(address, secret, nowSeconds, days = DEFAULT_DAYS) {
   if (!isTestAddress(address)) throw new Error(`mint-session: ${fenceSentence(address)}`);
+  if (!Number.isInteger(nowSeconds)) throw new RangeError(`mint-session: issued must be whole seconds — got ${nowSeconds}`);
+  if (!Number.isInteger(days) || days < 1) throw new RangeError(`mint-session: days must be whole and at least one — got ${days}`);
   return `${COOKIE_NAME}=${mintValue({ address, sid: null, issued: nowSeconds }, days, secret)}`;
 }
 
@@ -77,7 +89,10 @@ export function run(argv, env, nowSeconds) {
       if (daysSeen || value === undefined) return refuse(daysSeen ? `--days given twice — ${USAGE}` : `--days needs a value — ${USAGE}`);
       daysSeen = true;
       i += 1;
-      if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) return refuse(`--days must be a whole number above zero — got ${value}`);
+      if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) {
+        // Only digits are echoed: a secret handed over as the value is never printed (ruling R-52).
+        return refuse(`--days must be a whole number above zero — got ${/^[0-9]+$/.test(value) ? value : "a value that is not a whole number"}`);
+      }
       days = Number(value);
     } else if (argv[i].startsWith("--")) {
       return refuse(`unknown flag ${argv[i]} — ${USAGE}`);
