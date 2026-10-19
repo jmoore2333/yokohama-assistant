@@ -1007,3 +1007,16 @@ it("doorLine names the source", …);
     assertion earns strictly less than a verified caller.
   - Two files beyond the brief's list carry cells: `worker/src/r2.unit.test.ts` (the metadata put and the
     `onlyIf` precondition) and `worker/test/open/door.test.ts` (R-34).
+- **2026-10-19, Task 5 closed at `eb7d319a`** (review Approved, 0/0/3; two minors deferred to the after review: the
+  fallback's body parse precedes the limiter, bounded by `BODY_LIMIT` — a doc sentence, and `anonymousIdentity`'s
+  "parsed for this one member" parses twice; the shell's own device check for a NAMED caller is unpinned, the object's
+  `deviceOf` re-judges — a sibling cell). **The third minor is a plan conflict, ruled R-36 (the Global Constraints'
+  challenge line; Task 4's `withApiHeaders`; Task 6's consumer):** design §4.5 says a 401 under `worker` without
+  `WWW-Authenticate` "is the house refusing the anonymous shape … a defect to surface, not to park", while the plan
+  put the session challenge on EVERY 401 under `/api` when the source is an arm — the archive target's 401 included.
+  Since Task 5 a caller-less archive post is accepted, so the archive target's only 401 is a malformed body: the
+  challenge is NOT added on the `archive` target's 401 (one site in `answer`'s challenge flag), the client reads a
+  bare 401 as the body's sentence (a defect to surface) and a challenged 401 as "sign in". Task 4's challenge cells,
+  which C-1 pointed at `POST /api/archive`, move to the `/api/stream` upgrade with no cookie (401 unupgraded with the
+  challenge) or a table route; the bad-MAC renewal row keeps its "no Set-Cookie" assertion on whichever 401 it reads.
+  Built as Task 4's fix round 2 before Task 6 is dispatched.
