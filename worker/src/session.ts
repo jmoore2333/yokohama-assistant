@@ -12,6 +12,12 @@
  * The cells pin these bytes to values `openssl` computed, the reference a second minter (the plan's Task 8, under
  * `node:crypto`) is held to, so a change here is a change there.
  *
+ * **Both names take the `__Host-` prefix** (ruling R-14). A cookie a sibling subdomain sets for the parent domain is
+ * sent to this host too, so under a bare name a site elsewhere on the domain could fix a session it signed in
+ * itself onto a visitor's browser (cookie tossing). A browser refuses a `__Host-` cookie unless it is `Secure`, has
+ * `Path=/` and names no `Domain`, which is exactly what `setCookie` writes. So only this host can set either cookie,
+ * a browser holds at most one of each name for it, and `cookieValue`'s first match is the only one a browser sends.
+ *
  * **Reading is verify-then-parse:** the MAC is checked by `crypto.subtle.verify` (constant time) over the bytes the
  * request carried, and the payload is decoded and parsed only once it verifies. Each segment must be the one
  * spelling the minter writes (no padding, no whitespace, no standard alphabet, no stray trailing bits), a payload
@@ -35,8 +41,8 @@
  * and the two may be folded then.
  */
 
-export const SESSION_COOKIE = "yokohama_session";
-export const LOGIN_COOKIE = "yokohama_login";
+export const SESSION_COOKIE = "__Host-yokohama_session";
+export const LOGIN_COOKIE = "__Host-yokohama_login";
 
 /** A signed-in caller: the address the provider vouched for, already normalized by the caller; the provider's
  *  session id when it sent one (sign-out ends that session too); and the issue and expiry times, whole seconds. */
@@ -162,9 +168,9 @@ export function clearCookie(name: string): string {
   return setCookie(name, "", 0);
 }
 
-/** The value of the first pair in `cookieHeader` whose name is exactly `name`, or `null`. The header is split on
- *  `;`, each pair trimmed and split on its FIRST `=`; a pair with no `=` names nothing. It reads a `Set-Cookie`
- *  line too, whose first pair is the cookie and whose attributes follow. */
+/** The value of the first pair in `cookieHeader` whose name is exactly `name`, case included, or `null`. The header
+ *  is split on `;`, each pair trimmed and split on its FIRST `=`; a pair with no `=` names nothing. It reads a
+ *  `Set-Cookie` line too, whose first pair is the cookie and whose attributes follow. */
 export function cookieValue(cookieHeader: string | null, name: string): string | null {
   if (cookieHeader === null) return null;
   for (const raw of cookieHeader.split(";")) {

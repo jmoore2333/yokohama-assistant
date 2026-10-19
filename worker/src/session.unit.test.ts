@@ -20,8 +20,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// The brief's five cells (the auth cycle's plan, Task 2 Step 1), verbatim but for one cast: under
-// `noUncheckedIndexedAccess` a destructured `split` reads `string | undefined`, and `mac[0]` does not typecheck.
+// The brief's five cells (the auth cycle's plan, Task 2 Step 1), verbatim but for one cast (correction C-7): under
+// `noUncheckedIndexedAccess` a destructured `split` reads `string | undefined`, and `mac[0]` does not typecheck. The
+// Set-Cookie cell spells the `__Host-` names (ruling R-14, correction C-6), pinning them on the writing side; the
+// literal-name cell under "reading a cookie" pins them on the reading side, and every other cell uses the constants.
 describe("the session and login cookies (auth cycle, Task 2)", () => {
   it("mints and reads back, with the expiry 30 days out", async () => {
     const v = await mintSession({ address: "red@t.test", sid: "session_01", issued: NOW }, 30, SECRET);
@@ -51,8 +53,8 @@ describe("the session and login cookies (auth cycle, Task 2)", () => {
     expect(await readLogin(`${LOGIN_COOKIE}=${v}`, SECRET, NOW + 601)).toBeNull();
   });
   it("the Set-Cookie lines carry the attributes verbatim", () => {
-    expect(setCookie(SESSION_COOKIE, "v", 60)).toBe("yokohama_session=v; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=Lax");
-    expect(clearCookie(LOGIN_COOKIE)).toBe("yokohama_login=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax");
+    expect(setCookie(SESSION_COOKIE, "v", 60)).toBe("__Host-yokohama_session=v; Max-Age=60; Path=/; HttpOnly; Secure; SameSite=Lax");
+    expect(clearCookie(LOGIN_COOKIE)).toBe("__Host-yokohama_login=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax");
   });
 });
 
@@ -198,6 +200,19 @@ describe("reading a cookie", () => {
     }
   });
 
+  it("each reader reads its literal __Host- name, and neither the bare name nor another case of the prefix", async () => {
+    expect(await readSession(`__Host-yokohama_session=${GOLDEN_SESSION}`, SECRET, NOW)).not.toBeNull();
+    expect(await readLogin(`__Host-yokohama_login=${GOLDEN_LOGIN}`, SECRET, NOW)).not.toBeNull();
+    // Names a sibling subdomain may still be able to set (the bare name, `__Secure-`, and in an older browser another
+    // case of the prefix): none of them is either cookie.
+    for (const name of ["yokohama_session", "__host-yokohama_session", "__HOST-yokohama_session", "__Secure-yokohama_session"]) {
+      expect(await readSession(`${name}=${GOLDEN_SESSION}`, SECRET, NOW), name).toBeNull();
+    }
+    for (const name of ["yokohama_login", "__host-yokohama_login", "__Secure-yokohama_login"]) {
+      expect(await readLogin(`${name}=${GOLDEN_LOGIN}`, SECRET, NOW), name).toBeNull();
+    }
+  });
+
   it("a session is no login and a login no session, under either name", async () => {
     const s = await mintSession({ address: "red@t.test", sid: null, issued: NOW }, 30, SECRET);
     const l = await mintLogin({ state: "st", nonce: "no", verifier: "ve", returnTo: "/" }, NOW, SECRET);
@@ -285,14 +300,14 @@ describe("renewal", () => {
 });
 
 describe("cookieValue", () => {
-  it("matches a name exactly, takes the first match and splits on the first '=' only", () => {
+  it("matches a name exactly, case included, takes the first match and splits on the first '=' only", () => {
     expect(cookieValue("a=b=c", "a")).toBe("b=c");
-    expect(cookieValue(" ; ;yokohama_session_x=1;  yokohama_session=2 ; yokohama_session=3", SESSION_COOKIE)).toBe("2");
-    expect(cookieValue("x_yokohama_session=1", SESSION_COOKIE)).toBeNull();
-    expect(cookieValue("YOKOHAMA_SESSION=1", SESSION_COOKIE)).toBeNull();
-    expect(cookieValue("yokohama_session =1", SESSION_COOKIE)).toBeNull();
-    expect(cookieValue("yokohama_session", SESSION_COOKIE)).toBeNull();
-    expect(cookieValue("yokohama_session=", SESSION_COOKIE)).toBe("");
+    expect(cookieValue(` ; ;${SESSION_COOKIE}_x=1;  ${SESSION_COOKIE}=2 ; ${SESSION_COOKIE}=3`, SESSION_COOKIE)).toBe("2");
+    expect(cookieValue(`x_${SESSION_COOKIE}=1`, SESSION_COOKIE)).toBeNull();
+    expect(cookieValue(`${SESSION_COOKIE.toUpperCase()}=1`, SESSION_COOKIE)).toBeNull();
+    expect(cookieValue(`${SESSION_COOKIE} =1`, SESSION_COOKIE)).toBeNull();
+    expect(cookieValue(SESSION_COOKIE, SESSION_COOKIE)).toBeNull();
+    expect(cookieValue(`${SESSION_COOKIE}=`, SESSION_COOKIE)).toBe("");
     expect(cookieValue("", SESSION_COOKIE)).toBeNull();
     expect(cookieValue(null, SESSION_COOKIE)).toBeNull();
   });
