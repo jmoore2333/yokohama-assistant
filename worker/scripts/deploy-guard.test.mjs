@@ -89,16 +89,23 @@ const POOL_RATE_LIMITS = `"ratelimits": [
     { "name": "WRITE_LIMIT", "namespace_id": "7302", "simple": { "limit": 1000000, "period": 60 } }
   ]`;
 
-/** Production's door (M6.5c2, spec §2.1): the worker door, and the Access
- *  values it needs. Last in the file, so a cell that writes a `vars` block of
- *  its own before `"main"` is read OVER by this one — duplicate keys, the last
- *  one wins — and a cell that means a key to be read writes it into this
- *  block. */
+/** Production's door (M6.5c2, spec §2.1): the worker door, its identity
+ *  source (the auth cycle: `access`, as the committed file names it) and the
+ *  Access values that source needs. Last in the file, so a cell that writes a
+ *  `vars` block of its own before `"main"` is read OVER by this one — duplicate
+ *  keys, the last one wins — and a cell that means a key to be read writes it
+ *  into this block. */
 const DOOR_VARS = `"vars": {
     "YOKOHAMA_WEB_IDENTITY": "worker",
+    "YOKOHAMA_IDENTITY_SOURCE": "access",
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud"
   }`;
+
+/** Production's custom domain, as the guard's record of the deployment names it (the auth cycle, Task 7:
+ *  `DEPLOYMENTS`). Just before the door's block, so a cell that writes a `routes` block of its own before `"main"`
+ *  is read OVER by this one; a cell that means its routes to be read replaces this line. */
+const ROUTES = `"routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }]`;
 
 /** Production's logs (security S2b, finding D23; decision D-6): query strings redacted, the sampling rate left at its
  *  default. What check 14 holds production to, and what the open and dev files carry by the sibling rule. */
@@ -115,6 +122,7 @@ const PRODUCTION = `// production
   ${OBJECTS},
   ${BUCKET},
   ${RATE_LIMITS_BLOCK},
+  ${ROUTES},
   ${DOOR_VARS},
 }
 `;
@@ -140,6 +148,29 @@ const KEYED = { "assets/build-values.json": STAMP(true) };
 
 /** Production's configuration with the dev door open (security S2b, B6): the live tiers' file. */
 const DEV = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "on"');
+
+/** The private Worker's file (the auth cycle, Task 7; plan decision D-1): production's shape under its OWN record —
+ *  its own name, bucket and rate-limit namespaces, and no route until the owner names its domain — at the worker
+ *  door with source `access`, as production's is today. */
+const PRIVATE = PRODUCTION.replace("// production", "// the private Worker")
+  .replace('"name": "yokohama-web",', '"name": "yokohama-web-private",')
+  .replace(`  ${ROUTES},\n`, "")
+  .replace('"bucket_name": "yokohama-archive"', '"bucket_name": "yokohama-archive-private"')
+  .replace('"namespace_id": "7301"', '"namespace_id": "7303"')
+  .replace('"namespace_id": "7302"', '"namespace_id": "7304"');
+
+/** `text` (production's door block, or the dev file's) at a provider-signed source (the auth cycle): the source
+ *  named, the Access pair REMOVED, and `extra` (key → value) written in their place — the shape the window ships at
+ *  `workos` (the plan's Task 10, Step 5). */
+const atSource = (text, source, extra = {}) => {
+  const pair = '"YOKOHAMA_IDENTITY_SOURCE": "access",\n    "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",\n    "ACCESS_AUD": "test-aud"';
+  if (!text.includes(pair)) throw new Error("atSource: the text holds no access door block");
+  const lines = [`"YOKOHAMA_IDENTITY_SOURCE": ${JSON.stringify(source)}`, ...Object.entries(extra).map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)];
+  return text.replace(pair, lines.join(",\n    "));
+};
+/** The sign-in variables each arm needs (Task 1's table): the client id under both, the issuer under `oidc`. */
+const CLIENT = { YOKOHAMA_OIDC_CLIENT_ID: "client_test" };
+const ISSUER = { YOKOHAMA_OIDC_ISSUER: "https://issuer.example.test" };
 
 const TEST_CONFIG = `{
   "name": "yokohama-web-test",
@@ -214,6 +245,7 @@ function worker(changes = {}, since = {}) {
     "wrangler.jsonc": PRODUCTION,
     "wrangler.open.jsonc": OPEN_FILE,
     "wrangler.dev.jsonc": DEV,
+    "wrangler.private.jsonc": PRIVATE,
     "wrangler.test.jsonc": TEST_CONFIG,
     "wrangler.open.test.jsonc": OPEN_TEST_CONFIG,
     "../web/dist/sw.js": SW,
@@ -425,8 +457,9 @@ describe("the deploy guard", () => {
       expect.stringMatching(/^wrangler\.test\.jsonc's durable_objects differs from wrangler\.jsonc's/),
     ]);
   });
-  // Production's migration now differs from BOTH pool files (M6.5c2) and from
-  // the open window's and the dev files (R-6.5c2.39; security S2b, B6): each is named.
+  // Production's migration now differs from BOTH pool files (M6.5c2), from
+  // the open window's and the dev files (R-6.5c2.39; security S2b, B6) and from
+  // the private Worker's (the auth cycle, Task 7; plan decision D-1): each is named.
   it("refuses a migration the pool runs and production does not ship", () => {
     const drift = PRODUCTION.replace('["Table", "House", "Archive"]', '["Table", "House"]');
     expect(deployGuard(worker({ "wrangler.jsonc": drift }))).toEqual([
@@ -434,6 +467,7 @@ describe("the deploy guard", () => {
       expect.stringMatching(/^wrangler\.dev\.jsonc's migrations differs from wrangler\.jsonc's/),
       expect.stringMatching(/^wrangler\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
       expect.stringMatching(/^wrangler\.open\.test\.jsonc's migrations differs from wrangler\.jsonc's/),
+      expect.stringMatching(/^wrangler\.private\.jsonc's migrations differs from wrangler\.jsonc's/),
     ]);
   });
   it("reads the two blocks by value, whatever their keys' order or spacing", () => {
@@ -555,7 +589,10 @@ describe("the deploy guard", () => {
     ]);
   });
   // The reason the reader is `jsonc-parser` and not "strip // then JSON.parse":
-  // a `//` INSIDE a string is data, and a trailing comma is legal JSONC.
+  // a `//` INSIDE a string is data, and a trailing comma is legal JSONC. (The
+  // fixture's own routes line comes later and is the one read since the auth
+  // cycle's Task 7; this one is parsed all the same, and a stripping reader
+  // would not parse the file.)
   it("reads a // inside a string as data", () => {
     const routed = PRODUCTION.replace(
       '"main"',
@@ -746,7 +783,12 @@ describe("the deploy guard", () => {
 
   it("every deploy command names its file to the guard, the secrets guard and wrangler alike (security S2a, D18)", () => {
     const { scripts } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    for (const [name, file] of [["deploy", "wrangler.jsonc"], ["deploy:open", "wrangler.open.jsonc"], ["deploy:dev", "wrangler.dev.jsonc"]]) {
+    for (const [name, file] of [
+      ["deploy", "wrangler.jsonc"],
+      ["deploy:open", "wrangler.open.jsonc"],
+      ["deploy:dev", "wrangler.dev.jsonc"],
+      ["deploy:private", "wrangler.private.jsonc"],
+    ]) {
       expect(scripts[name], name).toBe(
         `node scripts/deploy-guard.mjs --config ${file} && node scripts/secrets-guard.mjs --config ${file} && wrangler deploy --config ${file}`,
       );
@@ -890,7 +932,7 @@ describe("the deploy guard", () => {
   it("judges the dev file as the worker door with the dev door on, and holds it to production's blocks", () => {
     const at = (files) => deployGuard(worker(files), undefined, "wrangler.dev.jsonc");
     expect(at({})).toEqual([]);
-    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
     for (const [off, shown] of [
       ['"off"', '"off"'],
       ['"ON"', '"ON"'],
@@ -927,7 +969,7 @@ describe("the deploy guard", () => {
       );
     }
     expect(deployGuard(worker(), undefined, "wrangler.dev.jsonc")).toEqual([]);
-    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(doorLine(worker(), "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
   });
 
   // The S2 stack review (lens 1, Minor 4): the switch read as a string alone, so a JSON `true` in production's file
@@ -980,8 +1022,8 @@ describe("the deploy guard", () => {
     }
     // G4: the dev file has a stale audience and another route.
     const stale = DEV.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "old-aud"').replace(
-      '"name": "yokohama-web",',
-      '"name": "yokohama-web",\n  "routes": [{ "pattern": "elsewhere.example", "custom_domain": true }],',
+      ROUTES,
+      '"routes": [{ "pattern": "elsewhere.example", "custom_domain": true }]',
     );
     expect(deployGuard(worker({ "wrangler.dev.jsonc": stale }), undefined, "wrangler.dev.jsonc")).toEqual(
       naming(/^wrangler\.dev\.jsonc's vars\.ACCESS_AUD differs from wrangler\.jsonc's/, /^wrangler\.dev\.jsonc's routes differs from wrangler\.jsonc's/),
@@ -1072,8 +1114,11 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker(at('"env": { "staging": { "placement": { "cache": { "enabled": true } } } }')))).toEqual([
       refused("env.staging.placement."),
     ]);
+    // Production's own route with the block in it: the fixture's routes line replaced, so it is the one read, and
+    // the deployment's record (the auth cycle, Task 7) still holds.
+    const cachedRoute = '"routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true, "cache": { "enabled": true } }]';
     expect(
-      deployGuard(worker(at('"routes": [{ "pattern": "x.example", "cache": { "enabled": true } }]'))),
+      deployGuard(worker({ "wrangler.jsonc": PRODUCTION.replace(ROUTES, cachedRoute) })),
       "an array's element, by its index",
     ).toEqual([refused("routes.0.")]);
     expect(
@@ -1095,9 +1140,10 @@ describe("the deploy guard", () => {
   // Check 5's value since cycle F (R-F5; spec §2.5): `404-page`, so a
   // browser's NAVIGATION miss is answered by the asset layer with the static
   // page instead of a blank. `none` — the value spec §2.3 of M6.5c chose — is
-  // refused in each of the five files. Mutants: the constant left at `none`;
-  // one file left out of the read.
-  it("refuses not_found_handling none in any of the five files, naming the file", () => {
+  // refused in each of the six files (the private Worker's since the auth
+  // cycle's Task 7, read whenever it exists). Mutants: the constant left at
+  // `none`; one file left out of the read.
+  it("refuses not_found_handling none in any of the six files, naming the file", () => {
     const back = (text) => text.replace('"not_found_handling": "404-page"', '"not_found_handling": "none"');
     expect(deployGuard(worker({ "wrangler.jsonc": back(PRODUCTION) }))).toEqual(
       naming(/^wrangler\.jsonc's assets\.not_found_handling must be "404-page" — got "none"$/),
@@ -1107,6 +1153,7 @@ describe("the deploy guard", () => {
       ["wrangler.dev.jsonc", DEV],
       ["wrangler.test.jsonc", TEST_CONFIG],
       ["wrangler.open.test.jsonc", OPEN_TEST_CONFIG],
+      ["wrangler.private.jsonc", PRIVATE],
     ]) {
       expect(deployGuard(worker({ [name]: back(text) })), name).toEqual([
         `${name}'s assets.not_found_handling must be "404-page" — got "none"`,
@@ -1146,12 +1193,13 @@ describe("the deploy guard", () => {
     const noKey =
       "wrangler.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
       "build the client with YOKOHAMA_TURNSTILE_SITEKEY set";
-    // At the open door, where this comparison is now the only one asked, so
-    // the sentence says nothing about Access (cycle F's fix wave; Task 7's
-    // review, Minor 2).
+    // At the open door — where this comparison is asked, as it is under a
+    // provider-signed worker door since the auth cycle's Task 7 — so the
+    // sentence says nothing about Access (cycle F's fix wave; Task 7's review,
+    // Minor 2).
     const keyed =
       "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at " +
-      "the open door declares on: set the var on, or build the client without the key";
+      "the open door or a provider-signed worker door declares on: set the var on, or build the client without the key";
 
     // The two that agree, and absent read as off.
     expect(deployGuard(worker({ "wrangler.jsonc": declared('"off"') })), "off, no key").toEqual([]);
@@ -1171,27 +1219,33 @@ describe("the deploy guard", () => {
       naming(/^wrangler\.open\.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key/),
     );
   });
-  // **The orchestrator's amendment (Task 7, from Task 6's re-review): check
-  // 12's IDENTITY rule.** The client infers the open door from the presence of
-  // a site key (`web/src/outbox.ts`'s keyed-build rule: a nameless visitor's
-  // game is written down signed-out, with no request), so a keyed build behind
-  // Access would silently never upload a nameless visitor's games. So `on`,
-  // and a keyed stamp, stand only beside `YOKOHAMA_WEB_IDENTITY` `open` (read
-  // as the shell reads the door: trimmed, matched exactly); under any other
-  // identity each is refused with ONE sentence naming the identity and the
-  // declaration, and the stamp comparison above is not asked — its advice
-  // ("set the var on", "build with the key") is wrong at a door that may hold
-  // neither. Mutants: the rule missing; the identity read raw (untrimmed);
-  // `on` refused at the open door; a keyed stamp under off let through; the
+  // **The orchestrator's amendment (cycle F's Task 7, from Task 6's
+  // re-review), narrowed by the auth cycle's Task 7 (R-A3/R-A4): check 12's
+  // IDENTITY rule.** Under Access the edge is the bot defence (R-FP4, one
+  // client build per door state), so `on`, and a keyed stamp, stand only
+  // beside `YOKOHAMA_WEB_IDENTITY` `open`, or `worker` with
+  // `YOKOHAMA_IDENTITY_SOURCE` `oidc` or `workos` — a provider-signed door,
+  // where the Turnstile is the bot defence — each read as the shell reads it
+  // (trimmed, matched exactly); under any other pairing each is refused with
+  // ONE sentence naming the identity, the source and the declaration, and the
+  // stamp comparison above is not asked — its advice ("set the var on",
+  // "build with the key") is wrong at a door that may hold neither. The client
+  // no longer reads the key as the door: it reads the SERVER FACTS
+  // (`web/src/outbox.ts`'s `heldForAName`). The arms' own rows are the cell
+  // "a keyed build is accepted under worker with source oidc or workos …".
+  // Mutants: the rule missing; the identity read raw (untrimmed); `on`
+  // refused at the open door; a keyed stamp under off let through; the
   // comparison's sentence added beside the identity's.
-  it("accepts on and a keyed build only at the open door, and refuses either under any other identity, naming both", () => {
-    const onUnder = (file, id) =>
-      `${file} sets YOKOHAMA_TURNSTILE on under identity ${id} — a keyed build is the open door (R-FP4): the widget and ` +
-      "the client's keyed-build rule assume no Access in front of the API; deploy the key only with wrangler.open.jsonc";
-    const keyedUnder = (file, id) =>
-      `${file} leaves YOKOHAMA_TURNSTILE off under identity ${id} but the assets tree's build carries a site key — a ` +
-      "keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of " +
-      "the API; build the client without the key, and deploy the key only with wrangler.open.jsonc";
+  it("accepts on and a keyed build at the open door, and refuses either under the worker door at source access or under an identity it does not know, naming the identity and the source", () => {
+    const onUnder = (file, id, source) =>
+      `${file} sets YOKOHAMA_TURNSTILE on under identity ${id}, source ${source} — a keyed build is the open door or a ` +
+      "provider-signed worker door (R-FP4, narrowed by the auth cycle's R-A3/R-A4): under Access the edge is the bot " +
+      "defence; deploy the key only at the open door or under source oidc or workos";
+    const keyedUnder = (file, id, source) =>
+      `${file} leaves YOKOHAMA_TURNSTILE off under identity ${id}, source ${source} but the assets tree's build carries ` +
+      "a site key — a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth " +
+      "cycle's R-A3/R-A4): under Access the edge is the bot defence; build the client without the key, and deploy the " +
+      "key only at the open door or under source oidc or workos";
     const declared = (text, value) =>
       text.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "YOKOHAMA_TURNSTILE": ${value}`);
 
@@ -1199,26 +1253,26 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc"), "on, a key, open").toEqual([]);
     // `on` with a key at the worker door: refused, naming both.
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"'), ...KEYED })), "on, a key, worker").toEqual([
-      onUnder("wrangler.jsonc", "worker"),
+      onUnder("wrangler.jsonc", "worker", "access"),
     ]);
     // The dev file is the worker door too (its drift from production is named as well).
     const devOn = DEV.replace('"YOKOHAMA_DEV_DOOR": "on"', '"YOKOHAMA_DEV_DOOR": "on", "YOKOHAMA_TURNSTILE": "on"');
     expect(deployGuard(worker({ "wrangler.dev.jsonc": devOn, ...KEYED }), undefined, "wrangler.dev.jsonc"), "the dev file").toEqual(
-      expect.arrayContaining([onUnder("wrangler.dev.jsonc", "worker")]),
+      expect.arrayContaining([onUnder("wrangler.dev.jsonc", "worker", "access")]),
     );
     // A keyed build under off, or absent, at the worker door.
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"off"'), ...KEYED })), "off, a key, worker").toEqual([
-      keyedUnder("wrangler.jsonc", "worker"),
+      keyedUnder("wrangler.jsonc", "worker", "access"),
     ]);
-    expect(deployGuard(worker(KEYED)), "absent, a key, worker").toEqual([keyedUnder("wrangler.jsonc", "worker")]);
+    expect(deployGuard(worker(KEYED)), "absent, a key, worker").toEqual([keyedUnder("wrangler.jsonc", "worker", "access")]);
     // Two defects, ONE sentence: `on` over a keyless build at the worker door
     // is the identity's to name, never "build the client with the key".
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"') })), "on, no key, worker").toEqual([
-      onUnder("wrangler.jsonc", "worker"),
+      onUnder("wrangler.jsonc", "worker", "access"),
     ]);
     // And the order when the stamp is missing too: the identity first, then the stamp.
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"on"'), "assets/build-values.json": null }))).toEqual([
-      onUnder("wrangler.jsonc", "worker"),
+      onUnder("wrangler.jsonc", "worker", "access"),
       "assets/build-values.json is absent, so nothing says whether the build carries a Turnstile site key — " +
         "run npm run build in web/, then in worker/",
     ]);
@@ -1229,12 +1283,12 @@ describe("the deploy guard", () => {
     expect(deployGuard(worker({ "wrangler.jsonc": spaced, ...KEYED })), "trimmed").toEqual([]);
     const shouted = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "Open", "YOKOHAMA_TURNSTILE": "on"');
     expect(deployGuard(worker({ "wrangler.jsonc": shouted, ...KEYED })), "matched exactly").toEqual(
-      expect.arrayContaining([onUnder("wrangler.jsonc", "Open")]),
+      expect.arrayContaining([onUnder("wrangler.jsonc", "Open", "nothing")]),
     );
     // No door at all: named as nothing (check 3 refuses it as well).
     const doorless = declared(PRODUCTION, '"on"').replace('"YOKOHAMA_WEB_IDENTITY": "worker",', "");
     expect(deployGuard(worker({ "wrangler.jsonc": doorless, ...KEYED })), "no door").toEqual(
-      expect.arrayContaining([onUnder("wrangler.jsonc", "nothing")]),
+      expect.arrayContaining([onUnder("wrangler.jsonc", "nothing", "access")]),
     );
   });
   // The open file's allowed differences gain `YOKOHAMA_TURNSTILE: "on"` (T8-a):
@@ -1312,7 +1366,7 @@ describe("the deploy guard", () => {
   // R2.2-m5), and none where it names none check 3 knows — which check 3
   // refuses. Mutants: the line missing; a door it does not know printed.
   it("names the door a configuration ships", () => {
-    expect(doorLine(worker())).toBe("wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(doorLine(worker())).toBe("wrangler.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
     expect(doorLine(worker({ "wrangler.jsonc": OPEN }))).toBe(
       "wrangler.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
     );
@@ -1320,6 +1374,326 @@ describe("the deploy guard", () => {
     const nas = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', '"YOKOHAMA_WEB_IDENTITY": "cf-access"');
     expect(doorLine(worker({ "wrangler.jsonc": nas }))).toBeUndefined();
     expect(doorLine(worker({ "wrangler.jsonc": null }))).toBeUndefined();
+  });
+
+  // **The identity source** (the auth cycle, Task 7; Task 1's `config.ts`): the worker door names WHO vouches for an
+  // address — `YOKOHAMA_IDENTITY_SOURCE`, read as the shell reads it (trimmed, matched exactly), with no default — and
+  // the guard refuses at the file what the shell would refuse at its first request, in the shell's words. Mutants:
+  // the rule missing; a default source; the value case-folded or read raw; the rule asked of the open door (the open
+  // rows here, and every open-door cell, read red).
+  it("a worker-door file names a source, with no default", () => {
+    const none = PRODUCTION.replace('"YOKOHAMA_IDENTITY_SOURCE": "access",', "");
+    expect(none, "premise: the source is gone").not.toContain("YOKOHAMA_IDENTITY_SOURCE");
+    expect(deployGuard(worker({ "wrangler.jsonc": none }))).toEqual([
+      "wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, " +
+        "and there is no default: who vouches for an address is a deployment decision",
+    ]);
+    for (const [value, shown] of [
+      ['"Access"', '"Access"'],
+      ['"cf-access"', '"cf-access"'],
+      ['""', '""'],
+      ["true", "true"],
+    ]) {
+      const other = PRODUCTION.replace('"YOKOHAMA_IDENTITY_SOURCE": "access"', `"YOKOHAMA_IDENTITY_SOURCE": ${value}`);
+      expect(deployGuard(worker({ "wrangler.jsonc": other })), value).toEqual([
+        `wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got ${shown}`,
+      ]);
+    }
+    const spaced = PRODUCTION.replace('"YOKOHAMA_IDENTITY_SOURCE": "access"', '"YOKOHAMA_IDENTITY_SOURCE": " access "');
+    expect(deployGuard(worker({ "wrangler.jsonc": spaced })), "trimmed, as the shell reads it").toEqual([]);
+    // The open door asks for none: the shell refuses one there (the cell on OPEN_DIFFERS below).
+    expect(deployGuard(worker({ "wrangler.jsonc": OPEN })), "the open door, as production's file").toEqual([]);
+    expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc"), "the open file").toEqual([]);
+  });
+
+  // Each source's variables (Task 1's table; `config.ts`'s `signin`): `access` keeps the Access pair, exactly as
+  // before; `oidc` needs the issuer and the client id; `workos` the client id and NO issuer (WorkOS's is fixed).
+  // Under either arm a SET Access value is refused: the shell ignores it there, and the guard, which writes the
+  // deploy, refuses the confusion. Blank is not set, as the shell reads it (`present`). Mutants: the pair asked under
+  // an arm; its refusal limited to workos (oidc accepting a set pair); the issuer's refusal under workos missing; the
+  // client id asked of one arm only; blank read as set.
+  it("access requires the Access pair; oidc requires the issuer and client id and forbids the pair; workos requires the client id and forbids the issuer", () => {
+    const at = (text) => deployGuard(worker({ "wrangler.jsonc": text }));
+    const issuerMissing =
+      "wrangler.jsonc's vars must set YOKOHAMA_OIDC_ISSUER under YOKOHAMA_IDENTITY_SOURCE=oidc — the issuer whose " +
+      "/.well-known/openid-configuration names the endpoints";
+    const issuerSet =
+      "wrangler.jsonc's vars set YOKOHAMA_OIDC_ISSUER beside YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS arm's issuer " +
+      "is https://api.workos.com and is not configurable";
+    const clientMissing = (source) =>
+      `wrangler.jsonc's vars must set YOKOHAMA_OIDC_CLIENT_ID under YOKOHAMA_IDENTITY_SOURCE=${source} — the client id ` +
+      "the issuer registered for this site";
+    const pairSet = (key, source) =>
+      `wrangler.jsonc's vars set ${key} beside YOKOHAMA_IDENTITY_SOURCE=${source} — the shell ignores the Access pair ` +
+      "under a provider-signed source, so the file would say Access vouches for a caller when it does not: remove it";
+    const PAIR = { ACCESS_TEAM_DOMAIN: "test.cloudflareaccess.com", ACCESS_AUD: "test-aud" };
+
+    // access: the pair, as before; the sign-in variables ignored, as the shell ignores them.
+    expect(at(PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": ""')), "access, no audience").toEqual([
+      "wrangler.jsonc's vars must set ACCESS_AUD under the worker door — without it no assertion is verified, and every caller is no one",
+    ]);
+    const signedToo = PRODUCTION.replace(
+      '"ACCESS_AUD": "test-aud"',
+      '"ACCESS_AUD": "test-aud", "YOKOHAMA_OIDC_ISSUER": "https://issuer.example.test", "YOKOHAMA_OIDC_CLIENT_ID": "client_test"',
+    );
+    expect(at(signedToo), "access ignores the sign-in variables").toEqual([]);
+    for (const [source, extra, want] of [
+      ["oidc", { ...ISSUER, ...CLIENT }, []],
+      ["oidc", CLIENT, [issuerMissing]],
+      ["oidc", { YOKOHAMA_OIDC_ISSUER: "  ", ...CLIENT }, [issuerMissing]],
+      ["oidc", ISSUER, [clientMissing("oidc")]],
+      ["oidc", { ...ISSUER, ...CLIENT, ACCESS_TEAM_DOMAIN: PAIR.ACCESS_TEAM_DOMAIN }, [pairSet("ACCESS_TEAM_DOMAIN", "oidc")]],
+      ["oidc", { ...ISSUER, ...CLIENT, ACCESS_AUD: PAIR.ACCESS_AUD }, [pairSet("ACCESS_AUD", "oidc")]],
+      ["oidc", { ...ISSUER, ...CLIENT, ACCESS_TEAM_DOMAIN: "", ACCESS_AUD: " " }, []],
+      ["workos", CLIENT, []],
+      ["workos", {}, [clientMissing("workos")]],
+      ["workos", { YOKOHAMA_OIDC_CLIENT_ID: " " }, [clientMissing("workos")]],
+      ["workos", { ...ISSUER, ...CLIENT }, [issuerSet]],
+      ["workos", { YOKOHAMA_OIDC_ISSUER: "", ...CLIENT }, []],
+      ["workos", { ...CLIENT, ...PAIR }, [pairSet("ACCESS_TEAM_DOMAIN", "workos"), pairSet("ACCESS_AUD", "workos")]],
+    ]) {
+      expect(at(atSource(PRODUCTION, source, extra)), `${source} ${JSON.stringify(extra)}`).toEqual(want);
+    }
+  });
+
+  // Check 7's two new secrets (the auth cycle, Task 7): the sign-in client secret — the WorkOS API key under
+  // `workos` — and the key that signs every session cookie. Each is `wrangler secret put`, never a committed var, in
+  // ANY vars block, read as a key, in whichever file is deployed. Mutants: either key missing from `SECRETS`; an
+  // environment's vars not read.
+  it("the two secrets are refused in any vars block", () => {
+    for (const [key, why] of [
+      [
+        "YOKOHAMA_OIDC_CLIENT_SECRET",
+        "the sign-in client secret (the WorkOS API key under workos) is a secret (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET), never a var",
+      ],
+      [
+        "YOKOHAMA_SESSION_SECRET",
+        "the key that signs every session cookie is a secret (wrangler secret put YOKOHAMA_SESSION_SECRET), never a var",
+      ],
+    ]) {
+      const top = PRODUCTION.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "${key}": "not-a-secret"`);
+      expect(deployGuard(worker({ "wrangler.jsonc": top })), key).toEqual([`wrangler.jsonc's vars name ${key} — ${why}`]);
+      const staged = PRODUCTION.replace('"main"', `"env": { "staging": { "vars": { "${key}": "not-a-secret" } } },\n  "main"`);
+      expect(deployGuard(worker({ "wrangler.jsonc": staged })), `${key}, an environment's`).toEqual([
+        `wrangler.jsonc's env.staging.vars name ${key} — ${why}`,
+      ]);
+      const mine = PRIVATE.replace('"YOKOHAMA_WEB_IDENTITY": "worker"', `"YOKOHAMA_WEB_IDENTITY": "worker", "${key}": "not-a-secret"`);
+      expect(configFailures(worker({ "wrangler.private.jsonc": mine }), "wrangler.private.jsonc"), `${key}, the private file`).toEqual([
+        `wrangler.private.jsonc's vars name ${key} — ${why}`,
+      ]);
+    }
+    const commented = PRODUCTION.replace("// production", "// production — YOKOHAMA_OIDC_CLIENT_SECRET and YOKOHAMA_SESSION_SECRET are put as secrets");
+    expect(deployGuard(worker({ "wrangler.jsonc": commented })), "a comment is prose").toEqual([]);
+  });
+
+  // **Check 12's pairing, narrowed** (the auth cycle, Task 7; design §4.7, R-A3/R-A4): a keyed build stands at the
+  // open door AND under the worker door at a provider-signed source, `oidc` or `workos` — the public deployment, the
+  // Turnstile in front of a door the provider signs — and is refused under `access`, where the Access edge is the
+  // bot defence. At an arm the stamp is compared with the declaration as at the open door. The first row is the
+  // window's own file (the plan's Task 10, Step 5: `workos`, the key on, the Access pair removed). The plan's named
+  // mutant — the guard accepting a keyed build under `access` — reads red at the access rows; also: an arm refused;
+  // the stamp comparison skipped at an arm; the source read raw or case-folded.
+  it("a keyed build is accepted under worker with source oidc or workos, and refused under worker with access, and on an open file as before", () => {
+    const workos = (declared) => atSource(PRODUCTION, "workos", { ...CLIENT, YOKOHAMA_TURNSTILE: declared });
+    const oidc = (declared) => atSource(PRODUCTION, "oidc", { ...ISSUER, ...CLIENT, YOKOHAMA_TURNSTILE: declared });
+    const at = (text, tree = {}) => deployGuard(worker({ "wrangler.jsonc": text, ...tree }));
+    const narrowed =
+      "a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth cycle's R-A3/R-A4): " +
+      "under Access the edge is the bot defence";
+    const where = "deploy the key only at the open door or under source oidc or workos";
+
+    expect(at(workos("on"), KEYED), "workos, on, a key: the window's file").toEqual([]);
+    expect(at(oidc("on"), KEYED), "oidc, on, a key").toEqual([]);
+    expect(at(workos("off")), "workos, off, keyless: an arm need not key").toEqual([]);
+    expect(at(workos("on")), "workos, on, keyless: the stamp is asked").toEqual([
+      "wrangler.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
+        "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
+    ]);
+    expect(at(oidc("off"), KEYED), "oidc, off, a key: the stamp is asked").toEqual([
+      "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at " +
+        "the open door or a provider-signed worker door declares on: set the var on, or build the client without the key",
+    ]);
+    const spaced = workos("on").replace('"YOKOHAMA_IDENTITY_SOURCE": "workos"', '"YOKOHAMA_IDENTITY_SOURCE": " workos "');
+    expect(at(spaced, KEYED), "trimmed, as the shell reads it").toEqual([]);
+
+    // access: refused, ONE sentence naming the identity and the source.
+    const accessOn = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_TURNSTILE": "on"');
+    expect(at(accessOn, KEYED), "access, on, a key").toEqual([
+      `wrangler.jsonc sets YOKOHAMA_TURNSTILE on under identity worker, source access — ${narrowed}; ${where}`,
+    ]);
+    expect(at(PRODUCTION, KEYED), "access, absent, a key").toEqual([
+      "wrangler.jsonc leaves YOKOHAMA_TURNSTILE off under identity worker, source access but the assets tree's build " +
+        `carries a site key — ${narrowed}; build the client without the key, and ${where}`,
+    ]);
+    // A source the shell does not know is no arm: matched exactly.
+    const shouted = workos("on").replace('"YOKOHAMA_IDENTITY_SOURCE": "workos"', '"YOKOHAMA_IDENTITY_SOURCE": "WorkOS"');
+    expect(at(shouted, KEYED), "matched exactly").toEqual([
+      `wrangler.jsonc sets YOKOHAMA_TURNSTILE on under identity worker, source WorkOS — ${narrowed}; ${where}`,
+      `wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "WorkOS"`,
+    ]);
+    // The open file, as before.
+    expect(deployGuard(worker(KEYED), undefined, "wrangler.open.jsonc"), "the open file, on, a key").toEqual([]);
+  });
+
+  // **The second deployment** (the auth cycle, Task 7; plan decision D-1, the design's §4.7 as amended):
+  // `wrangler.private.jsonc` is the LATER private Worker, held to ITS OWN record in the guard's `DEPLOYMENTS` — its
+  // name, its bucket, its rate-limit namespaces at production's figures, its source `access`, and no route until the
+  // owner names its domain — and never to production as a sibling; to production's `assets` and `observability` when
+  // it is the file deployed, and to production's `durable_objects` and `migrations` in every run (check 6's rule:
+  // both Workers run the same code). Absent, it is no failure, unless it is the file named. Mutants: the file judged
+  // as production's sibling (the pass rows read the name's, the bucket's and the route's drift); a route accepted;
+  // each record field unread; the blocks unread; absence refused.
+  it("wrangler.private.jsonc is held to its own record: name, bucket, namespaces, source access, no route, and production's other blocks", () => {
+    const PRIV = "wrangler.private.jsonc";
+    const judged = (text) => configFailures(worker({ [PRIV]: text }), PRIV);
+    for (const part of ['"name": "yokohama-web-private"', '"bucket_name": "yokohama-archive-private"', '"namespace_id": "7303"', '"namespace_id": "7304"']) {
+      expect(PRIVATE, `premise: ${part}`).toContain(part);
+    }
+    expect(PRIVATE, "premise: no route").not.toContain('"routes"');
+
+    expect(judged(PRIVATE)).toEqual([]);
+    expect(deployGuard(worker(), undefined, PRIV), "the whole guard, keyless").toEqual([]);
+    // Never production's sibling: its vars are its own.
+    const own = PRIVATE.replace('"YOKOHAMA_WEB_IDENTITY": "worker",', '"YOKOHAMA_WEB_IDENTITY": "worker",\n    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "30",');
+    expect(own, "premise: a variable production lacks").not.toBe(PRIVATE);
+    expect(judged(own), "a variable of its own").toEqual([]);
+
+    // Its record.
+    expect(judged(PRIVATE.replace('"name": "yokohama-web-private"', '"name": "yokohama-web"')), "production's name").toEqual([
+      `${PRIV}'s name must be "yokohama-web-private" — got "yokohama-web"; each deployment is its own Worker, and a deploy under another name replaces that one`,
+    ]);
+    expect(judged(PRIVATE.replace('"bucket_name": "yokohama-archive-private"', '"bucket_name": "yokohama-archive"')), "production's bucket").toEqual([
+      `${PRIV}'s r2_buckets must bind yokohama-archive-private as ARCHIVE, and nothing else — got ` +
+        '[{"binding":"ARCHIVE","bucket_name":"yokohama-archive"}]; each deployment keeps its own archive',
+    ]);
+    const limits = (create, write, figure) =>
+      `${PRIV}'s ratelimits block is not the two bindings at production's figures in its own namespaces 7303 and 7304 — ` +
+      "a namespace_id is the account's, and a shared one shares counters across Workers; got " +
+      `[{"name":"CREATE_LIMIT","namespace_id":"${create}","simple":{"limit":10,"period":60}},` +
+      `{"name":"WRITE_LIMIT","namespace_id":"${write}","simple":{"limit":${figure},"period":10}}]`;
+    expect(judged(PRIVATE.replace('"namespace_id": "7303"', '"namespace_id": "7301"')), "production's namespace").toEqual([
+      limits("7301", "7304", 120),
+    ]);
+    expect(judged(PRIVATE.replace('"limit": 120', '"limit": 121')), "another figure").toEqual([limits("7303", "7304", 121)]);
+    const noRoute = `${PRIV} binds the route yokohama.moore.nyc — no route until the owner names the private domain`;
+    expect(judged(PRIVATE.replace('"main"', `${ROUTES},\n  "main"`)), "a route").toEqual([noRoute]);
+    expect(judged(PRIVATE.replace('"main"', '"route": "yokohama.moore.nyc",\n  "main"')), "a route, singular").toEqual([noRoute]);
+    expect(judged(PRIVATE.replace('"main"', '"routes": [],\n  "main"')), "an empty list binds none").toEqual([]);
+    const source = (got) => `${PRIV}'s vars must set YOKOHAMA_IDENTITY_SOURCE to "access", its deployment's record (plan decision D-1) — got ${got}`;
+    expect(judged(atSource(PRIVATE, "workos", CLIENT)), "workos").toEqual([source('"workos"')]);
+    expect(judged(PRIVATE.replace(DOOR_VARS, '"vars": { "YOKOHAMA_WEB_IDENTITY": "open" }')), "the open door").toEqual([source("nothing")]);
+
+    // Production's other blocks.
+    const blocks = (key, got, want) =>
+      `${PRIV}'s ${key} differs from wrangler.jsonc's — both Workers run the same code, so ${PRIV} ships production's ${key}: ${got} against ${want}`;
+    expect(judged(PRIVATE.replace(OBSERVABILITY, '"observability": { "enabled": true }')), "observability").toEqual([
+      blocks("observability", '{"enabled":true}', '{"enabled":true,"redact_query_string":true}'),
+    ]);
+    const assetsAt = (dir) =>
+      `{"binding":"ASSETS","directory":"${dir}","html_handling":"none","not_found_handling":"404-page","run_worker_first":["/api/*","/enter"]}`;
+    expect(judged(PRIVATE.replace('"directory": "./assets"', '"directory": "./assets-private"')), "assets").toEqual([
+      blocks("assets", assetsAt("./assets-private"), assetsAt("./assets")),
+    ]);
+    const objects = PRIVATE.replace(',\n      { "name": "ARCHIVER", "class_name": "Archive" }', "");
+    expect(objects, "premise: a class gone").not.toBe(PRIVATE);
+    const objectsDiffer = expect.stringMatching(/^wrangler\.private\.jsonc's durable_objects differs from wrangler\.jsonc's — both Workers run the same code/);
+    expect(judged(objects), "durable_objects, judged").toEqual([objectsDiffer]);
+    expect(deployGuard(worker({ [PRIV]: objects })), "durable_objects, in the plain run").toEqual([objectsDiffer]);
+
+    // Absent: no failure, unless it is the file named.
+    expect(deployGuard(worker({ [PRIV]: null })), "absent, the plain run").toEqual([]);
+    expect(configFailures(worker({ [PRIV]: null }), "wrangler.dev.jsonc"), "absent, the dev run").toEqual([]);
+    expect(configFailures(worker({ [PRIV]: null }), PRIV), "absent, and named").toEqual([`${PRIV} is absent`]);
+  });
+
+  // Production is a deployment too (the auth cycle, Task 7): judged, it is held to ITS record — the Worker
+  // `yokohama-web`, the bucket `yokohama-archive` and the custom domain `yokohama.moore.nyc`, its routes binding that
+  // hostname and nothing else. Its rate limits are check 13's and its bucket's presence check 6's, so neither is
+  // named twice. Mutants: the record not read for production; its name, bucket or routes unread; a second route
+  // accepted.
+  it("wrangler.jsonc is held to its own record: name, bucket and route", () => {
+    const at = (text) => deployGuard(worker({ "wrangler.jsonc": text }));
+    expect(at(PRODUCTION.replace('"name": "yokohama-web",', '"name": "yokohama-web-public",')), "another name").toEqual([
+      'wrangler.jsonc\'s name must be "yokohama-web" — got "yokohama-web-public"; each deployment is its own Worker, and a deploy under another name replaces that one',
+    ]);
+    const routes = (got) => `wrangler.jsonc's routes must bind yokohama.moore.nyc and nothing else — got ${got}`;
+    expect(at(PRODUCTION.replace(ROUTES, '"routes": [{ "pattern": "elsewhere.example", "custom_domain": true }]')), "another route").toEqual([
+      routes("elsewhere.example"),
+    ]);
+    expect(at(PRODUCTION.replace(ROUTES, '"routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }, "elsewhere.example/*"]')), "a second route").toEqual([
+      routes("yokohama.moore.nyc, elsewhere.example/*"),
+    ]);
+    expect(at(PRODUCTION.replace(`  ${ROUTES},\n`, "")), "no route").toEqual([routes("none")]);
+    expect(at(PRODUCTION.replace('"main"', '"route": "elsewhere.example/*",\n  "main"')), "a route, singular, beside the list").toEqual([
+      routes("elsewhere.example/*, yokohama.moore.nyc"),
+    ]);
+    expect(at(PRODUCTION.replace('"bucket_name": "yokohama-archive"', '"bucket_name": "yokohama-archive-public"')), "another bucket").toEqual(
+      naming(/^wrangler\.jsonc's r2_buckets must bind yokohama-archive as ARCHIVE, and nothing else — got \[\{"binding":"ARCHIVE","bucket_name":"yokohama-archive-public"\}\]; each deployment keeps its own archive$/),
+    );
+  });
+
+  // **The 'both' pair** (the owner's direction, 2026-10-19): the window moves production to `workos` with the key on
+  // and the Access pair removed, and the dev file follows it with its dev door `on` — inert under an arm, whose
+  // shell never runs the Access verifier. The dev file is still production but for the dev door (`DEV_DIFFERS`
+  // unchanged): the source, and every sign-in variable, are COPIED. Mutant: `DEV_DIFFERS` gaining the source (the
+  // drift row reads green).
+  it("the dev file still differs from production in the dev door alone, with the source copied", () => {
+    const signed = (text) => atSource(text, "workos", { ...CLIENT, YOKOHAMA_TURNSTILE: "on" });
+    const files = { "wrangler.jsonc": signed(PRODUCTION), "wrangler.dev.jsonc": signed(DEV), ...KEYED };
+    expect(files["wrangler.dev.jsonc"], "premise: the dev door is on").toContain('"YOKOHAMA_DEV_DOOR": "on"');
+    expect(deployGuard(worker(files)), "production at workos, keyed").toEqual([]);
+    expect(deployGuard(worker(files), undefined, "wrangler.dev.jsonc"), "the dev file at workos, keyed").toEqual([]);
+    expect(doorLine(worker(files), "wrangler.dev.jsonc")).toBe(
+      "wrangler.dev.jsonc deploys the worker door, source workos — WorkOS AuthKit, through its first-party API at the callback",
+    );
+    // The source left behind at access: drift, named by key.
+    expect(deployGuard(worker({ ...files, "wrangler.dev.jsonc": DEV }), undefined, "wrangler.dev.jsonc"), "the dev file left at access").toEqual(
+      naming(/^wrangler\.dev\.jsonc's vars\.YOKOHAMA_IDENTITY_SOURCE differs from wrangler\.jsonc's — a deploy of it would roll production back: "access" against "workos"$/),
+    );
+    // The client id left behind: drift too.
+    const noClient = atSource(DEV, "workos", { YOKOHAMA_TURNSTILE: "on" });
+    expect(deployGuard(worker({ ...files, "wrangler.dev.jsonc": noClient }), undefined, "wrangler.dev.jsonc"), "the client id left behind").toEqual(
+      naming(/^wrangler\.dev\.jsonc's vars\.YOKOHAMA_OIDC_CLIENT_ID differs from wrangler\.jsonc's/),
+    );
+  });
+
+  // The door line names the source (the auth cycle, Task 7), in `SOURCES`' words; none when the worker door names no
+  // source check 3 knows — which check 3 refuses. Mutants: the source left out; a source it does not know printed;
+  // the value read raw.
+  it("doorLine names the source", () => {
+    expect(doorLine(worker())).toBe("wrangler.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
+    const oidcLine = "wrangler.jsonc deploys the worker door, source oidc — an OpenID Connect issuer, verified by the shell at the callback";
+    expect(doorLine(worker({ "wrangler.jsonc": atSource(PRODUCTION, "oidc", { ...ISSUER, ...CLIENT }) }))).toBe(oidcLine);
+    expect(doorLine(worker({ "wrangler.jsonc": atSource(PRODUCTION, " oidc ", { ...ISSUER, ...CLIENT }) })), "trimmed").toBe(oidcLine);
+    expect(doorLine(worker({ "wrangler.jsonc": atSource(PRODUCTION, "workos", CLIENT) }))).toBe(
+      "wrangler.jsonc deploys the worker door, source workos — WorkOS AuthKit, through its first-party API at the callback",
+    );
+    expect(doorLine(worker(), "wrangler.private.jsonc")).toBe(
+      "wrangler.private.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell",
+    );
+    expect(doorLine(worker({ "wrangler.jsonc": atSource(PRODUCTION, "WorkOS", CLIENT) })), "a source it does not know").toBeUndefined();
+    expect(doorLine(worker({ "wrangler.jsonc": PRODUCTION.replace('"YOKOHAMA_IDENTITY_SOURCE": "access",', "") })), "none").toBeUndefined();
+    expect(doorLine(worker({ "wrangler.jsonc": OPEN })), "the open door names none").toBe(
+      "wrangler.jsonc deploys the open door — no identity service: anyone who reaches the Worker plays under any name",
+    );
+  });
+
+  // C-2 (Task 1 landed the line; this cell pins it): the open door has no identity source — the shell refuses one
+  // beside `open` — so an open file omits the key production sets: `OPEN_DIFFERS` holds it ABSENT, and the door
+  // rules refuse it there in the shell's words, for the window's file and for any open file named. Mutants: the line
+  // removed (the shape that omits the key reads as drift); the open door's refusal dropped (the first sentence
+  // missing).
+  it("holds the open files' identity source absent: OPEN_DIFFERS, and the open door's own refusal", () => {
+    expect(PRODUCTION, "premise: production names a source").toContain('"YOKOHAMA_IDENTITY_SOURCE": "access"');
+    expect(OPEN_FILE, "premise: the open file names none").not.toContain("YOKOHAMA_IDENTITY_SOURCE");
+    const sourced = OPEN_FILE.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": "open",\n    "YOKOHAMA_IDENTITY_SOURCE": "access"');
+    for (const file of ["wrangler.open.jsonc", "wrangler.public.jsonc"]) {
+      expect(deployGuard(worker({ [file]: OPEN_FILE, ...KEYED }), undefined, file), `${file} omits it`).toEqual([]);
+      expect(deployGuard(worker({ [file]: sourced, ...KEYED }), undefined, file), `${file} copies production's`).toEqual([
+        `${file}'s vars set YOKOHAMA_IDENTITY_SOURCE beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it`,
+        `${file}'s vars.YOKOHAMA_IDENTITY_SOURCE must be absent — got "access"`,
+      ]);
+    }
   });
 });
 
@@ -1341,16 +1715,17 @@ describe("the committed configurations", () => {
   it("pass every check that needs no build under --config wrangler.dev.jsonc", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     expect(configFailures(root, "wrangler.dev.jsonc")).toEqual([]);
-    expect(doorLine(root, "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door — Cloudflare Access, verified by the shell");
+    expect(doorLine(root, "wrangler.dev.jsonc")).toBe("wrangler.dev.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell");
   });
-  // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the five
+  // Check 10 lives in `deployGuard`, which needs a build (R-FP13), so the six
   // committed files are held to it here, parsed as the guard parses them.
-  it("carry no Workers Cache block at any depth, each of the five", () => {
+  it("carry no Workers Cache block at any depth, each of the six", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     for (const name of [
       "wrangler.jsonc",
       "wrangler.open.jsonc",
       "wrangler.dev.jsonc",
+      "wrangler.private.jsonc",
       "wrangler.test.jsonc",
       "wrangler.open.test.jsonc",
     ]) {
@@ -1363,15 +1738,16 @@ describe("the committed configurations", () => {
       expect(failures, name).toEqual([]);
     }
   });
-  // Cycle F (R-F5; spec §2.5): each of the five names `404-page`, read off
+  // Cycle F (R-F5; spec §2.5): each of the six names `404-page`, read off
   // the file rather than through check 5's constant, so the constant and the
   // files cannot move back together unnoticed.
-  it("answer a browser's miss with the 404 page, each of the five", () => {
+  it("answer a browser's miss with the 404 page, each of the six", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     for (const name of [
       "wrangler.jsonc",
       "wrangler.open.jsonc",
       "wrangler.dev.jsonc",
+      "wrangler.private.jsonc",
       "wrangler.test.jsonc",
       "wrangler.open.test.jsonc",
     ]) {
@@ -1380,13 +1756,15 @@ describe("the committed configurations", () => {
       expect(value?.assets?.run_worker_first, name).toEqual(["/api/*", "/enter"]);
     }
   });
-  // Cycle F (R-FP2, R-FP4): the declaration in each of the five, read off the
-  // file — `on` in the open window's file alone.
-  it("declare YOKOHAMA_TURNSTILE off in four and on in the open file alone", () => {
+  // Cycle F (R-FP2, R-FP4): the declaration in each of the six, read off the
+  // file — `on` in the open window's file alone, until the window moves
+  // production to `workos` (the auth cycle's Task 10).
+  it("declare YOKOHAMA_TURNSTILE off in five and on in the open file alone", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     for (const [name, want] of [
       ["wrangler.jsonc", "off"],
       ["wrangler.dev.jsonc", "off"],
+      ["wrangler.private.jsonc", "off"],
       ["wrangler.test.jsonc", "off"],
       ["wrangler.open.test.jsonc", "off"],
       ["wrangler.open.jsonc", "on"],
@@ -1395,39 +1773,57 @@ describe("the committed configurations", () => {
       expect(value?.vars?.YOKOHAMA_TURNSTILE, name).toBe(want);
     }
   });
-  // The WHOLE guard over the five committed files, laid into a scratch package
-  // beside a tree of each kind (the amendment's cells): production and the
-  // dev file pass over a keyless build, the open file over a keyed one — and the
-  // open file FAILS check 12 over a keyless tree, by design (the window builds
-  // a keyed client before `npm run deploy:open`), as production and the dev
-  // file fail over a keyed one.
-  it("pass the whole guard: production and the dev file over a keyless build, the open file over a keyed one", () => {
+  // The WHOLE guard over the six committed files, laid into a scratch package
+  // beside a tree of each kind (the amendment's cells): production, the dev
+  // file and the private file pass over a keyless build, the open file over a
+  // keyed one — and the open file FAILS check 12 over a keyless tree, by design
+  // (the window builds a keyed client before `npm run deploy:open`), as the
+  // three at source `access` fail over a keyed one.
+  it("pass the whole guard: production, the dev file and the private file over a keyless build, the open file over a keyed one", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     const committed = Object.fromEntries(
-      ["wrangler.jsonc", "wrangler.open.jsonc", "wrangler.dev.jsonc", "wrangler.test.jsonc", "wrangler.open.test.jsonc"].map((name) => [
+      [
+        "wrangler.jsonc",
+        "wrangler.open.jsonc",
+        "wrangler.dev.jsonc",
+        "wrangler.private.jsonc",
+        "wrangler.test.jsonc",
+        "wrangler.open.test.jsonc",
+      ].map((name) => [
         name,
         readFileSync(join(root, name), "utf8"),
       ]),
     );
     expect(deployGuard(worker(committed)), "production, keyless").toEqual([]);
     expect(deployGuard(worker(committed), undefined, "wrangler.dev.jsonc"), "the dev file, keyless").toEqual([]);
+    expect(deployGuard(worker(committed), undefined, "wrangler.private.jsonc"), "the private file, keyless").toEqual([]);
     expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.open.jsonc"), "the open file, keyed").toEqual([]);
     expect(deployGuard(worker(committed), undefined, "wrangler.open.jsonc"), "the open file, keyless").toEqual([
       "wrangler.open.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
         "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
     ]);
-    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
+    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc", "wrangler.private.jsonc"]) {
       expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([
-        `${file} leaves YOKOHAMA_TURNSTILE off under identity worker but the assets tree's build carries a site key — a ` +
-          "keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of " +
-          "the API; build the client without the key, and deploy the key only with wrangler.open.jsonc",
+        `${file} leaves YOKOHAMA_TURNSTILE off under identity worker, source access but the assets tree's build carries ` +
+          "a site key — a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth " +
+          "cycle's R-A3/R-A4): under Access the edge is the bot defence; build the client without the key, and deploy the " +
+          "key only at the open door or under source oidc or workos",
       ]);
     }
   });
   // M6.5c2 (R-6.5c2.5): production's door is the worker door.
   it("name the worker door", () => {
     expect(doorLine(fileURLToPath(new URL("..", import.meta.url)))).toBe(
-      "wrangler.jsonc deploys the worker door — Cloudflare Access, verified by the shell",
+      "wrangler.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell",
+    );
+  });
+  // The auth cycle, Task 7 (plan decision D-1): the private Worker's file passes the checks that need no build under
+  // its own name — its record, its door and source, production's blocks — and names its door and source.
+  it("pass every check that needs no build under --config wrangler.private.jsonc, and name the worker door at source access", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    expect(configFailures(root, "wrangler.private.jsonc")).toEqual([]);
+    expect(doorLine(root, "wrangler.private.jsonc")).toBe(
+      "wrangler.private.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell",
     );
   });
 });

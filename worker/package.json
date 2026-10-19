@@ -17,7 +17,8 @@
     "test:scripts": "vitest run -c vitest.scripts.config.ts",
     "deploy": "node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc",
     "deploy:open": "node scripts/deploy-guard.mjs --config wrangler.open.jsonc && node scripts/secrets-guard.mjs --config wrangler.open.jsonc && wrangler deploy --config wrangler.open.jsonc",
-    "deploy:dev": "node scripts/deploy-guard.mjs --config wrangler.dev.jsonc && node scripts/secrets-guard.mjs --config wrangler.dev.jsonc && wrangler deploy --config wrangler.dev.jsonc"
+    "deploy:dev": "node scripts/deploy-guard.mjs --config wrangler.dev.jsonc && node scripts/secrets-guard.mjs --config wrangler.dev.jsonc && wrangler deploy --config wrangler.dev.jsonc",
+    "deploy:private": "node scripts/deploy-guard.mjs --config wrangler.private.jsonc && node scripts/secrets-guard.mjs --config wrangler.private.jsonc && wrangler deploy --config wrangler.private.jsonc"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.2.3",

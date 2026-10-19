@@ -1,7 +1,8 @@
 // **The deploy guard.** `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
 // scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, `npm run
-// deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39) and `npm run deploy:dev` the same over
-// `wrangler.dev.jsonc` (security S2b, B6) — checks 2–7 and 10–12 then judge THAT file, and 5 and 6 hold it to
+// deploy:open` the same over `wrangler.open.jsonc` (R-6.5c2.39), `npm run deploy:dev` the same over
+// `wrangler.dev.jsonc` (security S2b, B6) and `npm run deploy:private` the same over `wrangler.private.jsonc` (the
+// auth cycle, Task 7; plan decision D-1) — checks 2–7 and 10–12 then judge THAT file, and 5 and 6 hold it to
 // production's blocks — so nothing ships unless all fourteen hold. Every check that fails is named, not only the
 // first.
 //
@@ -26,9 +27,18 @@
 //    deployed code, whatever the door; and `"workers_dev": false` under EVERY
 //    door — under `worker` a `workers.dev` URL would go around the hostname's
 //    Access application, under `open` the edge rule, the rate limit and Bot
-//    Fight Mode (security S2a, C3); under `worker`, `ACCESS_TEAM_DOMAIN` and
-//    `ACCESS_AUD` set, without which no assertion is verified and every caller
-//    is no one; under `open`, `YOKOHAMA_DEV_DOOR` is not `on`, the dev door
+//    Fight Mode (security S2a, C3); under `worker`, `YOKOHAMA_IDENTITY_SOURCE`
+//    — who vouches for an address (the auth cycle, Task 7) — names `access`,
+//    `oidc` or `workos`, read as the shell reads it (`config.ts`'s `source`:
+//    trimmed, matched exactly), with no default and in the shell's words; at
+//    `access`, `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` set, without which no
+//    assertion is verified and every caller is no one; at `oidc`,
+//    `YOKOHAMA_OIDC_ISSUER` and `YOKOHAMA_OIDC_CLIENT_ID` set; at `workos`,
+//    `YOKOHAMA_OIDC_CLIENT_ID` set and `YOKOHAMA_OIDC_ISSUER` not (WorkOS's
+//    issuer is fixed); at either of those two, neither Access value set — the
+//    shell ignores them there, and the guard, which writes the deploy,
+//    refuses the confusion; under `open`, no source at all (the shell refuses
+//    one beside it) and `YOKOHAMA_DEV_DOOR` not `on`, the dev door
 //    being the worker door's test instrument (the Worker refuses the pair at
 //    run time too); and under `worker`, `YOKOHAMA_DEV_DOOR` is `on` in
 //    `wrangler.dev.jsonc` alone, which must set it to exactly `on` (security
@@ -38,19 +48,31 @@
 //    Absent is not false: with no route, an absent `workers_dev` is a public
 //    `workers.dev` URL, and an absent `preview_urls` leaves the Worker's
 //    Version URLs as they were — public, if they were ever on. The guard
-//    prints the door it reads before its verdict (`doorLine`).
+//    prints the door it reads, and at `worker` the source, before its verdict
+//    (`doorLine`).
 // 3b. No `.wrangler/deploy/config.json` beside the package or at the repository
 //    root (`REDIRECT_FILE`, D18); every open-door file judged by `--config` is
 //    held to production as its sibling (C3); `wrangler.dev.jsonc` is held to
-//    production but for its dev door `on` (security S2b, B6); and every OTHER
-//    worker-door file judged by `--config` is held to production exactly, with
-//    no allowed difference (F-40).
+//    production but for its dev door `on` (security S2b, B6); each file in
+//    `DEPLOYMENTS` — production's and the private Worker's,
+//    `wrangler.private.jsonc` (the auth cycle, Task 7; plan decision D-1) — is
+//    held, when judged, to its OWN record: its name, its bucket and its routes
+//    and, for the private Worker, its rate-limit namespaces at production's
+//    figures (production's are check 13's) and its source `access`; the
+//    private file is never production's sibling, and is held instead to
+//    production's `assets` and `observability` when judged and to its
+//    `durable_objects` and `migrations` in every run, as check 6 holds the
+//    open and dev files — absent, it is no failure unless it is the file
+//    named; and every OTHER worker-door file judged by `--config` is held to
+//    production exactly, with no allowed difference (F-40).
 // 4. `YOKOHAMA_WEB_TEST_CLOCK` appears nowhere in the deployed configuration — read as
 //    text, so an environment's `vars` or a comment cannot carry it past.
 // 4b. `YOKOHAMA_DIAGNOSTIC_SEEDS` appears nowhere in the deployed configuration (R-SEC8(b)).
 // 5. The `assets` block is EXACTLY spec §2.3's as cycle F amends it, in
-//    `wrangler.jsonc`, the open and dev files AND both pool configurations,
-//    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2):
+//    `wrangler.jsonc`, the open and dev files, both pool configurations,
+//    `wrangler.test.jsonc` and `wrangler.open.test.jsonc` (M6.5c2), AND the
+//    private Worker's `wrangler.private.jsonc` whenever it exists (the auth
+//    cycle, Task 7):
 //    `html_handling` `none`, `not_found_handling` `404-page` (cycle F, R-F5;
 //    spec §2.5), `run_worker_first` `["/api/*", "/enter"]`, the binding
 //    `ASSETS`, and no key beyond those and `directory`. Battery rows 13 and 14
@@ -73,12 +95,16 @@
 //    a class, a binding, a migration or a bucket there that production lacks
 //    would be tested green and never shipped — and production's
 //    `YOKOHAMA_WEB_ARCHIVE=r2` with no bucket bound is the 500 naming that
-//    variable (spec §2.6).
+//    variable (spec §2.6). The private Worker's file, whenever it exists,
+//    carries production's `durable_objects` and `migrations` too; its bucket
+//    is its own (check 3b).
 // 7. No `vars` block in the deployed configuration — the top level's, or any
 //    environment's — names a SECRET: `YOKOHAMA_WEB_ADMINS` (the plan's ruling
 //    P-1, as the orchestrator ruled at Task 14's review), whose value is an
-//    address committed to the repository, or `DEV_DOOR_CLIENT_ID` (M6.5c2,
-//    R-6.5c2.5). Both are set as secrets, which a deploy leaves alone. Read as
+//    address committed to the repository, `DEV_DOOR_CLIENT_ID` (M6.5c2,
+//    R-6.5c2.5), or the auth cycle's two (Task 7), `YOKOHAMA_OIDC_CLIENT_SECRET`
+//    and `YOKOHAMA_SESSION_SECRET`. Each is set as a secret, which a deploy
+//    leaves alone. Read as
 //    a KEY, so a comment may name either, and read in production's file
 //    alone, so the pool keeps its test client id (review m9).
 // 8. `gen/` is the build of the tree as it is now (R3's M-3): `gen/source.json`
@@ -131,17 +157,21 @@
 //    renders the widget under Access (R-FP4: one client build per door
 //    state). A tree with no stamp, or a stamp that is not one, is refused
 //    naming the file. Never read by the Worker at run time. **And the
-//    identity rule** (Task 7, the orchestrator's amendment from Task 6's
-//    re-review): `on`, and a keyed stamp, stand only beside
-//    `YOKOHAMA_WEB_IDENTITY` `open`, read as the shell reads the door; under
-//    any other each is refused with ONE sentence naming the identity and the
-//    declaration, and the stamp comparison is not asked there. The client
-//    infers the open door from the presence of a site key
-//    (`web/src/outbox.ts`'s keyed-build rule), so a keyed build behind Access
-//    would silently never upload a nameless visitor's games. The open file's
-//    `on` is one of its allowed differences from production (T8-a), and a POOL
-//    file's `on` is refused whichever file is judged: the pool never deploys,
-//    so never a keyed build.
+//    identity rule** (cycle F's Task 7, the orchestrator's amendment from
+//    Task 6's re-review; narrowed by the auth cycle's Task 7, R-A3/R-A4):
+//    `on`, and a keyed stamp, stand only beside `YOKOHAMA_WEB_IDENTITY`
+//    `open`, or `worker` with `YOKOHAMA_IDENTITY_SOURCE` `oidc` or `workos` —
+//    a provider-signed door, the public deployment, where the Turnstile is the
+//    bot defence — each read as the shell reads it; under any other pairing
+//    each is refused with ONE sentence naming the identity, the source and the
+//    declaration, and the stamp comparison is not asked there. Under Access
+//    the edge is the bot defence (R-FP4: one client build per door state).
+//    The client does not read the key as the door: it reads the SERVER FACTS
+//    (`web/src/outbox.ts`'s `heldForAName` — a keyed build holds a nameless
+//    visitor's game for a name only where the facts say `open`). The open
+//    file's `on` is one of its allowed differences from production (T8-a),
+//    and a POOL file's `on` is refused whichever file is judged: the pool
+//    never deploys, so never a keyed build.
 // 13. Production's two Rate Limiting bindings (security S2b, finding C2;
 //    decision D-3): `wrangler.jsonc`'s `ratelimits` block is EXACTLY
 //    `RATE_LIMITS`, read as values — `CREATE_LIMIT` 10 per 60 s and
@@ -285,6 +315,35 @@ const OPEN_FILE = "wrangler.open.jsonc";
  *  production's blocks like the open file. */
 const DEV_FILE = "wrangler.dev.jsonc";
 
+/** The private Worker's configuration (the auth cycle, Task 7; plan decision D-1): the LATER private deployment,
+ *  behind Cloudflare Access, under its own record — optional until the owner names its domain. */
+const PRIVATE_FILE = "wrangler.private.jsonc";
+
+/** **The deployments** (the auth cycle, Task 7; design §4.7 as amended by D-1), each file's RECORD: the Worker it
+ *  names, the bucket it binds as `ARCHIVE`, its two rate-limit namespaces (`CREATE_LIMIT`'s, then `WRITE_LIMIT`'s),
+ *  the hostnames its routes bind (`null`: none yet) and, where one is named, the identity source it declares. A
+ *  judged file in this table is held to its record (check 3b) and never, as a sibling, to production. Production's
+ *  source is the window's to move (`access` today, `workos` at the plan's Task 10), so its record names none; the
+ *  private Worker keeps Access. Production's namespaces are `RATE_LIMITS`' (check 13). */
+export const DEPLOYMENTS = {
+  "wrangler.jsonc": { name: "yokohama-web", bucket: "yokohama-archive", namespaces: ["7301", "7302"], routes: ["yokohama.moore.nyc"] },
+  "wrangler.private.jsonc": {
+    name: "yokohama-web-private",
+    bucket: "yokohama-archive-private",
+    namespaces: ["7303", "7304"],
+    routes: null,
+    source: "access",
+  },
+};
+
+/** Who vouches for an address at the worker door (the auth cycle, design §3; Task 1's `config.ts`), and what the
+ *  guard says each one is. */
+export const SOURCES = {
+  access: "Cloudflare Access, verified by the shell",
+  oidc: "an OpenID Connect issuer, verified by the shell at the callback",
+  workos: "WorkOS AuthKit, through its first-party API at the callback",
+};
+
 /** What check 6 compares, and what each block's absence leaves undeclared. */
 const OBJECT_BLOCKS = {
   durable_objects: "binds the three object classes",
@@ -315,21 +374,30 @@ function objectBlocks(production, pools, failures) {
   }
 }
 
-/** Production's two Rate Limiting bindings as values (security S2b, finding C2; decision D-3), the literals the
- *  shell's comment defends. The dev and open files carry the same block by the sibling rule; a pool file is held
- *  to the two NAMES alone, its figures being lenient by design (`test/worker.test.ts`'s creates through `handle`).
- *  Read at the top level: `ratelimits` is not inherited by a named environment (wrangler's schema), and the
- *  repository deploys none. */
-export const RATE_LIMITS = [
-  { name: "CREATE_LIMIT", namespace_id: "7301", simple: { limit: 10, period: 60 } },
-  { name: "WRITE_LIMIT", namespace_id: "7302", simple: { limit: 120, period: 10 } },
+/** The two Rate Limiting bindings' figures (security S2b, finding C2; decision D-3), the literals the shell's
+ *  comment defends. */
+const LIMITS = [
+  { name: "CREATE_LIMIT", simple: { limit: 10, period: 60 } },
+  { name: "WRITE_LIMIT", simple: { limit: 120, period: 10 } },
 ];
+
+/** The two bindings at those figures in `namespaces` (`CREATE_LIMIT`'s, then `WRITE_LIMIT`'s): one deployment's
+ *  block, as its record in `DEPLOYMENTS` names its namespaces. */
+const limitsIn = (namespaces) => LIMITS.map((b, i) => ({ name: b.name, namespace_id: namespaces[i], simple: b.simple }));
+
+/** Production's two Rate Limiting bindings as values (security S2b, finding C2; decision D-3): the figures above in
+ *  production's namespaces, `7301` and `7302` (its record). The dev and open files carry the same block by the
+ *  sibling rule; a pool file is held to the two NAMES alone, its figures being lenient by design
+ *  (`test/worker.test.ts`'s creates through `handle`); the private Worker's file to the same figures in ITS
+ *  namespaces (check 3b). Read at the top level: `ratelimits` is not inherited by a named environment (wrangler's
+ *  schema), and the repository deploys none. */
+export const RATE_LIMITS = limitsIn(DEPLOYMENTS[PRODUCTION_FILE].namespaces);
 
 /** Check 13: production's block at its literals; each pool file naming exactly the two bindings. */
 function rateLimits(production, pools, failures) {
   if (canonical(production.value.ratelimits) !== canonical(RATE_LIMITS)) {
     failures.push(
-      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces 7301 and 7302 (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
+      `wrangler.jsonc's ratelimits block is not the two bindings at their figures — CREATE_LIMIT 10 per 60 s and WRITE_LIMIT 120 per 10 s, namespaces ${DEPLOYMENTS[PRODUCTION_FILE].namespaces.join(" and ")} (security S2b, C2); got ${canonical(production.value.ratelimits) ?? "nothing"}`,
     );
   }
   for (const [name, pool] of pools) {
@@ -344,6 +412,11 @@ function rateLimits(production, pools, failures) {
 const SECRETS = {
   YOKOHAMA_WEB_ADMINS: "the operator list is a secret (wrangler secret put), never a committed value",
   DEV_DOOR_CLIENT_ID: "the dev door's client id is a secret (wrangler secret put), never a committed value",
+  // The auth cycle's two (Task 7): each a secret — `wrangler secret put <name>` — and never a var.
+  YOKOHAMA_OIDC_CLIENT_SECRET:
+    "the sign-in client secret (the WorkOS API key under workos) is a secret (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET), never a var",
+  YOKOHAMA_SESSION_SECRET:
+    "the key that signs every session cookie is a secret (wrangler secret put YOKOHAMA_SESSION_SECRET), never a var",
 };
 
 /** `value` when it is an object that is not an array — a `vars` block or an
@@ -384,9 +457,10 @@ function namesVar(judged, key) {
   return judged.text.includes(key) || varsBlocks(judged.value).some(([, vars]) => Object.hasOwn(vars, key));
 }
 
-/** The two doors (M6.5c2, spec §2.1), and what the guard says each one is. */
+/** The two doors (M6.5c2, spec §2.1), and what the guard says each one is. At `worker`, the source says who vouches
+ *  (`SOURCES`, the auth cycle), and the door line prints the source's words instead. */
 const DOORS = {
-  worker: "Cloudflare Access, verified by the shell",
+  worker: "an identity source, named by YOKOHAMA_IDENTITY_SOURCE, vouches for each caller's address",
   open: "no identity service: anyone who reaches the Worker plays under any name",
 };
 
@@ -402,6 +476,19 @@ function doorOf(value) {
 /** Whether `door` is one of the two, compared exactly. */
 function known(door) {
   return typeof door === "string" && Object.hasOwn(DOORS, door);
+}
+
+/** The identity source a configuration's top-level `vars` names (the auth cycle, Task 7), read as the shell reads
+ *  `YOKOHAMA_IDENTITY_SOURCE` (`config.ts`'s `source`): a string trimmed, and nothing else changed. Any other value
+ *  is handed back as it is, and `undefined` means none. */
+export function sourceOf(value) {
+  const raw = objectOf(value.vars)?.YOKOHAMA_IDENTITY_SOURCE;
+  return typeof raw === "string" ? raw.trim() : raw;
+}
+
+/** Whether `source` is one of the three, compared exactly. */
+function knownSource(source) {
+  return typeof source === "string" && Object.hasOwn(SOURCES, source);
 }
 
 /** What each deployable sibling may differ in: `vars` keys, each with the
@@ -485,12 +572,54 @@ function doorRules(name, value, failures) {
     }
   }
   const vars = objectOf(value.vars) ?? {};
+  // Required text, as a required variable must be: a string that is not blank.
+  const filled = (key) => typeof vars[key] === "string" && vars[key].trim() !== "";
+  // SET as the shell reads a variable (`config.ts`'s `present`): any value but absence or blank text.
+  const set = (key) => vars[key] !== undefined && !(typeof vars[key] === "string" && vars[key].trim() === "");
+  const source = sourceOf(value);
   if (door === "worker") {
-    for (const key of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
-      if (typeof vars[key] !== "string" || vars[key].trim() === "") {
+    // Who vouches for an address (the auth cycle, Task 7), with no default, in the shell's words (`config.ts`'s
+    // `source`).
+    if (source === undefined) {
+      failures.push(
+        `${name}'s YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, and there is no default: who vouches for an address is a deployment decision`,
+      );
+    } else if (!knownSource(source)) {
+      failures.push(`${name}'s YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got ${JSON.stringify(source)}`);
+    }
+    if (source === "access") {
+      for (const key of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
+        if (!filled(key)) {
+          failures.push(
+            `${name}'s vars must set ${key} under the worker door — without it no assertion is verified, and every caller is no one`,
+          );
+        }
+      }
+    }
+    // The arms' variables (Task 1's table, `config.ts`'s `signin`), and the Access pair refused beside either: the
+    // shell ignores it there, and the guard, which writes the deploy, refuses the confusion.
+    if (source === "oidc" || source === "workos") {
+      if (source === "oidc" && !filled("YOKOHAMA_OIDC_ISSUER")) {
         failures.push(
-          `${name}'s vars must set ${key} under the worker door — without it no assertion is verified, and every caller is no one`,
+          `${name}'s vars must set YOKOHAMA_OIDC_ISSUER under YOKOHAMA_IDENTITY_SOURCE=oidc — the issuer whose /.well-known/openid-configuration names the endpoints`,
         );
+      }
+      if (source === "workos" && set("YOKOHAMA_OIDC_ISSUER")) {
+        failures.push(
+          `${name}'s vars set YOKOHAMA_OIDC_ISSUER beside YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS arm's issuer is https://api.workos.com and is not configurable`,
+        );
+      }
+      if (!filled("YOKOHAMA_OIDC_CLIENT_ID")) {
+        failures.push(
+          `${name}'s vars must set YOKOHAMA_OIDC_CLIENT_ID under YOKOHAMA_IDENTITY_SOURCE=${source} — the client id the issuer registered for this site`,
+        );
+      }
+      for (const key of ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"]) {
+        if (set(key)) {
+          failures.push(
+            `${name}'s vars set ${key} beside YOKOHAMA_IDENTITY_SOURCE=${source} — the shell ignores the Access pair under a provider-signed source, so the file would say Access vouches for a caller when it does not: remove it`,
+          );
+        }
       }
     }
   }
@@ -514,16 +643,84 @@ function doorRules(name, value, failures) {
       `${name}'s vars set YOKOHAMA_DEV_DOOR=on — the dev door is deployed by wrangler.dev.jsonc alone (npm run deploy:dev), around a live tier, and reverted after (R-SEC8(d))`,
     );
   }
+  // Under `open` no source vouches for a claim: the shell refuses one beside the door, whatever its value, and last,
+  // after the older pairs (`config.ts`'s `openDoorRefusals`).
+  if (door === "open" && Object.hasOwn(vars, "YOKOHAMA_IDENTITY_SOURCE")) {
+    failures.push(
+      `${name}'s vars set YOKOHAMA_IDENTITY_SOURCE beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it`,
+    );
+  }
 }
 
-/** The line the guard prints about the door `wrangler.jsonc` under `root`
- *  names (R-6.5c2.5), whatever else the guard refuses — or `undefined` when
- *  the file is absent or does not parse, or names neither door, which check 3
- *  refuses. */
+/** The hostnames a configuration's routes bind: its `route` and each of its `routes`, a string or an object's
+ *  `pattern` (an entry with neither is shown whole). */
+function routePatterns(value) {
+  const many = Array.isArray(value.routes) ? value.routes : value.routes === undefined ? [] : [value.routes];
+  const entries = [...(value.route === undefined ? [] : [value.route]), ...many];
+  return entries.map((r) => (typeof r === "string" ? r : typeof objectOf(r)?.pattern === "string" ? r.pattern : canonical(r)));
+}
+
+/** Check 3b's record (the auth cycle, Task 7): the judged deployment `name` (parsed `value`) against its `record` in
+ *  `DEPLOYMENTS`. Production's rate limits are check 13's, and its bucket's presence check 6's, so neither is asked
+ *  twice. */
+function deploymentRecord(name, value, record, failures) {
+  const production = name === PRODUCTION_FILE;
+  if (value.name !== record.name) {
+    failures.push(
+      `${name}'s name must be ${JSON.stringify(record.name)} — got ${JSON.stringify(value.name) ?? "nothing"}; each deployment is its own Worker, and a deploy under another name replaces that one`,
+    );
+  }
+  const bucket = [{ binding: "ARCHIVE", bucket_name: record.bucket }];
+  if (!(production && value.r2_buckets === undefined) && canonical(value.r2_buckets) !== canonical(bucket)) {
+    failures.push(
+      `${name}'s r2_buckets must bind ${record.bucket} as ARCHIVE, and nothing else — got ${canonical(value.r2_buckets) ?? "nothing"}; each deployment keeps its own archive`,
+    );
+  }
+  if (!production && canonical(value.ratelimits) !== canonical(limitsIn(record.namespaces))) {
+    failures.push(
+      `${name}'s ratelimits block is not the two bindings at production's figures in its own namespaces ${record.namespaces.join(" and ")} — a namespace_id is the account's, and a shared one shares counters across Workers; got ${canonical(value.ratelimits) ?? "nothing"}`,
+    );
+  }
+  const routes = routePatterns(value);
+  if (record.routes === null && routes.length > 0) {
+    failures.push(`${name} binds the route ${routes.join(", ")} — no route until the owner names the private domain`);
+  } else if (record.routes !== null && canonical(routes) !== canonical(record.routes)) {
+    failures.push(`${name}'s routes must bind ${record.routes.join(", ")} and nothing else — got ${routes.join(", ") || "none"}`);
+  }
+  if (record.source !== undefined && sourceOf(value) !== record.source) {
+    failures.push(
+      `${name}'s vars must set YOKOHAMA_IDENTITY_SOURCE to ${JSON.stringify(record.source)}, its deployment's record (plan decision D-1) — got ${JSON.stringify(sourceOf(value)) ?? "nothing"}`,
+    );
+  }
+}
+
+/** The blocks a deployment's file carries as PRODUCTION's (the auth cycle, Task 7), read as values: both Workers
+ *  run the same code. Each of `keys` that production has is compared; one production lacks is named for production
+ *  by checks 5, 6 and 14, and not compared here. */
+function productionBlocks(name, production, mine, keys, failures) {
+  for (const key of keys) {
+    if (production[key] === undefined) continue;
+    const [p, t] = [canonical(production[key]), canonical(mine[key])];
+    if (p !== t) {
+      failures.push(
+        `${name}'s ${key} differs from wrangler.jsonc's — both Workers run the same code, so ${name} ships production's ${key}: ${t ?? "nothing"} against ${p}`,
+      );
+    }
+  }
+}
+
+/** The line the guard prints about the door `config` under `root` names
+ *  (R-6.5c2.5) and, at the worker door, its identity source (the auth cycle,
+ *  Task 7), whatever else the guard refuses — or `undefined` when the file is
+ *  absent or does not parse, names neither door, or names the worker door
+ *  with no source check 3 knows: each of which check 3 refuses. */
 export function doorLine(root, config = PRODUCTION_FILE) {
   const judged = readConfig(root, config, []);
-  const door = judged === undefined ? undefined : doorOf(judged.value);
-  return known(door) ? `${config} deploys the ${door} door — ${DOORS[door]}` : undefined;
+  if (judged === undefined) return undefined;
+  const door = doorOf(judged.value);
+  if (door === "open") return `${config} deploys the open door — ${DOORS.open}`;
+  const source = sourceOf(judged.value);
+  return door === "worker" && knownSource(source) ? `${config} deploys the worker door, source ${source} — ${SOURCES[source]}` : undefined;
 }
 
 /** Check 8: `gen/source.json` against the digest of the sources now. Asked
@@ -619,11 +816,16 @@ function notFoundPage(tree, failures, shown = tree) {
 }
 
 /** What check 12's identity rule says, after naming the file, the
- *  declaration and the identity (the orchestrator's amendment, Task 7). */
+ *  declaration, the identity and the source (cycle F's amendment, Task 7;
+ *  narrowed by the auth cycle's Task 7). */
 const KEYED_IS_OPEN =
-  "a keyed build is the open door (R-FP4): the widget and the client's keyed-build rule assume no Access in front of the API";
+  "a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth cycle's R-A3/R-A4): under Access the edge is the bot defence";
 
-/** The identity a configuration names, as check 12's sentences show it. */
+/** Where check 12's identity refusals send the key. */
+const KEY_ONLY = "deploy the key only at the open door or under source oidc or workos";
+
+/** The identity, or the source, a configuration names, as check 12's
+ *  sentences show it. */
 function identityShown(door) {
   if (door === undefined) return "nothing";
   return typeof door === "string" && door !== "" ? door : JSON.stringify(door);
@@ -633,10 +835,11 @@ function identityShown(door) {
  *  declaration against the stamp in the tree at `tree` (printed as `shown`),
  *  and against its door. Both are read whatever the other says, so a bad
  *  declaration and a missing stamp are two sentences. The identity rule
- *  comes first: `on`, or a keyed stamp, under any door but `open` is ONE
- *  sentence naming the identity and the declaration, and the stamp is
- *  compared with the declaration only at the open door — at any other, its
- *  sentences' advice (build with the key, set the var on) is wrong. */
+ *  comes first: `on`, or a keyed stamp, anywhere but the open door or the
+ *  worker door at source `oidc` or `workos` is ONE sentence naming the
+ *  identity, the source and the declaration, and the stamp is compared with
+ *  the declaration only where a keyed build may stand — at any other door,
+ *  its sentences' advice (build with the key, set the var on) is wrong. */
 function turnstileConsistency(config, value, tree, failures, shown = tree) {
   const declared = objectOf(value.vars)?.YOKOHAMA_TURNSTILE;
   const readable = declared === undefined || declared === "on" || declared === "off";
@@ -644,13 +847,14 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
     failures.push(`${config}'s vars.YOKOHAMA_TURNSTILE must be "on" or "off" (absent is off) — got ${JSON.stringify(declared)}`);
   }
   const door = doorOf(value);
-  const open = door === "open";
+  const source = sourceOf(value);
+  // Where a keyed build may stand (R-FP4, narrowed by the auth cycle's R-A3/R-A4): the open door, or the worker door
+  // at a provider-signed source — never under Access, whose edge is the bot defence there.
+  const open = door === "open" || (door === "worker" && (source === "oidc" || source === "workos"));
   const on = declared === "on";
+  const under = `identity ${identityShown(door)}, source ${identityShown(source)}`;
   if (on && !open) {
-    failures.push(
-      `${config} sets YOKOHAMA_TURNSTILE on under identity ${identityShown(door)} — ${KEYED_IS_OPEN}; ` +
-        "deploy the key only with wrangler.open.jsonc",
-    );
+    failures.push(`${config} sets YOKOHAMA_TURNSTILE on under ${under} — ${KEYED_IS_OPEN}; ${KEY_ONLY}`);
   }
   const file = join(tree, "build-values.json");
   if (!isFile(file)) {
@@ -674,8 +878,8 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
   if (!open) {
     if (!on && stamp.turnstile_sitekey) {
       failures.push(
-        `${config} leaves YOKOHAMA_TURNSTILE off under identity ${identityShown(door)} but the assets tree's build carries a ` +
-          `site key — ${KEYED_IS_OPEN}; build the client without the key, and deploy the key only with wrangler.open.jsonc`,
+        `${config} leaves YOKOHAMA_TURNSTILE off under ${under} but the assets tree's build carries a ` +
+          `site key — ${KEYED_IS_OPEN}; build the client without the key, and ${KEY_ONLY}`,
       );
     }
     return;
@@ -686,11 +890,12 @@ function turnstileConsistency(config, value, tree, failures, shown = tree) {
         "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
     );
   } else if (!on && stamp.turnstile_sitekey) {
-    // Asked only at the open door, which has no Access in front of it: a
-    // keyed build there is the open door's own, and its declaration says so.
+    // Asked only where a keyed build may stand — the open door, or a
+    // provider-signed worker door: a keyed build there is the door's own, and
+    // its declaration says so.
     failures.push(
       `${config} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at ` +
-        "the open door declares on: set the var on, or build the client without the key",
+        "the open door or a provider-signed worker door declares on: set the var on, or build the client without the key",
     );
   }
 }
@@ -716,7 +921,11 @@ function poolDeclaration(name, value, failures) {
  *  half rides here too (cycle F): neither pool file declares `on`; and check
  *  13 (security S2b, C2): production's rate limits at their figures, and each
  *  pool file binding the two; and check 14 (security S2b, D23): production's
- *  logs redacting query strings, unsampled. */
+ *  logs redacting query strings, unsampled. And check 3b's records (the auth
+ *  cycle, Task 7): a judged file in `DEPLOYMENTS` against its record; the
+ *  private Worker's file, whenever it exists, held to check 5 and to
+ *  production's object blocks, and to production's assets and logs when it
+ *  is the one judged. */
 export function configFailures(root, config = PRODUCTION_FILE) {
   const failures = [];
   const production = readConfig(root, PRODUCTION_FILE, failures);
@@ -735,13 +944,17 @@ export function configFailures(root, config = PRODUCTION_FILE) {
       const dev = objectOf(judged.value.vars)?.YOKOHAMA_DEV_DOOR;
       if (dev !== "on") failures.push(`${config}'s vars must set YOKOHAMA_DEV_DOOR to "on" — its only purpose is the worker door with the dev door open; got ${JSON.stringify(dev) ?? "nothing"}`);
     }
+    // A deployment is held to its own record (check 3b; the auth cycle, Task 7).
+    if (Object.hasOwn(DEPLOYMENTS, config)) deploymentRecord(config, judged.value, DEPLOYMENTS[config], failures);
   }
   if (production) assetsBlock(PRODUCTION_FILE, production.value, failures);
   const others = [];
   // The named configuration is held to the same blocks even when it is none of
-  // the listed ones (`configFrom` accepts any `wrangler*.jsonc`).
+  // the listed ones (`configFrom` accepts any `wrangler*.jsonc`) — but a
+  // deployment of its own is held below, to its record and production's
+  // blocks, never to production's bucket.
   const held = [OPEN_FILE, DEV_FILE, ...POOLS];
-  if (config !== PRODUCTION_FILE && !held.includes(config)) held.push(config);
+  if (!Object.hasOwn(DEPLOYMENTS, config) && !held.includes(config)) held.push(config);
   for (const name of held) {
     const other = name === config && judged ? judged : readConfig(root, name, failures);
     if (other) {
@@ -751,6 +964,18 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     }
   }
   if (production) objectBlocks(production, others, failures);
+  // Every deployment but production's (the auth cycle, Task 7; plan decision D-1) — the private Worker's file —
+  // whenever it exists: absent is no failure unless it is the file named, which `judged` above has said. Check 5
+  // reads it in every run, and check 6's object blocks too, so a production change that leaves it behind is named
+  // at the plain deploy; its assets and logs equal production's when it is the one deployed.
+  for (const name of Object.keys(DEPLOYMENTS)) {
+    if (name === PRODUCTION_FILE) continue;
+    const mine = name === config ? judged : existsSync(join(root, name)) ? readConfig(root, name, failures) : undefined;
+    if (!mine) continue;
+    assetsBlock(name, mine.value, failures);
+    const keys = name === config ? ["assets", "observability", "durable_objects", "migrations"] : ["durable_objects", "migrations"];
+    if (production) productionBlocks(name, production.value, mine.value, keys, failures);
+  }
   if (production) rateLimits(production, others.filter(([n]) => POOLS.includes(n)), failures);
   // Check 14 (security S2b, D23; decision D-6): production's logs redact query strings and are not sampled.
   const observed = production ? objectOf(production.value.observability) : undefined;
@@ -788,15 +1013,16 @@ export function configFailures(root, config = PRODUCTION_FILE) {
   if (production && judged && config === OPEN_FILE) siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
   // **Every open-door file is production's sibling** (security S2a, C3): a public configuration written later
   // and judged by `--config` is held to production's blocks and vars as the window's file is, not only to the
-  // assets and object blocks. (S4's public Worker, its own deployment, will need a rule of its own.)
-  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
+  // assets and object blocks. A deployment of its own — a file in `DEPLOYMENTS`, production's included — is held to
+  // its record instead (the auth cycle, Task 7).
+  if (production && judged && !Object.hasOwn(DEPLOYMENTS, config) && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "open") {
     siblingDrift(config, production.value, judged.value, OPEN_DIFFERS, failures);
   }
   // **Every unlisted worker-door file is production's sibling with NO allowed difference** (the S2a plan review's
   // F-40; security S2b): a configuration judged by `--config` whose door is `worker` and which is neither
   // production nor the dev file is held to production exactly — a deploy of it would otherwise roll production
-  // back or open a door no committed file opens.
-  if (production && judged && config !== PRODUCTION_FILE && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "worker") {
+  // back or open a door no committed file opens. Not a file in `DEPLOYMENTS`, held to its own record (Task 7).
+  if (production && judged && !Object.hasOwn(DEPLOYMENTS, config) && config !== DEV_FILE && config !== OPEN_FILE && doorOf(judged.value) === "worker") {
     siblingDrift(config, production.value, judged.value, {}, failures);
   }
   return failures;
@@ -902,10 +1128,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   console.log(
     "deploy-guard: the optimized release module, built from the sources as they are; the assets tree is the release, " +
       "with no debug browser module, assembled from the current web/dist and worker/static; " +
-      "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door both Access values, " +
-      "at the open door no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file production's sibling; no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open and dev files and both pool files; the open and dev files equal production but for their door, and the open file's declaration; " +
-      "the same object bindings, migrations and bucket binding in each; production's two rate limits at their figures, and both bound in each pool file; production's logs redacting query strings, unsampled; " +
-      "no operator list or dev-door client id in its vars; " +
-      "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door and never in the pool",
+      "a door named, and its rules: no preview URL and no workers.dev URL under any door, at the worker door an identity source named and its values " +
+      "(both Access values at access, the issuer and the client id at oidc, the client id and no issuer at workos, no Access value at either), " +
+      "at the open door no source and no dev door, the dev door in wrangler.dev.jsonc alone, every unlisted file production's sibling; " +
+      "each deployment held to its own record (its name, bucket and routes; the private Worker's namespaces and source), the private file never production's sibling; " +
+      "no redirect file; no test clock; no diagnostic seeds; spec §2.3's assets block in production, the open, dev and private files and both pool files; the open and dev files equal production but for their door, and the open file's declaration; " +
+      "the same object bindings and migrations in each, and production's bucket binding in each but the private file, which binds its own; production's two rate limits at their figures, and both bound in each pool file; production's logs redacting query strings, unsampled; " +
+      "no operator list, dev-door client id, sign-in client secret or session secret in its vars; " +
+      "no Workers Cache; the 404 page in the tree; YOKOHAMA_TURNSTILE as the build's stamp says, on only at the open door or the worker door at source oidc or workos, and never in the pool",
   );
 }

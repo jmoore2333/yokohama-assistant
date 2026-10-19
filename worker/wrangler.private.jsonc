@@ -1,0 +1,75 @@
+// **The Worker `yokohama-web-private`** (the auth cycle, Task 7; plan decision D-1, the design's §4.7 as amended)
+// — the LATER private deployment: production's configuration behind Cloudflare Access, as `yokohama-web` ran before
+// it went public, under its OWN record — its own Worker name (so its own Durable Objects), its own bucket
+// `yokohama-archive-private` and its own rate-limit namespaces `7303` and `7304`. It has NO route yet: the owner
+// names its domain later, and the route arrives with it; with `workers_dev` and `preview_urls` off, a deploy of
+// this file answers nowhere until then.
+//
+// `npm run deploy:private` ships it once `node scripts/deploy-guard.mjs --config wrangler.private.jsonc` passes.
+// The guard holds it to its record (`DEPLOYMENTS` in `scripts/deploy-guard.mjs`: the name, the bucket, the
+// namespaces at production's figures, no route and the source `access`), never to production as a sibling, and to
+// production's `assets`, `observability`, `durable_objects` and `migrations` blocks: both Workers run the same code.
+// A new Worker's first deploy cannot pass the secrets guard (wrangler answers "Worker not found" for a Worker that
+// does not exist): that deploy runs the deploy guard and then `wrangler deploy --config wrangler.private.jsonc` by
+// hand, and `npm run deploy:private` from the second deploy on (`scripts/secrets-guard.mjs`).
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "yokohama-web-private",
+  "main": "src/index.ts",
+  // Production's (spec §3.1); the deploy guard does not hold this one, so it moves with production's by hand.
+  "compatibility_date": "2026-09-15",
+  // No route until the owner names the private domain: the deploy guard refuses one here until its record names it.
+  "workers_dev": false,
+  "preview_urls": false,
+  // Production's logs, held equal to them by the deploy guard (`wrangler.jsonc` says why each key is set).
+  "observability": { "enabled": true, "redact_query_string": true },
+  "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+  // Production's assets block (spec §2.3, cycle F's not-found page), held equal to it by the deploy guard. The
+  // directory is the tree `npm run build` assembles: each deployment is its own client build and assembly.
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*", "/enter"]
+  },
+  // Production's three object classes and its migration, held equal to them by the deploy guard in every run.
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLE", "class_name": "Table" },
+      { "name": "HOUSE", "class_name": "House" },
+      { "name": "ARCHIVER", "class_name": "Archive" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Table", "House", "Archive"] }],
+  // The private Worker's own archive bucket, its record's.
+  "r2_buckets": [{ "binding": "ARCHIVE", "bucket_name": "yokohama-archive-private" }],
+  // Production's two Rate Limiting bindings at production's figures, in namespaces of this Worker's own: a
+  // `namespace_id` is unique to the ACCOUNT, and a shared one shares counters across Workers.
+  "ratelimits": [
+    { "name": "CREATE_LIMIT", "namespace_id": "7303", "simple": { "limit": 10, "period": 60 } },
+    { "name": "WRITE_LIMIT", "namespace_id": "7304", "simple": { "limit": 120, "period": 10 } }
+  ],
+  // The variables, none of them a secret (`worker/RUNBOOK.md` §3 says what each one's absence means); the deploy
+  // guard refuses a secret's name in them. They are this deployment's own, not held to production's.
+  "vars": {
+    "YOKOHAMA_WEB_IDENTITY": "worker",
+    // The private Worker keeps Access (plan decision D-1): its record names this source.
+    "YOKOHAMA_IDENTITY_SOURCE": "access",
+    // Production's Access pair (the `yokohama` application's) until the owner names the private domain: the domain
+    // joins that application's destinations, or brings an application of its own, and its audience, here.
+    "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
+    "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
+    // OFF: the dev door opens in `wrangler.dev.jsonc` alone, and the deploy guard refuses `on` here.
+    "YOKOHAMA_DEV_DOOR": "off",
+    "YOKOHAMA_WEB_ARCHIVE": "r2",
+    "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
+    "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
+    "YOKOHAMA_WEB_LOBBY_CHAT": "on",
+    "YOKOHAMA_WEB_CHAT_KEEP": "500",
+    "YOKOHAMA_WEB_CHAT_TEXT": "500",
+    // `off`: behind Access the edge is the bot defence, so the client is built WITHOUT a site key, and the deploy
+    // guard's check 12 refuses `on` or a keyed build at this source.
+    "YOKOHAMA_TURNSTILE": "off"
+  }
+}
