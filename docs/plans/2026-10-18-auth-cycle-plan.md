@@ -932,3 +932,11 @@ it("doorLine names the source", …);
     `isSafeId` (a percent-encoded segment lands on the lobby: `%` is outside the grammar); anything else → `/#/lobby`.
   - For Task 4's review (the reviewer's m-4b): `keySourceAt`'s doc commits to "ONE closure per isolate and URL"; Task 4's
     module-level map is what makes it true for the sign-in URLs.
+- **2026-10-18, Task 3 closed at `98d589ba`** (review clean after one fix round; one nit deferred: a 136-column doc
+  line at `signin.ts:361`). **C-13 (Task 4 Step 1, the pool cells' clock):** the shell reads the REAL clock
+  (`Math.floor(Date.now() / 1000)`, `index.ts` line 223) and the pool's Access tokens are signed at the real clock
+  (`test/worker.test.ts` line 31), while the brief's cells mint session cookies at the fixed `NOW` (1 789 000 000,
+  September 2026) — a cookie that is already expired at a real clock, so every "names the caller" cell would read 401.
+  Task 4's pool cells mint with `issued: Math.floor(Date.now() / 1000)`, the half-life cell with `issued = now - 16
+  days`, and the login cookie with the real `nowSeconds`; the fixed `NOW` stays in the UNIT files, which inject the
+  clock.
