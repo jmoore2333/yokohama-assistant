@@ -169,10 +169,32 @@ describe("verifyIdToken", () => {
   });
 
   it("aud: an array containing the client id is accepted; an array without it, or a number, is refused", async () => {
-    expect(await verifyIdToken(await rsa.sign(claims({ aud: ["other", AUD] })), SET, C)).toEqual({ address: "red@t.test", sid: "s1" });
-    expect(await verifyIdToken(await rsa.sign(claims({ aud: ["other", "client_2"] })), SET, C)).toBeNull();
+    // Two audiences need `azp` (R-21; the next cell); one in an array does not.
+    expect(await verifyIdToken(await rsa.sign(claims({ aud: ["other", AUD], azp: AUD })), SET, C)).toEqual({ address: "red@t.test", sid: "s1" });
+    expect(await verifyIdToken(await rsa.sign(claims({ aud: [AUD] })), SET, C)).toEqual({ address: "red@t.test", sid: "s1" });
+    expect(await verifyIdToken(await rsa.sign(claims({ aud: ["other", "client_2"], azp: AUD })), SET, C)).toBeNull();
     expect(await verifyIdToken(await rsa.sign(claims({ aud: [] })), SET, C)).toBeNull();
     expect(await verifyIdToken(await rsa.sign(claims({ aud: 1 })), SET, C)).toBeNull();
+  });
+
+  // OpenID Connect Core 1.0 §3.1.3.7, ruling R-21. Mutants: the azp comparison dropped; the several-audience rule
+  // dropped; the rule applied to one audience in an array; `azp` read loosely.
+  it("azp: when present it must be the client id, and two audiences must name it", async () => {
+    const cases: Array<[string, Record<string, unknown>, boolean]> = [
+      ["azp the client, one audience", { azp: AUD }, true],
+      ["azp the client, two audiences", { aud: ["other", AUD], azp: AUD }, true],
+      ["azp another client, one audience", { azp: "client_2" }, false],
+      ["azp another client, two audiences", { aud: ["other", AUD], azp: "client_2" }, false],
+      ["azp null", { azp: null }, false],
+      ["azp an array holding the client", { azp: [AUD] }, false],
+      ["two audiences and no azp", { aud: ["other", AUD] }, false],
+      ["the client twice and no azp", { aud: [AUD, AUD] }, false],
+      ["one audience in an array and no azp", { aud: [AUD] }, true],
+    ];
+    for (const [label, over, accepted] of cases) {
+      const got = await verifyIdToken(await rsa.sign(claims(over)), SET, C);
+      expect(got, label).toEqual(accepted ? { address: "red@t.test", sid: "s1" } : null);
+    }
   });
 
   // Mutants: no skew; `<` for `<=`; a wider skew; `>=` for `>` on `exp`.
@@ -559,19 +581,22 @@ describe("discovery", () => {
     expect(flaky.calls).toHaveLength(2);
   });
 
+  // Each document is served under the issuer it is fetched for, so each is refused for its own reason (the message),
+  // never for R-19's issuer check standing in for it.
   it("refuses a document that is not JSON, lacks an endpoint, or names one that is no URL; reads end_session_endpoint absent as null", async () => {
-    const refused: Array<[string, Recording]> = [
-      ["not JSON", answering(() => new Response("<html/>", { status: 200 }))],
-      ["no token_endpoint", recording(200, served("https://a.discovery.test", { token_endpoint: undefined }))],
-      ["no jwks_uri", recording(200, served("https://b.discovery.test", { jwks_uri: undefined }))],
-      ["an authorization_endpoint that is no URL", recording(200, served("https://c.discovery.test", { authorization_endpoint: "authorize" }))],
-      ["an issuer that is no string", recording(200, served("https://d.discovery.test", { issuer: 7 }))],
-      ["an end_session_endpoint that is no string", recording(200, served("https://e.discovery.test", { end_session_endpoint: 7 }))],
-      ["an array", recording(200, [])],
+    const refused: Array<[string, (issuer: string) => Recording, RegExp]> = [
+      ["not JSON", () => answering(() => new Response("<html/>", { status: 200 })), /is not JSON/],
+      ["no token_endpoint", (i) => recording(200, served(i, { token_endpoint: undefined })), /names no token_endpoint/],
+      ["no jwks_uri", (i) => recording(200, served(i, { jwks_uri: undefined })), /names no jwks_uri/],
+      ["an authorization_endpoint that is no URL", (i) => recording(200, served(i, { authorization_endpoint: "authorize" })), /names no authorization_endpoint/],
+      ["an issuer that is no string", (i) => recording(200, served(i, { issuer: 7 })), /names no issuer/],
+      ["an end_session_endpoint that is no string", (i) => recording(200, served(i, { end_session_endpoint: 7 })), /end_session_endpoint that is no URL/],
+      ["an array", () => recording(200, []), /is not a JSON object/],
     ];
     let n = 0;
-    for (const [label, fetcher] of refused) {
-      await expect(discovery(`https://refused-${n++}.discovery.test`, fetcher), label).rejects.toThrow();
+    for (const [label, fetcherFor, reason] of refused) {
+      const issuer = `https://refused-${n++}.discovery.test`;
+      await expect(discovery(issuer, fetcherFor(issuer)), label).rejects.toThrow(reason);
     }
     const quiet = recording(200, served("https://f.discovery.test", { end_session_endpoint: undefined }));
     expect((await discovery("https://f.discovery.test", quiet)).end_session_endpoint).toBeNull();
@@ -580,35 +605,78 @@ describe("discovery", () => {
   });
 });
 
+describe("discovery's issuer (OpenID Connect Discovery 1.0 §4.3; ruling R-19)", () => {
+  const served = (issuer: string) => ({
+    issuer,
+    authorization_endpoint: "https://idp.test/authorize",
+    token_endpoint: "https://idp.test/token",
+    jwks_uri: "https://idp.test/jwks",
+  });
+
+  // Mutants: the comparison dropped; trailing slashes ignored on one side only; a mismatch cached.
+  it("refuses a document naming another issuer, naming both, and caches nothing; a trailing slash on either side is no difference", async () => {
+    const configured = "https://mixup.discovery.test";
+    let named = "https://elsewhere.test";
+    const fetcher = answering(() => Response.json(served(named)));
+    await expect(discovery(configured, fetcher)).rejects.toThrow(
+      `the discovery document at ${configured}/.well-known/openid-configuration names issuer https://elsewhere.test but the configured issuer is ${configured}`,
+    );
+    named = configured;
+    expect((await discovery(configured, fetcher)).issuer, "the refusal cached nothing").toBe(configured);
+    expect(fetcher.calls).toHaveLength(2);
+
+    const docSlash = recording(200, served("https://doc-slash.discovery.test/"));
+    expect((await discovery("https://doc-slash.discovery.test", docSlash)).issuer, "the document's own spelling is kept").toBe(
+      "https://doc-slash.discovery.test/",
+    );
+    const configuredSlash = recording(200, served("https://configured-slash.discovery.test"));
+    expect((await discovery("https://configured-slash.discovery.test/", configuredSlash)).issuer).toBe(
+      "https://configured-slash.discovery.test",
+    );
+    // A longer path is another issuer, not a spelling of this one.
+    await expect(discovery("https://path.discovery.test", recording(200, served("https://path.discovery.test/tenant")))).rejects.toThrow(
+      /names issuer https:\/\/path\.discovery\.test\/tenant but the configured issuer is https:\/\/path\.discovery\.test$/,
+    );
+  });
+});
+
 describe("leaveUrl", () => {
   const RETURN = "https://yokohama.test/?a=b&c=d#/lobby";
 
   it("workos with a sid: WorkOS's logout with the session id and return_to, each encoded", () => {
     expect(WORKOS_JWKS("client_1")).toBe("https://api.workos.com/sso/jwks/client_1");
-    const u = new URL(leaveUrl("workos", "session_01&x=y", null, RETURN));
+    const u = new URL(leaveUrl("workos", "session_01&x=y", null, RETURN, AUD));
     expect(u.origin + u.pathname).toBe("https://api.workos.com/user_management/sessions/logout");
     expect(Object.fromEntries(u.searchParams)).toEqual({ session_id: "session_01&x=y", return_to: RETURN });
     expect(u.hash, "the return_to's fragment stays inside it").toBe("");
-    expect(leaveUrl("workos", "s1", DOC, RETURN)).toBe(`${WORKOS_LOGOUT("s1")}&return_to=${encodeURIComponent(RETURN)}`);
+    // The client id is the oidc shape's alone (R-18).
+    expect(leaveUrl("workos", "s1", DOC, RETURN, AUD)).toBe(`${WORKOS_LOGOUT("s1")}&return_to=${encodeURIComponent(RETURN)}`);
   });
 
   it("workos with no sid lands on return_to itself", () => {
-    expect(leaveUrl("workos", null, null, RETURN)).toBe(RETURN);
-    expect(leaveUrl("workos", "", null, RETURN)).toBe(RETURN);
+    expect(leaveUrl("workos", null, null, RETURN, AUD)).toBe(RETURN);
+    expect(leaveUrl("workos", "", null, RETURN, AUD)).toBe(RETURN);
   });
 
-  it("oidc: the end_session_endpoint with post_logout_redirect_uri and no id_token_hint, joined with & when it already has a query", () => {
-    const u = new URL(leaveUrl("oidc", "s1", DOC, RETURN));
+  // RP-Initiated Logout 1.0 §3, ruling R-18: with no id_token_hint, the client id lets the issuer confirm the redirect.
+  // Mutants: client_id dropped; client_id unencoded; `?` where the endpoint has a query.
+  it("oidc: the end_session_endpoint with post_logout_redirect_uri and client_id and no id_token_hint, joined with & when it already has a query", () => {
+    const u = new URL(leaveUrl("oidc", "s1", DOC, RETURN, AUD));
     expect(u.origin + u.pathname).toBe(DOC.end_session_endpoint);
-    expect(Object.fromEntries(u.searchParams)).toEqual({ post_logout_redirect_uri: RETURN });
+    expect(Object.fromEntries(u.searchParams)).toEqual({ post_logout_redirect_uri: RETURN, client_id: AUD });
     expect(u.hash).toBe("");
-    const queried = new URL(leaveUrl("oidc", null, { ...DOC, end_session_endpoint: "https://issuer.test/logout?x=1" }, RETURN));
-    expect(Object.fromEntries(queried.searchParams)).toEqual({ x: "1", post_logout_redirect_uri: RETURN });
+    expect(leaveUrl("oidc", "s1", DOC, RETURN, AUD)).toBe(
+      `${DOC.end_session_endpoint}?post_logout_redirect_uri=${encodeURIComponent(RETURN)}&client_id=${encodeURIComponent(AUD)}`,
+    );
+    const odd = "client 1&x=y#z";
+    const queried = new URL(leaveUrl("oidc", null, { ...DOC, end_session_endpoint: "https://issuer.test/logout?x=1" }, RETURN, odd));
+    expect(Object.fromEntries(queried.searchParams)).toEqual({ x: "1", post_logout_redirect_uri: RETURN, client_id: odd });
+    expect(queried.hash, "the client id's fragment stays inside it").toBe("");
   });
 
   it("oidc with no end_session_endpoint, or no document, lands on return_to itself", () => {
-    expect(leaveUrl("oidc", "s1", { ...DOC, end_session_endpoint: null }, RETURN)).toBe(RETURN);
-    expect(leaveUrl("oidc", "s1", null, RETURN)).toBe(RETURN);
+    expect(leaveUrl("oidc", "s1", { ...DOC, end_session_endpoint: null }, RETURN, AUD)).toBe(RETURN);
+    expect(leaveUrl("oidc", "s1", null, RETURN, AUD)).toBe(RETURN);
   });
 });
 

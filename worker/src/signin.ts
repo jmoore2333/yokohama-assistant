@@ -12,8 +12,8 @@
  *   carries no `email` claim (the pre-flight's reading), so the address is never the token's.
  * - **`oidc`** is a stock OpenID Connect relying party for any issuer with a discovery document: the code flow with
  *   `openid email`, a nonce, and PKCE when no client secret is set (`client_secret_post` when one is). Its ID token
- *   is verified as `resolveIdentity` verifies an Access assertion (`verifyIdToken`), plus the nonce and
- *   `email_verified`.
+ *   is verified as `resolveIdentity` verifies an Access assertion (`verifyIdToken`), plus the nonce, `azp` and
+ *   `email_verified`; the discovery document is held to the configured issuer (`discovery`).
  *
  * **The address is judged RAW** by `forwardable` before anything is done to it, then trimmed and lowercased in
  * ASCII, then held to `isAddress`: the Kelvin rule `identity.ts` records, so `\u212Aevin@x.test` is no caller rather
@@ -224,10 +224,12 @@ function failed(source: Arm, step: string, error: string): null {
  * **An ID token, verified** — `resolveIdentity`'s steps for a token in hand, plus what Access never needed: the
  * header's `alg` is `RS256` or `ES256` (issuers vary) with a string `kid`; the key the `kid` names is in `keys` and
  * fits that algorithm; the signature holds over `<header>.<payload>`; `iss` is `c.iss` exactly; `aud` is `c.aud` or
- * an array holding it; `exp` is a number after now; `nbf`, when a number, is at most 60 seconds ahead; `nonce` is
- * `c.nonce` exactly (an empty expected nonce matches nothing); `email_verified` is `true` and nothing else; and the
- * `email` claim passes `forwardable` RAW, then trimmed and lowercased in ASCII passes `isAddress`. The `sid` claim
- * rides along when it is a non-empty string. Anything short of that, a malformed token included, is `null`.
+ * an array holding it; `azp`, when present, is `c.aud` (the client id), and it must be present when `aud` names more
+ * than one audience (OpenID Connect Core 1.0 §3.1.3.7; ruling R-21); `exp` is a number after now; `nbf`, when a
+ * number, is at most 60 seconds ahead; `nonce` is `c.nonce` exactly (an empty expected nonce matches nothing);
+ * `email_verified` is `true` and nothing else; and the `email` claim passes `forwardable` RAW, then trimmed and
+ * lowercased in ASCII passes `isAddress`. The `sid` claim rides along when it is a non-empty string. Anything short
+ * of that, a malformed token included, is `null`.
  *
  * A `kid` that `keys` lacks is `null` here too: the caller that holds a key source refreshes it first (`keysFor`).
  */
@@ -241,6 +243,9 @@ export async function verifyIdToken(
   if (claims.iss !== c.iss) return null;
   const aud = claims.aud;
   if (!(typeof aud === "string" ? aud === c.aud : Array.isArray(aud) && aud.includes(c.aud))) return null;
+  // The authorized party (R-21): when named it must be this client, and a token for several audiences must name it.
+  if (claims.azp !== undefined && claims.azp !== c.aud) return null;
+  if (Array.isArray(aud) && aud.length > 1 && claims.azp === undefined) return null;
   // Written so a NaN clock fails closed: every comparison with NaN is false.
   if (typeof claims.exp !== "number" || !(claims.exp > c.nowSeconds)) return null;
   if (typeof claims.nbf === "number" && !(claims.nbf <= c.nowSeconds + SKEW_SECONDS)) return null;
@@ -342,26 +347,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** The discovery documents this isolate has fetched, or is fetching, by issuer (a trailing slash dropped). */
+/** The discovery documents this isolate has fetched, or is fetching, by issuer (trailing slashes dropped). */
 const discovered = new Map<string, Promise<Discovery>>();
 
 /**
- * **The issuer's discovery document**, from `<issuer>/.well-known/openid-configuration` (a trailing slash on the
+ * **The issuer's discovery document**, from `<issuer>/.well-known/openid-configuration` (trailing slashes on the
  * issuer dropped), cached per isolate as `keySourceAt` caches a key set: the calls that arrive while a fetch is out
- * JOIN it, so one fetch serves them all; a fetch that fails, answers anything but 200, or answers a document without
- * the four endpoints REJECTS every call that joined it and caches nothing, so the next call fetches again. A
- * document that loaded is kept for the isolate's life (there is no refresh: a key rotation moves the JWKS, not the
- * document). `fetcher` is the first caller's; a call that finds the issuer cached or in flight does not use its own.
+ * JOIN it, so one fetch serves them all; a fetch that fails, answers anything but 200, answers a document without
+ * the four endpoints, or answers one that names another issuer REJECTS every call that joined it and caches nothing,
+ * so the next call fetches again. A document that loaded is kept for the isolate's life (there is no refresh: a key
+ * rotation moves the JWKS, not the document). `fetcher` is the first caller's; a call that finds the issuer cached or
+ * in flight does not use its own.
  *
  * The document must be a JSON object with `issuer`, `authorization_endpoint`, `token_endpoint` and `jwks_uri` each a
  * string that parses as a URL, and `end_session_endpoint` a URL, `null` or absent (absent reads `null`), so the
- * URLs the arm builds from it never throw.
+ * URLs the arm builds from it never throw. Its `issuer` must be the configured `issuer`, trailing slashes ignored on
+ * both sides (OpenID Connect Discovery 1.0 §4.3; ruling R-19): a document served under one issuer that names another
+ * is refused, rather than letting its tokens' `iss` stand in for the issuer this deployment trusts. The answer keeps
+ * the document's own spelling, since that is what `verifyIdToken` holds a token's `iss` to.
  */
 export function discovery(issuer: string, fetcher: typeof fetch): Promise<Discovery> {
-  const base = issuer.replace(/\/$/, "");
+  const base = withoutTrailingSlashes(issuer);
   const known = discovered.get(base);
   if (known !== undefined) return known;
-  const pending = loadDiscovery(`${base}/.well-known/openid-configuration`, fetcher);
+  const pending = loadDiscovery(`${base}/.well-known/openid-configuration`, issuer, fetcher);
   discovered.set(base, pending);
   // Registered before any caller can await `pending`, so the entry is gone before a joiner sees the rejection.
   pending.catch(() => {
@@ -370,7 +379,12 @@ export function discovery(issuer: string, fetcher: typeof fetch): Promise<Discov
   return pending;
 }
 
-async function loadDiscovery(url: string, fetcher: typeof fetch): Promise<Discovery> {
+/** `value` with every trailing `/` removed: how the configured issuer and a document's are compared. */
+function withoutTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+async function loadDiscovery(url: string, configured: string, fetcher: typeof fetch): Promise<Discovery> {
   const res = await fetcher(url, { headers: { accept: "application/json" } });
   if (res.status !== 200) throw new Error(`the discovery document at ${url} answered ${res.status}`);
   let doc: unknown;
@@ -385,12 +399,16 @@ async function loadDiscovery(url: string, fetcher: typeof fetch): Promise<Discov
     if (typeof value !== "string" || !parsesAsUrl(value)) throw new Error(`the discovery document at ${url} names no ${name}`);
     return value;
   };
+  const issuer = endpoint("issuer");
+  if (withoutTrailingSlashes(issuer) !== withoutTrailingSlashes(configured)) {
+    throw new Error(`the discovery document at ${url} names issuer ${issuer} but the configured issuer is ${configured}`);
+  }
   const end = doc.end_session_endpoint;
   if (end !== undefined && end !== null && (typeof end !== "string" || !parsesAsUrl(end))) {
     throw new Error(`the discovery document at ${url} names an end_session_endpoint that is no URL`);
   }
   return Object.freeze({
-    issuer: endpoint("issuer"),
+    issuer,
     authorization_endpoint: endpoint("authorization_endpoint"),
     token_endpoint: endpoint("token_endpoint"),
     jwks_uri: endpoint("jwks_uri"),
@@ -411,10 +429,19 @@ function parsesAsUrl(value: string): boolean {
  * Where sign-out sends the browser, `returnTo` encoded into it. `workos` with a session id: `WORKOS_LOGOUT(sid)` and
  * `&return_to=` (load-bearing: with no `return_to` and no app homepage set, WorkOS lands on its own error page, the
  * pre-flight's reading); with none, `returnTo` itself. `oidc`: the document's `end_session_endpoint` with
- * `post_logout_redirect_uri=` (no `id_token_hint`: the session keeps no ID token), joined with `&` when the endpoint
- * already carries a query; with no such endpoint, or no document, `returnTo` itself.
+ * `post_logout_redirect_uri=` and `client_id=`, each encoded, joined with `&` when the endpoint already carries a
+ * query; with no such endpoint, or no document, `returnTo` itself. There is no `id_token_hint`, since the session
+ * keeps no ID token, so the client id is what lets the issuer confirm the redirect: RP-Initiated Logout 1.0 §3 says an
+ * issuer MUST NOT redirect after logout on a `post_logout_redirect_uri` alone unless it has other means of confirming
+ * it (ruling R-18). `clientId` is read under `oidc` only.
  */
-export function leaveUrl(source: Arm, signedInSid: string | null, discovery: Discovery | null, returnTo: string): string {
+export function leaveUrl(
+  source: Arm,
+  signedInSid: string | null,
+  discovery: Discovery | null,
+  returnTo: string,
+  clientId: string,
+): string {
   if (source === "workos") {
     return signedInSid === null || signedInSid === ""
       ? returnTo
@@ -422,5 +449,6 @@ export function leaveUrl(source: Arm, signedInSid: string | null, discovery: Dis
   }
   const end = discovery?.end_session_endpoint ?? null;
   if (end === null) return returnTo;
-  return `${end}${end.includes("?") ? "&" : "?"}post_logout_redirect_uri=${encodeURIComponent(returnTo)}`;
+  const joiner = end.includes("?") ? "&" : "?";
+  return `${end}${joiner}post_logout_redirect_uri=${encodeURIComponent(returnTo)}&client_id=${encodeURIComponent(clientId)}`;
 }
