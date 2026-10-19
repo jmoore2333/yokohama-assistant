@@ -940,3 +940,36 @@ it("doorLine names the source", …);
   Task 4's pool cells mint with `issued: Math.floor(Date.now() / 1000)`, the half-life cell with `issued = now - 16
   days`, and the login cookie with the real `nowSeconds`; the fixed `NOW` stays in the UNIT files, which inject the
   clock.
+- **2026-10-19, Task 4's `DONE_WITH_CONCERNS` (commit `e886b0b5`), rulings and corrections:**
+  - **R-27 (concern 1; `admin.ts`'s `operatorGate`):** a `session` identity is an operator candidate exactly as a
+    `person` is — `operatorGate` admits `identity.kind === "session"` with the address in the list. The design sets
+    `YOKOHAMA_WEB_ADMINS` on the public Worker too; a provider-verified address is the same trust the design gives a
+    seat and an archive, and whoever holds the session secret already owns the deployment (the `.test` fence on Task
+    8's minter stays). One cell: a session caller on the list reaches the operator route; one off the list is the
+    operator 403.
+  - **R-28 (concern 2):** under the `open` door `POST /api/leave` is the house's (the layer's 404, as before the route
+    existed): there is no server-side session to end, and the client's sign-out failure path clears the claimed name.
+  - **R-29 / C-14 (concern 3; Task 4 Step 3's "branch on `has("code")`"):** an issuer's `?error=` answer (RFC 6749
+    §4.1.2.1) is read as a CALLBACK and lands on the failure — read as a start it would redirect straight back to a
+    refusing issuer, a loop. The callback branch is `has("code") || has("error")`.
+  - **R-30 / C-15 (concern 4; the failure landing):** `/#/lobby?signin=failed` parses as the client's DOOR (the `?`
+    sits inside the hash path). The failure landing is `/?signin=failed#/lobby` — the hash route is the lobby, the
+    query is outside it, and the client shows nothing for it this cycle (the window reads it in the address bar).
+    Every cell that spells the landing moves with it.
+  - **R-31 (concern 5; the callback's cost):** the login cookie is stateless, so for its ten minutes any number of
+    `GET /enter?code=<junk>&state=<theirs>` each drive one `authenticate` POST under the deployment's API key. The
+    CALLBACK half spends `limits.create` by IP (`ip:<cf-connecting-ip>`, the key `limitKey` gives a caller-less
+    request) before any network call; a refused callback answers the failure landing with the login cookie cleared and
+    logs `signin-refused { source, reason: "limited" }` — never the JSON 429 on a navigation. The START half spends no
+    limiter (a cookie and a 302; under `oidc` the discovery fetch is cached). One cell with a counting fake limiter.
+  - **Concern 6 (for Task 9 and the window):** the Access destinations are ELEVEN with `/api/leave`
+    (`worker/scripts/access-paths.mjs`); the documents' "ten" (`docs/web-lane.md` §8, `worker/README.md`,
+    `worker/RUNBOOK.md`) move in Task 9; a deployment that keeps Access adds `/api/leave` to its application's
+    destinations at its next deploy (harmless without it: a fixed answer costing one write-limiter unit by IP).
+  - **Concern 7 (R-4's side effect, accepted):** `/enter` now sits after the upgrade `Origin` check, so a foreign-origin
+    WebSocket upgrade to `/enter` answers 403 where it answered 302; no navigation carries `Upgrade`.
+  - **C-16 (concern 8; Task 4 Step 4's "nothing moves for it"):** false — three `test/worker.test.ts` cells pinned
+    `/enter` → 302 under a REFUSED configuration (R-4 reverses it: the config 500) and `access-paths.test.mjs` catches
+    the eleventh destination by design; the four moved in Task 4's commit. The brief's renewal row "never on a 401" is
+    vacuous (a valid session never meets a 401; a bad-MAC cookie is nobody); the non-2xx guard is pinned by a due
+    session on a 404 instead, and the bad-MAC row stays for the header and the absent cookie.
