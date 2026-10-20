@@ -82,7 +82,8 @@ Design §3.4, D-8 and R-S3-14. The binary answers only the host names it is told
     // (None, None, "0.0.0.0") → is_on true, admits("attacker.example") false; (Some("on"), …) the same; (Some("off"), …) → is_on false, admits("attacker.example") true, listed() empty, start_line names the variable
 }
 #[test] fn a_malformed_switch_value_is_refused_naming_it() {
-    // Some("yes"), Some("ON "), Some("") → Err naming HOSTNAMES_ENABLED_VAR and the value (the Multiplayer::from_env_value shape, lib.rs:374)
+    // Some("yes"), Some("") → Err naming HOSTNAMES_ENABLED_VAR and the value; Some("ON "), Some(" Off") → Ok, read trimmed and case-insensitive
+    // exactly as Multiplayer::from_env_value reads (lib.rs:372 — "a rule that held for two of them would be a rule nobody could remember"; pre-flight ruling P-12)
 }
 ```
 
@@ -93,7 +94,7 @@ Expected: FAIL to compile (no module).
 
 - [ ] **Step 3: Implement `hostnames.rs`**
 
-`Hostnames` is `Off` or `On { names }`, the names lower-cased, no trailing dot, IPv6 literals without brackets. `admits` is true when off; when on it lowers the authority, strips a trailing dot and one `:port` (an authority starting with `[` ends its host at `]`), and looks the host up. `from_env_values`: the switch first — `None | Some("on")` on, `Some("off")` off, anything else `Err` naming `HOSTNAMES_ENABLED_VAR` and the value through `echo` (the shape of `Multiplayer::from_env_value`, `lib.rs:374`); off ignores the list; on with `None` is the default set; on with `Some(raw)` is the default set plus each comma-separated entry trimmed and checked — refused as `Err(format!("{HOSTNAMES_VAR}: \"{entry}\" is not a host name — …"))` through `echo` when empty, holding whitespace, `/`, `@`, `#`, or a `:` that does not parse as `std::net::Ipv6Addr`. Register `pub mod hostnames;` in `lib.rs`.
+`Hostnames` is `Off` or `On { names }`, the names lower-cased, no trailing dot, IPv6 literals without brackets. `admits` is true when off; when on it lowers the authority, strips a trailing dot and one `:port` (an authority starting with `[` ends its host at `]`), and looks the host up. `from_env_values`: the switch first, after `trim().to_ascii_lowercase()` as `Multiplayer::from_env_value` reads it — `None | Some("on")` on, `Some("off")` off, anything else (the empty string included) `Err` naming `HOSTNAMES_ENABLED_VAR` and the value through `echo` (the shape of `Multiplayer::from_env_value`, `lib.rs:374`); off ignores the list; on with `None` is the default set; on with `Some(raw)` is the default set plus each comma-separated entry trimmed and checked — refused as `Err(format!("{HOSTNAMES_VAR}: \"{entry}\" is not a host name — …"))` through `echo` when empty, holding whitespace, `/`, `@`, `#`, or a `:` that does not parse as `std::net::Ipv6Addr`. Register `pub mod hostnames;` in `lib.rs`.
 
 - [ ] **Step 4: Run the unit cells to verify they pass**
 
@@ -679,6 +680,7 @@ The "before" review, run from the ledger's scan (one row per pair of tasks shari
 - **P-6 (Task 3):** the hand-kept route copy is at `api.rs:4132` (the plan said 4118); every brief says probe every cited line.
 - **P-7 (the design, D-2 against D-14):** D-2 reads "one automatic pass per install attempt" and D-14 "the pass counter is the page's" — D-14 is the later decision (the builder check's question 4) and §3.1 step 4 agrees; Task 6 follows D-14. Recorded for the design's §7 at the wrap.
 - **P-8 (Task 1 Step 13, operations):** Docker's daemon is down on the workstation at the run's start; the implementer starts Docker Desktop once (`open -a Docker`, up to 90 s) for the smoke's two runs; failing that, the two smoke runs are NOT taken by the task and the window's Step 3 takes them (recorded in the task's report as a concern).
+- **P-12 (Task 1, after the implementer's DONE_WITH_CONCERNS — concern 2):** the plan's cell refused `"ON "`, while the design says the switch "reads as the layer's other switches do" and `Multiplayer::from_env_value` trims and lower-cases for a stated reason (one operator's `docker run` line); the design wins — the switch is read trimmed and case-insensitive, `""` still refused. The implementer's strict reading followed the plan's cell exactly; corrected by a new commit before the review. Cost if wrong: an operator's `ON` accepted instead of refused by name.
 - **Exports share the checkout's `target/`** (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
 ## Self-review (run by the author, 2026-10-20)
