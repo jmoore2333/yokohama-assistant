@@ -57,6 +57,13 @@ async fn shutdown_requested() {
     println!("shutdown requested — draining in-flight requests");
 }
 
+/// A variable's value through `var_os` and the lossy conversion the TTLs' read uses: a value that is not UTF-8
+/// reaches the parser with a replacement character in it, which it refuses by name, where `env::var(..).ok()`
+/// would have read it as unset (security S3 Task 1, fix round 1; M6.5c2 cycle D, row 130).
+fn read_var(name: &str) -> Option<String> {
+    std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+}
+
 #[tokio::main]
 async fn main() {
     // `yokohama-web segment <address>…` prints the archive segment of each
@@ -177,11 +184,13 @@ async fn main() {
 
     // **The `Host` allow-list and its switch** (security S3, D4; R-S3-14), read beside the bind address they
     // derive their default set from. The switch is absent-means-on; a malformed switch or a malformed entry stops
-    // the process before the bind, naming the variable, as the multiplayer switch does. The state it prints is
-    // the one `app` enforces: a deployment that forgot its list reads it in the log.
+    // the process before the bind, naming the variable, as the multiplayer switch does. Both are read through
+    // `var_os` as the TTLs above are, so a value that is not UTF-8 is refused by name rather than read as unset
+    // (M6.5c2 cycle D, row 130). The state it prints is the one `app` enforces: a deployment that forgot its list
+    // reads it in the log.
     let hostnames = match yokohama_web::hostnames::Hostnames::from_env_values(
-        std::env::var(yokohama_web::hostnames::HOSTNAMES_ENABLED_VAR).ok().as_deref(),
-        std::env::var(yokohama_web::hostnames::HOSTNAMES_VAR).ok().as_deref(),
+        read_var(yokohama_web::hostnames::HOSTNAMES_ENABLED_VAR).as_deref(),
+        read_var(yokohama_web::hostnames::HOSTNAMES_VAR).as_deref(),
         &host,
     ) {
         Ok(h) => h,

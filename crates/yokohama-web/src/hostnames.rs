@@ -25,7 +25,7 @@ pub const HOSTNAMES_ENABLED_VAR: &str = "YOKOHAMA_WEB_HOSTNAMES_ENABLED";
 
 /// The fixed part of the 421 sentence; the offered host follows it, quoted and echoed through [`echo`].
 /// It names no listed host, so a refusal teaches a prober nothing about what the server answers to.
-pub const NOT_FOR_THIS_HOST: &str = "This server does not answer to the host name";
+pub const NOT_FOR_THIS_HOST: &str = "this server does not answer to the host name";
 
 /// The names every on-state answers to before the operator lists any.
 const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
@@ -128,18 +128,23 @@ fn normalize(host: &str) -> String {
 }
 
 /// One list entry, trimmed, or the sentence that refuses it.
-/// A host name has no whitespace, scheme, path, user or port, so the entry is refused when it is empty or holds whitespace, `/`, `@` or `#`, or a `:` that is not an IPv6 literal.
+/// An IPv6 literal (any entry with a `:`) must parse as one.
+/// Any other entry, once its one trailing dot is dropped, is non-empty labels of ASCII letters, digits and hyphens separated by dots.
+/// That refuses an empty entry, a lone dot, an empty label, whitespace, a scheme, a path, a user, a port and every character no host name holds.
 fn checked_entry(entry: &str) -> Result<String, String> {
-    let bad = entry.is_empty()
-        || entry.chars().any(|c| c.is_whitespace() || matches!(c, '/' | '@' | '#'))
-        || (entry.contains(':') && entry.parse::<Ipv6Addr>().is_err());
+    let dedotted = entry.strip_suffix('.').unwrap_or(entry);
+    let bad = if entry.contains(':') {
+        entry.parse::<Ipv6Addr>().is_err()
+    } else {
+        dedotted.split('.').any(|label| label.is_empty() || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+    };
     if bad {
         return Err(format!(
-            "{HOSTNAMES_VAR}: \"{}\" is not a host name — a name has no space, scheme, path, user or port, and an IPv6 literal is written without brackets",
+            "{HOSTNAMES_VAR}: \"{}\" is not a host name — a name is letters, digits and hyphens in dot-separated labels (an internationalised name in punycode), and an IPv6 literal is written without brackets",
             echo(entry)
         ));
     }
-    Ok(normalize(entry.strip_suffix('.').unwrap_or(entry)))
+    Ok(normalize(dedotted))
 }
 
 /// The host part of a request's authority in [`normalize`]'s spelling, or `None` when the authority is not a host with an optional port.
@@ -238,6 +243,13 @@ mod tests {
         assert!(err("x:8080").contains("x:8080"), "a port is not a name");
         assert!(err("[::1]").contains("[::1]"), "an IPv6 literal is written without brackets");
         assert!(err("a,").contains(HOSTNAMES_VAR), "a trailing comma is an empty entry");
+        // An entry that is empty once its dot is dropped, an empty label, or a character no host name holds.
+        for entry in [".", "..", "a..b", ".example", "a?b", "caf\u{e9}.example", "a_b.example", "a\\b"] {
+            let e = err(entry);
+            assert!(e.contains(HOSTNAMES_VAR) && e.contains("is not a host name"), "{entry:?}: {e}");
+        }
+        let e = err("good.example,..");
+        assert!(e.contains("\"..\""), "the entry is named: {e}");
         assert!(err("").contains(HOSTNAMES_VAR), "an empty value is an empty entry");
         let long = "x".repeat(200) + " y";
         let e = err(&long);
