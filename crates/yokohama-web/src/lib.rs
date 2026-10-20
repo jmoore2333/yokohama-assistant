@@ -9075,9 +9075,10 @@ mod tests {
     /// twenty-first is a 429** carrying the one sentence as `error.json`'s
     /// shape and no `Retry-After` (D-7: the wait is in the sentence). **The
     /// RIGHT password inside the full window is refused the same way and the
-    /// seat stays open**: the counter asks before the compare, so a caller over
-    /// the figure learns nothing about any password — a counter that compared
-    /// first would answer the right guess 200 and keep the oracle open.
+    /// seat stays open**: the compare runs first and its result goes into the one
+    /// `guess` call, which answers `Refused` whatever the compare said, so a
+    /// caller over the figure learns nothing about any password — a call that
+    /// let the right guess through would answer it 200 and keep the oracle open.
     #[tokio::test]
     async fn the_twenty_first_wrong_password_at_a_join_is_429_with_the_sentence_and_no_header() {
         let (clock, _) = a_hand_clock(T0);

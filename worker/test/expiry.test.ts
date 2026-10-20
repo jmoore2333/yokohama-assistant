@@ -525,6 +525,9 @@ describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8; security S3, D9
     // Day 7: a day after the join, before its own 7 days.
     await survives(7, Date.now() - DAY_MS - 60_000);
     expect(await alarmOf(filled), "day 7: re-armed to the join plus 7 days").toBe((await lastActivity(filled)) + OPEN_TTL);
+    // Day 12: six days after the join, a day short of its 7 — the table
+    // stands, not closed as one that waited (the waited deadline a day early, at the alarm's gate and in `expiryReason`, reads red here).
+    await survives(12, Date.now() - 6 * DAY_MS);
     // Day 13: the join's 7 days are past, and the table — dealing, no keep
     // made — has not started.
     await backdate(filled, Date.now() - OPEN_TTL - 60_000);

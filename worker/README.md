@@ -318,7 +318,7 @@ the secret `YOKOHAMA_SESSION_SECRET` and, optionally, the secret `YOKOHAMA_OIDC_
 R-20), and the issuer and the four endpoints of its discovery document must be `https` — `http` is accepted
 on a loopback host (`localhost`, `127.0.0.1`, `[::1]`), for development (R-24). `workos` is WorkOS AuthKit's
 first-party API, two `fetch` calls and no SDK, with the API key as `YOKOHAMA_OIDC_CLIENT_SECRET`; the public
-deployment runs it after the window of `RUNBOOK.md` §23 (today it is still `access`). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
+deployment runs it after the window of `RUNBOOK.md` §23 (production has read `workos` since the window's stage 1, 2026-10-19). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
 (`__Host-yokohama_session`, `HttpOnly; Secure; SameSite=Lax; Path=/`), so a browser keeps it only over `https`
 or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days by default
 (`YOKOHAMA_SESSION_DAYS`), is renewed on use, and ends at an absolute cap of 90 days from its first issue

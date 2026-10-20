@@ -118,6 +118,7 @@ So bind the port only where everyone who can reach it is someone you would hand 
 network, a LAN, or a VPN. Never put an open door on the public internet.
 
 On a LAN, list the name or address your browsers type in `YOKOHAMA_WEB_HOSTNAMES` (§4), or set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off` when you do not want the host boundary.
+Behind a reverse proxy that rewrites `Host` to the upstream address (nginx's default `proxy_set_header Host $proxy_host` sends `127.0.0.1:8080`) the check admits every request, since the loopback names are in the default set; the proxy must pass the browser's `Host` through (`proxy_set_header Host $host`), or the boundary is the proxy's own.
 
 **Names:**
 - 1–32 characters of ASCII letters, digits, spaces, `.`, `-` and `_`, beginning with a letter or a digit;
@@ -237,7 +238,7 @@ docker run -d --name yokohama-web \
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
 | `YOKOHAMA_WEB_HOSTNAMES_ENABLED` | `on`, `off` | `on`. On, the server answers only the host names below and refuses any other `Host` with 421. Off, it answers any `Host`, as it did before 0.7.2, and the start line says so. Any other value stops the server at start. Write `on` beside the list, so the switch is visible to whoever reads your deploy file |
-| `YOKOHAMA_WEB_HOSTNAMES` | host names separated by commas, e.g. `yokohama-nas.moore.nyc` | `localhost`, `127.0.0.1` and `::1`, plus the bind address when it is a specific one. A list adds to that set and never replaces it. An entry is a name or an IPv6 literal written without brackets, with no space, scheme, path, user or port, and an unlisted `Host` is 421. The port of a request is never compared. The start line prints the names the server answers |
+| `YOKOHAMA_WEB_HOSTNAMES` | host names separated by commas, e.g. `yokohama-nas.moore.nyc` | `localhost`, `127.0.0.1` and `::1`, plus the bind address when it is a specific one. A list adds to that set and never replaces it. An entry is letters, digits, hyphens and dots (a name, in punycode when it is not ASCII) or an IPv6 literal written without brackets; any other character, a space, scheme, path, user, port or underscore among them, stops the server at start, so `my_nas.lan` is refused. An unlisted `Host` is 421. The port of a request is never compared. The start line prints the names the server answers |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<segment>/` (security S1b) — the segment is the address made readable, then `-` and a twelve-character digest (security S1c) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
@@ -270,6 +271,7 @@ The image binds `0.0.0.0`, which is no name, so the default set inside a contain
 A container reached through a tunnel or a proxy with no list answers every request 421, while a smoke run on loopback passes.
 So list the name your browsers use, and read your hostname's `/api/health` before you call a deploy done.
 If you do not want the boundary, set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off`.
+Behind a reverse proxy that rewrites `Host` to the upstream address (nginx's default `proxy_set_header Host $proxy_host` sends `127.0.0.1:8080`) the check admits every request, since the loopback names are in the default set; the proxy must pass the browser's `Host` through (`proxy_set_header Host $host`), or the boundary is the proxy's own.
 
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
@@ -340,7 +342,7 @@ lines before the first one goes. Each ending is the creator's own **Abandon**. A
 the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`.
 A table where no move was played files nothing. If the archive cannot be written, the delete
 is refused, a `sweep-failed` line says why, and the table stays for the next pass. A table the sweep cannot
-read gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
+read, or a dealing table it cannot start, gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
 no marker in its place, and the log line is the record.
 
 **A sweep never throws a game away.** A TTL with no archive directory stops the server at start-up:

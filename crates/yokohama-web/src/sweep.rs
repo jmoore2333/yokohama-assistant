@@ -206,8 +206,8 @@ pub fn check_archive(ttls: &Ttls, archive_on: bool) -> Result<(), String> {
 /// each table it tried to end, in listing order, with the delete's result.
 ///
 /// With no table TTL it reads nothing. A table whose activity the store
-/// cannot tell (`Ok(None)`) is never a candidate; one whose document or
-/// activity cannot be read is logged [`log::SWEEP_UNREAD`] and is not a
+/// cannot tell (`Ok(None)`) is never a candidate; one whose document, its
+/// repair or its activity cannot be read is logged [`log::SWEEP_UNREAD`] and is not a
 /// candidate this pass. The house is no table: `list(Doc::Table)` cannot name
 /// it. It makes no platform call of its own — `now` is the caller's, the disk
 /// is the store's — so a cell runs it without a runtime.
