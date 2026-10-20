@@ -1070,6 +1070,42 @@ mod tests {
         assert_eq!((r.status, tagged(&r).as_str()), (204, r#"[{"end":"b"}]"#), "the creator's delete");
     }
 
+    /// **The password counter runs inside the object** (security S3, D2;
+    /// design §3.3): the layer's `Games` carries it, so the Table object
+    /// answers a caller's twenty-first wrong join with the layer's 429 and its
+    /// one sentence, with no shell change. The zone's rule answers first, by
+    /// IP; this is the second fence behind it. The clock is PINNED, as the
+    /// shell pins one reading per call: this crate's own live clock ticks once
+    /// per reading, and twenty readings would outlast a window. The guard puts
+    /// the prior setting back however the cell ends, so a failure here cannot
+    /// leave the shared clock pinned for the next cell.
+    #[test]
+    fn the_twenty_first_wrong_join_is_the_layers_429_inside_the_object() {
+        struct Restore(Option<f64>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                set_clock(self.0);
+            }
+        }
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let _restore = Restore(set_clock(Some(1_800_000_000.0)));
+        let create = r#"{"id":"guarded","players":2,"colors":["Red","Blue"],"start_seat":0,"seed":20260831,
+                         "seats":[{"user":"red@t.test"},{"open":true}],"password":"sesame"}"#;
+        assert_eq!(call("red@t.test", "POST", "/api/games", Some(create)).status, 201);
+        let wrong = r#"{"seat":1,"password":"wrong"}"#;
+        for k in 1..=20 {
+            let r = call("guest@t.test", "POST", "/api/games/guarded/join", Some(wrong));
+            assert_eq!(r.status, 403, "wrong join {k}: {}", r.body);
+        }
+        let r = call("guest@t.test", "POST", "/api/games/guarded/join", Some(wrong));
+        assert_eq!(r.status, 429, "{}", r.body);
+        let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(body, serde_json::json!({ "error": yokohama_web::guesses::TOO_MANY_WRONG_PASSWORDS }));
+        let r = call("friend@t.test", "POST", "/api/games/guarded/join", Some(r#"{"seat":1,"password":"sesame"}"#));
+        assert_eq!(r.status, 200, "a friend during the guest's burst: {}", r.body);
+    }
+
     /// **The owed-pump FIXTURE** (plan review M3). Task 9's pool cell needs the SAME
     /// bytes — a record whose last events leave the bot to move — and only Rust can
     /// make them. They cannot be re-derived byte-identically, because the finalize

@@ -263,6 +263,28 @@ describe("the open table, to a stranger with one seat to take", () => {
     expect(stub.matching("GET", "/table")).toHaveLength(1);
   });
 
+  // **The password counter's 429 is drawn as the 403 is** (security S3, D2): the
+  // server's own sentence in the join form's strip, what was typed kept, Join
+  // still there to press once the wait it names is over, and the table not
+  // re-read. A join is a call, not the stream, so its 429 is not the stream
+  // cap's refusal and the screen does not leave on it.
+  it("shows the password counter's 429 in the server's words and stays usable", async () => {
+    const tooMany = "too many wrong passwords for this table — wait ten seconds and try again";
+    const { stub, onLeave, user } = show((call) => {
+      if (call.path.endsWith("/table")) return wire.tableOpen;
+      if (call.path.endsWith("/join")) return { status: 429, body: { error: tooMany } };
+      return undefined;
+    });
+    await user.type(await screen.findByLabelText("Table password"), "wrong");
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
+    expect(await screen.findByText(tooMany)).toBeInTheDocument();
+    expect(screen.getByLabelText("Table password")).toHaveValue("wrong");
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
+    expect(onLeave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
+    await waitFor(() => expect(stub.matching("POST", "/join")).toHaveLength(2));
+  });
+
   // **A join sent with no password at a locked table is refused in the
   // server's words** (dossier row 38): the corpus's `join_403_locked` had
   // contract cells only, and no screen was shown drawing it. Nothing typed,

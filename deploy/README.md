@@ -110,6 +110,9 @@ home.
 - Your tables stay with the name you sat down as, so a different name later is a different player, whose
   tables are empty.
 - There are no accounts and no house password.
+- A locked table's password counter (twenty wrong passwords per table and caller in ten seconds, then a wait it
+  names) counts per NAME here, and a name is free: it slows one name, not one person. The network you bind the port
+  to is the fence, by this door's own rule.
 
 So bind the port only where everyone who can reach it is someone you would hand the table to: your home
 network, a LAN, or a VPN. Never put an open door on the public internet.

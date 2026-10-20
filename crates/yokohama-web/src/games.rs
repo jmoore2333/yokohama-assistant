@@ -26,6 +26,7 @@ use yokohama_core::{GameRecord, Rules};
 
 use crate::archive::{Archive, NoArchive};
 use crate::chat::{ChatConfig, ChatCounts, ChatLimits};
+use crate::guesses::Guesses;
 use crate::log::{Log, NoLog};
 use crate::signal::{NoSignal, Signal};
 use crate::store::{Doc, GameId, Store, Version, WriteError};
@@ -60,6 +61,9 @@ pub enum GameError {
     BadRequest(String),
     /// This process failed at something the caller asked for correctly.
     Server(String),
+    /// A caller over the password counter's figure at one table (security S3, D2): a 429 carrying
+    /// [`crate::guesses::TOO_MANY_WRONG_PASSWORDS`], the wait in the sentence and no header.
+    TooMany(String),
     /// A game NOT OVER whose recorded bot this build does not run (M6.5c2,
     /// R-6.5c2.10; cycle F, R-F4: the CLI's resume decides,
     /// [`crate::bots::runs_here`]): the labels of the bot it was played
@@ -80,7 +84,8 @@ impl std::fmt::Display for GameError {
             | Self::Forbidden(m)
             | Self::Conflict(m)
             | Self::BadRequest(m)
-            | Self::Server(m) => f.write_str(m),
+            | Self::Server(m)
+            | Self::TooMany(m) => f.write_str(m),
             Self::Dealing => f.write_str(DEALING_SENTENCE),
             Self::Open => f.write_str(OPEN_SENTENCE),
             Self::Playing => f.write_str(PLAYING_SENTENCE),
@@ -411,13 +416,16 @@ pub struct Games {
     /// M6.5a (R-6.5a.1), so the house switch and the two text checks read one
     /// set of facts on every host.
     pub chat: ChatConfig,
-    /// The wall clock this type stamps documents from — see [`Clock`] for why
-    /// it is a seam and not a call.
+    /// The wall clock this type stamps documents from and times the password
+    /// counter's windows by — see [`Clock`] for why it is a seam and not a call.
     ///
-    /// **Two callers, both in [`crate::tables`]**: the `created_at` a `create`
-    /// writes onto a table document, and the one an append writes onto a
-    /// message. Nothing here reads a clock back, and nothing compares two
-    /// readings, so a host is free to hand over a constant.
+    /// **The stamps** are a table's `created_at`, a message's, and an archived
+    /// table's `archived_at`: they order and label documents, so a constant
+    /// only ties them. **The windows** (security S3, D2; [`crate::guesses`]) are
+    /// where the PASSAGE of time matters: a host that hands over a constant
+    /// freezes every window, and a caller over the figure stays refused for the
+    /// process's life. Every production host hands over a live reading in
+    /// seconds; a cell that pins one moves it by hand.
     pub(crate) clock: Clock,
     /// Where a finished or abandoned game's record and table document go
     /// (M6.5a, R-6.5a.9) — `NoArchive` for a host that keeps none, the
@@ -436,6 +444,12 @@ pub struct Games {
     /// The seed rule `create` applies (R-SEC8(b)) — see [`SeedPolicy`] for
     /// who sets what.
     pub(crate) seed_policy: SeedPolicy,
+    /// The password oracle's throttle (security S3, D2; [`crate::guesses`]):
+    /// wrong passwords per table and caller, asked and counted by `join` and
+    /// `unlock` alone. Here rather than on a host's state, so the NAS binary
+    /// and the Worker's Table object both carry it, and built empty by
+    /// [`Games::with_parts`], the one constructor that builds anything.
+    pub(crate) guesses: Guesses,
 }
 
 /// How many `Repl`s stay resident.
@@ -533,6 +547,7 @@ impl Games {
             run_host,
             log: Arc::new(NoLog),
             seed_policy: SeedPolicy::SoloOnly,
+            guesses: Guesses::default(),
         }
     }
 

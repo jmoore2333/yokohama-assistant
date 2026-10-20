@@ -779,6 +779,10 @@ impl std::str::FromStr for Scope {
 /// is a state whose owner should hear about it.
 pub const UNLOCKED_CAP: usize = 256;
 
+/// The one sentence a wrong table password answers with, at `join` and `unlock` alike (security S3, D2: one compare,
+/// `Games::guess`); the client draws it beside the field it is about.
+pub const WRONG_PASSWORD: &str = "wrong password for this table";
+
 /// The sentence a seeded create is refused with at a table that seats
 /// somebody else (R-SEC8(b), finding B3; [`crate::games::SeedPolicy`]).
 pub const SEED_NOT_SOLO: &str =
@@ -1387,6 +1391,29 @@ impl Games {
         Err(GameError::Forbidden("you are not seated at this table".to_string()))
     }
 
+    /// **One guess at `doc`'s password by `user`** (security S3, D2; [`crate::guesses`]): the one compare `join` and
+    /// `unlock` make, so the two routes share one counter, as the oracle is the table's password whichever route
+    /// asks it.
+    ///
+    /// **The counter asks BEFORE the compare**, so a caller over the figure is refused with
+    /// [`crate::guesses::TOO_MANY_WRONG_PASSWORDS`] whatever it sent and learns nothing about any password; a
+    /// counter that compared first would answer the right guess 200 and keep the oracle open. A wrong password
+    /// counts one and is the ordinary [`WRONG_PASSWORD`] 403; a right one clears the caller's entry.
+    ///
+    /// One clock reading serves the check and the count, and both callers hold the table's own lock
+    /// ([`Games::with_table_lock`]), so two guesses at one table never interleave a check with a count. Keyed by the
+    /// DOCUMENT's id, the table's identity, rather than the request's spelling of it.
+    fn guess(&self, doc: &TableDoc, user: &User, given: &str) -> Result<(), GameError> {
+        let now = (self.clock)();
+        self.guesses.check(&doc.id, user.as_str(), now).map_err(|s| GameError::TooMany(s.to_string()))?;
+        if !doc.check_password(given) {
+            self.guesses.failed(&doc.id, user.as_str(), now);
+            return Err(GameError::Forbidden(WRONG_PASSWORD.to_string()));
+        }
+        self.guesses.cleared(&doc.id, user.as_str());
+        Ok(())
+    }
+
     /// **Present the password once, and this caller may watch from now on**
     /// (M6.3, §3.4, R-3.5).
     ///
@@ -1427,9 +1454,14 @@ impl Games {
             if doc.lock.is_none() || doc.can_watch(user) {
                 return Ok(doc.view(user, self.archive_on()));
             }
-            if !doc.check_password(password.trim()) {
-                return Err(GameError::Forbidden("wrong password for this table".to_string()));
+            // An empty password is no guess, as at `join`: no lock is ever made
+            // from one (`config_of`), so it answers the wrong password's 403
+            // as it always did, and it never meets the counter.
+            let given = password.trim();
+            if given.is_empty() {
+                return Err(GameError::Forbidden(WRONG_PASSWORD.to_string()));
             }
+            self.guess(&doc, user, given)?;
             if doc.unlocked.len() >= UNLOCKED_CAP {
                 return Err(GameError::Conflict(
                     "this table has as many spectators as it can remember".to_string(),
@@ -1675,17 +1707,13 @@ impl Games {
                     // An absent password and an empty one are the same request —
                     // "let me in without one" — and get the same sentence, which
                     // names what to send rather than saying the guess was wrong.
+                    // Neither is a guess, so neither meets the counter.
                     None | Some("") => {
                         return Err(GameError::Forbidden(
                             "this table is locked — send its password".to_string(),
                         ))
                     }
-                    Some(p) if !doc.check_password(p) => {
-                        return Err(GameError::Forbidden(
-                            "wrong password for this table".to_string(),
-                        ))
-                    }
-                    Some(_) => {}
+                    Some(p) => self.guess(&doc, user, p)?,
                 }
             }
             doc.seats[n] = SeatDoc::Human { user: user.as_str().to_string(), name, bound_at_create: false };
@@ -6491,6 +6519,57 @@ mod tests {
         let games = games();
         playing(&games, &two_people_locked(id, "sesame"), &["red@t.test", "blue@t.test"]);
         games
+    }
+
+    /// **What is refused before the compare is no guess** (security S3, D2;
+    /// [`crate::guesses`]): an absent or empty password, a seat the table does
+    /// not have, a taken seat, and an unlock at a table with nothing to watch
+    /// yet neither ask nor feed the counter. Twenty-five of each leave the
+    /// caller's twenty wrong passwords whole, and once those fill the window
+    /// every one of them still answers its own refusal rather than the 429:
+    /// the counter sits at the password's rung of each ladder, last at `join`
+    /// and after the seat holder's at `unlock`. On a FROZEN clock, since the
+    /// default one ticks per reading and twenty readings outlast a window.
+    #[test]
+    fn what_is_refused_before_the_compare_is_no_guess_and_never_meets_the_counter() {
+        let frozen = || games().with_clock(Arc::new(|| 1_800_000_000));
+        let guest = who("guest@t.test");
+        let open = frozen();
+        let mut r = two_people_locked("guarded", "sesame");
+        r.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        open.create(&r, &who("red@t.test")).expect("a locked open table");
+        let join = |seat: u8, password: Option<&str>| open.join("guarded", &guest, PlayerId::new(seat), None, password);
+        let locked = |e: &GameError| matches!(e, GameError::Forbidden(m) if m == "this table is locked — send its password");
+        let refused_before = || {
+            for _ in 0..25 {
+                assert!(locked(&join(1, None).unwrap_err()), "an absent password");
+                assert!(locked(&join(1, Some("   ")).unwrap_err()), "an empty one");
+                assert!(matches!(join(2, Some("wrong")).unwrap_err(), GameError::BadRequest(_)), "a seat it has not");
+                assert!(matches!(join(0, Some("wrong")).unwrap_err(), GameError::Conflict(_)), "a taken seat");
+                assert!(matches!(open.unlock("guarded", &guest, "wrong"), Err(GameError::Open)), "nothing to watch");
+            }
+        };
+        refused_before();
+        for k in 1..=20 {
+            let e = join(1, Some("wrong")).unwrap_err();
+            assert!(matches!(&e, GameError::Forbidden(m) if m == WRONG_PASSWORD), "wrong join {k}: {e}");
+        }
+        assert!(matches!(join(1, Some("wrong")), Err(GameError::TooMany(_))), "premise: the window is full");
+        refused_before();
+
+        let playing_at = frozen();
+        playing(&playing_at, &two_people_locked("watched", "sesame"), &["red@t.test", "blue@t.test"]);
+        let unlock = |password: &str| playing_at.unlock("watched", &guest, password);
+        let wrong = |e: &GameError| matches!(e, GameError::Forbidden(m) if m == WRONG_PASSWORD);
+        for _ in 0..25 {
+            assert!(wrong(&unlock("   ").unwrap_err()), "an empty password at unlock is the wrong one's 403");
+        }
+        for k in 1..=20 {
+            assert!(wrong(&unlock("wrong").unwrap_err()), "wrong unlock {k}");
+        }
+        assert!(matches!(unlock("wrong"), Err(GameError::TooMany(_))), "premise: the window is full");
+        assert!(wrong(&unlock("").unwrap_err()), "an empty password inside the full window: no guess, no 429");
+        assert!(playing_at.unlock("watched", &who("red@t.test"), "wrong").is_ok(), "a seat holder never meets it");
     }
 
     /// **The seven answers of `POST …/{id}/unlock`** (§3.4), in one cell,

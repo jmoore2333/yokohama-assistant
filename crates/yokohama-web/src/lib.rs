@@ -70,6 +70,7 @@ pub mod text;
 pub mod explain;
 pub mod games;
 pub mod grammar;
+pub mod guesses;
 pub mod hostnames;
 pub mod identity;
 pub mod log;
@@ -180,8 +181,9 @@ impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self { status: StatusCode::BAD_REQUEST, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
-    /// A caller over a cap (security S2c, D3's NAS half): 429, the sentence a constant; no `Retry-After`, since the
-    /// client ends a signal on it rather than waiting (the client's decision D-2).
+    /// A caller over a cap: the open-stream caps (security S2c, D3's NAS half) and the password counter (security S3,
+    /// D2). 429, the sentence a constant, and no `Retry-After`: the client ends a signal on a stream's rather than
+    /// waiting (the client's decision D-2), and the password counter's sentence names its own wait (D-7).
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self { status: StatusCode::TOO_MANY_REQUESTS, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
@@ -259,6 +261,8 @@ impl From<games::GameError> for ApiError {
             E::Conflict(m) => Self { status: StatusCode::CONFLICT, message: Self::capped(m), table_status: None, foreign_bot: None },
             E::BadRequest(m) => Self::bad_request(m),
             E::Server(m) => Self::server_error(m),
+            // No header, as the stream caps' 429 carries none (D-7): the wait is in the sentence.
+            E::TooMany(m) => Self::too_many_requests(m),
             // `why` rides the sentence only: the pair beside it keeps exactly
             // `{played, runs}` (cycle F, spec §2.3).
             E::ForeignBot { played, runs, why } => Self {
@@ -8889,6 +8893,253 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(body["error"].as_str().unwrap_or_default().contains("nope"), "names the key: {body}");
+    }
+
+    // ---------------------------------------------------------------------
+    // Security S3, D2 — the password oracle's throttle, through the router
+    // (design §3.3, D-7). Every cell freezes the layer's clock: the window is
+    // the CLOCK's, and a wall clock would make "inside ten seconds" a claim
+    // about how fast the runner is.
+    // ---------------------------------------------------------------------
+
+    /// A layer clock a cell moves by hand, and the reading to move: seconds,
+    /// the unit `table::now_unix` and both wasm hosts hand the layer.
+    fn a_hand_clock(at: u64) -> (games::Clock, Arc<std::sync::atomic::AtomicU64>) {
+        let reading = Arc::new(std::sync::atomic::AtomicU64::new(at));
+        let read = Arc::clone(&reading);
+        (Arc::new(move || read.load(std::sync::atomic::Ordering::SeqCst)), reading)
+    }
+
+    /// The reading every throttle cell starts at.
+    const T0: u64 = 1_800_000_000;
+
+    /// `post_as` with the reply's headers: what "no `Retry-After`" is read off.
+    async fn post_with_headers(
+        state: &Arc<AppState>,
+        who: &str,
+        uri: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, http::HeaderMap, serde_json::Value) {
+        let req = a_request()
+            .method("POST")
+            .uri(uri)
+            .header(identity::CLAIMED_HEADER, who)
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).expect("a body")))
+            .expect("a request");
+        let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, headers, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    /// A LOCKED table still filling its seats, `seats` long, opened by
+    /// `red@t.test` at seat 0 with every other seat open; its password is
+    /// `sesame`.
+    async fn a_locked_open_table(state: &Arc<AppState>, id: &str, seats: usize) {
+        let colors = ["Red", "Blue", "Yellow", "Green"];
+        let mut wanted = vec![serde_json::json!({ "user": "red@t.test" })];
+        wanted.extend((1..seats).map(|_| serde_json::json!({ "open": true })));
+        let (status, table) = post_as(
+            state,
+            "red@t.test",
+            "/api/games",
+            serde_json::json!({
+                "players": seats,
+                "colors": colors[..seats],
+                "start_seat": 0,
+                "seed": "20260831",
+                "seats": wanted,
+                "id": id,
+                "password": "sesame",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{table}");
+        assert_eq!(table["status"], serde_json::json!("open"), "{table}");
+    }
+
+    /// One join at `id`'s `seat` as `who` with `password`.
+    async fn join_with(state: &Arc<AppState>, who: &str, id: &str, seat: u8, password: &str) -> (StatusCode, serde_json::Value) {
+        post_as(state, who, &format!("/api/games/{id}/join"), serde_json::json!({ "seat": seat, "password": password })).await
+    }
+
+    /// `n` wrong passwords at a join, each asserted the ordinary 403.
+    async fn wrong_joins(state: &Arc<AppState>, who: &str, id: &str, seat: u8, n: usize) {
+        for k in 1..=n {
+            let (status, body) = join_with(state, who, id, seat, "wrong").await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (StatusCode::FORBIDDEN, Some("wrong password for this table")),
+                "{who}'s wrong join {k}: {body}"
+            );
+        }
+    }
+
+    /// `n` wrong passwords at an unlock, each asserted the ordinary 403.
+    async fn wrong_unlocks(state: &Arc<AppState>, who: &str, id: &str, n: usize) {
+        for k in 1..=n {
+            let (status, body) =
+                post_as(state, who, &format!("/api/games/{id}/unlock"), serde_json::json!({ "password": "wrong" })).await;
+            assert_eq!(
+                (status, body["error"].as_str()),
+                (StatusCode::FORBIDDEN, Some("wrong password for this table")),
+                "{who}'s wrong unlock {k}: {body}"
+            );
+        }
+    }
+
+    /// **The twentieth wrong password at a join is the ordinary 403; the
+    /// twenty-first is a 429** carrying the one sentence as `error.json`'s
+    /// shape and no `Retry-After` (D-7: the wait is in the sentence). **The
+    /// RIGHT password inside the full window is refused the same way and the
+    /// seat stays open**: the counter asks before the compare, so a caller over
+    /// the figure learns nothing about any password — a counter that compared
+    /// first would answer the right guess 200 and keep the oracle open.
+    #[tokio::test]
+    async fn the_twenty_first_wrong_password_at_a_join_is_429_with_the_sentence_and_no_header() {
+        let (clock, _) = a_hand_clock(T0);
+        let state = Arc::new(AppState::in_memory().with_clock(clock));
+        a_locked_open_table(&state, "guarded", 3).await;
+        wrong_joins(&state, "guest@t.test", "guarded", 2, 20).await;
+        let (status, headers, body) = post_with_headers(
+            &state,
+            "guest@t.test",
+            "/api/games/guarded/join",
+            serde_json::json!({ "seat": 2, "password": "wrong" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert_eq!(body, serde_json::json!({ "error": guesses::TOO_MANY_WRONG_PASSWORDS }), "error.json's shape");
+        assert!(headers.get(http::header::RETRY_AFTER).is_none(), "no Retry-After: {headers:?}");
+        let (status, body) = join_with(&state, "guest@t.test", "guarded", 2, "sesame").await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::TOO_MANY_REQUESTS, Some(guesses::TOO_MANY_WRONG_PASSWORDS)),
+            "the right password inside the full window: {body}"
+        );
+        let (_, table) = get_as(&state, "red@t.test", "/api/games/guarded/table").await;
+        assert_eq!(table["seats"][2]["kind"], serde_json::json!("open"), "the seat is still open: {table}");
+        // Under a fixed window a refusal that was counted changes nothing a
+        // caller sees, so the count is read from the layer itself.
+        assert_eq!(state.games.guesses.failures_of("guarded", "guest@t.test"), Some(20), "the two 429s counted nothing");
+    }
+
+    /// **A right password clears the caller's count, and one caller's burst
+    /// refuses nobody else.** Nineteen wrong and then the right one seat the
+    /// guest; twenty more wrong from the guest at the next seat are each the
+    /// ordinary 403 (counted from one again) and the twenty-first is the 429;
+    /// a second stranger's twenty-first is a 429 of its own; and a friend with
+    /// the right password takes the last seat while both are refused.
+    #[tokio::test]
+    async fn the_right_password_at_the_twentieth_clears_and_a_friend_passes_during_a_strangers_burst() {
+        let (clock, _) = a_hand_clock(T0);
+        let state = Arc::new(AppState::in_memory().with_clock(clock));
+        a_locked_open_table(&state, "guarded", 3).await;
+        wrong_joins(&state, "guest@t.test", "guarded", 1, 19).await;
+        let (status, joined) = join_with(&state, "guest@t.test", "guarded", 1, "sesame").await;
+        assert_eq!(status, StatusCode::OK, "the right password at the twentieth: {joined}");
+        assert_eq!(joined["my_seats"], serde_json::json!([1]), "{joined}");
+        wrong_joins(&state, "guest@t.test", "guarded", 2, 20).await;
+        let (status, body) = join_with(&state, "guest@t.test", "guarded", 2, "wrong").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the guest's twenty-first after the clear: {body}");
+        wrong_joins(&state, "other@t.test", "guarded", 2, 20).await;
+        let (status, body) = join_with(&state, "other@t.test", "guarded", 2, "wrong").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the stranger's twenty-first: {body}");
+        let (status, joined) = join_with(&state, "friend@t.test", "guarded", 2, "sesame").await;
+        assert_eq!(status, StatusCode::OK, "the friend during both bursts: {joined}");
+        assert_eq!(joined["status"], serde_json::json!("dealing"), "the friend's join filled the table: {joined}");
+    }
+
+    /// **The window is the TABLE'S clock's**: refused at T+9, a wrong password
+    /// is the ordinary 403 again at T+10, and the right one seats the caller.
+    #[tokio::test]
+    async fn the_window_lapses_after_ten_seconds_on_the_tables_clock() {
+        let (clock, reading) = a_hand_clock(T0);
+        let state = Arc::new(AppState::in_memory().with_clock(clock));
+        a_locked_open_table(&state, "guarded", 2).await;
+        wrong_joins(&state, "guest@t.test", "guarded", 1, 20).await;
+        let (status, body) = join_with(&state, "guest@t.test", "guarded", 1, "wrong").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        reading.store(T0 + 9, std::sync::atomic::Ordering::SeqCst);
+        let (status, body) = join_with(&state, "guest@t.test", "guarded", 1, "wrong").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "still refused at T+9: {body}");
+        reading.store(T0 + 10, std::sync::atomic::Ordering::SeqCst);
+        wrong_joins(&state, "guest@t.test", "guarded", 1, 1).await;
+        let (status, joined) = join_with(&state, "guest@t.test", "guarded", 1, "sesame").await;
+        assert_eq!(status, StatusCode::OK, "and the right one seats the guest: {joined}");
+    }
+
+    /// **The unlock route counts the same way**: at a locked PLAYING table a
+    /// stranger's twenty-first wrong unlock is the 429 with the sentence, the
+    /// right password inside the full window is refused too, a seat holder is
+    /// answered by the ladder's earlier rung and never meets the counter, and
+    /// a friend's right password is taken.
+    #[tokio::test]
+    async fn the_unlock_route_counts_the_same_way() {
+        let (clock, _) = a_hand_clock(T0);
+        let state = Arc::new(AppState::in_memory().with_clock(clock));
+        start_locked_as(&state, "watched", 20_260_831, &["red@t.test", "blue@t.test"], "sesame").await;
+        wrong_unlocks(&state, "grey@t.test", "watched", 20).await;
+        let (status, headers, body) = post_with_headers(
+            &state,
+            "grey@t.test",
+            "/api/games/watched/unlock",
+            serde_json::json!({ "password": "wrong" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+        assert_eq!(body, serde_json::json!({ "error": guesses::TOO_MANY_WRONG_PASSWORDS }));
+        assert!(headers.get(http::header::RETRY_AFTER).is_none(), "no Retry-After: {headers:?}");
+        let (status, body) =
+            post_as(&state, "grey@t.test", "/api/games/watched/unlock", serde_json::json!({ "password": "sesame" })).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the right password inside the full window: {body}");
+        let (status, body) =
+            post_as(&state, "red@t.test", "/api/games/watched/unlock", serde_json::json!({ "password": "wrong" })).await;
+        assert_eq!(status, StatusCode::OK, "a seat holder's no-op: {body}");
+        let (status, body) =
+            post_as(&state, "friend@t.test", "/api/games/watched/unlock", serde_json::json!({ "password": "sesame" })).await;
+        assert_eq!((status, &body["can_watch"]), (StatusCode::OK, &serde_json::json!(true)), "a friend: {body}");
+    }
+
+    /// **Both routes share the counter** (design §3.3; pre-flight ruling P-4):
+    /// the oracle is the table's password whichever route asks it, so ten
+    /// wrong joins while the table fills and ten wrong unlocks once it plays
+    /// are twenty under one key, and the twenty-first is refused — all inside
+    /// one frozen window.
+    #[tokio::test]
+    async fn a_wrong_join_and_a_wrong_unlock_by_one_caller_at_one_table_count_together() {
+        let (clock, _) = a_hand_clock(T0);
+        let state = Arc::new(AppState::in_memory().with_clock(clock));
+        a_locked_open_table(&state, "guarded", 2).await;
+        wrong_joins(&state, "guest@t.test", "guarded", 1, 10).await;
+        // The creator fills a window of their own at their own table's open
+        // seat, for the two-defect probe at the end.
+        wrong_joins(&state, "red@t.test", "guarded", 1, 20).await;
+        let (status, body) = join_with(&state, "red@t.test", "guarded", 1, "wrong").await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "premise: the creator's window is full: {body}");
+        let (status, joined) = join_with(&state, "friend@t.test", "guarded", 1, "sesame").await;
+        assert_eq!(status, StatusCode::OK, "{joined}");
+        for (seat, who) in [(0, "red@t.test"), (1, "friend@t.test")] {
+            let (status, kept) =
+                post_as(&state, who, "/api/games/guarded/keep", serde_json::json!({ "seat": seat, "card": 1 })).await;
+            assert_eq!(status, StatusCode::OK, "seat {seat} as {who}: {kept}");
+        }
+        let (_, table) = get_as(&state, "red@t.test", "/api/games/guarded/table").await;
+        assert_eq!(table["status"], serde_json::json!("playing"), "premise: the table plays: {table}");
+        wrong_unlocks(&state, "guest@t.test", "guarded", 10).await;
+        let (status, body) =
+            post_as(&state, "guest@t.test", "/api/games/guarded/unlock", serde_json::json!({ "password": "wrong" })).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::TOO_MANY_REQUESTS, Some(guesses::TOO_MANY_WRONG_PASSWORDS)),
+            "ten joins and ten unlocks are twenty: {body}"
+        );
+        // Two defects at once (a seat holder, with a full window): the seat
+        // holder's rung speaks first, so the counter is never asked.
+        let (status, body) =
+            post_as(&state, "red@t.test", "/api/games/guarded/unlock", serde_json::json!({ "password": "wrong" })).await;
+        assert_eq!(status, StatusCode::OK, "a seat holder over the figure is still the no-op: {body}");
     }
 
     /// **A keep may carry the display name**, which is how a seat somebody
