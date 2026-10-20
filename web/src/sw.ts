@@ -39,6 +39,9 @@
 //   request's cache mode handed to `swRoute` for its `only-if-cached` rule;
 // - the install is all-or-nothing: one failed entry fails it, and the door is
 //   told why;
+// - the edge's challenge on an entry is its own `kind` (security S3, W-3): the
+//   install still fails, ONE door window is told `"challenged"` and every other
+//   window `"failed"`, and nothing in the install path asks for `/api`;
 // - every entry is fetched in parallel lanes with `cache: "reload"` and
 //   `redirect: "error"`, its head checked and its body's digest CALLED;
 // - a failed install deletes its generation only where the install CREATED it
@@ -72,9 +75,16 @@
 // every cell green, but not because the lanes have settled by then: an aborted
 // lane can still settle after the delete, and the cells' fake cache storage
 // unmaps the name on delete, so a late write goes unseen there.
+//
+// **Nor is the deadline's half of the install's `kind`** (security S3, W-3):
+// `!overran` beside the `EdgeChallenged` test. No cell reaches it, because the
+// challenge's rejection travels to the catch in microtasks no timer can cut
+// into — a deadline that fired first would have aborted that fetch instead. It
+// is there so the kind and the reason come from one branch by construction.
 
 /// <reference lib="webworker" />
 
+import { isEdgeChallengeResponse } from "./edgeChallenge";
 import { CACHE_PREFIX, META_PATH, SHELL_PATH, type PrecacheEntry } from "./precache";
 import {
   checkDigest,
@@ -87,6 +97,7 @@ import {
   retainedGenerations,
   type Generation,
 } from "./swInstall";
+import { electDoorWindow, type InstallFailed, type InstallFailedKind } from "./swMessages";
 import { swRoute } from "./swRoute";
 
 declare const self: ServiceWorkerGlobalScope;
@@ -172,9 +183,13 @@ async function installRelease(): Promise<void> {
     });
     await Promise.all(lanes);
   } catch (error) {
-    const reason = deadline.signal.aborted
-      ? `the install did not finish inside ${INSTALL_DEADLINE_MS} ms`
-      : messageOf(error);
+    const overran = deadline.signal.aborted;
+    const reason = overran ? `the install did not finish inside ${INSTALL_DEADLINE_MS} ms` : messageOf(error);
+    // **The kind is read HERE, from the same branch as the reason and before
+    // the abort below sets the signal** (security S3, W-3; D-1). A deadline is
+    // a plain failure whatever was in flight, so a `"challenged"` message always
+    // carries the challenge's own sentence.
+    const kind: InstallFailedKind = !overran && error instanceof EdgeChallenged ? "challenged" : "failed";
     // **Stop the other lanes, and WAIT for them, before deleting.**
     // `Promise.all` rejects on the FIRST failure and leaves its siblings
     // running: without the abort they would go on downloading a release that
@@ -185,7 +200,7 @@ async function installRelease(): Promise<void> {
     deadline.abort();
     await Promise.allSettled(lanes);
     if (!alreadyThere) await caches.delete(CACHE_NAME).catch(() => undefined);
-    await tellTheClients(reason);
+    await tellTheClients(reason, kind);
     // Rethrown, which is what FAILS the install: the browser marks this worker
     // redundant and the previous one goes on serving.
     throw new Error(reason);
@@ -193,6 +208,16 @@ async function installRelease(): Promise<void> {
     clearTimeout(overdue);
   }
 }
+
+/** An entry the EDGE refused to answer until a person passes its check (security S3, W-3; design §3.1 step 1):
+ *  under the no-Access door, Bot Fight Mode challenges a precache fetch of a path that is not a static resource
+ *  by extension (`/art/manifest.json` among them) for a browser holding no `cf_clearance` (`docs/web-lane.md`
+ *  §15's W-3). A failure like every other — the install still fails, which is what the door's retry relies on —
+ *  and the one the catch above names `"challenged"`. */
+class EdgeChallenged extends Error {}
+
+/** The challenge's sentence, after the path the way every entry's failure is named. */
+const CHALLENGED = "the edge asked for a check before it would answer";
 
 async function installOne(cache: Cache, entry: PrecacheEntry, deadline: AbortSignal): Promise<void> {
   const stop = new AbortController();
@@ -213,6 +238,10 @@ async function installOne(cache: Cache, entry: PrecacheEntry, deadline: AbortSig
       credentials: "same-origin",
       signal: stop.signal,
     });
+    // Asked BEFORE the head, which would read the challenge as a refused file.
+    if (isEdgeChallengeResponse(response.status, response.headers.get("cf-mitigated"))) {
+      throw new EdgeChallenged(CHALLENGED);
+    }
     const head = checkHead(response.status, response.headers.get("content-type"), entry.type);
     if (head) throw new Error(head);
     const body = await response.arrayBuffer();
@@ -223,7 +252,10 @@ async function installOne(cache: Cache, entry: PrecacheEntry, deadline: AbortSig
       new Response(body, { status: 200, statusText: response.statusText, headers: response.headers }),
     );
   } catch (error) {
-    throw new Error(`${entry.path}: ${messageOf(error)}`);
+    // The path is named the same way for every failure; the class is kept, so
+    // the install's catch can tell the challenge from the rest.
+    const said = `${entry.path}: ${messageOf(error)}`;
+    throw error instanceof EdgeChallenged ? new EdgeChallenged(said) : new Error(said);
   } finally {
     clearTimeout(late);
     deadline.removeEventListener("abort", onDeadline);
@@ -244,11 +276,27 @@ function messageOf(error: unknown): string {
  *
  *  `includeUncontrolled`, because on a first visit there is no controlled
  *  client at all — the page that is watching this install is precisely one this
- *  worker does not control yet. */
-async function tellTheClients(reason: string): Promise<void> {
+ *  worker does not control yet.
+ *
+ *  **A challenge is told to ONE window as `"challenged"`** (security S3, W-3;
+ *  D-13): the one [`electDoorWindow`] picks among the windows showing the door,
+ *  because every window that read `"challenged"` would open a widget for the one
+ *  install, and a game screen must never draw one mid-play. Every other window — and every window, when no
+ *  door is open or the failure is not a challenge — is told `"failed"`, with the
+ *  same reason. The election is made HERE because the worker alone sees every
+ *  window; a page does not know its siblings. */
+async function tellTheClients(reason: string, kind: InstallFailedKind): Promise<void> {
   try {
     const windows = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });
-    for (const client of windows) client.postMessage({ yokohama: "install-failed", reason });
+    const elected = kind === "challenged" ? electDoorWindow(windows) : null;
+    for (const client of windows) {
+      const message: InstallFailed = {
+        yokohama: "install-failed",
+        kind: client === elected ? "challenged" : "failed",
+        reason,
+      };
+      client.postMessage(message);
+    }
   } catch {
     // A page that cannot be told is not a reason to turn a failed install into
     // a different failure; the lifecycle still marks this worker redundant.
