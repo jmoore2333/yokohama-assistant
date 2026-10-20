@@ -374,6 +374,9 @@ describe("the help panel and talking (M6.4)", () => {
     expect(text).toMatch(/while it is still filling or dealing/);
     expect(text).toMatch(/Reopen/);
     expect(text).toMatch(/until the cards are dealt/i);
+    // A seat the creator BOUND for a named person is reopened too, not only one
+    // somebody joined.
+    expect(text).toMatch(/whether they joined or you named them for it/);
   });
 
   // **The door draws the help WITHOUT its screenshots** (M6.5c2): they are

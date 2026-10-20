@@ -701,6 +701,23 @@ describe("the open table's Reopen, for its creator", () => {
     expect(reopens()).toHaveLength(1);
     expect(within(cards()[1]!).getByRole("button", { name: "Reopen the Blue seat" })).toHaveTextContent("Reopen");
     for (const i of [0, 2, 3]) expect(within(cards()[i]!).queryByRole("button", { name: /^Reopen/ })).toBeNull();
+
+    // **A hot seat: the creator's SECOND seat is theirs too** (D-15's client
+    // half). The corpus's three-seat reading with seat 2 taken by the creator
+    // as a JOINED second seat — `you`, no `invited` — and seat 1 still open,
+    // so the table is still filling. Neither of the creator's seats offers a
+    // Reopen the layer would refuse, and the second reads "You" like the first.
+    cleanup();
+    const hotSeat: TableView = {
+      ...wire.tableTwoOpen,
+      my_seats: [0, 2],
+      seats: [wire.tableTwoOpen.seats[0]!, wire.tableTwoOpen.seats[1]!, { kind: "human", name: null, you: true, invited: null }],
+    };
+    show(tableIs(hotSeat), { game });
+    await screen.findByLabelText("Invite link");
+    expect(reopens()).toEqual([]);
+    for (const i of [0, 2]) expect(within(cards()[i]!).queryByRole("button", { name: /^Reopen/ })).toBeNull();
+    expect(cards()[2]!).toHaveTextContent("You");
   });
 
   it("draws no Reopen for a joiner, who did not open the table, nor for a stranger", async () => {
@@ -741,23 +758,66 @@ describe("the open table's Reopen, for its creator", () => {
     expect(stub.matching("GET", "/table")).toHaveLength(1);
   });
 
-  it("puts a refusal's sentence in the join block's strip, in the server's words", async () => {
-    const dealt = "the deal has begun \u2014 abandon the table and set it again";
-    const { onStarted, onLeave, user } = show(
+  // **A 409 is a statement about the table having moved, so the table is
+  // re-read ONCE, as a join's 409 is** (ruling P-21): the server's sentence in
+  // the join block's strip, one re-read, and the re-read's answer decides the
+  // screen. Here the seat was reopened elsewhere a moment before: the re-read
+  // finds the table still open, so the screen stays, redrawn, with the sentence.
+  it("puts a refusal's sentence in the join block's strip and re-reads the table once, staying on an open one", async () => {
+    const noJoiner = "that seat holds no joiner to reopen";
+    let tables = 0;
+    const { stub, onStarted, onLeave, user } = show(
       (call) => {
-        if (call.path.endsWith("/table")) return withAJoiner();
+        if (call.path.endsWith("/table")) {
+          tables += 1;
+          // The re-read is the truth the refusal is about: seat 1 open already.
+          return tables === 1 ? withAJoiner() : wire.tableTwoOpen;
+        }
+        if (call.path.endsWith("/reopen")) return { status: 409, body: { error: noJoiner } };
+        return undefined;
+      },
+      { game },
+    );
+    await user.click(await screen.findByRole("button", { name: "Reopen the Blue seat" }));
+    const strip = (await screen.findByText(noJoiner)).closest(".error")!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
+    expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
+    expect(document.querySelector(".abandon-refusal"), "not Abandon's strip").toBeNull();
+    await waitFor(() => expect(cards()[1]!).toHaveTextContent("Open seat"));
+    expect(stub.matching("GET", "/table"), "the opening read and ONE re-read").toHaveLength(2);
+    expect(screen.getByText(noJoiner), "the sentence survives the re-read").toBeInTheDocument();
+    expect(onStarted).not.toHaveBeenCalled();
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  // **And a re-read that finds the table DEALING hands over** (P-21): the deal
+  // began between this screen's last read and the press, so the creator is
+  // taken to the dealing screen — where Abandon is the remedy the sentence
+  // names — rather than left on a stale open table with a live Reopen.
+  it("hands over when the one re-read after a 409 finds the table dealing", async () => {
+    const dealt = "the deal has begun \u2014 abandon the table and set it again";
+    const dealing: TableView = {
+      ...withAJoiner(),
+      status: "dealing",
+      seats: [...withAJoiner().seats.slice(0, 2), { kind: "human", name: "Green", you: false, invited: null }],
+    };
+    let tables = 0;
+    const { stub, onStarted, onLeave, user } = show(
+      (call) => {
+        if (call.path.endsWith("/table")) {
+          tables += 1;
+          return tables === 1 ? withAJoiner() : dealing;
+        }
         if (call.path.endsWith("/reopen")) return { status: 409, body: { error: dealt } };
         return undefined;
       },
       { game },
     );
     await user.click(await screen.findByRole("button", { name: "Reopen the Blue seat" }));
-    const strip = (await screen.findByText(dealt)).closest(".error")!;
-    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-    expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
-    expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
-    expect(document.querySelector(".abandon-refusal"), "not Abandon's strip").toBeNull();
-    expect(onStarted).not.toHaveBeenCalled();
+    expect(await screen.findByText(dealt)).toBeInTheDocument();
+    await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(1));
+    expect(stub.matching("GET", "/table"), "the opening read and ONE re-read").toHaveLength(2);
     expect(onLeave).not.toHaveBeenCalled();
   });
 

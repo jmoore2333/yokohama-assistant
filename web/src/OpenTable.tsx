@@ -214,9 +214,16 @@ export function OpenTable({
   /** **The creator's Reopen** (security S3, D9): a joiner's seat back to open,
    *  at an open table only. The answer IS the table, so it is drawn at once; a
    *  refusal is the server's sentence in the join block's strip — the strip
-   *  beside the seats it is about — and the screen stays. One post at a time,
-   *  on the join's own guard: a second click on the same seat would earn "that
-   *  seat holds no joiner" about the seat this click just freed. */
+   *  beside the seats it is about. One post at a time, on the join's own
+   *  guard: a second click on the same seat would earn "that seat holds no
+   *  joiner" about the seat this click just freed.
+   *
+   *  **A 409 re-reads the table ONCE, as a join's 409 does** (ruling P-21):
+   *  every 409 here is the table having moved — the deal begun, or the seat
+   *  freed elsewhere — so the screen asks what it is now, and `take` hands a
+   *  table that is dealing over to the dealing screen, where Abandon is. None
+   *  of these 409s carries a status, so the join's first arm has nothing to
+   *  read here. A 403 is about the caller and is not re-read. */
   const reopen = async (seat: number) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -225,6 +232,14 @@ export function OpenTable({
       take(await api.reopen(game, seat));
     } catch (e) {
       setError(said(e));
+      if (e instanceof ApiError && e.status === 409) {
+        try {
+          take(await api.table(game));
+        } catch {
+          // The re-read failed too: the refusal above is the more useful of the
+          // two sentences, as on the join's path.
+        }
+      }
     } finally {
       inFlight.current = false;
     }

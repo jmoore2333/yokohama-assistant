@@ -536,6 +536,9 @@ describe("the dealing screen's Abandon, for its creator", () => {
     expect(wire.deal.table.mine && wire.deal.table.my_seats.length > 0, "premise: the creator, seated").toBe(true);
     expect(within(banner()).getByRole("button", { name: "abandon wire" })).toHaveTextContent("Abandon");
     expect(within(banner()).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    // **And no Reopen anywhere on it** (R-S3-13): a dealing table's seats have
+    // been dealt, so the open table's control has no place here.
+    expect(screen.queryByRole("button", { name: /^Reopen/ })).toBeNull();
   });
 
   it("offers nothing to abandon to a seated guest, whose delete the layer refuses", async () => {

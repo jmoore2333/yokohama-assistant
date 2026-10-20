@@ -297,11 +297,10 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         <em>Your tables</em> in the lobby, where it resumes exactly where you left it. You do not
         have to leave to find it: the banner&rsquo;s leftmost control names the game you are in,
         and opening it offers <em>Lobby</em> at the top and your other tables under it to switch
-        between. A table you opened yourself can be abandoned, from its own screen while it is
-        still filling or dealing or from its row in the lobby &mdash; two clicks, and it is gone for
-        everyone who was at it. Until the cards are dealt you can also free a seat somebody else
-        took: <em>Reopen</em> beside their seat makes it open again, and they may take a seat
-        again like anyone. When this server keeps an archive, a game with moves in it is saved there
+        between.
+        A table you opened yourself can be abandoned from its row in the lobby, or from its own screen while it is still filling or dealing &mdash; two clicks, and it is gone for everyone who was at it.
+        Until the cards are dealt you can also free a seat another person holds, whether they joined or you named them for it: <em>Reopen</em> beside it makes it open again, and they may take a seat again like anyone.
+        When this server keeps an archive, a game with moves in it is saved there
         before it is abandoned &mdash; the button then reads <em>Abandon and save</em> &mdash; and
         a finished game can be saved to a file from its own screen with{" "}
         <em>Save game file</em>, the same file the terminal loads.

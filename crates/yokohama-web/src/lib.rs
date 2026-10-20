@@ -4763,7 +4763,8 @@ mod tests {
     /// joiner, a would-be joiner again, reads the table with no seat. Refused
     /// before that: the joiner's own reopen, 403 in the one sentence and NO
     /// status field; a seat `PlayerId::try_new` refuses, 400 before the layer;
-    /// a seat past this three-seat table, the layer's 400; and a body with a
+    /// a seat past this three-seat table, the layer's 400; seat 0, the
+    /// creator's own, the layer's 409 in the own-seat sentence; and a body with a
     /// field the route does not take, `deny_unknown_fields`' 400. Each refusal
     /// leaves the guest seated, which the success at the end then reads.
     #[tokio::test]
@@ -4799,6 +4800,11 @@ mod tests {
         }
         let (_, body) = post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 3 })).await;
         assert_eq!(body["error"], "no seat 3 at this table", "{body}");
+        // Seat 0 is the CREATOR's own (the wire's seat is 0-based, as `keep` and
+        // `join` send it): a 409 in the own-seat sentence, never a 400.
+        let (status, body) = post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 0 })).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body, serde_json::json!({ "error": tables::OWN_SEAT }), "{body}");
         let (status, body) =
             post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 1, "card": 1 })).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown field: {body}");
