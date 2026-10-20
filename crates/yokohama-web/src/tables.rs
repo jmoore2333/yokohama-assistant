@@ -39,6 +39,7 @@ use crate::chat::{
 };
 use crate::client::{HistoricalFrame, Viewer};
 use crate::games::{bring_alive, enter, evict_down_to, mirror_of, GameError, Games};
+use crate::guesses::{Guess, TOO_MANY_WRONG_PASSWORDS};
 use crate::identity::User;
 use crate::store::{is_safe_id, Doc, Version, WriteError};
 use crate::table::{DealView, Lock, SeatDoc, TableDoc, TableStatus, TableView, TurnMirror};
@@ -1422,23 +1423,23 @@ impl Games {
     /// `unlock` make, so the two routes share one counter, as the oracle is the table's password whichever route
     /// asks it.
     ///
-    /// **The counter asks BEFORE the compare**, so a caller over the figure is refused with
-    /// [`crate::guesses::TOO_MANY_WRONG_PASSWORDS`] whatever it sent and learns nothing about any password; a
-    /// counter that compared first would answer the right guess 200 and keep the oracle open. A wrong password
-    /// counts one and is the ordinary [`WRONG_PASSWORD`] 403; a right one clears the caller's entry.
+    /// **A full window hides the compare's result**: the compare runs first and its answer goes INTO the counter's
+    /// one call, which answers [`Guess::Refused`] whatever it was, so a caller over the figure is refused with
+    /// [`TOO_MANY_WRONG_PASSWORDS`] whatever it sent and learns nothing about any password; a counter that let a right
+    /// guess through a full window would answer it 200 and keep the oracle open. A wrong password counts one and is
+    /// the ordinary [`WRONG_PASSWORD`] 403; a right one clears the caller's entry.
     ///
-    /// One clock reading serves the check and the count, and both callers hold the table's own lock
-    /// ([`Games::with_table_lock`]), so two guesses at one table never interleave a check with a count. Keyed by the
-    /// DOCUMENT's id, the table's identity, rather than the request's spelling of it.
+    /// One clock reading, and one acquisition of the counter's own lock for the ask and the count together
+    /// ([`crate::guesses::Guesses::guess`], P-17), so the serialization leans on no other lock: the table's lock
+    /// ([`Games::with_table_lock`]) is keyed by the request's spelling of the id, where this is keyed by the
+    /// DOCUMENT's id, the table's identity, so a case-folding store's spellings share one window.
     fn guess(&self, doc: &TableDoc, user: &User, given: &str) -> Result<(), GameError> {
         let now = (self.clock)();
-        self.guesses.check(&doc.id, user.as_str(), now).map_err(|s| GameError::TooMany(s.to_string()))?;
-        if !doc.check_password(given) {
-            self.guesses.failed(&doc.id, user.as_str(), now);
-            return Err(GameError::Forbidden(WRONG_PASSWORD.to_string()));
+        match self.guesses.guess(&doc.id, user.as_str(), now, doc.check_password(given)) {
+            Guess::Refused => Err(GameError::TooMany(TOO_MANY_WRONG_PASSWORDS.to_string())),
+            Guess::Wrong => Err(GameError::Forbidden(WRONG_PASSWORD.to_string())),
+            Guess::Right => Ok(()),
         }
-        self.guesses.cleared(&doc.id, user.as_str());
-        Ok(())
     }
 
     /// **Present the password once, and this caller may watch from now on**
