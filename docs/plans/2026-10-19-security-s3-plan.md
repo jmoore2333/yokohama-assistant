@@ -210,10 +210,13 @@ Design §3.3 and D-7. A failure counter keyed by (table, caller key), 20 wrong p
 #[test] fn two_callers_at_one_table_count_apart() {}
 #[test] fn one_caller_at_two_tables_counts_apart() {}
 #[test] fn a_refused_check_counts_nothing_so_the_window_lapses_on_schedule() {
-    // 20 failures at t=0; check at t=5 refused ×2; at t=10 check passes and live() reads 0
+    // 20 failures at t=0; check at t=5 refused ×2; at t=9 still refused; at t=10 check passes and live() reads 0 —
+    // AND the entry's count read white-box (a #[cfg(test)] reader) is still 20 after the two refusals: under a fixed
+    // window a counted refusal is invisible from outside, so the black-box line alone cannot see that mutant (P-14)
 }
 #[test] fn a_lapsed_entry_is_pruned_on_the_next_check_whatever_its_key() {
-    // failures under key A at t=0; a check under key B at t=10 → live() reads 0
+    // failures under key A at t=0; a check under key B at t=10 → the map's length read RAW is 0 (`live` prunes for
+    // itself, so `live() == 0` cannot see a `check` that never prunes; P-14)
 }
 ```
 
@@ -224,7 +227,7 @@ Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement `guesses.rs`**
 
-`Guesses { windows: Mutex<HashMap<(String, String), Window>> }`, `Window { started: u64, failures: u32 }`. `check`: lock; drop every entry whose `started + WINDOW_SECS <= now`; refuse with `TOO_MANY_WRONG_PASSWORDS` when the key's window holds `failures >= WRONG_PASSWORDS_PER_WINDOW`. `failed`: lock; start a window at `now` when none, else increment. `cleared`: remove the key. `live`: prune, then the map's length. One lock per call — the check and the count are never two operations (the S1b lesson). Register `pub mod guesses;`.
+`Guesses { windows: Mutex<HashMap<(String, String), Window>> }`, `Window { started: u64, failures: u32 }`. `check`: lock; drop every entry whose `now.saturating_sub(started) >= WINDOW_SECS` (the addition form overflows at the clock's end and a saturating add lapses a window started there at once; P-13); refuse with `TOO_MANY_WRONG_PASSWORDS` when the key's window holds `failures >= WRONG_PASSWORDS_PER_WINDOW`. `failed`: lock; start a window at `now` when none, else increment. `cleared`: remove the key. `live`: prune, then the map's length. One lock per call — the check and the count are never two operations (the S1b lesson). Register `pub mod guesses;`.
 
 - [ ] **Step 4: Run the unit cells to verify they pass**
 
@@ -256,12 +259,12 @@ Expected: PASS, 6 cells.
 
 - [ ] **Step 6: Run them to verify they fail**
 
-Run: `cargo test -p yokohama-web --features server wrong_password`
+Run: the five cells by name — the filter `wrong_password` matches only the first (P-15): `cargo test -p yokohama-web --features server -- the_twenty_first_wrong_password the_right_password_at_the_twentieth the_window_lapses_after_ten_seconds the_unlock_route_counts a_wrong_join_and_a_wrong_unlock`
 Expected: FAIL (every attempt 403).
 
 - [ ] **Step 7: Wire the counter into `join` and `unlock`**
 
-In both, after the table is read under the lock and before the compare: `self.guesses.check(id, user.as_str(), (self.clock)()).map_err(|s| GameError::TooMany(s.to_string()))?`; on a wrong password call `failed` then return the existing `Forbidden`; on a right one call `cleared` before the write. `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal (`with_parts` builds it as `Self { … }` inside `impl Games` — grep `Games {` AND `Self {` in `games.rs`).
+In both, after the table is read under the lock and immediately before the compare (a request the status match, the seat rungs or an absent/empty password refuse is no guess and neither checks nor counts): one private helper the two routes share — `let now = (self.clock)(); self.guesses.check(&doc.id, user.as_str(), now).map_err(|s| GameError::TooMany(s.to_string()))?` (the STORED document's id, never the request's spelling — a case-insensitive file store aliases `GUARDED` to `guarded`; one clock reading for the check and the count; P-16); on a wrong password call `failed` then return the existing `Forbidden`; on a right one call `cleared` before the write. `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal (`with_parts` builds it as `Self { … }` inside `impl Games` — grep `Games {` AND `Self {` in `games.rs`).
 
 - [ ] **Step 8: Run the lib suite and regenerate nothing**
 
@@ -681,7 +684,12 @@ The "before" review, run from the ledger's scan (one row per pair of tasks shari
 - **P-7 (the design, D-2 against D-14):** D-2 reads "one automatic pass per install attempt" and D-14 "the pass counter is the page's" — D-14 is the later decision (the builder check's question 4) and §3.1 step 4 agrees; Task 6 follows D-14. Recorded for the design's §7 at the wrap.
 - **P-8 (Task 1 Step 13, operations):** Docker's daemon is down on the workstation at the run's start; the implementer starts Docker Desktop once (`open -a Docker`, up to 90 s) for the smoke's two runs; failing that, the two smoke runs are NOT taken by the task and the window's Step 3 takes them (recorded in the task's report as a concern).
 - **P-12 (Task 1, after the implementer's DONE_WITH_CONCERNS — concern 2):** the plan's cell refused `"ON "`, while the design says the switch "reads as the layer's other switches do" and `Multiplayer::from_env_value` trims and lower-cases for a stated reason (one operator's `docker run` line); the design wins — the switch is read trimmed and case-insensitive, `""` still refused. The implementer's strict reading followed the plan's cell exactly; corrected by a new commit before the review. Cost if wrong: an operator's `ON` accepted instead of refused by name.
-- **Exports share the checkout's `target/`** (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
+- **P-13 (Task 2, after its DONE_WITH_CONCERNS):** the window test is `now.saturating_sub(started) >= WINDOW_SECS` — the plan's `started + WINDOW_SECS <= now` panics in debug near `u64::MAX`; pinned by a seventh unit cell.
+- **P-14 (Task 2):** the refused-check and prune cells read the count and the map white-box, because under a fixed window a counted refusal is invisible from outside and `live` prunes for itself.
+- **P-15 (Task 2):** Step 6's filter named one cell of five; the five are named.
+- **P-16 (Task 2):** the counter's key is the stored document's id and both routes share one private helper, one clock reading per guess.
+- **R-8 supersedes the next bullet: every export builds in its OWN `target/`** (cargo keys a workspace crate by its path relative to the workspace root, so a shared target runs the other tree's artifacts as fresh — found by Task 2's implementer).
+- **Exports share the checkout's `target/`** (WITHDRAWN by R-8, kept for the record) (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
 ## Self-review (run by the author, 2026-10-20)
 
