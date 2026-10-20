@@ -330,7 +330,7 @@ no caller files anonymously** under `anon-<device id or the game's own id>@anon.
 **offers no integrity guarantee: a device id is a self-declared label, not a credential** — so a finished
 game is kept whoever played it, and nothing about it is trustworthy beyond the replay that verified it. A
 deployment declares one source, and its file says which: `wrangler.jsonc` is the public deployment
-(`yokohama-web`, source `access` until the window of `RUNBOOK.md` §23 moves it to `workos`), and
+(`yokohama-web`, source `workos` since the window's stage 1, 2026-10-19; `RUNBOOK.md` §23), and
 `wrangler.private.jsonc` is the LATER private deployment (`yokohama-web-private`, its own bucket, objects and
 rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.nyc`, beside production's
 `yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare

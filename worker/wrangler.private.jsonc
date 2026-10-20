@@ -1,10 +1,10 @@
 // **The Worker `yokohama-web-private`** (the auth cycle, Task 7; plan decision D-1, the design's §4.7 as amended)
-// — the LATER private deployment: production's configuration behind Cloudflare Access, as `yokohama-web` ran before
-// it went public, under its OWN record — its own Worker name (so its own Durable Objects), its own bucket
+// — the LATER private deployment: production's configuration behind Cloudflare Access, as `yokohama-web` ran at source
+// `access` before the window's stage 1, under its OWN record — its own Worker name (so its own Durable Objects), its own bucket
 // `yokohama-archive-private` and its own rate-limit namespaces `7303` and `7304`. Its domain is
 // `yokohama-test.moore.nyc` (security S3, Task 7), a custom domain covered by the one Access application as a
-// destination since 2026-10-20; with `workers_dev` and `preview_urls` off, that hostname is the only place a
-// deploy of this file answers.
+// destination since 2026-10-20 and LIVE since its first deploy the same day (`RUNBOOK.md` §26); with `workers_dev`
+// and `preview_urls` off, that hostname is the only place a deploy of this file answers.
 //
 // `npm run deploy:private` ships it once `node scripts/deploy-guard.mjs --config wrangler.private.jsonc` passes.
 // The guard holds it to its record (`DEPLOYMENTS` in `scripts/deploy-guard.mjs`: the name, the bucket, the
@@ -20,8 +20,8 @@
   "main": "src/index.ts",
   // Production's (spec §3.1), held equal to it by the deploy guard (R-49), as `main` and `rules` are.
   "compatibility_date": "2026-09-15",
-  // The private domain, held to the deploy guard's record: that hostname and nothing else (the same shape as
-  // `wrangler.jsonc`'s route).
+  // The private domain. The deploy guard's record holds the HOSTNAME alone, and nothing else here; the route's
+  // shape (a custom domain) is `wrangler.jsonc`'s by convention.
   "routes": [{ "pattern": "yokohama-test.moore.nyc", "custom_domain": true }],
   "workers_dev": false,
   "preview_urls": false,

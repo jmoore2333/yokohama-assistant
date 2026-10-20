@@ -119,7 +119,7 @@ const DOOR_VARS = `"vars": {
 const ROUTES = `"routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }]`;
 
 /** The private Worker's custom domain, as the guard's record of that deployment names it (security S3, Task 7: the
- *  record's `routes` was `null` until the owner named the domain, `yokohama-test.moore.nyc`). */
+ *  `yokohama-test.moore.nyc`, a custom domain). */
 const PRIVATE_ROUTES = `"routes": [{ "pattern": "yokohama-test.moore.nyc", "custom_domain": true }]`;
 
 /** Production's logs (security S2b, finding D23; decision D-6): query strings redacted, the sampling rate left at its
@@ -1575,9 +1575,8 @@ describe("the deploy guard", () => {
   // it is the file deployed, and to production's `durable_objects` and `migrations` in every run (check 6's rule:
   // both Workers run the same code). Absent, it is no failure, unless it is the file named. Mutants: the file judged
   // as production's sibling (the pass rows read the name's, the bucket's and the route's drift); a route accepted;
-  // each record field unread; the blocks unread; absence refused. The route's mutants: the record's `routes` back to
-  // `null` (the hostname refused as "no route"); the record naming production's hostname (the private file's own
-  // refused); a second or a singular route accepted; an absent route accepted.
+  // each record field unread; the blocks unread; absence refused. The route's mutants: the record naming production's
+  // hostname (the private file's own refused); a second or a singular route accepted; an absent route accepted.
   it("wrangler.private.jsonc is held to its own record: name, bucket, namespaces, source access, its route, and production's other blocks", () => {
     const PRIV = "wrangler.private.jsonc";
     const judged = (text) => configFailures(worker({ [PRIV]: text }), PRIV);
