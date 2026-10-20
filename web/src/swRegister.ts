@@ -40,8 +40,24 @@
 // plays on out of the retained generation, and draws the same line, whose
 // click is a plain reload. Without that state its line would vanish with the
 // waiting worker, and nothing would tell the player the tab is behind.
+//
+// **Security S3 adds the door's pass of the edge's challenge** (W-3; design
+// §3.1 steps 3–6; D-2, D-3, D-14). Under the no-Access door Bot Fight Mode
+// challenges a precache fetch from a browser whose `cf_clearance` has lapsed,
+// and the worker tells the one door window it elects `kind: "challenged"`
+// (`sw.ts`, `swMessages.ts`). That window opens the overlay it already has
+// (`passChallenge`) and, once the widget passes, runs the same retry "Try
+// again" runs; a rejected pass, or a build with no overlay, lands on the
+// failure the door drew before S3. The pass is ONCE per page, because the page starts
+// installs on its own at every recheck below: after it a challenged install
+// draws the button and nothing else, and only a click earns the widget once
+// more. Nothing here asks anything under `/api` (step 7): the widget talks to
+// the edge's own challenge platform, and the retry refetches the release.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { parseRoute } from "./route";
+import type { InstallFailed, InstallFailedKind } from "./swMessages";
+import { passChallenge } from "./turnstile";
 
 /** Where the generator writes the worker, and the one path `assets.rs` answers
  *  `Cache-Control: no-store`. */
@@ -53,6 +69,10 @@ export const SW_URL = "/sw.js";
  *  `/sw.js`, a static asset the Worker serves free (Workers pricing, footnote
  *  3), and the browser's own check on every navigation is unchanged. */
 export const RECHECK_MS = 15 * 60 * 1000;
+
+/** The one kind the door acts on by itself: the edge asked for a check, and this
+ *  window is the one the worker elected to pass it (security S3, W-3). */
+const CHALLENGED: InstallFailedKind = "challenged";
 
 /** What the door reports about the release.
  *
@@ -80,7 +100,9 @@ export interface ReadinessStatus {
   readonly applyUpdate: () => void;
   /** Reload this tab: the stale line's click. */
   readonly reload: () => void;
-  /** Try the install again after a failure. */
+  /** Try the install again after a failure. A person's act, so it also gives
+   *  the page its automatic pass of the edge's challenge back (security S3,
+   *  W-3; D-14): the retry it starts may open the overlay once more. */
   readonly retry: () => void;
 }
 
@@ -234,6 +256,26 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
    *  each lent function's own `live` check is the guard that holds; the clear
    *  only lets go of a dead effect's closure. */
   const lent = useRef<Lent | null>(null);
+  /** **The page's one automatic pass of the edge's challenge** (security S3,
+   *  W-3; D-14 over D-2's words): set when the door starts it, cleared by a
+   *  click on "Try again" and by nothing else. The PAGE's and not the install
+   *  attempt's, since the recheck below starts an attempt every fifteen
+   *  minutes and at every return into view, and a counter per attempt would
+   *  reopen a cancelled overlay without end. Held here, because `App` mounts
+   *  this hook once for the page's life (`App.tsx`). */
+  const passedOnce = useRef(false);
+  /** **While the door's own pass runs, the door keeps what it had**: the
+   *  overlay is on screen, and the install it is passing for has failed by
+   *  design. The dying worker's `redundant` lands during the pass, since the
+   *  worker posts BEFORE its install rejects, and `settle` holds the shape's
+   *  "failed" until the pass is over; a challenge that arrives meanwhile is
+   *  handed the same pass, as `passChallenge` hands every concurrent challenge
+   *  one, so its retry runs once. Cleared on either outcome. */
+  const passing = useRef(false);
+  /** The retry's body for the message reader, which the effect registers
+   *  ONCE: through this ref it reaches the body of the latest render rather
+   *  than the closure of the first. Written beside the body, below. */
+  const retryInternalRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const swHost = hostRef.current;
@@ -252,8 +294,11 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       });
       setUpdateWaiting(next.updateWaiting);
       // A failure the worker REPORTED outranks the shape, because the shape
-      // stops saying "redundant" the moment the browser drops the worker.
-      setReadiness(failure.current !== null ? "failed" : next.readiness);
+      // stops saying "redundant" the moment the browser drops the worker. And
+      // while the door's own pass runs, the shape's "failed" is held: it is
+      // the install the pass is for (`passing`, above).
+      if (failure.current !== null) setReadiness("failed");
+      else if (!(passing.current && next.readiness === "failed")) setReadiness(next.readiness);
     };
 
     const watch = (worker: WorkerLike | null) => {
@@ -264,11 +309,51 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
 
     undo.push(
       swHost.onMessage((data) => {
-        const said = data as { yokohama?: unknown; reason?: unknown } | null;
+        const said = data as { readonly [K in keyof InstallFailed]?: unknown } | null;
         if (!live || !said || said.yokohama !== "install-failed") return;
-        failure.current = typeof said.reason === "string" ? said.reason : "";
-        setReason(typeof said.reason === "string" ? said.reason : null);
-        setReadiness("failed");
+        const named = typeof said.reason === "string" ? said.reason : null;
+        const failed = () => {
+          failure.current = named ?? "";
+          setReason(named);
+          setReadiness("failed");
+        };
+        // **Every failure but the edge's, and the edge's anywhere but the
+        // door, is the failure the door drew before S3** (W-3, P-26). The
+        // route is the page's own, read when the message arrives: the worker
+        // elects by `WindowClient.url`, which Chromium was measured to leave
+        // at the tab's LOAD address through a hash navigation (Playwright
+        // 1.62.1's Chromium, 2026-10-20), so the page is the fence, and a game
+        // screen never draws an overlay mid-play. A message with no kind is a
+        // failure too.
+        if (said.kind !== CHALLENGED || parseRoute(window.location.hash).kind !== "door") {
+          failed();
+          return;
+        }
+        if (passing.current) return;
+        // **One automatic pass per page** (D-14): after it, the button and
+        // nothing else.
+        if (passedOnce.current) {
+          failed();
+          return;
+        }
+        passedOnce.current = true;
+        passing.current = true;
+        // **The overlay's widget, then the retry "Try again" runs** (D-3):
+        // `update()` with a worker active, a new `register` where the first
+        // install failed. A rejection is `EDGE_CHECK` with no overlay mounted,
+        // the keyless build, or `EDGE_CHECK_REPEATED` when the check did not
+        // pass; either way the door names what the worker said and offers the
+        // button, as it did before S3.
+        passChallenge().then(
+          () => {
+            passing.current = false;
+            if (live) retryInternalRef.current();
+          },
+          () => {
+            passing.current = false;
+            if (live) failed();
+          },
+        );
       }),
     );
     undo.push(
@@ -384,7 +469,11 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
     waiting.postMessage({ yokohama: "skip-waiting" });
   }, []);
 
-  const retry = useCallback(() => {
+  // **The retry's body, whoever asks for it** (security S3, W-3; D-3): the
+  // click through `retry` below, and the door's automatic pass through
+  // `retryInternalRef`. It leaves the page's pass counter alone, so the
+  // automatic path can never give itself a second pass.
+  const retryInternal = useCallback(() => {
     failure.current = null;
     setReason(null);
     setReadiness("installing");
@@ -439,6 +528,17 @@ export function useReadiness(host: SwHost = browserSwHost()): ReadinessStatus {
       .then((next) => lent.current?.adopt(next))
       .catch(said);
   }, []);
+  // Written at render, so the ref holds this render's body before any effect
+  // runs; the body's identity never changes, and the write keeps that true if
+  // it ever does.
+  retryInternalRef.current = retryInternal;
+
+  /** **"Try again"**: a person's act, which gives the page its automatic pass
+   *  back before it retries (D-14). */
+  const retry = useCallback(() => {
+    passedOnce.current = false;
+    retryInternal();
+  }, [retryInternal]);
 
   const reload = useCallback(() => hostRef.current.reload(), []);
 

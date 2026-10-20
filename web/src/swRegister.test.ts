@@ -20,11 +20,13 @@ import {
   SW_URL,
   useDoorAutoApply,
   useReadiness,
+  type Readiness,
   type ReadinessStatus,
   type RegistrationLike,
   type SwHost,
   type WorkerLike,
 } from "./swRegister";
+import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 
 class FakeWorker implements WorkerLike {
   state: string;
@@ -266,7 +268,7 @@ describe("the hook", () => {
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
     act(() => {
-      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      message({ yokohama: "install-failed", kind: "failed", reason: "/art/orders/O01.webp answered 404" });
       first.installFailed();
     });
     expect(result.current.readiness).toBe("failed");
@@ -305,7 +307,7 @@ describe("the hook", () => {
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
     // The message has arrived; the install has not yet been failed.
-    act(() => message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" }));
+    act(() => message({ yokohama: "install-failed", kind: "failed", reason: "/art/orders/O01.webp answered 404" }));
     expect(result.current.readiness).toBe("failed");
     expect(first.installing, "the premise: the dying worker is still named").not.toBeNull();
 
@@ -329,7 +331,7 @@ describe("the hook", () => {
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
     act(() => {
-      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      message({ yokohama: "install-failed", kind: "failed", reason: "/art/orders/O01.webp answered 404" });
       registration.installFailed();
     });
     expect(result.current.readiness).toBe("failed");
@@ -363,7 +365,7 @@ describe("the hook", () => {
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
     act(() => {
-      message({ yokohama: "install-failed", reason: "/art/orders/O01.webp answered 404" });
+      message({ yokohama: "install-failed", kind: "failed", reason: "/art/orders/O01.webp answered 404" });
       registration.installFailed();
     });
     expect(result.current.readiness).toBe("failed");
@@ -462,7 +464,7 @@ describe("the hook", () => {
     const { result } = renderHook(() => useReadiness(host));
     await act(async () => undefined);
     act(() => {
-      message({ yokohama: "install-failed", reason: "/index.html answered 502" });
+      message({ yokohama: "install-failed", kind: "failed", reason: "/index.html answered 502" });
       registration.installFailed();
     });
     expect(result.current.readiness).toBe("failed");
@@ -883,6 +885,334 @@ describe("the re-check", () => {
     expect(result.current.readiness).toBe("ready");
     expect(result.current.reason).toBeNull();
     expect(result.current.updateWaiting).toBe(false);
+  });
+});
+
+// ---- the edge's challenge at the door (security S3, W-3) -------------------
+//
+// **The door passes the edge's challenge once per page and retries on its
+// own** (design §3.1 steps 3–6; D-2, D-3, D-14, D-17). Under the no-Access
+// door Bot Fight Mode challenges a precache fetch from a browser whose
+// `cf_clearance` has lapsed, and the worker names that failure "challenged" to
+// the one door window it elects (`sw.ts`). The door opens the overlay it
+// already has (`passChallenge`) and, once the widget passes, runs its existing
+// retry: `update()` with a worker active, the returning browser's case, and a
+// new `register` where the FIRST install failed. A rejected pass, and a build
+// with no overlay, land on today's failed. ONE automatic pass per page, since
+// the page starts installs on its own at every recheck: after it, a challenged
+// install draws the button and nothing else, and only a click earns the widget
+// once more. The page is its own fence: a challenge read anywhere but the door
+// is a failure (P-26).
+
+/** The worker's sentence for a challenged entry: `sw.ts`'s `CHALLENGED`, after the path. */
+const CHALLENGED_REASON = "/art/manifest.json: the edge asked for a check before it would answer";
+const challenged = { yokohama: "install-failed", kind: "challenged", reason: CHALLENGED_REASON } as const;
+
+/** The overlay's handler as a spy: each call opens ONE pass, which the cell settles. A person takes a second or
+ *  two in the widget, and the platform's events land meanwhile. */
+function overlay() {
+  const passes: { resolve: () => void; reject: (e: Error) => void }[] = [];
+  const handler = vi.fn(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        passes.push({ resolve, reject });
+      }),
+  );
+  setChallengeHandler(handler);
+  return { handler, passes };
+}
+
+/** The hook, with every readiness it ever RENDERED kept: what "never failed" is a claim about. */
+function mountSeeing(host: SwHost) {
+  const seen: Readiness[] = [];
+  const hook = renderHook(() => {
+    const status = useReadiness(host);
+    seen.push(status.readiness);
+    return status;
+  });
+  return { ...hook, seen };
+}
+
+/** A returning browser's door: release 1 running and release 2's install started, as a recheck or a navigation's
+ *  own check finds it; with the overlay mounted unless the cell says the build has none. */
+async function returningDoor(withOverlay = true) {
+  const registration = new FakeRegistration();
+  registration.active = new FakeWorker("activated");
+  const fake = fakeHost(registration);
+  const pass = withOverlay ? overlay() : { handler: vi.fn(), passes: [] };
+  const hook = mountSeeing(fake.host);
+  await act(async () => undefined);
+  act(() => registration.updateFound(new FakeWorker("installing")));
+  expect(hook.result.current.readiness, "the premise: release 2 is installing").toBe("installing");
+  return { registration, ...fake, ...pass, ...hook };
+}
+
+/** An install meeting the edge, in the platform's order: the worker posts BEFORE its install rejects, and then the
+ *  dying worker goes `redundant`, both while a person is in the overlay. */
+function meetsTheEdge(registration: FakeRegistration, message: (data: unknown) => void): void {
+  act(() => {
+    message(challenged);
+    registration.installFailed();
+  });
+}
+
+describe("the edge's challenge at the door", () => {
+  afterEach(() => {
+    resetTurnstileForTests();
+    window.location.hash = "";
+    delete (document as { visibilityState?: unknown }).visibilityState;
+  });
+
+  it("passes the challenge once and retries through update() when a worker is active, never reading failed", async () => {
+    const { registration, host, message, handler, passes, result, seen } = await returningDoor();
+    meetsTheEdge(registration, message);
+    expect(handler, "the overlay opened, once").toHaveBeenCalledTimes(1);
+    expect(registration.updates, "nothing is retried before the pass lands").toBe(0);
+    expect(result.current.readiness, "the door keeps what it had while the overlay is up").toBe("installing");
+
+    const next = new FakeWorker("installing");
+    registration.nextInstall = next;
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(registration.updates, "the retry is update(), the returning browser's case").toBe(1);
+    expect(host.register, "and no second register").toHaveBeenCalledTimes(1);
+    act(() => {
+      registration.installing = null;
+      registration.waiting = next;
+      next.become("installed");
+    });
+    expect(result.current.readiness).toBe("ready");
+    expect(result.current.updateWaiting, "release 2 waits for the door's own apply").toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(seen, "the door never read failed").not.toContain("failed");
+  });
+
+  it("passes once and registers anew when the first install failed", async () => {
+    const first = new FakeRegistration();
+    first.installing = new FakeWorker("installing");
+    const second = new FakeRegistration();
+    const worker = new FakeWorker("installing");
+    second.installing = worker;
+    const { host, message } = fakeHost(first);
+    host.register = vi
+      .fn<SwHost["register"]>()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const { handler, passes } = overlay();
+    const { result, seen } = mountSeeing(host);
+    await act(async () => undefined);
+    meetsTheEdge(first, message);
+    expect(handler, "the overlay opened, once").toHaveBeenCalledTimes(1);
+    expect(host.register, "nothing is retried before the pass lands").toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(host.register, "the retry REGISTERS: a failed first install empties the registration").toHaveBeenCalledTimes(2);
+    expect(first.updates).toBe(0);
+    walkToActivated(second, worker, () => result.current.readiness);
+    expect(result.current.readiness).toBe("ready");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(seen, "the door never read failed").not.toContain("failed");
+  });
+
+  it("a rejected pass lands on failed with the reason and no retry", async () => {
+    const { registration, host, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    await act(async () => {
+      passes[0]!.reject(new Error("the check was cancelled"));
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason, "the worker's sentence, which names the path and the edge").toBe(CHALLENGED_REASON);
+    expect(registration.updates, "no retry").toBe(0);
+    expect(host.register, "no register either").toHaveBeenCalledTimes(1);
+  });
+
+  it("with no overlay mounted the door lands on failed at once", async () => {
+    const { registration, host, message, result } = await returningDoor(false);
+    await act(async () => {
+      message(challenged);
+    });
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe(CHALLENGED_REASON);
+    expect(registration.updates, "no retry").toBe(0);
+    expect(host.register).toHaveBeenCalledTimes(1);
+  });
+
+  it("a second challenged message on the same page draws the button and runs no second pass", async () => {
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(registration.updates, "the premise: the pass's retry ran, and installed again").toBe(1);
+
+    // The retry's own install meets the edge again.
+    meetsTheEdge(registration, message);
+    expect(handler, "no second widget").toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe(CHALLENGED_REASON);
+
+    // A recheck the page starts by itself is silent too.
+    registration.nextInstall = new FakeWorker("installing");
+    act(() => turnPage("visible"));
+    expect(registration.updates, "the premise: the recheck asked, and installed again").toBe(2);
+    meetsTheEdge(registration, message);
+    expect(handler, "the recheck opened no widget").toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe(CHALLENGED_REASON);
+  });
+
+  it("a click on Try again resets the counter so its own challenged retry may pass once more", async () => {
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    meetsTheEdge(registration, message);
+    expect(handler, "the premise: the automatic pass is spent").toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("failed");
+
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(registration.updates, "the click's retry").toBe(2);
+    meetsTheEdge(registration, message);
+    expect(handler, "the click earned the widget once more").toHaveBeenCalledTimes(2);
+
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[1]!.resolve();
+    });
+    expect(registration.updates, "and that pass retried").toBe(3);
+    // Once more, and not once more for each challenge after it.
+    meetsTheEdge(registration, message);
+    expect(handler).toHaveBeenCalledTimes(2);
+    expect(result.current.readiness).toBe("failed");
+  });
+
+  it("a challenged message at a page whose route is not the door lands on failed and runs no pass", async () => {
+    for (const hash of ["#/t/abc", "#/lobby", "#/new"]) {
+      const { registration, message, handler, result, unmount } = await returningDoor();
+      // Read at MESSAGE time: the page mounted on the door and has left it by a hash navigation, which the worker's
+      // `WindowClient.url` may not have followed.
+      window.location.hash = hash;
+      await act(async () => {
+        message(challenged);
+      });
+      expect(handler, hash).not.toHaveBeenCalled();
+      expect(result.current.readiness, hash).toBe("failed");
+      expect(result.current.reason, hash).toBe(CHALLENGED_REASON);
+      expect(registration.updates, hash).toBe(0);
+      unmount();
+      resetTurnstileForTests();
+      window.location.hash = "";
+    }
+  });
+
+  it("kind failed takes today's path, and so does a message with no kind", async () => {
+    const reason = "/art/orders/O01.webp: answered 503";
+    for (const said of [
+      { yokohama: "install-failed", kind: "failed", reason },
+      { yokohama: "install-failed", reason },
+    ]) {
+      const { registration, message, handler, result, unmount } = await returningDoor();
+      await act(async () => {
+        message(said);
+      });
+      expect(handler, JSON.stringify(said)).not.toHaveBeenCalled();
+      expect(result.current.readiness).toBe("failed");
+      expect(result.current.reason).toBe(reason);
+      expect(registration.updates).toBe(0);
+      unmount();
+      resetTurnstileForTests();
+    }
+  });
+
+  it("the automatic pass and retry request nothing under /api", async () => {
+    const fetched = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response(null, { status: 204 }));
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    // And the click's path, which runs the same retry and may pass once more.
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      result.current.retry();
+    });
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[1]!.resolve();
+    });
+    expect(handler, "the premise: two passes ran").toHaveBeenCalledTimes(2);
+    expect(registration.updates, "and three retries").toBe(3);
+    const paths = fetched.mock.calls.map(
+      ([input]) => new URL(input instanceof Request ? input.url : String(input), window.location.href).pathname,
+    );
+    expect(paths.filter((p) => p.startsWith("/api")), "nothing under /api").toEqual([]);
+  });
+
+  // **A challenge that arrives while the pass runs is handed that pass**, as `passChallenge` hands every
+  // concurrent challenge one: the person switched tabs and came back with the overlay up, and the recheck's
+  // install met the edge as well. One widget, one retry when it lands, and the door never read failed.
+  it("a challenge arriving while the pass runs shares it: one pass, one retry, never failed", async () => {
+    const { registration, message, handler, passes, result, seen } = await returningDoor();
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    act(() => turnPage("visible"));
+    expect(registration.updates, "the premise: the recheck installed again").toBe(1);
+    meetsTheEdge(registration, message);
+    expect(handler, "one widget").toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("installing");
+
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(registration.updates, "ONE retry once the pass lands").toBe(2);
+    expect(seen, "the door never read failed").not.toContain("failed");
+  });
+
+  // **A click while the pass runs** — the overlay is modal, but a keyboard can still reach "Try again" behind it.
+  // Its install meets the edge with no clearance yet, and is handed the pass in flight: one retry when it lands.
+  it("a click while the pass runs is handed the same pass: one retry when it lands", async () => {
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(registration.updates, "the click's own retry").toBe(1);
+    meetsTheEdge(registration, message);
+    expect(handler, "the same widget").toHaveBeenCalledTimes(1);
+
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(registration.updates, "ONE retry once the pass lands").toBe(2);
+  });
+
+  it("a pass that lands after the page has gone retries nothing", async () => {
+    const { registration, host, message, passes, unmount } = await returningDoor();
+    meetsTheEdge(registration, message);
+    unmount();
+    await act(async () => {
+      passes[0]!.resolve();
+    });
+    expect(registration.updates).toBe(0);
+    expect(host.register).toHaveBeenCalledTimes(1);
   });
 });
 

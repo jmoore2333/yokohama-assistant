@@ -392,7 +392,7 @@ Each precondition, with its state after F:
 | pre-clearance: the widget, the predicate and the overlay | F §2.6 | **vetted in F's window** (mode `managed`, pre-clearance `managed`): the door's button cleared the visitor before the first metered call — the lobby's eight calls, every one 200; a table dealt and its WebSocket upgrade opened under the clearance; a link arrival met the predicate, the overlay and one retry in 1.3 s; a local game finished offline had its upload challenged by the `online` drain, read "waiting for a human check", and landed when its Check now was pressed — the observed path — through an overlay on screen for under a second that asked for no click. The visible launch's retry through the widget (`outbox.ts` rule 6a) stands on its cell, unobserved live: the window reached the door by a same-document hash change, not a launch. No siteverify (§15) |
 | Challenge Passage, the clearance's lifetime | F §2.6 | **the owner's: one week** (R-OWN-F3), set 2026-10-01 — the zone's `challenge_ttl` from 1800 to 604800, zone-wide and reversible. Cloudflare honours a value above 45 minutes best effort, and Precursor may re-challenge before it lapses (read from Cloudflare's own sources the same day) |
 | the zone's other settings | F §2.6 | **read in F's window**: Bot Fight Mode ON, and kept on through F (trap 42) — whether it stays on under the no-Access door is W-3's decision, below; managed `robots.txt` OFF, so the served `robots.txt` is the release's own, identical to the build's |
-| a returning browser's update under the no-Access door (W-3) | F's window | **OWED — the wrap's decision; F changes no code for it.** With Bot Fight Mode ON, a controlled browser whose clearance has lapsed cannot install a new release until something re-issues a clearance: Bot Fight Mode challenges the precache's fetches of the allowed paths that are not static resources by extension (`/art/manifest.json` among them), the rule's allow-list cannot exempt them (the Free plan's Bot Fight Mode takes no skip), and the browser's navigations are answered from the cached shell, so the edge's JavaScript detection, which issues `cf_clearance` on an HTML response, never runs for it again. The window read the failure four times over 18 minutes, on the pinned browser (§10). What restores a clearance: a metered call meeting the rule's challenge, whose widget sets one, or a navigation the edge answers itself. The candidates: Bot Fight Mode off under the no-Access door — the isolated bursts showed the rule alone refuses scanners at zero invocations — a clearance-refreshing read, or the precache's extensions (§15) |
+| a returning browser's update under the no-Access door (W-3) | F's window | **OWED — the wrap's decision; F changes no code for it.** With Bot Fight Mode ON, a controlled browser whose clearance has lapsed cannot install a new release until something re-issues a clearance: Bot Fight Mode challenges the precache's fetches of the allowed paths that are not static resources by extension (`/art/manifest.json` among them), the rule's allow-list cannot exempt them (the Free plan's Bot Fight Mode takes no skip), and the browser's navigations are answered from the cached shell, so the edge's JavaScript detection, which issues `cf_clearance` on an HTML response, never runs for it again. The window read the failure four times over 18 minutes, on the pinned browser (§10). What restores a clearance: a metered call meeting the rule's challenge, whose widget sets one, or a navigation the edge answers itself. The candidates: Bot Fight Mode off under the no-Access door — the isolated bursts showed the rule alone refuses scanners at zero invocations — a clearance-refreshing read, or the precache's extensions (§15). **Since security S3 the decision is made and BUILT, and its live reading is owed to the public day's window** (S3 design §3.1, D-13, D-14, D-17): Bot Fight Mode stays ON, and neither other candidate is taken, since a clearance-refreshing read would be a metered call and the precache's names are kept. The service worker names the edge's challenge on a precache fetch as its own kind and tells it to the ONE window it elects among those showing the door, every other window reading the plain failure (`sw.ts`, `swMessages.ts`; S3 Task 5). That door passes the challenge through the overlay it already has once per page and then runs its own retry, while a rejected pass, a keyless build, a page not on the door and every challenge after the page's one pass land on the failure the door drew before, a click earning the widget once more, and nothing under `/api` is asked (`swRegister.ts`; S3 Task 6). The door's unit cells prove the pass and `offline.spec.ts` the keyless landing; no harness stands in for Bot Fight Mode, so the reading is the public day's: a real browser holding the previous release with its cookies cleared, a release deployed, a reload, and the overlay, "Ready to play offline" with no click and the minute's invocation count unmoved (R-S3-8, R-S3-11; §15) |
 
 **What E's window read under state 1:** the door and the shell public; the name step; `GET /api/admin/tables` the
 layer's 404 for every typed name, the owner's own address typed as a name included (under `open` a name IS the person,
@@ -413,7 +413,8 @@ neither. Nor did either window measure a public load.
 
 **Still owed before the door opens for real:** the art's decision; a fresh-history repository, since `ASSETS.md`'s
 carve-outs and, before the M6.5c2 scrub, the owner's address live in the history; the dev door's client id deleted;
-rows 108 and 119 read with a second identity; W-3's decision (the table above); for an open-door Worker, a ceiling per
+rows 108 and 119 read with a second identity; W-3's live reading (the table above: security S3 made the decision and
+built it); for an open-door Worker, a ceiling per
 person: the Worker's own two limits (security S2b, finding C2) count creates by the connecting IP and writes by the
 IP and the name, and a name is free, so the write limit and the archive's share are per NAME, never per IP — the
 zone's rate-limit rule and the edge rule stay the deployer's tools for that, and S4's controls (the owner's R-3) its
@@ -442,7 +443,8 @@ as the KEYLESS build carrying the sign-in notice with `YOKOHAMA_TURNSTILE` `off`
 (it is disabled under Access, whose service token cannot pass a challenge); **stage 2**, in a later session with the
 owner, the keyed build with the notice, `YOKOHAMA_TURNSTILE` `on`, the edge rule ENABLED by its id, and THEN the
 hostname off the Access application. **Still owed**, unchanged by the cycle: the art's decision, the
-fresh-history repository, W-3's other half (a lapsed clearance blocking an install) and every live reading.
+fresh-history repository and every live reading. W-3's other half, a lapsed clearance blocking an install, left this
+list with security S3, which built it; what it still owes is its reading at the public day's window (the table above).
 
 ## 9. How the documents are built
 
@@ -937,17 +939,29 @@ These read like gaps and are not; each is the owner's ruling or a stated propert
 - **The first release after E's is taken E's way.** A browser pinned to E's release runs E's page from E's cache until
   its first update, so the step from E to F showed E's line and needed E's click on both hosts; the no-click update
   runs from the first F release on, and the Worker's revert read it (§10).
-- **Owed, not by design — W-3: a lapsed clearance blocks a release's install under the no-Access door** (the window's
-  finding; the close's §7). Under the no-Access door with Bot Fight Mode ON, a controlled browser whose clearance has
-  lapsed cannot install a new release until something re-issues a clearance: Bot Fight Mode challenges the precache's
-  fetches of the allowed paths that are not static resources by extension, and the door's "Try again" refetches with
-  no clearance. The window read it four times over 18 minutes, on the pinned browser (§10). The fix is the wrap's
-  decision — Bot Fight Mode off under the no-Access door, a clearance-refreshing read, or the precache's extensions
-  (§8) — and F changes no code for it. **The auth cycle narrowed what W-3 costs a player's games, not W-3 itself:** the anonymous upload no longer
-  depends on an update (R-A11) — a browser stuck on the previous client posts its waiting games with no device header,
-  and the Worker files such a post under the game's own id (`anon-<game id>@anon.invalid`), so those games land the first
-  time the browser reaches the archive through the widget, with no new release installed. The install failure itself,
-  and a returning browser's missing newer client, stay owed.
+- **W-3 — a lapsed clearance at a release's install under the no-Access door: built in security S3, its live reading
+  owed to the public day's window** (cycle F's window finding and the close's §7; S3 design §3.1, D-13, D-14, D-17).
+  Under the no-Access door with Bot Fight Mode ON, a controlled browser whose clearance has lapsed meets the edge's
+  challenge on the precache's fetches of the allowed paths that are not static resources by extension, and before S3
+  the door's "Try again" refetched with no clearance; cycle F's window read it four times over 18 minutes, on the
+  pinned browser (§10). **Bot Fight Mode stays ON**, and S3 takes neither of the wrap's other candidates (§8): a
+  clearance-refreshing read would be a metered call, and the precache's names are kept. **The service worker names
+  the challenge** (S3 Task 5): a precache fetch answered `403` with `cf-mitigated: challenge` still fails the install,
+  as its own kind, told `"challenged"` to the ONE window it elects among those showing the door (focused, else
+  visible, else any) and `"failed"` to every other (`sw.ts`, `swMessages.ts`). **The door passes it and retries on
+  its own** (S3 Task 6): that window opens the overlay it already has once per page and then runs the retry "Try
+  again" runs, while a rejected pass, a keyless build's absent overlay, a page not on the door and every challenge
+  after the page's one pass land on the failure the door drew before, a click earning the widget once more
+  (`swRegister.ts`). Nothing in the path asks for anything under `/api`: the widget talks to the edge's own challenge
+  platform and the retry refetches the release, which the asset layer serves at no invocation. The door's unit cells
+  prove the pass (`swRegister.test.ts`) and the walk the keyless landing (`offline.spec.ts`); no harness stands in
+  for Bot Fight Mode, so the success path's reading is the public day's window — a real browser holding the previous
+  release with its cookies cleared, a release deployed, a reload, the overlay, "Ready to play offline" with no click
+  and the minute's invocation count unmoved (R-S3-8, R-S3-11). **The auth cycle had already narrowed what W-3 costs a
+  player's games:** the anonymous upload does not depend on an update (R-A11) — a browser stuck on the previous
+  client posts its waiting games with no device header, and the Worker files such a post under the game's own id
+  (`anon-<game id>@anon.invalid`), so those games land the first time the browser reaches the archive through the
+  widget, with no new release installed.
 - **One client build per door state** (R-FP4; the deploy guard's check 12; trap 40; narrowed by the auth cycle's R-A3,
   R-A4 and Task 6, design §4.5). **The client reads the SERVER FACTS, not the key** (`heldForAName`): a keyed build
   holds a nameless visitor's finished game "not signed in" — no read, no widget, no post, at any game over, launch or
