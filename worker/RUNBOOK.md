@@ -2535,6 +2535,17 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
   read. Who it reaches: any player with the 0.6.3 shell cached who opens the lobby or a table link before the door —
   the Access allow-list today, everyone after stage 2. For the owner's ruling (the board): a per-IP bound on
   caller-less `/api/me` in the Worker (S3), or accepted as the transition's cost since the door applies the release.
+  - **RULED 2026-10-20 (S3's brainstorm; the ledger's D32 `accepted` with this leg):** a bound INSIDE the Worker spares
+    no invocation — a 429 the Worker answers is paid like the 401 it replaces — so the bound is the EDGE's: `/api/me`
+    was added as a fourth leg to the zone's one rate-limit rule (ruleset `0264d3bd466c4fb8941513cba5a37d1f`, phase
+    `http_ratelimit`, rule `0cbb21be3dc44896bb780926f35e4639`, version 4 → 5 at 04:22:40Z; 20 per 10 s by `ip.src` and
+    `cf.colo.id`, mitigation 10 s, action block — the figures and the three other legs unchanged, read back), which
+    turns a stale tab's ~80 a second into about one a second at the Worker and refuses the rest at zero invocations.
+    Read live at once from the workstation over WARP: 25 `GET /api/me` → 21 × 401 (the Worker's challenge), then 429
+    with `retry-after: 10` from the edge; `/robots.txt` 200 in the same minute. The new client reads `/api/me` once a
+    page load, so a player never meets the leg. The hole is CLOSED only by each 0.6.3 browser opening the front page
+    once (the door applies the release); the owner asks the two testers to. A Worker-side bound is struck from the
+    options: it was never a quota answer.
 - **The owner's sign-in, read the same afternoon (15:33–15:41Z): the rest of checklist item 1 but the table and the
   socket.** The sign-up by email code created the one production user; the Worker's API key `yokohama-worker` was
   used at the same second (its first use ever — the callback's exchange ran); three Magic Auth sessions from Chrome
