@@ -191,8 +191,11 @@ async function installRelease(): Promise<void> {
     // a plain failure whatever was in flight, so a `"challenged"` message always
     // carries the challenge's own sentence. The FIRST failure decides the kind
     // as it decides the reason, so an ordinary failure that lands first masks a
-    // challenge on that attempt, and the door's "Try again", or the next
-    // recheck, is the way out.
+    // challenge on that attempt, and the way out is the door's "Try again" or,
+    // once a worker is active, the next recheck. After a failed FIRST install
+    // the platform refuses the recheck's `update()` and the page swallows the
+    // refusal (`swRegister.ts`), so there only the click or a page load
+    // registers anew.
     const kind: InstallFailedKind = !overran && error instanceof EdgeChallenged ? "challenged" : "failed";
     // **Stop the other lanes, and WAIT for them, before deleting.**
     // `Promise.all` rejects on the FIRST failure and leaves its siblings

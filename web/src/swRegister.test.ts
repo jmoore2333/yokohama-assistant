@@ -890,19 +890,19 @@ describe("the re-check", () => {
 
 // ---- the edge's challenge at the door (security S3, W-3) -------------------
 //
-// **The door passes the edge's challenge once per page and retries on its
-// own** (design §3.1 steps 3–6; D-2, D-3, D-14, D-17). Under the no-Access
-// door Bot Fight Mode challenges a precache fetch from a browser whose
-// `cf_clearance` has lapsed, and the worker names that failure "challenged" to
-// the one door window it elects (`sw.ts`). The door opens the overlay it
-// already has (`passChallenge`) and, once the widget passes, runs its existing
-// retry: `update()` with a worker active, the returning browser's case, and a
-// new `register` where the FIRST install failed. A rejected pass, and a build
-// with no overlay, land on today's failed. ONE automatic pass per page, since
-// the page starts installs on its own at every recheck: after it, a challenged
-// install draws the button and nothing else, and only a click earns the widget
-// once more. The page is its own fence: a challenge read anywhere but the door
-// is a failure (P-26).
+// **The door passes the edge's challenge once per page and retries on its own**
+// (design §3.1 steps 3–6; D-2, D-3, D-14, D-17). Under the no-Access door Bot
+// Fight Mode challenges a precache fetch from a browser whose `cf_clearance`
+// has lapsed, and the worker names that failure "challenged" to the one window
+// it elects among those loaded at the door's address (`sw.ts`). The door opens
+// the overlay it already has (`passChallenge`) and, once the widget passes,
+// runs its existing retry: `update()` with a worker active, the returning
+// browser's case, and a new `register` where the FIRST install failed. A
+// rejected pass, and a build with no overlay, land on today's failed. ONE
+// automatic pass per page, since the page starts installs on its own at every
+// recheck: after it, a challenged install draws the button and nothing else,
+// and only a click earns the widget once more. The page is its own fence: a
+// challenge read anywhere but the door is a failure (P-26).
 
 /** The worker's sentence for a challenged entry: `sw.ts`'s `CHALLENGED`, after the path. */
 const CHALLENGED_REASON = "/art/manifest.json: the edge asked for a check before it would answer";
@@ -1028,6 +1028,51 @@ describe("the edge's challenge at the door", () => {
     expect(result.current.reason, "the worker's sentence, which names the path and the edge").toBe(CHALLENGED_REASON);
     expect(registration.updates, "no retry").toBe(0);
     expect(host.register, "no register either").toHaveBeenCalledTimes(1);
+  });
+
+  // **A CANCELLED pass spends the page's pass too** (D-14; design §3.1 step 4): the counter is set when the pass
+  // STARTS, so a person who cancelled the overlay is not shown it again at every recheck — the loop the anti-goal
+  // names. Only a click gives the pass back.
+  it("a cancelled pass spends the page's pass: a recheck's challenged install draws the button and opens no widget", async () => {
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    await act(async () => {
+      passes[0]!.reject(new Error("the check was cancelled"));
+    });
+    expect(result.current.readiness, "the premise: the cancel landed on failed").toBe("failed");
+
+    registration.nextInstall = new FakeWorker("installing");
+    act(() => turnPage("visible"));
+    expect(registration.updates, "the premise: the recheck asked, and installed again").toBe(1);
+    meetsTheEdge(registration, message);
+    expect(handler, "the cancelled overlay is not opened again").toHaveBeenCalledTimes(1);
+    expect(result.current.readiness).toBe("failed");
+    expect(result.current.reason).toBe(CHALLENGED_REASON);
+  });
+
+  // **And a cancel ends the pass**: the click after it earns the widget once more, rather than having its challenge
+  // absorbed into a pass that is over, with the door held on "installing" and no button.
+  it("after a cancelled pass, a click earns the widget once more, and a second cancel lands on failed", async () => {
+    const { registration, message, handler, passes, result } = await returningDoor();
+    meetsTheEdge(registration, message);
+    await act(async () => {
+      passes[0]!.reject(new Error("the check was cancelled"));
+    });
+
+    registration.nextInstall = new FakeWorker("installing");
+    await act(async () => {
+      result.current.retry();
+    });
+    expect(registration.updates, "the click's retry").toBe(1);
+    meetsTheEdge(registration, message);
+    expect(handler, "the click earned the widget once more").toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      passes[1]!.reject(new Error("the check was cancelled"));
+    });
+    expect(result.current.readiness, "failed, with its button, and not held on installing").toBe("failed");
+    expect(result.current.reason).toBe(CHALLENGED_REASON);
+    expect(registration.updates, "and no retry after the second cancel").toBe(1);
   });
 
   it("with no overlay mounted the door lands on failed at once", async () => {

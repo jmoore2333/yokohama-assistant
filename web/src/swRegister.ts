@@ -44,15 +44,16 @@
 // **Security S3 adds the door's pass of the edge's challenge** (W-3; design
 // §3.1 steps 3–6; D-2, D-3, D-14). Under the no-Access door Bot Fight Mode
 // challenges a precache fetch from a browser whose `cf_clearance` has lapsed,
-// and the worker tells the one door window it elects `kind: "challenged"`
-// (`sw.ts`, `swMessages.ts`). That window opens the overlay it already has
-// (`passChallenge`) and, once the widget passes, runs the same retry "Try
-// again" runs; a rejected pass, or a build with no overlay, lands on the
-// failure the door drew before S3. The pass is ONCE per page, because the page starts
-// installs on its own at every recheck below: after it a challenged install
-// draws the button and nothing else, and only a click earns the widget once
-// more. Nothing here asks anything under `/api` (step 7): the widget talks to
-// the edge's own challenge platform, and the retry refetches the release.
+// and the worker tells `kind: "challenged"` to the one window it elects among
+// those loaded at the door's address (`sw.ts`, `swMessages.ts`). On the door,
+// that window opens the overlay it already has (`passChallenge`) and, once the
+// widget passes, runs the same retry "Try again" runs; a rejected pass, or a
+// build with no overlay, lands on the failure the door drew before S3. The
+// pass is ONCE per page, because the page starts installs on its own at every
+// recheck below: after it a challenged install draws the button and nothing
+// else, and only a click earns the widget once more. Nothing here asks
+// anything under `/api` (step 7): the widget talks to the edge's own challenge
+// platform, and the retry refetches the release.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { parseRoute } from "./route";
