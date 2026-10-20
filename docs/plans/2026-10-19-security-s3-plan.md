@@ -337,7 +337,7 @@ Expected: FAIL to compile (`Games::reopen` missing).
 
 - [ ] **Step 3: Implement `Games::reopen` in `tables.rs`**
 
-`require_table`; `with_table_lock`; read; `is_creator` FIRST else `Forbidden(ONLY_CREATOR_REOPENS)` at every status (the status-leak ruling #8 — a stranger learns no status from a refusal; the stranger sweep, the admission grid's Write column and the seat holder's open-table loop are the catchers; P-19); then the status match (`Open` proceeds; `Dealing` → `Conflict(DEAL_HAS_BEGUN)`; `Playing` → `Conflict(GAME_HAS_STARTED)`); the seat by `doc.seats.get(n)` else `BadRequest`; `Human { user, .. }` equal to the creator → `OWN_SEAT`; `Bot` or `Open` → `NO_JOINER`; write `SeatDoc::Open`; `write_table(&doc, Some(version))`, a `Conflict` on a lost race in `join`'s sentence shape ("changed while this reopen was in flight"); `signal.bump(id)`; `Ok(doc.view(user, self.archive_on()))`.
+`require_table`; `with_table_lock`; read; `is_creator` FIRST else `Forbidden(ONLY_CREATOR_REOPENS)` at every status (the status-leak ruling #8 — a stranger learns no status from a refusal; the catchers are `a_reopen_is_refused_by_everyone_but_the_creator`'s dealing arm on a real filled table, the stranger sweep and the admission grid — the seat holder's open-table loop skips /reopen; P-19); then the status match (`Open` proceeds; `Dealing` → `Conflict(DEAL_HAS_BEGUN)`; `Playing` → `Conflict(GAME_HAS_STARTED)`); the seat by `doc.seats.get(n)` else `BadRequest`; `Human { user, .. }` equal to the creator → `OWN_SEAT`; `Bot` or `Open` → `NO_JOINER`; write `SeatDoc::Open`; `write_table(&doc, Some(version))`, a `Conflict` on a lost race in `join`'s sentence shape ("changed while this reopen was in flight"); `signal.bump(id)`; `Ok(doc.view(user, self.archive_on()))`.
 
 - [ ] **Step 4: Run the layer cells to verify they pass**
 
@@ -376,7 +376,7 @@ Expected: FAIL (no control).
 
 - [ ] **Step 11: Implement `api.reopen` and the control**
 
-`web/src/api.ts`: `reopen: (game: string, seat: number) => call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat })`. `OpenTable.tsx`: in the seat rows at 350, when `table.mine && s.kind === "human" && !s.you`, a button "Reopen" whose handler awaits `api.reopen(table.id, i)` (0-based; P-18), sets the table from the answer, and on an `ApiError` puts `e.message` in the general error strip (`setError`, not the Abandon strip). The Reopen control stays off the dealing screen; `Dealing.tsx` GAINS the creator's Abandon control under design §3.2 rule 3 — it had none at HEAD (the ~255 comment is about the lobby row) — `mayAbandon`-gated, the open table's wiring and sentence, with `Dealing.test.tsx` cells (P-20). `docs/web-lane.md` §16's metered ledger gains the reopen row (`lane_document`'s `the_ledger_names_every_route`).
+`web/src/api.ts`: `reopen: (game: string, seat: number) => call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat })`. `OpenTable.tsx`: in the seat rows at 350, when `table.mine && s.kind === "human" && !s.you`, a button "Reopen" whose handler awaits `api.reopen(table.id, i)` (0-based; P-18), sets the table from the answer, and on an `ApiError` puts `e.message` in the general error strip (`setError`, not the Abandon strip) and re-reads the table ONCE on a 409 exactly as `join`'s 409 path does — a re-read that finds the table dealing hands over to the dealing screen, where the Abandon control now is (P-21, after the review). The Reopen control stays off the dealing screen; `Dealing.tsx` GAINS the creator's Abandon control under design §3.2 rule 3 — it had none at HEAD (the ~255 comment is about the lobby row) — `mayAbandon`-gated, the open table's wiring and sentence, with `Dealing.test.tsx` cells (P-20). `docs/web-lane.md` §16's metered ledger gains the reopen row (`lane_document`'s `the_ledger_names_every_route`).
 
 - [ ] **Step 12: Run the client suites**
 
@@ -420,14 +420,14 @@ Design §3.2 rule 2, D-5 and D-16. Both hosts read `Dealing` beside `Open` for t
 #[test] fn a_dealing_table_is_waited_on_the_open_ttl_and_expired_on_the_table_ttl_like_an_open_one() {}
 #[test] fn a_dealing_table_with_a_bot_seat_is_waited_on_the_open_ttl() {} // a 2-seat table, creator + bot, un-kept
 #[test] fn the_sweep_settles_a_repairable_dealing_table_before_it_reads_its_status_and_keeps_it() {
-    // the fixture `tables.rs`'s settle cells build (a record present, the flip never landed), past the open TTL: the sweep's pass repairs it to Playing and ends nothing; the log line is the kept one
+    // the fixture `tables.rs`'s settle cells build (a record present, the flip never landed), past the open TTL: the sweep's pass repairs it to Playing and ends nothing; NO sweep line names it (a table the pass keeps gets no line; P-22)
 }
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `cargo test -p yokohama-web sweep::`
-Expected: FAIL (the first two: `Expired` where `Waited` is expected; the third: the table ended).
+Expected: FAIL (the first two read `None` at 7–8 days where `Waited` is expected — the old dealing arm is the table TTL; the third: the pass ENDS the repairable table where the real code keeps it; P-22).
 
 - [ ] **Step 3: Implement**
 
@@ -696,6 +696,8 @@ The "before" review, run from the ledger's scan (one row per pair of tasks shari
 - **P-18 (Task 3, the implementer's pre-code probe):** the wire seat is 0-based as `Keep`/`Join` send it; the 400/409 cells re-cut.
 - **P-19 (Task 3):** the creator check runs first, then status, then seat — the design's order and the status-leak ruling #8; three existing sweeps are the catchers.
 - **P-20 (Task 3):** the dealing screen had no Abandon control at HEAD, so design rule 3's "added there" applies and Task 3 builds it; §16's metered ledger gains the reopen row.
+- **P-21 (Task 3, after its review):** a reopen's 409 re-reads the table once as `join`'s does (the review's Minor 3); P-19's catcher list trimmed (the seat holder's loop skips /reopen).
+- **P-22 (Task 4, after its DONE_WITH_CONCERNS):** Step 2's predicted reds and Step 1's "the log line is the kept one" corrected — the old code reads `None`, and a kept table gets no line.
 - **R-8 supersedes the next bullet: every export builds in its OWN `target/`** (cargo keys a workspace crate by its path relative to the workspace root, so a shared target runs the other tree's artifacts as fresh — found by Task 2's implementer).
 - **Exports share the checkout's `target/`** (WITHDRAWN by R-8, kept for the record) (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
