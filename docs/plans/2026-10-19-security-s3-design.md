@@ -89,6 +89,17 @@ Quoted as given; each ruling names the rows or the mechanism it decides.
   `Dealing`; the creator's remedy at `Dealing` is Abandon and a new table, exactly as for a game that stalled a moment
   after it started, and the waiting-table TTL ends the table otherwise (rule 2). No seed is re-drawn and no leak is
   recorded: a seat whose cards were served is never reopened.
+- **R-S3-14 — the `Host` check has an enable switch, on in every committed deploy file** (2026-10-20, after the plan's
+  hand-over; a side agent's note that a NAS deploy reusing today's create body would answer every tunnelled request
+  421 while the loopback smoke still passed). "I think if we are going this far we should have a second variable for
+  YOKOHAMA_WEB_HOSTNAMES_ENABLED and have a boolean value there and then if it's enabled which we will by default in
+  our file to be set in the public repo/our demo files we have it on but some people may not care about those
+  boundries internally." → §3.4: a second variable, `YOKOHAMA_WEB_HOSTNAMES_ENABLED`, `on` or `off` in the layer's
+  own convention (`Multiplayer::from_env_value`: absent or `on` is on, `off` is off, anything else refuses to start by
+  name); every committed deploy file and example sets it `on` beside the list; a self-hoster who does not want the
+  boundary sets `off` and the binary answers any `Host`, saying so once at start. And the catcher the note asked for:
+  the smoke takes the hostname and probes with it, and the NAS recipe's reading through the tunnel is a REQUIRED step
+  before a deploy is called done.
 
 ## 2. Intent, goals and fences
 
@@ -352,10 +363,18 @@ the clearing) read red at review. On the Worker, the same cells through the Tabl
 is the public hostname (`deploy/cloudflared-config.yml` sets no `httpHostHeader`), so `yokohama-nas.moore.nyc` arrives
 at the binary. A self-host on a workstation under the README's default publish answers a rebound name the same.
 
-**The design.** `YOKOHAMA_WEB_HOSTNAMES`, a comma-separated list of host names the binary answers:
-- absent, the default set is the loopback names (`localhost`, `127.0.0.1`, `::1`) plus the bind address when it is a
-  specific one (not `0.0.0.0` or `::`) — so a workstation's `127.0.0.1:8080` and the smoke's `localhost:18080` pass
-  with nothing set, and a container bound to `0.0.0.0` answers loopback only until the operator lists its hostname;
+**The design.** Two variables (R-S3-14): `YOKOHAMA_WEB_HOSTNAMES_ENABLED`, the switch, and `YOKOHAMA_WEB_HOSTNAMES`, a
+comma-separated list of host names the binary answers:
+- the switch reads as the layer's other switches do (`Multiplayer::from_env_value`, `lib.rs:374`): absent or `on`
+  turns the check ON, `off` turns it OFF — the binary answers any `Host`, as it does today, and its start line says
+  "answering any host name — YOKOHAMA_WEB_HOSTNAMES_ENABLED is off" — and any other value refuses to start naming the
+  value. Every committed deploy file, example and recipe sets `on` explicitly beside the list, so the knob is visible
+  to a self-hoster who may want it off; the binary's own default is on, the public repository's safe default;
+- with the check on and the list absent, the default set is the loopback names (`localhost`, `127.0.0.1`, `::1`) plus
+  the bind address when it is a specific one (not `0.0.0.0` or `::`) — so a workstation's `127.0.0.1:8080` and the
+  smoke's `127.0.0.1:18080` pass with nothing set, and a container bound to `0.0.0.0` answers loopback only until the
+  operator lists its hostname (the trap the side agent named: a NAS create body without the list answers every
+  tunnelled request 421 — which is why the recipe's tunnel reading is required, below);
 - the comparison is on the host part of the request's authority, case-insensitive, the port ignored (a rebinding
   attack rebinds a NAME; a port is not the question), IPv6 literals bracketed as the header carries them;
 - an unlisted host is refused **421 Misdirected Request** with one sentence that echoes the offered host through
@@ -364,8 +383,10 @@ at the binary. A self-host on a workstation under the README's default publish a
 - the server prints the list it answers at start, beside its header-set line, so an operator reads it in the log; a
   malformed entry (empty, a space inside, a scheme) stops the server at start naming the entry, as a malformed header
   file does (`deploy/README.md` §4);
-- the deploy: `deploy/README.md` documents the variable in its environment section with the NAS's value
-  (`yokohama-nas.moore.nyc`), §2's LAN note tells a self-hoster to list the name or address their browsers use, the
+- the deploy: `deploy/README.md` documents BOTH variables in its environment table — the switch `on`, the list with
+  the NAS's value (`yokohama-nas.moore.nyc`) — and its §4 `docker run` example carries both; the root `README.md`'s
+  self-host lines carry both; §2's LAN note tells a self-hoster to list the name or address their browsers use, or to
+  set the switch `off` when the boundary is not wanted; the
   Dockerfile that builds the runtime image (`deploy/Dockerfile.runtime`) carries the note (R-S3-10: "note in the
   docs/docker build file what's required") and no default value, and the self-hoster's `deploy/update.sh` path
   documents it beside the other variables it passes. **On the NAS the container is NOT a Portainer stack** — the two
@@ -374,15 +395,23 @@ at the binary. A self-host on a workstation under the README's default publish a
   deployment's reading gains two lines, both taken by `docker exec` INSIDE `yokohama-web`, whose image carries `wget`
   (`Dockerfile.runtime:91`), since the terminal container is on `cf-terminal` and cannot reach the binary (B10's
   negative probe reads exactly that): `wget` against `127.0.0.1:8080` with `Host: yokohama-nas.moore.nyc` reads 200 and
-  with a foreign `Host` reads 421; and over the tunnel as the owner `/api/health` reads 200 as before;
+  with a foreign `Host` reads 421; and over the tunnel as the owner `/api/health` reads 200 as before — **the tunnel
+  reading is a REQUIRED step of the create recipe from 0.7.2 on, before a deploy is called done** (R-S3-14: a body
+  that forgets the list answers 421 to every tunnelled request while a loopback smoke passes); and
+  `deploy/smoke-image.sh` takes an optional third argument, the hostname, runs the container with the switch `on` and
+  the list set to it, and probes `/api/health` twice more — with `Host: <hostname>` expecting 200 and with
+  `Host: smoke-foreign.example` expecting 421 — so an image whose check is broken fails the smoke; without the argument
+  the smoke runs as today and says the host probe was not asked for;
 - the Worker is untouched; the e2e harness and the vite dev server reach the binary at `localhost`, and the smoke at
   `127.0.0.1` (`deploy/smoke-image.sh:39`); both are in the default set.
 
 **What proves it.** Layer cells: a listed host answers every route as before (the whole route table under one listed
 host, byte-identical to today's answers — the corpus's wire fixtures unmoved); an unlisted host is 421 on a static
 path, an API path and a `HEAD`; the port is ignored both ways; the default set with and without a specific bind
-address; a malformed list refuses to start with the entry named; the start-up line. A mutant on the comparison (the
-host part vs the whole authority) and on the default set read red.
+address; a malformed list refuses to start with the entry named; the switch absent is on, `off` answers a foreign
+`Host` 200 and says so at start, a malformed switch value refuses to start naming it; the start-up line in both states;
+the smoke with and without its hostname argument. A mutant on the comparison (the host part vs the whole authority),
+on the default set, and on the switch's absent arm (absent read as off) read red.
 
 ### 3.5 The test Worker — `yokohama-web-private` at `yokohama-test.moore.nyc`
 
@@ -464,9 +493,12 @@ The Access application's session and address list stay as they are (R-S3-1); the
 - **D-17 — the success path's proof is the unit cells and the public day's window.** No keyed client can start under a
   door S3 can reach, and no harness stands in for Bot Fight Mode; the close states the gap rather than adding a keyed
   e2e build to a cycle the owner wants wrapped (the builder check's question 5).
-- **D-8 — D4's default set is loopback plus a specific bind address; 421; host part only.** A container bound to
-  `0.0.0.0` answers loopback until told otherwise — the safe default, since the tunnel's hostname arriving at an unlisted
-  binary reads 421 at the update reading rather than answering a rebound name silently.
+- **D-8 — D4's default set is loopback plus a specific bind address; 421; host part only; the switch on by default
+  and explicit in every deploy file (R-S3-14).** A container bound to `0.0.0.0` answers loopback until told otherwise —
+  the safe default, since the tunnel's hostname arriving at an unlisted binary reads 421 at the required tunnel reading
+  rather than answering a rebound name silently; the switch is for the self-hoster who does not want the boundary, and
+  its explicit `on` in the committed files is what makes the knob visible to them. The smoke's hostname argument is the
+  image's catcher; the recipe's tunnel reading is the deployed container's.
 - **D-9 — the private Worker goes Access-first, over the API, with a typed skip** (R-S3-12). A route that goes live
   before the hostname is covered is a minute of an open Worker — the anti-goal — so the order is fixed and the skip is
   the whole of steps 2–6, never a partial deploy.
@@ -554,3 +586,12 @@ the restart sentence; no `keeps` read; the creator's own seats refused by D-15),
 `Open` only; the dealing screen keeps Abandon), the proof list, and D-4. Question 7 closes with it: the
 `Dealing` → `Open` transition cannot arise. The options not taken — a fresh seed at `Dealing`, a served-deal record, an
 accepted leak — are recorded here and nowhere else.
+
+### 7.3 — 2026-10-20, after the plan's hand-over: R-S3-14, the `Host` check's switch and its deploy catchers
+
+A side agent's note to the owner: a NAS create body reused as it stands today would carry no list, so every tunnelled
+request would read 421 while the loopback smoke passed. The owner's ruling (R-S3-14, §1) adds `YOKOHAMA_WEB_HOSTNAMES_ENABLED`,
+on by default and set `on` explicitly in every committed deploy file, with `off` for a self-hoster who does not want the
+boundary. Taken into §3.4 (the switch's semantics and start line; the smoke's hostname argument; the recipe's tunnel
+reading made a required step), D-8, and the plan's Task 1 (the cells for both switch states and the malformed value,
+the smoke's probe, both variables at every deploy site, the root README) and its "After the tasks" owner item.

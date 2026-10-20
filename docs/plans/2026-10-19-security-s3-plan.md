@@ -28,7 +28,7 @@
 
 Five inputs the design implies that a person will meet, each pinned by a cell in the task that owns it:
 
-1. **A `Host` header a real proxy or browser sends in a form the list did not spell** — uppercase, a trailing dot, a port, an IPv6 literal in brackets — must pass when the name is listed (Task 1: `a_listed_name_passes_in_every_spelling_a_client_sends`).
+1. **A `Host` header a real proxy or browser sends in a form the list did not spell** — uppercase, a trailing dot, a port, an IPv6 literal in brackets — must pass when the name is listed (Task 1: `a_listed_name_passes_in_every_spelling_a_client_sends`); and **a NAS deploy whose create body forgets the list** answers every tunnelled request 421 while the loopback smoke passes — the smoke's hostname probe and the recipe's required tunnel reading are the catchers (Task 1, R-S3-14).
 2. **A friend's right password during a stranger's wrong-password burst at the same table** must pass; the counter is theirs, not the table's (Task 2: `two_callers_at_one_table_count_apart`).
 3. **A creator's reopen racing the join that fills the last seat**: whichever lands first decides, and the loser reads a sentence, never a torn table (Task 3: `a_reopen_and_the_filling_join_land_in_either_order_and_the_table_is_whole`).
 4. **A creator's own un-kept table against a bot** — full at create, so `Dealing` at once — now expires on the waiting-table TTL (7 days) instead of the idle one (90): a consequence of "a table that has not started", stated in the docs and pinned (Task 4: `a_dealing_table_with_a_bot_seat_is_waited_on_the_open_ttl`).
@@ -48,17 +48,18 @@ And one election case: **the door tab in the background while a game tab is focu
 
 ### Task 1: D4 — the `Host` allow-list on the NAS binary · impl: sonnet · review: opus
 
-Design §3.4 and D-8. The binary answers only the host names it is told to; the default set is loopback plus a specific bind address; an unlisted name is 421 with one sentence; the list is printed at start and a malformed one refuses to start.
+Design §3.4, D-8 and R-S3-14. The binary answers only the host names it is told to; the default set is loopback plus a specific bind address; an unlisted name is 421 with one sentence; the list is printed at start and a malformed one refuses to start. A second variable, `YOKOHAMA_WEB_HOSTNAMES_ENABLED`, switches the check: absent or `on` is on, `off` answers any `Host` and says so at start, anything else refuses to start by name. Every committed deploy file sets `on` beside the list. The smoke takes the hostname and probes with it; the NAS recipe's tunnel reading becomes a required step.
 
 **Files:**
 - Create: `crates/yokohama-web/src/hostnames.rs`
 - Modify: `crates/yokohama-web/src/lib.rs` (the `AppState` struct near line 464 and its constructors near 696; `app()` at 1331–1350; a new middleware beside `response_headers` at 1296)
 - Modify: `crates/yokohama-web/src/main.rs:100–130` (read the variable; refuse at start; print the list)
 - Test: `crates/yokohama-web/src/hostnames.rs` (unit cells), `crates/yokohama-web/src/lib.rs` (route cells, the test module's helpers `request_raw` at 3423 extended with a `Host` header), `crates/yokohama-web/tests/start_refusal.rs` (two process cells)
-- Docs: `deploy/README.md` §4 (the paragraph at 257–259) and §2 (the LAN note), `deploy/Dockerfile.runtime` (a comment beside the `ENV` block at line 75; no value), `deploy/update.sh` (the variable documented beside the others it passes), `deploy/RUNBOOK.md` §3 (the create body's `Env` array at 244–254 gains `YOKOHAMA_WEB_HOSTNAMES=yokohama-nas.moore.nyc`; the deployment reading gains the two `docker exec` lines of design §3.4)
+- Modify: `deploy/smoke-image.sh` (an optional third argument, the hostname; the `get` helper at 71–77 already takes curl arguments, so `-H "Host: …"` rides it; the `docker run` at 99 gains `-e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on -e "YOKOHAMA_WEB_HOSTNAMES=$hostname"` when the argument is given)
+- Docs: `deploy/README.md` §4 (the paragraph at 257–259, the `docker run` example at 209 and the environment table at 234–235 gain BOTH variables) and §2 (the LAN note: list the browsers' name, or set the switch `off`), the root `README.md` (its self-host lines at 229 and 394 carry both), `deploy/Dockerfile.runtime` (a comment beside the `ENV` block at line 75; no value), `deploy/update.sh` (both variables documented beside the others it passes), `deploy/RUNBOOK.md` §3 (the create body's `Env` array at 244–254 gains `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and `YOKOHAMA_WEB_HOSTNAMES=yokohama-nas.moore.nyc`; the recipe's reading gains the two `docker exec` lines of design §3.4 and the tunnel's `/api/health` as a REQUIRED step before a deploy is called done, marked "from 0.7.2")
 
 **Interfaces:**
-- Produces: `pub struct Hostnames` with `pub fn from_env_value(raw: Option<&str>, bind: &str) -> Result<Hostnames, String>`, `pub fn admits(&self, authority: &str) -> bool`, `pub fn listed(&self) -> Vec<String>` (the printed order: the defaults, then the listed), `pub const HOSTNAMES_VAR: &str = "YOKOHAMA_WEB_HOSTNAMES"`, `pub const NOT_FOR_THIS_HOST: &str` (the sentence's fixed part); `AppState.hostnames: Hostnames`; `AppState::with_hostnames(self, h: Hostnames) -> Self` (the builder-step shape of `with_clock`); `ApiError::misdirected(message) -> ApiError` (status 421).
+- Produces: `pub struct Hostnames` with `pub fn from_env_values(enabled: Option<&str>, raw: Option<&str>, bind: &str) -> Result<Hostnames, String>`, `pub fn is_on(&self) -> bool`, `pub fn admits(&self, authority: &str) -> bool` (always true when off), `pub fn listed(&self) -> Vec<String>` (the printed order: the defaults, then the listed), `pub fn start_line(&self) -> String` (on: `yokohama-web answers host names: …`; off: `yokohama-web answers any host name — YOKOHAMA_WEB_HOSTNAMES_ENABLED is off`), `pub const HOSTNAMES_VAR: &str = "YOKOHAMA_WEB_HOSTNAMES"`, `pub const HOSTNAMES_ENABLED_VAR: &str = "YOKOHAMA_WEB_HOSTNAMES_ENABLED"`, `pub const NOT_FOR_THIS_HOST: &str` (the sentence's fixed part); `AppState.hostnames: Hostnames`; `AppState::with_hostnames(self, h: Hostnames) -> Self` (the builder-step shape of `with_clock`); `ApiError::misdirected(message) -> ApiError` (status 421).
 - Consumes: `crate::echo::echo`, `api::error_value`, `AppState`'s existing builder steps.
 
 - [ ] **Step 1: Write the failing unit cells in `hostnames.rs`**
@@ -77,6 +78,12 @@ Design §3.4 and D-8. The binary answers only the host names it is told to; the 
 #[test] fn a_malformed_list_is_refused_naming_the_entry() {
     // "a,,b" → the empty entry; "with space" → the entry; "http://x" → the entry (holds "/"); "x:8080" → the entry (a port is not a name; a colon is admitted only for an IPv6 literal); "::1" → Ok
 }
+#[test] fn the_switch_absent_or_on_is_on_and_off_admits_any_host() {
+    // (None, None, "0.0.0.0") → is_on true, admits("attacker.example") false; (Some("on"), …) the same; (Some("off"), …) → is_on false, admits("attacker.example") true, listed() empty, start_line names the variable
+}
+#[test] fn a_malformed_switch_value_is_refused_naming_it() {
+    // Some("yes"), Some("ON "), Some("") → Err naming HOSTNAMES_ENABLED_VAR and the value (the Multiplayer::from_env_value shape, lib.rs:374)
+}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
@@ -86,12 +93,12 @@ Expected: FAIL to compile (no module).
 
 - [ ] **Step 3: Implement `hostnames.rs`**
 
-`Hostnames` holds the admitted names lower-cased, no trailing dot, IPv6 literals without brackets. `admits` lowers the authority, strips a trailing dot and one `:port` (an authority starting with `[` ends its host at `]`), and looks the host up. `from_env_value`: `None` is the default set; `Some(raw)` is the default set plus each comma-separated entry trimmed and checked — refused as `Err(format!("{HOSTNAMES_VAR}: \"{entry}\" is not a host name — …"))` through `echo` when empty, holding whitespace, `/`, `@`, `#`, or a `:` that does not parse as `std::net::Ipv6Addr`. Register `pub mod hostnames;` in `lib.rs`.
+`Hostnames` is `Off` or `On { names }`, the names lower-cased, no trailing dot, IPv6 literals without brackets. `admits` is true when off; when on it lowers the authority, strips a trailing dot and one `:port` (an authority starting with `[` ends its host at `]`), and looks the host up. `from_env_values`: the switch first — `None | Some("on")` on, `Some("off")` off, anything else `Err` naming `HOSTNAMES_ENABLED_VAR` and the value through `echo` (the shape of `Multiplayer::from_env_value`, `lib.rs:374`); off ignores the list; on with `None` is the default set; on with `Some(raw)` is the default set plus each comma-separated entry trimmed and checked — refused as `Err(format!("{HOSTNAMES_VAR}: \"{entry}\" is not a host name — …"))` through `echo` when empty, holding whitespace, `/`, `@`, `#`, or a `:` that does not parse as `std::net::Ipv6Addr`. Register `pub mod hostnames;` in `lib.rs`.
 
 - [ ] **Step 4: Run the unit cells to verify they pass**
 
 Run: `cargo test -p yokohama-web hostnames::`
-Expected: PASS, 4 cells.
+Expected: PASS, 6 cells.
 
 - [ ] **Step 5: Write the failing route cells in `lib.rs`'s test module**
 
@@ -110,6 +117,9 @@ Add a helper `request_with_host(state, who, method, uri, host: Option<&str>)` be
 #[tokio::test] async fn a_request_with_no_host_header_is_421() {}
 #[tokio::test] async fn the_bind_address_is_admitted_only_when_specific() {
     // bind "10.0.0.5": Host 10.0.0.5 → 200; bind "0.0.0.0": Host 10.0.0.5 → 421
+}
+#[tokio::test] async fn with_the_switch_off_a_foreign_host_answers_200_and_nothing_is_refused() {
+    // with_hostnames(Hostnames::from_env_values(Some("off"), None, "0.0.0.0")): GET /api/health with Host attacker.example → 200; GET / → 200; no Host header → 200
 }
 ```
 
@@ -134,7 +144,10 @@ Expected: PASS; the count rises by the new cells and nothing else moves (the wir
     // YOKOHAMA_WEB_HOSTNAMES="good.example,bad name" → exit 1, stderr holds "bad name"; no listening line
 }
 #[test] fn the_binary_answers_its_listed_hostname_and_refuses_another_with_421() {
-    // YOKOHAMA_WEB_HOSTNAMES="yokohama-nas.moore.nyc", a free port: GET /api/health with Host yokohama-nas.moore.nyc → 200; with Host attacker.example → 421; stdout's start line names "yokohama-nas.moore.nyc"
+    // YOKOHAMA_WEB_HOSTNAMES_ENABLED=on, YOKOHAMA_WEB_HOSTNAMES="yokohama-nas.moore.nyc", a free port: GET /api/health with Host yokohama-nas.moore.nyc → 200; with Host attacker.example → 421; stdout's start line names "yokohama-nas.moore.nyc"
+}
+#[test] fn a_malformed_switch_value_exits_one_and_off_answers_any_host_saying_so() {
+    // YOKOHAMA_WEB_HOSTNAMES_ENABLED=yes → exit 1, stderr names the variable and "yes"; YOKOHAMA_WEB_HOSTNAMES_ENABLED=off, a free port: GET /api/health with Host attacker.example → 200; stdout holds "answers any host name"
 }
 ```
 
@@ -147,7 +160,7 @@ Expected: FAIL (the process starts on the malformed list; both hosts answer 200)
 
 - [ ] **Step 11: Implement `main.rs`'s read and the start line**
 
-Read `YOKOHAMA_WEB_HOSTNAMES` beside `YOKOHAMA_WEB_HOST` (line 106); `Hostnames::from_env_value(raw.as_deref(), &host)`; on `Err(e)` print `e` to stderr and `exit(1)` before the bind (the identity's shape at 108–114); on `Ok` print `yokohama-web answers host names: <listed, comma-separated>` before the listening line and pass it to the state with `with_hostnames`.
+Read `YOKOHAMA_WEB_HOSTNAMES_ENABLED` and `YOKOHAMA_WEB_HOSTNAMES` beside `YOKOHAMA_WEB_HOST` (line 106); `Hostnames::from_env_values(enabled.as_deref(), raw.as_deref(), &host)`; on `Err(e)` print `e` to stderr and `exit(1)` before the bind (the identity's shape at 108–114); on `Ok` print `hostnames.start_line()` before the listening line and pass it to the state with `with_hostnames`.
 
 - [ ] **Step 12: Run the process cells and the whole crate**
 
@@ -156,16 +169,18 @@ Expected: PASS; clippy clean.
 
 - [ ] **Step 13: The docs**
 
-`deploy/README.md` §4: after the paragraph at 257, one paragraph naming `YOKOHAMA_WEB_HOSTNAMES`, its default (loopback, plus the bind address when specific), the NAS's value, and that an unlisted `Host` is answered 421. §2: one sentence telling a LAN self-hoster to list the name or address their browsers use, and that a rebinding page is what the list refuses. `deploy/Dockerfile.runtime`: a comment beside the `ENV` block: the variable is the operator's, set at run (no default here), with the README's section named. `deploy/update.sh`: the variable documented beside the others it passes through. `deploy/RUNBOOK.md` §3: the create body's `Env` array gains the variable; the deployment reading gains the two `docker exec … wget` lines (design §3.4) — a record for the NEXT deployment, marked "from 0.7.2".
+`deploy/smoke-image.sh` FIRST, since the docs cite it: an optional third argument `hostname`; when given, the `docker run` at 99 adds `-e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on -e "YOKOHAMA_WEB_HOSTNAMES=$hostname"` and two probes follow the health read — `/api/health` with `-H "Host: $hostname"` expecting 200 and with `-H "Host: smoke-foreign.example"` expecting 421 — each a named pass or fail line; without it the script prints `smoke: the host probe was not asked for (pass a hostname as the third argument)` and runs as today. Run it once against a locally built image both ways and paste both tails in the report.
+
+`deploy/README.md` §4: the `docker run` example at 209 gains `-e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on -e YOKOHAMA_WEB_HOSTNAMES=<your hostname>`; the environment table at 234–235 gains two rows (the switch: `on`, `off`, the default, the start line; the list: its grammar, its default set, 421); after the paragraph at 257, one paragraph saying why both exist and the trap (a container reached through a tunnel with no list answers every request 421 while a loopback smoke passes). §2: one sentence telling a LAN self-hoster to list the name or address their browsers use, or to set the switch `off` when the boundary is not wanted. §5: the smoke's third argument. The root `README.md`: the self-host lines at 229 and 394 carry both variables. `deploy/Dockerfile.runtime`: a comment beside the `ENV` block: both variables are the operator's, set at run (no default here), with the README's section named. `deploy/update.sh`: both documented beside the others it passes through. `deploy/RUNBOOK.md` §3: the create body's `Env` array gains both; the recipe gains the two `docker exec … wget` lines (design §3.4) and the tunnel's `/api/health` as a REQUIRED step before a deploy is called done — a record for the NEXT deployment, marked "from 0.7.2".
 
 - [ ] **Step 14: Commit**
 
 ```bash
-git add crates/yokohama-web/src/hostnames.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/src/main.rs crates/yokohama-web/tests/start_refusal.rs deploy/README.md deploy/Dockerfile.runtime deploy/update.sh deploy/RUNBOOK.md
-git commit -m "web: the Host allow-list (security S3, D4) — YOKOHAMA_WEB_HOSTNAMES, loopback plus a specific bind address by default, 421 before routing on an unlisted name with the header set kept, the list printed at start and a malformed one refusing to start; the deploy docs and the NAS create body"
+git add crates/yokohama-web/src/hostnames.rs crates/yokohama-web/src/lib.rs crates/yokohama-web/src/main.rs crates/yokohama-web/tests/start_refusal.rs deploy/smoke-image.sh deploy/README.md README.md deploy/Dockerfile.runtime deploy/update.sh deploy/RUNBOOK.md
+git commit -m "web: the Host allow-list with its switch (security S3, D4; R-S3-14) — YOKOHAMA_WEB_HOSTNAMES_ENABLED on by default and explicit in every deploy file, YOKOHAMA_WEB_HOSTNAMES loopback plus a specific bind address by default, 421 before routing on an unlisted name with the header set kept, the state printed at start and a malformed value refusing to start; the smoke's hostname probe; the deploy docs and the NAS create body with the tunnel reading required"
 ```
 
-**Review focus for the reviewer:** the middleware's order (the 421 carries the header set); the mutant "compare the whole authority, port included" reads red at `a_listed_host_answers_every_route_as_before_and_the_port_is_ignored`; the mutant "defaults without the bind address" reads red at `the_bind_address_is_admitted_only_when_specific`; every `AppState` literal in the crate carries the field (grep `AppState {`).
+**Review focus for the reviewer:** the middleware's order (the 421 carries the header set); the mutant "compare the whole authority, port included" reads red at `a_listed_host_answers_every_route_as_before_and_the_port_is_ignored`; the mutant "defaults without the bind address" reads red at `the_bind_address_is_admitted_only_when_specific`; the mutant "an absent switch reads off" reads red at `the_switch_absent_or_on_is_on_and_off_admits_any_host` AND at `an_unlisted_host_is_421_before_routing…` (whose state names no switch); every `AppState` literal in the crate carries the field (grep `AppState {`); the smoke's two new probes each fail when the image's check is broken (run the smoke against an image built with the middleware removed, once).
 
 ---
 
@@ -629,6 +644,7 @@ Design D-11 and §1. No code.
 - [ ] **D32's record** (the owner's ruling, 2026-10-20, during this plan's hand-over): `/api/me` added to the zone's one rate-limit rule at the edge, since a bound inside the Worker spares no invocation and the edge's refusal costs none; the two testers asked to open the front page once; the ledger's D32 row and `worker/RUNBOOK.md` §23's D32 bullet say so (Task 9 carries the ledger's half; the runbook's half is written at the change).
 - [ ] **The PR** `security-s3` → `security-auth`, its description in the house style with the attribution trailer; the owner merges the stack on their word (design D-12).
 - [ ] **The board and the memory**: the session's close on `docs/handover.md`; the scratchpad's exports named for the owner to remove (never removed by an agent).
+- [ ] **The owner's item for the NEXT NAS deploy (0.7.2 or later; R-S3-14):** the create body carries `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and `YOKOHAMA_WEB_HOSTNAMES=yokohama-nas.moore.nyc`; the smoke runs with the hostname as its third argument; and the site is opened through the tunnel (`/api/health` over WARP, then a page) BEFORE the deploy is called done — a body that forgets the list answers 421 to everything while the loopback smoke passes. Written on the board's owner checklist at the close.
 
 ## Self-review (run by the author, 2026-10-20)
 
