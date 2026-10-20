@@ -47,15 +47,16 @@ impl Hostnames {
     }
 
     /// The two variables' values and the bind address, parsed.
-    /// The switch is read first, exactly: `None` and `on` are on, `off` is off, and every other value — a different case and a stray space included — is an `Err` naming the variable and the value.
+    /// The switch is read first, as `Multiplayer::from_env_value` reads its own (trimmed and case-insensitive): `None` and `on` are on, `off` is off, and every other value, the empty string included, is an `Err` naming the variable and the value as it was given.
     /// Off ignores the list.
     /// On with no list is the default set; on with a list is the default set plus each entry, trimmed and checked.
     pub fn from_env_values(enabled: Option<&str>, raw: Option<&str>, bind: &str) -> Result<Self, String> {
-        match enabled {
+        match enabled.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
             None | Some("on") => {}
             Some("off") => return Ok(Self::Off),
-            Some(other) => {
-                return Err(format!("{HOSTNAMES_ENABLED_VAR} must be on or off — got \"{}\"", echo(other)));
+            Some(_) => {
+                let original = enabled.unwrap_or_default();
+                return Err(format!("{HOSTNAMES_ENABLED_VAR} must be on or off — got \"{}\"", echo(original)));
             }
         }
         let mut names = default_names(bind);
@@ -268,9 +269,17 @@ mod tests {
 
     #[test]
     fn a_malformed_switch_value_is_refused_naming_it() {
-        for bad in ["yes", "ON ", "", "On", "true"] {
+        for bad in ["yes", "", "true", "of f"] {
             let e = Hostnames::from_env_values(Some(bad), None, "0.0.0.0").expect_err(bad);
             assert!(e.contains(HOSTNAMES_ENABLED_VAR) && e.contains(&format!("\"{bad}\"")), "{bad:?}: {e}");
         }
+        // The switch reads as the layer's other switches do (`Multiplayer::from_env_value`, ruling P-12): trimmed
+        // and case-insensitive. The refusal above names the ORIGINAL value, spaces and case as the operator typed it.
+        for (spelled, on) in [("ON ", true), (" Off", false), ("On", true), ("OFF", false), (" on\t", true)] {
+            let h = Hostnames::from_env_values(Some(spelled), None, "0.0.0.0").expect(spelled);
+            assert_eq!(h.is_on(), on, "{spelled:?}");
+        }
+        let e = Hostnames::from_env_values(Some(" Yes "), None, "0.0.0.0").expect_err("a padded unknown value");
+        assert!(e.contains("\" Yes \""), "the original value is named: {e}");
     }
 }
