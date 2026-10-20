@@ -243,6 +243,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("GET", "/api/games/{id}/deal"),
         ("POST", "/api/games/{id}/keep"),
         ("POST", "/api/games/{id}/join"),
+        ("POST", "/api/games/{id}/reopen"),
         ("POST", "/api/games/{id}/unlock"),
         ("GET", "/api/games/{id}/chat"),
         ("POST", "/api/games/{id}/chat"),
@@ -1042,6 +1043,29 @@ pub fn join(
     let seat = yokohama_core::PlayerId::try_new(req.seat)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(games.join(id, user, seat, req.name.as_deref(), req.password.as_deref())?)
+}
+
+/// The seat the creator turns back into an open one (security S3, D9; design §3.2 rule 1): [`Keep`]'s and [`Join`]'s
+/// `seat`, alone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reopen {
+    pub seat: u8,
+}
+
+/// `POST /api/games/{id}/reopen` — the creator reopens a joiner's seat at an OPEN table, and is answered their own
+/// `TableView` with the seat open. The whole of the ladder is [`Games::reopen`](crate::games::Games::reopen)'s, held
+/// under the table's own lock; this handler parses the seat as `keep` and `join` do, through the fallible constructor,
+/// because the number came off the wire and `PlayerId::new` panics at four and above.
+pub fn reopen(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &Reopen,
+) -> Result<crate::table::TableView, ApiError> {
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(games.reopen(id, user, seat)?)
 }
 
 /// The table's password, presented once so this caller may WATCH (M6.3, §3.4).
@@ -2660,6 +2684,8 @@ fn answer(
                     .map(|v| ok_json(200, &v)),
                 "/api/games/{id}/join" => join(games, u, b[0], &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(200, &v)),
+                "/api/games/{id}/reopen" => reopen(games, u, b[0], &parse_json(req.content_type, req.body)?)
+                    .map(|v| ok_json(200, &v)),
                 "/api/games/{id}/unlock" => {
                     unlock(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
@@ -4131,6 +4157,7 @@ mod tests {
             ("GET", "/api/games/{id}/deal"),
             ("POST", "/api/games/{id}/keep"),
             ("POST", "/api/games/{id}/join"),
+            ("POST", "/api/games/{id}/reopen"),
             ("POST", "/api/games/{id}/unlock"),
             ("GET", "/api/games/{id}/chat"),
             ("POST", "/api/games/{id}/chat"),

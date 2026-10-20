@@ -783,6 +783,33 @@ pub const UNLOCKED_CAP: usize = 256;
 /// `Games::guess`); the client draws it beside the field it is about.
 pub const WRONG_PASSWORD: &str = "wrong password for this table";
 
+/// [`Games::reopen`]'s refusal to anyone but the table's creator (security S3, D9; design §3.2 rule 1): a 403 in
+/// the delete's own pattern, naming the ROLE and never the person. Answered before the status, so it tells a caller
+/// nothing about the table that the other routes do not.
+pub const ONLY_CREATOR_REOPENS: &str = "only the table's creator can reopen a seat";
+
+/// [`Games::reopen`] at a DEALING table (R-S3-13): `GET …/deal` serves every seated caller their two cards on asking,
+/// and the dealing screen asks on mount, so a seat reopened now would hand the next joiner cards the kicked person may
+/// have seen. The remedy is the sentence's: Abandon, and a new table.
+pub const DEAL_HAS_BEGUN: &str = "the deal has begun — abandon the table and set it again";
+
+/// [`Games::reopen`] at a PLAYING table, a finished one included.
+pub const GAME_HAS_STARTED: &str = "the game has started — a seat at play is a player";
+
+/// [`Games::reopen`] at a seat the creator holds (D-15): a creator left seatless could neither Abandon nor be expired
+/// nor read a dealing roster, so their own seats, a hot seat's second included, are never reopened.
+pub const OWN_SEAT: &str = "you cannot reopen your own seat — abandon the table instead";
+
+/// [`Games::reopen`] at a bot's seat and at an open one alike: a 409, there being nobody in it to reopen.
+pub const NO_JOINER: &str = "that seat holds no joiner to reopen";
+
+/// [`Games::reopen`]'s 400 for a seat number the table does not have — one `PlayerId::try_new` admits (0–3) past a
+/// two- or three-seat table. The number is the caller's, through [`crate::echo::echo`] as every caller value a layer
+/// sentence repeats.
+pub(crate) fn no_seat_here(n: u8) -> String {
+    format!("no seat {} at this table", crate::echo::echo(&n.to_string()))
+}
+
 /// The sentence a seeded create is refused with at a table that seats
 /// somebody else (R-SEC8(b), finding B3; [`crate::games::SeedPolicy`]).
 pub const SEED_NOT_SOLO: &str =
@@ -969,8 +996,8 @@ impl Games {
     }
 
     /// **Absent before locked** (security S1c, finding B8): the one pre-read the
-    /// six writers that always lock make before [`Games::with_table_lock`] —
-    /// `join`, `keep`, `unlock`, `delete` and the chat's append and delete — so
+    /// seven writers that always lock make before [`Games::with_table_lock`] —
+    /// `join`, `reopen`, `keep`, `unlock`, `delete` and the chat's append and delete — so
     /// a fabricated id is a 404 that never creates a lock entry. The read under
     /// the lock is the one a write is checked against; this one only says
     /// "there". `settle` reads for itself and locks only to repair.
@@ -1733,6 +1760,71 @@ impl Games {
                 // answer is a conflict and not a retry.
                 Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
                     "\"{id}\" changed while this join was in flight",
+                    id = crate::echo::echo(id)
+                ))),
+                Err(WriteError::Io(e)) => Err(GameError::Server(e)),
+            }
+        })
+    }
+
+    /// **The creator turns a joiner's seat back into an open one** (security S3, D9; design §3.2 rule 1; R-S3-13,
+    /// D-4, D-15): `POST …/{id}/reopen`, the `Keep`/`Join` body's shape.
+    ///
+    /// The rule, in the order a caller reads it, under this table's own lock as every table writer is:
+    ///
+    /// 1. **the caller is the table's creator**, or 403 [`ONLY_CREATOR_REOPENS`] — FIRST, so a stranger at a dealing
+    ///    table learns nothing about its status (ruling #8's order, `keep`'s; the stranger sweep in the crate root
+    ///    asks this route at every status);
+    /// 2. **the table is `Open` and only `Open`**: at `Dealing` every seated caller can read their two cards (`deal`)
+    ///    and a seat reopened would hand the next joiner cards the kicked person may have seen (R-SEC1), so 409
+    ///    [`DEAL_HAS_BEGUN`]; at `Playing` 409 [`GAME_HAS_STARTED`]. At `Open` the deal route refuses everyone, and
+    ///    no seat has kept;
+    /// 3. **the seat is one the table has**, or 400 [`no_seat_here`];
+    /// 4. **the seat is a HUMAN seat the creator does not hold** — a joiner's, or one the creator bound at create for
+    ///    another person; the creator's own seats, a hot seat's second included, are 409 [`OWN_SEAT`] (D-15), and a
+    ///    bot's seat and an open one are 409 [`NO_JOINER`].
+    ///
+    /// The write makes the seat `Open` and leaves the status `Open`, which is the seat invariant on both sides
+    /// (`check_shape`: open exactly while an open seat exists — there was one before, and the reopened seat is one
+    /// after). It bumps the table and the house, `join`'s reason in reverse: the open table's screen shows the seat
+    /// free again and the lobby's open row has one seat more. Afterwards the kicked person is a would-be joiner like
+    /// anyone at an open table and may join again at once; a ban list is a non-goal, and the creator's remedies for a
+    /// repeat are the password and Abandon.
+    pub fn reopen(&self, id: &str, user: &User, seat: PlayerId) -> Result<TableView, GameError> {
+        self.require_table(id)?;
+        self.with_table_lock(id, || {
+            let (mut doc, version) = self
+                .read_table(id)?
+                .ok_or_else(|| GameError::NotFound(format!("no game named \"{id}\"", id = crate::echo::echo(id))))?;
+            if !doc.is_creator(user) {
+                return Err(GameError::Forbidden(ONLY_CREATOR_REOPENS.to_string()));
+            }
+            match doc.status {
+                TableStatus::Open => {}
+                TableStatus::Dealing => return Err(GameError::Conflict(DEAL_HAS_BEGUN.to_string())),
+                TableStatus::Playing => return Err(GameError::Conflict(GAME_HAS_STARTED.to_string())),
+            }
+            // `seats.len()`, not `PlayerId`'s own range, as `join` bounds it: `read_table` has already refused a
+            // document whose `seats` disagrees with its `players`.
+            let n = usize::from(seat.0);
+            match doc.seats.get(n) {
+                None => return Err(GameError::BadRequest(no_seat_here(seat.0))),
+                Some(SeatDoc::Human { user: holder, .. }) if *holder == doc.created_by => {
+                    return Err(GameError::Conflict(OWN_SEAT.to_string()))
+                }
+                Some(SeatDoc::Human { .. }) => {}
+                Some(SeatDoc::Bot | SeatDoc::Open) => return Err(GameError::Conflict(NO_JOINER.to_string())),
+            }
+            doc.seats[n] = SeatDoc::Open;
+            match self.write_table(&doc, Some(version)) {
+                Ok(_) => {
+                    self.signal.bump(id);
+                    Ok(doc.view(user, self.archive_on()))
+                }
+                // Another writer between the read and here — the lock rules that out in this process, so it is a
+                // second process at the same store. The stored table is the table: a conflict, never a retry.
+                Err(WriteError::Conflict { .. }) => Err(GameError::Conflict(format!(
+                    "\"{id}\" changed while this reopen was in flight",
                     id = crate::echo::echo(id)
                 ))),
                 Err(WriteError::Io(e)) => Err(GameError::Server(e)),
@@ -3570,7 +3662,7 @@ mod tests {
     /// **Every writer holds a table's lock through `with_table_lock`** (finding
     /// B8, decision D-3): the helper is where "drop, then prune" lives, so this
     /// file must not take a lock by hand. The one site allowed to call
-    /// `lock_for` is the helper itself, in `games.rs`. The six pre-reads are
+    /// `lock_for` is the helper itself, in `games.rs`. The seven pre-reads are
     /// `require_table`'s, counted the same way.
     ///
     /// The scan reads the CODE, cut at the file's first column-0
@@ -3583,8 +3675,8 @@ mod tests {
         let source = whole.split("\n#[cfg(test)]\n").next().expect("the code above the tests");
         assert!(source.len() < whole.len(), "the cut found the test module");
         assert!(!source.contains("lock_for("), "a writer calls lock_for directly — use with_table_lock");
-        assert!(source.matches("with_table_lock(").count() >= 7, "the seven writers go through the helper");
-        assert!(source.matches(".require_table(").count() >= 6, "the six pre-reads go through require_table");
+        assert!(source.matches("with_table_lock(").count() >= 8, "the eight writers go through the helper");
+        assert!(source.matches(".require_table(").count() >= 7, "the seven pre-reads go through require_table");
     }
 
     /// A [`MemStore`] that parks the FIRST table read after it is armed, so a
@@ -3640,8 +3732,9 @@ mod tests {
         });
         let games = Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
         type Writer = fn(&Games, &User) -> Result<(), GameError>;
-        let rows: [(&str, Writer); 6] = [
+        let rows: [(&str, Writer); 7] = [
             ("join", |g, u| g.join("nosuch", u, PlayerId::new(1), None, None).map(drop)),
+            ("reopen", |g, u| g.reopen("nosuch", u, PlayerId::new(1)).map(drop)),
             ("keep", |g, u| g.keep("nosuch", u, PlayerId::new(0), 1, None).map(drop)),
             ("unlock", |g, u| g.unlock("nosuch", u, "x").map(drop)),
             ("delete", |g, u| g.delete("nosuch", u)),
@@ -4417,6 +4510,403 @@ mod tests {
         assert!(e.to_string().contains("taken"), "a named seat is Human and therefore taken: {e}");
         let v = games.join("three", &red, PlayerId::new(2), None, None).expect("a second seat");
         assert_eq!(v.my_seats, vec![PlayerId::new(0), PlayerId::new(2)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Security S3, D9 — the seat the creator reopens, at `Open` only
+    // (design §3.2 rule 1; R-S3-13, D-4, D-15)
+    // -----------------------------------------------------------------------
+
+    /// A THREE-seat table opened by red: red at seat 0, `guest` JOINED at seat
+    /// 1, seat 2 still open — so the table is still `Open` and seat 1 is a
+    /// joiner's. The shape every reopen cell starts from.
+    fn open_three_with_a_guest(games: &Games, id: &str) {
+        let mut r = req(id);
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &who("red@t.test")).expect("an open table");
+        let v = games.join(id, &who("guest@t.test"), PlayerId::new(1), None, None).expect("the guest joins seat 1");
+        assert_eq!(v.status, TableStatus::Open, "premise: seat 2 is still open");
+    }
+
+    /// **The creator reopens a joiner's seat, and the table stays `Open`**:
+    /// the seat becomes `Open` in the stored document and in the creator's
+    /// view, the seat invariant holds on both sides of the write (`read_table`
+    /// runs `check_shape`), and the table's channel and the house's are each
+    /// bumped exactly once — a seat freed is something the open table's screen
+    /// shows and a row whose seat count moved is something the lobby shows,
+    /// `join`'s reason.
+    #[test]
+    fn a_creator_reopens_a_joiners_seat_at_an_open_table_and_the_table_stays_open() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let red = who("red@t.test");
+        open_three_with_a_guest(&games, "ro");
+        let mut rx = signals.subscribe("ro");
+        let mut house = signals.subscribe_house();
+        let (table_at, house_at) = (rx.borrow_and_update().seq, house.borrow_and_update().seq);
+
+        let v = games.reopen("ro", &red, PlayerId::new(1)).expect("the creator reopens the guest's seat");
+
+        assert_eq!(v.seats[1], SeatView::Open, "{v:?}");
+        assert_eq!(v.status, TableStatus::Open);
+        assert_eq!(v.my_seats, vec![PlayerId::new(0)], "the creator's own seat is untouched");
+        let (doc, _) = games.read_table("ro").expect("the shape still reads").expect("the table");
+        assert_eq!(doc.seats[1], SeatDoc::Open);
+        assert_eq!(doc.status, TableStatus::Open);
+        assert_eq!(doc.open_seats(), vec![PlayerId::new(1), PlayerId::new(2)]);
+        assert_eq!(rx.borrow_and_update().seq, table_at + 1, "the table bumped once");
+        assert_eq!(house.borrow_and_update().seq, house_at + 1, "the house bumped once");
+    }
+
+    /// **Nobody but the creator reopens a seat — and the creator check comes
+    /// FIRST, so a refusal tells a caller nothing about the table's status**
+    /// (ruling #8's rule, `keep`'s order; the stranger sweep in `lib.rs`
+    /// asks the route at all three statuses). The joiner, about their OWN
+    /// seat, and a stranger are both refused in the one sentence at an open
+    /// table; at a DEALING table (made real by the join that fills the last
+    /// seat) and at a PLAYING one they still read that sentence and never the
+    /// status's. A refusal writes nothing and bumps nothing.
+    #[test]
+    fn a_reopen_is_refused_by_everyone_but_the_creator() {
+        let (games, signals) = watched_games(Arc::new(MemStore::default()));
+        let (guest, stranger) = (who("guest@t.test"), who("nobody@t.test"));
+        open_three_with_a_guest(&games, "rf");
+        let (before, _) = games.read_table("rf").unwrap().unwrap();
+        let rx = signals.subscribe("rf");
+        let house = signals.subscribe_house();
+        for caller in [&guest, &stranger] {
+            let e = games.reopen("rf", caller, PlayerId::new(1)).unwrap_err();
+            assert!(matches!(&e, GameError::Forbidden(s) if s == ONLY_CREATOR_REOPENS), "{caller:?}: {e:?}");
+        }
+        let (after, _) = games.read_table("rf").unwrap().unwrap();
+        assert_eq!(after.seats, before.seats, "a refused reopen writes nothing");
+        assert!(!rx.has_changed().expect("the table channel is open"), "no write, no bump");
+        assert!(!house.has_changed().expect("the house channel is open"));
+
+        // DEALING, by the join that fills the last seat: the creator sentence,
+        // not "the deal has begun" — the earlier link answers.
+        games.join("rf", &who("third@t.test"), PlayerId::new(2), None, None).expect("the filling join");
+        assert_eq!(games.read_table("rf").unwrap().unwrap().0.status, TableStatus::Dealing, "premise");
+        for caller in [&guest, &stranger] {
+            let e = games.reopen("rf", caller, PlayerId::new(1)).unwrap_err();
+            assert!(matches!(&e, GameError::Forbidden(s) if s == ONLY_CREATOR_REOPENS), "dealing, {caller:?}: {e:?}");
+        }
+        // PLAYING: the seated non-creator and the stranger alike.
+        playing(&games, &two_people("rp", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        for caller in [&who("blue@t.test"), &stranger] {
+            let e = games.reopen("rp", caller, PlayerId::new(1)).unwrap_err();
+            assert!(matches!(&e, GameError::Forbidden(s) if s == ONLY_CREATOR_REOPENS), "playing, {caller:?}: {e:?}");
+        }
+    }
+
+    /// **`Open` only** (R-S3-13): the moment a table fills, `GET …/deal`
+    /// serves every seated caller their two cards on asking, so a seat
+    /// reopened then would hand the next joiner cards the kicked person may
+    /// have seen — the hidden-information fence (R-SEC1). The dealing table here is REAL: the
+    /// join that fills the last seat flipped it. Each refusal leaves the
+    /// document as it was, and the status answers BEFORE the seat is read —
+    /// the creator's own seat and a seat past the table, each wrong in a
+    /// second way, still read the status's sentence.
+    #[test]
+    fn a_reopen_at_dealing_and_at_playing_is_refused_with_its_sentence() {
+        let games = games();
+        let red = who("red@t.test");
+        open_three_with_a_guest(&games, "rd");
+        games.join("rd", &who("third@t.test"), PlayerId::new(2), None, None).expect("the filling join");
+        let (before, _) = games.read_table("rd").unwrap().unwrap();
+        assert_eq!(before.status, TableStatus::Dealing, "premise: the filling join flipped it");
+        for seat in [1, 0, 3] {
+            let e = games.reopen("rd", &red, PlayerId::new(seat)).unwrap_err();
+            assert!(matches!(&e, GameError::Conflict(s) if s == DEAL_HAS_BEGUN), "seat {seat}: {e:?}");
+        }
+        let (after, _) = games.read_table("rd").unwrap().unwrap();
+        assert_eq!((after.status, &after.seats), (TableStatus::Dealing, &before.seats), "nothing written");
+
+        playing(&games, &two_people("rg", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        for seat in [1, 0, 3] {
+            let e = games.reopen("rg", &red, PlayerId::new(seat)).unwrap_err();
+            assert!(matches!(&e, GameError::Conflict(s) if s == GAME_HAS_STARTED), "seat {seat}: {e:?}");
+        }
+        assert_eq!(games.read_table("rg").unwrap().unwrap().0.status, TableStatus::Playing);
+    }
+
+    /// **The creator's own seats are never reopened (D-15), and a seat with no
+    /// joiner has nothing to reopen** — while a joiner's seat at the SAME
+    /// table is, which is what keeps the refusals from being a table that
+    /// refuses everything.
+    ///
+    /// The own-seat arm covers all three ways a seat is the creator's: the
+    /// seat create gave them, a second seat they JOINED (a hot seat), and a
+    /// second seat they BOUND at create by typing their own key. A creator
+    /// left seatless could neither Abandon (`delete` refuses a caller with no
+    /// seat first), nor be expired (both expiry paths delete AS the creator),
+    /// nor read a dealing roster.
+    ///
+    /// **A bot's seat at an `Open` table is unreachable through `create`** — a
+    /// bot sits only at two players, where the creator and the bot leave no
+    /// open seat — so the document is written by hand, in a shape
+    /// `check_shape` reads (it asks only that an open seat and `Open` go
+    /// together); the arm is the rule's, not a route's.
+    #[test]
+    fn the_creators_own_seat_a_bots_seat_and_an_open_seat_are_not_reopened() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("rs");
+        r.players = 4;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &red).expect("an open table");
+        games.join("rs", &who("guest@t.test"), PlayerId::new(1), None, None).expect("a joiner at seat 1");
+        // Seat 2 a BOT, by hand: see the doc above. Seat 3 stays open.
+        let (mut doc, version) = games.read_table("rs").unwrap().unwrap();
+        doc.seats[2] = SeatDoc::Bot;
+        games.write_table(&doc, Some(version)).expect("a hand-written bot seat");
+        assert_eq!(games.read_table("rs").unwrap().unwrap().0.status, TableStatus::Open, "premise: the shape reads, open");
+
+        for (seat, sentence) in [(0, OWN_SEAT), (2, NO_JOINER), (3, NO_JOINER)] {
+            let e = games.reopen("rs", &red, PlayerId::new(seat)).unwrap_err();
+            assert!(matches!(&e, GameError::Conflict(s) if s == sentence), "seat {seat}: {e:?}");
+        }
+        // The anti-vacuity half: the joiner's seat at this same table IS reopened.
+        let v = games.reopen("rs", &red, PlayerId::new(1)).expect("the joiner's seat");
+        assert_eq!(v.seats[1], SeatView::Open);
+
+        // A second seat the creator JOINED: a hot seat at an open table.
+        let mut r = req("rh");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &red).expect("an open table");
+        let v = games.join("rh", &red, PlayerId::new(2), None, None).expect("the creator's second seat");
+        assert_eq!((v.my_seats, v.status), (vec![PlayerId::new(0), PlayerId::new(2)], TableStatus::Open), "premise");
+        for seat in [0, 2] {
+            let e = games.reopen("rh", &red, PlayerId::new(seat)).unwrap_err();
+            assert!(matches!(&e, GameError::Conflict(s) if s == OWN_SEAT), "a hot seat's seat {seat}: {e:?}");
+        }
+
+        // A second seat the creator BOUND at create, under their own key.
+        let mut r = req("rb");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &red).expect("an open hot-seat table");
+        let e = games.reopen("rb", &red, PlayerId::new(1)).unwrap_err();
+        assert!(matches!(&e, GameError::Conflict(s) if s == OWN_SEAT), "a seat bound at create to the creator: {e:?}");
+    }
+
+    /// **A seat the creator BOUND at create for a named person is a joiner's
+    /// seat for this rule** (design §3.2 rule 1: "a joiner's, or one the
+    /// creator bound at create for a named person"): it is reopened, and the
+    /// person it named is then a would-be joiner like anyone else.
+    #[test]
+    fn a_seat_bound_at_create_for_a_named_person_is_reopened() {
+        let games = games();
+        let red = who("red@t.test");
+        let mut r = req("rn");
+        r.players = 3;
+        r.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Green];
+        r.seats = vec![
+            SeatSpec { user: Some("red@t.test".into()), bot: false, open: false },
+            SeatSpec { user: Some("blue@t.test".into()), bot: false, open: false },
+            SeatSpec { user: None, bot: false, open: true },
+        ];
+        games.create(&r, &red).expect("an open table");
+        let (doc, _) = games.read_table("rn").unwrap().unwrap();
+        assert!(
+            matches!(&doc.seats[1], SeatDoc::Human { user, bound_at_create: true, .. } if user == "blue@t.test"),
+            "premise: a bound seat {:?}",
+            doc.seats[1]
+        );
+        let v = games.reopen("rn", &red, PlayerId::new(1)).expect("a bound seat is reopened");
+        assert_eq!(v.seats[1], SeatView::Open);
+        assert!(games.table_for_anyone("rn", &who("blue@t.test")).expect("admitted").seats_of(&who("blue@t.test")).is_empty());
+    }
+
+    /// **A seat number past the table is a 400**, in the layer's own sentence
+    /// and before anything is written. `PlayerId::try_new` (the route's parse)
+    /// admits 0–3, so seat 3 reaches the layer at a three-seat table and seat
+    /// 2 at a two-seat one.
+    #[test]
+    fn a_reopen_of_a_seat_past_the_table_is_a_bad_request() {
+        let games = games();
+        let red = who("red@t.test");
+        open_three_with_a_guest(&games, "rx");
+        let (before, _) = games.read_table("rx").unwrap().unwrap();
+        let e = games.reopen("rx", &red, PlayerId::new(3)).unwrap_err();
+        assert!(matches!(&e, GameError::BadRequest(s) if *s == no_seat_here(3)), "{e:?}");
+        assert_eq!(e.to_string(), "no seat 3 at this table");
+        assert_eq!(games.read_table("rx").unwrap().unwrap().0.seats, before.seats);
+        open_two(&games, "r2", None);
+        let e = games.reopen("r2", &red, PlayerId::new(2)).unwrap_err();
+        assert!(matches!(&e, GameError::BadRequest(s) if *s == no_seat_here(2)), "{e:?}");
+    }
+
+    /// **The kicked person is what anyone is at an open table: a would-be
+    /// joiner** — admitted to read it by `table_for_anyone` with no seat, no
+    /// longer a seat holder to `table`, refused a keep for the seat they held,
+    /// and free to join again at once (a ban list is a non-goal; the creator's
+    /// remedies for a repeat are the password and Abandon).
+    #[test]
+    fn a_joiner_whose_seat_is_reopened_is_a_would_be_joiner_and_may_join_again() {
+        let games = games();
+        let (red, guest) = (who("red@t.test"), who("guest@t.test"));
+        open_three_with_a_guest(&games, "rk");
+        games.reopen("rk", &red, PlayerId::new(1)).expect("reopened");
+
+        let doc = games.table_for_anyone("rk", &guest).expect("an open table reads for anyone");
+        let view = doc.view(&guest, false);
+        assert!(view.my_seats.is_empty(), "{view:?}");
+        assert_eq!(view.seats[1], SeatView::Open);
+        assert!(matches!(games.table("rk", &guest), Err(GameError::Forbidden(_))), "no longer a seat holder");
+        let e = games.keep("rk", &guest, PlayerId::new(1), 1, None).unwrap_err();
+        assert!(matches!(&e, GameError::Forbidden(s) if s == "seat 1 is not yours"), "{e:?}");
+
+        let v = games.join("rk", &guest, PlayerId::new(1), None, None).expect("joins again at once");
+        assert_eq!(v.my_seats, vec![PlayerId::new(1)]);
+        assert_eq!(v.status, TableStatus::Open, "seat 2 is still open");
+    }
+
+    /// A [`RaceStore`] whose only gate in use is `park_table`, with the two
+    /// ends of that gate handed back: the arrival and the release.
+    fn table_gated() -> (Arc<RaceStore>, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc::channel;
+        let (at_record, _) = channel();
+        let (_, go_record) = channel();
+        let (at_delete, _) = channel();
+        let (_, go_delete) = channel();
+        let (at_table_tx, at_table_rx) = channel();
+        let (go_table_tx, go_table_rx) = channel();
+        let (at_after_delete, _) = channel();
+        let (_, go_after_delete) = channel();
+        let store = Arc::new(RaceStore {
+            inner: MemStore::default(),
+            park_record: AtomicBool::new(false),
+            park_delete: AtomicBool::new(false),
+            park_table: AtomicBool::new(false),
+            park_after_delete: AtomicBool::new(false),
+            at_record: Mutex::new(at_record),
+            go_record: Mutex::new(go_record),
+            at_delete: Mutex::new(at_delete),
+            go_delete: Mutex::new(go_delete),
+            at_table: Mutex::new(at_table_tx),
+            go_table: Mutex::new(go_table_rx),
+            at_after_delete: Mutex::new(at_after_delete),
+            go_after_delete: Mutex::new(go_after_delete),
+        });
+        (store, at_table_rx, go_table_tx)
+    }
+
+    /// **A reopen and the join that fills the last seat land in either order,
+    /// under the table's lock, and the table is whole after both** (design
+    /// §3.2's proof list).
+    ///
+    /// Each order parks the FIRST writer inside the store at its table write —
+    /// lock held, document not yet replaced — and asks the second while it is
+    /// parked: the second must not answer until the first is released, which
+    /// is the lock; without it the second would read the old document and the
+    /// two would race on its version.
+    ///
+    /// - **Order A, the join first**: the join fills seat 2 and flips the table
+    ///   to `Dealing` — a REAL dealing table — and the reopen then reads it and
+    ///   is refused with the deal's sentence; the seats are the join's.
+    /// - **Order B, the reopen first**: seat 1 opens, and the join then lands
+    ///   on a table that still has an open seat, so it stays `Open` — seat 1
+    ///   open, seat 2 the joiner's.
+    ///
+    /// Both documents read back through `read_table`, whose `check_shape`
+    /// refuses an open seat at a dealing table and an open table with none.
+    #[test]
+    fn a_reopen_and_the_filling_join_land_in_either_order_and_the_table_is_whole() {
+        use std::sync::atomic::Ordering;
+        use std::sync::mpsc::{channel, RecvTimeoutError};
+        use std::time::Duration;
+        let (red, third) = (who("red@t.test"), who("third@t.test"));
+
+        // Order A: the join first.
+        let (store, at_table, go_table) = table_gated();
+        let games = Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        open_three_with_a_guest(&games, "ja");
+        store.park_table.store(true, Ordering::SeqCst);
+        let joiner = {
+            let (games, third) = (Arc::clone(&games), third.clone());
+            std::thread::spawn(move || games.join("ja", &third, PlayerId::new(2), None, None))
+        };
+        at_table.recv_timeout(Duration::from_secs(10)).expect("the join parks at its table write");
+        let (done_tx, done_rx) = channel();
+        let reopener = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || {
+                let answer = games.reopen("ja", &red, PlayerId::new(1));
+                let _ = done_tx.send(());
+                answer
+            })
+        };
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(500)),
+            Err(RecvTimeoutError::Timeout),
+            "the reopen answered while the filling join held the table mid-write",
+        );
+        go_table.send(()).expect("the parked join is listening");
+        let joined = joiner.join().expect("the join thread").expect("the join lands");
+        assert_eq!(joined.status, TableStatus::Dealing, "the join filled the table");
+        let e = reopener.join().expect("the reopen thread").unwrap_err();
+        assert!(matches!(&e, GameError::Conflict(s) if s == DEAL_HAS_BEGUN), "{e:?}");
+        let (doc, _) = games.read_table("ja").expect("the shape reads").expect("the table");
+        assert_eq!(doc.status, TableStatus::Dealing);
+        assert!(doc.open_seats().is_empty());
+        assert!(matches!(&doc.seats[1], SeatDoc::Human { user, .. } if user == "guest@t.test"), "{:?}", doc.seats);
+
+        // Order B: the reopen first.
+        let (store, at_table, go_table) = table_gated();
+        let games = Arc::new(Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>));
+        open_three_with_a_guest(&games, "jb");
+        store.park_table.store(true, Ordering::SeqCst);
+        let reopener = {
+            let (games, red) = (Arc::clone(&games), red.clone());
+            std::thread::spawn(move || games.reopen("jb", &red, PlayerId::new(1)))
+        };
+        at_table.recv_timeout(Duration::from_secs(10)).expect("the reopen parks at its table write");
+        let (done_tx, done_rx) = channel();
+        let joiner = {
+            let (games, third) = (Arc::clone(&games), third.clone());
+            std::thread::spawn(move || {
+                let answer = games.join("jb", &third, PlayerId::new(2), None, None);
+                let _ = done_tx.send(());
+                answer
+            })
+        };
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(500)),
+            Err(RecvTimeoutError::Timeout),
+            "the join answered while the reopen held the table mid-write",
+        );
+        go_table.send(()).expect("the parked reopen is listening");
+        reopener.join().expect("the reopen thread").expect("the reopen lands");
+        let joined = joiner.join().expect("the join thread").expect("the join lands on the reopened table");
+        assert_eq!(joined.status, TableStatus::Open, "seat 1 is open again, so the join did not fill it");
+        let (doc, _) = games.read_table("jb").expect("the shape reads").expect("the table");
+        assert_eq!(doc.status, TableStatus::Open);
+        assert_eq!(doc.seats[1], SeatDoc::Open);
+        assert!(matches!(&doc.seats[2], SeatDoc::Human { user, .. } if user == "third@t.test"), "{:?}", doc.seats);
     }
 
     /// **A keep names its seat only if the seat has no name yet** (§3.5).

@@ -4192,6 +4192,10 @@ mod tests {
             ("GET", "/deal", None),
             ("POST", "/keep", Some(serde_json::json!({ "seat": 1, "card": 1 }))),
             ("POST", "/join", Some(serde_json::json!({ "seat": 1 }))),
+            // **The creator's reopen** (security S3, D9): a seat-scoped write
+            // whose ladder starts with the creator check, so every caller this
+            // list's sweeps ask without a seat reads 403 at every status.
+            ("POST", "/reopen", Some(serde_json::json!({ "seat": 1 }))),
             ("POST", "/input", Some(serde_json::json!({ "line": "1" }))),
             ("GET", "/ports", None),
             ("GET", "/labs", None),
@@ -4588,6 +4592,12 @@ mod tests {
                     // never a status, so it tells a stranger nothing the others
                     // do not.
                     (_, _, "/keep") => "seat 1 is not yours",
+                    // **The reopen's own sentence names a ROLE** (security S3,
+                    // D9): the creator check comes before the status, so a
+                    // stranger at a dealing table reads it and never "the deal
+                    // has begun" — nothing about the table they could not read
+                    // from any other row here.
+                    (_, _, "/reopen") => tables::ONLY_CREATOR_REOPENS,
                     // The three that resolve the seat inside `Games` rather
                     // than through `admitted`: the lock is not their answer.
                     ("lockt", "DELETE", "") | ("lockt", _, "/deal") => NOT_SEATED,
@@ -4671,8 +4681,12 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{page}");
         assert_eq!(page["last"], 1, "{page}");
         for (method, suffix, body) in session_routes() {
+            // **`reopen` is the creator's WRITE at an open table** (security S3,
+            // D9), the one place it is answered rather than refused; its open-table
+            // answers are `the_creator_reopens_a_joiners_seat_through_the_router`'s.
             if suffix == "/table"
                 || suffix == "/join"
+                || suffix == "/reopen"
                 || suffix == "/unlock"
                 || suffix == "/events"
                 || suffix == "/stream"
@@ -4741,6 +4755,64 @@ mod tests {
             let (status, body) = get_as(&state, "blue@wire.test", uri).await;
             assert_eq!(status, StatusCode::OK, "{uri}: {body}");
         }
+    }
+
+    /// **`POST …/reopen` through the router** (security S3, D9; design §3.2
+    /// rule 1): the creator's reopen of a joiner's seat answers 200 with the
+    /// creator's `TableView` — the seat open, the table still open — and the
+    /// joiner, a would-be joiner again, reads the table with no seat. Refused
+    /// before that: the joiner's own reopen, 403 in the one sentence and NO
+    /// status field; a seat `PlayerId::try_new` refuses, 400 before the layer;
+    /// a seat past this three-seat table, the layer's 400; and a body with a
+    /// field the route does not take, `deny_unknown_fields`' 400. Each refusal
+    /// leaves the guest seated, which the success at the end then reads.
+    #[tokio::test]
+    async fn the_creator_reopens_a_joiners_seat_through_the_router() {
+        const RED: &str = "red@wire.test";
+        const GUEST: &str = "guest@wire.test";
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(
+            &state,
+            RED,
+            "/api/games",
+            serde_json::json!({
+                "players": 3,
+                "colors": ["Red", "Blue", "Green"],
+                "start_seat": 0,
+                "seats": [{ "user": RED }, { "open": true }, { "open": true }],
+                "id": "reo",
+                "name": "reo",
+            }),
+        )
+        .await;
+        assert_eq!((status, &body["status"]), (StatusCode::CREATED, &serde_json::json!("open")), "{body}");
+        let (status, body) = post_as(&state, GUEST, "/api/games/reo/join", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = post_as(&state, GUEST, "/api/games/reo/reopen", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body, serde_json::json!({ "error": tables::ONLY_CREATOR_REOPENS }), "one sentence, no status");
+        for (seat, why) in [(serde_json::json!(4), "PlayerId::try_new"), (serde_json::json!(3), "past the table")] {
+            let (status, body) =
+                post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": seat })).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {body}");
+        }
+        let (_, body) = post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 3 })).await;
+        assert_eq!(body["error"], "no seat 3 at this table", "{body}");
+        let (status, body) =
+            post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 1, "card": 1 })).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown field: {body}");
+        let (_, view) = get_as(&state, GUEST, "/api/games/reo/table").await;
+        assert_eq!(view["my_seats"], serde_json::json!([1]), "premise: every refusal left the guest seated: {view}");
+
+        let (status, view) = post_as(&state, RED, "/api/games/reo/reopen", serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{view}");
+        assert_eq!(view["seats"][1], serde_json::json!({ "kind": "open" }), "{view}");
+        assert_eq!(view["status"], "open", "{view}");
+        assert_eq!((&view["mine"], &view["my_seats"]), (&serde_json::json!(true), &serde_json::json!([0])), "{view}");
+        let (status, view) = get_as(&state, GUEST, "/api/games/reo/table").await;
+        assert_eq!(status, StatusCode::OK, "an open table reads for a would-be joiner: {view}");
+        assert_eq!(view["my_seats"], serde_json::json!([]), "{view}");
     }
 
     /// **A second page is reached by sending the cursor back** (§3.3), over the
@@ -6098,6 +6170,10 @@ mod tests {
             ("GET", "/deal", None, Kind::Write),
             ("POST", "/keep", Some(serde_json::json!({ "seat": 1, "card": 1 })), Kind::Write),
             ("POST", "/join", Some(serde_json::json!({ "seat": 1 })), Kind::OwnLadder),
+            // A WRITE for the grid's purposes: a caller with no seat — stranger
+            // or watcher — is refused it at every status (the creator check
+            // comes first), and the seat holder's write column is skipped.
+            ("POST", "/reopen", Some(serde_json::json!({ "seat": 1 })), Kind::Write),
             ("POST", "/unlock", Some(serde_json::json!({ "password": "x" })), Kind::OwnLadder),
             ("POST", "/input", Some(serde_json::json!({ "line": "1" })), Kind::Write),
             ("GET", "/ports", None, Kind::Read),

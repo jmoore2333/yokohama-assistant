@@ -1106,6 +1106,33 @@ mod tests {
         assert_eq!(r.status, 200, "a friend during the guest's burst: {}", r.body);
     }
 
+    /// **The creator's reopen runs inside the object** (security S3, D9; design
+    /// §3.2 rule 1): the layer's route, through `dispatch` exactly as the
+    /// Worker drives it, with no shell change — the shell routes every
+    /// `/api/games/{name}/…` path to the table object by its name, and its
+    /// write limiter counts every method but GET and HEAD. The joiner's own
+    /// reopen is the layer's 403 in one sentence and bumps nothing; the
+    /// creator's is a 200 with the seat open that bumps the table and the
+    /// house, as the join it undoes did.
+    #[test]
+    fn the_creators_reopen_is_the_layers_route_inside_the_object() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let create = r#"{"id":"reopened","players":3,"colors":["Red","Blue","Green"],"start_seat":0,
+                         "seats":[{"user":"red@t.test"},{"open":true},{"open":true}]}"#;
+        assert_eq!(call("red@t.test", "POST", "/api/games", Some(create)).status, 201);
+        assert_eq!(call("guest@t.test", "POST", "/api/games/reopened/join", Some(r#"{"seat":1}"#)).status, 200);
+        let r = call("guest@t.test", "POST", "/api/games/reopened/reopen", Some(r#"{"seat":1}"#));
+        assert_eq!((r.status, tagged(&r).as_str()), (403, "[]"), "the joiner's own: {}", r.body);
+        let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(body, serde_json::json!({ "error": yokohama_web::tables::ONLY_CREATOR_REOPENS }));
+        let r = call("red@t.test", "POST", "/api/games/reopened/reopen", Some(r#"{"seat":1}"#));
+        assert_eq!((r.status, tagged(&r).as_str()), (200, r#"[{"bump":"reopened"}]"#), "the creator's: {}", r.body);
+        let view: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(view["seats"][1], serde_json::json!({ "kind": "open" }), "{view}");
+        assert_eq!(view["status"], "open", "{view}");
+    }
+
     /// **The owed-pump FIXTURE** (plan review M3). Task 9's pool cell needs the SAME
     /// bytes — a record whose last events leave the bot to move — and only Rust can
     /// make them. They cannot be re-derived byte-identically, because the finalize

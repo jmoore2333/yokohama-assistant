@@ -1104,6 +1104,14 @@ export const api = {
    *  LAST open seat flips the table to `dealing` in the same write. */
   join: (game: string, req: JoinRequest) =>
     call<TableView>("POST", `/api/games/${id(game)}/join`, req),
+  /** The creator turns a JOINER's seat back into an open one (security S3,
+   *  D9) — at an OPEN table only. `seat` is 0-based, as `keep` and `join` send
+   *  it. The reply is the creator's table with the seat open. Refused 403 to
+   *  anyone but the creator; 409 at a table that is dealing or playing, on the
+   *  creator's own seat and on a seat with nobody to reopen; 400 for a seat the
+   *  table does not have — each in the server's own sentence. */
+  reopen: (game: string, seat: number) =>
+    call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat }),
   /** Knock, and be remembered (M6.3, R-3.5). The reply is the table with
    *  `can_watch` turned over, so the screen that was drawing the unlock face
    *  has what it needs to draw the game without a second request.
