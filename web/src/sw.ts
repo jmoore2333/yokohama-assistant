@@ -40,8 +40,9 @@
 // - the install is all-or-nothing: one failed entry fails it, and the door is
 //   told why;
 // - the edge's challenge on an entry is its own `kind` (security S3, W-3): the
-//   install still fails, ONE door window is told `"challenged"` and every other
-//   window `"failed"`, and nothing in the install path asks for `/api`;
+//   install still fails, ONE window at the door's address is told
+//   `"challenged"` and every other window `"failed"`, and nothing in the
+//   install path asks for `/api`;
 // - every entry is fetched in parallel lanes with `cache: "reload"` and
 //   `redirect: "error"`, its head checked and its body's digest CALLED;
 // - a failed install deletes its generation only where the install CREATED it
@@ -188,7 +189,10 @@ async function installRelease(): Promise<void> {
     // **The kind is read HERE, from the same branch as the reason and before
     // the abort below sets the signal** (security S3, W-3; D-1). A deadline is
     // a plain failure whatever was in flight, so a `"challenged"` message always
-    // carries the challenge's own sentence.
+    // carries the challenge's own sentence. The FIRST failure decides the kind
+    // as it decides the reason, so an ordinary failure that lands first masks a
+    // challenge on that attempt, and the door's "Try again", or the next
+    // recheck, is the way out.
     const kind: InstallFailedKind = !overran && error instanceof EdgeChallenged ? "challenged" : "failed";
     // **Stop the other lanes, and WAIT for them, before deleting.**
     // `Promise.all` rejects on the FIRST failure and leaves its siblings
@@ -279,12 +283,17 @@ function messageOf(error: unknown): string {
  *  worker does not control yet.
  *
  *  **A challenge is told to ONE window as `"challenged"`** (security S3, W-3;
- *  D-13): the one [`electDoorWindow`] picks among the windows showing the door,
- *  because every window that read `"challenged"` would open a widget for the one
- *  install, and a game screen must never draw one mid-play. Every other window — and every window, when no
- *  door is open or the failure is not a challenge — is told `"failed"`, with the
- *  same reason. The election is made HERE because the worker alone sees every
- *  window; a page does not know its siblings. */
+ *  D-13): the one [`electDoorWindow`] picks among the windows whose address is
+ *  the door's, because every window that read `"challenged"` would open a
+ *  widget for the one install. Every other window — and every window, when no
+ *  window's address is the door's or the failure is not a challenge — is told
+ *  `"failed"`, with the same reason. The election is made HERE because the
+ *  worker alone sees every window; a page does not know its siblings.
+ *
+ *  **The address is the one each window was LOADED at**, which in Chromium does
+ *  not follow a hash change (measured in Playwright's Chromium, the Task 5
+ *  review, 2026-10-20). So a game screen is kept clear by the page's check of
+ *  its own route (`swRegister.ts`, P-26), not by this election. */
 async function tellTheClients(reason: string, kind: InstallFailedKind): Promise<void> {
   try {
     const windows = await self.clients.matchAll({ includeUncontrolled: true, type: "window" });

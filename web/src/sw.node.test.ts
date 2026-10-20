@@ -428,8 +428,9 @@ describe("the worker's install", () => {
 // resource by extension (`/art/manifest.json` among them) for a browser holding no `cf_clearance`. The
 // install still FAILS — the redundant-worker path is what the door's retry relies on — and its message carries
 // `kind`: `"challenged"` to the one window the worker elects, `"failed"` to every other, the same `reason` to all.
-// The worker elects because it alone sees every window; the door alone, because a game screen must never draw
-// an overlay mid-play.
+// The worker elects because it alone sees every window, and it elects by ADDRESS: Chromium lists each window at
+// the address it was loaded at, so what keeps a game screen clear of an overlay is the page's check of its own
+// route (`swRegister.ts`, P-26), and these cells read the addresses alone.
 describe("the worker's install, when the edge challenges it", () => {
   beforeEach(() => vi.restoreAllMocks());
 

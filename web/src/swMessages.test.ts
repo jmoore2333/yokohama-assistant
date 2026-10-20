@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { parseRoute } from "./route";
 import { isDoorUrl } from "./swMessages";
 
-describe("which window is showing the door", () => {
+describe("which address is the door's", () => {
   it("reads the hash exactly as parseRoute does", () => {
     const hashes = [
       "",
@@ -46,6 +46,8 @@ describe("which window is showing the door", () => {
     expect(isDoorUrl("https://x.test/index.html")).toBe(true);
     expect(isDoorUrl("https://x.test/t/abc")).toBe(true);
     expect(isDoorUrl("https://x.test/somewhere#/t/abc")).toBe(false);
+    // Plain `http:` too: the local e2e serves the client at `http://127.0.0.1:<port>`.
+    expect(isDoorUrl("http://127.0.0.1:4173/#/")).toBe(true);
   });
 
   // **What a hash rule alone would call the door, and is not.** `clients.matchAll` lists every window of the
