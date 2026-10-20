@@ -54,7 +54,7 @@ Design §3.4, D-8 and R-S3-14. The binary answers only the host names it is told
 - Create: `crates/yokohama-web/src/hostnames.rs`
 - Modify: `crates/yokohama-web/src/lib.rs` (the `AppState` struct near line 464 and its constructors near 696; `app()` at 1331–1350; a new middleware beside `response_headers` at 1296)
 - Modify: `crates/yokohama-web/src/main.rs:100–130` (read the variable; refuse at start; print the list)
-- Test: `crates/yokohama-web/src/hostnames.rs` (unit cells), `crates/yokohama-web/src/lib.rs` (route cells, the test module's helpers `request_raw` at 3423 extended with a `Host` header), `crates/yokohama-web/tests/start_refusal.rs` (two process cells)
+- Test: `crates/yokohama-web/src/hostnames.rs` (unit cells), `crates/yokohama-web/src/lib.rs` (route cells, the test module's helpers `request_raw` at 3423 extended with a `Host` header), `crates/yokohama-web/tests/start_refusal.rs` (three process cells)
 - Modify: `deploy/smoke-image.sh` (an optional third argument, the hostname; the `get` helper at 71–77 already takes curl arguments, so `-H "Host: …"` rides it; the `docker run` at 99 gains `-e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on -e "YOKOHAMA_WEB_HOSTNAMES=$hostname"` when the argument is given)
 - Docs: `deploy/README.md` §4 (the paragraph at 257–259, the `docker run` example at 209 and the environment table at 234–235 gain BOTH variables) and §2 (the LAN note: list the browsers' name, or set the switch `off`), the root `README.md` (its self-host lines at 229 and 394 carry both), `deploy/Dockerfile.runtime` (a comment beside the `ENV` block at line 75; no value), `deploy/update.sh` (both variables documented beside the others it passes), `deploy/RUNBOOK.md` §3 (the create body's `Env` array at 244–254 gains `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and `YOKOHAMA_WEB_HOSTNAMES=yokohama-nas.moore.nyc`; the recipe's reading gains the two `docker exec` lines of design §3.4 and the tunnel's `/api/health` as a REQUIRED step before a deploy is called done, marked "from 0.7.2")
 
@@ -102,7 +102,7 @@ Expected: PASS, 6 cells.
 
 - [ ] **Step 5: Write the failing route cells in `lib.rs`'s test module**
 
-Add a helper `request_with_host(state, who, method, uri, host: Option<&str>)` beside `request_raw` (line 3423): the same request with a `Host` header when `host` is `Some`. Cells:
+**Every request a test sends through `app()` carries `Host: localhost` from this task on** (pre-flight ruling P-1): the in-process requests the crate's cells build today — `request_as`, `request_raw`, `request_raw_with_body`, `post_as`, `get_as` and every ad-hoc `Request::builder()` that reaches `app()` in `lib.rs`'s, `api.rs`'s and `assets.rs`'s test modules and in `tests/wire_fixtures.rs` and `tests/play_a_whole_game.rs` — carry NO `Host` header, so with the check on by default in every constructor each would read 421; a browser always sends one, so the fixtures sending one is the honest shape. Add `.header(http::header::HOST, "localhost")` to each (the suite names every miss as a 421), and add a helper `request_with_host(state, who, method, uri, host: Option<&str>)` beside `request_raw` (line 3423): the same request with the `Host` header when `host` is `Some` and with none when it is `None` — the ONLY path that omits it. (`tests/start_refusal.rs`'s raw helpers already write `Host: 127.0.0.1:{port}`, in the default set with the port ignored.) Cells:
 
 ```rust
 #[tokio::test] async fn an_unlisted_host_is_421_before_routing_with_the_header_set_and_no_store_under_api() {
@@ -130,12 +130,12 @@ Expected: FAIL (200 where 421 is expected; `with_hostnames` missing).
 
 - [ ] **Step 7: Implement the middleware and the state**
 
-`AppState.hostnames: Hostnames` (every constructor builds the default set from its bind — the in-memory fixtures with bind `127.0.0.1`; `AppState::production` from the environment); `async fn host_allowed(State(state), req, next) -> Response` reads `req.headers().get(http::header::HOST)` (absent → refused), answers `(StatusCode::MISDIRECTED_REQUEST, Json(api::error_value(&ApiError::misdirected(format!("{NOT_FOR_THIS_HOST} \"{}\"", echo(host))))))` or runs `next`; layered in `app()` BEFORE `response_headers` in the builder so the refusal carries the header set and `no-store` under `/api` (the cell in Step 5 is the catcher of the order). `ApiError::misdirected` beside `too_many_requests` at `lib.rs:184`.
+`AppState.hostnames: Hostnames` (every constructor builds the default set from its bind — the in-memory fixtures with bind `127.0.0.1`; `AppState::production` from the environment); `async fn host_allowed(State(state), req, next) -> Response` reads `req.headers().get(http::header::HOST)`, else the request URI's authority (`req.uri().authority()` — where an HTTP/2 `:authority` surfaces; pre-flight ruling P-2), neither → refused, answers `(StatusCode::MISDIRECTED_REQUEST, Json(api::error_value(&ApiError::misdirected(format!("{NOT_FOR_THIS_HOST} \"{}\"", echo(host))))))` or runs `next`; layered in `app()` BEFORE `response_headers` in the builder so the refusal carries the header set and `no-store` under `/api` (the cell in Step 5 is the catcher of the order). `ApiError::misdirected` beside `too_many_requests` at `lib.rs:184`.
 
 - [ ] **Step 8: Run the lib suite to verify it passes**
 
 Run: `cargo test -p yokohama-web --features server`
-Expected: PASS; the count rises by the new cells and nothing else moves (the wire fixtures unchanged — no payload changed).
+Expected: PASS; the count rises by the new cells and nothing else moves (the wire fixtures unchanged — no payload changed; the test requests now carry `Host: localhost`, so the committed corpus IS the design's "whole route table under one listed host, byte-identical" cell).
 
 - [ ] **Step 9: Write the failing process cells in `tests/start_refusal.rs`**
 
@@ -245,6 +245,12 @@ Expected: PASS, 6 cells.
 #[tokio::test] async fn the_unlock_route_counts_the_same_way() {
     // a locked PLAYING table; 20 wrong unlocks → the 21st 429 with the sentence
 }
+#[tokio::test] async fn a_wrong_join_and_a_wrong_unlock_by_one_caller_at_one_table_count_together() {
+    // design §3.3 "both routes share the counter" (pre-flight ruling P-4). Games::with_clock frozen; a locked 2-seat OPEN table;
+    // 10 wrong joins as "guest" → 403; "friend" joins with the right password and both seated players keep → Playing;
+    // 10 wrong unlocks as "guest" → 403; the 21st wrong unlock → 429 with the sentence (10 + 10 + 1 under one key).
+    // If the route module has no helper that carries a table from Open to Playing, the cell lives in tables.rs against Games directly, same arithmetic.
+}
 ```
 
 - [ ] **Step 6: Run them to verify they fail**
@@ -254,7 +260,7 @@ Expected: FAIL (every attempt 403).
 
 - [ ] **Step 7: Wire the counter into `join` and `unlock`**
 
-In both, after the table is read under the lock and before the compare: `self.guesses.check(id, user.as_str(), (self.clock)()).map_err(|s| GameError::TooMany(s.to_string()))?`; on a wrong password call `failed` then return the existing `Forbidden`; on a right one call `cleared` before the write. `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal.
+In both, after the table is read under the lock and before the compare: `self.guesses.check(id, user.as_str(), (self.clock)()).map_err(|s| GameError::TooMany(s.to_string()))?`; on a wrong password call `failed` then return the existing `Forbidden`; on a right one call `cleared` before the write. `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal (`with_parts` builds it as `Self { … }` inside `impl Games` — grep `Games {` AND `Self {` in `games.rs`).
 
 - [ ] **Step 8: Run the lib suite and regenerate nothing**
 
@@ -280,7 +286,7 @@ git add crates/yokohama-web/src/guesses.rs crates/yokohama-web/src/games.rs crat
 git commit -m "web: the password oracle's throttle inside Games (security S3, D2) — twenty wrong passwords per table and caller per ten seconds, failures only, a success clears, a refusal counts nothing, entries live only while their window is open; 429 in one sentence and no header, on both hosts"
 ```
 
-**Review focus for the reviewer:** one mutant per value class, each red at a named cell — key by caller alone (`one_caller_at_two_tables_counts_apart`), key by table alone (`two_callers_at_one_table_count_apart` and the friend cell), 19 or 21 (`the_twenty_first…`), never prune (`a_lapsed_entry_is_pruned…`), never clear (`a_clear_resets…`), count refusals (`a_refused_check_counts_nothing…`); the count of `Games {` literals carrying the field equals the count in the tree.
+**Review focus for the reviewer:** one mutant per value class, each red at a named cell — key by caller alone (`one_caller_at_two_tables_counts_apart`), key by table alone (`two_callers_at_one_table_count_apart` and the friend cell), 19 or 21 (`the_twenty_first…`), never prune (`a_lapsed_entry_is_pruned…`), never clear (`a_clear_resets…`), count refusals (`a_refused_check_counts_nothing…`), one counter per route (`a_wrong_join_and_a_wrong_unlock_by_one_caller_at_one_table_count_together`); the count of `Games {`/`Self {` literals carrying the field equals the count in the tree.
 
 ---
 
@@ -289,7 +295,7 @@ git commit -m "web: the password oracle's throttle inside Games (security S3, D2
 Design §3.2 rule 1, D-4, D-15 and R-S3-13. A seat-scoped route the creator posts at an open table; refused at `Dealing` and `Playing`, on the creator's own seat, on a bot's and on an open one; the kicked person is a would-be joiner afterwards; the client's control on the open table's roster and nowhere else.
 
 **Files:**
-- Modify: `crates/yokohama-web/src/api.rs` (a `Reopen` body beside `Keep` at 1011; `pub fn reopen` beside `keep` at 1281; `routes()` at 232 and the hand-kept copy at 4118; the dispatcher arm beside `/keep` at 2658)
+- Modify: `crates/yokohama-web/src/api.rs` (a `Reopen` body beside `Keep` at 1011; `pub fn reopen` beside `keep` at 1281; `routes()` at 232 and the hand-kept copy at 4132; the dispatcher arm beside `/keep` at 2658)
 - Modify: `crates/yokohama-web/src/tables.rs` (`Games::reopen` beside `join` at 1636)
 - Modify: `web/src/api.ts` (`reopen` beside `keep` at 1128), `web/src/OpenTable.tsx` (the seat rows at 350), `web/src/OpenTable.test.tsx`, `web/e2e/two_browsers.spec.ts`
 - Test: `tables.rs` (every arm), `lib.rs` (the route through the router), `crates/yokohama-worker/src/lib.rs` (one cell through `call`), the client cells, one e2e cell
@@ -332,7 +338,7 @@ Expected: PASS, 7 cells.
 
 - [ ] **Step 5: Write the failing route cells**
 
-In `api.rs`'s test module: the route table's hand-kept copy at 4118 gains `("POST", "/api/games/{id}/reopen")` (the drift detector); in `lib.rs`'s test module, through `request_raw_with_body`: the creator's reopen → 200 with the `TableView`; a joiner's → 403 with the sentence; a body `{"seat": 0}` → 400 (`PlayerId::try_new`); a body with an unknown field → 400 (`deny_unknown_fields`).
+In `api.rs`'s test module: the route table's hand-kept copy at 4132 gains `("POST", "/api/games/{id}/reopen")` (the drift detector); in `lib.rs`'s test module, through `request_raw_with_body`: the creator's reopen → 200 with the `TableView`; a joiner's → 403 with the sentence; a body `{"seat": 0}` → 400 (`PlayerId::try_new`); a body with an unknown field → 400 (`deny_unknown_fields`).
 
 - [ ] **Step 6: Run them to verify they fail**
 
@@ -660,6 +666,20 @@ Design D-10, R-S3-14 and R-S3-15; the lane's §7 (a stack that merges at its wra
 - [ ] **Step 6: the Worker.** `cd web && npm run build` (keyless, stage 1's shape), the assets copied as `worker/RUNBOOK.md` §23 stage 1 names, `cd worker && npm run deploy`; the update reading (`/api/health` version, `/sw.js` naming the new release), D2 and D9 read through the API over WARP as on the NAS, the W-3 message shape read in a browser's console if the owner is at hand (optional; the live reading of the pass itself is the public day's — design D-17).
 - [ ] **Step 7: the records.** `deploy/RUNBOOK.md` §3.23 (the twentieth deployment: every figure above, the rollback line — `yokohama-web:0.6.3-s2` stays on the NAS); `worker/RUNBOOK.md` §27 (the thirty-eighth deployment); `docs/web-lane.md` §1's host paragraph (both hosts at `0.7.2`); the ledger's live column for D2, D4, D9; the board; one commit on the branch, and the PR's description amended with the window's line.
 - [ ] **The fallback, if skipped (the owner's item):** the create body carries both variables; the smoke runs with the hostname as its third argument; the site is opened through the tunnel BEFORE the deploy is called done — a body that forgets the list answers 421 to everything while the loopback smoke passes. Written on the board's owner checklist at the close.
+
+## Pre-flight record (the orchestrator, 2026-10-20)
+
+The "before" review, run from the ledger's scan (one row per pair of tasks sharing a file or an interface, one per task against itself) and a read of Tasks 1–2's cells against the design's §3.3–§3.4 and the code at `302babdb`. Corrections written INTO the tasks above (the plan's text is the single source a brief is cut from):
+
+- **P-1 (Task 1, a plan defect):** the crate's in-process test requests carry no `Host` header, so the check on by default would turn every existing route cell 421; every request through `app()` now carries `Host: localhost`, and `request_with_host(.., None)` is the one path without — Step 5 says so. Cost if wrong: mechanical edits in test modules.
+- **P-2 (Task 1):** an absent `Host` header falls back to the URI's authority before the refusal (HTTP/2's `:authority` surfaces there under hyper's auto builder); the no-header cell builds a request with neither. Cost if wrong: one line.
+- **P-3 (Task 1):** three process cells, as Step 9 lists them (the Files line said two).
+- **P-4 (Task 2):** the design's "both routes share the counter" cell was missing; added beside `the_unlock_route_counts_the_same_way`, with its placement rule. Cost if wrong: one cell.
+- **P-5 (Task 2):** `Games`'s literal is `Self { … }` in `with_parts`; the grep names both spellings.
+- **P-6 (Task 3):** the hand-kept route copy is at `api.rs:4132` (the plan said 4118); every brief says probe every cited line.
+- **P-7 (the design, D-2 against D-14):** D-2 reads "one automatic pass per install attempt" and D-14 "the pass counter is the page's" — D-14 is the later decision (the builder check's question 4) and §3.1 step 4 agrees; Task 6 follows D-14. Recorded for the design's §7 at the wrap.
+- **P-8 (Task 1 Step 13, operations):** Docker's daemon is down on the workstation at the run's start; the implementer starts Docker Desktop once (`open -a Docker`, up to 90 s) for the smoke's two runs; failing that, the two smoke runs are NOT taken by the task and the window's Step 3 takes them (recorded in the task's report as a concern).
+- **Exports share the checkout's `target/`** (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
 ## Self-review (run by the author, 2026-10-20)
 
