@@ -480,7 +480,7 @@ Design §3.1 steps 1–2 and 7, D-1, D-13. A challenged precache fetch is a type
 
 **Interfaces:**
 - Produces: the message `{ yokohama: "install-failed", kind: "challenged" | "failed", reason: string }`; `export type InstallFailedKind = "challenged" | "failed"` in `web/src/swMessages.ts` (a new, tiny module both `sw.ts` and `swRegister.ts` import, so the page's reader and the worker's writer share the type); the challenged reason `"<path>: the edge asked for a check before it would answer"`; the election: among windows whose `url` is the door's, the focused one, else a visible one, else the first; with none, every window gets `"failed"`.
-- Consumes: `self.clients.matchAll({ includeUncontrolled: true, type: "window" })` (`WindowClient.url`, `.focused`, `.visibilityState`); the door's URL shape — the implementer reads how `App.tsx` computes `route.kind === "door"` (its `route` parser) and writes `isDoorUrl(url: string): boolean` in `swMessages.ts` from the same rule, with a cell.
+- Consumes: `self.clients.matchAll({ includeUncontrolled: true, type: "window" })` (`WindowClient.url`, `.focused`, `.visibilityState`); the door's URL shape — the implementer reads how `App.tsx` computes `route.kind === "door"` (its `route` parser) and writes `isDoorUrl(url: string): boolean` in `swMessages.ts` from the same rule, with a cell — restated for the worker's bundle (`route.ts` imports React): an `http(s)` URL whose path is the app's document (never `/enter`, `/api/…`, `/cdn-cgi/…` or another server path) and whose hash is empty or parses to the door; `about:blank` and server paths are never the door; equality with `parseRoute` pinned over a table of hashes (P-23).
 
 - [ ] **Step 1: Write the failing cells**
 
@@ -494,7 +494,7 @@ it("names the edge's challenge as its own kind, to one door window, and every ot
   // matchAll fake: [game tab focused, door tab visible, door tab hidden]
   // posted: the visible door gets kind "challenged" with reason "/art/manifest.json: the edge asked for a check before it would answer"; the other two get kind "failed" with the same reason; the install rejects; no generation left behind
 it("the_election_prefers_a_focused_door_then_a_visible_door_then_any_door_and_never_a_game", ...)
-  // three boots: [focused door, visible door] → the focused; [hidden door, visible door] → the visible; [hidden door, focused game] → the hidden door
+  // three boots, each list ordered ADVERSARIALLY with the wanted window last (a first-match election would otherwise pass): [visible door, focused door] → the focused; [hidden door, visible door] → the visible; [focused game, hidden door] → the hidden door (P-25)
 it("with no door open every window gets failed and nothing is challenged", ...)
 it("a 403 without the header is a plain failure to every window", ...)
 it("the install path requests nothing under /api", ...) // harness.asked has no path starting with "/api"
@@ -502,7 +502,7 @@ it("the install path requests nothing under /api", ...) // harness.asked has no 
 
 - [ ] **Step 2: Run them to verify they fail**
 
-Run: `cd web && npx vitest run sw.node edgeChallenge`
+Run: `cd web && npx vitest run -c vitest.node.config.ts sw.node` — the default config EXCLUDES `*.node.test.ts`; `npm run test:wasm` is that project — and `npx vitest run edgeChallenge swMessages` (P-24)
 Expected: FAIL (no `kind`; no module).
 
 - [ ] **Step 3: Implement**
@@ -511,7 +511,7 @@ Expected: FAIL (no `kind`; no module).
 
 - [ ] **Step 4: Run the client suites**
 
-Run: `cd web && npm run typecheck && npx vitest run`
+Run: `cd web && npm run typecheck && npx vitest run && npm run test:wasm` (P-24)
 Expected: PASS; the two older `posted` expectations updated with `kind: "failed"`.
 
 - [ ] **Step 5: Commit**
@@ -536,7 +536,7 @@ Design §3.1 steps 3–6, D-2, D-3, D-14, D-17. On a `"challenged"` message the 
 
 **Interfaces:**
 - Consumes: `passChallenge(): Promise<void>` (`turnstile.ts:186`, rejects `EDGE_CHECK` with no handler, `EDGE_CHECK_REPEATED` on a failed check); the message's `kind` (Task 5); `FakeRegistration`/`FakeWorker`/`fakeHost` in the test file.
-- Produces: `useReadiness` behaviour — on `kind: "challenged"` with no automatic pass yet on this hook instance: `passedOnce.current = true`, `passChallenge().then(retryInternal, (e) => { failure/reason = the message's reason; readiness "failed" })`; on `kind: "challenged"` after a pass: `failed` with the reason; `retry` (the UI's) sets `passedOnce.current = false` then runs `retryInternal`; `retryInternal` is today's retry body (`update()` with an active worker, `register` otherwise).
+- Produces: `useReadiness` behaviour — on `kind: "challenged"` the reader FIRST checks the page's own route (`parseRoute(location.hash).kind === "door"` at message time: the worker's election reads `WindowClient.url`, whose tracking of a hash navigation is unmeasured, so the page is the fence — a non-door page treats `challenged` as `failed` and runs no pass; P-26); then, on the door with no automatic pass yet on this hook instance: `passedOnce.current = true`, `passChallenge().then(retryInternal, (e) => { failure/reason = the message's reason; readiness "failed" })`; on `kind: "challenged"` after a pass: `failed` with the reason; `retry` (the UI's) sets `passedOnce.current = false` then runs `retryInternal`; `retryInternal` is today's retry body (`update()` with an active worker, `register` otherwise).
 
 - [ ] **Step 1: Write the failing cells in `swRegister.test.ts`**
 
@@ -550,6 +550,7 @@ it("a rejected pass lands on failed with the reason and no retry", ...) // handl
 it("with no overlay mounted the door lands on failed at once", ...) // setChallengeHandler(null) → "failed", no retry
 it("a second challenged message on the same page draws the button and runs no second pass", ...) // after one pass: handler spy still 1, readiness "failed"
 it("a click on Try again resets the counter so its own challenged retry may pass once more", ...) // result.current.retry(); then a challenged message → the handler spy reads 2
+it("a challenged message at a page whose route is not the door lands on failed and runs no pass", ...) // P-26: location.hash "#/t/abc"; the handler spy reads 0
 it("kind failed takes today's path", ...) // the existing 'names the failure…' cell asserts kind: "failed" in its message
 it("the automatic pass and retry request nothing under /api", ...) // vi.spyOn(globalThis, "fetch"): no call whose URL path starts with /api
 ```
@@ -698,6 +699,10 @@ The "before" review, run from the ledger's scan (one row per pair of tasks shari
 - **P-20 (Task 3):** the dealing screen had no Abandon control at HEAD, so design rule 3's "added there" applies and Task 3 builds it; §16's metered ledger gains the reopen row.
 - **P-21 (Task 3, after its review):** a reopen's 409 re-reads the table once as `join`'s does (the review's Minor 3); P-19's catcher list trimmed (the seat holder's loop skips /reopen).
 - **P-22 (Task 4, after its DONE_WITH_CONCERNS):** Step 2's predicted reds and Step 1's "the log line is the kept one" corrected — the old code reads `None`, and a kept table gets no line.
+- **P-23 (Task 5):** `isDoorUrl` also refuses non-`http(s)` URLs and the server's own paths (`/enter`, `/api/…`, `/cdn-cgi/…`) — the orchestrator's hash-only restatement would have elected them.
+- **P-24 (Task 5):** `sw.node.test.ts` runs under `vitest.node.config.ts` (`npm run test:wasm`), not the default config, which excludes `*.node.test.ts`.
+- **P-25 (Task 5):** the election cell orders each window list adversarially.
+- **P-26 (Task 6):** the door's reader checks its own route before an automatic pass — the page is the fence while `WindowClient.url`'s hash tracking is unmeasured.
 - **R-8 supersedes the next bullet: every export builds in its OWN `target/`** (cargo keys a workspace crate by its path relative to the workspace root, so a shared target runs the other tree's artifacts as fresh — found by Task 2's implementer).
 - **Exports share the checkout's `target/`** (WITHDRAWN by R-8, kept for the record) (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
