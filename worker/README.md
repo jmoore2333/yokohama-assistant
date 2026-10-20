@@ -332,7 +332,8 @@ game is kept whoever played it, and nothing about it is trustworthy beyond the r
 deployment declares one source, and its file says which: `wrangler.jsonc` is the public deployment
 (`yokohama-web`, source `access` until the window of `RUNBOOK.md` §23 moves it to `workos`), and
 `wrangler.private.jsonc` is the LATER private deployment (`yokohama-web-private`, its own bucket, objects and
-rate-limit namespaces, source `access`; `npm run deploy:private`, once the owner names its domain). Cloudflare
+rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.nyc`, beside production's
+`yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare
 Access may stay in front of a provider-signed Worker, which then ignores the assertion.
 
 **Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
@@ -1763,9 +1764,9 @@ named, not only the first:
    `oidc` and refused at `workos`, and the open files omit every arm variable. And each file in the
    guard's `DEPLOYMENTS` table is held to its own record — production's `yokohama-web`, bucket
    `yokohama-archive`, route `yokohama.moore.nyc`; the private Worker's `wrangler.private.jsonc`,
-   `yokohama-web-private`, its own bucket and rate-limit namespaces, source `access` — and to production's
-   `main`, `rules`, `compatibility_date`, `assets` and `observability`; it is optional until the owner
-   names its domain.)*
+   `yokohama-web-private`, route `yokohama-test.moore.nyc` (security S3, Task 7), its own bucket and
+   rate-limit namespaces, source `access` — and to production's `main`, `rules`, `compatibility_date`,
+   `assets` and `observability`; the file is optional unless it is the one named.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
    R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as

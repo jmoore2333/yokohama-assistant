@@ -1,13 +1,14 @@
 // **The Worker `yokohama-web-private`** (the auth cycle, Task 7; plan decision D-1, the design's §4.7 as amended)
 // — the LATER private deployment: production's configuration behind Cloudflare Access, as `yokohama-web` ran before
 // it went public, under its OWN record — its own Worker name (so its own Durable Objects), its own bucket
-// `yokohama-archive-private` and its own rate-limit namespaces `7303` and `7304`. It has NO route yet: the owner
-// names its domain later, and the route arrives with it; with `workers_dev` and `preview_urls` off, a deploy of
-// this file answers nowhere until then.
+// `yokohama-archive-private` and its own rate-limit namespaces `7303` and `7304`. Its domain is
+// `yokohama-test.moore.nyc` (security S3, Task 7), a custom domain covered by the one Access application as a
+// destination since 2026-10-20; with `workers_dev` and `preview_urls` off, that hostname is the only place a
+// deploy of this file answers.
 //
 // `npm run deploy:private` ships it once `node scripts/deploy-guard.mjs --config wrangler.private.jsonc` passes.
 // The guard holds it to its record (`DEPLOYMENTS` in `scripts/deploy-guard.mjs`: the name, the bucket, the
-// namespaces at production's figures, no route and the source `access`), never to production as a sibling, and to
+// namespaces at production's figures, the one route and the source `access`), never to production as a sibling, and to
 // production's `main`, `rules`, `compatibility_date`, `assets`, `observability`, `durable_objects` and `migrations`:
 // both Workers run the same code.
 // A new Worker's first deploy cannot pass the secrets guard (wrangler answers "Worker not found" for a Worker that
@@ -19,7 +20,9 @@
   "main": "src/index.ts",
   // Production's (spec §3.1), held equal to it by the deploy guard (R-49), as `main` and `rules` are.
   "compatibility_date": "2026-09-15",
-  // No route until the owner names the private domain: the deploy guard refuses one here until its record names it.
+  // The private domain, held to the deploy guard's record: that hostname and nothing else (the same shape as
+  // `wrangler.jsonc`'s route).
+  "routes": [{ "pattern": "yokohama-test.moore.nyc", "custom_domain": true }],
   "workers_dev": false,
   "preview_urls": false,
   // Production's logs, held equal to them by the deploy guard (`wrangler.jsonc` says why each key is set).
@@ -57,8 +60,8 @@
     "YOKOHAMA_WEB_IDENTITY": "worker",
     // The private Worker keeps Access (plan decision D-1): its record names this source.
     "YOKOHAMA_IDENTITY_SOURCE": "access",
-    // Production's Access pair (the `yokohama` application's) until the owner names the private domain: the domain
-    // joins that application's destinations, or brings an application of its own, and its audience, here.
+    // Production's Access pair (the `yokohama` application's): `yokohama-test.moore.nyc` is one of that
+    // application's destinations (2026-10-20), so its audience is this one.
     "ACCESS_TEAM_DOMAIN": "bdvc.cloudflareaccess.com",
     "ACCESS_AUD": "5fa7a989f4f4970771769d68ff273497c125f0374253c0ccf817952dc9c3e8c7",
     // OFF: the dev door opens in `wrangler.dev.jsonc` alone, and the deploy guard refuses `on` here.

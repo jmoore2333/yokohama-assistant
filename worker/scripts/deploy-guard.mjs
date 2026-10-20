@@ -325,17 +325,17 @@ const PRIVATE_FILE = "wrangler.private.jsonc";
 
 /** **The deployments** (the auth cycle, Task 7; design §4.7 as amended by D-1), each file's RECORD: the Worker it
  *  names, the bucket it binds as `ARCHIVE`, its two rate-limit namespaces (`CREATE_LIMIT`'s, then `WRITE_LIMIT`'s),
- *  the hostnames its routes bind (`null`: none yet) and, where one is named, the identity source it declares. A
- *  judged file in this table is held to its record (check 3b) and never, as a sibling, to production. Production's
- *  source is the window's to move (`access` today, `workos` at the plan's Task 10), so its record names none; the
- *  private Worker keeps Access. Production's namespaces are `RATE_LIMITS`' (check 13). */
+ *  the hostnames its routes bind (`null`: none yet; every record names one since security S3, Task 7) and, where
+ *  one is named, the identity source it declares. A judged file in this table is held to its record (check 3b) and
+ *  never, as a sibling, to production. Production's source is the window's to move (`access` today, `workos` at the
+ *  plan's Task 10), so its record names none; the private Worker keeps Access, at `yokohama-test.moore.nyc`. Production's namespaces are `RATE_LIMITS`' (check 13). */
 export const DEPLOYMENTS = {
   [PRODUCTION_FILE]: { name: "yokohama-web", bucket: "yokohama-archive", namespaces: ["7301", "7302"], routes: ["yokohama.moore.nyc"] },
   [PRIVATE_FILE]: {
     name: "yokohama-web-private",
     bucket: "yokohama-archive-private",
     namespaces: ["7303", "7304"],
-    routes: null,
+    routes: ["yokohama-test.moore.nyc"],
     source: "access",
   },
 };
