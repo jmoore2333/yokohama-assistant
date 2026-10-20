@@ -199,7 +199,7 @@ Design §3.3 and D-7. A failure counter keyed by (table, caller key), 20 wrong p
 - Docs: `docs/web-lane.md` §8 (the password-oracles row), `deploy/README.md` §2 (one sentence: under the open door the counter is per name)
 
 **Interfaces:**
-- Produces: `pub struct Guesses` (Default); `pub const WRONG_PASSWORDS_PER_WINDOW: u32 = 20`; `pub const WINDOW_SECS: u64 = 10`; `pub const TOO_MANY_WRONG_PASSWORDS: &str = "too many wrong passwords for this table — wait ten seconds and try again"`; `impl Guesses { pub fn check(&self, table: &str, caller: &str, now: u64) -> Result<(), &'static str>; pub fn failed(&self, table: &str, caller: &str, now: u64); pub fn cleared(&self, table: &str, caller: &str); pub fn live(&self, now: u64) -> usize }`; `GameError::TooMany(String)` → `ApiError::too_many_requests`; `Games.guesses: Guesses` (crate-visible).
+- Produces: `pub struct Guesses` (Default); `pub const WRONG_PASSWORDS_PER_WINDOW: u32 = 20`; `pub const WINDOW_SECS: u64 = 10`; `pub const TOO_MANY_WRONG_PASSWORDS: &str = "too many wrong passwords for this table — wait ten seconds and try again"`; `pub enum Guess { Refused, Wrong, Right }`; `impl Guesses { pub fn guess(&self, table: &str, caller: &str, now: u64, correct: bool) -> Guess; pub fn live(&self, now: u64) -> usize }` — ONE acquisition of the counter's lock per guess (P-17, after the review: the design's "the count-then-write is one operation under the counter's own lock", so the serialization no longer leans on the table lock, which is keyed by the request's spelling where the counter is keyed by the stored id); `GameError::TooMany(String)` → `ApiError::too_many_requests`; `Games.guesses: Guesses` (crate-visible).
 - Consumes: `(self.clock)()` for `now` (seconds — the unit `table::now_unix` and both wasm hosts hand the layer; the implementer confirms the Worker's `CLOCK.now` reading is seconds before writing the window arithmetic, `crates/yokohama-worker/src/lib.rs:105–120`).
 
 - [ ] **Step 1: Write the failing unit cells in `guesses.rs`**
@@ -214,6 +214,10 @@ Design §3.3 and D-7. A failure counter keyed by (table, caller key), 20 wrong p
     // AND the entry's count read white-box (a #[cfg(test)] reader) is still 20 after the two refusals: under a fixed
     // window a counted refusal is invisible from outside, so the black-box line alone cannot see that mutant (P-14)
 }
+#[test] fn a_failure_inside_an_open_window_never_moves_its_start() {
+    // nineteen failures at t=0, the twentieth at t=9; a check at t=9 refused; at t=10 Ok — a sliding window would refuse until t=19 (P-17; the review's one surviving mutant)
+}
+#[test] fn the_window_arithmetic_neither_overflows_nor_lapses_early_at_the_clocks_ends() {} // P-13
 #[test] fn a_lapsed_entry_is_pruned_on_the_next_check_whatever_its_key() {
     // failures under key A at t=0; a check under key B at t=10 → the map's length read RAW is 0 (`live` prunes for
     // itself, so `live() == 0` cannot see a `check` that never prunes; P-14)
@@ -227,12 +231,12 @@ Expected: FAIL to compile.
 
 - [ ] **Step 3: Implement `guesses.rs`**
 
-`Guesses { windows: Mutex<HashMap<(String, String), Window>> }`, `Window { started: u64, failures: u32 }`. `check`: lock; drop every entry whose `now.saturating_sub(started) >= WINDOW_SECS` (the addition form overflows at the clock's end and a saturating add lapses a window started there at once; P-13); refuse with `TOO_MANY_WRONG_PASSWORDS` when the key's window holds `failures >= WRONG_PASSWORDS_PER_WINDOW`. `failed`: lock; start a window at `now` when none, else increment. `cleared`: remove the key. `live`: prune, then the map's length. One lock per call — the check and the count are never two operations (the S1b lesson). Register `pub mod guesses;`.
+`Guesses { windows: Mutex<HashMap<(String, String), Window>> }`, `Window { started: u64, failures: u32 }`. `guess(table, caller, now, correct)`: ONE lock acquisition — drop every entry whose `now.saturating_sub(started) >= WINDOW_SECS` (the addition form overflows at the clock's end and a saturating add lapses a window started there at once; P-13); when the key's window holds `failures >= WRONG_PASSWORDS_PER_WINDOW` answer `Refused` whatever `correct` says (a full window hides the compare's result); else when `correct` is false start a window at `now` if none — **a window starts at the FIRST failure and never moves; a failure inside an open window increments and never restarts it** — and answer `Wrong`; when `correct` is true remove the key and answer `Right`. `live`: prune, then the map's length. The check and the count are one operation under the counter's own lock (the S1b lesson; P-17). Register `pub mod guesses;`.
 
 - [ ] **Step 4: Run the unit cells to verify they pass**
 
 Run: `cargo test -p yokohama-web guesses::`
-Expected: PASS, 6 cells.
+Expected: PASS, 8 cells.
 
 - [ ] **Step 5: Write the failing route cells (in `lib.rs`'s test module, through the router)**
 
@@ -264,7 +268,7 @@ Expected: FAIL (every attempt 403).
 
 - [ ] **Step 7: Wire the counter into `join` and `unlock`**
 
-In both, after the table is read under the lock and immediately before the compare (a request the status match, the seat rungs or an absent/empty password refuse is no guess and neither checks nor counts): one private helper the two routes share — `let now = (self.clock)(); self.guesses.check(&doc.id, user.as_str(), now).map_err(|s| GameError::TooMany(s.to_string()))?` (the STORED document's id, never the request's spelling — a case-insensitive file store aliases `GUARDED` to `guarded`; one clock reading for the check and the count; P-16); on a wrong password call `failed` then return the existing `Forbidden`; on a right one call `cleared` before the write. `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal (`with_parts` builds it as `Self { … }` inside `impl Games` — grep `Games {` AND `Self {` in `games.rs`).
+In both, after the table is read under the lock and immediately before the compare (a request the status match, the seat rungs or an absent/empty password refuse is no guess and neither checks nor counts): one private helper the two routes share — `let now = (self.clock)(); match self.guesses.guess(&doc.id, user.as_str(), now, doc.check_password(given)) { Guess::Refused => Err(GameError::TooMany(TOO_MANY_WRONG_PASSWORDS.to_string())), Guess::Wrong => Err(the existing Forbidden), Guess::Right => Ok(()) }` (the STORED document's id, never the request's spelling — a case-insensitive file store aliases `GUARDED` to `guarded`; one clock reading; the compare's result computed before the call and hidden by a `Refused` answer; P-16, P-17). `GameError::TooMany(m)` maps to `ApiError::too_many_requests(m)` in `lib.rs`. The field: `guesses: Guesses::default()` in every `Games` literal (`with_parts` builds it as `Self { … }` inside `impl Games` — grep `Games {` AND `Self {` in `games.rs`).
 
 - [ ] **Step 8: Run the lib suite and regenerate nothing**
 
@@ -306,7 +310,7 @@ Design §3.2 rule 1, D-4, D-15 and R-S3-13. A seat-scoped route the creator post
 - Docs: `docs/web-lane.md` §13 (the API map gains the row), §4 (the `admitted` bullet, one sentence)
 
 **Interfaces:**
-- Produces: `POST /api/games/{id}/reopen` with body `{ "seat": n }` (1-based, `PlayerId::try_new`), answering the creator's `TableView` (200); `Games::reopen(&self, id: &str, user: &User, seat: PlayerId) -> Result<TableView, GameError>`; the sentences — `ONLY_CREATOR_REOPENS = "only the table's creator can reopen a seat"` (403), `DEAL_HAS_BEGUN = "the deal has begun — abandon the table and set it again"` (409), `GAME_HAS_STARTED = "the game has started — a seat at play is a player"` (409), `OWN_SEAT = "you cannot reopen your own seat — abandon the table instead"` (409), `NO_JOINER = "that seat holds no joiner to reopen"` (409, a bot's seat and an open seat alike), `no seat N at this table` (400, echoed `n`); `api.reopen(game: string, seat: number): Promise<TableView>` in `web/src/api.ts`.
+- Produces: `POST /api/games/{id}/reopen` with body `{ "seat": n }` (0-BASED as `Keep`/`Join` send it — `PlayerId::try_new` accepts 0..3 and indexes `seats` directly; P-18), answering the creator's `TableView` (200); `Games::reopen(&self, id: &str, user: &User, seat: PlayerId) -> Result<TableView, GameError>`; the sentences — `ONLY_CREATOR_REOPENS = "only the table's creator can reopen a seat"` (403), `DEAL_HAS_BEGUN = "the deal has begun — abandon the table and set it again"` (409), `GAME_HAS_STARTED = "the game has started — a seat at play is a player"` (409), `OWN_SEAT = "you cannot reopen your own seat — abandon the table instead"` (409), `NO_JOINER = "that seat holds no joiner to reopen"` (409, a bot's seat and an open seat alike), `no seat N at this table` (400, echoed `n`); `api.reopen(game: string, seat: number): Promise<TableView>` in `web/src/api.ts`.
 - Consumes: `TableDoc.is_creator`, `SeatDoc::{Human, Bot, Open}`, `Games::with_table_lock`, `read_table`, `write_table`, `signal.bump`, `doc.view`.
 
 - [ ] **Step 1: Write the failing layer cells in `tables.rs`'s test module**
@@ -333,7 +337,7 @@ Expected: FAIL to compile (`Games::reopen` missing).
 
 - [ ] **Step 3: Implement `Games::reopen` in `tables.rs`**
 
-`require_table`; `with_table_lock`; read; the status match (`Open` proceeds; `Dealing` → `Conflict(DEAL_HAS_BEGUN)`; `Playing` → `Conflict(GAME_HAS_STARTED)`); `is_creator` else `Forbidden(ONLY_CREATOR_REOPENS)`; the seat by `doc.seats.get(n)` else `BadRequest`; `Human { user, .. }` equal to the creator → `OWN_SEAT`; `Bot` or `Open` → `NO_JOINER`; write `SeatDoc::Open`; `write_table(&doc, Some(version))`, a `Conflict` on a lost race in `join`'s sentence shape ("changed while this reopen was in flight"); `signal.bump(id)`; `Ok(doc.view(user, self.archive_on()))`.
+`require_table`; `with_table_lock`; read; `is_creator` FIRST else `Forbidden(ONLY_CREATOR_REOPENS)` at every status (the status-leak ruling #8 — a stranger learns no status from a refusal; the stranger sweep, the admission grid's Write column and the seat holder's open-table loop are the catchers; P-19); then the status match (`Open` proceeds; `Dealing` → `Conflict(DEAL_HAS_BEGUN)`; `Playing` → `Conflict(GAME_HAS_STARTED)`); the seat by `doc.seats.get(n)` else `BadRequest`; `Human { user, .. }` equal to the creator → `OWN_SEAT`; `Bot` or `Open` → `NO_JOINER`; write `SeatDoc::Open`; `write_table(&doc, Some(version))`, a `Conflict` on a lost race in `join`'s sentence shape ("changed while this reopen was in flight"); `signal.bump(id)`; `Ok(doc.view(user, self.archive_on()))`.
 
 - [ ] **Step 4: Run the layer cells to verify they pass**
 
@@ -342,7 +346,7 @@ Expected: PASS, 7 cells.
 
 - [ ] **Step 5: Write the failing route cells**
 
-In `api.rs`'s test module: the route table's hand-kept copy at 4132 gains `("POST", "/api/games/{id}/reopen")` (the drift detector); in `lib.rs`'s test module, through `request_raw_with_body`: the creator's reopen → 200 with the `TableView`; a joiner's → 403 with the sentence; a body `{"seat": 0}` → 400 (`PlayerId::try_new`); a body with an unknown field → 400 (`deny_unknown_fields`).
+In `api.rs`'s test module: the route table's hand-kept copy at 4132 gains `("POST", "/api/games/{id}/reopen")` (the drift detector); in `lib.rs`'s test module, through `request_raw_with_body`: the creator's reopen → 200 with the `TableView`; a joiner's → 403 with the sentence; a body `{"seat": 4}` → 400 (`PlayerId::try_new`) and `{"seat": 3}` at a 3-seat table → 400 naming the seat; `{"seat": 0}` is the creator's own seat → 409 OWN_SEAT (P-18); a stranger's reopen at a DEALING table → 403, never 409 (P-19); a body with an unknown field → 400 (`deny_unknown_fields`).
 
 - [ ] **Step 6: Run them to verify they fail**
 
@@ -372,7 +376,7 @@ Expected: FAIL (no control).
 
 - [ ] **Step 11: Implement `api.reopen` and the control**
 
-`web/src/api.ts`: `reopen: (game: string, seat: number) => call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat })`. `OpenTable.tsx`: in the seat rows at 350, when `table.mine && s.kind === "human" && !s.you`, a button "Reopen" whose handler awaits `api.reopen(table.id, i + 1)`, sets the table from the answer, and on an `ApiError` puts `e.message` in the general error strip (`setError`, not the Abandon strip). `Dealing.tsx` is not touched.
+`web/src/api.ts`: `reopen: (game: string, seat: number) => call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat })`. `OpenTable.tsx`: in the seat rows at 350, when `table.mine && s.kind === "human" && !s.you`, a button "Reopen" whose handler awaits `api.reopen(table.id, i)` (0-based; P-18), sets the table from the answer, and on an `ApiError` puts `e.message` in the general error strip (`setError`, not the Abandon strip). The Reopen control stays off the dealing screen; `Dealing.tsx` GAINS the creator's Abandon control under design §3.2 rule 3 — it had none at HEAD (the ~255 comment is about the lobby row) — `mayAbandon`-gated, the open table's wiring and sentence, with `Dealing.test.tsx` cells (P-20). `docs/web-lane.md` §16's metered ledger gains the reopen row (`lane_document`'s `the_ledger_names_every_route`).
 
 - [ ] **Step 12: Run the client suites**
 
@@ -688,12 +692,16 @@ The "before" review, run from the ledger's scan (one row per pair of tasks shari
 - **P-14 (Task 2):** the refused-check and prune cells read the count and the map white-box, because under a fixed window a counted refusal is invisible from outside and `live` prunes for itself.
 - **P-15 (Task 2):** Step 6's filter named one cell of five; the five are named.
 - **P-16 (Task 2):** the counter's key is the stored document's id and both routes share one private helper, one clock reading per guess.
+- **P-17 (Task 2, after its review):** one lock acquisition per guess through `Guesses::guess(.., correct) -> Guess`, so the counter's own lock is the serialization (the review's Minor 2, plan-mandated by the split interface); the window's anchor pinned by a cell (Minor 1, the one surviving mutant).
+- **P-18 (Task 3, the implementer's pre-code probe):** the wire seat is 0-based as `Keep`/`Join` send it; the 400/409 cells re-cut.
+- **P-19 (Task 3):** the creator check runs first, then status, then seat — the design's order and the status-leak ruling #8; three existing sweeps are the catchers.
+- **P-20 (Task 3):** the dealing screen had no Abandon control at HEAD, so design rule 3's "added there" applies and Task 3 builds it; §16's metered ledger gains the reopen row.
 - **R-8 supersedes the next bullet: every export builds in its OWN `target/`** (cargo keys a workspace crate by its path relative to the workspace root, so a shared target runs the other tree's artifacts as fresh — found by Task 2's implementer).
 - **Exports share the checkout's `target/`** (WITHDRAWN by R-8, kept for the record) (a symlink inside each export; 51 GiB free beside an 87 GiB target): cargo's lock serializes the builds and path-keyed artifacts coexist. The baseline counts are in the SDD ledger.
 
 ## Self-review (run by the author, 2026-10-20)
 
-- **Spec coverage:** §3.1 → Tasks 5–6 (steps 1–7 all placed; rule 7's cell in both); §3.2 rule 1 → Task 3, rule 2 → Task 4, rule 3 (Abandon exists) → verified by Task 3's reviewer, no build; §3.3 → Task 2; §3.4 → Task 1; §3.5 → Task 7; D-10 → Task 8; D-11 → Task 9; D-12 → Before Task 1 and After. The design's "the client's 429 does not route through the stream's end" → Task 2 Step 10's note (the join is a `call`, not a stream; by construction).
+- **Spec coverage:** §3.1 → Tasks 5–6 (steps 1–7 all placed; rule 7's cell in both); §3.2 rule 1 → Task 3, rule 2 → Task 4, rule 3 → BUILT by Task 3 (P-20: the dealing screen had no Abandon control at HEAD — the self-review's "verified, no build" was wrong); §3.3 → Task 2; §3.4 → Task 1; §3.5 → Task 7; D-10 → Task 8; D-11 → Task 9; D-12 → Before Task 1 and After. The design's "the client's 429 does not route through the stream's end" → Task 2 Step 10's note (the join is a `call`, not a stream; by construction).
 - **Step scan:** every code step names its signature and file; every test step names its cells and assertions; no step says "handle" or "appropriate".
 - **Type consistency:** `Hostnames`/`with_hostnames`/`misdirected` (Task 1) used nowhere else; `Guesses`/`GameError::TooMany` (Task 2) used in Tasks 2 only; `Reopen`/`Games::reopen`/`api.reopen` (Task 3) match across layer, Worker cell and client; `InstallFailedKind`/`isDoorUrl`/`isEdgeChallengeResponse` (Task 5) consumed by Task 6 under the same names.
 - **Review Focus:** six lines, each with its cell in the owning task.
