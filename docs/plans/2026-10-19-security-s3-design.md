@@ -100,6 +100,17 @@ Quoted as given; each ruling names the rows or the mechanism it decides.
   boundary sets `off` and the binary answers any `Host`, saying so once at start. And the catcher the note asked for:
   the smoke takes the hostname and probes with it, and the NAS recipe's reading through the tunnel is a REQUIRED step
   before a deploy is called done.
+- **R-S3-15 — the window is the plan's last task, programmatic, waiting on nobody** (2026-10-20). "the NAS deploy will
+  need to be layered at the very end of the plan, so it doesn't get hung waiting for me, unless it can be done over
+  portainer and configured programatically" → the plan's Task 10: `0.7.2` on the NAS first, then the Worker, after the
+  Fable review's fix round and the PR, driven from the workstation as S2's NAS window was (`deploy/RUNBOOK.md` §3.22:
+  the context served on the LAN, the image built and the container swapped through Portainer's Docker proxy, every
+  reading over WARP or by an exec inside a container); a host the orchestrator cannot reach is a typed, recorded skip
+  that the owner's checklist carries. **And R-S3-12's step is DONE:** the owner added `yokohama-test.moore.nyc` to the
+  Access application once the outage lifted ("yokohama-test was taken by the access policy so that is now done, the
+  pass for the worker can be handled in the plan"), read back over the API at 04:41:55Z in both `self_hosted_domains`
+  and `destinations` under the private file's `aud`; Task 7's first step is a read-back, and the private Worker's
+  deploy runs in the plan.
 
 ## 2. Intent, goals and fences
 
@@ -595,3 +606,9 @@ on by default and set `on` explicitly in every committed deploy file, with `off`
 boundary. Taken into §3.4 (the switch's semantics and start line; the smoke's hostname argument; the recipe's tunnel
 reading made a required step), D-8, and the plan's Task 1 (the cells for both switch states and the malformed value,
 the smoke's probe, both variables at every deploy site, the root README) and its "After the tasks" owner item.
+
+The same evening, two more: **R-S3-15** — the window is the plan's Task 10, at the very end, programmatic from the
+workstation through Portainer's Docker proxy and WARP, with a typed skip for a host it cannot reach; and **R-S3-12's
+step completed by the owner** — `yokohama-test.moore.nyc` is a destination of the one Access application, read back
+over the API (`updated_at` 2026-10-20T04:41:55Z; the session reads 24 h, for D22's row at the wrap), so Task 7's first
+step is a read-back and the private Worker's deploy runs in the plan.
