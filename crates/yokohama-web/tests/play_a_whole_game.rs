@@ -131,9 +131,11 @@ impl Api {
         if method == "POST" && uri.ends_with("/input") {
             self.input_posts.set(self.input_posts.get() + 1);
         }
+        // A browser always sends a `Host`, and the host check refuses a request with none (security S3, D4).
         let req = Request::builder()
             .method(method)
             .uri(uri)
+            .header("host", "localhost")
             .header("x-yokohama-claimed-user", who);
         let req = match body {
             Some(v) => req

@@ -263,6 +263,12 @@ COPY crates/yokohama-web/assets/art /srv/assets/art
 # image started without them runs the lobby chat on with a keep of 500
 # messages and 500 characters per message (M6.4, R-6.4.6, R-6.4.8); a bad value
 # still exits 1 naming the variable.
+# The Host check's two variables (security S3, D4; R-S3-14) are the operator's, set at
+# run, and this image sets neither: `YOKOHAMA_WEB_HOSTNAMES_ENABLED` (`on` or `off`;
+# absent is `on`) and `YOKOHAMA_WEB_HOSTNAMES` (host names, separated by commas).
+# This image binds 0.0.0.0, which is no name, so with the check on and no list it
+# answers loopback alone, and a container reached through a tunnel or a proxy
+# answers every request 421 until its hostname is listed. `deploy/README.md` §4.
 ENV YOKOHAMA_WEB_HOST=0.0.0.0 \
     YOKOHAMA_WEB_PORT=8080 \
     YOKOHAMA_WEB_DIST=/srv/web/dist \

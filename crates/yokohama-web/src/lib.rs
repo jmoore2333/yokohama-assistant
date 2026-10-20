@@ -70,6 +70,7 @@ pub mod text;
 pub mod explain;
 pub mod games;
 pub mod grammar;
+pub mod hostnames;
 pub mod identity;
 pub mod log;
 pub mod outcome;
@@ -183,6 +184,11 @@ impl ApiError {
     /// client ends a signal on it rather than waiting (the client's decision D-2).
     pub fn too_many_requests(message: impl Into<String>) -> Self {
         Self { status: StatusCode::TOO_MANY_REQUESTS, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
+    }
+    /// A request for a host name this server is not told to answer (security S3, D4): 421, the sentence the
+    /// caller composes from [`hostnames::NOT_FOR_THIS_HOST`] and an echoed host.
+    pub fn misdirected(message: impl Into<String>) -> Self {
+        Self { status: StatusCode::MISDIRECTED_REQUEST, message: Self::capped(message.into()), table_status: None, foreign_bot: None }
     }
     /// A body that did not arrive in time (security S2c, decision D-3): 408 with `BODY_TOO_SLOW`.
     pub fn request_timeout(message: impl Into<String>) -> Self {
@@ -501,6 +507,10 @@ pub struct AppState {
     pub replay_wait: std::time::Duration,
     /// The body read's deadline — [`BODY_READ_DEADLINE`]; a cell shortens it through [`Self::with_body_deadline`].
     pub body_deadline: std::time::Duration,
+    /// Which host names the binary answers (security S3, D4; R-S3-14): the check [`app`]'s `host_allowed` layer
+    /// runs on every request. Every constructor builds the on-state's default set for a loopback bind; `main`
+    /// reads the two variables and gives the state its own through [`Self::with_hostnames`].
+    pub hostnames: hostnames::Hostnames,
 }
 
 #[cfg(feature = "server")]
@@ -709,6 +719,9 @@ impl AppState {
             replay_gate: Arc::new(tokio::sync::Semaphore::new(REPLAY_PERMITS)),
             replay_wait: REPLAY_WAIT,
             body_deadline: BODY_READ_DEADLINE,
+            // The loopback default set (security S3, D4): only [`Self::with_hostnames`], given `main`'s reading,
+            // says otherwise. A state nobody told answers loopback and nothing else.
+            hostnames: hostnames::Hostnames::on_for_bind("127.0.0.1"),
         }
     }
 
@@ -729,6 +742,12 @@ impl AppState {
     /// A header set chosen for it — how a cell gives an in-memory state the pairs a dist would (security S2a).
     pub fn with_headers(self, headers: Vec<(http::HeaderName, http::HeaderValue)>) -> Self {
         Self { headers: Arc::new(headers), ..self }
+    }
+
+    /// This state answering the host names `hostnames` names (security S3, D4) — [`Self::with_clock`]'s shape, for
+    /// `main`, which read the two variables, and the cells that assert what the check refuses and admits.
+    pub fn with_hostnames(self, hostnames: hostnames::Hostnames) -> Self {
+        Self { hostnames, ..self }
     }
 
     /// This state with the multiplayer switch thrown (M6.5b2, R-6.5b2.4).
@@ -1313,6 +1332,36 @@ async fn response_headers(
     res
 }
 
+/// **The `Host` allow-list** (security S3, finding D4; R-S3-14): an unlisted `Host` is **421 Misdirected Request**
+/// with one sentence, before routing, on every path and method — static assets and `HEAD` included, since a
+/// rebinding page reads whatever it is answered. The host is the `Host` header, else the request line's authority
+/// (where an HTTP/2 `:authority` surfaces); a request with neither is refused. With the switch `off` nothing is
+/// refused. Layered in [`app`] INSIDE [`response_headers`], so the refusal carries the header set and, under
+/// `/api`, `no-store`.
+#[cfg(feature = "server")]
+async fn host_allowed(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.hostnames.is_on() {
+        return next.run(req).await;
+    }
+    let offered = match req.headers().get(http::header::HOST) {
+        Some(value) => Some(String::from_utf8_lossy(value.as_bytes()).into_owned()),
+        None => req.uri().authority().map(|authority| authority.as_str().to_string()),
+    };
+    match offered {
+        Some(host) if state.hostnames.admits(&host) => next.run(req).await,
+        offered => ApiError::misdirected(format!(
+            "{} \"{}\"",
+            hostnames::NOT_FOR_THIS_HOST,
+            echo(offered.as_deref().unwrap_or(""))
+        ))
+        .into_response(),
+    }
+}
+
 /// The router, built over a shared state so tests can drive it through
 /// `tower::ServiceExt::oneshot` without binding a port.
 ///
@@ -1347,6 +1396,9 @@ pub fn app(state: Arc<AppState>) -> Router {
         // BEFORE `with_state`, which `fallback` now needs: it reads the client
         // root off the state rather than the environment (M6.5b2).
         .fallback(fallback)
+        // The layer added LAST is the OUTERMOST: the host check goes first so `response_headers` wraps it, and a
+        // 421 carries the header set (security S3, D4; `an_unlisted_host_is_421_before_routing_…` reads the order).
+        .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), host_allowed))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&state), response_headers))
         .with_state(state)
 }
@@ -1369,6 +1421,18 @@ mod tests {
     /// route rather than about the 401 in front of it. The identity cells
     /// choose their own headers with [`get_with`].
     const WHO: &str = "red@wire.test";
+
+    /// The `Host` every request below carries (security S3, D4; pre-flight ruling P-1). A browser always sends
+    /// one, and the host check refuses a request with none, so the in-process requests the crate's cells build
+    /// send the one name every state's default set holds. [`request_with_host`] is the only path that omits it
+    /// or sends another.
+    const TEST_HOST: &str = "localhost";
+
+    /// A request builder already carrying [`TEST_HOST`]: every `Request::builder()` that reaches [`app`] starts
+    /// here, so the header is written once and a request that forgets it cannot exist.
+    fn a_request() -> http::request::Builder {
+        Request::builder().header(http::header::HOST, TEST_HOST)
+    }
 
     /// **A HEAD never runs a write arm** (security S1c, Task 3's finding — pre-
     /// existing): `find` folds HEAD onto GET, and `answer` must pick its arm by
@@ -1393,7 +1457,7 @@ mod tests {
             let s = Arc::clone(&state);
             let uri = uri.to_string();
             async move {
-                let req = Request::builder().method("HEAD").uri(&uri).header(identity::CLAIMED_HEADER, WHO)
+                let req = a_request().method("HEAD").uri(&uri).header(identity::CLAIMED_HEADER, WHO)
                     .header("content-type", "application/json")
                     .body(Body::from(body.map(|b| serde_json::to_vec(&b).expect("a body")).unwrap_or_default()))
                     .expect("a request");
@@ -1495,6 +1559,7 @@ mod tests {
             ApiError::server_error(long.clone()),
             ApiError::too_many_requests(long.clone()),
             ApiError::request_timeout(long.clone()),
+            ApiError::misdirected(long.clone()),
         ];
         for e in &built {
             assert_eq!(e.message.chars().count(), MESSAGE_MAX + 1, "{}", e.status);
@@ -1503,7 +1568,7 @@ mod tests {
         // Every constructor that TAKES a message passes it through `capped`: the
         // count of `message: impl Into<String>` signatures in the impl block is
         // the count of `Self::capped(message.into())` calls, and both are the
-        // five built above. A sixth constructor that skips the cap fails the
+        // six built above. A seventh constructor that skips the cap fails the
         // second count before it fails a body; `dealing`, `open` and `playing`
         // carry constants, and `busy()` builds the struct literally from one.
         let source = include_str!("lib.rs");
@@ -1644,7 +1709,7 @@ mod tests {
             ("GET", "/api/games".to_string(), None, format!("a{pad}b@c"), "contains whitespace"),
         ];
         for (method, uri, body, who, reaches) in rows {
-            let req = Request::builder().method(method).uri(&uri).header(identity::CLAIMED_HEADER, &who);
+            let req = a_request().method(method).uri(&uri).header(identity::CLAIMED_HEADER, &who);
             let req = match body {
                 Some(b) => req.header("content-type", "application/json").body(Body::from(serde_json::to_vec(&b).expect("a body"))),
                 None => req.body(Body::empty()),
@@ -1730,7 +1795,7 @@ mod tests {
     async fn get_json(uri: &str) -> (StatusCode, serde_json::Value) {
         let res = app(Arc::new(AppState::in_memory()))
             .oneshot(
-                Request::builder()
+                a_request()
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, WHO)
                     .body(Body::empty())
@@ -1756,7 +1821,7 @@ mod tests {
     /// the adapter's shape (HEAD, 405, the JSON 404) and, from Task 9, the record
     /// route's exact bytes. `who` is the claimed identity, or none.
     async fn raw(app: Router, method: &str, uri: &str, who: Option<&str>) -> (StatusCode, Vec<u8>) {
-        let mut builder = Request::builder().method(method).uri(uri);
+        let mut builder = a_request().method(method).uri(uri);
         if let Some(who) = who {
             builder = builder.header(identity::CLAIMED_HEADER, who);
         }
@@ -1781,7 +1846,7 @@ mod tests {
         async fn post_bytes(len: usize) -> (StatusCode, serde_json::Value) {
             let res = app(Arc::new(AppState::in_memory()))
                 .oneshot(
-                    Request::builder()
+                    a_request()
                         .method("POST")
                         .uri("/api/games")
                         .header(identity::CLAIMED_HEADER, "red@wire.test")
@@ -1819,7 +1884,7 @@ mod tests {
         uri: &str,
     ) -> (StatusCode, Option<String>, String) {
         let res = app
-            .oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).expect("a request"))
+            .oneshot(a_request().method(method).uri(uri).body(Body::empty()).expect("a request"))
             .await
             .expect("the router answers");
         let status = res.status();
@@ -1884,7 +1949,7 @@ mod tests {
     #[tokio::test]
     async fn the_layers_json_rejection_is_axums_word_for_word() {
         use axum::extract::FromRequest;
-        let req = axum::http::Request::builder()
+        let req = a_request()
             .method("POST")
             .uri("/x")
             .header("content-type", "application/json")
@@ -1898,7 +1963,7 @@ mod tests {
         assert_eq!(ours.message, axum_text);
         // And the SYNTAX arm, which is a different rejection type with a
         // different sentence.
-        let req = axum::http::Request::builder()
+        let req = a_request()
             .method("POST")
             .uri("/x")
             .header("content-type", "application/json")
@@ -1914,7 +1979,7 @@ mod tests {
         // And the MISSING content type, the third rejection type — pinned against
         // axum's own rather than a literal, so an upgrade that rewords it is
         // caught here (R-6.5a.4 asks that each of the four be pinned).
-        let req = axum::http::Request::builder()
+        let req = a_request()
             .method("POST")
             .uri("/x")
             .body(axum::body::Body::from(r#"{"line":"1"}"#))
@@ -1930,7 +1995,7 @@ mod tests {
         // by the layer in its own words — the only body whose answer is not
         // axum's, and only because axum's was a table opened from a list.
         let array = r#"[2,["Red","Blue"],0,null,[{"user":"red@t.test"},{"open":true}]]"#;
-        let req = axum::http::Request::builder()
+        let req = a_request()
             .method("POST")
             .uri("/x")
             .header("content-type", "application/json")
@@ -1954,14 +2019,14 @@ mod tests {
         let app = app(Arc::new(AppState::in_memory()));
         let res = app
             .clone()
-            .oneshot(Request::builder().method("DELETE").uri("/api/health").body(Body::empty()).unwrap())
+            .oneshot(a_request().method("DELETE").uri("/api/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(res.headers().get("allow").and_then(|v| v.to_str().ok()), Some("GET,HEAD"));
         let res = app
             .oneshot(
-                Request::builder()
+                a_request()
                     .method("PUT")
                     .uri("/api/games/sim-1")
                     .header(identity::CLAIMED_HEADER, WHO)
@@ -1978,7 +2043,7 @@ mod tests {
     #[tokio::test]
     async fn the_layers_query_rejection_is_axums_word_for_word() {
         use axum::extract::FromRequestParts;
-        let (mut parts, _) = axum::http::Request::builder().uri("/x?limit=abc").body(()).unwrap().into_parts();
+        let (mut parts, _) = Request::builder().uri("/x?limit=abc").body(()).unwrap().into_parts();
         let axum_text = match axum::extract::Query::<ListQuery>::from_request_parts(&mut parts, &()).await {
             Err(rej) => rej.body_text(),
             Ok(_) => panic!("axum accepted limit=abc"),
@@ -2032,7 +2097,7 @@ mod tests {
             get(|Path((id, k)): Path<(String, usize)>| async move { format!("{id}:{k}") }),
         );
         let res = probe
-            .oneshot(Request::builder().uri("/api/games/x/at/abc").body(Body::empty()).unwrap())
+            .oneshot(a_request().uri("/api/games/x/at/abc").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -2511,7 +2576,7 @@ mod tests {
         uri: &str,
         body: serde_json::Value,
     ) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder()
+        let req = a_request()
             .method("POST")
             .uri(uri)
             .header("content-type", "application/json")
@@ -2690,7 +2755,7 @@ mod tests {
     async fn raw_post(uri: &str, body: Vec<u8>) -> (StatusCode, serde_json::Value) {
         let res = app(Arc::new(AppState::in_memory()))
             .oneshot(
-                Request::builder()
+                a_request()
                     .method("POST")
                     .uri(uri)
                     .header("content-type", "application/json")
@@ -2712,7 +2777,7 @@ mod tests {
         uri: &str,
         headers: &[(&str, &str)],
     ) -> (StatusCode, serde_json::Value) {
-        let mut req = Request::builder().uri(uri);
+        let mut req = a_request().uri(uri);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -2837,7 +2902,7 @@ mod tests {
         let res = router
             .clone()
             .oneshot(
-                Request::builder()
+                a_request()
                     .method("POST")
                     .uri("/api/games")
                     .header("content-type", "application/json")
@@ -2850,7 +2915,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::CREATED, "accepted as a key, as a misspelled address is");
         let as_ben = |uri: &'static str| {
             router.clone().oneshot(
-                Request::builder().uri(uri).header(CF_ACCESS_HEADER, "ben").body(Body::empty()).expect("a GET"),
+                a_request().uri(uri).header(CF_ACCESS_HEADER, "ben").body(Body::empty()).expect("a GET"),
             )
         };
         let res = as_ben("/api/games/edge/table").await.expect("the router answers");
@@ -3049,7 +3114,7 @@ mod tests {
         let state = Arc::new(AppState::in_memory().with_body_deadline(std::time::Duration::from_millis(50)));
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
         tx.send(Ok(b"{\"players\":".to_vec())).await.expect("the first chunk");
-        let stalled = Request::builder()
+        let stalled = a_request()
             .method("POST")
             .uri("/api/games")
             .header(identity::CLAIMED_HEADER, WHO)
@@ -3072,7 +3137,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             tx.send(Ok(b"\"start_seat\":0,\"seats\":[{\"user\":\"red@wire.test\"},{\"open\":true}]}".to_vec())).await.expect("chunk 2");
         });
-        let slow = Request::builder()
+        let slow = a_request()
             .method("POST")
             .uri("/api/games")
             .header(identity::CLAIMED_HEADER, WHO)
@@ -3096,7 +3161,7 @@ mod tests {
             }
             let _ = tx.send(Ok(b"{\"players\":2,\"colors\":[\"Red\",\"Blue\"],\"start_seat\":0,\"seats\":[{\"user\":\"red@wire.test\"},{\"open\":true}]}".to_vec())).await;
         });
-        let trickled = Request::builder()
+        let trickled = a_request()
             .method("POST")
             .uri("/api/games")
             .header(identity::CLAIMED_HEADER, WHO)
@@ -3305,7 +3370,7 @@ mod tests {
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
         let req =
-            Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, WHO);
+            a_request().method(method).uri(uri).header(identity::CLAIMED_HEADER, WHO);
         let req = match body {
             Some(b) => req
                 .header("content-type", "application/json")
@@ -3404,7 +3469,7 @@ mod tests {
         uri: &str,
         body: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
-        let req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who);
+        let req = a_request().method(method).uri(uri).header(identity::CLAIMED_HEADER, who);
         let req = match body {
             Some(b) => req
                 .header("content-type", "application/json")
@@ -3421,7 +3486,7 @@ mod tests {
     /// `request_as` with the body returned as BYTES, for the cells whose fact
     /// is a reply's size.
     async fn request_raw(state: &Arc<AppState>, who: &str, method: &str, uri: &str) -> (StatusCode, Vec<u8>) {
-        let req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who).body(Body::empty()).expect("a request");
+        let req = a_request().method(method).uri(uri).header(identity::CLAIMED_HEADER, who).body(Body::empty()).expect("a request");
         let res = app(Arc::clone(state)).oneshot(req).await.expect("the router answers");
         let status = res.status();
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
@@ -3429,7 +3494,7 @@ mod tests {
     }
 
     async fn request_raw_with_body(state: &Arc<AppState>, who: &str, method: &str, uri: &str, body: serde_json::Value) -> (StatusCode, Vec<u8>) {
-        let req = Request::builder()
+        let req = a_request()
             .method(method)
             .uri(uri)
             .header(identity::CLAIMED_HEADER, who)
@@ -3622,7 +3687,7 @@ mod tests {
         };
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         let started = std::time::Instant::now();
-        let req = Request::builder()
+        let req = a_request()
             .method("POST")
             .uri("/api/archive")
             .header(identity::CLAIMED_HEADER, "local@browser")
@@ -3639,7 +3704,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_millis(600), "refused within the wait, not after the holder");
         // A HEAD of a gated GET waits for the same permit (`find` folds it onto
         // the GET row, and `dispatch` would pay the whole replay for it).
-        let head = Request::builder()
+        let head = a_request()
             .method("HEAD")
             .uri("/api/games/gated/at?from=0&to=1")
             .header(identity::CLAIMED_HEADER, WHO)
@@ -3678,7 +3743,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         assert_eq!(state.replay_gate.available_permits(), 0, "premise: the holder has the permit");
         let started = std::time::Instant::now();
-        let req = Request::builder().method("GET").uri("/api/games/gated2/why").body(Body::empty()).expect("a request");
+        let req = a_request().method("GET").uri("/api/games/gated2/why").body(Body::empty()).expect("a request");
         let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         assert!(started.elapsed() < std::time::Duration::from_millis(500), "the 401 waited for the permit");
@@ -3701,7 +3766,7 @@ mod tests {
     async fn a_caller_who_hangs_up_mid_replay_leaves_the_permit_held_until_the_work_ends() {
         let state = slow_state(1_000, 1, 50);
         let post = || {
-            Request::builder()
+            a_request()
                 .method("POST")
                 .uri("/api/archive")
                 .header(identity::CLAIMED_HEADER, "local@browser")
@@ -4252,7 +4317,7 @@ mod tests {
         }
         rows.push(("PUT".to_string(), "/api/games".to_string()));
         for (method, path) in &rows {
-            let req = Request::builder().method(method.as_str()).uri(path).header(identity::CLAIMED_HEADER, WHO)
+            let req = a_request().method(method.as_str()).uri(path).header(identity::CLAIMED_HEADER, WHO)
                 .header("content-type", "application/json").body(Body::from("{}")).expect("a request");
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             assert_eq!(
@@ -4271,7 +4336,7 @@ mod tests {
         // which that rule leaves unmarked too: a name that only BEGINS like
         // the API's.
         for path in ["/art/nothing.png", "/assets/nothing-abc123.js", "/apix"] {
-            let req = Request::builder().method("GET").uri(path).body(Body::empty()).expect("a request");
+            let req = a_request().method("GET").uri(path).body(Body::empty()).expect("a request");
             let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
             assert_ne!(
                 res.headers().get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
@@ -4324,7 +4389,7 @@ mod tests {
             ("GET", "/api/games/x/stream", true),
         ];
         for (method, path, api) in rows {
-            let mut req = Request::builder().method(*method).uri(*path);
+            let mut req = a_request().method(*method).uri(*path);
             if *api {
                 req = req.header(identity::CLAIMED_HEADER, WHO);
             }
@@ -4344,7 +4409,7 @@ mod tests {
         // the set and `no-store` too: the layer wraps a refusal as it wraps an answer (Task 3's C-2).
         let res = router
             .clone()
-            .oneshot(Request::builder().uri("/api/games").body(Body::empty()).unwrap())
+            .oneshot(a_request().uri("/api/games").body(Body::empty()).unwrap())
             .await
             .expect("the router answers");
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED, "no identity header at the open door is a 401");
@@ -4363,13 +4428,13 @@ mod tests {
     #[tokio::test]
     async fn an_in_memory_state_serves_no_header_set_and_with_headers_gives_it_one() {
         let bare = app(Arc::new(AppState::in_memory()));
-        let res = bare.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
+        let res = bare.oneshot(a_request().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
         assert!(res.headers().get("x-frame-options").is_none(), "the base constructor reads no header file, so no set");
         let given = app(Arc::new(AppState::in_memory().with_headers(vec![(
             http::HeaderName::from_static("x-frame-options"),
             http::HeaderValue::from_static("DENY"),
         )])));
-        let res = given.oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
+        let res = given.oneshot(a_request().uri("/api/health").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(res.headers().get("x-frame-options").and_then(|v| v.to_str().ok()), Some("DENY"));
         let cache_control = |res: &Response| -> Vec<String> {
             res.headers()
@@ -4378,7 +4443,7 @@ mod tests {
                 .map(|v| v.to_str().expect("an ASCII value").to_owned())
                 .collect()
         };
-        let shell = || Request::builder().uri("/shell.bin").body(Body::empty()).unwrap();
+        let shell = || a_request().uri("/shell.bin").body(Body::empty()).unwrap();
         let handler_set = app(Arc::new(AppState::in_memory())).oneshot(shell()).await.unwrap();
         assert_eq!(cache_control(&handler_set), ["no-store"], "the handler's own header, with no set");
         let private = app(Arc::new(AppState::in_memory().with_headers(vec![(
@@ -6061,7 +6126,7 @@ mod tests {
     async fn stream_status(state: &Arc<AppState>, uri: &str, who: &str) -> StatusCode {
         let res = app(Arc::clone(state))
             .oneshot(
-                Request::builder()
+                a_request()
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, who)
                     .header("accept", "text/event-stream")
@@ -6079,7 +6144,7 @@ mod tests {
     async fn stream_response(state: &Arc<AppState>, uri: &str, who: &str) -> Response {
         app(Arc::clone(state))
             .oneshot(
-                Request::builder()
+                a_request()
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, who)
                     .header("accept", "text/event-stream")
@@ -7665,7 +7730,7 @@ mod tests {
             async move {
                 let res = router
                     .oneshot(
-                        Request::builder()
+                        a_request()
                             .method("POST")
                             .uri(uri)
                             .header("content-type", "application/json")
@@ -7736,7 +7801,7 @@ mod tests {
         let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
             let router = router.clone();
             async move {
-                let req = Request::builder()
+                let req = a_request()
                     .method(method)
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, WHO);
@@ -7831,7 +7896,7 @@ mod tests {
         let call = |method: &'static str, uri: String, body: Option<serde_json::Value>| {
             let router = router.clone();
             async move {
-                let req = Request::builder()
+                let req = a_request()
                     .method(method)
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, WHO);
@@ -8021,7 +8086,7 @@ mod tests {
             async move {
                 let res = router
                     .oneshot(
-                        Request::builder()
+                        a_request()
                             .method("POST")
                             .uri(uri)
                             .header("content-type", "application/json")
@@ -8883,7 +8948,7 @@ mod tests {
     ) -> (StatusCode, String, bool) {
         let res = app(state)
             .oneshot(
-                Request::builder()
+                a_request()
                     .uri(uri)
                     .header(identity::CLAIMED_HEADER, who)
                     .header("accept", "text/event-stream")
@@ -10533,6 +10598,155 @@ mod tests {
         assert!(error.as_deref().is_some_and(|e| e.contains("the disk went away")), "the store's reason rides it: {error:?}");
         let house = *state.signals.subscribe_house().borrow();
         assert_eq!((house.seq, house.chat, house.rev), (0, 0, 0), "counting from 0, out loud");
+    }
+
+    /// A request with the `Host` a cell chooses, or with none (security S3, D4; pre-flight ruling P-1): the ONE
+    /// request in this module that can omit it — every other helper sends [`TEST_HOST`], as a browser always
+    /// sends one. Returns the status, the headers and the body's bytes.
+    async fn request_with_host(
+        state: &Arc<AppState>,
+        who: &str,
+        method: &str,
+        uri: &str,
+        host: Option<&str>,
+    ) -> (StatusCode, http::HeaderMap, Vec<u8>) {
+        let mut req = Request::builder().method(method).uri(uri).header(identity::CLAIMED_HEADER, who);
+        if let Some(host) = host {
+            req = req.header(http::header::HOST, host);
+        }
+        let res = app(Arc::clone(state)).oneshot(req.body(Body::empty()).expect("a request")).await.expect("the router answers");
+        let (status, headers) = (res.status(), res.headers().clone());
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.expect("a body");
+        (status, headers, bytes.to_vec())
+    }
+
+    /// The state the Host cells share: the check on with the default set for a container bound to `0.0.0.0`
+    /// (loopback only), and one header pair so the 421 can be read to carry the set.
+    fn a_host_checked_state() -> Arc<AppState> {
+        Arc::new(
+            AppState::in_memory()
+                .with_hostnames(hostnames::Hostnames::from_env_values(None, None, "0.0.0.0").expect("the default set"))
+                .with_headers(vec![(
+                    http::HeaderName::from_static("x-host-cell"),
+                    http::HeaderValue::from_static("kept"),
+                )]),
+        )
+    }
+
+    /// **An unlisted `Host` is 421 before routing, and the refusal still passes through the header layer**
+    /// (security S3, D4): the sentence is `error_value`'s JSON with [`hostnames::NOT_FOR_THIS_HOST`] and the
+    /// offered host, the state's header pair is on the refusal, and under `/api` it is `no-store`; a static path
+    /// and a `HEAD` are refused alike. This cell is the catcher of the layer ORDER in [`app`]: with the host
+    /// check added AFTER `response_headers` it is the outermost layer, and the refusal carries neither the pair
+    /// nor `no-store`. Its state names no switch, so a mutant that reads an absent switch as off reads 200 here.
+    #[tokio::test]
+    async fn an_unlisted_host_is_421_before_routing_with_the_header_set_and_no_store_under_api() {
+        let state = a_host_checked_state();
+        let (status, headers, body) = request_with_host(&state, WHO, "GET", "/api/health", Some("attacker.example")).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+        let body: serde_json::Value = serde_json::from_slice(&body).expect("error_value's JSON");
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": format!("{} \"attacker.example\"", hostnames::NOT_FOR_THIS_HOST) })
+        );
+        assert_eq!(headers.get("x-host-cell").and_then(|v| v.to_str().ok()), Some("kept"), "the set rides the 421");
+        assert_eq!(headers.get(http::header::CACHE_CONTROL).and_then(|v| v.to_str().ok()), Some("no-store"));
+
+        let (status, headers, _) = request_with_host(&state, WHO, "GET", "/", Some("attacker.example")).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "a static path is refused too");
+        assert_eq!(headers.get("x-host-cell").and_then(|v| v.to_str().ok()), Some("kept"));
+        assert!(headers.get(http::header::CACHE_CONTROL).is_none(), "no-store stays keyed on /api");
+
+        let (status, _, body) = request_with_host(&state, WHO, "HEAD", "/api/health", Some("attacker.example")).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "a HEAD is refused too");
+        assert!(body.is_empty(), "a HEAD has no body");
+    }
+
+    /// A listed host answers as it did before, and the port is ignored both ways (security S3, D4): the default
+    /// set's three spellings, a port that is not the server's, a listed name in another case with a trailing dot,
+    /// and an IPv6 literal as the header carries it. Mutant: the whole authority compared, port included — every
+    /// port-carrying spelling reads 421.
+    #[tokio::test]
+    async fn a_listed_host_answers_every_route_as_before_and_the_port_is_ignored() {
+        let state = Arc::new(
+            AppState::in_memory().with_hostnames(
+                hostnames::Hostnames::from_env_values(None, Some("yokohama-nas.moore.nyc"), "0.0.0.0").expect("a list"),
+            ),
+        );
+        for host in [
+            "localhost",
+            "localhost:9999",
+            "127.0.0.1",
+            "127.0.0.1:18080",
+            "[::1]:8080",
+            "yokohama-nas.moore.nyc",
+            "Yokohama-NAS.moore.nyc.:8080",
+        ] {
+            let (status, _, body) = request_with_host(&state, WHO, "GET", "/api/health", Some(host)).await;
+            assert_eq!(status, StatusCode::OK, "{host}: {}", String::from_utf8_lossy(&body));
+        }
+    }
+
+    /// No `Host` and no authority in the request line is 421 (security S3, D4; P-2): a path-only URI with no
+    /// header has nothing to compare. The two partners: an absolute-form URI with no header is read by its
+    /// authority (where an HTTP/2 `:authority` surfaces) — listed passes, unlisted is refused.
+    #[tokio::test]
+    async fn a_request_with_no_host_header_is_421() {
+        let state = a_host_checked_state();
+        let (status, _, body) = request_with_host(&state, WHO, "GET", "/api/health", None).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST, "{}", String::from_utf8_lossy(&body));
+        let (status, _, _) = request_with_host(&state, WHO, "GET", "http://localhost/api/health", None).await;
+        assert_eq!(status, StatusCode::OK, "the URI's authority stands in for a missing header");
+        let (status, _, _) = request_with_host(&state, WHO, "GET", "http://attacker.example/api/health", None).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    /// The bind address is a default name only when it is a specific one (security S3, D4). Mutant: the defaults
+    /// built without the bind address — `10.0.0.5` reads 421 under a bind of `10.0.0.5`.
+    #[tokio::test]
+    async fn the_bind_address_is_admitted_only_when_specific() {
+        let bound = |bind: &str| {
+            Arc::new(AppState::in_memory().with_hostnames(hostnames::Hostnames::from_env_values(None, None, bind).expect("defaults")))
+        };
+        let (status, _, _) = request_with_host(&bound("10.0.0.5"), WHO, "GET", "/api/health", Some("10.0.0.5:8080")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = request_with_host(&bound("0.0.0.0"), WHO, "GET", "/api/health", Some("10.0.0.5")).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
+    /// With the switch `off` nothing is refused (security S3, R-S3-14): a foreign `Host` on an API path and a
+    /// static path, and no `Host` at all, answer as they did before the check existed.
+    #[tokio::test]
+    async fn with_the_switch_off_a_foreign_host_answers_200_and_nothing_is_refused() {
+        let state = Arc::new(
+            AppState::in_memory()
+                .with_hostnames(hostnames::Hostnames::from_env_values(Some("off"), None, "0.0.0.0").expect("off")),
+        );
+        let (status, _, _) = request_with_host(&state, WHO, "GET", "/api/health", Some("attacker.example")).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = request_with_host(&state, WHO, "GET", "/", Some("attacker.example")).await;
+        assert_ne!(status, StatusCode::MISDIRECTED_REQUEST, "the shell or its 404, never the check's 421");
+        let (status, _, _) = request_with_host(&state, WHO, "GET", "/api/health", None).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    /// The offered host is echoed through the cap, whatever it is (security S3, D4; the echo rule): a 200-character
+    /// name is cut with `…`, and bytes that are no text — a `Host` header may carry any visible-ASCII-or-high byte —
+    /// are refused, never a panic, and read back escaped.
+    #[tokio::test]
+    async fn the_offered_host_is_echoed_through_the_cap_and_odd_bytes_are_refused() {
+        let state = a_host_checked_state();
+        let long = format!("{}.example", "a".repeat(200));
+        let (status, _, body) = request_with_host(&state, WHO, "GET", "/api/health", Some(&long)).await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+        let error = serde_json::from_slice::<serde_json::Value>(&body).expect("JSON")["error"].as_str().expect("a sentence").to_string();
+        assert!(error.contains('…') && !error.contains(&long), "{error}");
+        assert_eq!(error, format!("{} \"{}…\"", hostnames::NOT_FOR_THIS_HOST, "a".repeat(64)));
+
+        let odd = http::HeaderValue::from_bytes(b"caf\xe9.example").expect("obs-text is a legal header byte");
+        let req = Request::builder().uri("/api/health").header(http::header::HOST, odd).body(Body::empty()).expect("a request");
+        let res = app(Arc::clone(&state)).oneshot(req).await.expect("the router answers");
+        assert_eq!(res.status(), StatusCode::MISDIRECTED_REQUEST);
     }
 
     /// R-6.5a.6's fence. The wasm check line cannot see a `SystemTime` (it compiles

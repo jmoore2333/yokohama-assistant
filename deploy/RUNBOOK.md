@@ -245,7 +245,8 @@ the file has been corrected.)
 POST /containers/create?name=yokohama-web
 { "Image": "yokohama-web:<tag>",
   "Env": ["YOKOHAMA_WEB_IDENTITY=cf-access", "YOKOHAMA_WEB_ARCHIVE_DIR=/data/archive",
-          "YOKOHAMA_WEB_TABLE_TTL_DAYS=90", "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS=7"],
+          "YOKOHAMA_WEB_TABLE_TTL_DAYS=90", "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS=7",
+          "YOKOHAMA_WEB_HOSTNAMES_ENABLED=on", "YOKOHAMA_WEB_HOSTNAMES=yokohama-nas.moore.nyc"],
   "HostConfig": { "NetworkMode": "cf-internal",
                   "RestartPolicy": { "Name": "unless-stopped" },
                   "CapDrop": ["ALL"],
@@ -282,6 +283,22 @@ which the image cannot know.
 them the health route reads `table_ttl_days: null` and no table is ever swept. The S1 stack review
 (2026-10-11, AH-F5) found this body without them while the running container had them; a container
 made from this body now carries all four. *(Added 2026-10-11, security S1c.)*
+
+**The last two `Env` entries are the Host check's, and the body is incomplete without them (from 0.7.2; security S3, D4; R-S3-14).**
+This container binds `0.0.0.0`, which is no name, so with the check on and no list it answers loopback alone.
+A body that forgets `YOKOHAMA_WEB_HOSTNAMES` answers 421 to every request that arrives through the tunnel, while a smoke run on loopback passes.
+The deployment's reading therefore gains two lines, both taken INSIDE `yokohama-web` by `docker exec`, because the terminal container is on `cf-terminal` and cannot reach this port (`README.md` §1 step 4's negative probe reads exactly that):
+```
+docker exec yokohama-web wget -qO- --header 'Host: yokohama-nas.moore.nyc' http://127.0.0.1:8080/api/health
+docker exec yokohama-web wget -qO- --header 'Host: smoke-foreign.example'   http://127.0.0.1:8080/api/health
+```
+The first must print the health document.
+The second must fail, and busybox `wget` names the 421 in its error line.
+(Neither line has been run: Docker was not available when this paragraph was written, so the first deployment from 0.7.2 reads them and records what busybox printed.)
+**Then the tunnel's reading is a REQUIRED step before a deploy is called done:** as yourself through the hostname, `https://yokohama-nas.moore.nyc/api/health` must read 200, and `/api/me` must name you.
+A 421 there is the missing list.
+The two switches' values are the NAS's own: `on`, and the hostname Access covers.
+*(Added for 0.7.2; the sections below record earlier deployments and are not rewritten.)*
 
 **The second `Env` entry is the archive (M6.5a, umbrella R-6.5.4), and it is
 on the SAME named volume as the store**: a finished game is written under

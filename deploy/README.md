@@ -114,6 +114,8 @@ home.
 So bind the port only where everyone who can reach it is someone you would hand the table to: your home
 network, a LAN, or a VPN. Never put an open door on the public internet.
 
+On a LAN, list the name or address your browsers type in `YOKOHAMA_WEB_HOSTNAMES` (§4), or set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off` when you do not want the host boundary.
+
 **Names:**
 - 1–32 characters of ASCII letters, digits, spaces, `.`, `-` and `_`, beginning with a letter or a digit;
 - an address is refused here: under the open door a name is a name, and an `@` always means a verified address on every other door (security S2b, C1);
@@ -207,6 +209,8 @@ docker run -d --name yokohama-web \
   -p 127.0.0.1:8080:8080 \
   -v yokohama-web-data:/data \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
+  -e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on \
+  -e YOKOHAMA_WEB_HOSTNAMES=<your hostname> \
   --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true --memory 512m \
   yokohama-web:0.6.3-s2
@@ -229,6 +233,8 @@ docker run -d --name yokohama-web \
 | Variable | Values | Unset means |
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
+| `YOKOHAMA_WEB_HOSTNAMES_ENABLED` | `on`, `off` | `on`. On, the server answers only the host names below and refuses any other `Host` with 421. Off, it answers any `Host`, as it did before 0.7.2, and the start line says so. Any other value stops the server at start. Write `on` beside the list, so the switch is visible to whoever reads your deploy file |
+| `YOKOHAMA_WEB_HOSTNAMES` | host names separated by commas, e.g. `yokohama-nas.moore.nyc` | `localhost`, `127.0.0.1` and `::1`, plus the bind address when it is a specific one. A list adds to that set and never replaces it. An entry is a name or an IPv6 literal written without brackets, with no space, scheme, path, user or port, and an unlisted `Host` is 421. The port of a request is never compared. The start line prints the names the server answers |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<segment>/` (security S1b) — the segment is the address made readable, then `-` and a twelve-character digest (security S1c) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
@@ -254,6 +260,14 @@ server says so once at start, on stderr. A malformed file
 stops it at start, naming the file. The smoke (§5) reads `X-Frame-Options` and the policy on `/`, and
 `no-store` and `nosniff` on `/api/health`.
 
+**Why the host list exists, and the trap in it** (security S3, D4).
+A web page on another site can make a browser send requests to your server under a name the attacker controls, by changing what that name resolves to.
+The one thing that name cannot forge is the `Host` the browser sends, so the server answers only the names it is told to.
+The image binds `0.0.0.0`, which is no name, so the default set inside a container is loopback alone.
+A container reached through a tunnel or a proxy with no list answers every request 421, while a smoke run on loopback passes.
+So list the name your browsers use, and read your hostname's `/api/health` before you call a deploy done.
+If you do not want the boundary, set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off`.
+
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
 `YOKOHAMA_WEB_DIR=/data/games`.
@@ -261,8 +275,13 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port> [hostname], port default 18080
 ```
+
+Give a hostname as the third argument to check the host list too.
+The smoke then runs the containers with `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and that hostname listed.
+It reads `/api/health` under each door as `Host: <hostname>`, which must answer 200, and as `Host: smoke-foreign.example`, which must answer 421.
+Without it the smoke says the host probe was not asked for and runs as it always has, on loopback.
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on
 `127.0.0.1`:

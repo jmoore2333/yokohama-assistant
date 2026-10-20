@@ -715,6 +715,103 @@ fn the_binary_serves_the_dist_header_set_and_refuses_a_malformed_one() {
     assert!(stderr.contains("headers.json"), "{stderr}");
 }
 
+/// One `GET /api/health` to the server at `port` with the `Host` the cell chooses (security S3, D4), over the same
+/// plain socket [`get`] uses; only the status is read.
+#[cfg(feature = "open-door")]
+fn get_health_as_host(port: u16, host: &str) -> u16 {
+    use std::io::Write;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the server accepts");
+    stream.set_read_timeout(Some(BOUND)).expect("a read bound");
+    stream.set_write_timeout(Some(BOUND)).expect("a write bound");
+    write!(stream, "GET /api/health HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").expect("the request writes");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("the response reads");
+    let response = String::from_utf8_lossy(&response);
+    response.split(' ').nth(1).and_then(|s| s.parse().ok()).expect("a status line")
+}
+
+/// **A malformed hostname list stops the binary before it listens, naming the entry** (security S3, D4;
+/// R-S3-14): `main` reads `YOKOHAMA_WEB_HOSTNAMES` beside the bind, and an entry with a space in it is an exit 1
+/// with the entry on stderr and nothing on stdout where the listening line would be. Mutant: the `exit(1)`
+/// removed (the list is dropped and the binary listens).
+#[test]
+fn a_malformed_hostname_list_exits_one_before_it_listens_naming_the_entry() {
+    let scratch = Scratch::new("hostnames-malformed");
+    let mut command = binary();
+    command
+        .env(IDENTITY_VAR, "cf-access")
+        .env("YOKOHAMA_WEB_DIST", scratch.dist())
+        .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
+        .env("YOKOHAMA_WEB_PORT", "0")
+        .env("YOKOHAMA_WEB_HOSTNAMES", "good.example,bad name");
+    let (status, stdout, stderr) = Server::piped(command).exited("a malformed hostname list");
+    assert_eq!(status.code(), Some(1), "stderr {stderr:?}");
+    assert!(stderr.contains("bad name") && stderr.contains("YOKOHAMA_WEB_HOSTNAMES"), "{stderr:?}");
+    assert!(!stdout.contains(LISTENING), "no listening line: {stdout:?}");
+}
+
+/// **The binary answers its listed hostname and refuses another with 421** (security S3, D4): the catcher of
+/// `main` → `with_hostnames` → `app`, which no in-process cell runs. The start line names the listed name; the
+/// loopback the cell's own socket uses is in the default set, so the cell sends `Host` itself. Mutant: `main`
+/// never handing the state its reading (the default set holds, and the listed name reads 421).
+#[cfg(feature = "open-door")]
+#[test]
+fn the_binary_answers_its_listed_hostname_and_refuses_another_with_421() {
+    let scratch = Scratch::new("hostnames-listed");
+    let port = free_port();
+    let mut command = binary();
+    command
+        .env(IDENTITY_VAR, "open")
+        .env("YOKOHAMA_WEB_DIST", scratch.dist())
+        .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
+        .env("YOKOHAMA_WEB_PORT", port.to_string())
+        .env("YOKOHAMA_WEB_HOSTNAMES_ENABLED", "on")
+        .env("YOKOHAMA_WEB_HOSTNAMES", "yokohama-nas.moore.nyc");
+    let mut server = Server::piped(command);
+    server.listening("a listed hostname");
+    assert_eq!(get_health_as_host(port, "yokohama-nas.moore.nyc"), 200);
+    assert_eq!(get_health_as_host(port, "attacker.example"), 421);
+    assert_eq!(get_health_as_host(port, "localhost:1"), 200, "the default set stands beside the list");
+    let (_, stdout, stderr) = server.finish();
+    assert!(
+        stdout.contains("yokohama-web answers host names:") && stdout.contains("yokohama-nas.moore.nyc"),
+        "the start line names the list: {stdout:?}"
+    );
+    assert!(stdout.find("answers host names").unwrap() < stdout.find(LISTENING).unwrap(), "before the listening line: {stdout:?}");
+    assert!(!stderr.contains("attacker.example"), "{stderr:?}");
+}
+
+/// **A malformed switch refuses to start, and `off` answers any host and says so** (security S3, R-S3-14): `yes`
+/// is an exit 1 naming the variable and the value; `off` starts, answers a foreign `Host` 200 and prints
+/// "answers any host name". Mutant: an unknown value read as on (the exit disappears).
+#[cfg(feature = "open-door")]
+#[test]
+fn a_malformed_switch_value_exits_one_and_off_answers_any_host_saying_so() {
+    let spawn = |scratch: &Scratch, port: u16, enabled: &str| {
+        let mut command = binary();
+        command
+            .env(IDENTITY_VAR, "open")
+            .env("YOKOHAMA_WEB_DIST", scratch.dist())
+            .env("YOKOHAMA_WEB_DIR", scratch.root.join("games"))
+            .env("YOKOHAMA_WEB_PORT", port.to_string())
+            .env("YOKOHAMA_WEB_HOSTNAMES_ENABLED", enabled);
+        Server::piped(command)
+    };
+    let scratch = Scratch::new("hostnames-switch-bad");
+    let (status, stdout, stderr) = spawn(&scratch, 0, "yes").exited("a malformed switch");
+    assert_eq!(status.code(), Some(1), "stderr {stderr:?}");
+    assert!(stderr.contains("YOKOHAMA_WEB_HOSTNAMES_ENABLED") && stderr.contains("\"yes\""), "{stderr:?}");
+    assert!(!stdout.contains(LISTENING), "no listening line: {stdout:?}");
+
+    let scratch = Scratch::new("hostnames-switch-off");
+    let port = free_port();
+    let mut server = spawn(&scratch, port, "off");
+    server.listening("the switch off");
+    assert_eq!(get_health_as_host(port, "attacker.example"), 200);
+    let (_, stdout, _) = server.finish();
+    assert!(stdout.contains("answers any host name"), "the start line says so: {stdout:?}");
+}
+
 /// **The stream slot is held by the body hyper serves, and freed when the
 /// socket closes** (the S2 stack review, lens 2, Important 1; security S2c,
 /// D3): the binary `main` runs, at the open door, over real sockets. A

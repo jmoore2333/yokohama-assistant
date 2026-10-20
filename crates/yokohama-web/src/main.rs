@@ -175,11 +175,27 @@ async fn main() {
         }
     };
 
+    // **The `Host` allow-list and its switch** (security S3, D4; R-S3-14), read beside the bind address they
+    // derive their default set from. The switch is absent-means-on; a malformed switch or a malformed entry stops
+    // the process before the bind, naming the variable, as the multiplayer switch does. The state it prints is
+    // the one `app` enforces: a deployment that forgot its list reads it in the log.
+    let hostnames = match yokohama_web::hostnames::Hostnames::from_env_values(
+        std::env::var(yokohama_web::hostnames::HOSTNAMES_ENABLED_VAR).ok().as_deref(),
+        std::env::var(yokohama_web::hostnames::HOSTNAMES_VAR).ok().as_deref(),
+        &host,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
+
     // The archive directory is the third variable read here (M6.5a, R-6.5a.9):
     // unset is no archive, a directory that cannot be created is a refusal to
     // start that names the variable — and so is a table TTL without one.
     let state = match AppState::new(identity, chat, multiplayer, ttls) {
-        Ok(s) => Arc::new(s),
+        Ok(s) => Arc::new(s.with_hostnames(hostnames.clone())),
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
@@ -210,6 +226,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    println!("{}", hostnames.start_line());
     println!("yokohama-web listening on http://{host}:{port}");
     if let Err(e) = axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_requested())

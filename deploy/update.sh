@@ -35,6 +35,14 @@
 # image is a manual build for an open-door host. `YOKOHAMA_WEB_ENV` is the container's
 # environment, `YOKOHAMA_WEB_IDENTITY` first among them: the server refuses to
 # start without it.
+# **The Host check's two variables belong in that file too** (security S3, D4;
+# R-S3-14), beside the identity: `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and
+# `YOKOHAMA_WEB_HOSTNAMES=<the host name your browsers use>` (`deploy/README.md`
+# §4). The file reaches the container through `--env-file` unread by this
+# script, so it passes both without knowing them. A container bound to 0.0.0.0
+# with the check on and no list answers loopback alone: every request through
+# your proxy reads 421 while the smoke below, which reaches the port as
+# 127.0.0.1, passes. Set `off` to answer any host name.
 #
 # **Optional**, each with the guide's §4 default: `YOKOHAMA_WEB_CONTAINER`
 # (`yokohama-web`), `YOKOHAMA_WEB_VOLUME` (`yokohama-web-data`),
