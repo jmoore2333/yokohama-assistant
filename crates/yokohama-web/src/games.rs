@@ -3580,6 +3580,26 @@ pub(crate) mod test_support {
         games.handle(&id).expect("playing")
     }
 
+    /// **The table `id`, finalized, put back as a crash between the last keep's
+    /// two writes leaves it when the RECORD landed and the flip did not**
+    /// (`Games::settle`'s first arm): its document rewritten at `dealing` with
+    /// no turn, every keep still present, and its live handle evicted, so a
+    /// repair runs the cold path through the store. The premise is asserted:
+    /// a record stored and every human keep present.
+    pub(crate) fn unflipped(games: &Games, id: &str) {
+        let (json, v) = games.store().read(Doc::Table, id).expect("a read").expect("a table");
+        let mut doc: crate::table::TableDoc = serde_json::from_str(&json).expect("a table document");
+        assert!(doc.all_humans_kept(), "premise: every human keep present");
+        assert!(games.store().read(Doc::Record, id).expect("a read").is_some(), "premise: the record landed");
+        doc.status = crate::table::TableStatus::Dealing;
+        doc.turn = None;
+        games
+            .store()
+            .write_if_version(Doc::Table, id, &serde_json::to_string(&doc).expect("a document"), Some(v))
+            .expect("the flip undone");
+        games.evict_for_test(id);
+    }
+
     /// One remembered put, as [`RecordingArchive`] saw it.
     ///
     /// A named struct rather than the tuple it was until M6.5b: the prefix is a

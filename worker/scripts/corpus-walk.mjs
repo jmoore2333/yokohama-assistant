@@ -12,7 +12,8 @@
  * The fields a HOST is entitled to differ on (spec §4's second class): which
  * header names the caller (`identity`, and `mode` on `/api/me`), how a change
  * reaches a browser (`signal`), where its archive is kept (`archive`), and how
- * long an idle table, and one still waiting for players, stands
+ * long an idle table, and one that has not started — open, or dealing with a
+ * keep outstanding — stands
  * (`table_ttl_days`, `open_table_ttl_days`; R-6.5c2.42). This host reads
  * `cf-access`, `ws`, `r2`, 90 and 7; the axum host the corpus was cut from,
  * `open`, `sse`, `off` — its primary `Api` keeps no archive — and `null` twice,

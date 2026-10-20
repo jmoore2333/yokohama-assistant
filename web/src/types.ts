@@ -547,8 +547,9 @@ export interface Health {
    *  there is nobody else at the table. */
   multiplayer: boolean;
   /** How many days an idle table stands before it expires, and how many a
-   *  table still waiting for players does (M6.5c2 cycle E, R-6.5c2.42): the
-   *  Worker's two TTLs. `null` where no table expires — the NAS keeps no TTL,
+   *  table that has not started — open, or dealing with a keep outstanding —
+   *  does (M6.5c2 cycle E, R-6.5c2.42; security S3, D9): the Worker's two
+   *  TTLs. `null` where no table expires — the NAS keeps no TTL,
    *  and the browser host has no tables to expire. */
   table_ttl_days: number | null;
   open_table_ttl_days: number | null;

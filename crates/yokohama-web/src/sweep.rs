@@ -7,9 +7,10 @@
 //! [`TABLE_VAR`], whole days above zero a table stands idle before it expires —
 //! unset, no sweep runs, the behaviour every NAS deployment before this cycle
 //! had; and [`OPEN_VAR`], whole days above zero, default
-//! [`OPEN_DEFAULT_DAYS`], inert without the first, for a table whose status is
-//! still `open` (a seat unfilled). A `dealing` table waits the first, as on the
-//! Worker (ruling 9-b). A bad value stops the server naming the variable, and a
+//! [`OPEN_DEFAULT_DAYS`], inert without the first, for a table that has not
+//! started — open, or dealing with a keep outstanding — as on the Worker
+//! (security S3, D9; it replaces ruling 9-b's dealing table waiting the
+//! first). A bad value stops the server naming the variable, and a
 //! table TTL with no archive directory stops it naming both ([`check_archive`]):
 //! a sweep that discards games is not a configuration this host offers —
 //! stricter than the Worker, whose marker can say "this server keeps no
@@ -21,8 +22,10 @@
 //! table whose activity the store cannot tell (`Ok(None)`, the trait's
 //! default) is never a candidate.
 //!
-//! **A pass** ([`pass`]) reads every table document and its activity, decides
-//! each through ONE pure function ([`ending`], the Worker's `expiryReason`),
+//! **A pass** ([`pass`]) reads every table document — through `Games::settle`,
+//! the read that repairs a table stuck at `dealing` with every keep present,
+//! so that table is decided as `playing` — and its activity, decides each
+//! through ONE pure function ([`ending`], the Worker's `expiryReason`),
 //! logs a [`crate::log::SWEEP_LISTED`] line for every table it is about to end
 //! BEFORE it ends any, and then ends each through [`Games::delete`] as the
 //! table's creator — the creator's own Abandon — so a finished game already
@@ -62,9 +65,9 @@ use crate::table::{TableDoc, TableStatus};
 /// The table TTL's variable: whole days above zero a table stands idle before
 /// it expires. Unset, no table expires and no sweep runs.
 pub const TABLE_VAR: &str = "YOKOHAMA_WEB_TABLE_TTL_DAYS";
-/// The waiting-table TTL's variable: whole days above zero a table whose
-/// status is `open` stands idle before it is closed; inert without
-/// [`TABLE_VAR`].
+/// The waiting-table TTL's variable: whole days above zero a table that has
+/// not started — open, or dealing with a keep outstanding — stands idle before
+/// it is closed; inert without [`TABLE_VAR`].
 pub const OPEN_VAR: &str = "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS";
 /// A waiting table's TTL when [`OPEN_VAR`] is absent — the Worker's.
 pub const OPEN_DEFAULT_DAYS: u64 = 7;
@@ -126,8 +129,9 @@ fn whole_days(name: &str, raw: &str) -> Result<u64, String> {
 }
 
 /// How a pass ends a table, and how many whole days it had stood idle
-/// (floored). The reason is the Worker's word: `waited` for a table still
-/// waiting for players, `expired` for any other.
+/// (floored). The reason is the Worker's word: `waited` for a table that has
+/// not started — open, or dealing with a keep outstanding — `expired` for any
+/// other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ending {
     Expired { days: u64 },
@@ -152,11 +156,14 @@ impl Ending {
 }
 
 /// **The decision** — the Worker's `expiryReason` (`worker/src/marker.ts`),
-/// restated: with no table TTL, nothing ends; a table whose status is `open`
-/// is closed as one that WAITED once its last activity is the open TTL old
-/// ([`OPEN_DEFAULT_DAYS`] when `ttls.open` is unset), whatever else is past;
-/// any table EXPIRES once it is the table TTL old — an open one too, where
-/// that TTL is the shorter. `dealing` and `playing` wait the table TTL.
+/// restated: with no table TTL, nothing ends; a table that has not started —
+/// open, or dealing with a keep outstanding — is closed as one that WAITED
+/// once its last activity is the open TTL old ([`OPEN_DEFAULT_DAYS`] when
+/// `ttls.open` is unset), whatever else is past; any table EXPIRES once it is
+/// the table TTL old — one that has not started too, where that TTL is the
+/// shorter. `playing` waits the table TTL (security S3, D9). A `dealing` table
+/// whose every keep is present is not one that has not started: [`pass`]
+/// reads it through `Games::settle`, which repairs it to `playing` first.
 ///
 /// `last_active` and `now` are unix seconds. Nothing wraps: an activity after
 /// `now` is idle zero days, and a deadline past the range of a `u64` is never
@@ -168,7 +175,7 @@ pub fn ending(status: TableStatus, last_active: u64, now: u64, ttls: &Ttls) -> O
     let past = |ttl: u64| {
         ttl.checked_mul(DAY).and_then(|span| last_active.checked_add(span)).is_some_and(|deadline| now >= deadline)
     };
-    if status == TableStatus::Open && past(open_days) {
+    if matches!(status, TableStatus::Open | TableStatus::Dealing) && past(open_days) {
         return Some(Ending::Waited { days });
     }
     past(table_days).then_some(Ending::Expired { days })
@@ -220,7 +227,11 @@ pub fn pass(games: &Games, ttls: &Ttls, now: u64) -> Vec<(String, Ending, Result
     };
     let mut due: Vec<(String, TableDoc, Ending)> = Vec::new();
     for id in ids {
-        let doc = match games.read_table(&id) {
+        // `settle`, the repairing read, never the bare `read_table`: a table
+        // stuck at `dealing` with every keep present is repaired to `playing`
+        // here, before its status is decided, so it is kept, not waited
+        // (security S3, design §3.2 rule 2 and D-16).
+        let doc = match games.settle(&id) {
             Ok(Some((doc, _))) => doc,
             // Ended since the listing, by its creator or another writer.
             Ok(None) => continue,
@@ -439,28 +450,34 @@ mod tests {
         }
     }
 
-    /// **`open` waits the shorter TTL and says it WAITED; `dealing` and
-    /// `playing` wait the table TTL** (R-6.5c2.42; ruling 9-b: a dealing table
-    /// has every seat taken). An open table past both TTLs is `Waited`, as the
-    /// Worker's first arm reads; where the open TTL is the LONGER, the table TTL
-    /// ends it first, as `Expired`.
-    /// Mutants: `dealing` waiting the open TTL; `open` waiting the table TTL
-    /// (battery row 16); the arms' order swapped; the open default not 7.
+    /// **A table that has not started — `open`, or `dealing` with a keep
+    /// outstanding — waits the shorter TTL and says it WAITED; `playing` waits
+    /// the table TTL** (security S3, D9, design §3.2 rule 2 and D-5; it
+    /// replaces ruling 9-b's dealing table waiting the table TTL). Both
+    /// statuses read alike at every point: closed as `Waited` at exactly the
+    /// open TTL and not a second before, `Waited` past both TTLs, as the
+    /// Worker's first arm reads; where the open TTL is the LONGER, the table
+    /// TTL ends either first, as `Expired`, as it ends an open one.
+    /// Mutants: `dealing` waiting the table TTL again (`Open` alone read);
+    /// `open` waiting the table TTL (battery row 16); `playing` read as not
+    /// started; the arms' order swapped; the open default not 7.
     #[test]
-    fn an_open_table_waits_the_shorter_ttl_and_a_dealing_one_the_table_ttl() {
+    fn a_dealing_table_is_waited_on_the_open_ttl_and_expired_on_the_table_ttl_like_an_open_one() {
         let at = |status, idle: u64, ttls: &Ttls| ending(status, NOW - idle, NOW, ttls);
-        assert_eq!(at(TableStatus::Open, 7 * DAY, &WORKER), Some(Ending::Waited { days: 7 }));
-        assert_eq!(at(TableStatus::Open, 7 * DAY - 1, &WORKER), None, "one second short");
-        assert_eq!(at(TableStatus::Open, 100 * DAY, &WORKER), Some(Ending::Waited { days: 100 }), "past both: waited");
-        assert_eq!(at(TableStatus::Dealing, 8 * DAY, &WORKER), None, "a dealing table is not waiting for players");
-        assert_eq!(at(TableStatus::Dealing, 90 * DAY, &WORKER), Some(Ending::Expired { days: 90 }));
-        assert_eq!(at(TableStatus::Playing, 8 * DAY, &WORKER), None);
-        let longer_open = Ttls { table: Some(10), open: Some(30) };
-        assert_eq!(at(TableStatus::Open, 10 * DAY, &longer_open), Some(Ending::Expired { days: 10 }), "the shorter wins");
-        assert_eq!(at(TableStatus::Open, 30 * DAY, &longer_open), Some(Ending::Waited { days: 30 }));
-        let unset_open = Ttls { table: Some(90), open: None };
-        assert_eq!(at(TableStatus::Open, 7 * DAY, &unset_open), Some(Ending::Waited { days: 7 }), "the default is 7");
-        assert_eq!(at(TableStatus::Open, 7 * DAY - 1, &unset_open), None);
+        for status in [TableStatus::Open, TableStatus::Dealing] {
+            assert_eq!(at(status, 7 * DAY, &WORKER), Some(Ending::Waited { days: 7 }), "{status:?}");
+            assert_eq!(at(status, 7 * DAY - 1, &WORKER), None, "{status:?}: one second short");
+            assert_eq!(at(status, 8 * DAY, &WORKER), Some(Ending::Waited { days: 8 }), "{status:?}");
+            assert_eq!(at(status, 100 * DAY, &WORKER), Some(Ending::Waited { days: 100 }), "{status:?}: past both: waited");
+            let longer_open = Ttls { table: Some(10), open: Some(30) };
+            assert_eq!(at(status, 10 * DAY, &longer_open), Some(Ending::Expired { days: 10 }), "{status:?}: the shorter wins");
+            assert_eq!(at(status, 30 * DAY, &longer_open), Some(Ending::Waited { days: 30 }), "{status:?}");
+            let unset_open = Ttls { table: Some(90), open: None };
+            assert_eq!(at(status, 7 * DAY, &unset_open), Some(Ending::Waited { days: 7 }), "{status:?}: the default is 7");
+            assert_eq!(at(status, 7 * DAY - 1, &unset_open), None, "{status:?}");
+        }
+        assert_eq!(at(TableStatus::Playing, 8 * DAY, &WORKER), None, "a playing table has started");
+        assert_eq!(at(TableStatus::Playing, 90 * DAY, &WORKER), Some(Ending::Expired { days: 90 }));
     }
 
     /// **The arithmetic cannot wrap**: an activity stamped after `now` (a clock
@@ -505,7 +522,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::archive::{Archive, Why};
-    use crate::games::test_support::{one_move_in, play_to_the_end, playing, req, two_people, who, RecordingArchive, RecordingLog, CORPUS_SEED};
+    use crate::games::test_support::{
+        one_move_in, play_to_the_end, playing, req, two_people, unflipped, who, RecordingArchive, RecordingLog, CORPUS_SEED,
+    };
     use crate::store::{MemStore, Store};
     use crate::tables::SeatSpec;
     use yokohama_core::Rules;
@@ -616,6 +635,78 @@ mod tests {
             assert!(games.read_table(id).unwrap().is_none(), "{id} ended");
         }
         assert!(games.read_table("fresh").unwrap().is_some(), "the fresh table stands");
+    }
+
+    /// **A dealing table with a bot seat is closed on the waiting-table TTL**
+    /// (security S3, D9; design §3.2 rule 2): red and the bot, red's keep
+    /// outstanding — `dealing` from its create, since a bot seat is no open
+    /// seat — eight days idle, is listed `dealing` and `waited` and ended
+    /// through the creator's delete, keeping nothing; the same table six days
+    /// idle is not a candidate. The `waited` reason and the two lines keep
+    /// the shape an open table's carry.
+    /// Mutant: `ending` reading `Open` alone (the table stands, nothing logged).
+    #[test]
+    fn a_dealing_table_with_a_bot_seat_is_waited_on_the_open_ttl() {
+        let (games, store, log) = layer(RecordingArchive::recording());
+        for id in ["dealt", "young"] {
+            let view = games.create(&req(id), &who("red@t.test")).expect("a table");
+            assert_eq!(view.status, TableStatus::Dealing, "premise: {id} is dealing, red's keep outstanding");
+        }
+        store.stamp_for_test("dealt", NOW - 8 * DAY);
+        store.stamp_for_test("young", NOW - 6 * DAY);
+
+        let from = log.events().len();
+        let ended = pass(&games, &WORKER, NOW);
+
+        assert_eq!(ended, [("dealt".to_string(), Ending::Waited { days: 8 }, Ok(()))]);
+        assert_eq!(
+            lines_since(&log, from),
+            [
+                (log::SWEEP_LISTED, serde_json::json!({ "id": "dealt", "status": "dealing", "idle_days": "8", "reason": "waited" })),
+                (log::SWEEP_ENDED, serde_json::json!({ "id": "dealt", "reason": "waited", "kept": "nothing" })),
+            ],
+        );
+        assert!(games.read_table("dealt").unwrap().is_none(), "ended");
+        assert!(games.read_table("young").unwrap().is_some(), "six days idle: not a candidate");
+    }
+
+    /// **The sweep settles a repairable dealing table BEFORE it reads its
+    /// status, and keeps it** (security S3, D9; design §3.2 rule 2, D-5,
+    /// D-16): a table both people kept, whose record landed and whose flip
+    /// did not ([`unflipped`] — the stuck shape `tables.rs`'s settle cell
+    /// builds), eight days idle, is repaired to `playing` by the pass's own
+    /// read and is no candidate: no line names it, its record is untouched.
+    /// Beside it in the same pass, the same table one keep short — red kept,
+    /// blue's keep outstanding — is closed as `waited`: the anti-vacuity
+    /// partner, and the knob's own words, a table dealing with a keep
+    /// outstanding has not started.
+    /// Mutant: the pass reading through `read_table` rather than `settle` (the
+    /// repairable table listed `dealing`, ended `waited`, its game lost).
+    #[test]
+    fn the_sweep_settles_a_repairable_dealing_table_before_it_reads_its_status_and_keeps_it() {
+        let (games, store, log) = layer(RecordingArchive::recording());
+        drop(playing(&games, &two_people("kept", CORPUS_SEED), &["red@t.test", "blue@t.test"]));
+        let record = games.read_document(Doc::Record, "kept").unwrap().expect("the record landed");
+        unflipped(&games, "kept");
+        let red = who("red@t.test");
+        games.create(&two_people("half", CORPUS_SEED), &red).expect("a table");
+        games.keep("half", &red, yokohama_core::PlayerId::new(0), 1, None).expect("red's keep");
+        for id in ["kept", "half"] {
+            let (doc, _) = games.read_table(id).unwrap().expect("a table");
+            assert_eq!(doc.status, TableStatus::Dealing, "premise: {id} is dealing");
+            store.stamp_for_test(id, NOW - 8 * DAY);
+        }
+
+        let from = log.events().len();
+        let ended = pass(&games, &WORKER, NOW);
+
+        assert_eq!(ended, [("half".to_string(), Ending::Waited { days: 8 }, Ok(()))], "the repairable table is not ended");
+        let named: Vec<(&str, serde_json::Value)> =
+            lines_since(&log, from).into_iter().map(|(event, fields)| (event, fields["id"].clone())).collect();
+        assert_eq!(named, [(log::SWEEP_LISTED, "half".into()), (log::SWEEP_ENDED, "half".into())], "no line names it");
+        let (doc, _) = games.read_table("kept").unwrap().expect("the repaired table stands");
+        assert_eq!(doc.status, TableStatus::Playing, "repaired by the pass's read");
+        assert_eq!(games.read_document(Doc::Record, "kept").unwrap(), Some(record), "its record untouched");
     }
 
     /// **A failed archive put refuses the delete and keeps the table for the

@@ -9971,7 +9971,8 @@ mod tests {
 
     /// **`/api/health` reports no table TTL on this host when none is set**
     /// (M6.5c2 cycle E, R-6.5c2.42; R-6.5c2.2). The Worker expires an idle
-    /// table, and a table still waiting for players sooner, and reports both
+    /// table, and a table that has not started — open, or dealing with a keep
+    /// outstanding (security S3, D9) — sooner, and reports both
     /// TTLs so a client can say so; a NAS that sets no TTL runs no sweep
     /// (cycle F, R-F9) and says THAT — both keys present and `null`, never
     /// absent, because a client reading an absent key cannot tell "no TTL"

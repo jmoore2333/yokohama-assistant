@@ -23,6 +23,7 @@ import {
   operate,
   owedGameOver,
   rebuilt,
+  replaceOnce,
   revisionOf,
   seedPlaying,
   settle,
@@ -51,8 +52,8 @@ import {
 const TTL = 90 * DAY_MS;
 /** `wrangler.test.jsonc`'s waiting-table TTL, in milliseconds (R-6.5c2.42):
  *  the SHORTER of the two, so it is where every table's alarm is armed —
- *  from SQL alone, which cannot read whether a table still waits for players
- *  (the strings rule) — and the alarm decides by the table's status. */
+ *  from SQL alone, which cannot read whether a table has started (the
+ *  strings rule) — and the alarm decides by the table's status. */
 const OPEN_TTL = 7 * DAY_MS;
 /** An operator's address, as the Worker's gate would forward it. */
 const BOSS = "boss@t.test";
@@ -451,28 +452,33 @@ describe("expiry (R-6.5c.15; spec §2.4)", () => {
   });
 });
 
-describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8)", () => {
+describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8; security S3, D9)", () => {
   // Review Focus 2. A table's alarm is ARMED from SQL alone, which cannot read
   // its status (the strings rule), at the SHORTER deadline — its last activity
   // plus 7 days — and DECIDED at the alarm by the status its house copy reads
-  // (`copyFacts`, the one sanctioned parse). Three tables:
+  // (`copyFacts`, the one sanctioned parse). A table that has not started —
+  // open, or dealing with a keep outstanding — waits the 7 days (security S3,
+  // D9; design §3.2 rule 2 and D-5, replacing ruling 9-b's dealing table that
+  // waited the 90). Three tables:
   //
-  // - one still WAITING for players (`open`): armed at 7 days; advanced 7 days
-  //   and run, it is gone, its marker the waited head, and `expired` logged
-  //   with the reason;
+  // - one still OPEN, a seat unfilled: armed at 7 days; advanced 7 days and
+  //   run, it is gone, its marker the waited head, and `expired` logged with
+  //   the reason;
   // - one PLAYING (dealt, and a move made): armed at 7 days all the same, and
   //   at that alarm NOT expired — re-armed to its last activity plus 90 days;
-  // - one created `open` and FILLED on day 6: it survives day 7 and day 13
-  //   (its own 7 days, now `dealing`, re-armed to day 96), and expires on day
-  //   96 under the 90-day TTL.
+  // - one created `open` and FILLED on day 6 by a second identity, `dealing`
+  //   with both keeps outstanding: it survives day 7, a day after the join
+  //   (re-armed to the join plus 7), and is closed on day 13, the join's 7
+  //   days past, as one that `waited`, its marker the waited head with
+  //   `ttl_days` 7.
   //
   // Mutants: the alarm armed at the TTL (the waiting table's premise, 90 days
   // out); the status ignored — every table expired at its 7 days (the playing
   // table ends), or none (the waiting table stands); the playing table re-armed
   // at the 7 days already past, where it would fire again at once; `dealing`
-  // read as waiting (the filled table ends on day 13); the waited marker's
-  // reason, its days, or its head wrong.
-  it("a table still waiting for players expires at 7 days; a playing or filled one is re-armed to its 90 (Review Focus 2)", async () => {
+  // read as not waiting — `open` alone (the filled table survives day 13); the
+  // waited marker's reason, its days, or its head wrong.
+  it("a table that has not started expires at 7 days — open, or filled and dealing; a playing one is re-armed to its 90 (Review Focus 2; security S3, D9)", async () => {
     const waiting = "wt-open";
     const open = tableStub(waiting);
     expect((await call(open, RED, "POST", "/api/games", CREATE_BODY, waiting)).status).toBe(201);
@@ -506,7 +512,8 @@ describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8)", () => {
     await settle(filled);
     // Created on day 0; it is day 6, and blue fills the open seat.
     await backdate(filled, Date.now() - 6 * DAY_MS);
-    expect((await call(filled, BLUE, "POST", `/api/games/${late}/join`, '{"seat":1}')).status, "filled on day 6").toBe(200);
+    const joined = await call(filled, BLUE, "POST", `/api/games/${late}/join`, '{"seat":1}');
+    expect([joined.status, (await joined.json<{ status: string }>()).status], "filled on day 6: dealing, no keep made").toEqual([200, "dealing"]);
     await settle(filled);
     const survives = async (day: number, backTo: number) => {
       await backdate(filled, backTo);
@@ -518,16 +525,95 @@ describe("the waiting-table expiry (R-6.5c2.42; the plan's R-E8)", () => {
     // Day 7: a day after the join, before its own 7 days.
     await survives(7, Date.now() - DAY_MS - 60_000);
     expect(await alarmOf(filled), "day 7: re-armed to the join plus 7 days").toBe((await lastActivity(filled)) + OPEN_TTL);
-    // Day 13: the join's 7 days are past, and the table is dealing, not waiting.
-    await survives(13, Date.now() - OPEN_TTL - 60_000);
-    expect(await alarmOf(filled), "day 13: re-armed to the join plus 90 days, day 96").toBe((await lastActivity(filled)) + TTL);
-    // Day 96: the join's 90 days are past.
-    await backdate(filled, Date.now() - TTL - 60_000);
+    // Day 13: the join's 7 days are past, and the table — dealing, no keep
+    // made — has not started.
+    await backdate(filled, Date.now() - OPEN_TTL - 60_000);
     const ended = await alarmRun(filled);
-    expect(ends(ended.lines), "day 96: expired under the 90-day TTL").toEqual([{ event: "expired", id: late, reason: "expired", kept: "nothing" }]);
+    expect(ends(ended.lines), "day 13: closed as one that waited").toEqual([{ event: "expired", id: late, reason: "waited", kept: "nothing" }]);
     const closed = await markerOf(filled);
-    expect(closed).toEqual({ at: expect.any(Number), reason: "expired", ttl_days: 90, kept: "nothing" });
-    expect(await sentenceAt(filled, late, RED)).toBe(HEAD.expired(utcDate(closed!.at as number)) + TAIL.nothing);
+    expect(closed).toEqual({ at: expect.any(Number), reason: "waited", ttl_days: 7, kept: "nothing" });
+    expect(await docKinds(filled), "every document removed").toEqual([]);
+    expect(await sentenceAt(filled, late, RED)).toBe(HEAD.waited(utcDate(closed!.at as number)) + TAIL.nothing);
+  });
+
+  // **The unread corner** (design §3.2 rule 2, D-16): a dealing table
+  // finalized but unflipped — both keeps made, the record stored, its document
+  // still at `dealing` — that NOBODY reads for the whole waiting-table TTL is
+  // CLOSED on the Worker as one that `waited`. The alarm reads `waiting` from
+  // the stored, un-settled document before the delete (`lifecycle.ts`'s
+  // `expiry` and `waiting`), `settle` runs only inside the delete's `events`
+  // read, and `gameOf` keeps a table only when a move was made — so the loss
+  // is a game with no move, accepted over a shell that settles before it
+  // reads. The NAS parts here, by design: its sweep settles first and keeps
+  // the table (`crates/yokohama-web/src/sweep.rs`, the settle-first cell).
+  //
+  // The stuck document is made as the layer's settle cell makes it
+  // (`tables.rs`, `a_table_left_dealing_with_every_keep_present_settles_on_the_next_read`):
+  // a real finalize, its table text put back at `dealing` with no turn, and
+  // the object rebuilt so its wake loads that text. No request sequence leaves
+  // it here: a request's record and table reach SQL in ONE batch, so the
+  // crash between the last keep's two writes is the NAS's window. The
+  // anti-vacuity partner is the same shape READ once: the read repairs it to
+  // `playing`, and that table's alarm at 7 days ends nothing.
+  //
+  // Mutants: `waiting` reading `open` alone (the unread table survives); a
+  // shell that settles before it reads (the unread table survives — the
+  // design's rejected alternative); a fixture that is not the repairable shape
+  // (the read partner stays `dealing`).
+  it("the unread corner (D-16): a finalized-but-unflipped dealing table nobody read is closed as waited, and one read is repaired and kept", async () => {
+    /** The table at `id` finalized with no move, its stored document put back
+     *  at `dealing` with no turn, its object rebuilt. */
+    async function unflipped(id: string): Promise<DurableObjectStub<Table>> {
+      const stub = tableStub(id);
+      const steps: Array<[string, string, string]> = [
+        [RED, "/api/games", CREATE_BODY],
+        [BLUE, `/api/games/${id}/join`, '{"seat":1}'],
+        [RED, `/api/games/${id}/keep`, '{"seat":0,"card":1}'],
+        [BLUE, `/api/games/${id}/keep`, '{"seat":1,"card":1}'],
+      ];
+      for (const [user, path, body] of steps) {
+        const res = await call(stub, user, "POST", path, body, path === "/api/games" ? id : undefined);
+        expect(res.status, `${user} ${path}: ${await res.clone().text()}`).toBeLessThan(300);
+      }
+      const game = await call(stub, RED, "GET", `/api/games/${id}`);
+      expect((await game.json<Play>()).events, "premise: playing, and no move made").toBe(0);
+      await settle(stub);
+      const table = (await docOf(stub, "table")) ?? "";
+      const turns = table.match(/"turn": \{[^{}]*\}/g) ?? [];
+      expect(turns.length, "premise: one turn mirror, flat").toBe(1);
+      const stuck = replaceOnce(replaceOnce(table, '"status": "playing"', '"status": "dealing"'), turns[0]!, '"turn": null');
+      await runInDurableObject(stub, (_t, state) => {
+        state.storage.transactionSync(() => state.storage.sql.exec("UPDATE docs SET json = ? WHERE kind = 'table'", stuck));
+      });
+      await rebuilt(stub);
+      expect(await docOf(stub, "table"), "premise: the stuck text is what the wake loads").toBe(stuck);
+      expect(await docOf(stub, "record"), "premise: the record stored").toBeDefined();
+      return stub;
+    }
+
+    const unread = "wt-unflipped";
+    const stuck = await unflipped(unread);
+    await backdate(stuck, Date.now() - OPEN_TTL - 60_000);
+    const gone = await alarmRun(stuck);
+    expect(ends(gone.lines), "closed as one that waited, its game with no move not kept").toEqual([
+      { event: "expired", id: unread, reason: "waited", kept: "nothing" },
+    ]);
+    const marker = await markerOf(stuck);
+    expect(marker).toEqual({ at: expect.any(Number), reason: "waited", ttl_days: 7, kept: "nothing" });
+    expect(await docKinds(stuck), "every document removed").toEqual([]);
+    expect(await bucketText(`test/rev7/abandoned/${unread}.json`), "nothing filed").toBeNull();
+
+    const read = "wt-unflipped-read";
+    const opened = await unflipped(read);
+    const view = await call(opened, RED, "GET", `/api/games/${read}/table`);
+    expect([view.status, (await view.json<{ status: string }>()).status], "premise: the stuck shape is repairable — one read flips it").toEqual([200, "playing"]);
+    await settle(opened);
+    await backdate(opened, Date.now() - OPEN_TTL - 60_000);
+    const kept = await alarmRun(opened);
+    expect([kept.result, ends(kept.lines)], "the alarm ran, and ended nothing").toEqual([true, []]);
+    expect(await markerOf(opened)).toBeUndefined();
+    expect(await docKinds(opened)).toEqual(["record", "table"]);
+    expect(await alarmOf(opened), "re-armed to the last activity plus 90 days").toBe((await lastActivity(opened)) + TTL);
   });
 });
 
@@ -702,10 +788,12 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
   // stamped game read as `off` once the switch is off (the stamp consulted
   // after the switch); a table with no move read as a game; the switch
   // ignored; a head under the wrong reason; `ttl_days` missing from an
-  // expired marker. **The alarm's `open` arrangement ends as `waited`** (R-6.5c2.42):
-  // a table still waiting for players, idle past both TTLs, is closed as one
-  // that waited 7 days — its status decides, whatever else is past. Mutant: the
-  // TTL asked before the status (`expired` here).
+  // expired marker. **The alarm's `open` and `dealing` arrangements end as
+  // `waited`** (R-6.5c2.42; security S3, D9): a table that has not started —
+  // open, or dealing with a keep outstanding — idle past both TTLs, is closed
+  // as one that waited 7 days — its status decides, whatever else is past.
+  // Mutants: the TTL asked before the status (`expired` here); `dealing` read
+  // as not waiting (`expired` for the dealing arrangement).
   it.each(
     (["abandoned", "expired", "operator"] as const).flatMap((head) =>
       (["saved", "stamped", "stamped-off", "open", "dealing", "no-move", "off"] as const).map((arranged) => [head, arranged] as const),
@@ -721,7 +809,7 @@ describe("the marker's tail, by what was kept, under each head (spec §2.4 step 
     } finally {
       off?.restore();
     }
-    const reason = head === "expired" && arranged === "open" ? "waited" : head;
+    const reason = head === "expired" && (arranged === "open" || arranged === "dealing") ? "waited" : head;
     const days = reason === "expired" ? { ttl_days: 90 } : reason === "waited" ? { ttl_days: 7 } : {};
     const marker = await markerOf(stub);
     expect(marker).toEqual({ at: expect.any(Number), reason, ...days, kept: KEPT[arranged] });

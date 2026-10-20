@@ -84,8 +84,9 @@ describe("YOKOHAMA_WEB_TABLE_TTL_DAYS (R-6.5c.15)", () => {
   });
 });
 
-// R-6.5c2.42: a table still WAITING for players expires after these days,
-// default 7, refused as the first TTL is. With no first TTL it is inert — no
+// R-6.5c2.42: a table that has not started — open, or dealing with a keep
+// outstanding (security S3, D9) — expires after these days, default 7,
+// refused as the first TTL is. With no first TTL it is inert — no
 // table expires — which the module's configuration says (below). Mutants: no
 // default; a default other than 7; the refusal naming the first TTL.
 describe("YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS (R-6.5c2.42)", () => {

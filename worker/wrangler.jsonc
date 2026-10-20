@@ -125,9 +125,9 @@
     // value, 2026-09-23), as its creator's own Abandon, saved first while the
     // archive is on. Removing the line keeps every table (`worker/RUNBOOK.md` §3).
     "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
-    // A table still WAITING for players — its status `open`, a seat unfilled —
-    // expires after 7 days without activity instead (R-6.5c2.42), with a marker
-    // saying it waited. Removing the line reads the default, 7; with no
+    // A table that has not started — open, or dealing with a keep outstanding
+    // — expires after 7 days without activity instead (R-6.5c2.42; security
+    // S3, D9), with a marker saying it waited. Removing the line reads the default, 7; with no
     // `YOKOHAMA_WEB_TABLE_TTL_DAYS` no table expires and this line is inert.
     "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     // The NAS's three chat variables, at the NAS's defaults.

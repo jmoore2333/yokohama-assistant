@@ -359,8 +359,8 @@ export const DAY_MS = 86_400_000;
  *  §2.4; R-6.5c2.42): its last activity — the newest `written_at` of its
  *  record, table and chat — plus the SHORTER of `wrangler.test.jsonc`'s two
  *  TTLs, the waiting-table TTL's 7 days: a batch arms the expiry from SQL
- *  alone, which cannot read whether the table still waits for players, and
- *  the alarm decides. */
+ *  alone, which cannot read whether the table has started, and the alarm
+ *  decides. */
 export async function expiryOf(stub: DurableObjectStub<Table>): Promise<number> {
   const [row] = await sqlOf(stub, "SELECT max(written_at) AS at FROM docs WHERE kind IN ('record', 'table', 'chat')");
   return Number(row?.at) + 7 * DAY_MS;

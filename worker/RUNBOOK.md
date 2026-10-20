@@ -75,7 +75,8 @@ What answers what:
     the client's probe reads it. The heads: `this table was abandoned on 2026-10-22`, `this table
     expired on 2026-10-22 after 90 days without activity` (one day of TTL reads `1 day`), `this
     table waited 7 days for players and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
-    table still waiting for players when its alarm closed it), `this table was removed by an
+    table that had not started when its alarm closed it — from 0.7.2 a dealing one too, security S3,
+    D9), `this table was removed by an
     operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
     game is in the archive` where its game was saved — stamped at game over, or saved by the delete
     itself, which with the switch at `r2` saves every game before it deletes it — whatever the
@@ -347,7 +348,7 @@ the whole list; it leaves secrets alone.
 | `YOKOHAMA_DEV_DOOR` | `on`, for this cycle's live tests. *(Corrected 2026-10-12, security S2b, finding B6: `off` in `wrangler.jsonc` — the standing state is Access alone, the shape a self-hoster copies; `wrangler.dev.jsonc`, production with this one variable `on`, opens it around a live tier — `npm run deploy:dev` before it, the plain `npm run deploy` after it (§7) — and the deploy guard refuses `on` in any other worker-door file. The dev door names a `.test` address only.)* | off: an assertion naming only the credential is no one |
 | `YOKOHAMA_WEB_ARCHIVE` | `r2`, over the bucket `yokohama-archive` | off (`r2` needs the bucket bound as `ARCHIVE`) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | `90` | no table ever expires |
-| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | *not a variable at the seventeenth; added 2026-09-30 (M6.5c2 cycle E, R-6.5c2.42):* `7` in `wrangler.jsonc` — how long a table still waiting for players stands (below) | 7 days; and with `YOKOHAMA_WEB_TABLE_TTL_DAYS` absent it is inert, since no table expires |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | *not a variable at the seventeenth; added 2026-09-30 (M6.5c2 cycle E, R-6.5c2.42):* `7` in `wrangler.jsonc` — how long a table that has not started — open, or dealing with a keep outstanding — stands (below). *(From 0.7.2, security S3, D9: a dealing table too; before it a dealing table waited the 90 days.)* | 7 days; and with `YOKOHAMA_WEB_TABLE_TTL_DAYS` absent it is inert, since no table expires |
 | `YOKOHAMA_WEB_ADMINS` | set, as a SECRET (`wrangler secret put`, the plan's ruling P-1), its value never shown — a refusal names an entry by its position, never its value; the deploy guard refuses `wrangler.jsonc` if its `vars` name it | the operator routes are the layer's 404 |
 | `YOKOHAMA_WEB_COUNT_WAKES` | unset — the exit's window sets it for one deploy, and the next deploy unsets it (§7) | off: no wake is counted |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on` | on |
@@ -431,17 +432,20 @@ the whole list; it leaves secrets alone.
   table expires then, or sooner if an alarm runs for other work, since every run re-reads the TTL. A
   RAISED TTL needs nothing: the alarm at the old deadline re-reads it, finds nothing due, and
   re-arms.
-- **The waiting-table TTL** (M6.5c2 cycle E, R-6.5c2.42): a table still WAITING for players — its
-  status `open`, a seat unfilled — is closed after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` days without
+- **The waiting-table TTL** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9): a table that
+  has not started — open, or dealing with a keep outstanding; its status `open` or `dealing` — is
+  closed after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` days without
   activity, `7` in `wrangler.jsonc` and by default, with the marker head `this table waited 7 days
   for players and was closed on …` and the tail `— no move had been made, so there was nothing to
   keep`; its `expired` line reads `reason: "waited"`. No write can read a table's status (the
   shell never parses a table document), so **every table's alarm is armed at its last activity
   plus the SHORTER of the two TTLs** — 7 days — and the alarm decides by the status its house copy
-  reads: an `open` table is closed; any other is re-armed to its last activity plus
-  `YOKOHAMA_WEB_TABLE_TTL_DAYS`, and expires there as above. So a dealing or playing table idle for 7
-  days costs one alarm run more than before — its house copy made once more, on a module of its
-  own, to read the status — and the alarm set again. A table
+  reads: an `open` or `dealing` table is closed; any other is re-armed to its last activity plus
+  `YOKOHAMA_WEB_TABLE_TTL_DAYS`, and expires there as above. So a playing table idle for 7 days
+  costs one alarm run more than before — its house copy made once more, on a module of its own, to
+  read the status — and the alarm set again. The status is read as stored, never repaired first: a
+  table finalized but never flipped to `playing` that nobody opened for 7 days is closed as
+  `waited`, a game with no move (design D-16). A table
   already waiting when this is first deployed keeps the deadline armed before it, its last activity
   plus 90 days, until a delivery to the lobby or an alarm for other work re-arms it — as with a
   lowered TTL, above. `/api/health` reports both TTLs, `table_ttl_days` and `open_table_ttl_days`

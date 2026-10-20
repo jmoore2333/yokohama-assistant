@@ -241,7 +241,7 @@ docker run -d --name yokohama-web \
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<segment>/` (security S1b) — the segment is the address made readable, then `-` and a twelve-character digest (security S1c) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
-| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table that has not started — open, or dealing with a keep outstanding — stands idle before the sweep closes it |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
 | `YOKOHAMA_WEB_CHAT_KEEP` | a positive number of messages, or `all` | 500 a room |
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
@@ -328,10 +328,11 @@ idle tables itself: one pass a minute after start, then one every hour. A table'
 write to any of its three files (the table, the record and the chat, listed below): a seat taken, a keep, an
 applied move, a chat message. A pass ends:
 
-- a table still waiting for players, a seat empty, once it has stood idle `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`
-  (7 unless set), with the reason `waited`;
-- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`. A table at its
-  deal, every seat taken, waits this one.
+- a table that has not started — open, or dealing with a keep outstanding — once it has stood idle
+  `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` (7 unless set), with the reason `waited`. A keep is a write, so a half-kept
+  table counts its days from the last keep. A table whose every keep is in but whose start never landed — a
+  crash between the last keep's two writes — is started by the pass's own read first, and kept;
+- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`.
 
 **Each pass lists before it ends anything.** It writes one `sweep-listed` line for every table it is about to
 end, and only then ends them, one `sweep-ended` line each: a pass that ends forty tables has written forty

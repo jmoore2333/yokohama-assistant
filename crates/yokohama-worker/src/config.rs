@@ -68,8 +68,9 @@ pub(crate) struct Config {
 /// reports on `/api/health` and nothing in this module applies: a table's
 /// expiry is the shell's alarm. `table` is `YOKOHAMA_WEB_TABLE_TTL_DAYS` — how
 /// long an idle table stands — and `open_table` is
-/// `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, how long one still waiting for players
-/// does; both `None` while no table expires.
+/// `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, how long a table that has not started —
+/// open, or dealing with a keep outstanding (security S3, D9) — does; both
+/// `None` while no table expires.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Ttls {
     pub(crate) table: Option<u64>,

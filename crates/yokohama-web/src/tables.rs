@@ -2813,15 +2813,7 @@ mod tests {
         let red = who("red@t.test");
         let id = games.create(&req_seeded("settle1", CORPUS_SEED), &red).unwrap().id;
         games.keep(&id, &red, PlayerId::new(0), 1, None).unwrap();
-        let (json, v) = games.store().read(Doc::Table, &id).unwrap().unwrap();
-        let mut doc: TableDoc = serde_json::from_str(&json).unwrap();
-        doc.status = TableStatus::Dealing;
-        doc.turn = None;
-        games
-            .store()
-            .write_if_version(Doc::Table, &id, &serde_json::to_string(&doc).unwrap(), Some(v))
-            .unwrap();
-        games.evict_for_test(&id);
+        crate::games::test_support::unflipped(&games, &id);
         assert_eq!(games.table(&id, &red).unwrap().status, TableStatus::Playing, "settled on read");
 
         // Arm 2: every keep present and NO record (a crash between the two writes).

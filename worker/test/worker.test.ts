@@ -712,7 +712,7 @@ describe("the house, first cut (spec §2.5)", () => {
   // NAS reports both `null` (the layer's own cell). Mutants: either TTL
   // missing from the module's configuration, or from the host's facts; the
   // two swapped.
-  it("answers /api/health with the two TTLs this Worker reads: 90 days, and 7 for a table waiting for players", async () => {
+  it("answers /api/health with the two TTLs this Worker reads: 90 days, and 7 for a table that has not started", async () => {
     const res = await worker("/api/health");
     expect(res.status).toBe(200);
     const health = JSON.parse(res.text) as Record<string, unknown>;

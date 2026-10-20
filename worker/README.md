@@ -1501,12 +1501,16 @@ alarm finds `last activity + TTL` has passed, the table expires as its creator: 
 the archive is on, then deleted, behind its marker. Finished games expire on the same clock, their
 save made at game over. Open and dealing tables expire with nothing to save.
 
-**A table still waiting for players** (M6.5c2 cycle E, R-6.5c2.42) — its status `open` — is closed
-sooner, after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
+**A table that has not started** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9) — open,
+or dealing with a keep outstanding: its status `open` or `dealing` — is closed sooner, after
+`YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
 `this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
 so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
 by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
-scratch module. An `open` table is closed; any other is re-armed to its last activity plus the TTL.
+scratch module. An `open` or `dealing` table is closed; any other is re-armed to its last activity
+plus the TTL. The status is read as the stored document says it, never repaired first, so a table
+finalized but never flipped to `playing` that nobody opened for the whole 7 days is closed too, a
+game with no move (design D-16; the NAS's sweep repairs it first and keeps it).
 `/api/health` reports both, `table_ttl_days` and `open_table_ttl_days`, `null` while no table
 expires.
 
