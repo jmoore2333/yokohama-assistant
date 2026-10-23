@@ -310,14 +310,17 @@ The spec's Issue 3. Reword, do not re-decide: the rule stays (a keyed build is r
 ```rust
 #[test] fn the_keyed_build_refusal_gives_the_clients_present_reason_and_not_the_retired_one() {
     // for door in [CfAccess, Worker]: let s = keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, door).unwrap_err();
-    // assert!(s.contains("YOKOHAMA_WEB_IDENTITY=open")); assert!(!s.contains("the open door's")); assert!(!s.contains("reads the key as a door")); assert!(s.contains(door.name()))
+    // assert!(s.contains("belongs with YOKOHAMA_WEB_IDENTITY=open on this server")); assert!(s.contains("already has an identity provider in front")); assert!(s.ends_with("or run it with YOKOHAMA_WEB_IDENTITY=open."));
+    // assert!(!s.contains("the open door's")); assert!(!s.contains("reads the key as a door")); assert!(s.contains(door.name()))
 }
 ```
+
+(P-15: the block's first assertion read `s.contains("YOKOHAMA_WEB_IDENTITY=open")`, which pins the REMEDY's variable — a substring the retired sentence and a sentence with no reason at all both carry — so the cell pinned no word of the reason the spec's Issue 3 acceptance item 2 asks it to pin; the reason's two phrases and the remedy's tail are pinned instead. The cell's doc lists what it pins and the mutants it catches, and no more.)
 
 - [ ] **Step 2: Run to verify it fails**
 
 Run: `cargo test -p yokohama-web --lib the_keyed_build_refusal_gives`
-Expected: FAIL on `!s.contains("the open door's")`.
+Expected: FAIL — on `!s.contains("the open door's")` under the block as first written; under the corrected block the retired sentence fails the reason's first phrase before it reaches that line (P-15).
 
 - [ ] **Step 3: Rewrite the sentence** in `keyed_build_refusal`, move `keyed_behind`'s literal with it, reword the two doc comments and `main.rs`'s, and the two `update.sh` lines.
 
@@ -384,7 +387,7 @@ The spec's Part 2 ((a)–(d) and "Other sites"), its items 7 and 8, and the boar
 **Files:**
 - Modify: `docs/security-ledger.md` (row C1 at ~27: the clause → Part 2 (a); row D3 at ~33: the clause → Part 2 (c)'s "wave lands it" draft naming Task 1's and Task 2's commits and catchers, the "Recorded, not closed" tail rewritten to say a seated player is no longer locked out by a watcher fill; row D32 at ~62: the closing clause of item 7; the AUTH row at ~63: "(accepted undone, the owner, 2026-10-22)"; the `Updated` line at 5)
 - Modify: `docs/web-lane.md` (§8's "Still owed" paragraph at ~414–423 rewritten as ONE paragraph from Part 2 (b) and findings 7–8 — the fresh-history and art preconditions answered by the S4 design §2.1 and §2.3, "on a public Worker that starts empty" retracted, the auth paragraph's header at ~425 brought to "stage 1 live since 2026-10-19; stage 2 is S4c's window"; §15 at ~998, ~1002 and ~1004 from the "Other sites" drafts, the two D3 rows naming the watchers' figure and Task 1's/Task 2's commits; §4 at ~162, the Worker's caps clause gaining the watchers' figure; §13's stream rows at ~818–819 naming the watchers' refusal)
-- Modify: `worker/RUNBOOK.md` (the cap sentences at ~105–108 gain the fifth; the sentence at ~273 → the "Other sites" draft)
+- Modify: `worker/RUNBOOK.md` (the cap sentences at ~105–108 gain the fifth; the sentence at ~273 → the "Other sites" draft; P-16: §2's secrets-guard paragraph at ~253–258, which lists what the guard refuses and quotes its source refusal, gains the door in the same shape — "A file whose door is absent, or neither `worker` nor `open`, is refused the same way (`secrets-guard: <file>'s YOKOHAMA_WEB_IDENTITY must be worker or open …; the secrets it requires cannot be judged without a door`)" — the spec's Issue 4 "Record to update" condition being met)
 - Modify: `docs/handover.md` (line ~122, housekeeping item 4: the Rust sentences and the guard done in this wave with their commits, the sign-in block and the encoders → "issue #N"; line ~128, "S4's" → "superseded by the provider-signed door, 2026-10-22"; line ~140, items (c) and (d) done; rulings 10 and 11 closed with one line each; a line naming the two polish issues by number)
 - Test: `cargo test -p yokohama-web --test lane_document` (§13 and §16 held to the code) and `cd worker && npm run test:scripts` (`lane-variables.test.mjs` holds §12)
 
@@ -439,5 +442,10 @@ Found by the implementers of Tasks 1 and 2 (2026-10-23), ruled by the orchestrat
 - **P-12** (concern 2) — Task 2's Step 7 expected "the three existing D3 cells … at their baseline"; the caps-total pool cell filled 64 from callers with no seat, who now stop at 32 (measured red), so it is rebuilt on a four-player table — four seated players at eight plus 32 spectators — and probes the 65th both as a watcher and as a seated player. The Worker's P-8.
 - **P-13** (Task 4's implementer, concern 1) — Task 4's Interfaces sentence ("because the challenge the key draws is the open door's and the public Worker's") contained the substring its own cell forbids; the shipped wording, "belongs to the open door and to the public Worker", stands.
 - **P-14** (concern 2; the ledger's R-9) — Task 4 Step 4's grep expectation "prints nothing" cannot hold: the new cell's assertion `!s.contains("reads the key as a door")` spells the phrase it forbids, and it is the one place allowed to. The expectation is "exactly that assertion line in `assets.rs`"; a literal split with `concat!` to dodge the grep was reverted to the plain literal in the task's fix round 0 (`b033f28d`).
+
+Found by the reviewers of Tasks 4 and 5 (2026-10-23), ruled by the orchestrator between Tasks 5 and 6 and recorded here; the SDD ledger holds the rulings as R-11 onward:
+
+- **P-15** (Task 4's reviewer, Important 1, plan-mandated; the ledger's R-11) — Task 4 Step 1's block asserted `s.contains("YOKOHAMA_WEB_IDENTITY=open")` as the cell's one positive check, and that substring is the REMEDY's variable, carried by every version of the sentence: the retired sentence passed it and so did a sentence with no reason at all (the reviewer's mutant M5 — the reason dropped whole from the function and the twin together — read GREEN in all twelve module cells). The spec's Issue 3 acceptance item 2 asks the cell to pin the reason's presence, and the spec binds. The block now pins the reason's two phrases and the remedy's tail (`ends_with`), which also kills the reviewer's M4 (the remedy's `=open` dropped in both slots), the mutant the cell's doc had claimed without catching (the reviewer's Important 2). Fixed in Task 4's fix round 1.
+- **P-16** (Task 5's reviewer, its R-1 for the orchestrator) — Task 6's `worker/RUNBOOK.md` line named only the cap sentences (~105–108) and the sentence at ~273, and §2's secrets-guard paragraph (~253–258) lists what the guard refuses and quotes the source refusal, so the spec's Issue 4 "Record to update" condition ("needs a word only if it lists what the guard refuses") is met and the door's word is due there. The line names the site.
 
 Also read, no change: the design's two edit artifacts named at the brainstorm's close ("(the owner:" dangling in §2.11; "a reader that weaker is the point" in §4) are not in the design at `2026-10-23` — the owner's edits removed them. Task 5's cited sites (`doorOf`, `judgeSecrets`'s rows, `judgedIn`, `config.ts:168–169`) read as the plan says. Task 2's `tableVerdict` rows were checked by hand against the verdict order (every row agrees). The vitest configs place `src/**/*.unit.test.ts` under `test:scripts` and `test/**/*.test.ts` under the pool, as Step 9's counts assume.
