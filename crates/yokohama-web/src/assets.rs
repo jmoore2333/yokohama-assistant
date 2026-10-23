@@ -695,8 +695,7 @@ mod tests {
             let s = keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, door).unwrap_err();
             assert!(s.contains("YOKOHAMA_WEB_IDENTITY=open"), "{door:?}: {s}");
             assert!(!s.contains("the open door's"), "{door:?}: {s}");
-            // Split, so the tree-wide grep for the retired phrase finds nothing.
-            assert!(!s.contains(concat!("reads the key as ", "a door")), "{door:?}: {s}");
+            assert!(!s.contains("reads the key as a door"), "{door:?}: {s}");
             assert!(s.contains(door.name()), "{door:?}: {s}");
         }
     }
