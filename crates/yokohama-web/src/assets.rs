@@ -686,14 +686,20 @@ mod tests {
     /// for a name only where the server's facts say `open`
     /// (`web/src/outbox.ts`, rule 6b), so the sentence says where a keyed
     /// build belongs, not what the client reads. The rule is unchanged and the
-    /// cell above pins it; this one pins the words. Mutants: the old sentence
-    /// restored (either retired phrase back); the sentence without the
-    /// remedy's `open`; the sentence naming no door.
+    /// cell above pins it; this one pins the sentence's words: the two retired
+    /// phrases absent, the reason's two phrases present (the remedy's variable
+    /// is no evidence of a reason, since the remedy carries it in every
+    /// version), the remedy's tail, and the door named. Mutants: the old
+    /// sentence restored (either retired phrase back); the reason dropped
+    /// whole, in the function and the cell above's twin together; the sentence
+    /// without the remedy's `open`; the sentence naming no door.
     #[test]
     fn the_keyed_build_refusal_gives_the_clients_present_reason_and_not_the_retired_one() {
         for door in [IdentityMode::CfAccess, IdentityMode::Worker] {
             let s = keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, door).unwrap_err();
-            assert!(s.contains("YOKOHAMA_WEB_IDENTITY=open"), "{door:?}: {s}");
+            assert!(s.contains("belongs with YOKOHAMA_WEB_IDENTITY=open on this server"), "{door:?}: {s}");
+            assert!(s.contains("already has an identity provider in front"), "{door:?}: {s}");
+            assert!(s.ends_with("or run it with YOKOHAMA_WEB_IDENTITY=open."), "{door:?}: {s}");
             assert!(!s.contains("the open door's"), "{door:?}: {s}");
             assert!(!s.contains("reads the key as a door"), "{door:?}: {s}");
             assert!(s.contains(door.name()), "{door:?}: {s}");
