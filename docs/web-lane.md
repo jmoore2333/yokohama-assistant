@@ -509,13 +509,17 @@ day's window (the table above).
   stack review, `YOKOHAMA_DEV_DOOR`: the guard refuses the first two in a committed file and judges the third there,
   and a secret would carry any of them past it. It is a network step: a logged-out clone runs `npx wrangler login` once, and one with more
   than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing); a listing that
-  fails is a refusal; and a NEW Worker's first deploy cannot pass it, since wrangler answers "Worker not found" —
-  so a new Worker's first deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that
-  does not exist holds no secret, and the deploy guard holds each file to its own deployment identity — production's
-  `yokohama-web`, bucket `yokohama-archive`, and the later private Worker's `wrangler.private.jsonc`, `yokohama-web-private`
-  and its own bucket, namespaces and source `access` (the auth cycle's Task 7, plan decision D-1) — and passes no other
-  Worker's file; the secrets guard runs from the second deploy on and, since R-48, REQUIRES the judged file's source's
-  secrets (security S2b, decision D-7 as corrected at Task 9's review; the owner's R-6; `worker/RUNBOOK.md` §2).
+  fails is a refusal; and a NEW Worker's first deploy cannot pass it, since wrangler answers "Worker not found" — so a
+  new Worker's first deploy runs the deploy guard and then `wrangler deploy --config <file>` by hand, skipping the
+  secrets guard alone — a Worker that does not exist holds no secret, while the deploy guard reads files and judges
+  the new file against its record in `DEPLOYMENTS`, which holds each file to its own deployment identity —
+  production's `yokohama-web`, bucket `yokohama-archive`, and the private Worker's `wrangler.private.jsonc`,
+  `yokohama-web-private` and its own bucket, namespaces and source `access` (the auth cycle's Task 7, plan decision
+  D-1) — and passes no other Worker's file; both guards run from the second deploy on, and the secrets guard, since
+  R-48, REQUIRES the judged file's source's secrets. Security S2b's decision D-7, as corrected at Task 9's review (the
+  owner's R-6), read "with neither guard" while the deploy guard held this repository's Worker alone; the
+  `DEPLOYMENTS` record superseded it, recorded forward (`worker/RUNBOOK.md` §2; §26's step (5) is the private Worker's
+  first deploy).
 - **The update reading** (§3) is `web/scripts/pinned-browsers.mjs` (cycle F, Task 8; orchestrator-only — its state
   directory `web/scripts/pinned/<label>` is gitignored and no cookie VALUE is ever written):
   `node web/scripts/pinned-browsers.mjs <label> <origin> <state-dir> [--no-second-tab] [--go-wait <minutes>]`.
