@@ -87,11 +87,22 @@ describe("judgeSecrets under a sign-in arm (the auth cycle, R-48)", () => {
       put("YOKOHAMA_SESSION_SECRET", "oidc"),
     ]);
   });
-  it("requires nothing new under access, at the open door, or beside a door the shell does not know", () => {
+  it("requires nothing new under access or at the open door, and refuses a file with no door or an unknown one", () => {
     expect(judgeSecrets("[]", worker("access")), "access").toEqual([]);
     expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: undefined }), "the open door").toEqual([]);
     expect(judgeSecrets("[]", { file: "wrangler.open.jsonc", door: "open", source: "workos" }), "a stray source beside open").toEqual([]);
-    expect(judgeSecrets("[]", { file: "wrangler.jsonc", door: undefined, source: "workos" }), "no door").toEqual([]);
+    expect(judgeSecrets("[]", { file: "wrangler.jsonc", door: undefined, source: "workos" }), "no door").toEqual([
+      "secrets-guard: wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision; the secrets it requires cannot be judged without a door",
+    ]);
+    expect(judgeSecrets("[]", { file: "wrangler.jsonc", door: "Worker", source: "workos" }), "an unknown door").toEqual([
+      'secrets-guard: wrangler.jsonc\'s YOKOHAMA_WEB_IDENTITY must be worker or open — got "Worker"; the secrets it requires cannot be judged without a door',
+    ]);
+    // The door's place among the sentences: after the forbidden names (it cannot meet the source's or the missing
+    // secrets', which need the worker door).
+    const order = judgeSecrets(listing("YOKOHAMA_DEV_DOOR"), { file: "wrangler.jsonc", door: undefined, source: undefined });
+    expect(order, "the forbidden name, then the door").toHaveLength(2);
+    expect(order[0]).toContain("the Worker holds a secret named YOKOHAMA_DEV_DOOR");
+    expect(order[1]).toContain("YOKOHAMA_WEB_IDENTITY must be worker or open");
     expect(judgeSecrets("[]"), "no judged file: the forbidden names alone").toEqual([]);
   });
   // A worker-door file whose source the shell refuses (`config.ts`'s `source`) names no arm to judge the secrets
@@ -204,6 +215,20 @@ describe("as a command — the deploy's step, with a fake npx first on PATH, so 
     const unknown = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "worker", YOKOHAMA_IDENTITY_SOURCE: "WorkOS" }));
     expect(unknown.status, "an unknown source").toBe(1);
     expect(unknown.stderr).toContain(`secrets-guard: wrangler.jsonc's YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got "WorkOS"`);
+    const open = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "open" }));
+    expect([open.status, open.stderr], "the open door").toEqual([0, ""]);
+  });
+  // Run alone, the command refuses a file whose door the shell refuses (absent, or neither worker nor open) — the deploy
+  // guard refuses it first in every deploy script; the open door asks nothing.
+  it("run alone, the command refuses a file with no door or an unknown one, and passes the open door", () => {
+    const unset = run(`echo '[]'`, undefined, judgedIn({}));
+    expect(unset.status, "no door").toBe(1);
+    expect(unset.stderr).toContain(
+      "secrets-guard: wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — it is not set, and there is no default: a door is a deployment decision",
+    );
+    const unknown = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "Worker" }));
+    expect(unknown.status, "an unknown door").toBe(1);
+    expect(unknown.stderr).toContain(`secrets-guard: wrangler.jsonc's YOKOHAMA_WEB_IDENTITY must be worker or open — got "Worker"`);
     const open = run(`echo '[]'`, undefined, judgedIn({ YOKOHAMA_WEB_IDENTITY: "open" }));
     expect([open.status, open.stderr], "the open door").toEqual([0, ""]);
   });

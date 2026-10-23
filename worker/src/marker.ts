@@ -47,8 +47,9 @@ const TAILS: Record<Kept, string> = {
  * lists it as host-written): a HEAD naming how the table ended and the UTC
  * date of `at`, written `YYYY-MM-DD`, then a TAIL saying what was kept. One
  * day of TTL is "1 day". A table that waited (R-6.5c2.42) had not started —
- * or, finalized but unflipped and read by nobody, had no move made (design
- * §3.2 rule 2, D-16) — so it had no game, and its tail is `nothing`'s.
+ * open, or dealing with a keep outstanding — or, finalized but unflipped and
+ * read by nobody, had no move made (design §3.2 rule 2, D-16), so it had no
+ * game, and its tail is `nothing`'s.
  */
 export function markerSentence(m: Marker): string {
   const day = new Date(m.at).toISOString().slice(0, 10);
@@ -64,7 +65,7 @@ function head(m: Marker, day: string): string {
     case "expired":
       return `this table expired on ${day} after ${days(m.ttl_days)} without activity`;
     case "waited":
-      return `this table waited ${days(m.ttl_days)} for players and was closed on ${day}`;
+      return `this table waited ${days(m.ttl_days)} to start and was closed on ${day}`;
   }
 }
 

@@ -49,15 +49,18 @@ pub enum Stamp<'a> {
 }
 
 /// **The keyed-build rule at this host's door** (M6.5c2 cycle F's fix wave;
-/// the final review's Important 1): a client built with a Turnstile site key
-/// IS the open door (R-FP4). It reads the key as a door with no identity
-/// provider in front, so a visitor with no claimed name has each finished
-/// local game written "not signed in" and sent nowhere (`web/src/outbox.ts`'s
-/// keyed-build rule) — and behind `cf-access` or `worker` nobody has a claimed
-/// name, so such a build would upload nobody's games. The Worker's deploy
-/// guard refuses that pairing (`worker/scripts/deploy-guard.mjs`, check 12);
-/// this is the same rule for the self-host, asked once at start, where `main`
-/// exits 1 on the `Err` as on every other start refusal.
+/// the final review's Important 1; reworded S4-pre Task 4): a client built
+/// with a Turnstile site key belongs with `YOKOHAMA_WEB_IDENTITY=open`
+/// on this server. The challenge the key draws belongs to the open
+/// door and to the Cloudflare Worker's provider-signed door, and
+/// this server behind `cf-access` or `worker` already has an identity
+/// provider in front. The client no longer reads the key as a
+/// door: it holds a nameless visitor's finished game for a name only where
+/// the server's facts say `open` (`web/src/outbox.ts`, rule 6b). The rule
+/// stays all the same. The Worker's deploy guard holds the same pairing
+/// (`worker/scripts/deploy-guard.mjs`, check 12); this is the rule for the
+/// self-host, asked once at start, where `main` exits 1 on the `Err` as on
+/// every other start refusal.
 ///
 /// Pure: `shown` names the file in the sentence. At the `open` door nothing is
 /// asked. Behind any other, a stamp whose `turnstile_sitekey` is `true` is the
@@ -89,9 +92,11 @@ pub fn keyed_build_refusal(stamp: Stamp<'_>, shown: &str, identity: IdentityMode
         Ok(false) => Ok(()),
         Ok(true) => Err(format!(
             "{shown} says the client was built with a Turnstile site key (YOKOHAMA_TURNSTILE_SITEKEY), but \
-             {IDENTITY_VAR} is {} — a keyed build is the open door's: the client reads the key as a door with no \
-             identity provider in front, so here it would write every finished game \"not signed in\" and send none. \
-             Rebuild the client without YOKOHAMA_TURNSTILE_SITEKEY, or run it with {IDENTITY_VAR}=open.",
+             {IDENTITY_VAR} is {} — a keyed build belongs with {IDENTITY_VAR}=open on this server: the challenge \
+             the key draws belongs to the open door and to the Cloudflare Worker's provider-signed door, and this \
+             server behind {} already has an identity provider in front. Rebuild the client without \
+             YOKOHAMA_TURNSTILE_SITEKEY, or run it with {IDENTITY_VAR}=open.",
+            identity.name(),
             identity.name(),
         )),
     }
@@ -645,22 +650,23 @@ mod tests {
     fn keyed_behind(door: IdentityMode) -> String {
         format!(
             "{SHOWN} says the client was built with a Turnstile site key (YOKOHAMA_TURNSTILE_SITEKEY), but \
-             YOKOHAMA_WEB_IDENTITY is {} — a keyed build is the open door's: the client reads the key as a door with \
-             no identity provider in front, so here it would write every finished game \"not signed in\" and send \
-             none. Rebuild the client without YOKOHAMA_TURNSTILE_SITEKEY, or run it with YOKOHAMA_WEB_IDENTITY=open.",
+             YOKOHAMA_WEB_IDENTITY is {} — a keyed build belongs with YOKOHAMA_WEB_IDENTITY=open on this server: the \
+             challenge the key draws belongs to the open door and to the Cloudflare Worker's provider-signed door, \
+             and this server behind {} already has an identity provider in front. Rebuild the client without \
+             YOKOHAMA_TURNSTILE_SITEKEY, or run it with YOKOHAMA_WEB_IDENTITY=open.",
+            door.name(),
             door.name(),
         )
     }
 
-    /// **A keyed client build is the open door's, and this host's start holds
-    /// it there** (M6.5c2 cycle F's fix wave; the final review's Important 1:
-    /// the Worker's deploy guard, check 12, for the self-host). The client
-    /// reads a site key as a door with no identity provider in front
-    /// (`web/src/outbox.ts`'s keyed-build rule), so behind `cf-access` or
-    /// `worker`, where nobody has a claimed name, every finished game would be
-    /// written "not signed in" and none sent. Mutants: the rule missing; the
-    /// open door refused too; an unkeyed stamp refused; an absent stamp
-    /// refused; the sentence naming one of the two.
+    /// **A keyed client build starts only at the open door, and this host's
+    /// start holds it there** (M6.5c2 cycle F's fix wave; the final review's
+    /// Important 1: the Worker's deploy guard, check 12, for the self-host).
+    /// A site key belongs with `YOKOHAMA_WEB_IDENTITY=open` on this server
+    /// (`deploy/README.md` §3); behind `cf-access` or `worker` an identity
+    /// provider already stands in front, where the open door has none (§2).
+    /// Mutants: the rule missing; the open door refused too; an unkeyed stamp
+    /// refused; an absent stamp refused; the sentence naming one of the two.
     #[test]
     fn a_keyed_build_starts_only_at_the_open_door_and_is_refused_behind_any_other_naming_both() {
         assert_eq!(keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, IdentityMode::Open), Ok(()));
@@ -672,6 +678,32 @@ mod tests {
         for door in DOORS {
             assert_eq!(keyed_build_refusal(Stamp::Text(&stamp(false)), SHOWN, door), Ok(()), "{door:?}, unkeyed");
             assert_eq!(keyed_build_refusal(Stamp::Absent, SHOWN, door), Ok(()), "{door:?}, no stamp");
+        }
+    }
+
+    /// **The keyed-build refusal gives the client's PRESENT reason, not the
+    /// retired one** (S4-pre Task 4; the spec's Issue 3). The client no longer
+    /// reads a site key as the open door: it holds a nameless visitor's game
+    /// for a name only where the server's facts say `open`
+    /// (`web/src/outbox.ts`, rule 6b), so the sentence says where a keyed
+    /// build belongs, not what the client reads. The rule is unchanged and the
+    /// cell above pins it; this one pins the sentence's words: the two retired
+    /// phrases absent, two of the reason's phrases present (the remedy's
+    /// variable is no evidence of a reason, since the remedy carries it in
+    /// every version), the remedy's tail, and the door named. Mutants: the old
+    /// sentence restored (either retired phrase back); the reason dropped
+    /// whole, in the function and the cell above's twin together; the sentence
+    /// without the remedy's `open`; the sentence naming no door.
+    #[test]
+    fn the_keyed_build_refusal_gives_the_clients_present_reason_and_not_the_retired_one() {
+        for door in [IdentityMode::CfAccess, IdentityMode::Worker] {
+            let s = keyed_build_refusal(Stamp::Text(&stamp(true)), SHOWN, door).unwrap_err();
+            assert!(s.contains("belongs with YOKOHAMA_WEB_IDENTITY=open on this server"), "{door:?}: {s}");
+            assert!(s.contains("already has an identity provider in front"), "{door:?}: {s}");
+            assert!(s.ends_with("or run it with YOKOHAMA_WEB_IDENTITY=open."), "{door:?}: {s}");
+            assert!(!s.contains("the open door's"), "{door:?}: {s}");
+            assert!(!s.contains("reads the key as a door"), "{door:?}: {s}");
+            assert!(s.contains(door.name()), "{door:?}: {s}");
         }
     }
 

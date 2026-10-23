@@ -1010,12 +1010,14 @@ async fn stream(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio_stream::StreamExt;
 
-    api::events_at(&state.games, &id, &user)?;
+    let (_, seated) = api::events_at_seated(&state.games, &id, &user)?;
     // **The cap, after the admission read's own verdict** (security S2c, D3): a 403 or a 404 about the table is
     // answered first and takes no slot; the (n+1)-th stream of a caller, or of the table, is a 429 before any
-    // frame. The slot rides the body (`Admitted`), so an abandoned connection frees it when hyper drops the body.
+    // frame, and so is a watcher's past the table's watchers' figure — a caller the admission read found holding
+    // no seat (S4-pre). The slot rides the body (`Admitted`), so an abandoned connection frees it when hyper drops
+    // the body.
     let slot = Arc::clone(&state.streams)
-        .admit(streams::Room::Table(id.clone()), &user)
+        .admit(streams::Room::Table(id.clone()), &user, seated)
         .map_err(ApiError::too_many_requests)?;
     let rx = state.signals.subscribe(&id);
     let heartbeat = state.heartbeat;
@@ -1089,7 +1091,7 @@ async fn house_stream(
 
     // **The cap** (security S2c, D3): the house's own figures and sentences; identity is still the whole of the
     // admission, and the slot rides the body as a table stream's does.
-    let slot = Arc::clone(&state.streams).admit(streams::Room::House, &user).map_err(ApiError::too_many_requests)?;
+    let slot = Arc::clone(&state.streams).admit(streams::Room::House, &user, false).map_err(ApiError::too_many_requests)?;
     let rx = state.signals.subscribe_house();
     let frames = tokio_stream::wrappers::WatchStream::from_changes(rx).map(|h| {
         Ok::<_, std::convert::Infallible>(Event::default().event("house").data(signal::house_frame(h.seq, h.chat, h.rev)))
@@ -6304,6 +6306,73 @@ mod tests {
         drop(held);
     }
 
+    /// **A seat holder's stream is a 200 into a table whose watchers' streams are full** (S4-pre, the spec's
+    /// Issue 1): four strangers hold eight streams each at an open table — the watchers' figure — and the creator's
+    /// stream is admitted and counted apart as a seated one, while a fifth stranger's first stream is a 429 in the
+    /// watchers' sentence and takes no slot. Every stream counted below is a HELD response (the plan's P-2): a
+    /// dropped one frees its slot at once. Mutant: the route passing `false` for the bit (the creator reads the
+    /// watchers' 429).
+    #[tokio::test]
+    async fn a_seat_holders_stream_is_a_200_into_a_table_whose_watcher_streams_are_full() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(&state, WHO, "/api/games", serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": WHO}, {"open": true}] })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().expect("an id").to_string();
+        let uri = format!("/api/games/{id}/stream");
+        let room = streams::Room::Table(id.clone());
+        let mut watchers = Vec::new();
+        for w in 1..=4 {
+            for _ in 0..streams::STREAMS_PER_CALLER {
+                let res = stream_response(&state, &uri, &format!("w{w}@wire.test")).await;
+                assert_eq!(res.status(), StatusCode::OK, "w{w}'s stream");
+                watchers.push(res);
+            }
+        }
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (streams::WATCHERS_PER_TABLE, 0), "premise: the watchers at their figure");
+        let seat = stream_response(&state, &uri, WHO).await;
+        assert_eq!(seat.status(), StatusCode::OK, "the seat holder's stream is admitted");
+        assert_eq!(state.streams.seated(&room), 1, "counted as a seated stream");
+        assert_eq!(state.streams.open(&room), streams::WATCHERS_PER_TABLE + 1);
+        let fifth = stream_response(&state, &uri, "w5@wire.test").await;
+        assert_eq!(fifth.status(), StatusCode::TOO_MANY_REQUESTS);
+        let bytes = axum::body::to_bytes(fifth.into_body(), usize::MAX).await.expect("a body");
+        let got: serde_json::Value = serde_json::from_slice(&bytes).expect("the API's error shape");
+        assert_eq!(got["error"], streams::TOO_MANY_WATCHERS);
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (streams::WATCHERS_PER_TABLE + 1, 1), "the refused one took no slot");
+        drop(seat);
+        drop(watchers);
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (0, 0), "every slot released");
+    }
+
+    /// **A stranger's stream at an open table counts as a watcher's until they reconnect holding a seat** (S4-pre,
+    /// the spec's Issue 1, item 5): a stream is classified by its caller's standing when it is admitted, so blue's
+    /// stream opened before the join stays a watcher's after it, and only blue's next stream counts as seated; the
+    /// earlier one's drop frees a watcher's slot and leaves the seated count alone. Every stream counted is HELD
+    /// (P-2). Mutants: the bit forced `false` at the route (the second stream reads `seated` 0); a drop that releases
+    /// the seated count for a watcher's slot (the last count reads 0).
+    #[tokio::test]
+    async fn a_strangers_stream_at_an_open_table_is_counted_as_a_watchers_until_they_reconnect_holding_a_seat() {
+        let state = Arc::new(AppState::in_memory());
+        let (status, body) = post_as(&state, WHO, "/api/games", serde_json::json!({ "players": 2, "colors": ["Red", "Blue"], "start_seat": 0, "seats": [{"user": WHO}, {"open": true}] })).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let id = body["id"].as_str().expect("an id").to_string();
+        let uri = format!("/api/games/{id}/stream");
+        let room = streams::Room::Table(id.clone());
+        let first = stream_response(&state, &uri, "blue@wire.test").await;
+        assert_eq!(first.status(), StatusCode::OK, "a stranger's stream at an open table");
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (1, 0), "a watcher's");
+        let (status, body) = post_as(&state, "blue@wire.test", &format!("/api/games/{id}/join"), serde_json::json!({ "seat": 1 })).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (1, 0), "classified at admission: still a watcher's");
+        let second = stream_response(&state, &uri, "blue@wire.test").await;
+        assert_eq!(second.status(), StatusCode::OK, "the joiner's reconnect");
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (2, 1), "the reconnect counts as seated");
+        drop(first);
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (1, 1), "the watcher's drop leaves the seated count");
+        drop(second);
+        assert_eq!((state.streams.open(&room), state.streams.seated(&room)), (0, 0));
+    }
+
     /// **A body that PANICS frees its slot, and the counts stay usable** (the S2 stack review, lens 2, Important 1's
     /// second cell; the lens's probe, transcribed): an [`Admitted`] stream whose third poll panics, served by
     /// `axum::serve` and read over a real socket. The panic unwinds hyper's connection task, tokio drops the task's
@@ -6346,7 +6415,7 @@ mod tests {
             axum::routing::get(move || {
                 let (counts, room, red) = (Arc::clone(&served), served_room.clone(), served_red.clone());
                 async move {
-                    let slot = counts.admit(room, &red).expect("the first stream is admitted");
+                    let slot = counts.admit(room, &red, false).expect("the first stream is admitted");
                     axum::response::sse::Sse::new(Admitted { inner: Panicky { polls: 0 }, _slot: slot })
                 }
             }),
@@ -6375,7 +6444,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the panicking body's slot was not freed within 5 s");
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        let again = counts.admit(room.clone(), &red).expect("the counts admit after the panic");
+        let again = counts.admit(room.clone(), &red, false).expect("the counts admit after the panic");
         assert_eq!(counts.open(&room), 1, "the lock reads, and counts the new slot");
         drop(again);
         drop(socket);

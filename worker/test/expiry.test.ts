@@ -70,12 +70,12 @@ function utcDate(at: number): string {
 }
 
 /** Spec §2.4 step 5's heads — and R-6.5c2.42's fourth, a table that waited
- *  for players — and three tails, as LITERALS. */
+ *  to start — and three tails, as LITERALS. */
 const HEAD = {
   abandoned: (day: string) => `this table was abandoned on ${day}`,
   expired: (day: string) => `this table expired on ${day} after 90 days without activity`,
   operator: (day: string) => `this table was removed by an operator on ${day}`,
-  waited: (day: string) => `this table waited 7 days for players and was closed on ${day}`,
+  waited: (day: string) => `this table waited 7 days to start and was closed on ${day}`,
 } as const;
 const TAIL = {
   archive: " — its game is in the archive",

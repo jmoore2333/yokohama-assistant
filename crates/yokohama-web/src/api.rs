@@ -2083,7 +2083,25 @@ pub fn events_of(repl: &yokohama_cli::repl::Repl, viewer: client::Viewer, chat: 
 /// an open table is still `admitted`'s 403 — and it stops at `open`: `dealing`
 /// and `playing` fall straight through, so a stranger at a deal is refused and
 /// a locked game still asks for its password.
+///
+/// It is [`events_at_seated`] less the seat bit.
 pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Events, ApiError> {
+    events_at_seated(games, id, user).map(|(e, _)| e)
+}
+
+/// [`events_at`]'s reading, and beside it whether the caller holds a seat at
+/// the table (S4-pre, the spec's Issue 1) — the bit the NAS's stream admission
+/// reads, so a seated caller is admitted past a table's full watchers' figure.
+///
+/// **The bit comes from the table read the admission already makes**, taken
+/// above every arm: `seats_of` on the document `table_for_anyone` answered, so
+/// it holds at `open`, `dealing` and `playing` alike — for a hot seat's holder
+/// too — and costs no second read (`events_at_reads_the_table_once` and its
+/// sibling pin the count). It is false for a stranger at an open table and a
+/// spectator at a playing one; a caller the admission refuses gets no bit, only
+/// the refusal. **It never rides the wire**: `Events` is the committed corpus's,
+/// byte for byte, and gains no field.
+pub fn events_at_seated(games: &Games, id: &str, user: &identity::User) -> Result<(Events, bool), ApiError> {
     // An unsafe `{id}` is the layer's 404 here too: `app()` serves the two transport routes outside `dispatch` (S1c, Task 2's C6).
     if !crate::store::is_safe_id(id) {
         return Err(ApiError::not_found(format!("no game named \"{id}\"", id = crate::echo::echo(id))));
@@ -2091,6 +2109,8 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
     // The table is read FIRST, exactly as `admitted` reads it, so the open arm
     // and the fall-through see one document and one `settle`.
     let table = games.table_for_anyone(id, user)?;
+    // Whether the caller holds a seat, from that one read, above the open arm.
+    let seated = !table.seats_of(user).is_empty();
     // **Read ONCE, above all three arms**, because every one of them answers
     // it: an open table where the seats are still filling is exactly where the
     // people at it are talking. It sits AFTER the table read, which is as far
@@ -2112,7 +2132,7 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
         chat_rev: chat.rev,
     };
     if table.status == crate::table::TableStatus::Open {
-        return Ok(unplayed("open"));
+        return Ok((unplayed("open"), seated));
     }
     // **The table read above IS the admission's** (M6.5c2 cycle D, row 129):
     // `admitted` would read and settle it a second time, once per poll, per
@@ -2123,14 +2143,14 @@ pub fn events_at(games: &Games, id: &str, user: &identity::User) -> Result<Event
         // Unreachable behind the return above, and written rather than
         // collapsed into the fall-through: a status this function answers by
         // name is a status a reader can find.
-        crate::table::TableStatus::Open => Ok(unplayed("open")),
-        crate::table::TableStatus::Dealing => Ok(unplayed("dealing")),
+        crate::table::TableStatus::Open => Ok((unplayed("open"), seated)),
+        crate::table::TableStatus::Dealing => Ok((unplayed("dealing"), seated)),
         crate::table::TableStatus::Playing => {
             // `live_handle`, not `handle`: the table is in hand, and a cold
             // handle's rebuild through `handle` would settle it once more.
             let handle = games.live_handle(id, &table)?;
             let repl = games.lock_game(&handle, id)?;
-            Ok(events_of(&repl, viewer, chat))
+            Ok((events_of(&repl, viewer, chat), seated))
         }
     }
 }
@@ -4362,6 +4382,52 @@ mod tests {
         assert_eq!(reads("playing", &red), 1, "playing, the handle cold");
         games.evict_for_test("playing");
         assert_eq!(reads("playing", &green), 1, "playing, a watcher, the handle cold");
+    }
+
+    /// **`events` answers whether the caller holds a seat, from its one table read** (S4-pre, the spec's Issue 1):
+    /// the bit the NAS's stream admission reads, beside the reading and never on it — `Events` gains no field,
+    /// and `wire_fixtures` pins that. It is true for a seat holder at `open`, `dealing` and `playing`, for the
+    /// joiner who is not the creator at `dealing` and `playing` (so a bit computed as "is the creator" cannot pass),
+    /// and for a hot seat's holder (one key in both seats), and false for a stranger at an open table and a spectator
+    /// at a playing one; and it costs no read: each call reads the table EXACTLY once, the pin above's count, so a bit
+    /// computed from a second read cannot pass. Mutants: the bit forced `false`, or forced `true`, or computed as the
+    /// creator's, or read from a second `table_for_anyone`.
+    #[test]
+    fn events_at_answers_whether_the_caller_holds_a_seat_from_its_one_table_read() {
+        use std::sync::Arc;
+        use crate::games::test_support::*;
+        use crate::store::Store;
+        use crate::tables::SeatSpec;
+        let store = Arc::new(CountingStore::default());
+        let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
+        let (red, green, blue) = (who("red@t.test"), who("green@t.test"), who("blue@t.test"));
+        let seated = |id: &str, user: &User| {
+            let before = store.table_reads();
+            let (_, seated) = events_at_seated(&games, id, user).unwrap_or_else(|e| panic!("{id}: {}", e.message));
+            assert_eq!(store.table_reads() - before, 1, "{id}, {}: one table read", user.as_str());
+            seated
+        };
+
+        let mut open = two_people("open", CORPUS_SEED);
+        open.seats[1] = SeatSpec { user: None, bot: false, open: true };
+        games.create(&open, &red).expect("an open table");
+        games.create(&two_people("dealing", CORPUS_SEED), &red).expect("a dealing table");
+        playing(&games, &two_people("playing", CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let mut hot = two_people("hot", CORPUS_SEED);
+        hot.seats[0] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        hot.seats[1] = SeatSpec { user: Some("red@t.test".into()), bot: false, open: false };
+        playing(&games, &hot, &["red@t.test"]);
+
+        assert!(seated("open", &red), "a seat holder at open");
+        assert!(!seated("open", &green), "a stranger at open");
+        assert!(seated("dealing", &red), "a seat holder at dealing");
+        assert!(seated("dealing", &blue), "the joiner, not the creator, at dealing");
+        assert!(seated("playing", &red), "a seat holder at playing");
+        assert!(seated("playing", &blue), "the joiner, not the creator, at playing");
+        assert!(!seated("playing", &green), "a spectator at playing");
+        assert!(seated("hot", &red), "a hot seat's holder at playing");
+        games.evict_for_test("playing");
+        assert!(seated("playing", &red), "a seat holder at playing, the handle cold");
     }
 
     /// **The non-acting refusal names the seat, never its holder's address**

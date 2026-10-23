@@ -34,9 +34,12 @@ use crate::{error_body, from_the_layer, host_refusal, identity_of, ReplyData, Sc
 ///    handler calls too: a `wait` above 25 is its 400, in its sentence. The
 ///    refusal is the HANDLER's, not the parser's: `parse_query` accepts
 ///    `wait=26`;
-/// 4. **the reading** — `api::events_at`, the one function axum's handler and
-///    its stream both answer with: `Ok` serialized at 200, `Err` in the layer's
-///    error shape (`error_body`).
+/// 4. **the reading** — `api::events_at_seated`, which is `api::events_at`
+///    (the reading axum's handler and its stream both answer with) and beside
+///    it whether the caller holds a seat, from the same one table read: `Ok`
+///    serialized at 200 with that bit in `ReplyData.seated` (S4-pre, the
+///    spec's Issue 1) — the bit the table object's socket admission reads —
+///    `Err` in the layer's error shape (`error_body`), with no bit.
 ///
 /// The first three refuse before the `Games` is touched. The fourth answers
 /// through `from_the_layer`, the drain `dispatch` answers through, because
@@ -58,8 +61,17 @@ pub fn events_inner(id: &str, user: Option<&str>, query: &str) -> ReplyData {
     if let Err(e) = api::check_wait(q.wait) {
         return host_refusal(e);
     }
-    from_the_layer(Scope::Table(id), |games| match api::events_at(games, id, &user) {
-        Ok(events) => (200, serde_json::to_string(&events).expect("an Events serializes"), None),
+    // The bit is captured beside the reading and set on the reply after the
+    // drain: `from_the_layer` builds every reply with `seated: None`, so it is
+    // `Some` on the 200 alone.
+    let mut seated = None;
+    let mut reply = from_the_layer(Scope::Table(id), |games| match api::events_at_seated(games, id, &user) {
+        Ok((events, bit)) => {
+            seated = Some(bit);
+            (200, serde_json::to_string(&events).expect("an Events serializes"), None)
+        }
         Err(e) => (e.status.as_u16(), error_body(&e), None),
-    })
+    });
+    reply.seated = seated;
+    reply
 }

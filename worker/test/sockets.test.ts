@@ -197,9 +197,11 @@ describe("the table's sockets (spec §2.4)", () => {
 
   // Spec §2.4: a socket is accepted with the table's id as its tag — and,
   // since security S2b's caps (D3), the caller's tag beside it, which the cap
-  // reads (`test/caps.test.ts`). Nothing reads the id's tag today —
-  // `sendFrames` frames every socket the object holds — so this cell keeps a
-  // later `getWebSockets(id)` honest. The tags are compared as a SET:
+  // reads (`test/caps.test.ts`), and since S4-pre (the spec's Issue 1) the
+  // seated tag third for a caller who holds a seat, which the watchers'
+  // figure reads; both callers here are seated. Nothing reads the id's tag
+  // today — `sendFrames` frames every socket the object holds — so this cell
+  // keeps a later `getWebSockets(id)` honest. The tags are compared as a SET:
   // `getWebSockets()` is not in acceptance order (measured: blue's socket
   // listed before red's). Mutant: any other tag.
   it("every socket is accepted under the table's id as its tag", async () => {
@@ -208,7 +210,7 @@ describe("the table's sockets (spec §2.4)", () => {
     const tabs = [await openTab(stub, RED, id), await openTab(stub, BLUE, id)];
     await Promise.all(tabs.map((tab) => tab.until(1)));
     const tags = await runInDurableObject(stub, (_o, state) => state.getWebSockets().map((ws) => state.getTags(ws)));
-    expect(tags.map((t) => t.join("|")).sort()).toEqual([`${id}|${await callerTag(RED)}`, `${id}|${await callerTag(BLUE)}`].sort());
+    expect(tags.map((t) => t.join("|")).sort()).toEqual([`${id}|${await callerTag(RED)}|s:seated`, `${id}|${await callerTag(BLUE)}|s:seated`].sort());
     expect(await runInDurableObject(stub, (_o, state) => state.getWebSockets(id).length)).toBe(2);
   });
 

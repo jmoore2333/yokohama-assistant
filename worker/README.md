@@ -1482,7 +1482,7 @@ to one secret and to test identities, and it never grants an operator's rights
 4. The slot's push, or the alarm, delivers the removal to the house.
 5. **For 90 days the marker answers EVERY request 404** with a sentence made of a head and a tail.
    The heads are `this table was abandoned on <date>`, `this table expired on <date> after 90 days
-   without activity`, `this table waited 7 days for players and was closed on <date>` (R-6.5c2.42)
+   without activity`, `this table waited 7 days to start and was closed on <date>` (R-6.5c2.42)
    and `this table was removed by an operator on <date>`, the date in UTC. The
    tails come from `kept`: `— its game is in the archive`, `— no move had been made, so there was
    nothing to keep`, and `— this server keeps no archive, so its game was not kept`. It is a 404
@@ -1505,7 +1505,7 @@ save made at game over. Open and dealing tables expire with nothing to save.
 **A table that has not started** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9) — open,
 or dealing with a keep outstanding: its status `open` or `dealing` — is closed sooner, after
 `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
-`this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
+`this table waited 7 days to start …`. A batch cannot read a table's status (the strings rule),
 so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
 by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
 scratch module. An `open` or `dealing` table is closed; any other is re-armed to its last activity
@@ -1833,16 +1833,20 @@ first two in a committed file and judges the third there, and a secret would car
 it. A listing that fails is a refusal, never a pass, so every deploy script is a network
 step: a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
-deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first
-deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that does not exist
-holds no secret, and the deploy guard holds each file to its own deployment identity (production's
-`yokohama-web` and the private Worker's `yokohama-web-private`, the auth cycle's Task 7) — and the secrets
-guard from the second deploy on (security S2b, decision D-7 as corrected at Task 9's review; the owner's
-R-6). **The secrets guard also REQUIRES an arm's secrets** (R-48): it reads the judged file's source and
-refuses the deploy, naming the secret and its `wrangler secret put` line, when the listing lacks, under
-`workos`, `YOKOHAMA_OIDC_CLIENT_SECRET` (the WorkOS API key) or `YOKOHAMA_SESSION_SECRET`, or, under `oidc`,
-`YOKOHAMA_SESSION_SECRET` (the client secret is optional there: PKCE); under `access` and the open door it
-asks for nothing.
+deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's
+first deploy runs the deploy guard and then `wrangler deploy --config <file>` by hand, skipping the
+secrets guard alone — a Worker that does not exist holds no secret, while the deploy guard reads
+files and judges the new file against its record in `DEPLOYMENTS`, which holds each file to its own
+deployment identity (production's `yokohama-web` and the private Worker's `yokohama-web-private`,
+the auth cycle's Task 7) — and from the second deploy on both guards, as every `deploy` script in
+`package.json` chains them. Security S2b's decision D-7, as corrected at Task 9's review (the
+owner's R-6), read "with neither guard" while the deploy guard held this repository's Worker alone;
+the `DEPLOYMENTS` record superseded it, recorded forward (RUNBOOK §2; §26's step (5) is the private
+Worker's first deploy). **The secrets guard also REQUIRES an arm's secrets** (R-48): it reads the
+judged file's source and refuses the deploy, naming the secret and its `wrangler secret put` line,
+when the listing lacks, under `workos`, `YOKOHAMA_OIDC_CLIENT_SECRET` (the WorkOS API key) or
+`YOKOHAMA_SESSION_SECRET`, or, under `oidc`, `YOKOHAMA_SESSION_SECRET` (the client secret is
+optional there: PKCE); under `access` and the open door it asks for nothing.
 
 ### 9.4 Configuration and secrets
 

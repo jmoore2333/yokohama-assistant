@@ -240,6 +240,12 @@ pub struct ReplyData {
     /// order, less the one deferral `log.rs` drops. Empty from a call that
     /// never reached the layer.
     pub logs: Vec<LogLine>,
+    /// Whether the caller holds a seat at the table (S4-pre, the spec's Issue
+    /// 1), which the table object's socket admission reads: `Some` only from
+    /// `events` at 200, from the layer's `api::events_at_seated`, and `None`
+    /// from every other call and from every refusal. Host-internal, as
+    /// `picker` is: it never rides the wire.
+    pub seated: Option<bool>,
 }
 
 /// [`ReplyData`] as a JS class with getters — `wasm-bindgen` cannot hand a
@@ -298,6 +304,13 @@ impl Reply {
     pub fn logs(&self) -> String {
         serde_json::to_string(&self.data.logs).expect("a log line serializes")
     }
+
+    /// Whether the caller holds a seat at the table: set only by `events` at
+    /// 200, and `undefined` from every other call and every refusal.
+    #[wasm_bindgen(getter)]
+    pub fn seated(&self) -> Option<bool> {
+        self.data.seated
+    }
 }
 
 /// The layer's error body — `{"error": …}`, with `"status"` and
@@ -326,6 +339,7 @@ pub(crate) fn host_refusal(e: ApiError) -> ReplyData {
         picker: None,
         dropped: None,
         logs: Vec::new(),
+        seated: None,
     }
 }
 
@@ -384,7 +398,7 @@ pub fn identity_inner(user: Option<&str>) -> ReplyData {
         Ok(u) => (200, serde_json::json!({ "user": u.as_str() }).to_string()),
         Err(sentence) => (401, serde_json::json!({ "error": sentence }).to_string()),
     };
-    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None, logs: Vec::new() }
+    ReplyData { status, body, bumps: Vec::new(), archive: None, picker: None, dropped: None, logs: Vec::new(), seated: None }
 }
 
 #[wasm_bindgen]
@@ -582,6 +596,7 @@ pub(crate) fn from_the_layer(
         picker,
         dropped: None,
         logs: drain_logs(),
+        seated: None,
     }
 }
 
@@ -1442,6 +1457,47 @@ mod tests {
         let e = events_inner("t", Some("red@t.test"), "wait=25");
         assert_eq!(e.status, 200, "25 is allowed, and answered at once: {}", e.body);
         assert_eq!(e.body, r#"{"events":0,"to_move":null,"status":"open","your_turn":false,"chat":0,"chat_rev":0}"#);
+    }
+
+    /// **The seat bit** (S4-pre, the spec's Issue 1): the events reply says
+    /// whether its caller holds a seat, from the layer's own
+    /// `api::events_at_seated`, which the table object's socket admission
+    /// reads — at an open table, a deal and a game, for a seat holder (`true`)
+    /// and for a stranger or a spectator the layer admits (`false`). A refusal
+    /// carries no bit, and neither does any other call. Each status is pinned
+    /// in the body, so a `Some(true)` is read at the status it names.
+    #[test]
+    fn events_inner_reports_a_seat_holder_seated_at_every_status_and_a_stranger_or_a_spectator_not() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let status_of = |r: &ReplyData| serde_json::from_str::<serde_json::Value>(&r.body).unwrap()["status"].as_str().map(str::to_string);
+        // Open: red seated, seat 1 open, so any signed-in caller is admitted.
+        assert_eq!(create_inner(Some("red@t.test"), CREATE.as_bytes(), "t", Some("application/json")).status, 201);
+        let e = events_inner("t", Some("red@t.test"), "");
+        assert_eq!((e.status, status_of(&e).as_deref(), e.seated), (200, Some("open"), Some(true)), "the creator at an open table — {}", e.body);
+        let e = events_inner("t", Some("blue@t.test"), "");
+        assert_eq!((e.status, e.seated), (200, Some(false)), "a stranger at an open table — {}", e.body);
+        // Dealing: seat 1 a bot, so the deal waits on red alone and admits nobody else.
+        let dealt = CREATE.replace(r#"{"open":true}"#, r#"{"bot":true}"#);
+        assert_eq!(create_inner(Some("red@t.test"), dealt.as_bytes(), "dealt", Some("application/json")).status, 201);
+        let e = events_inner("dealt", Some("red@t.test"), "");
+        assert_eq!((e.status, status_of(&e).as_deref(), e.seated), (200, Some("dealing"), Some(true)), "the seat holder at a deal — {}", e.body);
+        let e = events_inner("dealt", Some("blue@t.test"), "");
+        assert_eq!((e.status, e.seated), (403, None), "a stranger refused at a deal carries no bit — {}", e.body);
+        let e = events_inner("dealt", None, "");
+        assert_eq!((e.status, e.seated), (401, None), "no caller: the host's own refusal — {}", e.body);
+        // Playing: both seats bound, both keep card 1, and the last keep finalizes.
+        let bound = CREATE.replace(r#"{"open":true}"#, r#"{"user":"blue@t.test"}"#);
+        assert_eq!(create_inner(Some("red@t.test"), bound.as_bytes(), "p", Some("application/json")).status, 201);
+        assert_eq!(call("red@t.test", "POST", "/api/games/p/keep", Some(r#"{"seat":0,"card":1}"#)).status, 200);
+        assert_eq!(call("blue@t.test", "POST", "/api/games/p/keep", Some(r#"{"seat":1,"card":1}"#)).status, 200);
+        let e = events_inner("p", Some("red@t.test"), "");
+        assert_eq!((e.status, status_of(&e).as_deref(), e.seated), (200, Some("playing"), Some(true)), "a seat holder at a game — {}", e.body);
+        let e = events_inner("p", Some("green@t.test"), "");
+        assert_eq!((e.status, e.seated), (200, Some(false)), "a spectator at an unlocked game — {}", e.body);
+        // Every other call answers no bit: the table read, at 200, for the same seat holder.
+        let r = call("red@t.test", "GET", "/api/games/p/table", None);
+        assert_eq!((r.status, r.seated), (200, None), "a dispatch carries no bit — {}", r.body);
     }
 
     /// The error body this host writes itself (`host_refusal`, `events`) is

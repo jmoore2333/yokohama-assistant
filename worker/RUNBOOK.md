@@ -74,7 +74,7 @@ What answers what:
     answers **404** with a sentence of a head and a tail, an upgrade included, answered unupgraded so
     the client's probe reads it. The heads: `this table was abandoned on 2026-10-22`, `this table
     expired on 2026-10-22 after 90 days without activity` (one day of TTL reads `1 day`), `this
-    table waited 7 days for players and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
+    table waited 7 days to start and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
     table that had not started when its alarm closed it — from 0.7.2 a dealing one too, security S3,
     D9), `this table was removed by an
     operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
@@ -104,9 +104,11 @@ What answers what:
   - a socket past a cap (security S2b, finding D3): accepted, sent `end` with the cap's sentence and
     closed **4429** — `you have too many connections open to this table — close another tab and try
     again` past 8 of the caller's at a table, `this table has as many connections as it can take — try
-    again later` past 64 in all, and in the lobby `you have too many connections open to the lobby —
-    close another tab and try again` past 8 and `the lobby has as many connections as it can take — try
-    again later` past 1,024.
+    again later` past 64 in all, `this table has as many watchers as it can take — try again later` for
+    a caller who holds no seat at it once 32 such sockets are open (S4-pre, from `0.7.3`, which deploys
+    with stage 2; a seated caller is refused only by the 64 and by their own 8), and in the lobby `you
+    have too many connections open to the lobby — close another tab and try again` past 8 and `the lobby
+    has as many connections as it can take — try again later` past 1,024.
 
 ## 1. Build
 
@@ -253,29 +255,35 @@ wrangler secret put <name> --config <file>`; a clean run then ends `…, and the
 them`. A worker-door file with no source, or one the shell does not know, names no arm to judge the listing
 against, so the secrets guard refuses it too, in the shell's sentence with the file named (`secrets-guard:
 <file>'s YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos …; the secrets it requires cannot be judged
-without one of the three`); the deploy guard refuses such a file first in every deploy script, so only the
-secrets guard run alone meets it. The listing names secrets and never holds a value, so the session secret's
+without one of the three`). A file whose door is absent, or neither `worker` nor `open`, is refused the same
+way (`secrets-guard: <file>'s YOKOHAMA_WEB_IDENTITY must be worker or open …; the secrets it requires cannot be
+judged without a door`). The deploy guard refuses such a file first in every deploy script, so only the secrets
+guard run alone meets either. The listing names secrets and never holds a value, so the session secret's
 32-byte floor stays the shell's to refuse.
 
 **What the secrets guard costs.** Every deploy script is a network step from here on — the plain
 `deploy`, the safe direction since security S2b, included. A logged-out clone runs `npx wrangler login`
 once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them
 and caches nothing). A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found"
-for a Worker that does not exist yet. **So a NEW Worker's first deploy runs `wrangler deploy --config
-<file>` by hand with neither guard — a Worker that does not exist holds no secret, and the deploy guard
-holds each file to its own deployment identity — production's `yokohama-web` with the bucket
-`yokohama-archive`, and the later private Worker's `yokohama-web-private` with its own bucket and
-rate-limit namespaces (`DEPLOYMENTS`, the auth cycle's Task 7; plan decision D-1) — and the secrets
-guard from the second deploy on** (security S2b, decision D-7 as corrected at Task 9's review; the
-owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
-whatever its door: C3's sibling rule holds every open-door file to production, and F-40 every unlisted
-worker-door file (measured at the review: a renamed open file and a renamed production file, each with
-its own bucket, both refused). S4's public Worker's first-deploy path is this recipe, and no guard code
-in S2b:
+for a Worker that does not exist yet. **So a NEW Worker's first deploy runs the deploy guard and then
+`wrangler deploy --config <file>` by hand, skipping the secrets guard alone — a Worker that does not
+exist holds no secret, while the deploy guard reads files and judges the new file against its record in
+`DEPLOYMENTS`, which holds each file to its own deployment identity: production's `yokohama-web` with the
+bucket `yokohama-archive`, and the private Worker's `yokohama-web-private` with its own bucket and
+rate-limit namespaces (the auth cycle's Task 7; plan decision D-1) — and from the second deploy on both
+guards, as every `deploy` script in `package.json` chains them.** Security S2b's decision D-7, as corrected
+at Task 9's review (the owner's R-6), read "with neither guard" while the deploy guard held this repository's
+Worker alone, by its name and its bucket; the `DEPLOYMENTS` record superseded it, recorded forward here,
+and the dated S2b plan stays as written. The deploy guard refuses any other Worker's file on its `name`
+and its bucket, whatever its door: C3's sibling rule holds every open-door file to production, and F-40
+every unlisted worker-door file (measured at that review: a renamed open file and a renamed production
+file, each with its own bucket, both refused). This recipe was the private Worker's first deploy (§26,
+step (5)); the deploy guard holds its record in `DEPLOYMENTS` since the auth cycle's Task 7, and §26's
+step (2) named its hostname there:
 
 ```sh
-npx wrangler deploy --config <file>                                                     # a NEW Worker's FIRST deploy: neither guard
-node scripts/secrets-guard.mjs --config <file> && npx wrangler deploy --config <file>   # from its second deploy on
+node scripts/deploy-guard.mjs --config <file> && npx wrangler deploy --config <file>   # a NEW Worker's FIRST deploy: the deploy guard, not the secrets guard
+node scripts/deploy-guard.mjs --config <file> && node scripts/secrets-guard.mjs --config <file> && npx wrangler deploy --config <file>   # from its second deploy on: both guards, as every deploy script in package.json runs them
 ```
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client
@@ -436,7 +444,7 @@ the whole list; it leaves secrets alone.
   has not started — open, or dealing with a keep outstanding; its status `open` or `dealing` — is
   closed after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` days without
   activity, `7` in `wrangler.jsonc` and by default, with the marker head `this table waited 7 days
-  for players and was closed on …` and the tail `— no move had been made, so there was nothing to
+  to start and was closed on …` and the tail `— no move had been made, so there was nothing to
   keep`; its `expired` line reads `reason: "waited"`. No write can read a table's status (the
   shell never parses a table document), so **every table's alarm is armed at its last activity
   plus the SHORTER of the two TTLs** — 7 days — and the alarm decides by the status its house copy
