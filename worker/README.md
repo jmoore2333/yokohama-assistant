@@ -1482,7 +1482,7 @@ to one secret and to test identities, and it never grants an operator's rights
 4. The slot's push, or the alarm, delivers the removal to the house.
 5. **For 90 days the marker answers EVERY request 404** with a sentence made of a head and a tail.
    The heads are `this table was abandoned on <date>`, `this table expired on <date> after 90 days
-   without activity`, `this table waited 7 days for players and was closed on <date>` (R-6.5c2.42)
+   without activity`, `this table waited 7 days to start and was closed on <date>` (R-6.5c2.42)
    and `this table was removed by an operator on <date>`, the date in UTC. The
    tails come from `kept`: `— its game is in the archive`, `— no move had been made, so there was
    nothing to keep`, and `— this server keeps no archive, so its game was not kept`. It is a 404
@@ -1505,7 +1505,7 @@ save made at game over. Open and dealing tables expire with nothing to save.
 **A table that has not started** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9) — open,
 or dealing with a keep outstanding: its status `open` or `dealing` — is closed sooner, after
 `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
-`this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
+`this table waited 7 days to start …`. A batch cannot read a table's status (the strings rule),
 so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
 by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
 scratch module. An `open` or `dealing` table is closed; any other is re-armed to its last activity

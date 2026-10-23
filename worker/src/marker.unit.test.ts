@@ -59,13 +59,13 @@ describe("the marker's sentence (spec §2.4 step 5, §4)", () => {
   // (security S3, D9) — whose game there never was. The
   // head carries the marker's OWN `ttl_days`; one day is "1 day". Mutants: the
   // expired head under `waited`; a constant 7; "1 days".
-  it("names a table that waited for players, with the marker's own ttl_days", () => {
+  it("names a table that waited to start, with the marker's own ttl_days", () => {
     const waited = (ttl_days: number): Marker => ({ at: NOON, reason: "waited", ttl_days, kept: "nothing" });
     expect(markerSentence(waited(7))).toBe(
-      "this table waited 7 days for players and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
+      "this table waited 7 days to start and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
     );
     expect(markerSentence(waited(1))).toBe(
-      "this table waited 1 day for players and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
+      "this table waited 1 day to start and was closed on 2026-10-22 — no move had been made, so there was nothing to keep",
     );
   });
 

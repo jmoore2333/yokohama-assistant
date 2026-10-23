@@ -74,7 +74,7 @@ What answers what:
     answers **404** with a sentence of a head and a tail, an upgrade included, answered unupgraded so
     the client's probe reads it. The heads: `this table was abandoned on 2026-10-22`, `this table
     expired on 2026-10-22 after 90 days without activity` (one day of TTL reads `1 day`), `this
-    table waited 7 days for players and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
+    table waited 7 days to start and was closed on 2026-10-22` (M6.5c2 cycle E, R-6.5c2.42: a
     table that had not started when its alarm closed it — from 0.7.2 a dealing one too, security S3,
     D9), `this table was removed by an
     operator on 2026-10-22` — the UTC date of the delete. The tails: `— its
@@ -436,7 +436,7 @@ the whole list; it leaves secrets alone.
   has not started — open, or dealing with a keep outstanding; its status `open` or `dealing` — is
   closed after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` days without
   activity, `7` in `wrangler.jsonc` and by default, with the marker head `this table waited 7 days
-  for players and was closed on …` and the tail `— no move had been made, so there was nothing to
+  to start and was closed on …` and the tail `— no move had been made, so there was nothing to
   keep`; its `expired` line reads `reason: "waited"`. No write can read a table's status (the
   shell never parses a table document), so **every table's alarm is armed at its last activity
   plus the SHORTER of the two TTLs** — 7 days — and the alarm decides by the status its house copy
