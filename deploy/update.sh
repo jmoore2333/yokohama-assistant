@@ -31,10 +31,11 @@
 # an empty file builds with none. **It builds KEYLESS images only:** a
 # non-empty `YOKOHAMA_TURNSTILE_SITEKEY` is refused up front, before the fetch,
 # because step 4's smoke starts the image under `cf-access` and a keyed build
-# refuses to start there (a keyed build is the open door's, R-FP4). A keyed
-# image is a manual build for an open-door host. `YOKOHAMA_WEB_ENV` is the container's
-# environment, `YOKOHAMA_WEB_IDENTITY` first among them: the server refuses to
-# start without it.
+# refuses to start there (a keyed build belongs with YOKOHAMA_WEB_IDENTITY=open
+# on this server, R-FP4). A keyed image is a manual build for an open-door
+# host. `YOKOHAMA_WEB_ENV` is the container's environment,
+# `YOKOHAMA_WEB_IDENTITY` first among them: the server refuses to start without
+# it.
 # **The Host check's two variables belong in that file too** (security S3, D4;
 # R-S3-14), beside the identity: `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and
 # `YOKOHAMA_WEB_HOSTNAMES=<the host name your browsers use>` (`deploy/README.md`
@@ -117,7 +118,7 @@ main() {
       case "$line" in
         "" | "#"*) continue ;;
         YOKOHAMA_TURNSTILE_SITEKEY=?*)
-          die "$BUILD_ENV sets YOKOHAMA_TURNSTILE_SITEKEY, and this script builds keyless images only: its smoke starts the image under cf-access, which refuses to start a keyed build (a keyed build is the open door's). A keyed image is a manual build for an open-door host (deploy/README.md §3); remove the line, or leave its value empty." ;;
+          die "$BUILD_ENV sets YOKOHAMA_TURNSTILE_SITEKEY, and this script builds keyless images only: its smoke starts the image under cf-access, which refuses to start a keyed build (a keyed build belongs with YOKOHAMA_WEB_IDENTITY=open on this server, and the challenge its key draws belongs to the open door and the public Worker). A keyed image is a manual build for an open-door host (deploy/README.md §3); remove the line, or leave its value empty." ;;
         YOKOHAMA_PROJECT_URL=* | YOKOHAMA_SITE_BLURB=* | YOKOHAMA_SITE_NOTICE=* \
           | YOKOHAMA_RELEASE_FEED=* | YOKOHAMA_TURNSTILE_SITEKEY=* | YOKOHAMA_SITE_URL=*)
           build_args+=(--build-arg "$line") ;;

@@ -125,13 +125,15 @@ async fn main() {
         }
     };
 
-    // **A client built with a Turnstile site key is the open door's** (M6.5c2
-    // cycle F's fix wave; R-FP4): it reads the key as a door with no identity
-    // provider in front, so behind `cf-access` or `worker` it would upload
-    // nobody's finished games. The Worker's deploy guard holds the pairing
-    // (check 12); this is the self-host's half, read off the stamp in the root
-    // this process serves (`assets::check_build_stamp`). A `dist` with no
-    // stamp, built before it, starts.
+    // **A client built with a Turnstile site key belongs with
+    // `YOKOHAMA_WEB_IDENTITY=open` on this server** (M6.5c2 cycle F's fix
+    // wave; reworded S4-pre Task 4): the challenge the key draws belongs to
+    // the open door and to the public Worker, and behind `cf-access` or
+    // `worker` an identity provider already stands in front. The Worker's
+    // deploy guard holds the pairing (check 12); this is the self-host's half,
+    // read off the stamp in the root this process serves
+    // (`assets::check_build_stamp`). A `dist` with no stamp, built before it,
+    // starts.
     if let Err(e) = yokohama_web::assets::check_build_stamp(&yokohama_web::assets::dist_dir(), identity) {
         eprintln!("{e}");
         std::process::exit(1);
