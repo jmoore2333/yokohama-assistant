@@ -1,5 +1,6 @@
-// The build's SIX values, checked where the BUILD reads them (M6.5c2,
-// R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F, R-F2, R-F6 and R-F12).
+// The build's SEVEN values, checked where the BUILD reads them (M6.5c2,
+// R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F, R-F2, R-F6 and R-F12; the auth
+// cycle, R-A14).
 //
 // `vite.config.ts` calls these with `process.env`, and a throw here fails
 // `vite build` — the Worker's release build and the Docker image's
@@ -20,6 +21,13 @@
 // the page's canonical link and `og:url` are written from; unset or empty is
 // no address and none of the three, `checkSiteUrl`). One row in
 // `BUILD_VALUES` and one checker each: a later value joins in the same shape.
+//
+// **The auth cycle adds one** (Task 6; R-A14): `YOKOHAMA_SIGNIN_NOTICE`, the
+// sentence under every sign-in link — who signs the player in, and what this
+// site keeps — through `checkText` at most 300 (two sentences). Unset or empty
+// is none, and nothing is drawn. The Worker's builds alone set it: the
+// self-host image takes no `ARG` for it, since no provider signs anyone in
+// there.
 //
 // **Build time, never run time**: the release is precached under a digest of
 // its own bytes, so a server that rewrote `index.html` at start-up would fail
@@ -184,11 +192,12 @@ export function checkSiteUrl(raw) {
   return url.origin;
 }
 
-/** The six build values and the longest each may be. */
+/** The seven build values and the longest each may be. */
 export const BUILD_VALUES = {
   YOKOHAMA_PROJECT_URL: PROJECT_URL_MAX,
   YOKOHAMA_SITE_BLURB: 400,
   YOKOHAMA_SITE_NOTICE: 200,
+  YOKOHAMA_SIGNIN_NOTICE: 300,
   YOKOHAMA_RELEASE_FEED: RELEASE_FEED_MAX,
   YOKOHAMA_TURNSTILE_SITEKEY: SITE_KEY_MAX,
   YOKOHAMA_SITE_URL: SITE_URL_MAX,

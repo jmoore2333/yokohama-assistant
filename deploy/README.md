@@ -72,6 +72,15 @@ for its objects. An identity-aware proxy of your own can play that part. It must
 - remove any copy of the header the client sent;
 - be the only path to the port.
 
+**The Cloudflare Worker host has more sources than this server** (the auth cycle; `worker/README.md` §1.5). Its
+`worker` door may also run `oidc` against an issuer that publishes a discovery document and accepts
+`client_secret_post` or PKCE (an issuer that accepts only `client_secret_basic` cannot be configured this cycle,
+R-20), with `https` endpoints (a loopback host is accepted for development) — or `workos`, WorkOS AuthKit's
+first-party API — and mints its own session cookie after the sign-in. **This server gains no sign-in arm and no
+`/api/leave` route**: under `cf-access` a sign-out falls back to Access's own logout, `/cdn-cgi/access/logout`;
+under its other modes the client forgets the name. Its `cf-access` door and the one rule it rests on, above,
+are unchanged.
+
 **Verify** as yourself, through the tunnel: `/api/me` must name you — `{"mode":"cf-access","user":"<your
 address>"}` — and a caller Access admits without an address, such as a service token, must read
 `"user":null` ([`RUNBOOK.md`](RUNBOOK.md) §3.2 is the recipe). `/api/health` answers the same whether the
@@ -101,9 +110,15 @@ home.
 - Your tables stay with the name you sat down as, so a different name later is a different player, whose
   tables are empty.
 - There are no accounts and no house password.
+- A locked table's password counter (twenty wrong passwords per table and caller in ten seconds, then a wait it
+  names) counts per NAME here, and a name is free: it slows one name, not one person. The network you bind the port
+  to is the fence, by this door's own rule.
 
 So bind the port only where everyone who can reach it is someone you would hand the table to: your home
 network, a LAN, or a VPN. Never put an open door on the public internet.
+
+On a LAN, list the name or address your browsers type in `YOKOHAMA_WEB_HOSTNAMES` (§4), or set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off` when you do not want the host boundary.
+Behind a reverse proxy that rewrites `Host` to the upstream address (nginx's default `proxy_set_header Host $proxy_host` sends `127.0.0.1:8080`) the check admits every request, since the loopback names are in the default set; the proxy must pass the browser's `Host` through (`proxy_set_header Host $host`), or the boundary is the proxy's own.
 
 **Names:**
 - 1–32 characters of ASCII letters, digits, spaces, `.`, `-` and `_`, beginning with a letter or a digit;
@@ -116,12 +131,12 @@ network, a LAN, or a VPN. Never put an open door on the public internet.
 The corner of the lobby and the setup screens reads "Playing as" and the name, and its action is
 **switch player**, which forgets the name and asks for another.
 
-**A Turnstile site key goes with this door and no other.** A client built with
-`YOKOHAMA_TURNSTILE_SITEKEY` (§3) is the open door's: it takes the key to mean no identity provider stands
-in front, so it holds a finished game until its player has chosen a name. Behind Access nobody chooses one,
-and every finished game would stay on its device. So build with a key only for `YOKOHAMA_WEB_IDENTITY=open`;
-the server reads the build's stamp at start and refuses a keyed build under `cf-access` or `worker`, naming
-both.
+**A Turnstile site key goes with this door and no other, on this server.** A client built with
+`YOKOHAMA_TURNSTILE_SITEKEY` (§3) holds a nameless visitor's finished game for a name only where the server's
+facts say `open`; it no longer reads the key as the door (the auth cycle, Task 6). So build with a key only for
+`YOKOHAMA_WEB_IDENTITY=open`: the server reads the build's stamp at start and refuses a keyed build under
+`cf-access` or `worker`, naming both. (The Cloudflare Worker's provider-signed door is the one other place a
+keyed build is accepted, `worker/README.md` §1.5.)
 
 **Changing one origin's door.** A browser keeps the name it typed as a display name, per origin. So an
 operator who flips one origin from `open` to `cf-access` sees that stored display name in the corner
@@ -170,7 +185,7 @@ docker build --platform linux/amd64 -f deploy/Dockerfile \
 | `YOKOHAMA_SITE_BLURB` | 400 characters | A paragraph under the title on the first screen. |
 | `YOKOHAMA_SITE_NOTICE` | 200 characters | One line at the foot of every screen. |
 | `YOKOHAMA_RELEASE_FEED` | 300 characters | Where the first screen and the lobby look for the latest release, to say when it is newer than the one running. **Three states:** unset or empty derives the feed from `YOKOHAMA_PROJECT_URL` when that names a GitHub repository (`https://github.com/<owner>/<repo>`); a URL is that feed, `https://` only, answering GitHub's release shape; the literal `off` is no feed and no check. |
-| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2): a keyed build is the open door, so the browser takes a visitor with no name of its own for someone who has not chosen one yet, and behind Access, where nobody chooses a name, it would send no finished game to the archive. The server refuses to start a keyed build under any other door, naming both. **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
+| `YOKOHAMA_TURNSTILE_SITEKEY` | 100 characters | The public site key of a Turnstile check on the way to the lobby. Plain text, no whitespace or control character. Blank, the default, draws the plain link. It belongs only with `YOKOHAMA_WEB_IDENTITY=open` (§2) on this server, and the server refuses to start a keyed build under any other door, naming both. The browser does not read the key as the door: it reads the server's facts, and holds a visitor with no name of their own for a name only where those facts say `open`; with the facts unread it asks the server's health first and may show the widget once, at a fresh context's first game over (the Cloudflare Worker's provider-signed door is the other place a keyed build is accepted, `worker/README.md` §1.5). **Behind Access, leave it blank:** the widget is the no-Access Worker's, where an edge rule stands in front of the open door. **A keyed image is a manual build for an open-door host:** `deploy/update.sh` (§9) refuses a key, because the image smoke starts every image under `cf-access`, which refuses a keyed build. |
 | `YOKOHAMA_SITE_URL` | 200 characters | The site's own address, the one a search engine should know it by: an `https://` origin such as `https://yokohama.example.org`, with no path, query, fragment or credentials (a trailing `/` is dropped). With it the build writes `sitemap.xml`, the page's canonical link and `og:url`, and `robots.txt` names the sitemap; without it none of the three. |
 
 - **Omit an argument, or leave it empty, for none of that value** — except the release feed, where unset and empty
@@ -198,6 +213,8 @@ docker run -d --name yokohama-web \
   -p 127.0.0.1:8080:8080 \
   -v yokohama-web-data:/data \
   -e YOKOHAMA_WEB_IDENTITY=cf-access \
+  -e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on \
+  -e YOKOHAMA_WEB_HOSTNAMES=<your hostname> \
   --restart unless-stopped \
   --cap-drop ALL --security-opt no-new-privileges:true --memory 512m \
   yokohama-web:0.6.3-s2
@@ -220,10 +237,12 @@ docker run -d --name yokohama-web \
 | Variable | Values | Unset means |
 |---|---|---|
 | `YOKOHAMA_WEB_IDENTITY` | `cf-access`, `open`, `worker` | the server refuses to start |
+| `YOKOHAMA_WEB_HOSTNAMES_ENABLED` | `on`, `off` | `on`. On, the server answers only the host names below and refuses any other `Host` with 421. Off, it answers any `Host`, as it did before 0.7.2, and the start line says so. Any other value stops the server at start. Write `on` beside the list, so the switch is visible to whoever reads your deploy file |
+| `YOKOHAMA_WEB_HOSTNAMES` | host names separated by commas, e.g. `yokohama-nas.moore.nyc` | `localhost`, `127.0.0.1` and `::1`, plus the bind address when it is a specific one. A list adds to that set and never replaces it. An entry is letters, digits, hyphens and dots (a name, in punycode when it is not ASCII) or an IPv6 literal written without brackets; any other character, a space, scheme, path, user, port or underscore among them, stops the server at start, so `my_nas.lan` is refused. An unlisted `Host` is 421. The port of a request is never compared. The start line prints the names the server answers |
 | `YOKOHAMA_WEB_MULTIPLAYER` | `on`, `off` | `on`. Off, the lobby, the tables and chat are not served at all; single player still works |
 | `YOKOHAMA_WEB_ARCHIVE_DIR` | a directory, e.g. `/data/archive` | no archive. Set, every finished and abandoned game is written once under `rev7/over/` and `rev7/abandoned/`, as the record the CLI loads beside its table document; a browser's uploads are bounded — 4,096 events and 512 KiB a record, 256 records and 128 MiB a caller under `browser/<segment>/` (security S1b) — the segment is the address made readable, then `-` and a twelve-character digest (security S1c) |
 | `YOKOHAMA_WEB_TABLE_TTL_DAYS` | whole days above zero, e.g. `90` | no table expires and no sweep runs. Set, an hourly sweep ends every table idle this long through its creator's Abandon (§8). It needs `YOKOHAMA_WEB_ARCHIVE_DIR`: set without it, the server refuses to start |
-| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table with a seat still empty stands idle before the sweep closes it. A table at its deal, every seat taken, waits the first |
+| `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | whole days above zero | `7`, and inert while `YOKOHAMA_WEB_TABLE_TTL_DAYS` is unset: how long a table that has not started — open, or dealing with a keep outstanding — stands idle before the sweep closes it |
 | `YOKOHAMA_WEB_LOBBY_CHAT` | `on`, `off` | `on` |
 | `YOKOHAMA_WEB_CHAT_KEEP` | a positive number of messages, or `all` | 500 a room |
 | `YOKOHAMA_WEB_CHAT_TEXT` | a positive number of characters | 500 a message |
@@ -245,6 +264,15 @@ server says so once at start, on stderr. A malformed file
 stops it at start, naming the file. The smoke (§5) reads `X-Frame-Options` and the policy on `/`, and
 `no-store` and `nosniff` on `/api/health`.
 
+**Why the host list exists, and the trap in it** (security S3, D4).
+A web page on another site can make a browser send requests to your server under a name the attacker controls, by changing what that name resolves to.
+The one thing that name cannot forge is the `Host` the browser sends, so the server answers only the names it is told to.
+The image binds `0.0.0.0`, which is no name, so the default set inside a container is loopback alone.
+A container reached through a tunnel or a proxy with no list answers every request 421, while a smoke run on loopback passes.
+So list the name your browsers use, and read your hostname's `/api/health` before you call a deploy done.
+If you do not want the boundary, set `YOKOHAMA_WEB_HOSTNAMES_ENABLED=off`.
+Behind a reverse proxy that rewrites `Host` to the upstream address (nginx's default `proxy_set_header Host $proxy_host` sends `127.0.0.1:8080`) the check admits every request, since the loopback names are in the default set; the proxy must pass the browser's `Host` through (`proxy_set_header Host $host`), or the boundary is the proxy's own.
+
 The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST=0.0.0.0` and
 `YOKOHAMA_WEB_PORT=8080` inside the container; `YOKOHAMA_WEB_DIST`, `YOKOHAMA_WEB_ART` and
 `YOKOHAMA_WEB_DIR=/data/games`.
@@ -252,8 +280,13 @@ The image sets its own paths, which you do not need to touch: `YOKOHAMA_WEB_HOST
 ## 5. Check the image before you trust it
 
 ```bash
-bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port>, default 18080
+bash deploy/smoke-image.sh yokohama-web:0.6.3-s2      # or: … <image> <port> [hostname], port default 18080
 ```
+
+Give a hostname as the third argument to check the host list too.
+The smoke then runs the containers with `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and that hostname listed.
+It reads `/api/health` under each door as `Host: <hostname>`, which must answer 200, and as `Host: smoke-foreign.example`, which must answer 421.
+Without it the smoke says the host probe was not asked for and runs as it always has, on loopback.
 
 It needs `docker`, `curl` and `python3`, and it starts the image three times, publishing only on
 `127.0.0.1`:
@@ -297,10 +330,11 @@ idle tables itself: one pass a minute after start, then one every hour. A table'
 write to any of its three files (the table, the record and the chat, listed below): a seat taken, a keep, an
 applied move, a chat message. A pass ends:
 
-- a table still waiting for players, a seat empty, once it has stood idle `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`
-  (7 unless set), with the reason `waited`;
-- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`. A table at its
-  deal, every seat taken, waits this one.
+- a table that has not started — open, or dealing with a keep outstanding — once it has stood idle
+  `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` (7 unless set), with the reason `waited`. A keep is a write, so a half-kept
+  table counts its days from the last keep. A table whose every keep is in but whose start never landed — a
+  crash between the last keep's two writes — is started by the pass's own read first, and kept;
+- any table once it has stood idle `YOKOHAMA_WEB_TABLE_TTL_DAYS`, with the reason `expired`.
 
 **Each pass lists before it ends anything.** It writes one `sweep-listed` line for every table it is about to
 end, and only then ends them, one `sweep-ended` line each: a pass that ends forty tables has written forty
@@ -308,7 +342,7 @@ lines before the first one goes. Each ending is the creator's own **Abandon**. A
 the archive from game over, so it is not filed twice. A game in play is filed under `rev7/abandoned/`.
 A table where no move was played files nothing. If the archive cannot be written, the delete
 is refused, a `sweep-failed` line says why, and the table stays for the next pass. A table the sweep cannot
-read gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
+read, or a dealing table it cannot start, gets a `sweep-unread` line and stays. The ended table's link answers "no such game": this server leaves
 no marker in its place, and the log line is the record.
 
 **A sweep never throws a game away.** A TTL with no archive directory stops the server at start-up:

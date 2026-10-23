@@ -226,9 +226,11 @@ multiplayer on Cloudflare, the NAS container, and single player entirely inside 
 2. **Self-host in Docker.** [`deploy/README.md`](deploy/README.md) is the guide: build the image (its five
    build values are `--build-arg`s, and the Turnstile site key's stays blank behind Access), then run it
    with `YOKOHAMA_WEB_IDENTITY` set, `cf-access` behind Access or `open` for a home network, and a named
-   volume at `/data`. `YOKOHAMA_WEB_TABLE_TTL_DAYS` with an archive directory turns on an hourly sweep of
-   idle tables, and `deploy/update.sh` moves a running container to a new release tag: fetch, build, smoke,
-   swap ([§9, Updating](deploy/README.md#9-updating)).
+   volume at `/data`, and `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` beside `YOKOHAMA_WEB_HOSTNAMES=<the host name
+   your browsers use>` (the server answers only the names it is told to; `off` answers any).
+   `YOKOHAMA_WEB_TABLE_TTL_DAYS` with an archive directory turns on an hourly sweep of idle tables, and
+   `deploy/update.sh` moves a running container to a new release tag: fetch, build, smoke, swap ([§9,
+   Updating](deploy/README.md#9-updating)).
 3. **Play the bot with no server.** The door's bot card runs the whole game in the browser, kept in its own
    storage and playable offline once the release is installed. A local game makes no server call until it
    ends. Any host that serves the release will do.
@@ -258,7 +260,9 @@ The settings a player notices, as cycle F's release set them (2026-10-01) and se
   `YOKOHAMA_SITE_NOTICE` ("Not affiliated with Asmodee"), `YOKOHAMA_SITE_BLURB` (the door's paragraph,
   quoted in the lane document), `YOKOHAMA_RELEASE_FEED` (unset, so derived from the project link) and
   `YOKOHAMA_SITE_URL`, which names the host, so each host serves its own client build. Neither host's
-  build carries a Turnstile site key: both run behind Access.
+  build carries a Turnstile site key: both run behind Access. The auth cycle adds
+  `YOKOHAMA_SIGNIN_NOTICE`, the sentence under every sign-in link saying who signs a player in and what
+  the site keeps; neither host's build sets it yet.
 
 ### What a public deployment gets for free
 
@@ -392,9 +396,11 @@ cd web && npm ci && npm run build && cd ..
 YOKOHAMA_WEB_IDENTITY=open cargo run --release -p yokohama-web   # http://127.0.0.1:8080
 ```
 
-`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. `open` is the mode for your
-own machine: the door is the first screen, the lobby asks for a name, and you play under it. Before you put the server on a
-network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
+`YOKOHAMA_WEB_IDENTITY` has no default and the server exits without it. The server answers only the host names
+it is told to (`YOKOHAMA_WEB_HOSTNAMES_ENABLED`, `on` unless set `off`, and `YOKOHAMA_WEB_HOSTNAMES`, which
+adds to loopback and the bind address); behind a tunnel or on a LAN, list the name your browsers use. `open`
+is the mode for your own machine: the door is the first screen, the lobby asks for a name, and you play under
+it. Before you put the server on a network, read the self-host guide, [`deploy/README.md`](deploy/README.md).
 
 ## Hosting
 

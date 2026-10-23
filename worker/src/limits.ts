@@ -23,22 +23,32 @@ export type Limiter = Pick<RateLimit, "limit">;
  * the caller's digest (`callerTag`), whatever their IP: a person on two devices is one budget. Under `open` a
  * claim is free, so a create is counted by the connecting IP alone (a flood of names from one address is one
  * budget) and a write by IP and claim together (a household's players each get their own). A request with no
- * caller is counted by IP under either door — the layer answers it 401, and its object call is still a cost. An
- * absent IP header reads `unknown`: one shared budget for a request that reached this Worker without the edge.
+ * caller is counted by IP under either door — the layer answers it 401, and its object call is still a cost. So is
+ * an ANONYMOUS upload (the auth cycle, design §4.4's ceiling 2): its device or game id is whatever the client sends,
+ * so a per-device key is one a client could rotate, and the connecting IP is the budget. An absent IP header reads
+ * `unknown`: one shared budget for a request that reached this Worker without the edge.
  */
 export async function limitKey(door: Door, identity: Identity, ip: string | null, kind: "create" | "write"): Promise<string> {
-  const who = callerName(identity);
+  const who = identity.kind === "anonymous" ? undefined : callerName(identity);
   const at = `ip:${ip ?? UNKNOWN_IP}`;
   if (who === undefined) return at;
   if (door === "worker") return callerTag(who);
   return kind === "create" ? at : `${at}|${await callerTag(who)}`;
 }
 
-/** Which binding an unsafe request spends: the create's for `POST /api/games`, the writes' for every other method
- *  but GET and HEAD — the operator's POST, `/api/archive` and every DELETE among them; `undefined` for a read. */
-export function limiterFor(method: string, target: Target, limits: Limits): { limiter: Limiter; kind: "create" | "write" } | undefined {
+/** Which binding an unsafe request spends: the create's for `POST /api/games`, and for an `anonymous` caller's
+ *  `POST /api/archive` (the auth cycle, design §4.4: one machine mints devices no faster than games); the writes' for
+ *  every other method but GET and HEAD — the operator's POST, a signed-in caller's `/api/archive` and every DELETE
+ *  among them; `undefined` for a read. */
+export function limiterFor(
+  method: string,
+  target: Target,
+  limits: Limits,
+  anonymous: boolean,
+): { limiter: Limiter; kind: "create" | "write" } | undefined {
   if (method === "GET" || method === "HEAD") return undefined;
-  return target.kind === "create" ? { limiter: limits.create, kind: "create" } : { limiter: limits.write, kind: "write" };
+  const creates = target.kind === "create" || (anonymous && target.kind === "archive");
+  return creates ? { limiter: limits.create, kind: "create" } : { limiter: limits.write, kind: "write" };
 }
 
 /**
@@ -48,7 +58,7 @@ export function limiterFor(method: string, target: Target, limits: Limits): { li
  * effort: a bound on cost, never a fence a feature may lean on. `Retry-After` is the refused kind's own window.
  */
 export async function limited(req: Request, target: Target, identity: Identity, door: Door, limits: Limits): Promise<Response | undefined> {
-  const spend = limiterFor(req.method, target, limits);
+  const spend = limiterFor(req.method, target, limits, identity.kind === "anonymous");
   if (spend === undefined) return undefined;
   const key = await limitKey(door, identity, req.headers.get(IP_HEADER), spend.kind);
   const { success } = await spend.limiter.limit({ key });

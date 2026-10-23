@@ -103,9 +103,13 @@ export function LobbyBand({ crumbs, corner }: { crumbs: string[]; corner: ReactN
  *  hides it behind the pill ("Ben ▾"), which is a disclosure over the SAME
  *  element — so there is never a second "switch player" for anything to find.
  *
- *  `onChange` fires on switch player only, AFTER the display name is dropped:
- *  the host re-asks `/api/me` (App passes `signOut`, which drops the claimed
- *  name too). A display-name edit changes no identity and tells nobody. */
+ *  `onChange` fires on switch player (the open door) and on sign out (an edge
+ *  door; the auth cycle, ruling R-37). App passes `signOut`, the ONE wiring
+ *  every sign-out control calls: it drops the display name (it labels whoever
+ *  signs in next), asks the server where to go to end the session and goes,
+ *  or, where it answers nowhere (the open door), drops the claimed name and
+ *  re-asks `/api/me`. A display-name edit changes no identity and tells
+ *  nobody. */
 export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void }) {
   const menuId = useId();
   const fieldId = useId();
@@ -218,26 +222,27 @@ export function IdentityCorner({ me, onChange }: { me: Me; onChange: () => void 
             </span>
             {edge && shown !== null && <span className="identity-address">{me.user}</span>}
             {edge ? (
-              <button
-                ref={rename}
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  setDraft(shown ?? "");
-                  setEditing(true);
-                }}
-              >
-                change name
-              </button>
+              <>
+                <button
+                  ref={rename}
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    setDraft(shown ?? "");
+                    setEditing(true);
+                  }}
+                >
+                  change name
+                </button>
+                {/* **The way out behind an edge door** (the auth cycle, Task 6;
+                    ruling R-37): the identity is the edge's to end, and the
+                    host asks the server where that is. */}
+                <button type="button" className="ghost" onClick={onChange}>
+                  sign out
+                </button>
+              </>
             ) : (
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  clearDisplayName();
-                  onChange();
-                }}
-              >
+              <button type="button" className="ghost" onClick={onChange}>
                 switch player
               </button>
             )}

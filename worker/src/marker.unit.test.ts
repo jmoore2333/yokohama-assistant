@@ -54,8 +54,9 @@ describe("the marker's sentence (spec §2.4 step 5, §4)", () => {
     );
   });
 
-  // R-6.5c2.42's fourth head: a table still WAITING for players when the
-  // alarm closed it — its status `open` — whose game there never was. The
+  // R-6.5c2.42's fourth head: a table that had not started when the alarm
+  // closed it — its status `open`, or `dealing` with a keep outstanding
+  // (security S3, D9) — whose game there never was. The
   // head carries the marker's OWN `ttl_days`; one day is "1 day". Mutants: the
   // expired head under `waited`; a constant 7; "1 days".
   it("names a table that waited for players, with the marker's own ttl_days", () => {
@@ -110,10 +111,14 @@ describe("the marker's end, and the expiry deadline (spec §2.4)", () => {
   it("reads the TTL from the configuration, null when unset, and the waiting-table TTL beside it", () => {
     const config = (ttlDays: number | null, openTtlDays = 7): ShellConfig => ({
       door: "worker",
+      source: "access",
+      signin: null,
+      session: null,
       archive: "r2",
       ttlDays,
       openTtlDays,
       admins: null,
+      denied: null,
       countWakes: false,
       devDoor: false,
       diagnosticSeeds: false,
@@ -143,8 +148,9 @@ describe("the days an expiry is due after (R-6.5c2.42)", () => {
 });
 
 // R-6.5c2.42: how the alarm ends a table past the deadline it was armed at —
-// by its STATUS first. A table still waiting for players is closed as one
-// that waited once its waiting TTL is past, whatever else is; any other table
+// by its STATUS first. A table that has not started — open, or dealing with a
+// keep outstanding (security S3, D9) — is closed as one that waited once its
+// waiting TTL is past, whatever else is; any other table
 // expires only once the TTL itself is past. Each boundary is pinned at its
 // millisecond. Mutants: the TTL asked before the status (an open table idle
 // 100 days read `expired`); the status ignored (a playing table closed at 7

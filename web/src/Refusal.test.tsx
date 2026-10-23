@@ -16,9 +16,9 @@
 // reads the crate). A rendered-tree assertion cannot be written for screens
 // that do not exist.
 import { readdirSync, readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { ACCESS_CHALLENGE } from "./api";
+import { ACCESS_CHALLENGE, SIGN_IN_NEEDED } from "./api";
 import { Refusal } from "./Refusal";
 
 describe("the refusal strip", () => {
@@ -32,6 +32,79 @@ describe("the refusal strip", () => {
     // sentence and `/enter` would do nothing about it.
     render(<Refusal sentence="no game named &quot;wire&quot;" />);
     expect(screen.queryByRole("link", { name: "Sign in again" })).toBeNull();
+  });
+
+  // **The auth cycle's sign-in (Task 6; design §4.3)**: a provider-signed
+  // Worker's 401 reads as `SIGN_IN_NEEDED`, and the way out is `/enter` with the
+  // screen the player is on as `return_to` — a NAVIGATION, never a fetch, which
+  // starts the sign-in and lands the player back where they were. The Worker
+  // accepts only `/#/…` there (Task 4's `safeReturnTo`), so the hash goes with a
+  // leading `/`; no hash is the lobby. Access's "Sign in again" keeps its bare
+  // `/enter`: Access ignores the query and lands every sign-in on the lobby.
+  // Mutants: the hash sent without its leading `/`; the hash unencoded; no
+  // `return_to` at all; the link drawn for an ordinary sentence.
+  describe("beside SIGN_IN_NEEDED", () => {
+    afterEach(() => {
+      window.location.hash = "";
+    });
+
+    it("draws the /enter link beside SIGN_IN_NEEDED, with return_to the current hash", () => {
+      window.location.hash = "#/t/abc-123";
+      const { unmount } = render(<Refusal sentence={SIGN_IN_NEEDED} />);
+      expect(screen.getByText(SIGN_IN_NEEDED, { exact: false })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+        "href",
+        "/enter?return_to=%2F%23%2Ft%2Fabc-123",
+      );
+      expect(screen.queryByRole("link", { name: "Sign in again" })).toBeNull();
+      unmount();
+
+      // No route at all: the lobby.
+      window.location.hash = "";
+      const lobby = render(<Refusal sentence={SIGN_IN_NEEDED} />);
+      expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+        "href",
+        `/enter?return_to=${encodeURIComponent("/#/lobby")}`,
+      );
+      lobby.unmount();
+
+      // Access's expired session keeps its own words and its bare link.
+      window.location.hash = "#/t/abc-123";
+      render(<Refusal sentence={ACCESS_CHALLENGE} />);
+      expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/enter");
+      expect(screen.queryByRole("link", { name: "Sign in" })).toBeNull();
+    });
+
+    // **R-A14, the transparency notice**: who signs the player in, and what this
+    // site keeps — read BEFORE the click, directly under the link. A per-host
+    // build value; a build with none (a self-host with no provider) draws
+    // nothing at all, not an empty line. Mutants: the notice drawn when unset;
+    // the notice drawn beside an ordinary sentence; a class other than `muted`.
+    it("draws the build's sign-in notice under the link, and nothing when the build sets none", () => {
+      const NOTICE = "Sign-in is by WorkOS. This site keeps only your verified email address, to seat you.";
+      vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", NOTICE);
+      const { container, unmount } = render(<Refusal sentence={SIGN_IN_NEEDED} />);
+      const notice = screen.getByText(NOTICE);
+      expect(notice.tagName).toBe("P");
+      expect(notice).toHaveClass("muted");
+      // Under the link, inside the strip.
+      const link = screen.getByRole("link", { name: "Sign in" });
+      expect(link.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(container.querySelector(".error")).toContainElement(notice);
+      unmount();
+
+      // Every sign-in link the strip draws carries it: Access's too.
+      const expired = render(<Refusal sentence={ACCESS_CHALLENGE} />);
+      expect(screen.getByText(NOTICE)).toHaveClass("muted");
+      expired.unmount();
+
+      render(<Refusal sentence="no game named wire" />);
+      expect(screen.queryByText(NOTICE), "an ordinary refusal names no sign-in").toBeNull();
+
+      vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", null);
+      const bare = render(<Refusal sentence={SIGN_IN_NEEDED} />);
+      expect(bare.container.querySelector("p"), "no notice set, nothing drawn").toBeNull();
+    });
   });
 
   it("keeps the class its host already drew", () => {

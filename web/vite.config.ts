@@ -36,12 +36,13 @@ import { injectMetadata } from "./scripts/presence.mjs";
 // (M6.5c2, R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F, R-FP2): the door's
 // project link, the blurb under its title and the one-line notice in the
 // footer, and — cycle F's — the release feed the door and the lobby read, the
-// Turnstile site key and the site's own address (R-F12). Vite hands only
+// Turnstile site key and the site's own address (R-F12), and — the auth
+// cycle's (R-A14) — the notice under every sign-in link. Vite hands only
 // `VITE_`-prefixed variables to `import.meta.env`, so `YOKOHAMA_PROJECT_URL`,
-// `YOKOHAMA_SITE_BLURB`, `YOKOHAMA_SITE_NOTICE`, `YOKOHAMA_RELEASE_FEED`,
-// `YOKOHAMA_TURNSTILE_SITEKEY` and `YOKOHAMA_SITE_URL` — the names both hosts
-// document, and
-// `deploy/Dockerfile`'s `ARG`s — reach the bundle here, CHECKED by
+// `YOKOHAMA_SITE_BLURB`, `YOKOHAMA_SITE_NOTICE`, `YOKOHAMA_SIGNIN_NOTICE`,
+// `YOKOHAMA_RELEASE_FEED`, `YOKOHAMA_TURNSTILE_SITEKEY` and `YOKOHAMA_SITE_URL`
+// — the names the hosts document, and (all but the sign-in notice, which the
+// self-host never sets) `deploy/Dockerfile`'s `ARG`s — reach the bundle here, CHECKED by
 // `scripts/build-values.mjs`: a throw in this file fails `vite build` naming
 // the variable. Unset or empty is `null` (the feed's derived default aside,
 // `checkReleaseFeed`), and nothing is drawn. The feed is checked AFTER the
@@ -53,6 +54,11 @@ import { injectMetadata } from "./scripts/presence.mjs";
 const projectUrl = checkProjectUrl(process.env.YOKOHAMA_PROJECT_URL);
 const siteBlurb = checkText("YOKOHAMA_SITE_BLURB", process.env.YOKOHAMA_SITE_BLURB, BUILD_VALUES.YOKOHAMA_SITE_BLURB);
 const siteNotice = checkText("YOKOHAMA_SITE_NOTICE", process.env.YOKOHAMA_SITE_NOTICE, BUILD_VALUES.YOKOHAMA_SITE_NOTICE);
+const signInNotice = checkText(
+  "YOKOHAMA_SIGNIN_NOTICE",
+  process.env.YOKOHAMA_SIGNIN_NOTICE,
+  BUILD_VALUES.YOKOHAMA_SIGNIN_NOTICE,
+);
 const releaseFeed = checkReleaseFeed(process.env.YOKOHAMA_RELEASE_FEED, projectUrl);
 const siteKey = checkSiteKey(process.env.YOKOHAMA_TURNSTILE_SITEKEY);
 const siteUrl = checkSiteUrl(process.env.YOKOHAMA_SITE_URL);
@@ -61,7 +67,7 @@ const { version } = JSON.parse(readFileSync(new URL("./package.json", import.met
 };
 
 // **The build-values stamp** (cycle F, R-FP3; spec §2.6): `dist/build-values.json`,
-// six booleans naming which build values this build carries — never a value —
+// seven booleans naming which build values this build carries — never a value —
 // read off the SAME checked locals the `define` block below reads, so the stamp
 // cannot say one thing while the bundle says another. The Worker's deploy guard
 // holds its `YOKOHAMA_TURNSTILE` declaration to `turnstile_sitekey` (its check
@@ -77,6 +83,7 @@ const stamp = {
   project_url: projectUrl !== null,
   blurb: siteBlurb !== null,
   notice: siteNotice !== null,
+  signin_notice: signInNotice !== null,
   release_feed: releaseFeed !== null,
   site_url: siteUrl !== null,
   turnstile_sitekey: siteKey !== null,
@@ -133,6 +140,7 @@ export default defineConfig({
     __YOKOHAMA_PROJECT_URL__: JSON.stringify(projectUrl),
     __YOKOHAMA_SITE_BLURB__: JSON.stringify(siteBlurb),
     __YOKOHAMA_SITE_NOTICE__: JSON.stringify(siteNotice),
+    __YOKOHAMA_SIGNIN_NOTICE__: JSON.stringify(signInNotice),
     __YOKOHAMA_RELEASE_FEED__: JSON.stringify(releaseFeed),
     __YOKOHAMA_TURNSTILE_SITEKEY__: JSON.stringify(siteKey),
     __YOKOHAMA_SITE_URL__: JSON.stringify(siteUrl),

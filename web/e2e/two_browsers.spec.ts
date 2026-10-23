@@ -509,3 +509,56 @@ test("two people at two browsers play to a winner and neither sees the other's h
   expect(streamOpens.a, "a never reopened this table's stream").toBe(streamsAtStart.a);
   expect(streamOpens.b, "b never reopened this table's stream").toBe(streamsAtStart.b);
 });
+
+// **The creator reopens a seat a second browser took** (security S3, D9;
+// design §3.2 rule 1), read from BOTH screens: A opens a three-seat table, B
+// takes Blue by the link, A presses Reopen beside B's seat, and B's own screen
+// — on its own signal, with nobody touching it — is a would-be joiner's again:
+// Sit here at Blue, no invite to send, no hand. The cell reads the SECOND
+// browser because the claim is about what the kicked person is offered, which
+// A's screen cannot show.
+test("the creator reopens a seat another browser took, and that browser may join again", async ({ browser }) => {
+  test.setTimeout((LIVE ? 4 : 2) * 60 * 1000);
+  const a = await (await newContextWithoutWorker(browser, await liveContextOptions(A))).newPage();
+  const b = await (await newContextWithoutWorker(browser, await liveContextOptions(B))).newPage();
+  const watchA = watchForBreakage(a);
+  const watchB = watchForBreakage(b);
+
+  await signIn(a, A);
+  await expect(a.getByRole("heading", { name: "Lobby", exact: true })).toBeVisible();
+  await a.getByRole("button", { name: "New table" }).click();
+  await expect(a.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  // Three players: every seat but the creator's defaults to OPEN (spec §5.3),
+  // so the table stays open with Blue taken and Yellow still free.
+  await a.getByRole("group", { name: "Players" }).getByRole("radio", { name: "3", exact: true }).check();
+  opened = awaitCreate(a);
+  await a.getByRole("button", { name: "Open table" }).click();
+  const id = await createdTable(opened);
+  await expect(a).toHaveURL(new RegExp(`#/t/${id}$`));
+  // Before anybody joins, the creator's roster offers no Reopen at all.
+  await expect(a.getByLabel("Invite link", { exact: true })).toBeVisible();
+  await expect(a.getByRole("button", { name: /^Reopen/ })).toHaveCount(0);
+
+  // B arrives by the link and takes Blue: seated, its face is the waiting one.
+  await signIn(b, B, `/#/t/${id}`);
+  await b.getByRole("button", { name: "Sit here as Blue" }).click();
+  await expect(b.getByLabel("Invite link", { exact: true })).toBeVisible();
+  await expect(b.getByRole("button", { name: /^Sit here/ })).toHaveCount(0);
+
+  // A's screen learns of B on its signal, and offers Reopen beside B's seat alone.
+  const reopen = a.getByRole("button", { name: "Reopen the Blue seat" });
+  await expect(reopen).toBeVisible({ timeout: 15_000 });
+  await expect(a.getByRole("button", { name: /^Reopen/ })).toHaveCount(1);
+  await reopen.click();
+  await expect(a.getByRole("button", { name: /^Reopen/ })).toHaveCount(0);
+
+  // B's screen, on its own signal: a would-be joiner at an open table.
+  await expect(b.getByRole("button", { name: "Sit here as Blue" })).toBeVisible({ timeout: 15_000 });
+  await expect(b.getByRole("button", { name: "Sit here as Yellow" })).toBeVisible();
+  await expect(b.getByLabel("Invite link", { exact: true })).toHaveCount(0);
+  await expect(b.getByRole("button", { name: /^Reopen/ })).toHaveCount(0);
+  expect(await ownHand(b), "no hand on the kicked browser's screen").toEqual([]);
+
+  expect(watchA.failures, "a's page reported no errors").toEqual([]);
+  expect(watchB.failures, "b's page reported no errors").toEqual([]);
+});

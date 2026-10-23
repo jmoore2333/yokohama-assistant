@@ -122,7 +122,7 @@ describe("the smoke's live mode: the edge line", () => {
       mkdirSync(join(root, "assets"));
       writeFileSync(
         join(root, "assets", "build-values.json"),
-        `${JSON.stringify({ project_url: false, blurb: false, notice: false, release_feed: false, site_url: siteUrl, turnstile_sitekey: true }, null, 2)}\n`,
+        `${JSON.stringify({ project_url: false, blurb: false, notice: false, signin_notice: false, release_feed: false, site_url: siteUrl, turnstile_sitekey: true }, null, 2)}\n`,
       );
     }
     return root;

@@ -6,10 +6,12 @@
 // (`worker/scripts/live-replay.mjs`) and the live tier (`web/e2e/live.ts`) —
 // and `dev-vars.d.mts` beside it is what TypeScript reads for the second: an
 // `.mjs` import reads no `.d.ts` (TS7016). It imports nothing but node's own
-// modules, so neither package installs anything for it.
+// modules and `mint-session.mjs`, which imports nothing else, so neither package
+// installs anything for it.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { COOKIE_NAME, fenceSentence, isTestAddress } from "./mint-session.mjs";
 
 /** The deployed Worker's origin: the only one the credential is presented
  *  to — every request the live replay sends, and the live tier's `BASE_URL`
@@ -47,4 +49,86 @@ export function readCredential(file = DEV_VARS) {
     return value;
   };
   return { id: read(KEYS[0]), secret: read(KEYS[1]) };
+}
+
+/** The environment variable that holds a minted session cookie line (`mint-session.mjs`'s output). */
+export const SESSION_COOKIE_ENV = "YOKOHAMA_SESSION_COOKIE";
+
+/** The line a minted cookie reads as: `src/session.ts`'s `SESSION_COOKIE` name (`mint-session.mjs`'s `COOKIE_NAME`,
+ *  which a cell pins to it), `=`, `v2.<payload>.<mac>` in the url alphabet (`v2` since the absolute cap, 2026-10-19;
+ *  the auth cycle's `v1` is no minted cookie any more). Anything else is no minted cookie — and a value with a
+ *  control character or a `;` in it is no header value an instrument should send. */
+const MINTED_LINE = new RegExp(`^${COOKIE_NAME}=v2\\.([A-Za-z0-9_-]+)\\.[A-Za-z0-9_-]+$`);
+
+/** The sentence a run is refused in when a claimed name — a row's `who`, a context's email — sits beside a session
+ *  cookie that names someone else (ruling R-39): the live replay's and the live tier's one text. */
+export const TWO_IDENTITIES = "the session cookie names the caller — a claimed name beside it is two identities";
+
+/**
+ * What a minted cookie line carries, read WITHOUT the secret — its payload is base64url JSON: the cookie's `name`,
+ * `value`, the `address` it names and its `expires` (seconds). `null` when the payload is not JSON with a string
+ * address. The signature is not checked: this is the instrument reading its own cookie, never the Worker's trust.
+ */
+export function sessionCookieParts(line) {
+  const match = MINTED_LINE.exec(line);
+  if (match === null) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof payload !== "object" || payload === null || typeof payload.address !== "string") return null;
+  const expires = Number.isInteger(payload.expires) ? payload.expires : -1;
+  return { name: COOKIE_NAME, value: line.slice(COOKIE_NAME.length + 1), address: payload.address, expires };
+}
+
+/**
+ * The minted session cookie in `env`, as the `Cookie` header's value — or `null` when the variable is unset or empty.
+ * Under a sign-in arm the Worker names a caller by its own session cookie (auth cycle, Task 8), so an instrument that
+ * holds one sends it as the caller's identity. A value that is not a minted line is refused by the variable's NAME,
+ * never its value.
+ */
+export function readSessionCookie(env = process.env) {
+  const value = env[SESSION_COOKIE_ENV];
+  if (value === undefined || value === "") return null;
+  const parts = sessionCookieParts(value);
+  if (parts === null) {
+    throw new Error(`${SESSION_COOKIE_ENV} is not a minted session cookie line (__Host-yokohama_session=v2.<payload>.<mac>) — scripts/mint-session.mjs prints one`);
+  }
+  // **The `.test` fence applies to a cookie handed in too** (review I-1): a copied browser cookie for a real address
+  // would run the instruments as that person, on production. The address is not a secret, so the sentence names it.
+  if (!isTestAddress(parts.address)) throw new Error(`${SESSION_COOKIE_ENV}: mint-session: ${fenceSentence(parts.address)}`);
+  return value;
+}
+
+/** The environment variable that holds the deployment's session secret: an instrument that finds it MINTS a session
+ *  per identity (`mint-session.mjs`'s `cookieLine`, `.test` addresses only; ruling R-50). */
+export const SESSION_SECRET_ENV = "YOKOHAMA_SESSION_SECRET";
+
+/** The session secret in `env`, or `null` when unset or empty. Never printed. */
+export function readSessionSecret(env = process.env) {
+  const value = env[SESSION_SECRET_ENV];
+  return value === undefined || value === "" ? null : value;
+}
+
+/**
+ * What an instrument presents: the session `secret` it mints per identity from (or `null`), the one minted `cookie`
+ * (or `null`) and the Access `credential` (or `null`). Three modes, in this order of precedence (ruling R-50):
+ *
+ * 1. **the secret** (`YOKOHAMA_SESSION_SECRET`): a cookie MINTED for each identity the run names. It wins over a
+ *    cookie that is also set, which is then not read at all, so `cookie` is `null` here;
+ * 2. **the cookie** (`YOKOHAMA_SESSION_COOKIE`): ONE identity, a line `mint-session.mjs` printed;
+ * 3. **neither**: the dev door's credential and claimed header, as ever.
+ *
+ * With neither the credential is required, as ever, and its absence is `readCredential`'s refusal. Under a secret or a
+ * cookie the credential is optional — the Access service credential is the EDGE's pass where Access still stands over a
+ * provider-signed Worker (ruling R-39), not an identity — so it rides when `file` is there and is `null` when it is
+ * absent. A file that IS there is read strictly: a malformed one is refused, never read as absent.
+ */
+export function readIdentity(env = process.env, file = DEV_VARS) {
+  const secret = readSessionSecret(env);
+  const cookie = secret === null ? readSessionCookie(env) : null;
+  if (secret === null && cookie === null) return { secret, cookie, credential: readCredential(file) };
+  return { secret, cookie, credential: existsSync(file) ? readCredential(file) : null };
 }

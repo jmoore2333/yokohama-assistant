@@ -332,7 +332,8 @@ impl Api {
         uri: &str,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
-        let mut req = Request::builder().method(method).uri(uri);
+        // A browser always sends a `Host`, and the host check refuses a request with none (security S3, D4).
+        let mut req = Request::builder().method(method).uri(uri).header("host", "localhost");
         if let Some(who) = who {
             req = req.header("x-yokohama-claimed-user", who);
         }
@@ -3808,6 +3809,7 @@ async fn the_stream_s_first_frame_is_the_events_route_s_reply_by_value() {
         .oneshot(
             Request::builder()
                 .uri("/api/games/streamed/stream")
+                .header("host", "localhost")
                 .header("x-yokohama-claimed-user", WALKER)
                 .header("accept", "text/event-stream")
                 .body(Body::empty())

@@ -2,6 +2,7 @@ import type { Env } from "./env";
 import { isAddress } from "./identity";
 import type { Limiter } from "./limits";
 import { openTtlDaysOf, ttlDaysOf } from "./marker";
+import { log } from "./respond";
 
 /** Where the shell reads the time (the plan's ruling P-2): the wall clock, a
  *  frozen reading, or a reading that ticks one second per use. */
@@ -9,6 +10,11 @@ export type Clock = { kind: "wall" } | { kind: "frozen"; at: number } | { kind: 
 
 /** The Worker's door (M6.5c2, spec §2.1; R-6.5c2.5). */
 export type Door = "worker" | "open";
+
+/** Who vouches for a caller's address (the auth cycle, design §3): Cloudflare Access (`access`, this shell's
+ *  verification of the assertion), a generic OpenID Connect issuer (`oidc`) or WorkOS's first-party flow
+ *  (`workos`). One source per deployment, and no default. */
+export type Source = "access" | "oidc" | "workos";
 
 /** The two Rate Limiting bindings as the shell uses them (security S2b, finding C2; decision D-3): each a
  *  `Limiter` — `limit` and nothing else, so a cell hands in a fake. */
@@ -19,22 +25,48 @@ export interface ShellConfig {
   /** `YOKOHAMA_WEB_IDENTITY` (M6.5c2, spec §2.1): Cloudflare Access verified
    *  by this shell, or the open door. No default. */
   door: Door;
+  /** `YOKOHAMA_IDENTITY_SOURCE` (auth cycle, design §3): who vouches for an address under the `worker` door,
+   *  with no default. `null` under `open`, where a name is a claim and no source vouches for it. */
+  source: Source | null;
+  /** The sign-in half of `oidc` and `workos`; `null` under `access` and `open`, where the variables, if set,
+   *  are ignored. `issuer` is `null` under `workos` (its issuer is fixed and not configurable) and
+   *  `clientSecret` is `null` under `oidc` when none is set (the PKCE flow); under `workos` it is the API key. */
+  signin: { issuer: string | null; clientId: string; clientSecret: string | null } | null;
+  /** The session cookie's signing secret (at least 32 bytes), its sliding lifetime in days, 30 when
+   *  `YOKOHAMA_SESSION_DAYS` is absent, and its absolute cap in days from the first issue, 90 when
+   *  `YOKOHAMA_SESSION_MAX_DAYS` is absent (2026-10-19); `null` under `access` and `open`. */
+  session: { secret: string; days: number; maxDays: number } | null;
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
-  /** How many days a table still WAITING for players — its status `open` —
-   *  stands without activity (R-6.5c2.42); 7 when the variable is absent.
+  /** How many days a table that has not started — open, or dealing with a
+   *  keep outstanding; its status `open` or `dealing` — stands without
+   *  activity (R-6.5c2.42; security S3, D9); 7 when the variable is absent.
    *  Inert while `ttlDays` is `null`: then no table expires. */
   openTtlDays: number;
   /** `null`: the operator routes are the layer's 404 (spec §2.9). Always
    *  `null` under `open`, where a list is refused (`openDoorRefusals`). */
   admins: string[] | null;
+  /** The red button (2026-10-19): `YOKOHAMA_DENIED`, read under `oidc` and `workos` alone — `null` when absent or
+   *  under another source. Addresses and domains are folded (trimmed, ASCII-lowercased), domains without their `@`. */
+  denied: Denied | null;
   countWakes: boolean;
   devDoor: boolean;
   diagnosticSeeds: boolean;
   clock: Clock;
   /** `CREATE_LIMIT` and `WRITE_LIMIT` (security S2b, C2), both required. */
   limits: Limits;
+}
+
+/** The deny-list (the red button, 2026-10-19): the addresses and the domains, each folded as `denied` folds them. */
+export interface Denied { addresses: string[]; domains: string[] }
+
+/** Whether `address` — a session's, folded here — is on the deny-list: its whole self among the addresses, or
+ *  the part after its last `@` among the domains. `null` denies nobody. */
+export function isDenied(denied: Denied | null, address: string): boolean {
+  if (denied === null) return false;
+  const a = folded(address);
+  return denied.addresses.includes(a) || denied.domains.includes(a.slice(a.lastIndexOf("@") + 1));
 }
 
 /** Every variable `Env` declares: its string-typed keys, and none of its
@@ -53,6 +85,14 @@ type Variable = { [K in keyof Env]-?: NonNullable<Env[K]> extends string ? K : n
  */
 const ROWS: { readonly [K in Variable]: true } = {
   YOKOHAMA_WEB_IDENTITY: true,
+  YOKOHAMA_IDENTITY_SOURCE: true,
+  YOKOHAMA_OIDC_ISSUER: true,
+  YOKOHAMA_OIDC_CLIENT_ID: true,
+  YOKOHAMA_OIDC_CLIENT_SECRET: true,
+  YOKOHAMA_SESSION_SECRET: true,
+  YOKOHAMA_SESSION_DAYS: true,
+  YOKOHAMA_SESSION_MAX_DAYS: true,
+  YOKOHAMA_DENIED: true,
   ACCESS_TEAM_DOMAIN: true,
   ACCESS_AUD: true,
   DEV_DOOR_CLIENT_ID: true,
@@ -130,6 +170,121 @@ function door(raw: string | null): Door {
   );
 }
 
+/**
+ * `access` | `oidc` | `workos`, with NO default (the auth cycle, design §3): who vouches for an address is a
+ * deployment decision, as the door is. Trimmed, then matched EXACTLY, as the door is. **Under `open` it is not read
+ * here**: a source set beside the open door is refused by `openDoorRefusals`, after the older pairs, so the
+ * sentence that names the operator list or the dev door is still the one a configuration holding both gets.
+ */
+function source(door: Door, raw: string | null): Source | null {
+  if (door === "open") return null;
+  const value = raw === null ? null : raw.trim();
+  if (value === "access" || value === "oidc" || value === "workos") return value;
+  return refuse(
+    value === null
+      ? "YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos under the worker door — it is not set, and there is no default: who vouches for an address is a deployment decision"
+      : `YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos — got ${JSON.stringify(value)}`,
+  );
+}
+
+/** A variable's trimmed text, or `null` when it is not set or only whitespace. */
+function present(env: Env, name: Variable): string | null {
+  const value = text(env, name)?.trim();
+  return value === undefined || value === "" ? null : value;
+}
+
+/**
+ * The sign-in variables, read for `oidc` and `workos` alone: under `access` they are ignored when set, never
+ * refused. The client id is required under both; the issuer under `oidc` only, and REFUSED beside `workos`, whose
+ * issuer is fixed; the client secret is the WorkOS API key under `workos` (required) and optional under `oidc`.
+ */
+function signin(env: Env, src: Source | null): ShellConfig["signin"] {
+  if (src !== "oidc" && src !== "workos") return null;
+  const issuer = present(env, "YOKOHAMA_OIDC_ISSUER");
+  if (src === "oidc" && issuer === null) {
+    refuse(
+      "YOKOHAMA_OIDC_ISSUER must be set under YOKOHAMA_IDENTITY_SOURCE=oidc — the issuer whose /.well-known/openid-configuration names the endpoints",
+    );
+  }
+  if (src === "workos" && issuer !== null) {
+    refuse(
+      "YOKOHAMA_OIDC_ISSUER is set beside YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS arm's issuer is https://api.workos.com and is not configurable",
+    );
+  }
+  const clientId = present(env, "YOKOHAMA_OIDC_CLIENT_ID");
+  if (clientId === null) {
+    refuse(
+      `YOKOHAMA_OIDC_CLIENT_ID must be set under YOKOHAMA_IDENTITY_SOURCE=${src} — the client id the issuer registered for this site`,
+    );
+  }
+  const clientSecret = present(env, "YOKOHAMA_OIDC_CLIENT_SECRET");
+  if (src === "workos" && clientSecret === null) {
+    refuse(
+      "YOKOHAMA_OIDC_CLIENT_SECRET must be set under YOKOHAMA_IDENTITY_SOURCE=workos — the WorkOS API key the code exchange is authenticated with (wrangler secret put YOKOHAMA_OIDC_CLIENT_SECRET)",
+    );
+  }
+  return { issuer, clientId, clientSecret };
+}
+
+/** A session cookie's sliding lifetime when `YOKOHAMA_SESSION_DAYS` is absent. */
+const SESSION_DAYS = 30;
+
+/** A session's absolute cap, from its first issue, when `YOKOHAMA_SESSION_MAX_DAYS` is absent (2026-10-19). */
+const SESSION_MAX_DAYS = 90;
+
+/** The signing secret's floor, in UTF-8 bytes (counted as `isAddress` counts). */
+const SESSION_SECRET_BYTES = 32;
+
+/**
+ * The session variables, read for `oidc` and `workos` alone. The secret is taken as it is set (never trimmed) and
+ * counted in UTF-8 bytes; the days and the cap are the TTLs' own rule (`wholeDays`), 30 and 90 when absent. A cap
+ * below the days is not refused: the expiry is the earlier of the two, so such a session simply lives the cap.
+ */
+function session(env: Env, src: Source | null): ShellConfig["session"] {
+  if (src !== "oidc" && src !== "workos") return null;
+  const secret = text(env, "YOKOHAMA_SESSION_SECRET") ?? "";
+  if (new TextEncoder().encode(secret).length < SESSION_SECRET_BYTES) {
+    refuse(
+      "YOKOHAMA_SESSION_SECRET must be at least 32 bytes — it signs every session cookie (wrangler secret put YOKOHAMA_SESSION_SECRET)",
+    );
+  }
+  const raw = text(env, "YOKOHAMA_SESSION_DAYS");
+  const cap = text(env, "YOKOHAMA_SESSION_MAX_DAYS");
+  return {
+    secret,
+    days: raw === null ? SESSION_DAYS : wholeDays("YOKOHAMA_SESSION_DAYS", raw),
+    maxDays: cap === null ? SESSION_MAX_DAYS : wholeDays("YOKOHAMA_SESSION_MAX_DAYS", cap),
+  };
+}
+
+/** An `@domain` entry's domain: `@` then a domain — no `@`, no spaces or control characters, at most 253 bytes. */
+function isDomainEntry(entry: string): boolean {
+  return entry.startsWith("@") && new TextEncoder().encode(entry).length <= 254 && /^@[^@\s\p{Cc}]+$/u.test(entry);
+}
+
+/**
+ * The deny-list (the red button, 2026-10-19), read for `oidc` and `workos` alone: entries split on commas and
+ * newlines, each folded as a caller's address is read (`folded`), the empty ones dropped — a put from a file ends in
+ * a newline, and a trailing comma is no reason to refuse every request — and each kept entry an address
+ * (`isAddress`) or an `@domain` (`isDomainEntry`). **An entry that is neither is SKIPPED, never a refusal** (the
+ * owner's ruling the same day, on a side agent's note: a typo in the ban list must never take the API down): the
+ * line `denied-skipped` names its POSITION among the kept entries and never its value — the list is a secret and the
+ * log is not — and the rest stand. `admins` keeps its refusal: an operator list with a typo admits nobody, which the
+ * operator sees at once; a ban list with one denies everybody else just the same.
+ */
+function denied(raw: string | null, src: Source | null): Denied | null {
+  if (raw === null || (src !== "oidc" && src !== "workos")) return null;
+  const entries = raw.split(/[,\n]/).map(folded).filter((entry) => entry !== "");
+  const addresses: string[] = [];
+  const domains: string[] = [];
+  entries.forEach((entry, i) => {
+    if (isDomainEntry(entry)) domains.push(entry.slice(1));
+    else if (isAddress(entry)) addresses.push(entry);
+    else log("denied-skipped", { position: i + 1, of: entries.length });
+  });
+  return { addresses, domains };
+}
+
 /** `r2` | `off`, absent = off (R-6.5c.14). The module matches these two
  *  strings exactly, and `moduleConfig` hands it this value. */
 function archive(env: Env): "r2" | "off" {
@@ -145,8 +300,11 @@ function archive(env: Env): "r2" | "off" {
 const OPEN_TTL_DAYS = 7;
 
 /** `raw`, trimmed, as whole days above zero — or the refusal naming `name`.
- *  The two TTLs' one rule. */
-function wholeDays(name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS", raw: string): number {
+ *  The one rule of the two TTLs and the session's days. */
+function wholeDays(
+  name: "YOKOHAMA_WEB_TABLE_TTL_DAYS" | "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS" | "YOKOHAMA_SESSION_DAYS" | "YOKOHAMA_SESSION_MAX_DAYS",
+  raw: string,
+): number {
   const value = raw.trim();
   const days = Number(value);
   if (!/^\d+$/.test(value) || days === 0 || !Number.isSafeInteger(days)) {
@@ -241,13 +399,15 @@ function limits(env: Env): Limits {
  *   echoes nothing of its value (R3's M-6);
  * - the dev door on: it is the `worker` door's test instrument, and under
  *   `open` a claim needs no credential. The deploy guard refuses this pair in
- *   the committed `vars` too.
+ *   the committed `vars` too;
+ * - an identity source (auth cycle, design §3), last: under `open` a name is a
+ *   claim and no source vouches for it.
  *
  * `DEV_DOOR_CLIENT_ID` is ignored under `open`, never refused: a credential
  * means nothing where a claim needs none. Under `worker` nothing here is
  * refused.
  */
-function openDoorRefusals(c: ShellConfig): void {
+function openDoorRefusals(c: ShellConfig, env: Env): void {
   if (c.door !== "open") return;
   if (c.admins !== null) {
     refuse(
@@ -259,6 +419,13 @@ function openDoorRefusals(c: ShellConfig): void {
     refuse(
       "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
         "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
+    );
+  }
+  // Last, so a configuration holding an older pair as well still names that pair first. Presence, not value:
+  // whatever the source says, no source vouches for a claim.
+  if (text(env, "YOKOHAMA_IDENTITY_SOURCE") !== null) {
+    refuse(
+      "YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it",
     );
   }
 }
@@ -277,19 +444,27 @@ function openDoorRefusals(c: ShellConfig): void {
 export function shellConfig(env: Env): ShellConfig | { error: string } {
   try {
     strings(env);
+    // The door and the source are read before the object literal so `signin` and `session` can see the source;
+    // the literal below still lists the fields in `ShellConfig`'s order, and the first refusal named is the door's.
+    const d = door(text(env, "YOKOHAMA_WEB_IDENTITY"));
+    const src = source(d, text(env, "YOKOHAMA_IDENTITY_SOURCE"));
     const config: ShellConfig = {
-      door: door(text(env, "YOKOHAMA_WEB_IDENTITY")),
+      door: d,
+      source: src,
+      signin: signin(env, src),
+      session: session(env, src),
       archive: archive(env),
       ttlDays: ttlDays(text(env, "YOKOHAMA_WEB_TABLE_TTL_DAYS")),
       openTtlDays: openTtlDays(text(env, "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS")),
       admins: admins(text(env, "YOKOHAMA_WEB_ADMINS")),
+      denied: denied(text(env, "YOKOHAMA_DENIED"), src),
       countWakes: onOff("YOKOHAMA_WEB_COUNT_WAKES", text(env, "YOKOHAMA_WEB_COUNT_WAKES")),
       devDoor: onOff("YOKOHAMA_DEV_DOOR", text(env, "YOKOHAMA_DEV_DOOR")),
       diagnosticSeeds: onOff("YOKOHAMA_DIAGNOSTIC_SEEDS", text(env, "YOKOHAMA_DIAGNOSTIC_SEEDS")),
       clock: clock(text(env, "YOKOHAMA_WEB_TEST_CLOCK")),
       limits: limits(env),
     };
-    openDoorRefusals(config);
+    openDoorRefusals(config, env);
     return config;
   } catch (e) {
     if (e instanceof Refusal) return { error: e.sentence };

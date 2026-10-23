@@ -7,10 +7,11 @@ import { ROUTER_FILES, accessPaths, apiSegments, layerRoutesText } from "./acces
 const repo = fileURLToPath(new URL("../..", import.meta.url));
 const script = fileURLToPath(new URL("./access-paths.mjs", import.meta.url));
 
-/** The ten destinations of the Access application the door window's state 2
+/** The eleven destinations of the Access application the door window's state 2
  *  names (spec R-6.5c2.39, as cycle F amends it — spec §2.5): every `/api/`
- *  prefix, `health` among them, and `/enter`. */
-const TEN = [
+ *  prefix, `health` among them, and `/enter`. `leave` is the eleventh since the
+ *  auth cycle's Task 4: `POST /api/leave`, sign-out, read after sign-in. */
+const ELEVEN = [
   "yokohama.moore.nyc/api/admin",
   "yokohama.moore.nyc/api/archive",
   "yokohama.moore.nyc/api/art",
@@ -18,6 +19,7 @@ const TEN = [
   "yokohama.moore.nyc/api/games",
   "yokohama.moore.nyc/api/health",
   "yokohama.moore.nyc/api/labels",
+  "yokohama.moore.nyc/api/leave",
   "yokohama.moore.nyc/api/me",
   "yokohama.moore.nyc/api/stream",
   "yokohama.moore.nyc/enter",
@@ -25,15 +27,15 @@ const TEN = [
 
 describe("the protected path list", () => {
   // **The catcher for a prefix the router files gain, or one none of them
-  // names any more**: TEN is written out by hand, so the printed list cannot
+  // names any more**: ELEVEN is written out by hand, so the printed list cannot
   // move without this cell failing.
   // Mutants: a prefix dropped from the list; `health` excepted again (cycle F,
   // spec §2.5: the lobby reads it after `/enter`, so a state-2 door protects
   // it); `/enter` missing; a new prefix named in a router file; the layer's
   // file read whole (its tests name /api/nope).
-  it("is the ten destinations, one per line, sorted, host-prefixed — health among them", () => {
-    expect(accessPaths(repo)).toEqual(TEN);
-    expect(execFileSync("node", [script], { encoding: "utf8" })).toBe(`${TEN.join("\n")}\n`);
+  it("is the eleven destinations, one per line, sorted, host-prefixed — health among them", () => {
+    expect(accessPaths(repo)).toEqual(ELEVEN);
+    expect(execFileSync("node", [script], { encoding: "utf8" })).toBe(`${ELEVEN.join("\n")}\n`);
   });
   // **What this cell proves is the script's ASSEMBLY** over what the regex
   // finds in all four files: every segment kept, `health` included, `/enter`

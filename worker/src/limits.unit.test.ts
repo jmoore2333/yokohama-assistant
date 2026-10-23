@@ -26,12 +26,36 @@ describe("limitKey (security S2b, C2; decision D-3)", () => {
     const create = { limit: async () => ({ success: true }) };
     const write = { limit: async () => ({ success: true }) };
     const limits = { create, write };
-    expect(limiterFor("POST", { kind: "create" }, limits)).toEqual({ limiter: create, kind: "create" });
-    expect(limiterFor("POST", { kind: "table", name: "x" }, limits)).toEqual({ limiter: write, kind: "write" });
-    expect(limiterFor("DELETE", { kind: "table", name: "x" }, limits)).toEqual({ limiter: write, kind: "write" });
-    expect(limiterFor("POST", { kind: "archive" }, limits)).toEqual({ limiter: write, kind: "write" });
-    expect(limiterFor("POST", { kind: "admin", rest: "/tables/x/expire" }, limits)).toEqual({ limiter: write, kind: "write" });
-    expect(limiterFor("GET", { kind: "table", name: "x" }, limits)).toBeUndefined();
-    expect(limiterFor("HEAD", { kind: "house" }, limits)).toBeUndefined();
+    expect(limiterFor("POST", { kind: "create" }, limits, false)).toEqual({ limiter: create, kind: "create" });
+    expect(limiterFor("POST", { kind: "table", name: "x" }, limits, false)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("DELETE", { kind: "table", name: "x" }, limits, false)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("POST", { kind: "archive" }, limits, false)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("POST", { kind: "admin", rest: "/tables/x/expire" }, limits, false)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("GET", { kind: "table", name: "x" }, limits, false)).toBeUndefined();
+    expect(limiterFor("HEAD", { kind: "house" }, limits, false)).toBeUndefined();
+  });
+
+  // The anonymous archive (the auth cycle, Task 5; design §4.4's ceiling 2): a caller-less upload is counted like a
+  // create, by the connecting IP — never by its device or game id, which a client can rotate at will. Mutants:
+  // `limitKey` keying an anonymous caller by its tag; `limiterFor` sending the anonymous post to the write limiter, or
+  // every archive post (a signed-in one among them) to the create limiter; an anonymous flag widening another target.
+  it("counts an anonymous caller by IP under either door, and spends the create limiter on its archive post alone", async () => {
+    const anonymous = { kind: "anonymous", device: "0123456789abcdef" } as const;
+    const byGame = { kind: "anonymous", device: "local-aaaaaaaaaaaaaaaa" } as const;
+    expect(await limitKey("worker", anonymous, "9.9.9.9", "create")).toBe("ip:9.9.9.9");
+    expect(await limitKey("worker", byGame, "9.9.9.9", "create"), "a game id is no budget of its own").toBe("ip:9.9.9.9");
+    expect(await limitKey("worker", anonymous, null, "create")).toBe(`ip:${UNKNOWN_IP}`);
+    expect(await limitKey("open", anonymous, "9.9.9.9", "write"), "never the IP-plus-claim key").toBe("ip:9.9.9.9");
+    const session = { kind: "session", email: "red@wire.test", sid: null, first: 1, renew: false } as const;
+    expect(await limitKey("worker", session, "9.9.9.9", "write"), "a session is its own budget").toBe(await callerTag("red@wire.test"));
+
+    const create = { limit: async () => ({ success: true }) };
+    const write = { limit: async () => ({ success: true }) };
+    const limits = { create, write };
+    expect(limiterFor("POST", { kind: "archive" }, limits, true)).toEqual({ limiter: create, kind: "create" });
+    expect(limiterFor("POST", { kind: "archive" }, limits, false), "a signed-in upload is a write").toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("POST", { kind: "table", name: "x" }, limits, true)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("POST", { kind: "house" }, limits, true)).toEqual({ limiter: write, kind: "write" });
+    expect(limiterFor("GET", { kind: "archive" }, limits, true)).toBeUndefined();
   });
 });

@@ -89,11 +89,15 @@ describe("checkText", () => {
     );
   });
 
-  it("names the six values with their caps", () => {
+  // The auth cycle's seventh (Task 6; R-A14): the sentence under every sign-in
+  // link — who signs the player in, and what this site keeps. Two sentences,
+  // so a longer cap than the footer's one line.
+  it("names the seven values with their caps", () => {
     expect(BUILD_VALUES).toEqual({
       YOKOHAMA_PROJECT_URL: 200,
       YOKOHAMA_SITE_BLURB: 400,
       YOKOHAMA_SITE_NOTICE: 200,
+      YOKOHAMA_SIGNIN_NOTICE: 300,
       YOKOHAMA_RELEASE_FEED: 300,
       YOKOHAMA_TURNSTILE_SITEKEY: 100,
       YOKOHAMA_SITE_URL: 200,

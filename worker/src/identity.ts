@@ -9,16 +9,28 @@
  * `test/worker.test.ts`).
  */
 import type { Env } from "./env";
+import { isSafeId } from "./route";
 
 export type Identity =
   | { kind: "person"; email: string }
   | { kind: "dev"; email: string }
   /** The open door's caller (M6.5c2, spec §2.1; review R2.2-m6): a name a
    *  caller claimed, held only to what a header can carry. Its own kind, so
-   *  the operator gate's person-only rule and the archive object's naming
-   *  read it without a special case, and `dev` stays the live tier's kind
+   *  the operator gate (a person or a session only) and the archive object's
+   *  naming read it without a special case, and `dev` stays the live tier's kind
    *  under `worker`. */
   | { kind: "claimed"; name: string }
+  /** A signed-in caller under a sign-in arm (`oidc`, `workos`; the auth cycle, design §4.2): the address the
+   *  session cookie carries, which the issuer vouched for at the sign-in, and the issuer's session id when it sent
+   *  one, which sign-out ends; `first`, when the session was first issued, which a renewal keeps (the absolute cap
+   *  counts from it, 2026-10-19). `renew` says a renewal is due AND would extend the cookie (`renewalExpiry`), so
+   *  a 2xx answer carries a fresh one. The operator gate admits it exactly as a person (ruling R-27). */
+  | { kind: "session"; email: string; sid: string | null; first: number; renew: boolean }
+  /** A caller-less upload to `POST /api/archive` under the `worker` door (the auth cycle, design §4.4; `anonymousIdentity`):
+   *  `device` is the post's device id, or with none the game's own id from its table document (R-A11). Formed in
+   *  `answer` for that one target, so no game route ever sees it; `callerName` renders it as a synthetic ADDRESS the
+   *  key grammar already accepts, so the layer and the module are untouched. Never an operator, and counted by IP. */
+  | { kind: "anonymous"; device: string }
   | { kind: "none"; unknownKid?: true };
 export interface JwkSet { keys: Array<JsonWebKey & { kid?: string }> }
 export interface IdentityConfig {
@@ -34,11 +46,16 @@ export const CLAIMED_USER_HEADER = "X-Yokohama-Claimed-User";
  *  a browser can put no header on (M6.5c2, spec §2.1; `web/src/ws.ts`). */
 export const CLAIMED_PARAM = "claimed";
 
-const bytes = (b64url: string): Uint8Array => {
+/** A JWT segment's bytes: base64url, padding restored. Throws on a character
+ *  outside the alphabet (`atob`). Shared with the sign-in arms (`signin.ts`). */
+export const bytes = (b64url: string): Uint8Array => {
   const b64 = b64url.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64url.length / 4) * 4, "=");
   return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 };
-const json = (b64url: string): Record<string, unknown> => JSON.parse(new TextDecoder().decode(bytes(b64url)));
+/** A JWT segment parsed as JSON. Throws on bytes that are not JSON. The
+ *  return type is not checked: `null`, a number or an array parse too, so a
+ *  caller that needs an object tests for one. */
+export const json = (b64url: string): Record<string, unknown> => JSON.parse(new TextDecoder().decode(bytes(b64url)));
 
 /** ASCII letters lowercased and nothing else — `User::parse`'s
  *  `to_ascii_lowercase`, never JavaScript's `toLowerCase()`, which maps U+212A
@@ -166,24 +183,94 @@ export function claimedIdentity(raw: string | null): Identity {
 }
 
 /** The value an identity is forwarded as, and names its archive object by —
- *  a person's or the dev door's address, or an open-door claim — or
- *  `undefined` for no one (M6.5c2). */
+ *  a person's, the dev door's or a session's address, an open-door claim, or
+ *  an anonymous upload's synthetic address — or `undefined` for no one
+ *  (M6.5c2; the auth cycle). */
 export function callerName(identity: Identity): string | undefined {
   switch (identity.kind) {
     case "person":
     case "dev":
+    case "session":
       return identity.email;
     case "claimed":
       return identity.name;
+    case "anonymous":
+      // ASCII-lowercased as every caller name is (`address`; ruling R-32): a device id is lowercase hex already, and a
+      // game id may carry ASCII capitals, so every spelling of one game names ONE archive object and one prefix.
+      return `${ANON_LOCAL_PREFIX}${asciiLower(identity.device)}@${ANON_DOMAIN}`;
     case "none":
       return undefined;
   }
 }
 
+/** The header a browser's archive post names its device by (the auth cycle, design §4.4): sixteen lowercase hex digits
+ *  the client draws once. Read RAW before the strip rule drops every `x-yokohama-*` header, and set again on the
+ *  archive object's request when it is a device id (`isDeviceId`), for the object's metadata. */
+export const DEVICE_HEADER = "X-Yokohama-Device";
+
+/** The anonymous address's domain: `.invalid` is reserved by RFC 6761, so no player the Worker verifies can hold it. */
+export const ANON_DOMAIN = "anon.invalid";
+
+/** The anonymous address's local part begins so. */
+const ANON_LOCAL_PREFIX = "anon-";
+
+/** Whether `s` is a device id: exactly sixteen LOWERCASE hex digits and nothing else — no capital, no other length, no
+ *  surrounding space, and no case mapping first (so a Kelvin sign is never read as anything). Anything else is an
+ *  absent header. */
+export function isDeviceId(s: string): boolean {
+  return /^[0-9a-f]{16}$/.test(s);
+}
+
+/** Whether `address` is an anonymous upload's synthetic address (`callerName` of the `anonymous` kind): the archive
+ *  object writes `anonymous` in its metadata for one, never the address. */
+export function isAnonymousAddress(address: string): boolean {
+  return address.startsWith(ANON_LOCAL_PREFIX) && address.endsWith(`@${ANON_DOMAIN}`);
+}
+
 /**
- * The team's keys: `refresh: false` for the cached set, `refresh: true` when
- * an assertion names a `kid` the cached set lacks. Rejects when the keys
- * cannot be had, and the caller reads that as no caller at all.
+ * **The anonymous caller** of a caller-less `POST /api/archive` (the auth cycle, design §4.4; R-A4, R-A11): the device
+ * header's value when it is a device id (`isDeviceId`); else the GAME's own id, read from the body's table document —
+ * an archive post is `{"record": "…", "table": "…"}`, two strings (the layer's `ArchivePost`), so the id is the
+ * `table` string's own `id`, read as a create's is (`bodyId`) — when the store would accept it (`isSafeId`); else no
+ * one, and the house's `dispatch` answers the layer's 401 as before. `headers` are the request's as sent, before the
+ * strip rule. With no device id it parses twice: the body for its `table` member, then that string, encoded again as
+ * UTF-8, for its own `id`. Nothing re-serializes the body, which is forwarded as the bytes it was.
+ */
+export function anonymousIdentity(headers: Headers, body: Uint8Array | null): Identity {
+  const device = headers.get(DEVICE_HEADER);
+  if (device !== null && isDeviceId(device)) return { kind: "anonymous", device };
+  const table = bodyMember(body, "table");
+  const game = table === undefined ? undefined : bodyId(new TextEncoder().encode(table));
+  return game !== undefined && isSafeId(game) ? { kind: "anonymous", device: game } : { kind: "none" };
+}
+
+/** A body's `id` when it is a JSON object whose `id` is a string (spec §2.3's create row); otherwise `undefined`. It
+ *  READS, and `isSafeId` judges. The body is parsed for this one member and forwarded as the bytes it was: nothing here
+ *  re-serializes it. Bytes that are not UTF-8, or that open with a byte-order mark, name no id — the layer's own parse
+ *  refuses both. */
+export function bodyId(body: Uint8Array | null): string | undefined {
+  return bodyMember(body, "id");
+}
+
+/** The string member `key` of a body that is a JSON object, or `undefined` — `bodyId`'s reading, for any member. */
+function bodyMember(body: Uint8Array | null, key: string): string | undefined {
+  if (body === null) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
+  } catch {
+    return undefined;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const value = (parsed as Record<string, unknown>)[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * A key set — the team's, or a sign-in arm's issuer's: `refresh: false` for
+ * the cached set, `refresh: true` when a token names a `kid` the cached set
+ * lacks. Rejects when the keys cannot be had, and the caller reads that as no
+ * caller at all.
  */
 export type KeySource = (refresh: boolean) => Promise<JwkSet>;
 
@@ -197,9 +284,17 @@ export function refreshDue(lastRefreshAt: number | null, now: number): boolean {
 }
 
 /**
- * The team's keys, from `https://<teamDomain>/cdn-cgi/access/certs`, cached in
- * this closure — ONE per isolate, which is how the Worker's default export
- * holds it (plan review m14; re-review m-d).
+ * The team's keys, from `https://<teamDomain>/cdn-cgi/access/certs`: the
+ * Access certs URL handed to `keySourceAt`, which says how they are cached.
+ */
+export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
+  return keySourceAt(`https://${teamDomain}/cdn-cgi/access/certs`, fetcher, clock);
+}
+
+/**
+ * The key set at `url`, cached in this closure: the Access certs (`keySource`)
+ * or a sign-in arm's issuer's JWKS (the auth cycle, Task 3). The Worker holds
+ * ONE closure per isolate and URL (plan review m14; re-review m-d).
  *
  * - `false` answers the cache; with none, it joins the fetch in flight, or
  *   starts one.
@@ -215,16 +310,16 @@ export function refreshDue(lastRefreshAt: number | null, now: number): boolean {
  * - A fetch that fails, answers anything but 200, or answers no key set
  *   REJECTS every call that joined it, and the cache is left as it was.
  */
-export function keySource(teamDomain: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
+export function keySourceAt(url: string, fetcher: typeof fetch = fetch, clock: () => number = Date.now): KeySource {
   let cached: JwkSet | undefined;
   let lastRefreshAt: number | null = null;
   let inflight: Promise<JwkSet> | undefined;
   const load = async (): Promise<JwkSet> => {
-    const res = await fetcher(`https://${teamDomain}/cdn-cgi/access/certs`);
-    if (res.status !== 200) throw new Error(`the Access certs answered ${res.status}`);
+    const res = await fetcher(url);
+    if (res.status !== 200) throw new Error(`the key set at ${url} answered ${res.status}`);
     const body: unknown = await res.json();
     const keys = (body as { keys?: unknown } | null)?.keys;
-    if (!Array.isArray(keys)) throw new Error("the Access certs hold no key set");
+    if (!Array.isArray(keys)) throw new Error(`the answer at ${url} holds no key set`);
     cached = { keys: keys as JwkSet["keys"] };
     return cached;
   };

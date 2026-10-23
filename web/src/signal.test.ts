@@ -25,7 +25,7 @@ import {
   type End,
   type Source,
 } from "./signal";
-import { ACCESS_CHALLENGE, BOUND_MS, api, resetHealthReadForTest, setSignalKind, signalKind } from "./api";
+import { ACCESS_CHALLENGE, BOUND_MS, SIGN_IN_NEEDED, api, resetHealthReadForTest, setSignalKind, signalKind } from "./api";
 import { resetFactsForTest } from "./local/facts";
 import { resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { FakeSocket } from "./test/fakeSocket";
@@ -978,6 +978,33 @@ describe("the signal, over a WebSocket (M6.5c)", () => {
     expect(FakeSocket.made).toHaveLength(1);
     expect(stub.calls).toHaveLength(1);
     expect(ends).toHaveLength(1);
+  });
+
+  // **The same end on a provider-signed Worker's challenge** (the auth cycle,
+  // Task 6 fix round 1, review M-1): under a sign-in arm the Worker's 401 names
+  // `Yokohama-Session`, which `call` reads as `SIGN_IN_NEEDED` — and on the
+  // Worker the socket IS the transport, so the probe is where a player whose
+  // session ended learns it. Mutant: the probe's catch ending on Access's
+  // sentence alone (the ladder says "reconnecting…" about a sign-in).
+  it("probes ONCE after a socket that closes before it opens, and ends on a provider-signed Worker's session challenge", async () => {
+    const ends: End[] = [];
+    const stub = stubApi((call) =>
+      call.path.includes("/events")
+        ? new Response(JSON.stringify({ error: "no identity reached the server" }), {
+            status: 401,
+            headers: { "content-type": "application/json", "www-authenticate": 'Yokohama-Session realm="/enter"' },
+          })
+        : undefined,
+    );
+    renderHook(() => useSignal("wire", true, () => {}, (e) => ends.push(e)));
+    const refused = await socket(1);
+    act(() => refused.drop());
+    await until(() => ends.length > 0, "the source ended");
+    expect(ends).toEqual([{ reason: "refused", sentence: SIGN_IN_NEEDED }]);
+    expect(stub.matching("GET", "/events")).toHaveLength(1);
+    // Nothing is scheduled after it: signing in fixes this, and asking again
+    // cannot.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   // **Battery 37 and Review Focus 2: a close the arm made ITSELF asks

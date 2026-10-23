@@ -57,6 +57,8 @@
     // Production's door (M6.5c2, spec §2.1). The pool's `open` project runs the
     // other door, over `wrangler.open.test.jsonc`.
     "YOKOHAMA_WEB_IDENTITY": "worker",
+    // Who vouches for an address (auth cycle, design §3), with no default: Cloudflare Access, as today.
+    "YOKOHAMA_IDENTITY_SOURCE": "access",
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-aud",
     "DEV_DOOR_CLIENT_ID": "test-client.access",
@@ -69,8 +71,9 @@
     // a table's last activity past it rather than configuring a TTL of its own
     // (the orchestrator's ruling I-34).
     "YOKOHAMA_WEB_TABLE_TTL_DAYS": "90",
-    // Production's value too (R-6.5c2.42): a table still WAITING for players
-    // expires after 7 days, so every table's alarm is armed at its last
+    // Production's value too (R-6.5c2.42): a table that has not started —
+    // open, or dealing with a keep outstanding — expires after 7 days
+    // (security S3, D9), so every table's alarm is armed at its last
     // activity plus 7 days, the shorter of the two, and decided at the alarm.
     "YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS": "7",
     // The node replay's reading (the plan's ruling P-2). This variable is set

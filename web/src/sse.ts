@@ -28,7 +28,7 @@
 // `Events` or that an `end` frame means a table was deleted. That belongs to
 // `signal.ts`, which is the one place the four consumers meet.
 
-import { ACCESS_CHALLENGE, api, ApiError, isAccessChallenge, serverHeaders } from "./api";
+import { api, ApiError, challengeSentence, serverHeaders } from "./api";
 import { isEdgeChallenge } from "./turnstile";
 
 /** One frame off the wire: its name, and its payload as TEXT.
@@ -133,11 +133,13 @@ export async function readStream(
       await api.health();
       throw new Error("the edge's check was passed: the stream reopens on the ladder");
     }
-    // **The EDGE's 401 is not this API's** (spec §2.1): the session in front of
-    // the server expired, and the sentence for that is the one with the
-    // turnstile's link. Read the same way `call` reads it, through the same
-    // two functions, so the three sites cannot drift.
-    if (res.status === 401 && isAccessChallenge(res)) throw new ApiError(ACCESS_CHALLENGE, 401);
+    // **A DOOR's 401 is not this API's** (spec §2.1; the auth cycle, Task 6):
+    // Access's expired session, or a provider-signed Worker's "sign in", each
+    // with the sentence the strip draws its sign-in link beside. Read the same
+    // way `call` reads it, through the same one reader, so the three sites
+    // cannot drift.
+    const challenge = res.status === 401 ? challengeSentence(res) : null;
+    if (challenge !== null) throw new ApiError(challenge, 401);
     let message = `${res.status} ${res.statusText}`.trim();
     try {
       const parsed = (await res.json()) as { error?: unknown };

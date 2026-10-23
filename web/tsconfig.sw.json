@@ -15,13 +15,24 @@
   // project and the app project — they are imported by the worker and by the
   // component suite's cells — which is the same arrangement `src/local/db.ts`
   // already has, and it is what keeps the tested decision and the running one
-  // the same code.
+  // the same code. So are three more (security S3, W-3): `edgeChallenge.ts`,
+  // the challenge's one predicate, which `turnstile.ts` imports for the page;
+  // `swMessages.ts`, the install-failed message's type and the door's election;
+  // and `tableId.ts`, the id grammar `swMessages.ts`'s door rule reads.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "lib": ["ES2022", "WebWorker"],
     "types": []
   },
-  "include": ["src/sw.ts", "src/swRoute.ts", "src/swInstall.ts", "src/precache.ts"],
+  "include": [
+    "src/sw.ts",
+    "src/swRoute.ts",
+    "src/swInstall.ts",
+    "src/precache.ts",
+    "src/edgeChallenge.ts",
+    "src/swMessages.ts",
+    "src/tableId.ts"
+  ],
   // `extends` inherits `exclude`, and the app project excludes `sw.ts` —
   // which this project is entirely about.
   "exclude": []

@@ -12,8 +12,11 @@ import {
   bounded,
   ensureArchiveFact,
   isEdgeRefusal,
+  isSessionExpired,
   onUnauthorized,
+  SIGN_IN_NEEDED,
 } from "./api";
+import { deviceId, resetDeviceForTests } from "./device";
 import { EDGE_CHECK, EDGE_CHECK_REPEATED, resetTurnstileForTests, setChallengeHandler } from "./turnstile";
 import { facts, resetFactsForTest, serverFactsTakenAt } from "./local/facts";
 import { readStream } from "./sse";
@@ -599,5 +602,125 @@ describe("the edge's challenge (cycle F, R-FP8)", () => {
     expect(isEdgeRefusal(refused)).toBe(true);
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
     await expect(ensureArchiveFact()).resolves.toBe("unknown");
+  });
+});
+
+// ---- the auth cycle, Task 6: the session challenge, the device, the leave ----
+//
+// **A provider-signed Worker names itself in `WWW-Authenticate` as Access
+// does** (Task 4's `withApiHeaders`): a 401 under `/api` carries
+// `Yokohama-Session realm="/enter"` when the deployment signs players in
+// itself — every 401 but the archive target's (ruling R-36), whose only 401 is
+// a malformed body. So there are THREE 401s, and each reads as what it is:
+// Access's own expired session, this Worker's "sign in", and the API's own
+// refusal in the body's words.
+describe("the session challenge, the device header and the leave (auth cycle, Task 6)", () => {
+  const challenge = (scheme: string) =>
+    new Response(JSON.stringify({ error: "no identity reached the server" }), {
+      status: 401,
+      headers: { "content-type": "application/json", "www-authenticate": scheme },
+    });
+  const session = () => challenge('Yokohama-Session realm="/enter"');
+  const access = () => challenge('Cloudflare-Access resource_metadata="https://x/.well-known/y"');
+  const bare = () =>
+    new Response(JSON.stringify({ error: "no signed-in user" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
+  const caught = async (p: Promise<unknown>): Promise<ApiError> => {
+    const e = await p.catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(ApiError);
+    return e as ApiError;
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    onUnauthorized(null);
+    resetDeviceForTests();
+  });
+
+  // Mutants: the session scheme read as Access's (`startsWith("Cloudflare-Access")`
+  // matching both); the session header unread (the body's sentence comes back);
+  // `unauthorized` fired before the session's throw (the door moves for a strip's
+  // sign-in); the stream's own open left reading Access alone; `isSessionExpired`
+  // true for the Access sentence only.
+  it("a 401 with WWW-Authenticate Yokohama-Session throws ApiError(SIGN_IN_NEEDED, 401); Cloudflare-Access still throws ACCESS_CHALLENGE; a bare 401 throws the body's sentence", async () => {
+    const door = vi.fn();
+    onUnauthorized(door);
+
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => session()));
+    const signIn = await caught(api.health());
+    expect([signIn.message, signIn.status]).toEqual([SIGN_IN_NEEDED, 401]);
+    expect(isSessionExpired(signIn), "a sign-in ends a held signal as an expired session does").toBe(true);
+    // The record read and the stream build their own requests, and read the
+    // challenge the way `call` does.
+    expect((await caught(api.recordText("sim-1"))).message).toBe(SIGN_IN_NEEDED);
+    const ac = new AbortController();
+    expect((await caught(readStream("/api/games/g/stream", ac.signal, () => {}))).message).toBe(SIGN_IN_NEEDED);
+    // **And the door is NOT moved**: the strip that caught the refusal draws
+    // the sign-in link beside it, as it does for Access's.
+    expect(door).not.toHaveBeenCalled();
+
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => access()));
+    const expired = await caught(api.health());
+    expect([expired.message, expired.status]).toEqual([ACCESS_CHALLENGE, 401]);
+    expect(isSessionExpired(expired)).toBe(true);
+    expect(door).not.toHaveBeenCalled();
+
+    // A scheme that merely MENTIONS the word is not the challenge: the test is
+    // the scheme the header opens with.
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => challenge('Bearer realm="Yokohama-Session"')));
+    expect((await caught(api.health())).message).toBe("no identity reached the server");
+
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => bare()));
+    const own = await caught(api.health());
+    expect([own.message, own.status]).toEqual(["no signed-in user", 401]);
+    expect(isSessionExpired(own), "the API's own 401 is not a sign-in").toBe(false);
+    expect(door).toHaveBeenCalledWith("no signed-in user");
+    // The status is asked too: the sentence on another status is not a sign-in.
+    expect(isSessionExpired(new ApiError(SIGN_IN_NEEDED, 403))).toBe(false);
+  });
+
+  // Mutants: the header left off the archive post; the header sent on another
+  // call (the device id is the archive's alone — a game route never reads it,
+  // and a header the Worker reads on one target is not one to scatter); a
+  // device id other than `deviceId()`'s.
+  it("api.archive sends X-Yokohama-Device with the device id", async () => {
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/archive")) return { status: 201, body: wire.archivePost };
+      if (call.path.endsWith("/api/health")) return wire.health;
+      if (call.path.endsWith("/api/leave")) return { leave: "/cdn-cgi/access/logout" };
+      return undefined;
+    });
+    await api.archive('{"seed":1}', '{"schema":3}');
+    const [sent] = stub.matching("POST", "/api/archive");
+    expect(sent!.headers["x-yokohama-device"]).toMatch(/^[0-9a-f]{16}$/);
+    expect(sent!.headers["x-yokohama-device"]).toBe(deviceId());
+    // The rest of what every server call carries rides it too.
+    expect(sent!.headers["x-requested-with"]).toBe("XMLHttpRequest");
+    expect(sent!.headers["content-type"]).toBe("application/json");
+
+    await api.health();
+    await api.leave();
+    await api.table("sim-1").catch(() => undefined);
+    const others = stub.calls.filter((c) => !c.path.endsWith("/api/archive"));
+    expect(others.length, "premise: other calls were made").toBe(3);
+    for (const c of others) expect(c.headers["x-yokohama-device"], `${c.method} ${c.path}`).toBeUndefined();
+  });
+
+  // Mutants: a GET (a link would sign a player out); the reply's body dropped;
+  // a refusal answered as a reply (the open door's 404 is the caller's failure
+  // path, never a `leave` to navigate to).
+  it("api.leave POSTs /api/leave and returns the body", async () => {
+    const leave = "https://api.workos.com/user_management/sessions/logout?session_id=s&return_to=https%3A%2F%2Fh%2F";
+    const stub = stubApi((call) => (call.path === "/api/leave" ? { leave } : undefined));
+    await expect(api.leave()).resolves.toEqual({ leave });
+    const [sent] = stub.calls;
+    expect([sent!.method, sent!.path, sent!.body]).toEqual(["POST", "/api/leave", undefined]);
+    expect(sent!.headers["x-requested-with"], "a write's cross-site rules, like every other").toBe("XMLHttpRequest");
+
+    stubApi((call) => (call.path === "/api/leave" ? { status: 404, body: { error: "not found" } } : undefined));
+    const refused = await caught(api.leave());
+    expect(refused.status).toBe(404);
   });
 });

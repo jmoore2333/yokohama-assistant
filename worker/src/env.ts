@@ -47,6 +47,30 @@ export interface Env {
    *  provider, where the name a caller claims is who they are. Unset, every
    *  `/api/*` answers the 500 naming it. */
   YOKOHAMA_WEB_IDENTITY?: string;
+  /** `access` | `oidc` | `workos`, with NO default under the `worker` door (auth cycle, design §3): who vouches
+   *  for an address — Cloudflare Access, a generic OpenID Connect issuer, or WorkOS's first-party flow. Refused
+   *  beside `open`, where a name is a claim. */
+  YOKOHAMA_IDENTITY_SOURCE?: string;
+  /** The OpenID Connect issuer, whose `/.well-known/openid-configuration` names the endpoints: required under
+   *  `oidc`, refused beside `workos`, ignored otherwise. */
+  YOKOHAMA_OIDC_ISSUER?: string;
+  /** The client id the issuer (or WorkOS) registered for this site: required under `oidc` and `workos`. */
+  YOKOHAMA_OIDC_CLIENT_ID?: string;
+  /** A SECRET (`wrangler secret put`): the client secret under `oidc`, optional (absent = the PKCE flow); the
+   *  WorkOS API key under `workos`, required. */
+  YOKOHAMA_OIDC_CLIENT_SECRET?: string;
+  /** A SECRET (`wrangler secret put`): at least 32 UTF-8 bytes, signing every session cookie; required under
+   *  `oidc` and `workos`. */
+  YOKOHAMA_SESSION_SECRET?: string;
+  /** Whole days above zero, absent = 30: how long a session cookie stands under `oidc` and `workos`. */
+  YOKOHAMA_SESSION_DAYS?: string;
+  /** Whole days above zero, absent = 90: the ABSOLUTE cap on a session under `oidc` and `workos` — no renewal
+   *  expires later than the session's first issue plus this (2026-10-19, the owner's ruling; R-16 amended). */
+  YOKOHAMA_SESSION_MAX_DAYS?: string;
+  /** A SECRET (`wrangler secret put`), read under `oidc` and `workos`: the red button (2026-10-19). Addresses and
+   *  `@domain` entries, separated by commas or newlines, whose sessions are nobody here and whose sign-in the
+   *  callback refuses. A secret, so no address enters the repository or a configuration file. */
+  YOKOHAMA_DENIED?: string;
   /** The Access team's domain; its keys are
    *  `https://<domain>/cdn-cgi/access/certs` (spec §2.3). */
   ACCESS_TEAM_DOMAIN?: string;
@@ -70,8 +94,9 @@ export interface Env {
   YOKOHAMA_WEB_ARCHIVE?: string;
   /** Whole days, absent = no table ever expires (R-6.5c.15). */
   YOKOHAMA_WEB_TABLE_TTL_DAYS?: string;
-  /** Whole days, absent = 7: how long a table still WAITING for players
-   *  stands without activity (R-6.5c2.42). Inert while
+  /** Whole days, absent = 7: how long a table that has not started — open,
+   *  or dealing with a keep outstanding — stands without activity
+   *  (R-6.5c2.42; security S3, D9). Inert while
    *  `YOKOHAMA_WEB_TABLE_TTL_DAYS` is absent. */
   YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS?: string;
   /** Comma-separated addresses, absent = the operator routes are the layer's

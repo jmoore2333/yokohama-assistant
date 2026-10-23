@@ -5,7 +5,7 @@
 // live tier shares — and how long the run waits: a request's timeout, and the
 // lobby's re-reads.
 
-export { KEYS, ORIGIN, readCredential } from "../dev-vars.mjs";
+export { KEYS, ORIGIN, readCredential, readIdentity, TWO_IDENTITIES } from "../dev-vars.mjs";
 
 /**
  * How many times a lobby page is read again while it differs, and how long

@@ -44,15 +44,28 @@
 //    are `drainVisible`, which shows the widget through the seam and sends
 //    again. And a visitor who has chosen no name under the open door is never
 //    posted for: the layer's refusal is certain (F-14).
-// 6b. **A keyed build is the open door by R-FP4 (one build per door state)**
-//    (Task 6 fix round 1): the deploy guard's check 12 holds the declaration
-//    to the stamp and, from Task 7, to the open identity. So under a keyed build a
-//    visitor with no claimed name is refused an upload for CERTAIN without
-//    anything being asked — and nothing is: no health read, no widget, no post,
-//    at game over (a fresh context's included), at a launch or in any drain.
-//    Their games are written down `"signed-out"`, and a `"signed-out"` row is
-//    retried only once a name is stored. A KEYLESS build (the Access builds,
-//    the NAS) cannot know its door without the read, and makes it as E did.
+// 6b. **A keyed build holds a nameless visitor's game for a name ONLY where the
+//    server facts say `open`** (`heldForAName`; the auth cycle, Task 6, design
+//    §4.5, narrowing cycle F's Task 6 fix round 1). Cycle F read a keyed build
+//    as the open door (R-FP4, one build per door state) and held every
+//    nameless visitor's game with nothing asked. Since the auth cycle a keyed
+//    build under `worker` is the PUBLIC deployment — the Turnstile in front of
+//    a provider-signed door (R-A3, R-A4) — where no visitor holds a claimed
+//    name and the archive takes a caller-less post anonymously, under the
+//    device id the post carries (`api.archive`). Held there, every solo
+//    player's game would wait for ever for a name step that door does not
+//    have. So the hold reads the door: where the remembered facts name `open`,
+//    the layer's refusal of a nameless post is certain, and nothing is asked —
+//    no health read, no widget, no post, at game over, at a launch or in any
+//    drain; the games are written down `"signed-out"`, and such a row is
+//    retried only once a name is stored. With the facts UNREAD the pass takes
+//    its ordinary path — the health read, then the post with the device header
+//    on it — and the read decides: a post the open door would refuse is still
+//    not made (F-14, `attempt`). A KEYLESS build (the Access builds, the NAS)
+//    makes the read as E did. A 401 that names a door (`WWW-Authenticate`:
+//    Access's, or the Worker's `Yokohama-Session`) parks the row
+//    `"signed-out"`, whose remedy is the door's sign-in link (`OnThisDevice`'s
+//    `Remedy`), and such a row is re-evaluated at every trigger (rule 2).
 // 6c. **The archive fact's wait is the caller's, and the read has its own
 //    bound** (Task 6 fix rounds 1 and 2): a check that takes longer than the
 //    read's 5 s wait still lands its answer, which is written down, and the
@@ -176,8 +189,11 @@ function fingerprint(record: string): string {
  *  **Branching on the STATUS and never on the sentence** (`ApiError`'s own
  *  rule): 401 is the one thing `identity.rs` answers, and it is also what
  *  Cloudflare Access answers when the session in front of the server has
- *  expired — two different doors, one remedy, and one of three possible
- *  sentences. A 400 or a 409 is about THIS RECORD and will not change, and
+ *  expired — two different doors, one remedy, and one of several possible
+ *  sentences. (A provider-signed Worker's `Yokohama-Session` challenge would
+ *  read the same, but the Worker puts none on the archive post since ruling
+ *  R-36: a caller-less post is filed anonymously there, so its only 401 is a
+ *  malformed body.) A 400 or a 409 is about THIS RECORD and will not change, and
  *  so is a 413 — the record's SIZE, over the archive's body limit, which no
  *  retry changes (the S1 stack review's CB-F12: it read as offline, with no
  *  sentence, and was sent again on every drain for ever); a 403, a 5xx or a
@@ -473,10 +489,16 @@ async function attempt(
       await forget(db, id);
       return undefined;
     }
-    // **Rule 6b: a keyed build is the open door by R-FP4**, so a nameless
-    // visitor's upload is refused for certain — whatever this browser has or
-    // has not been told — and the game waits for a name.
-    if (namelessUnderKey()) {
+    // **Rule 6b: a keyed build whose facts name the open door** refuses a
+    // nameless visitor's upload for certain, and the game waits for a name —
+    // asked HERE, before the archive fact's "unknown" (ruling R-47). Every
+    // pass's `attempt` reads it, `holdForAName`'s and the ordinary ones' alike.
+    // A pass can be handed `kind === "unknown"` (its health read outlived the
+    // caller's wait) and find the late answer, naming the open door, written
+    // down by the time it reaches this game: the game is then "signed-out",
+    // never "not yet known". The F-14 check below holds the same game under any
+    // build, but only after the "unknown" check.
+    if (heldForAName()) {
       await putPending(db, id, "signed-out");
       return undefined;
     }
@@ -508,9 +530,13 @@ async function attempt(
 type Outcome = "challenged" | undefined;
 
 /** Rule 6b: whether this visitor's upload is refused for CERTAIN with nothing
- *  asked — a keyed build is the open door by R-FP4, and under the open door a
- *  visitor with no claimed name is not one the layer will take a post from. */
-const namelessUnderKey = (): boolean => Boolean(turnstileSiteKey()) && claimedUser() === null;
+ *  asked — a keyed build whose server facts name the open door, under which a
+ *  visitor with no claimed name is not one the layer will take a post from.
+ *  **The facts, not the key, name the door** (the auth cycle, design §4.5): a
+ *  keyed build under `worker` is the public deployment, and unread facts
+ *  (`identity` empty) are no grounds to hold. */
+const heldForAName = (): boolean =>
+  Boolean(turnstileSiteKey()) && serverFacts().identity === "open" && claimedUser() === null;
 
 /** Rule 6b's pass: write each game down for what it is waiting on, asking the
  *  server NOTHING. The remembered archive fact still drops a game a deployment
@@ -711,10 +737,10 @@ export async function noteGameOver(id: string): Promise<void> {
     // finished game in a background tab is: then the row waits for a visible
     // one, like every background pass's.
     //
-    // **Rule 6b first**: under a keyed build a nameless visitor's game is
-    // written down for its name, and the server is asked nothing — a fresh
-    // context's first game over included.
-    if (namelessUnderKey()) {
+    // **Rule 6b first**: under a keyed build whose facts name the open door, a
+    // nameless visitor's game is written down for its name, and the server is
+    // asked nothing. A fresh context has no facts, and reads them below.
+    if (heldForAName()) {
       await holdForAName([id]);
       return;
     }
@@ -754,10 +780,10 @@ export async function drain(
 ): Promise<void> {
   const interactive = opts.interactive ?? false;
   await serial(async () => {
-    // **Rule 6b**: a `signed-out` row under a keyed build with no name stored
-    // is waiting on a NAME, which no read and no widget can supply — it is
-    // left out, and retried once a name is stored.
-    const nameless = namelessUnderKey();
+    // **Rule 6b**: a `signed-out` row under the open door's keyed build with no
+    // name stored is waiting on a NAME, which no read and no widget can supply
+    // — it is left out, and retried once a name is stored.
+    const nameless = heldForAName();
     const waiting = await withStore(
       async (db) =>
         (await readOutbox(db))
@@ -771,8 +797,8 @@ export async function drain(
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     if (waiting.length === 0) return;
-    // Any other row of a nameless visitor's under a keyed build is written down
-    // for its name, with nothing asked (rule 6b).
+    // Any other row of a nameless visitor's under the open door's keyed build
+    // is written down for its name, with nothing asked (rule 6b).
     if (nameless) {
       await holdForAName(waiting.map((r) => r.id));
       return;
@@ -831,8 +857,9 @@ export async function drainVisible(): Promise<void> {
 /** One game, because the player asked for it by name. */
 export async function sendNow(id: string): Promise<void> {
   await serial(async () => {
-    // Rule 6b: a nameless visitor under a keyed build is asked nothing.
-    if (namelessUnderKey()) {
+    // Rule 6b: a nameless visitor under the open door's keyed build is asked
+    // nothing.
+    if (heldForAName()) {
       await holdForAName([id]);
       return;
     }
@@ -867,9 +894,9 @@ export async function reconsiderAll(): Promise<void> {
       [] as Extract<OutboxRow, { state: "pending" }>[],
     );
     const waiting = rows.filter((r) => r.reason !== "refused");
-    // Rule 6b: a nameless visitor under a keyed build is asked nothing, and
-    // their `signed-out` rows stay as they are.
-    if (namelessUnderKey()) {
+    // Rule 6b: a nameless visitor under the open door's keyed build is asked
+    // nothing, and their `signed-out` rows stay as they are.
+    if (heldForAName()) {
       await holdForAName(waiting.filter((r) => r.reason !== "signed-out").map((r) => r.id));
       return;
     }

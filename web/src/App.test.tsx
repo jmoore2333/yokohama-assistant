@@ -14,6 +14,7 @@ import {
   rememberServerFacts,
   setChatText,
   setLobbyChat,
+  SIGN_IN_TITLE,
 } from "./api";
 import { archiveAnswer, resetFactsForTest } from "./local/facts";
 import { IDBFactory, IDBKeyRange as FakeKeyRange } from "fake-indexeddb";
@@ -2790,6 +2791,38 @@ describe("the door", () => {
   // 3): the Access application covers the whole hostname, `/api/health`
   // included, so an expired session fails the health read too — and the card
   // must still be A, not "can't reach the server", once that read has settled.
+  // **A FIRST visitor at a shared table link, end to end** (the auth cycle,
+  // Task 6 fix round 1; rulings R-40, R-44): under a sign-in arm the Worker
+  // answers a caller-less `/api/me` with its own 401 and `WWW-Authenticate:
+  // Yokohama-Session`, which `call` reads as `SIGN_IN_NEEDED`, `failureOf` as a
+  // challenge, and the door draws the first-visit card — its link back to THIS
+  // table. Mutants: the session challenge unread (the API's own refusal card);
+  // the link without `return_to`; the Access card's wording.
+  it("draws the first-visit card at a shared table link when a provider-signed Worker answers /api/me with its session challenge", async () => {
+    stubWorker();
+    const signIn = () =>
+      new Response(JSON.stringify({ error: "no signed-in user — sign in at /enter" }), {
+        status: 401,
+        headers: { "content-type": "application/json", "www-authenticate": 'Yokohama-Session realm="/enter"' },
+      });
+    stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return signIn();
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "cf-access" };
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    window.location.hash = "#/t/abc-123";
+    render(<App />);
+    expect(await screen.findByRole("heading", { level: 3, name: SIGN_IN_TITLE })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/enter?return_to=%2F%23%2Ft%2Fabc-123",
+    );
+    expect(screen.queryByRole("heading", { name: "Your sign-in has run out" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "This server couldn't tell who you are" })).toBeNull();
+  });
+
   it("draws the turnstile's link for an EXPIRED Access session, and keeps the stored name", async () => {
     stubWorker();
     localStorage.setItem(CLAIMED_USER_KEY, wire.me.user!);
@@ -2810,7 +2843,11 @@ describe("the door", () => {
     window.location.hash = "#/lobby";
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Your sign-in has run out" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute("href", "/enter");
+    // `/enter` with the screen as `return_to` since the auth cycle (R-40).
+    expect(screen.getByRole("link", { name: "Sign in again" })).toHaveAttribute(
+      "href",
+      "/enter?return_to=%2F%23%2Flobby",
+    );
     // **The claimed name is NOT dropped**, which is the half a status-only read
     // would get wrong: the door this browser knocks on is fine, and signing the
     // player out of it would replace an actionable sentence with a form that
@@ -3047,6 +3084,53 @@ describe("the door", () => {
     expect(stub.matching("GET", "/api/me")[0]!.headers["x-yokohama-claimed-user"]).toBe("stale@old.test");
   });
 
+  // **Sign-out behind an edge door** (the auth cycle, Task 6; ruling R-37): the
+  // public deployment's wire mode is `cf-access`, so the corner offers the way
+  // out there too, and it asks the SERVER where to go to end the session — the
+  // Worker answers Access's own logout under Access, the issuer's under a
+  // sign-in arm — and goes. Mutants: no sign-out in the corner behind an edge
+  // door; the navigation made to anything but the answer's `leave`.
+  it("signs out behind an edge door through POST /api/leave, going where the answer says", async () => {
+    // At the lobby BEFORE `location` is stood in for: the stand-in reads
+    // through to jsdom's, but a write to it would land on the stand-in.
+    window.location.hash = "#/lobby";
+    const went: string[] = [];
+    const real = window.location;
+    vi.stubGlobal(
+      "location",
+      new Proxy(
+        {},
+        {
+          get(_t, key) {
+            if (key === "assign") return (url: string) => went.push(url);
+            const value = Reflect.get(real, key, real);
+            return typeof value === "function" ? value.bind(real) : value;
+          },
+        },
+      ),
+    );
+    localStorage.setItem(DISPLAY_NAME_KEY, "Ben Castle");
+    const stub = stubApi((call) => {
+      if (call.path.endsWith("/api/me")) return { ...wire.me, mode: "cf-access" };
+      if (call.path.endsWith("/api/health")) return { ...wire.health, identity: "cf-access" };
+      if (call.path.endsWith("/api/labels")) return wire.labels;
+      if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;
+      if (call.path.endsWith("/stream")) return openStream();
+      if (call.method === "GET" && call.path.startsWith("/api/chat"))
+        return { ...wire.houseChat, messages: [], last: 0, rev: 0 };
+      if (call.method === "POST" && call.path === "/api/leave") return { leave: "/cdn-cgi/access/logout" };
+      if (isGamesList(call)) return gamesNamed();
+      throw new Error(`unexpected ${call.method} ${call.path}`);
+    });
+    render(<App />);
+    await waitFor(() => expect(document.querySelector(".identity-corner")).not.toBeNull());
+    const corner = document.querySelector<HTMLElement>(".identity-corner")!;
+    await userEvent.setup().click(within(corner).getByRole("button", { name: "sign out" }));
+    await waitFor(() => expect(went).toEqual(["/cdn-cgi/access/logout"]));
+    expect(stub.matching("POST", "/api/leave")).toHaveLength(1);
+    expect(localStorage.getItem(DISPLAY_NAME_KEY)).toBeNull();
+  });
+
   // **switch player, under the open door** (spec §2.1): the stored name goes —
   // key and display both — and the player is back at the name step.
   it("drops the stored name on switch player, and lands on the name step", async () => {
@@ -3055,6 +3139,9 @@ describe("the door", () => {
     stubApi((call) => {
       if (call.path.endsWith("/api/me"))
         return localStorage.getItem(CLAIMED_USER_KEY) ? wire.me : wire.meSignedOut;
+      // The open door ends no server session: `POST /api/leave` is the house's
+      // 404 there (the auth cycle, Task 4), and the sign-out is this one.
+      if (call.method === "POST" && call.path === "/api/leave") return { status: 404, body: wire.error };
       if (call.path.endsWith("/api/health")) return wire.health;
       if (call.path.endsWith("/api/labels")) return wire.labels;
       if (call.path.endsWith("/art/manifest.json")) return wire.artManifest;

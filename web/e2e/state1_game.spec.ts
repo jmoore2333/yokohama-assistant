@@ -49,7 +49,7 @@ import type { Page } from "@playwright/test";
 import { archiveDir, haveBrowser } from "../playwright.config";
 import { REV } from "./caps";
 import { act, capReached, deadEnd, readScreen, rng, signIn, tally } from "./harness";
-import { LIVE, abandonOpened, awaitCreate, createdTable, identityHeaders, type Opening } from "./live";
+import { LIVE, abandonOpened, awaitCreate, createdTable, type Opening } from "./live";
 import { hasMove } from "./shared_table";
 import { expect, newContextWithoutWorker, test } from "./sw";
 
@@ -83,7 +83,7 @@ test.afterEach(async () => {
     // own requests). Under the open door an anonymous DELETE is refused, so the
     // fallback would abandon nothing. A's context is handed the name the walk
     // signed in with; nothing else is using it by now.
-    await table.page.context().setExtraHTTPHeaders(identityHeaders(NAME_A));
+    await table.page.context().setExtraHTTPHeaders({ "X-Yokohama-Claimed-User": NAME_A });
   }
   await abandonOpened(table);
 });

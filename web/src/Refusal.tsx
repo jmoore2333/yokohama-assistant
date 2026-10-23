@@ -24,15 +24,36 @@
 // another origin, which a `fetch` follows and then fails opaquely; a navigation
 // is what the browser already knows how to do, and passing `/enter` is what
 // mints the cookie every later request carries.
+//
+// **The auth cycle adds the third 401** (Task 6; design §4.3): a
+// provider-signed Worker's, carrying `WWW-Authenticate: Yokohama-Session`,
+// which `api.ts` reads as [`SIGN_IN_NEEDED`]. Beside that sentence the link is
+// "Sign in" to `/enter?return_to=<this screen>` ([`signInHref`]): `/enter`
+// starts the provider's sign-in, and its callback lands the player back here.
+// Access's "Sign in again" keeps its bare `/enter` — Access ignores the query
+// and lands every sign-in on the lobby. **Under every sign-in link the build's
+// transparency notice** ([`SignInNotice`], R-A14): who signs the player in and
+// what this site keeps, read before the click.
 
-import { ACCESS_CHALLENGE } from "./api";
+import { ACCESS_CHALLENGE, SIGN_IN_NEEDED, signInHref } from "./api";
+import { signInNotice } from "./buildValues";
+
+/** The build's sign-in notice as a muted line, or nothing where the build set
+ *  none (R-A14; the auth cycle, Task 6) — drawn directly under every sign-in
+ *  link: the strip's here, the device card's `Remedy`, the front door's
+ *  multiplayer card and the door's own card (`Door.tsx`, states A and B; ruling
+ *  R-40). One component, so the four cannot word or style it differently. */
+export function SignInNotice() {
+  const notice = signInNotice();
+  return notice === null ? null : <p className="muted">{notice}</p>;
+}
 
 export function Refusal({
   sentence,
   className = "error",
 }: {
-  /** What refused, in the server's own words — or, for the edge, in
-   *  [`ACCESS_CHALLENGE`]'s. */
+  /** What refused, in the server's own words — or, for a door's own 401, in
+   *  [`ACCESS_CHALLENGE`]'s or [`SIGN_IN_NEEDED`]'s. */
   sentence: string;
   /** The class the host already drew this strip with, so moving a site to this
    *  component changes no styling. */
@@ -48,6 +69,14 @@ export function Refusal({
               draw to `/enter`. Here the sentence is a line in an error strip
               and the link reads as one. */}
           <a href="/enter">Sign in again</a>
+          <SignInNotice />
+        </>
+      )}
+      {sentence === SIGN_IN_NEEDED && (
+        <>
+          {" "}
+          <a href={signInHref()}>Sign in</a>
+          <SignInNotice />
         </>
       )}
     </div>

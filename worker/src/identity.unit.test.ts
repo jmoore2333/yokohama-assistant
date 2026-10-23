@@ -1,12 +1,20 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { credentialClaims, personClaims, signer, type Signer } from "../test/tokens";
+import { operatorGate } from "./admin";
 import type { Env } from "./env";
 import {
+  ANON_DOMAIN,
+  anonymousIdentity,
   asciiLower,
+  bodyId,
   callerName,
   claimedIdentity,
+  DEVICE_HEADER,
   forwardable,
   identityConfig,
+  isAddress,
+  isAnonymousAddress,
+  isDeviceId,
   isTestAddress,
   keySource,
   refreshDue,
@@ -14,6 +22,7 @@ import {
   type IdentityConfig,
   type JwkSet,
 } from "./identity";
+import { isSafeId } from "./route";
 
 const TEAM = "team.cloudflareaccess.com";
 const AUD = "the-audience";
@@ -500,5 +509,123 @@ describe("callerName (M6.5c2)", () => {
     expect(callerName({ kind: "dev", email: "probe@deploy.test" })).toBe("probe@deploy.test");
     expect(callerName({ kind: "claimed", name: "ben" })).toBe("ben");
     expect(callerName({ kind: "none" })).toBeUndefined();
+  });
+});
+
+// The project's types are workerd's: no node module and no `import.meta.url` (`fence.unit.test.ts` says why), so `node:fs`
+// is imported through a variable specifier and typed here; the file runs in node (`npm run test:scripts`).
+const FS = "node:fs";
+const fs = (await import(/* @vite-ignore */ FS)) as { readFileSync(path: URL, encoding: "utf8"): string };
+
+/** The store's id verdicts, emitted by `wire_fixtures` (security S2a, D14): `[{ raw, safe }]`. */
+const ID_CASES = JSON.parse(
+  fs.readFileSync(new URL("../../web/src/wire/id_cases.json", (import.meta as unknown as { url: string }).url), "utf8"),
+) as Array<{ raw: string; safe: boolean }>;
+
+/** A browser's archive post as the outbox sends it (`web/src/api.ts`; the layer's `ArchivePost`): the record and the
+ *  table document as two STRINGS, the game's id inside the second. */
+function archivePost(table: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ record: '{"events":[]}', table }));
+}
+const tableNaming = (id: string): Uint8Array => archivePost(JSON.stringify({ schema: 3, id, name: "x" }));
+
+const DEVICE = "0123456789abcdef";
+const LOCAL_GAME = "local-aaaaaaaaaaaaaaaa";
+
+// The anonymous archive (the auth cycle, Task 5; design §4.4, R-A4, R-A11; ruling R-32). Mutants: `isDeviceId` accepting
+// uppercase (the `/i` flag, or a lowering first), or any length but 16; the header read and the body never; the
+// body's TOP-LEVEL `id` read (an archive post has none — its id is inside the table document); `isSafeId` dropped (a
+// `../x` id names an address); `callerName` without its ASCII lowering (two spellings of one game, two objects); the
+// anonymous kind admitted by the operator gate.
+describe("the anonymous caller (the auth cycle, Task 5; design §4.4)", () => {
+  it("names the synthetic address anon-<device|game id>@anon.invalid, ASCII-lowercased (ruling R-32)", () => {
+    expect([DEVICE_HEADER, ANON_DOMAIN]).toEqual(["X-Yokohama-Device", "anon.invalid"]);
+    expect(callerName({ kind: "anonymous", device: DEVICE })).toBe("anon-0123456789abcdef@anon.invalid");
+    expect(callerName({ kind: "anonymous", device: LOCAL_GAME })).toBe(`anon-${LOCAL_GAME}@anon.invalid`);
+    expect(callerName({ kind: "anonymous", device: "Local-AAAA.b_C" }), "one spelling per game").toBe("anon-local-aaaa.b_c@anon.invalid");
+    expect(isAnonymousAddress("anon-0123456789abcdef@anon.invalid")).toBe(true);
+    for (const other of ["red@t.test", "anon-x@anon.invalid.test", "anon@anon.invalid", "x-anon-y@anon.invalid", "anon-x@x.anon.invalid"]) {
+      expect(isAnonymousAddress(other), other).toBe(false);
+    }
+  });
+
+  it("reads a device id as exactly sixteen lowercase hex digits, and nothing else", () => {
+    expect(isDeviceId(DEVICE)).toBe(true);
+    for (const bad of [
+      "0123456789ABCDEF",
+      "0123456789abcdeF",
+      "0123456789abcde",
+      "0123456789abcdef0",
+      "\u212A123456789abcde",
+      "K123456789abcde",
+      "0123456789abcdeg",
+      " 0123456789abcdef",
+      "0123456789abcdef\n",
+      "",
+    ]) {
+      expect(isDeviceId(bad), JSON.stringify(bad)).toBe(false);
+    }
+  });
+
+  it("is the device header's value when it is a device id, whatever the body says", () => {
+    const h = new Headers({ [DEVICE_HEADER]: DEVICE });
+    expect(anonymousIdentity(h, tableNaming(LOCAL_GAME))).toEqual({ kind: "anonymous", device: DEVICE });
+    expect(anonymousIdentity(h, null)).toEqual({ kind: "anonymous", device: DEVICE });
+  });
+
+  it("falls to the game's own id, read from the table document, for a header that is no device id or none (R-A11)", () => {
+    for (const bad of ["0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0", "K123456789abcdef", undefined]) {
+      const h = new Headers(bad === undefined ? {} : { [DEVICE_HEADER]: bad });
+      expect(anonymousIdentity(h, tableNaming(LOCAL_GAME)), String(bad)).toEqual({ kind: "anonymous", device: LOCAL_GAME });
+    }
+  });
+
+  it("is no one when neither the header nor the table document names a safe id", () => {
+    const none = new Headers();
+    const bodies: Array<[string, Uint8Array | null]> = [
+      ["no body", null],
+      ["an empty body", new Uint8Array(0)],
+      ["the no-identity cell's body", new TextEncoder().encode('{"record":"","table":""}')],
+      ["a table id the store refuses", tableNaming("../x")],
+      ["a table id of 65 characters", tableNaming("a".repeat(65))],
+      ["a reserved suffix", tableNaming("x.table")],
+      ["a table id that is no string", archivePost(JSON.stringify({ id: 7 }))],
+      ["a table document that is no object", archivePost("[]")],
+      ["a table that is an object, not a string", new TextEncoder().encode(JSON.stringify({ record: "", table: { id: LOCAL_GAME } }))],
+      ["a create's shape: the id at the top, which an archive post never carries", new TextEncoder().encode(JSON.stringify({ id: LOCAL_GAME }))],
+      ["bytes that are not JSON", new TextEncoder().encode("{")],
+      ["bytes that are not UTF-8", new Uint8Array([0xff, 0xfe])],
+    ];
+    for (const [what, body] of bodies) expect(anonymousIdentity(none, body), what).toEqual({ kind: "none" });
+    expect(anonymousIdentity(new Headers({ [DEVICE_HEADER]: "0123456789ABCDEF" }), tableNaming("../x")), "a bad header and a bad id").toEqual({ kind: "none" });
+  });
+
+  it("bodyId is the create's reader: a JSON object's string id, or nothing", () => {
+    expect(bodyId(new TextEncoder().encode('{"id":"evening-2","players":2}'))).toBe("evening-2");
+    expect(bodyId(new TextEncoder().encode('{"id":"../x"}')), "it reads; isSafeId judges").toBe("../x");
+    for (const body of [null, new TextEncoder().encode('{"id":7}'), new TextEncoder().encode("[]"), new TextEncoder().encode("\uFEFF{\"id\":\"x\"}")]) {
+      expect(bodyId(body)).toBeUndefined();
+    }
+  });
+
+  // The design's claim (§4.4): the synthetic address is a shape the layer's key grammar already accepts — under the
+  // worker door an ADDRESS, which `isAddress` restates (`User::is_email`: one `@` with something on both sides, no
+  // whitespace or control character, at most 254 bytes) — for every id the store calls safe. The pool's anonymous
+  // cells land one through the module itself.
+  it("forms an address the key grammar accepts for every id the store calls safe, and none past the archive's bound", () => {
+    const safe = ID_CASES.filter((c) => c.safe).map((c) => c.raw);
+    expect(safe.length).toBeGreaterThan(5);
+    for (const id of [...safe, "a".repeat(64), "A.b_C-d", DEVICE]) {
+      expect(isSafeId(id) || isDeviceId(id), id).toBe(true);
+      const address = callerName({ kind: "anonymous", device: id })!;
+      expect(isAddress(address), address).toBe(true);
+      expect(new TextEncoder().encode(address).length, address).toBeLessThanOrEqual(82);
+      expect(isTestAddress(address), `${address} never lands under test/`).toBe(false);
+    }
+  });
+
+  it("is never an operator, even with its address on the list", () => {
+    const anonymous = { kind: "anonymous", device: DEVICE } as const;
+    expect(operatorGate("worker", [callerName(anonymous)!], anonymous)).toEqual({ kind: "refused" });
   });
 });

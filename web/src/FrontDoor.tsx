@@ -38,7 +38,7 @@ import { VersionTag } from "./Chips";
 import { Help } from "./Help";
 import { OnThisDevice } from "./OnThisDevice";
 import { siteBlurb, turnstileSiteKey, type ProjectLink } from "./buildValues";
-import { Refusal } from "./Refusal";
+import { Refusal, SignInNotice } from "./Refusal";
 import { ReleaseNotice } from "./ReleaseNotice";
 import { navigate } from "./route";
 import { setApplyBusy, type ReadinessStatus } from "./swRegister";
@@ -173,6 +173,10 @@ export function FrontDoor({
                     Go to the lobby
                   </a>
                 )}
+                {/* **R-A14, under the way in, either shape** (the auth cycle,
+                    Task 6): who signs the player in and what this site keeps,
+                    read before the click — nothing where the build set none. */}
+                <SignInNotice />
               </div>
             </section>
           )}

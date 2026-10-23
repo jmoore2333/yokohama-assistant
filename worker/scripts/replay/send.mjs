@@ -3,16 +3,34 @@
 // credential to the one origin, its answer read whole, and the operator's
 // force, sent with only the JSON type.
 
-import { KEYS, ORIGIN, REQUEST_TIMEOUT_MS } from "./credential.mjs";
+import { KEYS, ORIGIN, REQUEST_TIMEOUT_MS, TWO_IDENTITIES } from "./credential.mjs";
 import { errorText, said } from "./judge.mjs";
 import { urlOf } from "./scripts.mjs";
 
-/** One row, sent with the credential and its `who`, and its answer read
- *  whole. */
-export async function send(row, credential, fetcher) {
+export { TWO_IDENTITIES };
+
+/**
+ * One row, and its answer read whole. Its headers are who it is sent as:
+ *
+ * - **no `cookie`**: the dev door's pair — the credential, and the row's `who` as the claimed header (a row with no
+ *   `who` sends the credential alone);
+ * - **a `cookie`** (a minted session, `mint-session.mjs`): the cookie names the caller, so the row sends it as
+ *   `Cookie` and NO claimed header, and the credential, if there is one, rides as the EDGE's pass beside it. A row with
+ *   a `who` is refused ({@link TWO_IDENTITIES}), not sent without it.
+ */
+export async function send(row, credential, fetcher, cookie = null) {
   const url = urlOf(row);
-  const headers = { [KEYS[0]]: credential.id, [KEYS[1]]: credential.secret };
-  if (row.who !== null) headers["X-Yokohama-Claimed-User"] = row.who;
+  const headers = {};
+  if (credential !== null) {
+    headers[KEYS[0]] = credential.id;
+    headers[KEYS[1]] = credential.secret;
+  }
+  if (cookie !== null) {
+    if (row.who !== null) throw new Error(`${row.method} ${row.path} names ${row.who} — ${TWO_IDENTITIES}`);
+    headers.Cookie = cookie;
+  } else if (row.who !== null) {
+    headers["X-Yokohama-Claimed-User"] = row.who;
+  }
   let body;
   if (row.body !== null) {
     body = JSON.stringify(row.body);

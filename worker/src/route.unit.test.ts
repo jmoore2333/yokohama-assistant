@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { abandons, isSafeId, ID_MAX, route } from "./route";
+import { abandons, isSafeId, ID_MAX, route, safeReturnTo } from "./route";
 
 // Spec §2.3's routing table, row by row. What each target then does is
 // `handle`'s, and `test/worker.test.ts` holds it.
@@ -80,6 +80,19 @@ describe("route (spec §2.3)", () => {
     expect(route("GET", "/api/administrator")).toEqual({ kind: "house" });
   });
 
+  // The auth cycle, Task 4: sign-out is `POST /api/leave`, answered by the Worker itself. Mutants: the method not
+  // read (a GET signs a player out from a link); a prefix compare (`/api/leaver` taken from the house).
+  it("POST /api/leave is the sign-out", () => {
+    expect(route("POST", "/api/leave")).toEqual({ kind: "leave" });
+  });
+  it("GET /api/leave, or any other method on it, is not allowed", () => {
+    for (const method of ["GET", "HEAD", "PUT", "DELETE"]) expect(route(method, "/api/leave"), method).toEqual({ kind: "not-allowed" });
+  });
+  it("POST /api/leaver, or a path below /api/leave, is the house's", () => {
+    expect(route("POST", "/api/leaver")).toEqual({ kind: "house" });
+    expect(route("POST", "/api/leave/")).toEqual({ kind: "house" });
+  });
+
   it.each([
     ["GET", "/api/health"],
     ["GET", "/api/me"],
@@ -127,5 +140,45 @@ describe("isSafeId (security S2b, C2's name rule; decision D-11)", () => {
       expect(route("GET", `/api/games/${bad}/table`), bad).toEqual({ kind: "house" });
     }
     expect(route("GET", "/api/games/sim-0123456789abcdef/table")).toEqual({ kind: "table", name: "sim-0123456789abcdef" });
+  });
+});
+
+// The auth cycle, Task 4 (rulings R-23, C-12): where a finished sign-in lands. Exactly the hash routes the client's
+// `parseRoute` (`web/src/route.ts`) reads as somewhere other than the door, with a table's segment held RAW to the
+// store's grammar; anything else is the lobby, never followed. Mutants: any string starting with `/` accepted (every
+// refused row passes through); the segment percent-decoded first (`caf%C3%A9`'s neighbour `sim%2D1` kept); the
+// segment held to a narrower alphabet than `isSafeId` (`sim.1` lost); a prefix compare on the fixed routes
+// (`/#/lobbyx` kept).
+describe("safeReturnTo (the auth cycle, Task 4; rulings R-23, C-12)", () => {
+  it("keeps the lobby, the two forms and a table whose raw segment the store accepts", () => {
+    for (const kept of ["/#/lobby", "/#/new", "/#/new/local", "/#/t/sim-1", "/#/t/sim.1", "/#/t/sim_1", `/#/t/${"a".repeat(ID_MAX)}`]) {
+      expect(safeReturnTo(kept), kept).toBe(kept);
+    }
+  });
+  it("lands anything else on the lobby: another origin, a plain path, an unsafe hash, nothing at all", () => {
+    for (const refused of [
+      null,
+      "",
+      "https://evil.test/#/t/x",
+      "//evil.test/#/lobby",
+      "/api/me",
+      "/#/t/../x",
+      "#/t/sim-1",
+      "/#/t/x/y",
+      "/#/t/",
+      "/#/t/sim%2D1",
+      "/#/t/caf%C3%A9",
+      "/#/t/x.table",
+      "/#/t/_x",
+      `/#/t/${"a".repeat(ID_MAX + 1)}`,
+      "/#/lobbyx",
+      "/#/lobby?x=1",
+      "/#/new/local/",
+      "/#/",
+      "/#/door",
+      " /#/lobby",
+    ]) {
+      expect(safeReturnTo(refused), JSON.stringify(refused)).toBe("/#/lobby");
+    }
   });
 });

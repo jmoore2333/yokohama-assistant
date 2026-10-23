@@ -1,7 +1,8 @@
 // The build's values (M6.5c2, R-6.5c2.6 and R-6.5c2.40; spec §2.3; cycle F,
 // R-FP2): the door's project link, the blurb under the title and the footer's
 // notice, and — cycle F's — the release feed, the Turnstile site key, the
-// site's own address and this build's own version.
+// site's own address and this build's own version; and — the auth cycle's
+// (R-A14) — the notice under every sign-in link.
 //
 // **A build value, and never a request**: the door asks the server nothing
 // (R-6.5b2.7), and a run-time value would mean rewriting `index.html` at
@@ -31,6 +32,16 @@ export function siteBlurb(): string | null {
 /** The build's footer notice, or `null`. */
 export function siteNotice(): string | null {
   return __YOKOHAMA_SITE_NOTICE__;
+}
+
+/** The build's sign-in notice, or `null` (the auth cycle, Task 6; R-A14): who
+ *  signs the player in and what this site keeps, drawn under every sign-in
+ *  link (`Refusal.tsx`'s `SignInNotice`) so it is read before the click. A
+ *  PER-HOST value, because the client is provider-agnostic and the wire never
+ *  names the source; a build with none — a self-host with no provider — draws
+ *  nothing. */
+export function signInNotice(): string | null {
+  return __YOKOHAMA_SIGNIN_NOTICE__;
 }
 
 /** The release feed this build reads for the latest release, or `null` — `off`,

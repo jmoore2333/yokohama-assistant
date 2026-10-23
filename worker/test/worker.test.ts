@@ -220,17 +220,19 @@ describe("the Worker's own answers (spec §2.3)", () => {
   });
 
   // Spec §2.6: the Worker's form of the NAS refusing to start, on every
-  // `/api/*` — and after the three routes that need no configuration. The
+  // `/api/*` and on `/enter`, whose sign-in reads the configuration since the
+  // auth cycle (pre-flight note R-4) — and after the routes that need none. The
   // other half (`/` untouched) never reaches `handle` and is the live reading.
   // Mutants: no check (the house, configured by the pool, answers 200); the
-  // check before routing (`/enter` answers 500).
+  // check before routing (`/assets/x.js` answers 500).
   it("a bad YOKOHAMA_WEB_ARCHIVE answers 500 naming it on every /api/* path", async () => {
     const bad = { ...env, YOKOHAMA_WEB_ARCHIVE: "s3" };
     for (const path of ["/api/health", "/api/art", "/api/games/wire/table"]) {
       const res = await worker(path, { env: bad });
       expect([res.status, res.text], path).toEqual([500, '{"error":"YOKOHAMA_WEB_ARCHIVE must be r2 or off — got \\"s3\\""}']);
     }
-    expect((await worker("/enter", { env: bad })).status).toBe(302);
+    const enter = await worker("/enter", { env: bad });
+    expect([enter.status, enter.text], "/enter reads the configuration (R-4)").toEqual([500, '{"error":"YOKOHAMA_WEB_ARCHIVE must be r2 or off — got \\"s3\\""}']);
     expect((await worker("/assets/x.js", { env: bad })).status).toBe(404);
   });
 
@@ -239,7 +241,8 @@ describe("the Worker's own answers (spec §2.3)", () => {
   // — and a cell's override reaches the Worker's own `shellConfig` alone,
   // which is exactly this instrument (review R2.2-M2): the objects read their
   // configuration file's. Mutants: a default door (the absence read as
-  // `worker`); the check before routing (`/enter` answers 500).
+  // `worker`); the check before routing (`/assets/x.js` answers 500). `/enter`
+  // reads the configuration since the auth cycle (R-4), so it answers the 500.
   it("an unset YOKOHAMA_WEB_IDENTITY answers 500 naming it on every /api/* path", async () => {
     const unset = { ...env, YOKOHAMA_WEB_IDENTITY: undefined };
     const body = JSON.stringify({
@@ -249,20 +252,24 @@ describe("the Worker's own answers (spec §2.3)", () => {
       const res = await worker(path, { env: unset, token: await person(RED) });
       expect([res.status, res.text], path).toEqual([500, body]);
     }
-    expect((await worker("/enter", { env: unset })).status).toBe(302);
+    const enter = await worker("/enter", { env: unset });
+    expect([enter.status, enter.text], "/enter reads the configuration (R-4)").toEqual([500, body]);
     expect((await worker("/assets/x.js", { env: unset })).status).toBe(404);
   });
 
-  // M6.5c2, spec §2.1 (review R2.2-M1): what the OPEN door refuses beside it —
-  // an operator list, and the dev door on — answers every `/api/*` the 500
-  // naming both variables, as the unset door does, before any object is
-  // reached. This configuration is the worker door's, whose dev door is ON, so
-  // an override of the door alone meets the dev door's refusal, and one that
-  // also sets a list meets the list's first. The override reaches the Worker's
-  // own `shellConfig` alone (review R2.2-M2), which is where both are read.
-  // The partner: the same override with the dev door off and no list is no
-  // refusal. Mutants: either refusal missing; the list's value echoed.
-  it("an operator list, or the dev door on, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
+  // M6.5c2, spec §2.1 (review R2.2-M1; the third row since the auth cycle's
+  // Task 1): what the OPEN door refuses beside it — an operator list, the dev
+  // door on, and an identity source — answers every `/api/*` the 500 naming
+  // both variables, as the unset door does, before any object is reached. This
+  // configuration is the worker door's, whose dev door is ON and whose source
+  // is `access`, so an override of the door alone meets the dev door's
+  // refusal; one that also sets a list meets the list's first; and one that
+  // turns the dev door off meets the source's, the last of the three. The
+  // override reaches the Worker's own `shellConfig` alone (review R2.2-M2),
+  // which is where all three are read. The partner: the same override with the
+  // dev door off, no list AND the source unset is no refusal. Mutants: any of
+  // the three refusals missing; the list's value echoed.
+  it("an operator list, the dev door on, or an identity source, beside YOKOHAMA_WEB_IDENTITY=open answers 500 naming both on every /api/* path", async () => {
     const opened = { ...env, YOKOHAMA_WEB_IDENTITY: "open" };
     const refusals: Array<[Env, string]> = [
       [
@@ -275,6 +282,12 @@ describe("the Worker's own answers (spec §2.3)", () => {
         "YOKOHAMA_DEV_DOOR=on beside YOKOHAMA_WEB_IDENTITY=open — the dev door is the worker door's test instrument, " +
           "and under open a claim needs no credential: set YOKOHAMA_DEV_DOOR to off, or deploy the worker door",
       ],
+      // The identity source (auth cycle, Task 1): this configuration's `access`, left beside the open door once
+      // the dev door is off, is the last of the three refused.
+      [
+        { ...opened, YOKOHAMA_DEV_DOOR: "off" },
+        "YOKOHAMA_IDENTITY_SOURCE is set beside YOKOHAMA_WEB_IDENTITY=open — under the open door a name is a claim and no source vouches for it",
+      ],
     ];
     expect(env.YOKOHAMA_DEV_DOOR, "premise: this configuration's dev door is on").toBe("on");
     for (const [overridden, sentence] of refusals) {
@@ -284,9 +297,11 @@ describe("the Worker's own answers (spec §2.3)", () => {
         expect(res.result.text, `${path}: the list's value is echoed nowhere`).not.toContain("boss@t.test");
         expect([res.table.length, res.house.length, res.archive.length], `${path}: no object reached`).toEqual([0, 0, 0]);
       }
-      expect((await worker("/enter", { env: overridden })).status).toBe(302);
+      // `/enter` reads the configuration since the auth cycle (R-4): the same 500.
+      const enter = await worker("/enter", { env: overridden });
+      expect([enter.status, enter.text], "/enter").toEqual([500, JSON.stringify({ error: sentence })]);
     }
-    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off" } });
+    const accepted = await worker("/api/health", { env: { ...opened, YOKOHAMA_DEV_DOOR: "off", YOKOHAMA_IDENTITY_SOURCE: undefined } });
     expect(accepted.status, accepted.text).toBe(200);
   });
 
@@ -697,7 +712,7 @@ describe("the house, first cut (spec §2.5)", () => {
   // NAS reports both `null` (the layer's own cell). Mutants: either TTL
   // missing from the module's configuration, or from the host's facts; the
   // two swapped.
-  it("answers /api/health with the two TTLs this Worker reads: 90 days, and 7 for a table waiting for players", async () => {
+  it("answers /api/health with the two TTLs this Worker reads: 90 days, and 7 for a table that has not started", async () => {
     const res = await worker("/api/health");
     expect(res.status).toBe(200);
     const health = JSON.parse(res.text) as Record<string, unknown>;

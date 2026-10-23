@@ -19,14 +19,21 @@
 // door then names its caller by `X-Yokohama-Claimed-User`. So a live context
 // carries two things:
 //
-//   - the COOKIE, seeded into its storage. It is origin-scoped by the browser,
-//     so the credential it stands for never reaches another host — the Web
-//     Analytics beacon's among them;
+//   - the COOKIES, seeded into its storage. They are origin-scoped by the
+//     browser, so what they stand for never reaches another host — the Web
+//     Analytics beacon's among them. Access's `CF_Authorization` is one. Under
+//     a sign-in arm (auth cycle, Task 8; rulings R-50 and R-54) the minted
+//     SESSION is the other, seeded as a host-only `__Host-yokohama_session`
+//     cookie on the Worker's origin — a bearer that names the caller for thirty
+//     days, so never a header, which Chromium adds to the beacon's cross-origin
+//     load. A jar cookie rides the page's same-origin socket upgrade too;
 //   - the claimed header, as the context's `extraHTTPHeaders`: the one header
 //     the page's own socket needs and cannot set on its upgrade (§0.4 measured
 //     context headers reaching it; I-75 records that request routing does
 //     not). It is not a secret, and it is also why the beacon's CORS error
-//     recurs live — `harness.ts`'s `isBeaconCorsError` is that one error.
+//     recurs live — `harness.ts`'s `isBeaconCorsError` is that one error. Under
+//     a minted session the claimed header is not sent at all: a claimed name
+//     beside a session is two identities.
 //
 // **The credential never reaches Playwright.** It is presented once per
 // worker process, which is once per green run — Playwright restarts the
@@ -47,7 +54,8 @@
 // prints the call log too — `expect(res.ok())` is the form to use.
 
 import type { BrowserContextOptions, Page } from "@playwright/test";
-import { KEYS, ORIGIN, readCredential } from "../../worker/scripts/dev-vars.mjs";
+import { KEYS, ORIGIN, readCredential, readIdentity, readSessionCookie, readSessionSecret, sessionCookieParts, TWO_IDENTITIES } from "../../worker/scripts/dev-vars.mjs";
+import { cookieLine } from "../../worker/scripts/mint-session.mjs";
 
 /** The deployed Worker's origin: `BASE_URL` under `LIVE` — `ORIGIN`, stated
  *  once in `worker/scripts/dev-vars.mjs` beside the credential that is sent
@@ -132,9 +140,45 @@ type Cookie = StorageState["cookies"][number];
  *  calls too (M6.5c2 cycle D, Task 9). */
 export const credential = readCredential;
 
-/** Who a context is, to the dev door: the claimed header, in both modes. */
+/**
+ * The minted session `email`'s context stands as, as a cookie line — or `null` for the dev door. Three modes, in this
+ * order (auth cycle, Task 8; rulings R-39, R-50, R-53):
+ *
+ *  - **`YOKOHAMA_SESSION_SECRET` set**: a session MINTED for `email` (`worker/scripts/mint-session.mjs`'s `cookieLine`,
+ *    `.test` addresses only, the real clock, thirty days — a context whose `email` is not a `.test` address refuses,
+ *    with the script's own fence sentence). Each email is its own caller, so two contexts are two identities. It wins
+ *    over a cookie that is also set;
+ *  - **`YOKOHAMA_SESSION_COOKIE` set**: that ONE minted line, and only for the address it names. The cookie names ONE
+ *    caller, so a context whose `email` is anyone else's is refused with `TWO_IDENTITIES`, before any context opens;
+ *  - **neither**: `null`, the dev door.
+ */
+function mintedLine(email: string): string | null {
+  const secret = readSessionSecret();
+  if (secret !== null) return cookieLine(email, secret, Math.floor(Date.now() / 1000));
+  const cookie = readSessionCookie();
+  if (cookie === null) return null;
+  const own = sessionCookieParts(cookie)?.address;
+  if (email !== own) throw new Error(`the context for ${email}: ${TWO_IDENTITIES} (YOKOHAMA_SESSION_COOKIE names ${own})`);
+  return cookie;
+}
+
+/** Who a context is, as HEADERS: to the dev door, the claimed header, in both modes; under a minted session (see
+ *  [`mintedLine`]) NO header at all — the session rides the context's cookie jar ([`sessionCookies`], ruling R-54), and a
+ *  claimed name beside it would be a second identity. */
 export function identityHeaders(email: string): Record<string, string> {
-  return { "X-Yokohama-Claimed-User": email };
+  return mintedLine(email) === null ? { "X-Yokohama-Claimed-User": email } : {};
+}
+
+/** The cookies a context's storage state carries for `email`'s minted session: `[]` at the dev door, else the one
+ *  host-only `__Host-yokohama_session` cookie on the Worker's origin — Secure, `Path=/`, HttpOnly, `SameSite=Lax`, with
+ *  no `Domain` beyond the origin's host — as the Worker sets it (ruling R-54). */
+export function sessionCookies(email: string): Cookie[] {
+  const line = mintedLine(email);
+  const parts = line === null ? null : sessionCookieParts(line);
+  if (parts === null) return [];
+  return [
+    { name: parts.name, value: parts.value, domain: new URL(LIVE_ORIGIN).hostname, path: "/", expires: parts.expires, httpOnly: true, secure: true, sameSite: "Lax" },
+  ];
 }
 
 /**
@@ -227,7 +271,8 @@ let seeded: Promise<StorageState> | undefined;
  * `open`: the walk types the address into the sign-in form, and the client
  * keeps it and attaches the claimed header to its own requests.
  *
- * Under `LIVE` it is the seeded cookie and, context-wide, the claimed header —
+ * Under `LIVE` it is the seeded cookies (Access's, and a minted session's under a sign-in arm) and, context-wide, the
+ * claimed header, which a minted session does not send —
  * because neither half of the local arrangement holds there. The Worker's
  * door is `cf-access`, where the client draws no sign-in form (`Door.tsx`
  * draws one under `open` only), so it never holds an address and attaches
@@ -236,8 +281,20 @@ let seeded: Promise<StorageState> | undefined;
  */
 export async function liveContextOptions(email: string): Promise<BrowserContextOptions> {
   if (!LIVE) return {};
-  seeded ??= (async () => accessState(credential()))();
-  return { storageState: await seeded, extraHTTPHeaders: identityHeaders(email) };
+  const headers = identityHeaders(email);
+  const session = sessionCookies(email);
+  // The credential is the EDGE's pass where Access stands; under a minted session it is optional (`readIdentity`), and a
+  // run with none seeds no Access state.
+  const { credential: cred } = readIdentity();
+  if (cred === null && session.length === 0) return { extraHTTPHeaders: headers };
+  let access: StorageState = { cookies: [], origins: [] };
+  if (cred !== null) {
+    seeded ??= (async () => accessState(cred))();
+    access = await seeded;
+  }
+  // The minted session rides the jar beside Access's cookie, never `extraHTTPHeaders` (ruling R-54): the beacon's
+  // cross-origin load would carry a header, and the bearer must reach no other host.
+  return { storageState: { cookies: [...access.cookies, ...session], origins: access.origins }, extraHTTPHeaders: headers };
 }
 
 /**

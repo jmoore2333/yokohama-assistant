@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { executePlan, logOutcome, parsePlan, parseStamp, settledArm, stampArm, type Bucket, type Outcome, type Plan } from "./r2";
+import { executePlan, logOutcome, parsePlan, parseStamp, settledArm, stampArm, uploadMetadata, type Bucket, type Outcome, type Plan } from "./r2";
 
 /**
  * A plan as the module writes one (the plan's names table). The record's seed
@@ -29,6 +29,8 @@ const OTHER_SEED = '{"seed":18446744073709551614,"events":[]}';
 class FakeBucket {
   readonly objects = new Map<string, string>();
   readonly puts: Array<{ key: string; conditional: boolean }> = [];
+  /** Each put's custom metadata, in the puts' order: `undefined` for a put that carried none. */
+  readonly metas: Array<[string, Record<string, string> | undefined]> = [];
   racer: { key: string; bytes: string } | undefined;
   fails: ((op: "get" | "put", key: string) => unknown) | undefined;
 
@@ -46,6 +48,7 @@ class FakeBucket {
     const conditional =
       onlyIf instanceof Headers ? onlyIf.get("If-None-Match") === "*" : (onlyIf as R2Conditional | undefined)?.etagDoesNotMatch === "*";
     this.puts.push({ key, conditional });
+    this.metas.push([key, options?.customMetadata as Record<string, string> | undefined]);
     if (conditional && this.racer?.key === key) this.objects.set(key, this.racer.bytes);
     if (conditional && this.objects.has(key)) return null;
     this.objects.set(key, value);
@@ -58,6 +61,84 @@ class FakeBucket {
     return this as unknown as Bucket;
   }
 }
+
+// The anonymous archive's metadata (the auth cycle, Task 5; design §4.4): every browser upload's two objects carry
+// who sent it, from which device, at which rev, why, and when — read off the plan's key, so the plan's five fields
+// do not change. Mutants: the metadata on the record key only (or the table only); the conditional create's `onlyIf`
+// lost beside it (the racer's record overwritten); rev or why read from another segment; the anonymous caller's
+// address written out; a key that does not parse failing the upload rather than skipping the metadata.
+describe("the upload's metadata (the auth cycle, Task 5; design §4.4)", () => {
+  const META = { caller: "anonymous", device: "0123456789abcdef", rev: "7", why: "abandoned", uploaded: "1789000000" };
+
+  it("puts BOTH keys with the metadata, the record still created only if absent", async () => {
+    const bucket = new FakeBucket();
+    expect(await executePlan(bucket.asBucket, PLAN, META)).toEqual({ outcome: "landed", detail: PLAN.record_key });
+    expect(bucket.puts).toEqual([
+      { key: PLAN.table_key, conditional: false },
+      { key: PLAN.record_key, conditional: true },
+    ]);
+    expect(bucket.metas).toEqual([
+      [PLAN.table_key, META],
+      [PLAN.record_key, META],
+    ]);
+  });
+
+  it("keeps the create's precondition beside the metadata: a racer's record still stands", async () => {
+    const bucket = new FakeBucket();
+    bucket.racer = { key: PLAN.record_key, bytes: OTHER_SEED };
+    expect(await executePlan(bucket.asBucket, PLAN, META)).toEqual({ outcome: "conflict", detail: PLAN.record_key, held: OTHER_SEED });
+    expect(bucket.objects.get(PLAN.record_key)).toBe(OTHER_SEED);
+  });
+
+  it("puts no metadata when none is given", async () => {
+    const bucket = new FakeBucket();
+    await executePlan(bucket.asBucket, PLAN);
+    expect(bucket.metas).toEqual([
+      [PLAN.table_key, undefined],
+      [PLAN.record_key, undefined],
+    ]);
+  });
+
+  it("reads rev and why off the record key, names an anonymous caller `anonymous` and an absent device `none`", () => {
+    expect(uploadMetadata("anon-0123456789abcdef@anon.invalid", "0123456789abcdef", "browser/anon-seg-0a1b2c3d4e5f/rev7/over/local-x.json", 1_789_000_000)).toEqual({
+      caller: "anonymous",
+      device: "0123456789abcdef",
+      rev: "7",
+      why: "over",
+      uploaded: "1789000000",
+    });
+    expect(uploadMetadata("anon-local-x@anon.invalid", null, "browser/s/rev7/abandoned/local-x.json", 5)).toEqual({
+      caller: "anonymous",
+      device: "none",
+      rev: "7",
+      why: "abandoned",
+      uploaded: "5",
+    });
+    expect(uploadMetadata("red@t.test", "0123456789abcdef", "test/browser/red_at_t.test-0a1b2c3d4e5f/rev12/over/wire.json", 9)).toEqual({
+      caller: "red@t.test",
+      device: "0123456789abcdef",
+      rev: "12",
+      why: "over",
+      uploaded: "9",
+    });
+  });
+
+  it("answers null — no metadata, never a failed upload — for a key that does not parse, or no caller", () => {
+    for (const key of [
+      "browser/s/over/x.json",
+      "browser/s/rev/over/x.json",
+      "browser/s/revx7/over/x.json",
+      "browser/s/rev7/done/x.json",
+      "browser/s/rev7/over/x.txt",
+      "browser/s/rev7/over/.json",
+      "browser/s/over/rev7/x.json",
+      "",
+    ]) {
+      expect(uploadMetadata("red@t.test", null, key, 1), key).toBeNull();
+    }
+    expect(uploadMetadata(null, null, "browser/s/rev7/over/x.json", 1)).toBeNull();
+  });
+});
 
 // Spec §2.6: the shell carries a plan out in `DirArchive::put`'s own order —
 // the record key read; the table key put UNCONDITIONALLY; the record key put

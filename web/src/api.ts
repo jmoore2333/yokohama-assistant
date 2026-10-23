@@ -1,6 +1,7 @@
 import type {
   AreasPanel,
   ArchiveReply,
+  LeaveReply,
   ChatMessage,
   ChatPage,
   ChatPost,
@@ -38,6 +39,7 @@ import {
   type Host,
 } from "./local/facts";
 import { gameIdOf, isLocal, LOCAL_PREFIX, LOCAL_USER } from "./local/ids";
+import { deviceId } from "./device";
 import { EDGE_CHECK, EDGE_CHECK_REPEATED, isEdgeChallenge, passChallenge, passesSoFar } from "./turnstile";
 
 /** Which host a game belongs to, and what a local one is called (R-6.5b.12).
@@ -327,7 +329,7 @@ export function serverHeaders(): Record<string, string> {
  *  the server saying nobody is signed in.
  *
  *  The header is the whole test: Access names itself in `WWW-Authenticate`, and
- *  this API never sends that header at all. The two 401s mean different things
+ *  the layer never sends that header at all. The two 401s mean different things
  *  and must not render the same sentence — one is fixed by passing the
  *  turnstile, the other by signing in. */
 export function isAccessChallenge(res: Response): boolean {
@@ -341,17 +343,73 @@ export function isAccessChallenge(res: Response): boolean {
  *  passing the turnstile is what mints the cookie every later request carries. */
 export const ACCESS_CHALLENGE = "Your session has expired.";
 
-/** Whether this refusal is the EDGE's expired session rather than anything this
- *  API said — the one refusal a player can act on.
+/** Whether this response is a provider-signed Worker saying nobody is signed in
+ *  (the auth cycle, Task 6; design §4.3): `Access`'s sibling.
  *
- *  **A predicate and not a string compare at each site**, because there are now
- *  two readers of it: [`Refusal`](../Refusal) draws the link beside the
- *  sentence, and `usePolled` ENDS a held stream on it rather than climbing the
- *  reconnect ladder about a door the player has to walk through themselves
- *  (final review I-2). Both the status and the sentence are asked, since this
- *  API's own 401 is a different refusal with a different answer. */
+ *  Under a sign-in arm (`YOKOHAMA_IDENTITY_SOURCE` `oidc` or `workos`) the
+ *  Worker puts `WWW-Authenticate: Yokohama-Session realm="/enter"` on every 401
+ *  under `/api` it answers (Task 4's `withApiHeaders`) — every one but the
+ *  archive target's, whose only 401 since Task 5 is the house refusing a
+ *  malformed body, a defect to surface (ruling R-36). The scheme the header
+ *  OPENS with is the whole test, as Access's is. */
+export function isSessionChallenge(res: Response): boolean {
+  return res.headers.get("www-authenticate")?.startsWith("Yokohama-Session") ?? false;
+}
+
+/** The words of [`SIGN_IN_NEEDED`] with no period: the door card's HEADING,
+ *  which titles a card as every other card title does (ruling R-46). Written
+ *  once, here, and the sentence below is built from it, so there is no second
+ *  spelling. */
+export const SIGN_IN_TITLE = "Sign in to play multiplayer";
+
+/** What the player reads when a provider-signed Worker refused: one sentence
+ *  for the table link, the lobby and every refusal strip, and the strip is
+ *  where the player reads it (the plan's wording, replacing the design's
+ *  §4.3). [`Refusal`](../Refusal) matches on it to draw the sign-in link, and
+ *  the door matches on it to draw its first-visit card. */
+export const SIGN_IN_NEEDED = `${SIGN_IN_TITLE}.`;
+
+/** The sentence a 401 carrying a door's own challenge is read as — Access's
+ *  expired session, or the Worker's "sign in" — or `null` for a 401 that is the
+ *  layer's own refusal in the body's words.
+ *
+ *  **The one reader all three fetch sites ask** (`call`, `recordText` and the
+ *  stream's open in `sse.ts`), so a fourth door's challenge is added once and
+ *  the three cannot drift. */
+export function challengeSentence(res: Response): string | null {
+  if (isAccessChallenge(res)) return ACCESS_CHALLENGE;
+  if (isSessionChallenge(res)) return SIGN_IN_NEEDED;
+  return null;
+}
+
+/** Whether this refusal is a door's own challenge — the EDGE's expired session
+ *  or the Worker's "sign in" — rather than anything the layer said: the one
+ *  refusal a player can act on.
+ *
+ *  **A predicate and not a string compare at each site**, because there are
+ *  several readers of it: [`Refusal`](../Refusal) draws the link beside the
+ *  sentence, `whoami`'s `failureOf` draws the door's way in, and `usePolled`
+ *  ENDS a held stream on it rather than climbing the reconnect ladder about a
+ *  door the player has to walk through themselves (final review I-2). Both the
+ *  status and the sentence are asked, since the layer's own 401 is a different
+ *  refusal with a different answer. */
 export const isSessionExpired = (e: unknown): boolean =>
-  e instanceof ApiError && e.status === 401 && e.message === ACCESS_CHALLENGE;
+  e instanceof ApiError && e.status === 401 && (e.message === ACCESS_CHALLENGE || e.message === SIGN_IN_NEEDED);
+
+/** Where the sign-in link beside [`SIGN_IN_NEEDED`] goes: `/enter`, with the
+ *  screen the player is on as `return_to` (the auth cycle, design §4.3).
+ *
+ *  **A NAVIGATION, never a fetch**: `/enter` with no `code` starts the
+ *  provider's sign-in, and its callback lands the player on `return_to`. The
+ *  Worker takes `/#/…` there and nothing else (Task 4's `safeReturnTo`; any
+ *  other value is the lobby), so the hash goes with a leading `/` —
+ *  `#/t/<id>` is `/#/t/<id>` — and a page with no hash returns to the lobby.
+ *  Read when the link is drawn, so it names the screen it is drawn on. */
+export function signInHref(): string {
+  const hash = typeof location === "undefined" ? "" : location.hash;
+  const back = hash.length > 1 ? `/${hash}` : "/#/lobby";
+  return `/enter?return_to=${encodeURIComponent(back)}`;
+}
 
 /** How long the SERVER is given to answer a read before this client acts on
  *  the silence.
@@ -753,6 +811,10 @@ async function call<T>(
   /** How a challenge at the EDGE is met (cycle F) — see [`CallOptions`]. A
    *  LOCAL call never meets one: nothing stands in front of the module. */
   opts?: CallOptions,
+  /** Headers this ONE call carries beside what every server call does — the
+   *  archive post's device id (the auth cycle, Task 6), and nothing else today.
+   *  A local call sends none: nothing reads them there. */
+  extra?: Record<string, string>,
 ): Promise<T> {
   // **The id decides, unless the caller says** (R-6.5b.12). Five routes carry
   // no id — the create, the listing, `/api/health`, `/api/me`, `/api/labels` —
@@ -765,16 +827,16 @@ async function call<T>(
     const r = await localCall(method, path, body);
     // Nothing is in front of the module in this browser, so nothing can
     // challenge it: the local arm is never an expired session.
-    const out = settle<T>(r.status, "", r.text, false);
+    const out = settle<T>(r.status, "", r.text, null);
     return r.saved ? out : withUnsaved(out, r.reason);
   }
-  const headers: Record<string, string> = { ...serverHeaders() };
+  const headers: Record<string, string> = { ...serverHeaders(), ...extra };
   if (body !== undefined) headers["content-type"] = "application/json";
   const sent = body === undefined ? undefined : JSON.stringify(body);
   // Through the edge's one predicate and its one retry (R-FP8): the request is
   // built once and sent again WHOLE if the widget had to be shown.
   const res = await pastTheEdge(() => fetch(path, { method, headers, body: sent }), opts);
-  return settle<T>(res.status, res.statusText, await res.text(), isAccessChallenge(res));
+  return settle<T>(res.status, res.statusText, await res.text(), challengeSentence(res));
 }
 
 /** Whether a path names a LOCAL game. Its own function so the two callers —
@@ -794,10 +856,10 @@ function settle<T>(
   status: number,
   statusText: string,
   text: string,
-  /** Whether the response carried Access's own `WWW-Authenticate` — see
-   *  [`isAccessChallenge`]. The two 401s are different refusals and the caller
-   *  is the only one holding the `Response` that tells them apart. */
-  challenged: boolean,
+  /** The sentence a door's own `WWW-Authenticate` reads as, or `null` — see
+   *  [`challengeSentence`]. The 401s are different refusals and the caller is
+   *  the only one holding the `Response` that tells them apart. */
+  challenge: string | null,
 ): T {
   // **The status is read BEFORE the body is parsed, and the parse cannot throw
   // over it.** This used to be an unguarded `JSON.parse` above the `res.ok`
@@ -820,14 +882,16 @@ function settle<T>(
   // status LINE at all — so the fallback is trimmed rather than left with a
   // trailing space.
   const bare = `${status} ${statusText}`.trim();
-  // **The EDGE's 401, which is not this API's** (M6.5b2, spec §2.1). The
-  // session in front of the server expired; the name this browser holds is
-  // fine. So the sentence is the expired-session line — the screen draws the
-  // turnstile's link beside it — and `unauthorized` is deliberately NOT fired:
-  // dropping the claimed user would sign the player out of a deployment that
-  // never asked them to, and the form they would then be shown cannot mint the
-  // cookie that is actually missing.
-  if (status === 401 && challenged) throw new ApiError(ACCESS_CHALLENGE, status, null);
+  // **A DOOR's 401, which is not the layer's** (M6.5b2, spec §2.1; the auth
+  // cycle, Task 6). Access's: the session in front of the server expired, and
+  // the name this browser holds is fine. A provider-signed Worker's: nobody
+  // holds a session cookie, and no stored name was ever what it reads. Either
+  // way the sentence is the door's own — the screen draws the sign-in link
+  // beside it — and `unauthorized` is deliberately NOT fired: dropping the
+  // claimed user would sign the player out of a deployment that never asked
+  // them to, and the form they would then be shown cannot mint the cookie
+  // that is actually missing.
+  if (status === 401 && challenge !== null) throw new ApiError(challenge, status, null);
   if (status < 200 || status >= 300) {
     const message =
       !parseFailed && parsed && typeof parsed === "object" && "error" in parsed
@@ -949,7 +1013,7 @@ export async function recordText(game: string): Promise<string> {
     // two kinds of 401 — would have restated the challenge read too. It always
     // throws for a non-2xx, which is why the return below is still reached only
     // on success.
-    settle<never>(res.status, res.statusText, text, isAccessChallenge(res));
+    settle<never>(res.status, res.statusText, text, challengeSentence(res));
   }
   return text;
 }
@@ -1012,7 +1076,22 @@ export const api = {
    *  replays strictly and chooses the leaf from the replayed state — never
    *  from what this client says. */
   archive: (record: string, table: string, opts?: CallOptions) =>
-    call<ArchiveReply>("POST", "/api/archive", { record, table }, "server", opts),
+    // **The device id rides this post and no other** (the auth cycle, Task 6;
+    // design §4.4): with no one signed in the Worker files the game under
+    // `anon-<device>@anon.invalid`, one prefix per browser; signed in, it is
+    // noted on the archived object. No game route reads it, so no other call
+    // carries it.
+    call<ArchiveReply>("POST", "/api/archive", { record, table }, "server", opts, {
+      "X-Yokohama-Device": deviceId(),
+    }),
+  /** Sign out (the auth cycle, Task 6; design §4.3): `{ leave }`, where the
+   *  player goes to end the session that signed them in — the issuer's logout
+   *  under a sign-in arm (the session cookie cleared by the same answer),
+   *  Access's own `/cdn-cgi/access/logout` under Access. A POST, so it carries
+   *  every write's cross-site rules. **Explicitly the server**: there is no
+   *  local session. The open door has no server session to end, and answers
+   *  the layer's 404 — a refusal, which the caller's failure path reads. */
+  leave: () => call<LeaveReply>("POST", "/api/leave", undefined, "server"),
   /** Who sits where, and how far the dealing has got.
    *
    *  **The one route widened to any signed-in caller at an OPEN table**
@@ -1025,6 +1104,14 @@ export const api = {
    *  LAST open seat flips the table to `dealing` in the same write. */
   join: (game: string, req: JoinRequest) =>
     call<TableView>("POST", `/api/games/${id(game)}/join`, req),
+  /** The creator turns a JOINER's seat back into an open one (security S3,
+   *  D9) — at an OPEN table only. `seat` is 0-based, as `keep` and `join` send
+   *  it. The reply is the creator's table with the seat open. Refused 403 to
+   *  anyone but the creator; 409 at a table that is dealing or playing, on the
+   *  creator's own seat and on a seat with nobody to reopen; 400 for a seat the
+   *  table does not have — each in the server's own sentence. */
+  reopen: (game: string, seat: number) =>
+    call<TableView>("POST", `/api/games/${id(game)}/reopen`, { seat }),
   /** Knock, and be remembered (M6.3, R-3.5). The reply is the table with
    *  `can_watch` turned over, so the screen that was drawing the unlock face
    *  has what it needs to draw the game without a second request.

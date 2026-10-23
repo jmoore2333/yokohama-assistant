@@ -712,12 +712,15 @@ describe("the games waiting to reach the archive", () => {
     stubWorker();
     await enqueue(LOCAL, "signed-out");
     rememberServerFacts({ ...wire.health, identity: "open" });
+    // The card is the front door's: the sign-in starts there, and lands back
+    // there (the auth cycle, Task 6: `return_to`, the hash with a leading `/`).
+    window.location.hash = "#/";
     render(<OnThisDevice />);
     let box = await waiting();
     expect(within(box).getByText("not signed in")).toBeInTheDocument();
     expect(within(box).getByRole("link", { name: /sign in at the door/i })).toHaveAttribute(
       "href",
-      "/enter",
+      "/enter?return_to=%2F%23%2F",
     );
     expect(within(box).getByText(/then choose a name in the lobby/i)).toBeInTheDocument();
 
@@ -731,20 +734,51 @@ describe("the games waiting to reach the archive", () => {
     expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
   });
 
-  // **A keyed build IS the open door** (R-FP4; cycle F's fix wave, Task 6's
-  // deferred minor): its nameless visitor's game is written "not signed in"
-  // before any read has said which door this is (`outbox.ts`'s rule 6b), and
-  // the name step is the remedy. So the clause is drawn under a key with no
-  // door named — the arm the cell below draws WITHOUT a key, as the turnstile
-  // alone. Mutant: the clause read off the remembered door only.
-  it("names the name step under a keyed build, before any door has been named", async () => {
+  // **A keyed build is no longer the open door** (the auth cycle, Task 6;
+  // design §4.5): since the public deployment is a keyed build under `worker`,
+  // the outbox's rule 6b holds a nameless game for a name only where the server
+  // facts say `open` — so a row's remedy reads the door the facts name, and a
+  // door never named gets the sign-in alone, which is true under every door.
+  // Mutant: the cycle-F clause kept (`|| Boolean(turnstileSiteKey())`), which
+  // sends a player of the public deployment looking for a name step it does
+  // not have.
+  it("names the sign-in alone under a keyed build with no door named", async () => {
     vi.stubGlobal("__YOKOHAMA_TURNSTILE_SITEKEY__", "site-key-fixture");
     stubWorker();
     await enqueue(LOCAL, "signed-out");
     render(<OnThisDevice />);
     const box = await waiting();
-    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toHaveAttribute("href", "/enter");
-    expect(within(box).getByText(/then choose a name in the lobby/i)).toBeInTheDocument();
+    expect(within(box).getByRole("link", { name: /sign in at the door/i })).toBeInTheDocument();
+    expect(within(box).queryByText(/then choose a name in the lobby/i)).toBeNull();
+  });
+
+  // **R-A14, the transparency notice, under the remedy's link** (the auth
+  // cycle, Task 6): who signs the player in and what is kept, read before the
+  // click; nothing at all where the build sets none. Mutants: the notice drawn
+  // when unset; the notice drawn on a row whose remedy is not a sign-in.
+  it("draws the build's sign-in notice under the remedy's link, and nothing when the build sets none", async () => {
+    const NOTICE = "Sign-in is by WorkOS. This site keeps only your verified email address, to seat you.";
+    vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", NOTICE);
+    stubWorker();
+    await enqueue(LOCAL, "signed-out");
+    await enqueue("local-2", "offline");
+    rememberServerFacts({ ...wire.health, identity: "cf-access" });
+    render(<OnThisDevice />);
+    const box = await waiting();
+    const notice = within(box).getByText(NOTICE);
+    expect(notice.tagName).toBe("P");
+    expect(notice).toHaveClass("muted");
+    const link = within(box).getByRole("link", { name: /sign in at the door/i });
+    expect(link.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(box).getAllByText(NOTICE), "the signed-out row's alone").toHaveLength(1);
+    expect(notice.closest("li")).toBe(link.closest("li"));
+
+    cleanup();
+    vi.stubGlobal("__YOKOHAMA_SIGNIN_NOTICE__", null);
+    render(<OnThisDevice />);
+    const bare = await waiting();
+    expect(within(bare).getByRole("link", { name: /sign in at the door/i })).toBeInTheDocument();
+    expect(bare.querySelector("li.signed-out p"), "no notice set, nothing drawn").toBeNull();
   });
 
   // **The remedy follows the door the server NAMES, even when it is named after

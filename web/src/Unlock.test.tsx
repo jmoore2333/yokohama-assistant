@@ -99,6 +99,23 @@ describe("the unlock face", () => {
     expect(screen.getByRole("button", { name: "Spectate" })).toBeInTheDocument();
   });
 
+  // **The password counter's 429 is drawn as the 403 is** (security S3, D2): the
+  // server's own sentence, no hand-over, and the face still here to press again
+  // once the wait the sentence names is over.
+  it("shows the password counter's 429 in the server's words and stays usable", async () => {
+    const tooMany = "too many wrong passwords for this table — wait ten seconds and try again";
+    const { stub, onUnlocked, onLeave, user } = show((call) =>
+      call.path.endsWith("/unlock") ? { status: 429, body: { error: tooMany } } : undefined,
+    );
+    await user.type(screen.getByLabelText("Table password"), "nope");
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
+    expect(await screen.findByText(tooMany)).toBeInTheDocument();
+    expect(onUnlocked).not.toHaveBeenCalled();
+    expect(onLeave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Spectate" }));
+    await waitFor(() => expect(stub.matching("POST", "/unlock")).toHaveLength(2));
+  });
+
   it("goes back to the lobby", async () => {
     const { onLeave, user } = show();
     await user.click(screen.getByRole("button", { name: "Lobby" }));

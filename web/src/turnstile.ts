@@ -19,7 +19,9 @@
 //
 // **One predicate, one seam.** `isEdgeChallenge` is the test every site that
 // talks to the server asks of a response (`api.ts`'s `call` and record
-// download, `sse.ts`'s stream reader; the socket's probe is a `call`).
+// download, `sse.ts`'s stream reader; the socket's probe is a `call`). Its
+// rule is `edgeChallenge.ts`'s, the one copy the service worker imports too
+// (security S3, W-3).
 // `passChallenge` is the seam they ask to pass it: the overlay
 // (`Challenge.tsx`) registers the handler, and concurrent challenges share one
 // pass, so a person sees ONE widget however many requests met the edge.
@@ -29,6 +31,7 @@
 // is that site's.
 
 import { turnstileSiteKey } from "./buildValues";
+import { isEdgeChallengeResponse } from "./edgeChallenge";
 
 /** The widget's script: explicit rendering, and the `onload` callback below.
  *  Injected ONCE per page life by [`loadTurnstile`], never at module load. */
@@ -226,12 +229,14 @@ export function passesSoFar(): number {
   return passed;
 }
 
-/** Whether `res` is the EDGE's Managed Challenge: Cloudflare answers a
- *  challenged fetch `403` with `cf-mitigated: challenge` (readable by a
- *  same-origin fetch). Both, and never one of them: a 403 is also this API's
- *  own refusal of a locked table or a stranger's seat. */
+/** Whether `res` is the EDGE's Managed Challenge: [`isEdgeChallengeResponse`]
+ *  over its status and its `cf-mitigated` header — a `403` with
+ *  `cf-mitigated: challenge`, both and never one of them, since a 403 is also
+ *  this API's own refusal of a locked table or a stranger's seat. The rule is
+ *  `edgeChallenge.ts`'s, so the service worker's install reads a challenge
+ *  exactly as the page does. */
 export function isEdgeChallenge(res: Response): boolean {
-  return res.status === 403 && res.headers.get("cf-mitigated") === "challenge";
+  return isEdgeChallengeResponse(res.status, res.headers.get("cf-mitigated"));
 }
 
 /** Put the module back where a fresh page load finds it — for the CELLS. The

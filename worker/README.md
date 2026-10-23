@@ -303,7 +303,38 @@ it (§7.7).*
 deployment that names none answers its API with a 500 naming the variable, as it answers any bad
 value, while the static release is still served; the deploy guard refuses to deploy a configuration
 that names none, and prints the door it deploys. The value is trimmed and then matched exactly, as the
-layer reads the same variable on the NAS, so `Open` is refused by name. There are two doors.
+layer reads the same variable on the NAS, so `Open` is refused by name. There are two doors, and the
+first has three sources.
+
+**The `worker` door has three identity sources, one per deployment** (the auth cycle; design §4.1).
+`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under it — `access`, `oidc` or `workos` —
+with no default and refused beside `open`; the layer's door stays `worker` and the wire never learns the
+source (`/api/me` reads `cf-access` under all three). `access` is the section below, today's shape.
+`oidc` signs a player in against ANY issuer that publishes a discovery document (Auth0, Keycloak,
+Authentik, Google and the like): the shell runs the code flow once, at the callback on `/enter`,
+verifies the ID token, and mints its own session cookie — `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID`,
+the secret `YOKOHAMA_SESSION_SECRET` and, optionally, the secret `YOKOHAMA_OIDC_CLIENT_SECRET`. It accepts
+**`client_secret_post` or PKCE only** (an issuer that accepts only `client_secret_basic` is out of scope,
+R-20), and the issuer and the four endpoints of its discovery document must be `https` — `http` is accepted
+on a loopback host (`localhost`, `127.0.0.1`, `[::1]`), for development (R-24). `workos` is WorkOS AuthKit's
+first-party API, two `fetch` calls and no SDK, with the API key as `YOKOHAMA_OIDC_CLIENT_SECRET`; the public
+deployment runs it after the window of `RUNBOOK.md` §23 (production has read `workos` since the window's stage 1, 2026-10-19). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
+(`__Host-yokohama_session`, `HttpOnly; Secure; SameSite=Lax; Path=/`), so a browser keeps it only over `https`
+or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days by default
+(`YOKOHAMA_SESSION_DAYS`), is renewed on use, and ends at an absolute cap of 90 days from its first issue
+(`YOKOHAMA_SESSION_MAX_DAYS`, 2026-10-19) however much it is used; **rotating `YOKOHAMA_SESSION_SECRET` ends every
+session at once**, and **`YOKOHAMA_DENIED` — a secret naming addresses and `@domains` — ends one player's: their
+session is nobody and their sign-in is refused (the red button, `RUNBOOK.md` §24)**.
+Both halves of the sign-in are on `/enter`, and sign-out is `POST /api/leave`. **A post to the archive with
+no caller files anonymously** under `anon-<device id or the game's own id>@anon.invalid`, limited by IP, and
+**offers no integrity guarantee: a device id is a self-declared label, not a credential** — so a finished
+game is kept whoever played it, and nothing about it is trustworthy beyond the replay that verified it. A
+deployment declares one source, and its file says which: `wrangler.jsonc` is the public deployment
+(`yokohama-web`, source `workos` since the window's stage 1, 2026-10-19; `RUNBOOK.md` §23), and
+`wrangler.private.jsonc` is the LATER private deployment (`yokohama-web-private`, its own bucket, objects and
+rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.nyc`, beside production's
+`yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare
+Access may stay in front of a provider-signed Worker, which then ignores the assertion.
 
 **Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
 - A Cloudflare Access application covers the hostname. The Worker verifies Access's signed assertion
@@ -391,14 +422,16 @@ the secrets guard over the same file (`node scripts/secrets-guard.mjs --config w
 §9.3), and then `wrangler deploy --config wrangler.open.jsonc`; a visitor then reaches the first
 screen and the lobby with no login and a name of their own choosing, and the operator surface
 answers 404. The revert is the plain `npm run deploy` and the two secrets put back. The Access application's destinations for
-the state in between come from `node scripts/access-paths.mjs`, derived from the routers.
+the state in between come from `node scripts/access-paths.mjs`, derived from the routers: ELEVEN lines
+since the auth cycle, `/api/leave` (sign-out) the eleventh, so a deployment that keeps a path-scoped
+application in front adds it at its next deploy.
 Since security S2b production itself is Access alone, with the dev door shut — the shape a self-hoster
 behind their own application copies — and `wrangler.dev.jsonc` is production with the dev door open
 (`npm run deploy:dev`), deployed around a live tier and reverted by the plain `npm run deploy`. The
 open door is also proven in the test pool's second project (`wrangler.open.test.jsonc`, whose cells
 are `test/open/`), where the shell runs in workerd with real sockets.
 
-**The two doors do not share one client build.** `cd web && npm run build` reads five build values when
+**The doors do not share one client build.** `cd web && npm run build` reads five build values when
 they are set (R-6.5c2.40, cycle F; `web/scripts/build-values.mjs` checks them and a bad one fails the
 build naming it): `YOKOHAMA_PROJECT_URL` (a link to the repository, on the first screen and the lobby; at
 most 200 characters), `YOKOHAMA_SITE_BLURB` (a paragraph under the first screen's title; at most 400),
@@ -407,9 +440,14 @@ host's own address, an `https://` origin, for the sitemap, the canonical link an
 and `YOKOHAMA_RELEASE_FEED` (where the door and the lobby look for the latest release: unset derives it
 from a GitHub project link, a URL is that feed, `off` is none; at most 300). Unset or empty draws nothing,
 the feed's derivation apart. A sixth, `YOKOHAMA_TURNSTILE_SITEKEY` (the public Turnstile site key; at most
-100), belongs only with the open door: a keyed client is the open door's, so the worker door's production
-build is made WITHOUT it and the deploy guard's check 12 refuses a keyed build beside `worker`, while the
-open window's build carries it beside `YOKOHAMA_TURNSTILE` `on` (RUNBOOK §3). Since `YOKOHAMA_SITE_URL`
+100), belongs with the open door and with a provider-signed worker door (source `oidc` or `workos`), where the
+Turnstile is the bot defence: the Access build is made WITHOUT it and the deploy guard's check 12 refuses a
+keyed build beside `worker` at source `access`, while the open window's build carries it beside
+`YOKOHAMA_TURNSTILE` `on`, and the public deployment's will after the window of `RUNBOOK.md` §23, at its
+stage 2 (RUNBOOK §3). The client does not read the key as the door: it reads
+the server's facts, and holds a nameless visitor's game for a name only where they say `open`. A seventh,
+`YOKOHAMA_SIGNIN_NOTICE` (the transparency notice under every sign-in link; at most 300), is the Worker's
+builds alone. Since `YOKOHAMA_SITE_URL`
 names the host, each host serves its own client build. All of them are baked into the release, not read at
 run time, because the release is precached under a digest of its own bytes.
 
@@ -1364,6 +1402,12 @@ table, logged `archive-owed-dropped`.
 This section is the `worker` door's, this repository's; the open door's reading of a claimed name is
 §1.5. *(Added 2026-09-28, M6.5c2.)*
 
+*(Added 2026-10-19, the auth cycle: this section is the identity source `access`'s. Under `oidc` and `workos`
+the caller is the Worker's own session cookie, minted at the callback on `/enter` (`src/session.ts`,
+`src/signin.ts`; §1.5), no assertion is read, and the dev door is inert; the rest of this section — the
+raw judgement of an address, the strip rule, `X-Yokohama-User` as the one header the objects trust — holds
+at every source.)*
+
 **Access is the door.** The `yokohama` Access application covers the whole hostname, so no request,
 not even for a static file, reaches this host without passing it. Access forwards its verdict as a
 signed JWT in `Cf-Access-Jwt-Assertion`. It also sends a convenience header naming the email
@@ -1458,12 +1502,16 @@ alarm finds `last activity + TTL` has passed, the table expires as its creator: 
 the archive is on, then deleted, behind its marker. Finished games expire on the same clock, their
 save made at game over. Open and dealing tables expire with nothing to save.
 
-**A table still waiting for players** (M6.5c2 cycle E, R-6.5c2.42) — its status `open` — is closed
-sooner, after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
+**A table that has not started** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9) — open,
+or dealing with a keep outstanding: its status `open` or `dealing` — is closed sooner, after
+`YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
 `this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
 so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
 by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
-scratch module. An `open` table is closed; any other is re-armed to its last activity plus the TTL.
+scratch module. An `open` or `dealing` table is closed; any other is re-armed to its last activity
+plus the TTL. The status is read as the stored document says it, never repaired first, so a table
+finalized but never flipped to `playing` that nobody opened for the whole 7 days is closed too, a
+game with no move (design D-16; the NAS's sweep repairs it first and keeps it).
 `/api/health` reports both, `table_ttl_days` and `open_table_ttl_days`, `null` while no table
 expires.
 
@@ -1681,8 +1729,8 @@ in `web/dist`. And after a release build, `npm run build:module:debug` comes bef
 
 `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
 scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and
-`npm run deploy:open` and `npm run deploy:dev` the same three steps over `wrangler.open.jsonc` and
-`wrangler.dev.jsonc` — each step told its file, so wrangler deploys exactly what the guard judged
+`npm run deploy:open`, `npm run deploy:dev` and `npm run deploy:private` the same three steps over
+`wrangler.open.jsonc`, `wrangler.dev.jsonc` and `wrangler.private.jsonc` — each step told its file, so wrangler deploys exactly what the guard judged
 (security S2a, finding D18). Nothing ships unless all fourteen checks hold, and every failure is
 named, not only the first:
 
@@ -1708,7 +1756,17 @@ named, not only the first:
    *(Since security S2b, finding B6: under `worker`, `YOKOHAMA_DEV_DOOR` is `on` in
    `wrangler.dev.jsonc` alone, which must set it to exactly `on` and is held to production but for
    that one variable; and every other worker-door file judged by `--config` is held to production
-   exactly, with no allowed difference — the S2a plan review's F-40.)*
+   exactly, with no allowed difference — the S2a plan review's F-40.)* *(Since the auth cycle, Task 7:
+   under `worker`, `YOKOHAMA_IDENTITY_SOURCE` must be `access`, `oidc` or `workos` with no default, and the
+   door line names it — `wrangler.jsonc deploys the worker door, source access — Cloudflare Access,
+   verified by the shell`; `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are required at `access` and REFUSED
+   at `oidc` and `workos`, `YOKOHAMA_OIDC_CLIENT_ID` is required at both arms, `YOKOHAMA_OIDC_ISSUER` at
+   `oidc` and refused at `workos`, and the open files omit every arm variable. And each file in the
+   guard's `DEPLOYMENTS` table is held to its own record — production's `yokohama-web`, bucket
+   `yokohama-archive`, route `yokohama.moore.nyc`; the private Worker's `wrangler.private.jsonc`,
+   `yokohama-web-private`, route `yokohama-test.moore.nyc` (security S3, Task 7), its own bucket and
+   rate-limit namespaces, source `access` — and to production's `main`, `rules`, `compatibility_date`,
+   `assets` and `observability`; the file is optional unless it is the one named.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
    R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as
@@ -1723,7 +1781,8 @@ named, not only the first:
    production's**, so the pool never tests a class, a binding, a migration or a bucket that
    production does not ship.
 7. **No `vars` block in `wrangler.jsonc` names a secret**: `YOKOHAMA_WEB_ADMINS`, whose value would
-   commit an address to the repository, or, since M6.5c2, `DEV_DOOR_CLIENT_ID`. Both are set as
+   commit an address to the repository, or, since M6.5c2, `DEV_DOOR_CLIENT_ID`, or, since the auth
+   cycle, `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET`. All are set as
    secrets, which a deploy leaves alone, and the pool's `wrangler.test.jsonc` keeps its test client
    id. *(Checks 5–7 corrected 2026-09-28 for the pool's second configuration and the second secret.)*
 8. **`gen/` is the build of the sources as they are now**: `gen/source.json` against the same digest
@@ -1746,8 +1805,9 @@ named, not only the first:
     `vars.YOKOHAMA_TURNSTILE` (`on`, `off`, or absent, which is `off`) against the tree's
     `build-values.json`, whose `turnstile_sitekey` says whether the bundle carries a site key — `on`
     exactly when it does. And the identity rule: `on`, and a keyed build, stand only beside
-    `YOKOHAMA_WEB_IDENTITY` `open`, because the client reads a site key as the open door and, behind
-    Access, would never upload a nameless visitor's games (RUNBOOK §3).
+    `YOKOHAMA_WEB_IDENTITY` `open`, or `worker` at source `oidc` or `workos` — a provider-signed door,
+    where the Turnstile is the bot defence; under Access the edge is (RUNBOOK §3). The client no
+    longer reads a site key as the open door: it reads the server's facts.
 13. **Production's two Rate Limiting bindings are at their figures** (security S2b, finding C2):
     `wrangler.jsonc`'s `ratelimits` block is exactly `CREATE_LIMIT` 10 per 60 s and `WRITE_LIMIT`
     120 per 10 s, namespaces `7301` and `7302`, read as values, and each pool file binds exactly
@@ -1775,9 +1835,14 @@ step: a logged-out clone runs `npx wrangler login` once, and one with more than 
 `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing). A new Worker's first
 deploy cannot pass it, since wrangler answers "Worker not found" (RUNBOOK §2). So a NEW Worker's first
 deploy runs `wrangler deploy --config <file>` by hand with neither guard — a Worker that does not exist
-holds no secret, and the deploy guard holds this repository's Worker alone, its name and bucket, until
-S4 gives it the new Worker's identity — and the secrets guard from the second deploy on (security S2b,
-decision D-7 as corrected at Task 9's review; the owner's R-6).
+holds no secret, and the deploy guard holds each file to its own deployment identity (production's
+`yokohama-web` and the private Worker's `yokohama-web-private`, the auth cycle's Task 7) — and the secrets
+guard from the second deploy on (security S2b, decision D-7 as corrected at Task 9's review; the owner's
+R-6). **The secrets guard also REQUIRES an arm's secrets** (R-48): it reads the judged file's source and
+refuses the deploy, naming the secret and its `wrangler secret put` line, when the listing lacks, under
+`workos`, `YOKOHAMA_OIDC_CLIENT_SECRET` (the WorkOS API key) or `YOKOHAMA_SESSION_SECRET`, or, under `oidc`,
+`YOKOHAMA_SESSION_SECRET` (the client secret is optional there: PKCE); under `access` and the open door it
+asks for nothing.
 
 ### 9.4 Configuration and secrets
 
@@ -1791,7 +1856,11 @@ the first deploy, so a class added later needs a tag of its own; and the private
 `wrangler deploy` REPLACES the Worker's variables with the file's `vars`, so that file is the whole
 list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its absence means. In
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
-`ACCESS_AUD` configure Access (§7.6); `YOKOHAMA_DEV_DOOR` is `off`, and `wrangler.dev.jsonc` sets it
+`ACCESS_AUD` configure Access (§7.6) and are required at source `access` alone;
+`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under `worker` — `access` here, `workos` after
+the window — with `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID` and `YOKOHAMA_SESSION_DAYS` its arms'
+variables and `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET` its two secrets (§1.5; RUNBOOK
+§3); `YOKOHAMA_DEV_DOOR` is `off`, and `wrangler.dev.jsonc` sets it
 `on` for the live tiers (security S2b);
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
@@ -1997,11 +2066,13 @@ the credential, which is never an operator.
   security S2b, opened by `wrangler.dev.jsonc` around a live tier; the public door's preconditions
   are recorded in the M6.5c2 cycle C close (§6). *(Corrected 2026-09-28: `DEV_DOOR_CLIENT_ID` is a
   secret since M6.5c2, where this said it was committed.)*
-  Going public is meant to be a NEW Worker that starts empty — after the security process the door of this
-  private Worker stays steady (R-SEC6 as the owner read it on 2026-10-12; RUNBOOK §3) — and a change to the deploy guard, which holds this
-  repository's Worker alone, its name and bucket, until S4 gives it the new Worker's identity (D-7 as
-  corrected at S2b Task 9's review); on a public door, a scanner's misses would each be a Worker
-  invocation.
+  Going public is now this Worker's own switch from source `access` to `workos` (plan decision D-1, the
+  owner's R-A12: `yokohama-web` itself becomes the public deployment, and the key space does not move since
+  Access and WorkOS both vouch for verified addresses), in the window `RUNBOOK.md` §23 records as a plan —
+  the later private Worker is the new file `wrangler.private.jsonc`, and the DOOR of a deployment still stays
+  steady after the security process (R-SEC6 as the owner read it on 2026-10-12; RUNBOOK §3). The deploy
+  guard holds each deployment file to its own identity (D-7 as corrected at S2b Task 9's review, extended
+  by the auth cycle's Task 7); on a public door, a scanner's misses would each be a Worker invocation.
 - **Rows read: a warm request asks `sqlite_master` nothing since M6.5c2** — the tables' existence is
   remembered per object (MEASURED in the pool: 32 → 2 rows a warm request); a warm request reads the
   documents once and a cold one twice, the wake and the batch, where M6.5c's read them up to three

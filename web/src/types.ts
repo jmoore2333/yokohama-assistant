@@ -547,9 +547,10 @@ export interface Health {
    *  there is nobody else at the table. */
   multiplayer: boolean;
   /** How many days an idle table stands before it expires, and how many a
-   *  table still waiting for players does (M6.5c2 cycle E, R-6.5c2.42): the
-   *  Worker's two TTLs. `null` where no table expires — the NAS keeps no TTL,
-   *  and the browser host has no tables to expire. */
+   *  table that has not started — open, or dealing with a keep outstanding —
+   *  does (M6.5c2 cycle E, R-6.5c2.42; security S3, D9): both hosts' two
+   *  TTLs. `null` where no table expires — a NAS or Worker with no TTL set,
+   *  and the browser host. */
   table_ttl_days: number | null;
   open_table_ttl_days: number | null;
 }
@@ -1152,4 +1153,13 @@ export interface ArchiveReply {
   leaf: "over" | "abandoned";
   path: string;
   identical: boolean;
+}
+
+/** Where to go to sign out — `POST /api/leave` (the auth cycle, Task 4; design
+ *  §4.3). The WORKER's own answer, never the layer's: under a sign-in arm the
+ *  issuer's logout URL returning to this site's root, with the session cookie
+ *  cleared by the same answer; under Access, `/cdn-cgi/access/logout`. The open
+ *  door answers no such thing (the layer's 404), and nor does the NAS. */
+export interface LeaveReply {
+  leave: string;
 }

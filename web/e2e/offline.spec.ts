@@ -46,6 +46,15 @@
 // their offer OFF the door (on a local game), and cell 7's door tab takes its
 // update by itself rather than by a click.
 //
+// **Security S3's cell is the edge's challenge on an update** (W-3; design
+// §3.1, "What proves it"; D-17), beside cells 8 and 9 and on their
+// `context.route`: release 2's install meets a 403 carrying `cf-mitigated:
+// challenge` on one file, the keyless door names the edge and offers Try
+// again, and the click lands the release. The kind is read off the message the
+// door was told, because a keyless door's line reads the same for either kind;
+// the pass itself is `swRegister.test.ts`'s, and its live reading is the public
+// day's window.
+//
 // **Cells 3 and 7 MUTATE `web/dist` in place**, put it back in a `finally`, and
 // CHECK the restoration there too — the files' own bytes and the restored
 // worker's cache name, read back from disk. `dist` is what the walk's server
@@ -1577,6 +1586,123 @@ test("a failed FIRST install: one file answers 503 once, the release fails whole
   // eslint-disable-next-line no-console
   console.log(`FAILED FIRST INSTALL: retried into ${release} after "${failed}"`);
   expect(watch.failures, "the page threw nothing while it failed and retried").toEqual([]);
+});
+
+test("the edge's challenge on an update: one file answers the challenge once, the keyless door names the edge and offers Try again, and the click lands the release", async ({
+  page,
+  context,
+}) => {
+  // **Security S3, W-3** (design §3.1, "What proves it"; D-17). A returning
+  // browser's door, controlled by release 1's worker, starts release 2's
+  // install, and the edge answers one of its precache fetches with its
+  // Managed Challenge: a 403 carrying `cf-mitigated: challenge` and no body.
+  // The worker names that failure "challenged" to the door it elects; the
+  // walk's build is KEYLESS (`scripts/e2e-build.mjs`), so no overlay mounts,
+  // `passChallenge` refuses at once, and the door lands on its failed line,
+  // naming the edge, with "Try again". The route then answers as the server
+  // does, and the click's retry installs release 2, which the door takes by
+  // itself. This proves the typed kind reaching the door through a real
+  // browser, and the keyless landing; the pass itself is the unit cells'
+  // (`swRegister.test.ts`), and its live reading is the public day's window.
+  const was = { marked: fs.readFileSync(MARKED), worker: fs.readFileSync(SW) };
+  const firstName = cacheNameOf(was.worker.toString("utf8"));
+  const watch = watchForFaults(page);
+  // A file the door never draws, so the one challenge is the WORKER's fetch
+  // and not the page's (cell 9's reason); asserted to be in the list.
+  const challengedPath = "/art/achievements/Copper5.webp";
+  let failure: unknown = null;
+  try {
+    expect(fs.readFileSync(SW, "utf8"), "the challenged file is one the release precaches").toContain(
+      JSON.stringify(challengedPath),
+    );
+    await page.goto("/");
+    const one = await installed(page);
+    expect(one, "the release on disk is the release in the cache").toBe(firstName);
+    // Cell 3's reason: an update waits, and is offered, only to a page the
+    // old worker controls.
+    await page.reload();
+    expect(await controlled(page), "the door is served by release 1's worker").toBe(true);
+
+    // What this window is told, kept: the keyless door's line reads the same
+    // for "challenged" and "failed", so the kind is read off the message.
+    await page.evaluate(() => {
+      const w = window as unknown as { __told?: unknown[] };
+      w.__told = [];
+      navigator.serviceWorker.addEventListener("message", (e) => w.__told!.push(e.data));
+    });
+
+    // Armed only now, so release 1's install was the real server's.
+    let asks = 0;
+    await context.route(`**${challengedPath}`, async (route) => {
+      asks += 1;
+      if (asks === 1) {
+        await route.fulfill({ status: 403, headers: { "cf-mitigated": "challenge" }, body: "" });
+      } else {
+        await route.continue();
+      }
+    });
+
+    // ---- release 2, whose install meets the edge -------------------------
+    const two = shipRelease(2);
+    expect(two, "a changed file is a different release").not.toBe(one);
+    await checkForUpdate(page);
+    await expect(page.getByRole("button", { name: "Try again", exact: true })).toBeVisible({
+      timeout: INSTALL_WAIT_MS,
+    });
+    const named = await doorLine(page);
+    expect(named).toBe(
+      `Could not prepare to play offline — ${challengedPath}: the edge asked for a check before it would answer. Try again`,
+    );
+    expect(asks, "the challenge was the install's one fetch of the file").toBe(1);
+    expect(
+      await page.evaluate(() => (window as unknown as { __told?: unknown[] }).__told),
+      "the worker told THIS window, the door, that the edge asked",
+    ).toEqual([
+      {
+        yokohama: "install-failed",
+        kind: "challenged",
+        reason: `${challengedPath}: the edge asked for a check before it would answer`,
+      },
+    ]);
+    expect(await markOnScreen(page), "the door still runs release 1").toBeNull();
+    expect(await releaseCaches(page), "and no half of release 2 is kept beside it").toEqual([one]);
+
+    // ---- the click, under a route that now answers ------------------------
+    //
+    // The retry is `update()`, the returning browser's arm: release 2
+    // installs whole, and the door applies it by itself and reloads. The wait
+    // is the reload's LOAD, armed before the click (cell 3's lesson).
+    const landed = page.waitForEvent("load", { timeout: INSTALL_WAIT_MS });
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await landed;
+    await expect(page.getByText("Ready to play offline")).toBeVisible({ timeout: INSTALL_WAIT_MS });
+    expect(await markOnScreen(page), "the click landed release 2").toBe(2);
+    expect(asks, "and its install fetched the file again").toBe(2);
+    await expect
+      .poll(() => releaseCaches(page), { timeout: 30_000 })
+      .toEqual([one, two].sort());
+
+    // eslint-disable-next-line no-console
+    console.log(`EDGE CHALLENGE: ${one} -> ${two} after "${named}"`);
+    expect(watch.failures, "the page threw nothing while it failed and retried").toEqual([]);
+  } catch (e) {
+    failure = e;
+  } finally {
+    // Cell 3's restoration, and checked in the same place for the same reason.
+    fs.writeFileSync(MARKED, was.marked);
+    fs.writeFileSync(SW, was.worker);
+    const back = cacheNameOf(fs.readFileSync(SW, "utf8"));
+    const same = fs.readFileSync(MARKED).equals(was.marked);
+    if (back !== firstName || !same) {
+      throw new Error(
+        `dist was NOT restored: sw.js names ${back} (expected ${firstName}), ` +
+          `manifest.webmanifest ${same ? "is" : "is NOT"} its original bytes. ` +
+          `Rebuild with \`npm run build:client\` before trusting any later spec.` +
+          (failure ? ` The cell itself had already failed: ${String(failure)}` : ""),
+      );
+    }
+  }
+  if (failure) throw failure;
 });
 
 // ----------------------------------------------------- cells 8 and 9's tools

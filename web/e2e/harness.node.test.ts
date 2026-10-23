@@ -40,6 +40,7 @@ import {
   mustBeApart,
   mustBeVisible,
   placeWindow,
+  sessionCookies,
   reportVisibility,
   watchVisibility,
 } from "./live";
@@ -333,6 +334,183 @@ describe("identityHeaders and liveContextOptions", () => {
 
   it("is the claimed header alone — the one header a page's socket cannot set, and no secret", () => {
     expect(identityHeaders("a@e2e.test")).toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
+  });
+  // **The minted session** (auth cycle, Task 8; rulings R-39, R-50, R-53, R-54): under a sign-in arm the Worker names a
+  // caller by its own cookie. The session rides the context's COOKIE JAR (`sessionCookies`), never `extraHTTPHeaders`
+  // (the beacon's cross-origin load carries a context header), and no claimed name rides beside it.
+  const SECRET = "0123456789abcdef0123456789abcdef";
+  const payload = (line: string) => JSON.parse(Buffer.from(line.split("=")[1]!.split(".")[1]!, "base64url").toString("utf8"));
+  /** A minted-shaped cookie line for `address` (a fake mac: the instrument reads its own cookie, the Worker verifies). */
+  const lineFor = (address: string) =>
+    `__Host-yokohama_session=v2.${Buffer.from(JSON.stringify({ address, sid: null, first: 1_789_000_000, issued: 1_789_000_000, expires: 1_791_592_000 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
+
+  describe("under YOKOHAMA_SESSION_COOKIE", () => {
+    it("is the cookie's own address and no other: its jar cookie, and no header at all", () => {
+      const line = lineFor("b@e2e.test");
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", line);
+      expect(identityHeaders("b@e2e.test"), "no claimed header and no Cookie header").toEqual({});
+      const [c] = sessionCookies("b@e2e.test");
+      expect(c!.name).toBe("__Host-yokohama_session");
+      expect(c!.value).toBe(line.slice("__Host-yokohama_session=".length));
+    });
+    it("refuses a context for anyone else with the two-identities sentence, before any context opens (R-53)", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("b@e2e.test"));
+      expect(() => identityHeaders("a@e2e.test")).toThrow("the session cookie names the caller — a claimed name beside it is two identities");
+      expect(() => sessionCookies("a@e2e.test")).toThrow("a@e2e.test");
+      expect(() => sessionCookies("a@e2e.test")).toThrow("YOKOHAMA_SESSION_COOKIE names b@e2e.test");
+      // Only the cookie's own address, exactly: not one that shares a start, an end or its case with it.
+      for (const near of ["bb@e2e.test", "b@e2e.test.test", "B@E2E.TEST", "b@e2e.test "]) {
+        expect(() => identityHeaders(near), near).toThrow("two identities");
+      }
+    });
+    it("refuses a cookie for an address that is not a .test one, in either helper", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("jamoore@gmail.com"));
+      for (const call of [() => identityHeaders("jamoore@gmail.com"), () => sessionCookies("jamoore@gmail.com")]) {
+        expect(call).toThrow("YOKOHAMA_SESSION_COOKIE: mint-session: only a .test address may be minted — got jamoore@gmail.com");
+      }
+    });
+    it("an empty variable is unset: the dev door's claimed header", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "");
+      expect(identityHeaders("a@e2e.test")).toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
+      expect(sessionCookies("a@e2e.test")).toEqual([]);
+    });
+  });
+
+  // **The secret** (ruling R-50): a session MINTED per email from the deployment's secret — two emails, two callers.
+  describe("under YOKOHAMA_SESSION_SECRET", () => {
+    const lineOf = (email: string) => `${sessionCookies(email)[0]!.name}=${sessionCookies(email)[0]!.value}`;
+    it("is a different jar cookie per email, each minted for its own address, with no header", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      expect(identityHeaders("a@e2e.test")).toEqual({});
+      const [ca, cb] = [lineOf("a@e2e.test"), lineOf("b@e2e.test")];
+      expect(ca).toMatch(/^__Host-yokohama_session=v2\./);
+      expect(ca).not.toBe(cb);
+      expect(payload(ca).address).toBe("a@e2e.test");
+      expect(payload(cb).address).toBe("b@e2e.test");
+      expect(payload(ca).sid).toBeNull();
+      expect(payload(ca).expires - payload(ca).issued).toBe(30 * 86_400);
+    });
+    it("is host-only, Secure, HttpOnly, Lax, Path / on the Worker's origin, with the session's own expiry (R-54)", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const cookies = sessionCookies("a@e2e.test");
+      expect(cookies).toHaveLength(1);
+      const c = cookies[0]!;
+      expect(c).toEqual({
+        name: "__Host-yokohama_session",
+        value: c.value,
+        domain: new URL(LIVE_ORIGIN).hostname,
+        path: "/",
+        expires: payload(lineOf("a@e2e.test")).expires,
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+      });
+      expect(c.domain, "host-only: no leading dot").not.toMatch(/^\./);
+    });
+    it("is minted at the real clock, in seconds", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const before = Math.floor(Date.now() / 1000);
+      const issued = payload(lineOf("a@e2e.test")).issued;
+      const after = Math.floor(Date.now() / 1000);
+      // A millisecond clock would stand for millennia, a fixed one for nothing.
+      expect(issued).toBeGreaterThanOrEqual(before);
+      expect(issued).toBeLessThanOrEqual(after);
+    });
+    it("is the same bytes the minting script's own function writes, signed with the secret", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const { cookieLine } = await import("../../worker/scripts/mint-session.mjs");
+      const line = lineOf("a@e2e.test");
+      expect(line).toBe(cookieLine("a@e2e.test", SECRET, payload(line).issued));
+    });
+    it("refuses an email that is not a .test address, in the script's fence sentence, in either helper", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      for (const call of [() => identityHeaders("jamoore@gmail.com"), () => sessionCookies("jamoore@gmail.com")]) {
+        expect(call).toThrow("mint-session: only a .test address may be minted — got jamoore@gmail.com");
+      }
+      expect(() => sessionCookies("A@E2E.TEST")).toThrow("only a .test address may be minted");
+    });
+    it("wins over the one cookie, which then names nobody and refuses nobody", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("b@e2e.test"));
+      expect(payload(lineOf("a@e2e.test")).address).toBe("a@e2e.test");
+    });
+    it("an empty secret is unset", () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", "");
+      expect(identityHeaders("a@e2e.test")).toEqual({ "X-Yokohama-Claimed-User": "a@e2e.test" });
+    });
+  });
+
+  // **The context's storage state carries the session; its headers carry no Cookie** (ruling R-54). A live run with no
+  // `.dev.vars` on the workstation — read here through a stand-in `readIdentity`, so no cell reaches the network or the
+  // workstation's own file.
+  describe("liveContextOptions under a minted session", () => {
+    async function liveWith(credential: { id: string; secret: string } | null) {
+      vi.stubEnv("YOKOHAMA_WEB_E2E_TARGET", "live");
+      vi.resetModules();
+      vi.doMock("../../worker/scripts/dev-vars.mjs", async (original) => ({
+        ...(await original<typeof import("../../worker/scripts/dev-vars.mjs")>()),
+        readIdentity: () => ({ secret: null, cookie: null, credential }),
+      }));
+      return import("./live");
+    }
+    afterEach(() => vi.doUnmock("../../worker/scripts/dev-vars.mjs"));
+
+    it("seeds the cookie into storageState and puts no Cookie (and no claimed header) in extraHTTPHeaders", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const live = await liveWith(null);
+      const options = await live.liveContextOptions("a@e2e.test");
+      const state = options.storageState as { cookies: Array<{ name: string; value: string; httpOnly: boolean; secure: boolean }>; origins: unknown[] };
+      expect(state.cookies.map((c) => c.name)).toEqual(["__Host-yokohama_session"]);
+      expect(payload(`${state.cookies[0]!.name}=${state.cookies[0]!.value}`).address).toBe("a@e2e.test");
+      expect(options.extraHTTPHeaders).toEqual({});
+      expect(JSON.stringify(options.extraHTTPHeaders ?? {})).not.toMatch(/cookie/i);
+    });
+    // Ruling R-39: the credential RIDES beside a minted session — Access's cookie is the edge's pass where Access
+    // stands — so a context seeded with a session keeps every cookie Access set. The credential's one request is a fake
+    // `fetch`: no cell reaches the network. Mutant: Access's cookies dropped when a session is seeded.
+    it("keeps Access's cookies beside the session when a credential is present (R-39)", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const asked: string[] = [];
+      vi.stubGlobal("fetch", async (url: string | URL) => {
+        asked.push(String(url));
+        const headers = new Headers();
+        headers.append("set-cookie", "CF_Authorization=dummy.jwt.value; Path=/; HttpOnly; Secure; SameSite=None");
+        headers.append("set-cookie", "__cf_bm=x; Path=/; Domain=moore.nyc");
+        return new Response("{}", { status: 200, headers });
+      });
+      try {
+        const live = await liveWith({ id: "dummy-id.access", secret: "dummy-secret-value" });
+        const options = await live.liveContextOptions("a@e2e.test");
+        const state = options.storageState as { cookies: Array<{ name: string; value: string }> };
+        expect(state.cookies.map((c) => c.name)).toEqual(["CF_Authorization", "__cf_bm", "__Host-yokohama_session"]);
+        expect(payload(`${state.cookies[2]!.name}=${state.cookies[2]!.value}`).address).toBe("a@e2e.test");
+        expect(asked, "the credential presented once, to the health route").toEqual([`${LIVE_ORIGIN}/api/health`]);
+        expect(options.extraHTTPHeaders, "and no header names a caller").toEqual({});
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+    it("two emails, two contexts, two distinct cookies", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
+      const live = await liveWith(null);
+      const value = async (email: string) => ((await live.liveContextOptions(email)).storageState as { cookies: Array<{ value: string }> }).cookies[0]!.value;
+      expect(await value("a@e2e.test")).not.toBe(await value("b@e2e.test"));
+    });
+    it("refuses the second context's email under the one cookie, before any context opens", async () => {
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("b@e2e.test"));
+      const live = await liveWith(null);
+      await expect(live.liveContextOptions("b@e2e.test")).resolves.toBeDefined();
+      await expect(live.liveContextOptions("a@e2e.test")).rejects.toThrow("a claimed name beside it is two identities");
+    });
+    it("with no minted session and no credential the context carries the claimed header alone", async () => {
+      const live = await liveWith(null);
+      expect(await live.liveContextOptions("a@e2e.test")).toEqual({ extraHTTPHeaders: { "X-Yokohama-Claimed-User": "a@e2e.test" } });
+    });
+  });
+  it("refuses a variable that is not a minted line, naming it and never the value", () => {
+    vi.stubEnv("YOKOHAMA_SESSION_COOKIE", "red@t.test");
+    expect(() => identityHeaders("a@e2e.test")).toThrow("YOKOHAMA_SESSION_COOKIE");
+    expect(() => identityHeaders("a@e2e.test")).not.toThrow("red@t.test");
   });
   // Locally a context is exactly today's: the walk signs in through the form,
   // and the client attaches the header itself.

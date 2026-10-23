@@ -15,13 +15,17 @@
 export type Target =
   /** No file, no route: 404 with an empty body, never `index.html`. */
   | { kind: "missing" }
-  /** `GET|HEAD /enter`: the turnstile's 302 to `/#/lobby`. */
+  /** `GET|HEAD /enter`: under `access` and the open door, the turnstile's 302 to `/#/lobby`; under `oidc` and `workos`,
+   *  the sign-in's start, or with a `code` (or an issuer's `error`) its callback (the auth cycle, design §4.3;
+   *  `index.ts`, `enter`). */
   | { kind: "enter" }
   /** `GET|HEAD /api/art`: the static art manifest, projected onto the
    *  layer's nine maps (`index.ts`, `art`). */
   | { kind: "art" }
-  /** Any other method on `/enter` or `/api/art`: 405, as axum's router answers. */
+  /** Any other method on `/enter`, `/api/art` or `/api/leave`: 405, as axum's router answers. */
   | { kind: "not-allowed" }
+  /** `POST /api/leave`: sign-out, answered by the Worker itself (the auth cycle, design §4.2; `index.ts`, `leave`). */
+  | { kind: "leave" }
   /** `POST /api/games`: the table object the body names, or a drawn one. */
   | { kind: "create" }
   /** `/api/games/{name}` and below: the table object `name`. */
@@ -84,6 +88,7 @@ export function route(method: string, pathname: string): Target {
   if (pathname === "/enter") return read ? { kind: "enter" } : { kind: "not-allowed" };
   if (!pathname.startsWith("/api/")) return { kind: "missing" };
   if (pathname === "/api/art") return read ? { kind: "art" } : { kind: "not-allowed" };
+  if (pathname === "/api/leave") return method === "POST" ? { kind: "leave" } : { kind: "not-allowed" };
   if (pathname === "/api/games") return method === "POST" ? { kind: "create" } : { kind: "house" };
   if (pathname.startsWith(GAMES)) {
     // The segment exactly as the layer binds it: raw, never percent-decoded
@@ -94,4 +99,28 @@ export function route(method: string, pathname: string): Target {
   if (pathname === "/api/archive" && method === "POST") return { kind: "archive" };
   if (pathname === ADMIN || pathname.startsWith(`${ADMIN}/`)) return { kind: "admin", rest: pathname.slice(ADMIN.length) };
   return { kind: "house" };
+}
+
+/** Where a sign-in lands when it names nowhere the client would draw. */
+const LOBBY = "/#/lobby";
+
+/** The fixed hash routes besides a table's: `parseRoute`'s (`web/src/route.ts`) lobby and its two forms. */
+const FIXED_ROUTES: ReadonlySet<string> = new Set([LOBBY, "/#/new", "/#/new/local"]);
+
+/** A table's hash route: `/#/t/` and the rest, which must be one segment the store accepts. */
+const TABLE_ROUTE = "/#/t/";
+
+/**
+ * **Where a finished sign-in lands** (the auth cycle, design §4.3; rulings R-23, C-12): `raw` when it is one of the
+ * hash routes the client's `parseRoute` (`web/src/route.ts`) reads as somewhere other than its door — exactly
+ * `/#/lobby`, `/#/new`, `/#/new/local`, or `/#/t/<id>` where the RAW `<id>` passes `isSafeId` — and `/#/lobby` for
+ * anything else: another origin, a path, a hash outside the grammar, nothing at all. The segment is never
+ * percent-decoded, so `%`, outside the store's alphabet, lands on the lobby even where the client would decode it to
+ * a usable id; and `isSafeId`'s alphabet holds no `/`, so the segment is one segment. The landing is the browser's
+ * `Location` after a sign-in, so it can only ever name this origin's own page.
+ */
+export function safeReturnTo(raw: string | null): string {
+  if (raw === null) return LOBBY;
+  if (FIXED_ROUTES.has(raw)) return raw;
+  return raw.startsWith(TABLE_ROUTE) && isSafeId(raw.slice(TABLE_ROUTE.length)) ? raw : LOBBY;
 }

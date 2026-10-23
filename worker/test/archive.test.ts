@@ -1,19 +1,27 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import type { Archive } from "../src/archive";
+import { Archive } from "../src/archive";
 import * as clockModule from "../src/clock";
-import type { House } from "../src/house";
+import type { Env } from "../src/env";
+import { House } from "../src/house";
+import { DEVICE_HEADER, type KeySource } from "../src/identity";
+import { handle } from "../src/index";
+import type { Limiter } from "../src/limits";
+import * as r2Module from "../src/r2";
 import type { ArchiveOwed } from "../src/r2";
-import { callerDigest, redactKey } from "../src/redact";
+import { callerDigest, callerTag, redactKey } from "../src/redact";
+import { mintSession, SESSION_COOKIE } from "../src/session";
 import { HOUSE_NAME } from "../src/slot";
-import type { Table } from "../src/table";
+import { Table } from "../src/table";
+import { credentialClaims, signer } from "./tokens";
 import { OWED_GAME_OVER_JSON } from "./fixtures.gen";
 import { upsertDoc } from "../src/storage";
 import { failingList, failingPuts, failPushes, heldInTurn, heldPuts, holdApply, R2_UNREACHABLE, swapBucket } from "./gates";
 import {
   ANOTHER_RECORD,
   BLUE,
+  CREATE_BODY,
   DAY_MS,
   LOCAL,
   OWED,
@@ -1516,5 +1524,341 @@ describe("the switch (R-6.5c.14; spec §2.6)", () => {
       await settle(stub);
     }
     expect(await bucketText(recordKey), "nothing uploaded").toBeNull();
+  });
+});
+
+describe("the anonymous archive (the auth cycle, Task 5; design §4.4, R-A4, R-A11; ruling R-32)", () => {
+  // Every cell goes THROUGH THE SHELL (`handle`, as the runtime's `fetch` calls it): the anonymous caller is formed in
+  // `answer`, never by an object. The pool's door is `worker` with the `access` source, so a request with no assertion
+  // is caller-less, and nothing here needs a sign-in arm. Each cell posts games and devices of its own: the bucket is
+  // the file's (pool fact 5).
+  const ORIGIN = "https://yokohama.test";
+  const DEVICE = "0123456789abcdef";
+  /** The layer's 401 for a caller-less request under `worker`, as the no-identity cell in `worker.test.ts` reads it. */
+  const NO_CALLER = "X-Yokohama-User from the edge Worker";
+
+  /** A key source no caller-less request may ask: such a request carries no assertion. */
+  const NO_KEYS: KeySource = async () => {
+    throw new Error("a request with no assertion asked for Access's keys");
+  };
+
+  /** The walk's finished pair (its first send) or its abandoned one (its fourth), the table document's `id` rewritten
+   *  in its TEXT — a browser's own game, posted as the outbox posts it: two strings, the id inside the second. */
+  function pairAs(id: string, row: 0 | 3 = 0): string {
+    const { record, table } = ARCHIVE_WALK[row]!.body as { record: string; table: string };
+    return JSON.stringify({ record, table: replaceOnce(table, '"id": "wire"', `"id": "${id}"`) });
+  }
+
+  interface Sent { method?: string; headers?: Record<string, string>; body?: string; env?: Env; keys?: KeySource }
+
+  /** The `x-yokohama-*` headers an object was handed: the names it trusts. */
+  const trusted = (req: Request): Record<string, string> => Object.fromEntries([...req.headers].filter(([name]) => name.startsWith("x-yokohama-")));
+
+  /** One request through `handle`, answered whole, with what each object class was handed: the archive objects by
+   *  name and trusted headers, the house and the tables by trusted headers (spies on the PROTOTYPES, pool fact 1). */
+  async function through(path: string, sent: Sent = {}) {
+    const table = vi.spyOn(Table.prototype, "fetch");
+    const house = vi.spyOn(House.prototype, "fetch");
+    const archive = vi.spyOn(Archive.prototype, "fetch");
+    try {
+      const headers = new Headers({ "content-type": "application/json", ...sent.headers });
+      const req = new Request(ORIGIN + path, { method: sent.method ?? "POST", headers, body: sent.body ?? null });
+      const res = await handle(req, sent.env ?? env, createExecutionContext(), sent.keys ?? NO_KEYS);
+      return {
+        status: res.status,
+        text: await res.text(),
+        setCookie: res.headers.getSetCookie(),
+        archive: archive.mock.calls.map(([r], i) => ({ name: (archive.mock.contexts[i] as unknown as { ctx: DurableObjectState }).ctx.id.name, headers: trusted(r) })),
+        house: house.mock.calls.map(([r]) => trusted(r)),
+        table: table.mock.calls.map(([r]) => trusted(r)),
+      };
+    } finally {
+      table.mockRestore();
+      house.mockRestore();
+      archive.mockRestore();
+    }
+  }
+
+  /** The custom metadata R2 holds on `key`, or `undefined` when nothing is there. */
+  async function metaOf(key: string): Promise<Record<string, string> | undefined> {
+    return (await env.ARCHIVE!.head(key))?.customMetadata;
+  }
+
+  /** `meta` holds `want` with an `uploaded` stamp in whole seconds within [`from`, `to`]: the shell's own clock, the
+   *  platform's `Date.now()` (`clock.ts`'s rule), never the module's frozen reading. */
+  function stamped(meta: Record<string, string> | undefined, want: Record<string, string>, from: number, to: number, what: string): void {
+    expect(meta, what).toEqual({ ...want, uploaded: expect.stringMatching(/^\d+$/) });
+    expect(Number(meta!.uploaded), `${what}: uploaded, not before the post`).toBeGreaterThanOrEqual(from);
+    expect(Number(meta!.uploaded), `${what}: uploaded, not after the answer`).toBeLessThanOrEqual(to);
+  }
+
+  /** The pool's dev door (`wrangler.test.jsonc`): a service credential's assertion and the key source that verifies it. */
+  async function devDoor(): Promise<{ token: string; keys: KeySource }> {
+    const key = await signer("k1");
+    const now = Math.floor(Date.now() / 1000);
+    const token = await key.sign(credentialClaims(env.DEV_DOOR_CLIENT_ID!, { teamDomain: env.ACCESS_TEAM_DOMAIN!, aud: env.ACCESS_AUD!, now }));
+    return { token, keys: async () => key.set() };
+  }
+
+  /** A fake binding that records every key and lets every request through. */
+  function counting(): Limiter & { asked: string[] } {
+    const asked: string[] = [];
+    return { asked, limit: async ({ key }) => { asked.push(key); return { success: true }; } };
+  }
+
+  const seconds = () => Math.floor(Date.now() / 1000);
+
+  // Mutants: the device header read AFTER the strip (always absent: the game id's prefix instead); the device not
+  // forwarded to the object (its metadata reads `none`); the metadata on one key only; `uploaded` from the module's
+  // frozen reading, or that reading divided again (a 1970 stamp); the anonymous caller's address written as `caller`.
+  it("a caller-less post with a device header lands under the device's anonymous prefix, with the metadata on both keys", async () => {
+    const id = "local-a0a0a0a0a0a0a0a0";
+    const address = `anon-${DEVICE}@anon.invalid`;
+    const path = `browser/${await segmentOf(address)}/rev7/over/${id}.json`;
+    const from = seconds();
+    const res = await through("/api/archive", { headers: { [DEVICE_HEADER]: DEVICE }, body: pairAs(id) });
+    const to = seconds();
+    expect([res.status, JSON.parse(res.text)]).toEqual([201, { leaf: "over", path, identical: false }]);
+    expect(res.archive, "the device's own archive object, handed the synthetic address and the device").toEqual([
+      { name: `archive:${address}`, headers: { "x-yokohama-user": address, "x-yokohama-device": DEVICE } },
+    ]);
+    expect(res.house).toEqual([]);
+    for (const key of [path, path.replace(/\.json$/, ".table.json")]) {
+      stamped(await metaOf(key), { caller: "anonymous", device: DEVICE, rev: "7", why: "over" }, from, to, key);
+    }
+    expect(await bucketText(path), "the record as sent").toBe((ARCHIVE_WALK[0]!.body as { record: string }).record);
+  });
+
+  // The red button (2026-10-19; review I-2): a DENIED session's post files anonymously exactly as a stranger's does —
+  // the deny rule runs BEFORE step 5a forms the anonymous caller — and the clear of the session cookie rides the
+  // answer. Mutant: the deny rule after step 5a (the post filed under the denied address, in that address's object).
+  it("a denied session's post with a device header files anonymously, under the device, with the session cookie cleared", async () => {
+    const id = "local-b1b1b1b1b1b1b1b1";
+    const address = `anon-${DEVICE}@anon.invalid`;
+    const secret = "a-session-secret-of-at-least-32-bytes!";
+    const denied: Env = {
+      ...env,
+      YOKOHAMA_IDENTITY_SOURCE: "workos",
+      YOKOHAMA_OIDC_CLIENT_ID: "c",
+      YOKOHAMA_OIDC_CLIENT_SECRET: "k",
+      YOKOHAMA_SESSION_SECRET: secret,
+      ACCESS_TEAM_DOMAIN: undefined,
+      ACCESS_AUD: undefined,
+      YOKOHAMA_DENIED: "spam@t.test\n",
+    };
+    const now = seconds();
+    const cookie = await mintSession({ address: "spam@t.test", sid: null, first: now, issued: now }, 30, 90, secret);
+    const res = await through("/api/archive", { headers: { [DEVICE_HEADER]: DEVICE, cookie: `${SESSION_COOKIE}=${cookie}` }, body: pairAs(id), env: denied });
+    expect([res.status, JSON.parse(res.text).leaf]).toEqual([201, "over"]);
+    expect(res.archive, "the device's anonymous object, never the denied address's").toEqual([
+      { name: `archive:${address}`, headers: { "x-yokohama-user": address, "x-yokohama-device": DEVICE } },
+    ]);
+    expect(res.setCookie, "the denied session's cookie cleared on the way out").toEqual([`${SESSION_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`]);
+    // The anti-vacuity half: the same post under the same session with NO deny-list files under the address.
+    const kept = await through("/api/archive", { headers: { [DEVICE_HEADER]: DEVICE, cookie: `${SESSION_COOKIE}=${cookie}` }, body: pairAs("local-b2b2b2b2b2b2b2b2"), env: { ...denied, YOKOHAMA_DENIED: undefined } });
+    expect([kept.status, kept.archive[0]?.name, kept.setCookie]).toEqual([201, "archive:spam@t.test", []]);
+  });
+
+  // R-A11: a browser running TODAY's released client sends no device header, and its waiting games land the first
+  // time it comes back. Review Focus 5: the segment the layer files it under, read from `segmentOf` — the address
+  // made readable, then the digest. Mutants: the fallback dropped (the house's 401); the body's TOP-LEVEL `id` read
+  // (an archive post has none, so the same 401); the metadata's device anything but `none`.
+  it("a caller-less post with NO device header files under the game's own id — today's client, no update (R-A11)", async () => {
+    const id = "local-1e205cc2c8b9f836";
+    const address = `anon-${id}@anon.invalid`;
+    const segment = await segmentOf(address);
+    expect(segment, "browser/anon-local-<16 hex>_at_anon.invalid-<digest>/").toMatch(/^anon-local-1e205cc2c8b9f836_at_anon\.invalid-[0-9a-f]{12}$/);
+    const path = `browser/${segment}/rev7/over/${id}.json`;
+    const from = seconds();
+    const res = await through("/api/archive", { body: pairAs(id) });
+    const to = seconds();
+    expect([res.status, JSON.parse(res.text)]).toEqual([201, { leaf: "over", path, identical: false }]);
+    expect(res.archive).toEqual([{ name: `archive:${address}`, headers: { "x-yokohama-user": address } }]);
+    for (const key of [path, path.replace(/\.json$/, ".table.json")]) {
+      stamped(await metaOf(key), { caller: "anonymous", device: "none", rev: "7", why: "over" }, from, to, key);
+    }
+  });
+
+  // Review Focus 4: a device header of 15 or 17 hex digits, or uppercase hex, is ABSENT — at the shell (the game id's
+  // prefix, no device forwarded) and at the object (the metadata's `none`). The first lands; the next two are the same
+  // object's 200 identical, so all three named ONE prefix. (A Kelvin sign is `isDeviceId`'s unit cell: workerd sends
+  // such a header on with a warning, which a browser's `Headers` would throw on.) Mutants: `isDeviceId` accepting
+  // uppercase or any length; the raw header forwarded without the check.
+  it("a device header that is no device id — uppercase, 15 or 17 digits — is ABSENT: the post files under the game's own id", async () => {
+    const id = "local-b1b1b1b1b1b1b1b1";
+    const address = `anon-${id}@anon.invalid`;
+    const path = `browser/${await segmentOf(address)}/rev7/over/${id}.json`;
+    const answers: unknown[] = [];
+    const from = seconds();
+    for (const bad of ["0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0"]) {
+      const res = await through("/api/archive", { headers: { [DEVICE_HEADER]: bad }, body: pairAs(id) });
+      answers.push([bad, res.status, JSON.parse(res.text), res.archive]);
+    }
+    const to = seconds();
+    const reached = [{ name: `archive:${address}`, headers: { "x-yokohama-user": address } }];
+    expect(answers).toEqual([
+      ["0123456789ABCDEF", 201, { leaf: "over", path, identical: false }, reached],
+      ["0123456789abcde", 200, { leaf: "over", path, identical: true }, reached],
+      ["0123456789abcdef0", 200, { leaf: "over", path, identical: true }, reached],
+    ]);
+    stamped(await metaOf(path), { caller: "anonymous", device: "none", rev: "7", why: "over" }, from, to, path);
+  });
+
+  // Ruling R-32 and the design's grammar claim, through the module itself: a 64-character id of uppercase letters,
+  // dots, hyphens and underscores forms an address the key grammar accepts, ASCII-lowercased, so its two spellings
+  // name ONE object and one prefix; an abandoned game's metadata reads `abandoned`. Mutants: `callerName` without its
+  // lowering (two objects, two prefixes); `why` hard-coded or read from another segment.
+  it("one object serves every spelling of a game id; a 64-character id of dots, hyphens and underscores lands; abandoned reads abandoned", async () => {
+    const spelled = "Local.Mixed_Case-".padEnd(64, "x");
+    const lower = spelled.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    expect([spelled.length, spelled === lower]).toEqual([64, false]);
+    const address = `anon-${lower}@anon.invalid`;
+    const segment = await segmentOf(address);
+    const from = seconds();
+    const abandoned = await through("/api/archive", { body: pairAs(spelled, 3) });
+    const over = await through("/api/archive", { body: pairAs(lower, 0) });
+    const to = seconds();
+    expect([abandoned.status, JSON.parse(abandoned.text)]).toEqual([201, { leaf: "abandoned", path: `browser/${segment}/rev7/abandoned/${spelled}.json`, identical: false }]);
+    expect([over.status, JSON.parse(over.text)]).toEqual([201, { leaf: "over", path: `browser/${segment}/rev7/over/${lower}.json`, identical: false }]);
+    expect([...abandoned.archive, ...over.archive].map((a) => a.name), "one object for both spellings").toEqual([`archive:${address}`, `archive:${address}`]);
+    stamped(await metaOf(`browser/${segment}/rev7/abandoned/${spelled}.json`), { caller: "anonymous", device: "none", rev: "7", why: "abandoned" }, from, to, "abandoned");
+  });
+
+  // The signed-in variant: a caller the Worker verified keeps their own prefix — never the device's — and the device
+  // rides into the metadata all the same (design §4.4, "the header's value when sent, signed in or not"). Mutants: the
+  // anonymous kind formed over a verified caller (the device's prefix); the device forwarded only when anonymous.
+  it("a signed-in post keeps the caller's prefix and carries the device in the metadata", async () => {
+    const { token, keys } = await devDoor();
+    const who = "devicer@t.test";
+    const id = "local-c2c2c2c2c2c2c2c2";
+    const path = `browser/${await segmentOf(who)}/rev7/over/${id}.json`;
+    const from = seconds();
+    const res = await through("/api/archive", {
+      headers: { "Cf-Access-Jwt-Assertion": token, "X-Yokohama-Claimed-User": who, [DEVICE_HEADER]: DEVICE },
+      body: pairAs(id),
+      keys,
+    });
+    const to = seconds();
+    expect([res.status, JSON.parse(res.text)]).toEqual([201, { leaf: "over", path, identical: false }]);
+    expect(res.archive).toEqual([{ name: `archive:${who}`, headers: { "x-yokohama-user": who, "x-yokohama-device": DEVICE } }]);
+    for (const key of [`test/${path}`, `test/${path}`.replace(/\.json$/, ".table.json")]) {
+      stamped(await metaOf(key), { caller: who, device: DEVICE, rev: "7", why: "over" }, from, to, key);
+    }
+  });
+
+  // The shell's own device check for a NAMED caller: the object re-judges (the next cell), so the metadata alone cannot
+  // tell whether the shell checked; what the archive object was handed can. Mutant: the shell forwarding a header that
+  // is no device id raw whenever the caller is not anonymous (a signed-in or claimed caller).
+  it("a signed-in post whose device header is no device id hands the object no device, and the metadata reads none", async () => {
+    const { token, keys } = await devDoor();
+    const who = "undeviced@t.test";
+    const id = "local-c3c3c3c3c3c3c3c3";
+    const path = `browser/${await segmentOf(who)}/rev7/over/${id}.json`;
+    const from = seconds();
+    const res = await through("/api/archive", {
+      headers: { "Cf-Access-Jwt-Assertion": token, "X-Yokohama-Claimed-User": who, [DEVICE_HEADER]: "0123456789ABCDEF" },
+      body: pairAs(id),
+      keys,
+    });
+    const to = seconds();
+    expect([res.status, JSON.parse(res.text)]).toEqual([201, { leaf: "over", path, identical: false }]);
+    expect(res.archive, "the caller's own object, handed no device").toEqual([{ name: `archive:${who}`, headers: { "x-yokohama-user": who } }]);
+    stamped(await metaOf(`test/${path}`), { caller: who, device: "none", rev: "7", why: "over" }, from, to, path);
+  });
+
+  // The archive object judges the device again (`deviceOf`): the shell sets the header for a device id alone, and the
+  // object reads nothing else as one. Driven directly, as the Worker would never send it. Mutant: `Incoming.device` the
+  // raw header (the metadata reads the uppercase value).
+  it("the archive object reads only a device id as the device: anything else is none", async () => {
+    const who = "judged@t.test";
+    const id = "local-f8f8f8f8f8f8f8f8";
+    const res = await archiveStub(who).fetch(`${ORIGIN}/api/archive`, {
+      method: "POST",
+      headers: { "X-Yokohama-User": who, "content-type": "application/json", [DEVICE_HEADER]: "0123456789ABCDEF" },
+      body: pairAs(id),
+    });
+    expect(res.status, await res.text()).toBe(201);
+    expect((await metaOf(`test/browser/${await segmentOf(who)}/rev7/over/${id}.json`))?.device).toBe("none");
+  });
+
+  // A key that does not read as `archive::paths` writes one costs the metadata, never the upload, and is logged with
+  // the key redacted. Every key the module writes reads, so the parse is replaced at module scope (pool fact 4).
+  // Mutants: a null metadata failing the upload; the line not logged, or logging the key unredacted.
+  it("a key whose rev or why cannot be read lands without metadata, logged metadata-skipped", async () => {
+    const id = "local-f9f9f9f9f9f9f9f9";
+    const address = `anon-${id}@anon.invalid`;
+    const path = `browser/${await segmentOf(address)}/rev7/over/${id}.json`;
+    const spy = vi.spyOn(r2Module, "uploadMetadata").mockReturnValue(null);
+    try {
+      const { result, lines } = await logsDuring(() => through("/api/archive", { body: pairAs(id) }));
+      expect(result.status, result.text).toBe(201);
+      expect(lines.filter((l) => (l as { event: string }).event === "metadata-skipped")).toEqual([
+        { event: "metadata-skipped", id: `archive:${await callerDigest(address)}`, record_key: redactKey(path) },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await bucketText(path), "the upload landed").not.toBeNull();
+    expect(await metaOf(path), "with no metadata").toEqual({});
+  });
+
+  // A caller-less post that names no safe id stays the house's 401, as before this cycle — the no-identity cell's body
+  // and the challenge cells' among them. Mutants: `isSafeId` dropped from the fallback (an archive object for `../x`);
+  // the fallback reading a create's top-level `id`; a bad device header forwarded or used.
+  it("a caller-less post whose body names no safe id is the layer's 401, from the house, whatever device header it carries", async () => {
+    const cases: Array<[string, Record<string, string>, string]> = [
+      ["the no-identity cell's body", {}, '{"record":"","table":""}'],
+      ["a table id the store refuses", {}, pairAs("../x")],
+      ["an uppercase device and a table id the store refuses", { [DEVICE_HEADER]: "0123456789ABCDEF" }, pairAs("../x")],
+      ["a create's shape, its id at the top", {}, JSON.stringify({ id: "local-d3d3d3d3d3d3d3d3" })],
+    ];
+    for (const [what, headers, body] of cases) {
+      const res = await through("/api/archive", { headers, body });
+      expect([res.status, (JSON.parse(res.text) as { error: string }).error.includes(NO_CALLER)], what).toEqual([401, true]);
+      expect([res.house, res.archive], `${what}: the house alone, handed no caller and no device`).toEqual([[{}], []]);
+    }
+  });
+
+  // Design §4.4's ceiling 2: an anonymous upload is a create by connecting IP — one budget for every device and game id
+  // one address can mint — and the write limiter never sees it; a signed-in upload stays a write under the caller's
+  // tag. Mutants: `limitKey` keying an anonymous caller by its tag (two keys); `limiterFor` sending it to the write
+  // limiter; `limited` calling every archive post anonymous (the signed-in post spends a create).
+  it("an anonymous post spends the create limiter by IP, and a signed-in one the write limiter by its tag", async () => {
+    const create = counting();
+    const write = counting();
+    const limited: Env = { ...env, CREATE_LIMIT: create as unknown as RateLimit, WRITE_LIMIT: write as unknown as RateLimit };
+    const ip = { "cf-connecting-ip": "1.1.1.1" };
+    const id = "local-e4e4e4e4e4e4e4e4";
+    for (const device of ["e4e4e4e4e4e4e4e4", "e5e5e5e5e5e5e5e5"]) {
+      expect((await through("/api/archive", { headers: { ...ip, [DEVICE_HEADER]: device }, body: pairAs(id), env: limited })).status, device).toBe(201);
+    }
+    expect((await through("/api/archive", { headers: ip, body: pairAs("local-e6e6e6e6e6e6e6e6"), env: limited })).status, "today's client").toBe(201);
+    expect(create.asked, "one key for every device and game from one address").toEqual(["ip:1.1.1.1", "ip:1.1.1.1", "ip:1.1.1.1"]);
+    expect(write.asked, "the write limiter sees nothing").toEqual([]);
+
+    const { token, keys } = await devDoor();
+    const who = "limited@t.test";
+    const signed = await through("/api/archive", {
+      headers: { ...ip, "Cf-Access-Jwt-Assertion": token, "X-Yokohama-Claimed-User": who, [DEVICE_HEADER]: DEVICE },
+      body: pairAs("local-e7e7e7e7e7e7e7e7"),
+      env: limited,
+      keys,
+    });
+    expect(signed.status).toBe(201);
+    expect([create.asked.length, write.asked], "a signed-in upload is a write, under its caller's tag").toEqual([3, [await callerTag(who)]]);
+  });
+
+  // The kind is formed for `POST /api/archive` alone: on any other target a device header names no one, and no object
+  // but the archive is ever handed one. Mutants: `anonymousIdentity` formed on every target (`/api/me` reads the
+  // synthetic address; the create seats it); the device forwarded on every target.
+  it("the anonymous caller never reaches a table route: /api/me and a create with a device header and no caller are no one's", async () => {
+    const device = { [DEVICE_HEADER]: DEVICE };
+    const me = await through("/api/me", { method: "GET", headers: device });
+    expect([me.status, me.text, me.house]).toEqual([200, '{"mode":"cf-access","user":null}', [{}]]);
+    const id = "anon-never-creates";
+    const created = await through("/api/games", { headers: device, body: CREATE_BODY.replace(/}$/, `,"id":"${id}"}`) });
+    expect([created.status, (JSON.parse(created.text) as { error: string }).error.includes(NO_CALLER)]).toEqual([401, true]);
+    expect(created.table, "the table object, handed its name and no caller or device").toEqual([{ "x-yokohama-table-id": id }]);
+    expect([created.house, created.archive]).toEqual([[], []]);
   });
 });

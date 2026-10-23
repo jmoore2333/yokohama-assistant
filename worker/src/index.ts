@@ -1,23 +1,41 @@
 import { ADMIN_NEEDS_JSON, adminRoute, isJsonEssence, NOT_AN_OPERATOR, OPERATOR_HEADER, operatorGate } from "./admin";
 import { Archive, ARCHIVE_PREFIX } from "./archive";
-import { shellConfig } from "./config";
+import { isDenied, shellConfig, type Denied, type Limits, type ShellConfig, type Source } from "./config";
 import type { Env } from "./env";
 import { House } from "./house";
 import {
+  anonymousIdentity,
+  bodyId,
   callerName,
   CLAIMED_PARAM,
   CLAIMED_USER_HEADER,
   claimedIdentity,
+  DEVICE_HEADER,
   identityConfig,
+  isDeviceId,
   keySource,
+  keySourceAt,
   resolveIdentity,
   type Identity,
   type IdentityConfig,
   type KeySource,
 } from "./identity";
-import { limited } from "./limits";
+import { IP_HEADER, limited, limitKey } from "./limits";
 import { errorBody, log, respond } from "./respond";
-import { isSafeId, route, type Target } from "./route";
+import { isSafeId, route, safeReturnTo, type Target } from "./route";
+import {
+  clearCookie,
+  LOGIN_COOKIE,
+  mintLogin,
+  mintSession,
+  readLogin,
+  readSession,
+  renewalExpiry,
+  SESSION_COOKIE,
+  sessionExpiry,
+  setCookie,
+} from "./session";
+import { authorizeUrl, discovery, exchange, leaveUrl, WORKOS_JWKS, type Discovery } from "./signin";
 import { HOUSE_NAME } from "./slot";
 import { isUpgrade, Table, TABLE_ID_HEADER, USER_HEADER } from "./table";
 
@@ -94,29 +112,95 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
-/** `res` with [`API_HEADERS`] set — a fresh `Response` over the same body and status, since an object's answer
- *  may be immutable — or `res` ITSELF for a 101, which carries its socket, cannot be rebuilt (the constructor
- *  refuses the status) and is sent nothing a cache could keep. */
-export function withApiHeaders(res: Response): Response {
+/** The challenge every 401 under `/api` but the archive target's carries when a sign-in arm (`oidc`, `workos`) vouches
+ *  for callers (the auth cycle, design §4.3; ruling R-36): the client's cue to draw its sign-in link beside the
+ *  refusal, as Access's own `Cloudflare-Access` challenge is under Access. The wire's only addition; `/api/me`'s
+ *  `mode` stays `cf-access` (R2.2-m2). */
+export const SESSION_CHALLENGE = 'Yokohama-Session realm="/enter"';
+
+/** The 401 a caller-less `GET`/`HEAD /api/me` answers under a sign-in arm (ruling R-44; host-written): the shell's
+ *  own, since the layer's sentence names the edge Worker's internal header. The challenge beside it is what the
+ *  client reads. */
+export const NOT_SIGNED_IN = "no signed-in user — sign in at /enter";
+
+/** `res` with [`API_HEADERS`] set, and with `WWW-Authenticate: SESSION_CHALLENGE` when `challenge` and `res` is a
+ *  401 — a fresh `Response` over the same body and status, since an object's answer may be immutable — or `res`
+ *  ITSELF for a 101, which carries its socket, cannot be rebuilt (the constructor refuses the status) and is sent
+ *  nothing a cache could keep. */
+export function withApiHeaders(res: Response, challenge: boolean): Response {
   if (res.status === 101) return res;
   const headers = new Headers(res.headers);
   for (const [name, value] of API_HEADERS) headers.set(name, value);
+  if (challenge && res.status === 401) headers.set("WWW-Authenticate", SESSION_CHALLENGE);
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-/** The Worker's entry: [`answer`]'s reply, with the API's two headers on every answer under `/api`. */
-export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys: KeySource): Promise<Response> {
-  const res = await answer(req, env, ctx, keys);
-  return isApiPath(new URL(req.url).pathname) ? withApiHeaders(res) : res;
+/** What [`answer`] hands [`handle`]: the reply; whether a 401 under `/api` carries the session challenge — the
+ *  configuration's source is a sign-in arm and the target is not the archive (ruling R-36), read once in `answer` and
+ *  threaded here rather than read twice; for a session due for one, what a renewal re-mints; and whether the session
+ *  cookie the request sent is cleared on the way out — a denied address's (the red button, 2026-10-19). */
+interface Answered { res: Response; challenge: boolean; renew: Renewal | null; clear: boolean }
+
+/** A session to re-mint on a 2xx answer: its address, session id and first issue, under the deployment's secret,
+ *  days and cap. */
+interface Renewal { address: string; sid: string | null; first: number; secret: string; days: number; maxDays: number }
+
+/** An answer given before the configuration is read, or one that takes neither the challenge nor a renewal. */
+function plain(res: Response): Answered {
+  return { res, challenge: false, renew: null, clear: false };
 }
 
 /**
- * **The Worker** (spec §2.3), wrapped by [`handle`]: stateless, and in this order —
+ * The Worker's entry: [`answer`]'s reply, renewed and then given the API's headers. A session past half its life
+ * gets a fresh cookie on a 2xx answer only — never a 101, which carries its socket and no cookie, and never a
+ * refusal — and every answer under `/api` gets [`API_HEADERS`], with the session challenge on a 401 when a sign-in
+ * arm is the source and the target is not the archive (ruling R-36). `fetcher` is the sign-in's network — the
+ * issuer's discovery document, keys and code exchange — the runtime's `fetch`, or a test's.
+ */
+export async function handle(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  keys: KeySource,
+  fetcher: typeof fetch = fetch,
+): Promise<Response> {
+  const { res, challenge, renew, clear } = await answer(req, env, ctx, keys, fetcher);
+  const kept = renew !== null && res.status >= 200 && res.status < 300 ? await renewed(res, renew) : res;
+  const out = clear ? withCookie(kept, clearCookie(SESSION_COOKIE)) : kept;
+  return isApiPath(new URL(req.url).pathname) ? withApiHeaders(out, challenge) : out;
+}
+
+/** `res` with a fresh session cookie appended, issued NOW — a renewal re-stamps the time (ruling R-16) while keeping
+ *  the session's first issue, from which the cap counts (2026-10-19) — its `Max-Age` the life it really has, over
+ *  the same body and status, since an object's answer may be immutable. */
+async function renewed(res: Response, r: Renewal): Promise<Response> {
+  const issued = nowSeconds();
+  const value = await mintSession({ address: r.address, sid: r.sid, first: r.first, issued }, r.days, r.maxDays, r.secret);
+  return withCookie(res, setCookie(SESSION_COOKIE, value, sessionExpiry(r.first, issued, r.days, r.maxDays) - issued));
+}
+
+/** `res` with the `Set-Cookie` line `cookie` appended, over the same body and status. Never asked of a 101: a
+ *  renewal is a 2xx's alone, and a cleared session is nobody, who gets no socket. */
+function withCookie(res: Response, cookie: string): Response {
+  const headers = new Headers(res.headers);
+  headers.append("Set-Cookie", cookie);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/** The real clock, in whole seconds: what every token, cookie and renewal here is read and minted at. */
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+
+/**
+ * **The Worker** (spec §2.3), wrapped by [`handle`], which renews a session
+ * and sets the API's headers: stateless, and in this order —
  *
  * 1. `route`. A path the asset layer had no file for answers 404 with an
  *    EMPTY body — never `index.html`; any method but GET or HEAD on `/enter`
- *    or `/api/art` is 405 with an empty body, as axum's router answers; and
- *    `/enter` is the turnstile's 302 to `/#/lobby`.
+ *    or `/api/art`, and any but POST on `/api/leave`, is 405 with an empty
+ *    body, as axum's router answers.
  * 1a. An upgrade whose `Origin` is present and not this site's own is 403
  *    `this socket is for the site's own pages`, unupgraded (the
  *    orchestrator's ruling on Task 11's review, escalation 1). A WebSocket is
@@ -135,45 +219,96 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    is not a page's, and passes; a refused sender's assertion is never
  *    verified.
  * 2. `shellConfig`: a configuration it refuses answers every remaining
- *    request — every `/api/*` — 500 with its refusal sentence, which names
- *    the variable, the open door's pair of variables or the Rate Limiting
- *    binding refused (spec §2.6).
+ *    request — every `/api/*`, and `/enter` since the auth cycle (pre-flight
+ *    note R-4: its sign-in reads the configuration) — 500 with its refusal
+ *    sentence, which names the variable, the open door's pair of variables or
+ *    the Rate Limiting binding refused (spec §2.6).
+ * 2a. `/enter` (`enter`; the auth cycle, design §4.3). Under `access`, and
+ *    under the open door, the turnstile's 302 to `/#/lobby`, whatever the
+ *    query, setting nothing. Under a sign-in arm (`oidc`, `workos`), with no
+ *    `code` and no `error` in the query, the sign-in's START: a 302 to the
+ *    issuer's authorize URL, setting the login cookie; with either, its
+ *    CALLBACK: the state checked against the login cookie, the code
+ *    exchanged, and a 302 to the cookie's `return_to` setting the session
+ *    cookie — or `/?signin=failed#/lobby` — with the login cookie cleared
+ *    either way. The callback spends the create limiter by IP before any
+ *    network call (ruling R-31); the start spends none.
  * 3. The body, read ONCE for a method that carries one, under a streaming
  *    bound: over `BODY_LIMIT` it answers 400 with the NAS's sentence. What is
  *    forwarded is the bytes it bounded.
  * 4. `/api/art`: the static art manifest projected onto the nine maps the
  *    layer's `ArtManifest` declares, as JSON (`art`).
- * 5. The caller, by the door (M6.5c2, spec §2.1). Under `worker`: Access's
+ * 5. The caller, by the door (M6.5c2, spec §2.1) and the source (the auth
+ *    cycle, design §4.2). Under `worker` with `access`: Access's
  *    assertion, verified (`resolveIdentity`), whose address was judged raw
  *    and then trimmed and ASCII-lowercased as the layer reads one. No
  *    assertion asks nothing of the key source; a key set that cannot be had
- *    is no caller, so the request fails CLOSED. Under `open`: no assertion is
- *    read and no key is asked for; the caller is the name claimed —
+ *    is no caller, so the request fails CLOSED. Under `worker` with `oidc` or
+ *    `workos`: the session cookie, its MAC and its expiry verified
+ *    (`readSession`), and nothing else — no Access assertion is read and no
+ *    issuer is asked, since the cookie is the whole session. Under `open`: no
+ *    assertion is read and no key is asked for; the caller is the name claimed —
  *    `X-Yokohama-Claimed-User` on a `fetch`, the `claimed` query parameter on
  *    an upgrade, where a browser can put no header, and never the other
  *    carrier — held to what a header can carry (`claimedIdentity`).
+ * 5a. The anonymous caller (the auth cycle, design §4.4; R-A4, R-A11): under
+ *    `worker`, a `POST /api/archive` that step 5 left with NO caller is
+ *    `anonymousIdentity`'s — the device header's value when it is a device
+ *    id (`isDeviceId`, read from the request as sent, before the strip),
+ *    else the game's own id from the body's table document when the store
+ *    would accept it, else still no one. `callerName` renders it as the
+ *    synthetic address `anon-<device|game id>@anon.invalid`, which the key
+ *    grammar already accepts. It is formed for this one target alone, so no
+ *    game route ever sees it, and never over a caller step 5 found. With no
+ *    device id, its fallback parses the body (up to `BODY_LIMIT`, step 3's
+ *    bound) and then the `table` string inside it BEFORE the limiter (6a) is
+ *    asked, since the limiter's kind depends on the caller: a refused post
+ *    still pays for that parse, bounded by `BODY_LIMIT`. Under `open`
+ *    nothing changes: a claim is the caller.
+ * 5b. Under a sign-in arm (`oidc`, `workos`), a `GET` or `HEAD` of `/api/me`
+ *    (the path alone: a query changes nothing) with NO caller is the shell's
+ *    own 401 `NOT_SIGNED_IN`, which `handle` gives the session challenge, and
+ *    no object is reached (ruling R-44). The module would answer 200 with
+ *    `user: null`, which the client's door draws as "This server couldn't
+ *    tell who you are" with a note for the operator (`web/src/Door.tsx`),
+ *    false for a first visitor; the 401 is its cue for the sign-in card.
+ *    Under `access` nothing changes: the module's 200 `user: null` stands
+ *    (correction C-1), since there "nobody" means the edge named nobody, the
+ *    operator's matter. Any other method is the house's.
  * 6. The strip rule: a fresh `Headers` without any header named
  *    `x-yokohama-…`, and the caller set, when there is one, as the ONE header
  *    its door's objects read (`forwardedCaller`): `X-Yokohama-User` for a
- *    caller the Worker verified, `X-Yokohama-Claimed-User` for a claim.
+ *    caller the Worker verified or an anonymous upload's synthetic address,
+ *    `X-Yokohama-Claimed-User` for a claim. For `POST /api/archive` with a
+ *    caller alone, the client's `X-Yokohama-Device` is set again when it is
+ *    a device id, for the archive object's metadata, signed in or not.
  * 6a. The rate limit (security S2b, finding C2; decision D-3; `limited`):
  *    any method but GET or HEAD spends a Rate Limiting binding — the
- *    creates' for `POST /api/games`, the writes' for every other — counted
- *    under the caller's digest at the `worker` door, and at the `open` door
- *    under the connecting IP for a create and IP plus claim for a write; a
- *    request with no caller under its IP at either. Past the limit it is 429
+ *    creates' for `POST /api/games` and for an anonymous caller's `POST
+ *    /api/archive`, the writes' for every other — counted under the caller's
+ *    digest at the `worker` door, and at the `open` door under the connecting
+ *    IP for a create and IP plus claim for a write; a request with no caller,
+ *    or an anonymous one, under its IP at either. Past the limit it is 429
  *    `too many requests from you just now — wait a moment and try again`,
  *    with `Retry-After` the refused kind's own window, and no object is
  *    reached. A limiter that throws is logged `limiter-failed` and the
  *    request proceeds: the limit bounds cost, never access (AD-6).
+ * 6a'. `POST /api/leave` (`leave`; the auth cycle, design §4.2): under
+ *    `access`, `{"leave":"/cdn-cgi/access/logout"}`, clearing nothing; under
+ *    a sign-in arm, the issuer's sign-out URL (`leaveUrl`) returning to this
+ *    site's root, with the session cookie cleared. It is a POST under `/api`,
+ *    so the cross-site check (1b) refuses another site's page before any of
+ *    this, and the write limiter (6a) is spent under the caller's key. Under
+ *    the open door no source signs anyone in: the request is the house's, as
+ *    it was before the route existed (the layer's own 404).
  * 6b. `/api/admin` and below — the operator surface (spec §2.9) — pass the
  *    gate (`operatorGate`): under the open door, or with
  *    `YOKOHAMA_WEB_ADMINS` absent, they are unrouted `/api/*`, the house's
  *    (M6.5c2: a claimed name is never an operator's rights); a caller who is
- *    not a PERSON on the list is 403 `this address is not an operator here`,
- *    a dev-door identity among them whatever address it claims; a listed
- *    person passes with `X-Yokohama-Operator` set to their address, and the
- *    route names the object (`adminRoute`): the listing is the house's, an
+ *    not a PERSON or a SESSION on the list (ruling R-27) is 403 `this address
+ *    is not an operator here`, a dev-door identity among them whatever address
+ *    it claims; a listed one passes with `X-Yokohama-Operator` set to their
+ *    address, and the route names the object (`adminRoute`): the listing is the house's, an
  *    expire the table's, `?force` given a value the 400 `adminRoute` names
  *    (the orchestrator's ruling I-72), an expire whose type is not
  *    `application/json` the 400 `ADMIN_NEEDS_JSON`, in the layer's own words
@@ -191,36 +326,79 @@ export async function handle(req: Request, env: Env, ctx: ExecutionContext, keys
  *    answers its own trap 500.
  *
  * `keys` is the team's key set (`keySource`): the default export's ONE per
- * isolate, or a test's. `_ctx` is the runtime's execution context: nothing
- * here outlives the reply, so nothing reads it, and it is taken so a pool cell
- * calls `handle` exactly as the runtime's `fetch` does.
+ * isolate, or a test's. `fetcher` is the sign-in's network (`handle`'s).
+ * `_ctx` is the runtime's execution context: nothing here outlives the reply,
+ * so nothing reads it, and it is taken so a pool cell calls `handle` exactly as
+ * the runtime's `fetch` does.
  */
-async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource): Promise<Response> {
+async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeySource, fetcher: typeof fetch): Promise<Answered> {
   const url = new URL(req.url);
   const target = route(req.method, url.pathname);
-  if (target.kind === "missing") return new Response(null, { status: 404 });
-  if (target.kind === "not-allowed") return new Response(null, { status: 405 });
-  if (target.kind === "enter") return new Response(null, { status: 302, headers: { Location: "/#/lobby" } });
+  if (target.kind === "missing") return plain(new Response(null, { status: 404 }));
+  if (target.kind === "not-allowed") return plain(new Response(null, { status: 405 }));
   const origin = req.headers.get("Origin");
   if (isUpgrade(req.headers) && origin !== null && origin !== url.origin) {
-    return respond(403, errorBody(FOREIGN_SOCKET));
+    return plain(respond(403, errorBody(FOREIGN_SOCKET)));
   }
-  if (crossSite(req.method, req.headers, url.origin)) return respond(403, errorBody(CROSS_SITE));
+  if (crossSite(req.method, req.headers, url.origin)) return plain(respond(403, errorBody(CROSS_SITE)));
 
   const config = shellConfig(env);
-  if ("error" in config) return respond(500, errorBody(config.error));
+  if ("error" in config) return plain(respond(500, errorBody(config.error)));
+  const now = nowSeconds();
+  if (target.kind === "enter") return plain(await enter(req, url, config, fetcher, now));
+  // The session challenge rides a 401 under a sign-in arm — but never the archive's (ruling R-36): the anonymous
+  // archive takes a caller-less post (step 5a), so the archive's one remaining 401 is the house refusing a body that
+  // names no device and no safe game id, a defect to surface (design §4.5), never "sign in".
+  const challenge = config.source !== null && config.source !== "access" && target.kind !== "archive";
+  // Set when the request's session cookie names a denied address (the red button), read by `handle`.
+  let clear = false;
+  const done = (res: Response, renew: Renewal | null = null): Answered => ({ res, challenge, renew, clear });
 
   // GET and HEAD carry no body: the Fetch API refuses one on either.
   const carries = req.method !== "GET" && req.method !== "HEAD";
   const body = carries ? await bounded(req.body) : null;
-  if (body === undefined) return respond(400, errorBody(BODY_LIMIT_SENTENCE));
+  if (body === undefined) return done(respond(400, errorBody(BODY_LIMIT_SENTENCE)));
 
-  if (target.kind === "art") return art(req, url, env);
+  if (target.kind === "art") return done(await art(req, url, env));
 
-  const identity =
+  let identity =
     config.door === "open"
       ? claimedIdentity(isUpgrade(req.headers) ? url.searchParams.get(CLAIMED_PARAM) : req.headers.get(CLAIMED_USER_HEADER))
-      : await identify(req.headers, keys, identityConfig(env, config.devDoor, Math.floor(Date.now() / 1000)));
+      : config.source === "access"
+        ? await identify(req.headers, keys, identityConfig(env, config.devDoor, now))
+        : await sessionIdentity(req.headers.get("cookie"), config.session, now);
+  // **The red button** (2026-10-19, the owner's ruling): a session naming a denied address, or one at a denied
+  // domain (`YOKOHAMA_DENIED`), is nobody — answered exactly as a caller-less request is, and the cookie it sent is
+  // cleared on the way out (`clear`), so the browser stops sending it. Read before step 5a, so a denied player's
+  // upload files anonymously as a stranger's does, and before step 5b's 401, which a denied `/api/me` then meets.
+  if (identity.kind === "session" && isDenied(config.denied, identity.email)) {
+    clear = true;
+    identity = NO_ONE;
+  }
+  // Step 5a: an upload with no caller is filed anonymously, from the request's headers AS SENT — the device header is
+  // an `x-yokohama-*` one, which the strip below drops.
+  if (config.door === "worker" && target.kind === "archive" && callerName(identity) === undefined) {
+    identity = anonymousIdentity(req.headers, body);
+  }
+  // Step 5b (ruling R-44): under a sign-in arm, "who am I" with no caller is "sign in", never the module's 200 naming
+  // nobody, which the client's door reads as a server that could not tell who you are. C-1's 200 stays under `access`.
+  const whoAmI = target.kind === "house" && url.pathname === "/api/me" && SAFE_METHODS.has(req.method);
+  if (whoAmI && armOf(config) !== null && identity.kind === "none") {
+    const body401 = req.method === "HEAD" ? null : errorBody(NOT_SIGNED_IN);
+    return done(new Response(body401, { status: 401, headers: { "content-type": "application/json" } }));
+  }
+  // Renewed on a 2xx (`handle`); never on the leave's answer, which clears the cookie a renewal would set again.
+  const renew: Renewal | null =
+    identity.kind === "session" && identity.renew && config.session !== null
+      ? {
+          address: identity.email,
+          sid: identity.sid,
+          first: identity.first,
+          secret: config.session.secret,
+          days: config.session.days,
+          maxDays: config.session.maxDays,
+        }
+      : null;
 
   const headers = new Headers();
   for (const [name, value] of req.headers) {
@@ -228,6 +406,10 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   }
   const who = callerName(identity);
   if (who !== undefined) headers.set(identity.kind === "claimed" ? CLAIMED_USER_HEADER : USER_HEADER, who);
+  // The device, for the archive object's metadata alone — so only with a caller, which names that object (a caller-less
+  // post is the house's): the raw header, judged before it is set again.
+  const device = req.headers.get(DEVICE_HEADER);
+  if (target.kind === "archive" && who !== undefined && device !== null && isDeviceId(device)) headers.set(DEVICE_HEADER, device);
 
   // The rate limit (security S2b, finding C2; decision D-3): after the caller is known, before any object. A
   // limiter that throws is logged and the request proceeds: the limit bounds cost, never access (AD-6) — a binding
@@ -238,20 +420,29 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   } catch (e) {
     log("limiter-failed", { error: String(e) });
   }
-  if (refused !== undefined) return refused;
+  if (refused !== undefined) return done(refused, renew);
+
+  if (target.kind === "leave") {
+    if (config.source === "access") return done(respond(200, JSON.stringify({ leave: ACCESS_LOGOUT })));
+    const arm = armOf(config);
+    if (arm !== null) return done(await leave(url, arm, identity, fetcher));
+    // The open door: no source signs anyone in, so the request is the house's, below.
+  }
 
   let forwarded: Forwarded;
   if (target.kind === "admin") {
     const gate = operatorGate(config.door, config.admins, identity);
-    if (gate.kind === "refused") return respond(403, errorBody(NOT_AN_OPERATOR));
+    if (gate.kind === "refused") return done(respond(403, errorBody(NOT_AN_OPERATOR)), renew);
     forwarded = { kind: "house" };
     if (gate.kind === "operator") {
       headers.set(OPERATOR_HEADER, gate.email);
       const admin = adminRoute(req.method, url.pathname, url.search.slice(1));
-      if (admin.kind === "refused") return respond(400, errorBody(admin.sentence));
-      if (admin.kind === "expire" && !isJsonEssence(req.headers.get("content-type"))) return respond(400, errorBody(ADMIN_NEEDS_JSON));
+      if (admin.kind === "refused") return done(respond(400, errorBody(admin.sentence)), renew);
+      if (admin.kind === "expire" && !isJsonEssence(req.headers.get("content-type"))) return done(respond(400, errorBody(ADMIN_NEEDS_JSON)), renew);
       if (admin.kind === "expire") forwarded = { kind: "table", name: admin.name };
     }
+  } else if (target.kind === "leave") {
+    forwarded = { kind: "house" };
   } else {
     forwarded = target;
   }
@@ -263,16 +454,243 @@ async function answer(req: Request, env: Env, _ctx: ExecutionContext, keys: KeyS
   if (config.door === "open" && isUpgrade(req.headers)) forwardedUrl.searchParams.delete(CLAIMED_PARAM);
   const object = objectFor(forwarded, env, identity, body, headers);
   try {
-    return await object.fetch(new Request(forwardedUrl, { method: req.method, headers, body }));
+    return done(await object.fetch(new Request(forwardedUrl, { method: req.method, headers, body })), renew);
   } catch (e) {
     log("object-failed", { target: forwarded.kind, path: url.pathname, error: String(e) });
-    return respond(500, errorBody(OBJECT_FAILED));
+    return done(respond(500, errorBody(OBJECT_FAILED)), renew);
   }
 }
 
 /** A target `handle` forwards to an object: every route but the Worker's own
- *  answers, with an operator's route resolved to the house or a table. */
-type Forwarded = Exclude<Target, { kind: "missing" | "not-allowed" | "enter" | "art" | "admin" }>;
+ *  answers, with an operator's route resolved to the house or a table, and the
+ *  open door's `leave` to the house. */
+type Forwarded = Exclude<Target, { kind: "missing" | "not-allowed" | "enter" | "art" | "admin" | "leave" }>;
+
+/** A sign-in arm's configuration: the source and its sign-in and session halves, all three present. */
+interface Arm {
+  source: Exclude<Source, "access">;
+  signin: NonNullable<ShellConfig["signin"]>;
+  session: NonNullable<ShellConfig["session"]>;
+}
+
+/** The sign-in arm `config` runs, or `null` under `access` and the open door. `shellConfig` sets `signin` and
+ *  `session` exactly when the source is `oidc` or `workos`. */
+function armOf(config: ShellConfig): Arm | null {
+  const { source, signin, session } = config;
+  return source === null || source === "access" || signin === null || session === null ? null : { source, signin, session };
+}
+
+/** Every failed sign-in's landing (the auth cycle, design §4.3; ruling R-30): the query OUTSIDE the hash, so the
+ *  client's `parseRoute`, which reads the hash alone, draws the lobby, and the query still shows in the address bar.
+ *  Inside the hash (`/#/lobby?signin=failed`) the route would be the door. */
+export const SIGNIN_FAILED = "/?signin=failed#/lobby";
+
+/** Access's own sign-out path: it ends the Access session and its cookie. */
+const ACCESS_LOGOUT = "/cdn-cgi/access/logout";
+
+/** A login cookie's `Max-Age`: `mintLogin`'s ten minutes, which the payload's `expires` also bounds. */
+const LOGIN_SECONDS = 600;
+
+/**
+ * `GET|HEAD /enter` (step 2a of `answer`). Under `access` and the open door: the 302 to `/#/lobby`, setting nothing.
+ * Under a sign-in arm: the CALLBACK when the query carries a `code` or an `error` — an issuer that refuses a sign-in
+ * answers the redirect URI with `error` and no `code` (RFC 6749 §4.1.2.1), and read as a fresh START that answer
+ * would send the browser straight back to an issuer that refuses again — and the START otherwise.
+ */
+async function enter(req: Request, url: URL, config: ShellConfig, fetcher: typeof fetch, now: number): Promise<Response> {
+  const arm = armOf(config);
+  if (arm === null) return redirect("/#/lobby", []);
+  const isCallback = url.searchParams.has("code") || url.searchParams.has("error");
+  return isCallback ? callback(req, url, arm, config.limits, config.denied, fetcher, now) : start(url, arm, fetcher, now);
+}
+
+/** The redirect URI the issuer registered: this origin's `/enter`, the one path both halves live on. */
+function redirectUri(url: URL): string {
+  return `${url.origin}/enter`;
+}
+
+/**
+ * The sign-in's START: `state` and `nonce` drawn, and a PKCE verifier when the arm is `oidc` with no client secret —
+ * the ONE place the PKCE decision is made (ruling R-25): a challenge beside a secret would have the issuer refuse
+ * every sign-in, so with a secret, and under `workos`, there is no challenge and the stored verifier is empty. The
+ * answer is a 302 to the issuer's authorize URL (`authorizeUrl`), setting the login cookie, which carries the three
+ * and the landing (`safeReturnTo` of `?return_to=`) for ten minutes. Anything that throws on the way — the issuer's
+ * document that cannot be had, a `Location` no header can carry — is the failed landing, logged `signin-failed`,
+ * never the platform's 500.
+ */
+async function start(url: URL, arm: Arm, fetcher: typeof fetch, now: number): Promise<Response> {
+  try {
+    const state = drawn();
+    const nonce = drawn();
+    const pkce = arm.source === "oidc" && arm.signin.clientSecret === null;
+    const verifier = pkce ? drawn() : "";
+    const challenge = pkce ? base64url(new Uint8Array(await crypto.subtle.digest("SHA-256", utf8.encode(verifier)))) : null;
+    const doc = await documentOf(arm, fetcher);
+    const location = authorizeUrl(arm.source, arm.signin, { redirectUri: redirectUri(url), state, nonce, challenge }, doc);
+    const login = await mintLogin({ state, nonce, verifier, returnTo: safeReturnTo(url.searchParams.get("return_to")) }, now, arm.session.secret);
+    return redirect(location, [setCookie(LOGIN_COOKIE, login, LOGIN_SECONDS)]);
+  } catch (e) {
+    log("signin-failed", { source: arm.source, step: "start", error: String(e) });
+    return failedSignin();
+  }
+}
+
+/**
+ * The sign-in's CALLBACK, refused before any exchange — logged `signin-refused` with its reason — when the request
+ * carries no live login cookie this deployment signed (`no-login`: absent, forged, expired, or already cleared by an
+ * earlier callback, which is what makes a replayed callback fail), when the issuer answered an `error`
+ * (`issuer-error`), when the `code` is empty (`no-code`), or when the `state` is not the login cookie's, compared in
+ * constant time (`state`) — each costing a MAC and nothing else. Then the create limiter (`callbackLimited`; ruling
+ * R-31), refused as `limited`. Then ONE exchange (`exchange`, with the caller's IP and user agent, which WorkOS's Radar
+ * reads, the stored verifier and nonce, and the arm's key source); a `null` from it — logged by the arm itself — or
+ * anything that throws is the failed landing. On success: a 302 to the login cookie's landing, held to
+ * `safeReturnTo` once more, setting the session cookie for the configured days. Every outcome clears the login cookie.
+ */
+async function callback(
+  req: Request,
+  url: URL,
+  arm: Arm,
+  limits: Limits,
+  denied: Denied | null,
+  fetcher: typeof fetch,
+  now: number,
+): Promise<Response> {
+  const refused = (reason: string): Response => {
+    log("signin-refused", { source: arm.source, reason });
+    return failedSignin();
+  };
+  const login = await readLogin(req.headers.get("cookie"), arm.session.secret, now);
+  if (login === null) return refused("no-login");
+  if (url.searchParams.has("error")) return refused("issuer-error");
+  const code = url.searchParams.get("code");
+  if (code === null || code === "") return refused("no-code");
+  if (!sameState(url.searchParams.get("state"), login.state)) return refused("state");
+  if (await callbackLimited(req, limits)) return refused("limited");
+  try {
+    const doc = await documentOf(arm, fetcher);
+    const jwks = doc === null ? WORKOS_JWKS(arm.signin.clientId) : doc.jwks_uri;
+    const who = await exchange(
+      arm.source,
+      arm.signin,
+      {
+        code,
+        redirectUri: redirectUri(url),
+        verifier: login.verifier,
+        nonce: login.nonce,
+        ip: req.headers.get(IP_HEADER),
+        userAgent: req.headers.get("user-agent"),
+      },
+      { fetcher, keys: armKeys(jwks, fetcher), discovery: doc, nowSeconds: now },
+    );
+    if (who === null) return failedSignin();
+    // The red button: a denied address is refused AFTER the exchange — the issuer vouched, this site declines — by
+    // reason alone, never the address (the list is a secret and the log is not).
+    if (isDenied(denied, who.address)) return refused("denied");
+    const { days, maxDays, secret } = arm.session;
+    const value = await mintSession({ address: who.address, sid: who.sid, first: now, issued: now }, days, maxDays, secret);
+    return redirect(safeReturnTo(login.returnTo), [
+      setCookie(SESSION_COOKIE, value, sessionExpiry(now, now, days, maxDays) - now),
+      clearCookie(LOGIN_COOKIE),
+    ]);
+  } catch (e) {
+    log("signin-failed", { source: arm.source, step: "callback", error: String(e) });
+    return failedSignin();
+  }
+}
+
+/**
+ * Whether the create limiter refuses this callback (ruling R-31). The login cookie is stateless, so for its ten minutes
+ * any number of callbacks could each drive one code exchange under the deployment's API key: the callback spends
+ * `limits.create` under the key `limitKey` gives a request with no caller — `ip:<cf-connecting-ip>`, or `ip:unknown`
+ * without the header — the key a caller-less request is counted under at either door, so the limiter keeps one key
+ * format. A limiter that throws is logged `limiter-failed` and the callback proceeds, as `limited` does (AD-6: the
+ * limit bounds cost, never access).
+ */
+async function callbackLimited(req: Request, limits: Limits): Promise<boolean> {
+  try {
+    // The door is `worker` wherever a sign-in arm runs; with no caller `limitKey` reads the IP alone either way.
+    const key = await limitKey("worker", NO_ONE, req.headers.get(IP_HEADER), "create");
+    return !(await limits.create.limit({ key })).success;
+  } catch (e) {
+    log("limiter-failed", { error: String(e) });
+    return false;
+  }
+}
+
+/** The `oidc` arm's discovery document (`discovery`, cached per isolate and issuer), or `null` under `workos`, which
+ *  has none. Rejects as `discovery` does. */
+async function documentOf(arm: Arm, fetcher: typeof fetch): Promise<Discovery | null> {
+  if (arm.source !== "oidc") return null;
+  // `shellConfig` refuses `oidc` without an issuer, so this never throws; it keeps the type honest.
+  if (arm.signin.issuer === null) throw new Error("the oidc arm has no issuer");
+  return discovery(arm.signin.issuer, fetcher);
+}
+
+/** Whether the callback's `state` is the login cookie's: `timingSafeEqual` over equal-length bytes, and `false` at
+ *  once for an absent state or another length (a drawn state's length is public). */
+function sameState(sent: string | null, kept: string): boolean {
+  if (sent === null) return false;
+  const a = utf8.encode(sent);
+  const b = utf8.encode(kept);
+  return a.byteLength === b.byteLength && crypto.subtle.timingSafeEqual(a, b);
+}
+
+/** A 302 to `location`, setting each of `cookies`. Throws when `location` is no header value, which every caller
+ *  handing it an issuer's URL catches. */
+function redirect(location: string, cookies: readonly string[]): Response {
+  const headers = new Headers({ Location: location });
+  for (const cookie of cookies) headers.append("Set-Cookie", cookie);
+  return new Response(null, { status: 302, headers });
+}
+
+/** The failed landing: `SIGNIN_FAILED`, with the login cookie cleared and no session cookie. */
+function failedSignin(): Response {
+  return redirect(SIGNIN_FAILED, [clearCookie(LOGIN_COOKIE)]);
+}
+
+/**
+ * `POST /api/leave` under a sign-in arm (step 6a' of `answer`): `{ leave }`, the issuer's sign-out URL returning to
+ * this site's root (`leaveUrl`; the WorkOS session id when the session carries one), with the session cookie cleared.
+ * With no session, or no document for an `oidc` issuer (logged `signin-failed`), the leave is the site's root, and the
+ * cookie is cleared all the same.
+ */
+async function leave(url: URL, arm: Arm, identity: Identity, fetcher: typeof fetch): Promise<Response> {
+  let doc: Discovery | null = null;
+  try {
+    doc = await documentOf(arm, fetcher);
+  } catch (e) {
+    log("signin-failed", { source: arm.source, step: "leave", error: String(e) });
+  }
+  const sid = identity.kind === "session" ? identity.sid : null;
+  const res = respond(200, JSON.stringify({ leave: leaveUrl(arm.source, sid, doc, `${url.origin}/`, arm.signin.clientId) }));
+  res.headers.append("Set-Cookie", clearCookie(SESSION_COOKIE));
+  return res;
+}
+
+/** The caller a sign-in arm's session cookie names, or no one (`readSession` never throws), with `renew` set when a
+ *  renewal is due and would extend the cookie (`renewalExpiry`: past half the sliding days, and not yet at the cap). */
+async function sessionIdentity(cookie: string | null, session: ShellConfig["session"], now: number): Promise<Identity> {
+  if (session === null) return NO_ONE;
+  const s = await readSession(cookie, session.secret, now);
+  if (s === null) return NO_ONE;
+  const renew = renewalExpiry(s, now, session.days, session.maxDays) !== null;
+  return { kind: "session", email: s.address, sid: s.sid, first: s.first, renew };
+}
+
+const utf8 = new TextEncoder();
+
+/** 32 bytes from `crypto.getRandomValues`, base64url: a state, a nonce or a PKCE verifier (43 characters, inside RFC
+ *  7636's 43 to 128). */
+function drawn(): string {
+  return base64url(crypto.getRandomValues(new Uint8Array(32)));
+}
+
+/** RFC 4648's url alphabet, unpadded. */
+function base64url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
 /**
  * The caller, or no one. A request with no assertion is no one without a word
@@ -354,24 +772,6 @@ async function art(req: Request, url: URL, env: Env): Promise<Response> {
   return new Response(req.method === "HEAD" ? null : body, { status: 200, headers: { "content-type": "application/json" } });
 }
 
-/** A body's `id` when it is a JSON object whose `id` is a string (spec
- *  §2.3's create row); otherwise `undefined`. The body is parsed for this one
- *  member and forwarded as the bytes it was: nothing here re-serializes it.
- *  Bytes that are not UTF-8, or that open with a byte-order mark, name no id —
- *  the layer's own parse refuses both. */
-function createId(body: Uint8Array | null): string | undefined {
-  if (body === null) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(body));
-  } catch {
-    return undefined;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const id = (parsed as { id?: unknown }).id;
-  return typeof id === "string" ? id : undefined;
-}
-
 /** `sim-` and 16 hex digits from `crypto.getRandomValues`: a create's name
  *  when its body names none — drawn independently of any seed, as the
  *  layer's own default id is. */
@@ -407,7 +807,7 @@ function objectFor(
       // A named id the layer can never use is the house's, whose `create`
       // refuses it as the layer does (the orchestrator's ruling, Task 9's
       // review): the name never makes a table object.
-      const named = createId(body);
+      const named = bodyId(body);
       if (named !== undefined && !isSafeId(named)) return house();
       const name = named ?? drawName();
       // Percent-encoded (spec §2.3), so the name travels as ASCII whatever
@@ -432,7 +832,10 @@ function objectFor(
       // the key grammar refuses — `..`, a name of 40 letters — still names an
       // object, whose `init` refuses it: that object answers the layer's own
       // 401 for the caller, as the NAS does (M6.5c2 cycle D, row 8;
-      // `Archive.callerRefused`).
+      // `Archive.callerRefused`). An anonymous upload's synthetic address
+      // (`anonymousIdentity`; the auth cycle, design §4.4) is ASCII-lowercased
+      // too (`callerName`), so every spelling of one game names one object,
+      // and is at most 82 bytes, so it always names one.
       const who = callerName(identity);
       if (who === undefined || new TextEncoder().encode(who).length > ADDRESS_MAX_BYTES) return house();
       return env.ARCHIVER.get(env.ARCHIVER.idFromName(ARCHIVE_PREFIX + who));
@@ -440,6 +843,24 @@ function objectFor(
     case "house":
       return house();
   }
+}
+
+/**
+ * The sign-in arms' key sources: ONE per isolate and JWKS URL (`keySourceAt`'s doc), made at the first callback that
+ * needs each — `WORKOS_JWKS(clientId)` under `workos`, the discovery document's `jwks_uri` under `oidc` — and kept,
+ * as the Access `source` below is, so a token naming an unknown `kid` costs at most one fetch a minute per URL,
+ * whoever sends it. Each URL comes from the configuration or the issuer's cached document, so a deployment holds one
+ * entry. The FIRST caller's `fetcher` serves a URL for the isolate's life, as `discovery`'s cache does.
+ */
+const armKeySources = new Map<string, KeySource>();
+
+function armKeys(url: string, fetcher: typeof fetch): KeySource {
+  let keys = armKeySources.get(url);
+  if (keys === undefined) {
+    keys = keySourceAt(url, fetcher);
+    armKeySources.set(url, keys);
+  }
+  return keys;
 }
 
 /** ONE key source per isolate, made at the first request. */
