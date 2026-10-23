@@ -39,8 +39,9 @@ export interface ShellConfig {
   archive: "r2" | "off";
   /** `null`: no table ever expires. */
   ttlDays: number | null;
-  /** How many days a table still WAITING for players — its status `open` —
-   *  stands without activity (R-6.5c2.42); 7 when the variable is absent.
+  /** How many days a table that has not started — open, or dealing with a
+   *  keep outstanding; its status `open` or `dealing` — stands without
+   *  activity (R-6.5c2.42; security S3, D9); 7 when the variable is absent.
    *  Inert while `ttlDays` is `null`: then no table expires. */
   openTtlDays: number;
   /** `null`: the operator routes are the layer's 404 (spec §2.9). Always

@@ -246,8 +246,9 @@ export abstract class TableBase extends DurableObject<Env> {
    *    (`deliverArchive`): a game over whose upload failed, or was cut off.
    *    With the archive `off`, the owed save is kept and logged;
    * 3. expires the table once its last activity is a TTL old — or, while it
-   *    still waits for players, the waiting-table TTL old (R-6.5c2.42), which
-   *    its status decides here — or re-reads that activity and re-arms to the
+   *    has not started (open, or dealing with a keep outstanding), the
+   *    waiting-table TTL old (R-6.5c2.42; security S3, D9), which its status
+   *    decides here — or re-reads that activity and re-arms to the
    *    table's next deadline (`expiry`).
    *
    * The batches the first two write re-arm the alarm — a new slot's, a failed
@@ -846,8 +847,8 @@ export abstract class TableBase extends DurableObject<Env> {
   /**
    * When the table expires (spec §2.4 "Expiry"; R-6.5c2.42): its last
    * activity plus the days `expiryDays` gives — the SHORTER of the two TTLs
-   * from SQL alone, since no batch can read whether the table still waits for
-   * players (the strings rule), and the TTL itself once the alarm has read
+   * from SQL alone, since no batch can read whether the table has started
+   * (the strings rule), and the TTL itself once the alarm has read
    * its status and passes `waiting` as `false` (`expiry`) — or, while its
    * expiries keep failing, the retry after them on the backoff (`nextRetry`),
    * if that is later. `undefined` when no expiry is due: no TTL, whatever the

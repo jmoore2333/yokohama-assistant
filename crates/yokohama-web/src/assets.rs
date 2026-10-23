@@ -544,7 +544,12 @@ mod tests {
         use tower::ServiceExt;
         let res = router
             .clone()
-            .oneshot(axum::http::Request::get(path).body(Body::empty()).expect("a request"))
+            .oneshot(
+                axum::http::Request::get(path)
+                    .header(header::HOST, "localhost")
+                    .body(Body::empty())
+                    .expect("a request"),
+            )
             .await
             .expect("the router answers");
         let status = res.status();

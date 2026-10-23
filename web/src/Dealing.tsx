@@ -21,6 +21,7 @@
 // from the same seed, and the game this screen opens shows them all.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Abandon } from "./Abandon";
 import { api, ApiError, displayName, isLocal } from "./api";
 import { backArt } from "./art";
 import { Board } from "./Board";
@@ -29,7 +30,7 @@ import { OrderCardView, seatClass } from "./Cards";
 import { Chat } from "./Chat";
 import { TableSections } from "./TableSections";
 import { useSignal } from "./signal";
-import { holder, seatName } from "./tables";
+import { holder, mayAbandon, seatName } from "./tables";
 import type { SectionKey } from "./sections";
 import type { ArtManifest, DealView, Labels, PlayerColor } from "./types";
 import { Refusal } from "./Refusal";
@@ -111,6 +112,11 @@ export function Dealing({
 }) {
   const [deal, setDeal] = useState<DealView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Abandon's refusal, in a strip of its own in the line directly under the
+   *  banner that holds the control — the open table's rule (R-C24): each
+   *  refusal sits beside its own control, and the keep's strip is the deck's,
+   *  a screen away. */
+  const [abandonError, setAbandonError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** The table's newest message number, off the signal's own frame — the chat
    *  panel's `count` (spec §6.2). The table exists before the game does, and so
@@ -343,6 +349,16 @@ export function Dealing({
             choosing. */}
         <nav className="views">
           <BoardsMenu enabled={sections} onToggle={onToggleSection} />
+          {/* **The creator's Abandon, SEATED** (security S3, design §3.2 rule 3;
+              D-6): a dealing table's seats are never reopened — every seat can
+              read its dealt cards (R-S3-13) — so the creator closes a deal that
+              stalled with Abandon and sets a new table. The shared control and
+              the layer's rule (`mayAbandon`), as the open table and the lobby's
+              rows draw it. A LOCAL table waits on nobody and leaves by the
+              door, so it is offered none here. */}
+          {!isLocal(game) && mayAbandon(table) && (
+            <Abandon table={table} onDone={() => onLeave()} onError={setAbandonError} />
+          )}
           {/* "Lobby", the word the Game menu and the open table both use for
               this destination (live review M-3). It read "Games" while the
               other three screens named the same place differently. */}
@@ -351,7 +367,13 @@ export function Dealing({
           </button>
         </nav>
       </header>
-      <div className="end-strip" role="status" />
+      {/* Abandon's refusal goes INSIDE the end strip, the one line under the
+          banner at every width: from 1201px `.app` is a grid that places its
+          children by name, and an element added between these two would be
+          auto-placed into a row below the screen. */}
+      <div className="end-strip" role="status">
+        {abandonError && <Refusal sentence={abandonError} className="error abandon-refusal" />}
+      </div>
       <main className="table">
         <div className="table-body">
           {/* No `onTileClick`: every tile is an inert `<div>`, the rule a replay

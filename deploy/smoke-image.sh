@@ -3,9 +3,10 @@
 # spec §2.9). `.github/workflows/docker.yml` runs it on every image it builds,
 # and a self-hoster can run it on theirs before putting it behind anything:
 #
-#     bash deploy/smoke-image.sh <image> [port]
+#     bash deploy/smoke-image.sh <image> [port] [hostname]
 #
-# It proves three things about the IMAGE and nothing about a deployment:
+# It proves three things about the IMAGE and nothing about a deployment, and a
+# fourth when it is given a hostname:
 #
 # 1. no door is a refusal to start, never a guess: the container exits 1 and
 #    its output names `YOKOHAMA_WEB_IDENTITY`;
@@ -13,7 +14,14 @@
 #    `Cf-Access-Authenticated-User-Email`, and only an address (the mode rule):
 #    a plain name in that header is no one;
 # 3. under `open`, which this image must ship (`open-door` is a default
-#    feature), a typed name is a caller, keyed as `User::parse` keys it.
+#    feature), a typed name is a caller, keyed as `User::parse` keys it;
+# 4. with a `hostname` (security S3, D4): the container runs with
+#    `YOKOHAMA_WEB_HOSTNAMES_ENABLED=on` and `YOKOHAMA_WEB_HOSTNAMES=<hostname>`,
+#    and under each door `/api/health` answers 200 to `Host: <hostname>` and
+#    421 to `Host: smoke-foreign.example` — so an image whose Host check is
+#    broken fails here. Without it the smoke runs as it always did, the check
+#    on with its loopback default (the smoke reaches the port as 127.0.0.1),
+#    and says the host probe was not asked for.
 #
 # `/api/health` alone cannot tell a working door from a broken one — it answers
 # the same either way — so every door is also read through `/api/me` and
@@ -30,12 +38,22 @@
 # published on 127.0.0.1 only.
 set -euo pipefail
 
-image="${1:?usage: deploy/smoke-image.sh <image> [port]}"
+image="${1:?usage: deploy/smoke-image.sh <image> [port] [hostname]}"
 for tool in docker curl python3; do
   command -v "$tool" >/dev/null 2>&1 \
     || { echo "smoke: FAIL — \`$tool\` is not on PATH; this script needs docker, curl and python3" >&2; exit 1; }
 done
 port="${2:-18080}"
+hostname="${3:-}"
+# The Host check's two variables, for the containers that serve (security S3,
+# D4). An array, expanded below with the `+` guard: bash 3.2 (macOS) reads an
+# empty array under `set -u` as unbound.
+hostenv=()
+if [ -n "$hostname" ]; then
+  hostenv=(-e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on -e "YOKOHAMA_WEB_HOSTNAMES=$hostname")
+else
+  echo "smoke: the host probe was not asked for (pass a hostname as the third argument)"
+fi
 base="http://127.0.0.1:${port}"
 name="yokohama-smoke-$$"
 nodoor="yokohama-smoke-nodoor-$$"
@@ -96,7 +114,7 @@ running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = tru
 start() {
   docker rm -f -v "$name" >/dev/null 2>&1 || true
   current="$name"
-  docker run -d --name "$name" -p "127.0.0.1:${port}:8080" -e "YOKOHAMA_WEB_IDENTITY=$1" "$image" >/dev/null
+  docker run -d --name "$name" -p "127.0.0.1:${port}:8080" -e "YOKOHAMA_WEB_IDENTITY=$1" ${hostenv[@]+"${hostenv[@]}"} "$image" >/dev/null
   # A deadline rather than a count: each probe may take its whole ten seconds.
   local deadline=$((SECONDS + 60))
   until curl -fsS --max-time 10 -o /dev/null "${base}/api/health" 2>/dev/null; do
@@ -115,6 +133,12 @@ door() {
   expect "health.identity" "$(field "$body" identity)" "\"$1\""
   expect "health.signal" "$(field "$body" signal)" '"sse"'
   echo "smoke:   health.server_version = $(field "$body" server_version)"
+  if [ -n "$hostname" ]; then
+    get /api/health -H "Host: $hostname"
+    expect "GET /api/health as Host '$hostname' (listed): status" "$status" 200
+    get /api/health -H "Host: smoke-foreign.example"
+    expect "GET /api/health as Host 'smoke-foreign.example' (unlisted): status" "$status" 421
+  fi
   get /api/me
   expect "GET /api/me, no header: mode" "$(field "$body" mode)" "\"$1\""
   expect "GET /api/me, no header: user" "$(field "$body" user)" null

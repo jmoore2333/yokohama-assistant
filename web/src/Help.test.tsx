@@ -363,6 +363,22 @@ describe("the help panel and talking (M6.4)", () => {
     expect(saving.textContent).toMatch(/Save game file/);
   });
 
+  // **The creator's two controls before the game starts** (security S3, D9 and
+  // design §3.2 rule 3): Abandon on the table's own screen while it is filling
+  // AND while it deals, and Reopen beside a seat somebody else took while it is
+  // still filling — which nothing on the screen explains, and whose limit (not
+  // once the cards are dealt) a player cannot discover by looking.
+  it("says a creator abandons from the table's screen while it fills or deals, and reopens a taken seat only while it fills", () => {
+    render(<Help />);
+    const text = section("Saving, and coming back");
+    expect(text).toMatch(/while it is still filling or dealing/);
+    expect(text).toMatch(/Reopen/);
+    expect(text).toMatch(/until the cards are dealt/i);
+    // A seat the creator BOUND for a named person is reopened too, not only one
+    // somebody joined.
+    expect(text).toMatch(/whether they joined or you named them for it/);
+  });
+
   // **The door draws the help WITHOUT its screenshots** (M6.5c2): they are
   // photographs of the card art (`ASSETS.md`, the `web/public/help/` row), and
   // no setup screen draws card art. The game's surface keeps them.

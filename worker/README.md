@@ -318,7 +318,7 @@ the secret `YOKOHAMA_SESSION_SECRET` and, optionally, the secret `YOKOHAMA_OIDC_
 R-20), and the issuer and the four endpoints of its discovery document must be `https` — `http` is accepted
 on a loopback host (`localhost`, `127.0.0.1`, `[::1]`), for development (R-24). `workos` is WorkOS AuthKit's
 first-party API, two `fetch` calls and no SDK, with the API key as `YOKOHAMA_OIDC_CLIENT_SECRET`; the public
-deployment runs it after the window of `RUNBOOK.md` §23 (today it is still `access`). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
+deployment runs it after the window of `RUNBOOK.md` §23 (production has read `workos` since the window's stage 1, 2026-10-19). **The session cookie is the Worker's own, stateless and `__Host-`prefixed**
 (`__Host-yokohama_session`, `HttpOnly; Secure; SameSite=Lax; Path=/`), so a browser keeps it only over `https`
 or on `localhost` — a deployed Worker is always the first and `wrangler dev` the second. It lives 30 days by default
 (`YOKOHAMA_SESSION_DAYS`), is renewed on use, and ends at an absolute cap of 90 days from its first issue
@@ -330,9 +330,10 @@ no caller files anonymously** under `anon-<device id or the game's own id>@anon.
 **offers no integrity guarantee: a device id is a self-declared label, not a credential** — so a finished
 game is kept whoever played it, and nothing about it is trustworthy beyond the replay that verified it. A
 deployment declares one source, and its file says which: `wrangler.jsonc` is the public deployment
-(`yokohama-web`, source `access` until the window of `RUNBOOK.md` §23 moves it to `workos`), and
+(`yokohama-web`, source `workos` since the window's stage 1, 2026-10-19; `RUNBOOK.md` §23), and
 `wrangler.private.jsonc` is the LATER private deployment (`yokohama-web-private`, its own bucket, objects and
-rate-limit namespaces, source `access`; `npm run deploy:private`, once the owner names its domain). Cloudflare
+rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.nyc`, beside production's
+`yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare
 Access may stay in front of a provider-signed Worker, which then ignores the assertion.
 
 **Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
@@ -1501,12 +1502,16 @@ alarm finds `last activity + TTL` has passed, the table expires as its creator: 
 the archive is on, then deleted, behind its marker. Finished games expire on the same clock, their
 save made at game over. Open and dealing tables expire with nothing to save.
 
-**A table still waiting for players** (M6.5c2 cycle E, R-6.5c2.42) — its status `open` — is closed
-sooner, after `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
+**A table that has not started** (M6.5c2 cycle E, R-6.5c2.42; from 0.7.2, security S3, D9) — open,
+or dealing with a keep outstanding: its status `open` or `dealing` — is closed sooner, after
+`YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS`, 7 in production and by default, behind the marker
 `this table waited 7 days for players …`. A batch cannot read a table's status (the strings rule),
 so every table's alarm is ARMED at its last activity plus the shorter TTL, and DECIDED at the alarm
 by the status its house copy reads — `factsOf`, the parse `copyFacts` makes, over a copy made on a
-scratch module. An `open` table is closed; any other is re-armed to its last activity plus the TTL.
+scratch module. An `open` or `dealing` table is closed; any other is re-armed to its last activity
+plus the TTL. The status is read as the stored document says it, never repaired first, so a table
+finalized but never flipped to `playing` that nobody opened for the whole 7 days is closed too, a
+game with no move (design D-16; the NAS's sweep repairs it first and keeps it).
 `/api/health` reports both, `table_ttl_days` and `open_table_ttl_days`, `null` while no table
 expires.
 
@@ -1759,9 +1764,9 @@ named, not only the first:
    `oidc` and refused at `workos`, and the open files omit every arm variable. And each file in the
    guard's `DEPLOYMENTS` table is held to its own record — production's `yokohama-web`, bucket
    `yokohama-archive`, route `yokohama.moore.nyc`; the private Worker's `wrangler.private.jsonc`,
-   `yokohama-web-private`, its own bucket and rate-limit namespaces, source `access` — and to production's
-   `main`, `rules`, `compatibility_date`, `assets` and `observability`; it is optional until the owner
-   names its domain.)*
+   `yokohama-web-private`, route `yokohama-test.moore.nyc` (security S3, Task 7), its own bucket and
+   rate-limit namespaces, source `access` — and to production's `main`, `rules`, `compatibility_date`,
+   `assets` and `observability`; the file is optional unless it is the one named.)*
 4. **The test clock is named nowhere in `wrangler.jsonc`**, read as text, so no environment or
    comment can carry a frozen clock into production. **And 4b, its twin** (security S1a,
    R-SEC8(b)): `YOKOHAMA_DIAGNOSTIC_SEEDS` is named nowhere in the deployed configuration, read as

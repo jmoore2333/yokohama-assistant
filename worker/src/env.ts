@@ -94,8 +94,9 @@ export interface Env {
   YOKOHAMA_WEB_ARCHIVE?: string;
   /** Whole days, absent = no table ever expires (R-6.5c.15). */
   YOKOHAMA_WEB_TABLE_TTL_DAYS?: string;
-  /** Whole days, absent = 7: how long a table still WAITING for players
-   *  stands without activity (R-6.5c2.42). Inert while
+  /** Whole days, absent = 7: how long a table that has not started — open,
+   *  or dealing with a keep outstanding — stands without activity
+   *  (R-6.5c2.42; security S3, D9). Inert while
    *  `YOKOHAMA_WEB_TABLE_TTL_DAYS` is absent. */
   YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS?: string;
   /** Comma-separated addresses, absent = the operator routes are the layer's

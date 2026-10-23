@@ -4,7 +4,8 @@
 // seat here is a STRANGER — the one person on this API allowed to read a table
 // they are not at (R-2.7) — and what they are offered is a seat. A caller who
 // holds one is WAITING, and what they are offered is the link to send somebody
-// else and, if they opened the table, the way to abandon it.
+// else and, if they opened the table, the way to abandon it and a Reopen beside
+// each seat somebody else took.
 //
 // Every payload below is the corpus's. The two faces are two committed
 // fixtures: `wire.tableOpen` is the table as the stranger reads it, and the
@@ -261,6 +262,28 @@ describe("the open table, to a stranger with one seat to take", () => {
     // And the table was not re-read: a 403 is about the caller, not about the
     // table having moved.
     expect(stub.matching("GET", "/table")).toHaveLength(1);
+  });
+
+  // **The password counter's 429 is drawn as the 403 is** (security S3, D2): the
+  // server's own sentence in the join form's strip, what was typed kept, Join
+  // still there to press once the wait it names is over, and the table not
+  // re-read. A join is a call, not the stream, so its 429 is not the stream
+  // cap's refusal and the screen does not leave on it.
+  it("shows the password counter's 429 in the server's words and stays usable", async () => {
+    const tooMany = "too many wrong passwords for this table — wait ten seconds and try again";
+    const { stub, onLeave, user } = show((call) => {
+      if (call.path.endsWith("/table")) return wire.tableOpen;
+      if (call.path.endsWith("/join")) return { status: 429, body: { error: tooMany } };
+      return undefined;
+    });
+    await user.type(await screen.findByLabelText("Table password"), "wrong");
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
+    expect(await screen.findByText(tooMany)).toBeInTheDocument();
+    expect(screen.getByLabelText("Table password")).toHaveValue("wrong");
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
+    expect(onLeave).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Join as Blue" }));
+    await waitFor(() => expect(stub.matching("POST", "/join")).toHaveLength(2));
   });
 
   // **A join sent with no password at a locked table is refused in the
@@ -635,6 +658,185 @@ describe("the open table, to somebody sitting at it", () => {
     const { onLeave, user } = showSeated(tableIs(seated()));
     await user.click(await screen.findByRole("button", { name: "Lobby" }));
     expect(onLeave).toHaveBeenCalledTimes(1);
+  });
+});
+
+// **The creator's Reopen** (security S3, D9; design §3.2 rule 1): beside a
+// JOINER's seat on the creator's own roster, and nowhere else — not beside the
+// creator's own seat (D-15), a bot's, an open one, and never on a joiner's or
+// a stranger's screen. The layer refuses every one of those cases itself; the
+// control is drawn only where a press can land.
+describe("the open table's Reopen, for its creator", () => {
+  /** The creator's three-seat table with a JOINER at seat 1: the corpus's
+   *  `table_two_open.json`, the creator's own reading, with seat 1 taken by the
+   *  named guest as anyone but its holder reads it (`table_watchable.json`'s
+   *  Blue). Only seat 1 moves. */
+  const withAJoiner = (): TableView => ({
+    ...wire.tableTwoOpen,
+    seats: [wire.tableTwoOpen.seats[0]!, wire.tableWatchable.seats[1]!, wire.tableTwoOpen.seats[2]!],
+  });
+  /** Every kind of seat on one roster: the creator's, the joiner's, a bot's
+   *  (`table_bot.json`'s) and an open one. A bot at an open table is no
+   *  create's shape — a bot sits only at two players — so this is the
+   *  control's rule asked of every kind, not a table the server makes. */
+  const everyKind = (): TableView => ({
+    ...wire.tableTwoOpen,
+    players: 4,
+    colors: ["Red", "Blue", "Yellow", "Green"],
+    seats: [
+      wire.tableTwoOpen.seats[0]!,
+      wire.tableWatchable.seats[1]!,
+      wire.tableBot.seats[1]!,
+      wire.tableTwoOpen.seats[1]!,
+    ],
+    chosen: [false, false, true, false],
+  });
+  const reopens = () => screen.queryAllByRole("button", { name: /^Reopen/ });
+  const game = wire.tableTwoOpen.id;
+
+  it("draws Reopen beside a joiner's seat for the creator, and none beside their own, a bot's or an open one", async () => {
+    show(tableIs(everyKind()), { game });
+    await screen.findByLabelText("Invite link");
+    expect(everyKind().mine, "premise: the creator's reading").toBe(true);
+    expect(reopens()).toHaveLength(1);
+    expect(within(cards()[1]!).getByRole("button", { name: "Reopen the Blue seat" })).toHaveTextContent("Reopen");
+    for (const i of [0, 2, 3]) expect(within(cards()[i]!).queryByRole("button", { name: /^Reopen/ })).toBeNull();
+
+    // **A hot seat: the creator's SECOND seat is theirs too** (D-15's client
+    // half). The corpus's three-seat reading with seat 2 taken by the creator
+    // as a JOINED second seat — `you`, no `invited` — and seat 1 still open,
+    // so the table is still filling. Neither of the creator's seats offers a
+    // Reopen the layer would refuse, and the second reads "You" like the first.
+    cleanup();
+    const hotSeat: TableView = {
+      ...wire.tableTwoOpen,
+      my_seats: [0, 2],
+      seats: [wire.tableTwoOpen.seats[0]!, wire.tableTwoOpen.seats[1]!, { kind: "human", name: null, you: true, invited: null }],
+    };
+    show(tableIs(hotSeat), { game });
+    await screen.findByLabelText("Invite link");
+    expect(reopens()).toEqual([]);
+    for (const i of [0, 2]) expect(within(cards()[i]!).queryByRole("button", { name: /^Reopen/ })).toBeNull();
+    expect(cards()[2]!).toHaveTextContent("You");
+  });
+
+  it("draws no Reopen for a joiner, who did not open the table, nor for a stranger", async () => {
+    const joiner: TableView = {
+      ...withAJoiner(),
+      mine: false,
+      my_seats: [1],
+      seats: [wire.tableOpen.seats[0]!, { kind: "human", name: "Blue", you: true, invited: null }, { kind: "open" }],
+    };
+    show(tableIs(joiner), { game });
+    await screen.findByLabelText("Invite link");
+    expect(reopens()).toEqual([]);
+    cleanup();
+    show(tableIs(wire.tableOpen));
+    await screen.findByRole("button", { name: "Join as Blue" });
+    expect(reopens()).toEqual([]);
+  });
+
+  it("posts the seat and redraws the roster from the answer", async () => {
+    const { stub, user } = show(
+      (call) => {
+        if (call.path.endsWith("/table")) return withAJoiner();
+        // The answer is the table with seat 1 open again: the corpus's own.
+        if (call.path.endsWith("/reopen")) return wire.tableTwoOpen;
+        return undefined;
+      },
+      { game },
+    );
+    await user.click(await screen.findByRole("button", { name: "Reopen the Blue seat" }));
+    await waitFor(() => expect(stub.matching("POST", "/reopen")).toHaveLength(1));
+    const posted = stub.matching("POST", "/reopen")[0]!;
+    expect(posted.path).toBe(`/api/games/${game}/reopen`);
+    // **0-based, as `keep` and `join` send it**: the second seat is seat 1.
+    expect(posted.body).toEqual({ seat: 1 });
+    await waitFor(() => expect(cards()[1]!).toHaveTextContent("Open seat"));
+    expect(reopens()).toEqual([]);
+    // The answer IS the table: nothing is read again for it.
+    expect(stub.matching("GET", "/table")).toHaveLength(1);
+  });
+
+  // **A 409 is a statement about the table having moved, so the table is
+  // re-read ONCE, as a join's 409 is** (ruling P-21): the server's sentence in
+  // the join block's strip, one re-read, and the re-read's answer decides the
+  // screen. Here the seat was reopened elsewhere a moment before: the re-read
+  // finds the table still open, so the screen stays, redrawn, with the sentence.
+  it("puts a refusal's sentence in the join block's strip and re-reads the table once, staying on an open one", async () => {
+    const noJoiner = "that seat holds no joiner to reopen";
+    let tables = 0;
+    const { stub, onStarted, onLeave, user } = show(
+      (call) => {
+        if (call.path.endsWith("/table")) {
+          tables += 1;
+          // The re-read is the truth the refusal is about: seat 1 open already.
+          return tables === 1 ? withAJoiner() : wire.tableTwoOpen;
+        }
+        if (call.path.endsWith("/reopen")) return { status: 409, body: { error: noJoiner } };
+        return undefined;
+      },
+      { game },
+    );
+    await user.click(await screen.findByRole("button", { name: "Reopen the Blue seat" }));
+    const strip = (await screen.findByText(noJoiner)).closest(".error")!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(document.querySelector("ol.seat-cards")!, strip), "after the seats").toBe(true);
+    expect(after(strip, document.querySelector(".open-table-controls")!), "above the controls").toBe(true);
+    expect(document.querySelector(".abandon-refusal"), "not Abandon's strip").toBeNull();
+    await waitFor(() => expect(cards()[1]!).toHaveTextContent("Open seat"));
+    expect(stub.matching("GET", "/table"), "the opening read and ONE re-read").toHaveLength(2);
+    expect(screen.getByText(noJoiner), "the sentence survives the re-read").toBeInTheDocument();
+    expect(onStarted).not.toHaveBeenCalled();
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  // **And a re-read that finds the table DEALING hands over** (P-21): the deal
+  // began between this screen's last read and the press, so the creator is
+  // taken to the dealing screen — where Abandon is the remedy the sentence
+  // names — rather than left on a stale open table with a live Reopen.
+  it("hands over when the one re-read after a 409 finds the table dealing", async () => {
+    const dealt = "the deal has begun \u2014 abandon the table and set it again";
+    const dealing: TableView = {
+      ...withAJoiner(),
+      status: "dealing",
+      seats: [...withAJoiner().seats.slice(0, 2), { kind: "human", name: "Green", you: false, invited: null }],
+    };
+    let tables = 0;
+    const { stub, onStarted, onLeave, user } = show(
+      (call) => {
+        if (call.path.endsWith("/table")) {
+          tables += 1;
+          return tables === 1 ? withAJoiner() : dealing;
+        }
+        if (call.path.endsWith("/reopen")) return { status: 409, body: { error: dealt } };
+        return undefined;
+      },
+      { game },
+    );
+    await user.click(await screen.findByRole("button", { name: "Reopen the Blue seat" }));
+    expect(await screen.findByText(dealt)).toBeInTheDocument();
+    await waitFor(() => expect(onStarted).toHaveBeenCalledTimes(1));
+    expect(stub.matching("GET", "/table"), "the opening read and ONE re-read").toHaveLength(2);
+    expect(onLeave).not.toHaveBeenCalled();
+  });
+
+  it("posts one reopen however fast the button is clicked", async () => {
+    let answer: (t: TableView) => void = () => {};
+    const { stub } = show(
+      (call) => {
+        if (call.path.endsWith("/table")) return withAJoiner();
+        if (call.path.endsWith("/reopen")) return new Promise<TableView>((r) => (answer = r));
+        return undefined;
+      },
+      { game },
+    );
+    const button = await screen.findByRole("button", { name: "Reopen the Blue seat" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(stub.matching("POST", "/reopen")).toHaveLength(1));
+    await act(async () => answer(wire.tableTwoOpen));
+    expect(stub.matching("POST", "/reopen")).toHaveLength(1);
   });
 });
 

@@ -322,7 +322,8 @@ export function withLifecycle<T extends TableParts>(Base: T) {
      *   activity has made stale is dropped;
      * - past it, the table's STATUS decides (the plan's R-E8): read off its
      *   house copy (`waiting`, through `factsOf`, `copyFacts`'s parse), a
-     *   table still waiting for players — `open` — is closed as one that
+     *   table that has not started — `open`, or `dealing` with a keep
+     *   outstanding (security S3, D9) — is closed as one that
      *   `waited` once the waiting-table TTL is past, and any table `expired`
      *   once the TTL is (`expiryReason`); a table that is neither is
      *   re-armed with the TTL itself as its expiry's deadline (`nextDue`,
@@ -369,21 +370,30 @@ export function withLifecycle<T extends TableParts>(Base: T) {
     }
 
     /**
-     * Whether the table still WAITS for players (R-6.5c2.42): its status
-     * `open`, as its house copy says it — read by `factsOf`, the parse
-     * `copyFacts` makes and the strings rule's one sanctioned parse — the copy
-     * made from the STORED table document on a module of its own (`copyOf`),
-     * so this object's module — its wake, and whatever a wake owes — is
-     * untouched and nothing is written. A copy that cannot be made — no table
-     * document, a refusal, a trap — reads as not waiting, so the TTL itself
-     * decides: the alarm's `recopy`, which ran first, made a copy from the
-     * stored document too and logged any failure.
+     * Whether the table has not started (R-6.5c2.42; security S3, D9) — open,
+     * or dealing with a keep outstanding: its status `open` or `dealing`, as
+     * its house copy says it — read by `factsOf`, the parse `copyFacts` makes
+     * and the strings rule's one sanctioned parse — the copy made from the
+     * STORED table document on a module of its own (`copyOf`), so this
+     * object's module — its wake, and whatever a wake owes — is untouched and
+     * nothing is written. A copy that cannot be made — no table document, a
+     * refusal, a trap — reads as not waiting, so the TTL itself decides: the
+     * alarm's `recopy`, which ran first, made a copy from the stored document
+     * too and logged any failure.
+     *
+     * The stored document is read as it stands, never settled first: a table
+     * finalized but unflipped — every keep made, its record stored, its
+     * status still `dealing` — reads as waiting here and, if nobody read it
+     * for the whole waiting-table TTL, ends as one that `waited`, where the
+     * NAS's sweep settles first and keeps it (design §3.2 rule 2, D-16).
      */
     private waiting(id: string): boolean {
       const table = readDocs(this.ctx.storage.sql).get("table");
       if (table === undefined) return false;
       const made = this.copyOf(id, table);
-      return "copy" in made && made.copy !== undefined && factsOf(made.copy).status === "open";
+      if (!("copy" in made) || made.copy === undefined) return false;
+      const status = factsOf(made.copy).status;
+      return status === "open" || status === "dealing";
     }
 
     /**
@@ -570,7 +580,8 @@ interface CopyFacts {
    *  ruling I-71). */
   stamped: boolean;
   /** The table's `status` — `open`, `dealing` or `playing` — which decides
-   *  whether it still waits for players (R-6.5c2.42). */
+   *  whether it has not started: `open` or `dealing` (R-6.5c2.42; security
+   *  S3, D9). */
   status: string | undefined;
 }
 

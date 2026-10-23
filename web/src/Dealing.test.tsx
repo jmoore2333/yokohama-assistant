@@ -19,6 +19,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSections } from "./BoardsMenu";
 import { Dealing } from "./Dealing";
+import { NO_ANSWER } from "./Abandon";
 import { ApiError, DISPLAY_NAME_KEY } from "./api";
 import { BACKOFF_MS, endSentence } from "./signal";
 import { fakeStream, flush, until, stubApi, type ApiCall, type Reply } from "./test/harness";
@@ -517,6 +518,83 @@ describe("the dealing screen", () => {
     expect(await screen.findByText(/you do not hold a seat/)).toBeInTheDocument();
   });
 });
+// ---- security S3, design §3.2 rule 3: the creator's Abandon at a deal --------
+//
+// A dealing table cannot have a seat reopened — every seat can read its dealt
+// cards (R-S3-13) — so the creator's way to close a deal that stalled is
+// Abandon and a new table. The open table and the lobby's rows carry the one
+// shared control; this screen carried none, so the creator had to leave for
+// the lobby to find it. What is HERE is the wiring, as on the open table: who
+// is offered it, where its refusal is said, and where the screen goes after.
+describe("the dealing screen's Abandon, for its creator", () => {
+  const banner = () => document.querySelector("header.banner") as HTMLElement;
+
+  it("offers the creator, seated, the abandon control in the banner beside Lobby", async () => {
+    stubApi(dealThen(wire.deal));
+    render(<Host />);
+    await screen.findAllByRole("button", { name: /^keep/ });
+    expect(wire.deal.table.mine && wire.deal.table.my_seats.length > 0, "premise: the creator, seated").toBe(true);
+    expect(within(banner()).getByRole("button", { name: "abandon wire" })).toHaveTextContent("Abandon");
+    expect(within(banner()).getByRole("button", { name: "Lobby" })).toBeInTheDocument();
+    // **And no Reopen anywhere on it** (R-S3-13): a dealing table's seats have
+    // been dealt, so the open table's control has no place here.
+    expect(screen.queryByRole("button", { name: /^Reopen/ })).toBeNull();
+  });
+
+  it("offers nothing to abandon to a seated guest, whose delete the layer refuses", async () => {
+    const guest: DealView = { ...wire.deal, table: { ...wire.deal.table, mine: false } };
+    stubApi(dealThen(guest));
+    render(<Host />);
+    await screen.findAllByRole("button", { name: /^keep/ });
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
+  });
+
+  it("leaves for the lobby once the dealing table has been abandoned", async () => {
+    const onLeave = vi.fn();
+    const deals = dealThen(wire.deal);
+    const stub = stubApi((call) => (call.method === "DELETE" ? null : deals(call)));
+    render(<Host onLeave={onLeave} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "abandon wire" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
+    await waitFor(() => expect(stub.matching("DELETE", "/api/games/wire")).toHaveLength(1));
+    await waitFor(() => expect(onLeave).toHaveBeenCalled());
+  });
+
+  it("puts Abandon's refusal in its own strip, in the line directly under the banner that holds the control", async () => {
+    const deals = dealThen(wire.deal);
+    stubApi((call) => {
+      if (call.method === "DELETE") throw new TypeError("Failed to fetch");
+      return deals(call);
+    });
+    render(<Host />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "abandon wire" }));
+    await user.click(screen.getByRole("button", { name: "confirm abandon wire" }));
+    const strip = (await screen.findByText(NO_ANSWER)).closest(".error")!;
+    expect(strip.classList.contains("abandon-refusal"), "the Abandon strip").toBe(true);
+    // Inside the end strip, the row the grid places under the banner at every
+    // width — an element of its own there would be auto-placed off the screen.
+    const line = banner().nextElementSibling!;
+    expect(line.classList.contains("end-strip"), "the line right after the banner").toBe(true);
+    expect(line.firstElementChild, "and the refusal is that line's").toBe(strip);
+  });
+
+  it("offers no abandon on a LOCAL game's deal, which leaves by the door", async () => {
+    const { stubWorker } = await import("./test/fakeWorker");
+    vi.stubGlobal(
+      "Worker",
+      stubWorker({
+        call: (req) => (req.path.endsWith("/deal") ? { status: 200, body: wire.deal } : undefined),
+      }),
+    );
+    stubApi(() => undefined);
+    render(<Host game="local-1" />);
+    await screen.findAllByRole("button", { name: /^keep O\d\d/ });
+    expect(screen.queryByRole("button", { name: /abandon/i })).toBeNull();
+  });
+});
+
 // ---- M6.4: the chat on the dealing screen ---------------------------------
 
 describe("the dealing screen's chat", () => {

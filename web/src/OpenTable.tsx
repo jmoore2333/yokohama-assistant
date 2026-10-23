@@ -11,7 +11,8 @@
 // keeps (R-6.5c2.8), read at the click; the screen asks for none. A caller who
 // already holds a seat is WAITING, and what they are offered is the link to
 // send to whoever is still missing, plus — if they opened the table — the way
-// to abandon it.
+// to abandon it and a Reopen beside each seat somebody else took (security S3,
+// D9).
 //
 // **Arriving seats nobody.** One click, never zero: a link preview or a curious
 // click must not take a seat, and a locked table needs its password typed
@@ -210,6 +211,40 @@ export function OpenTable({
     }
   };
 
+  /** **The creator's Reopen** (security S3, D9): a joiner's seat back to open,
+   *  at an open table only. The answer IS the table, so it is drawn at once; a
+   *  refusal is the server's sentence in the join block's strip — the strip
+   *  beside the seats it is about. One post at a time, on the join's own
+   *  guard: a second click on the same seat would earn "that seat holds no
+   *  joiner" about the seat this click just freed.
+   *
+   *  **A 409 re-reads the table ONCE, as a join's 409 does** (ruling P-21):
+   *  every 409 here is the table having moved — the deal begun, or the seat
+   *  freed elsewhere — so the screen asks what it is now, and `take` hands a
+   *  table that is dealing over to the dealing screen, where Abandon is. None
+   *  of these 409s carries a status, so the join's first arm has nothing to
+   *  read here. A 403 is about the caller and is not re-read. */
+  const reopen = async (seat: number) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setError(null);
+    try {
+      take(await api.reopen(game, seat));
+    } catch (e) {
+      setError(said(e));
+      if (e instanceof ApiError && e.status === 409) {
+        try {
+          take(await api.table(game));
+        } catch {
+          // The re-read failed too: the refusal above is the more useful of the
+          // two sentences, as on the join's path.
+        }
+      }
+    } finally {
+      inFlight.current = false;
+    }
+  };
+
   /** The band's corner: what the signal can say for itself, and whatever `App`
    *  put there (the identity corner). `live` says nothing, as on every screen. */
   const corner = (
@@ -296,10 +331,33 @@ export function OpenTable({
       // own seat notes the name you gave, and another's reads `seatName` — its
       // name, the address you typed if you created the table and they have
       // given none, or "invited".
+      //
+      // **The creator alone is offered Reopen, beside a seat that is not theirs**
+      // (security S3, D9): the layer refuses their own seats (D-15), and a bot's
+      // or an open seat has nobody in it, so the control stands only where a
+      // press can land. "Not theirs" is this arm's own condition: it is reached
+      // only for a seat outside `my_seats`, which the server reads off the same
+      // comparison as each seat's `you`.
       case "human":
         return table.my_seats.includes(i)
           ? { color, caption, who: "You", note: s.name ?? undefined }
-          : { color, caption, who: seatName(s), note: "seated" };
+          : {
+              color,
+              caption,
+              who: seatName(s),
+              note: "seated",
+              action:
+                table.mine ? (
+                  <button
+                    type="button"
+                    className="ghost reopen"
+                    aria-label={`Reopen the ${color} seat`}
+                    onClick={() => void reopen(i)}
+                  >
+                    Reopen
+                  </button>
+                ) : undefined,
+            };
     }
   };
 

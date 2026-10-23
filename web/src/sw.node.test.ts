@@ -60,6 +60,16 @@ const ENTRIES = Object.entries(BODIES).map(([path, { body, type }]) => ({
 
 type Entry = { path: string; digest: string; type: string };
 
+/** One open window, as `clients.matchAll` hands it to the worker: its address, whether it has the focus, and
+ *  whether it can be seen. `name` is the cell's, for reading who was told what. */
+type FakeWindow = { name: string; url: string; focused: boolean; visibilityState: "visible" | "hidden" };
+
+const DOOR = "https://yokohama.test/#/";
+const GAME = "https://yokohama.test/#/t/abc";
+/** The window every cell that names none is booted with: the door, focused. A failure that is not the edge's
+ *  challenge must read `failed` even there, with a door to elect. */
+const ONE_DOOR: readonly FakeWindow[] = [{ name: "door", url: DOOR, focused: true, visibilityState: "visible" }];
+
 /** `src/sw.ts`, bundled once per release list for the whole file. */
 const bundled = new Map<string, Promise<string>>();
 function workerSource(entries: readonly Entry[] = ENTRIES): Promise<string> {
@@ -158,6 +168,8 @@ interface Harness {
   skipWaiting: ReturnType<typeof vi.fn>;
   claim: ReturnType<typeof vi.fn>;
   posted: unknown[];
+  /** Every message, as (the window's name, what it was sent), in the order sent. */
+  told: { to: string; message: unknown }[];
   /** Every fetch the worker makes, at install or at fetch time, as (path, init). */
   asked: { path: string; init: RequestInit }[];
   /** The options of every `clients.matchAll` the worker made. */
@@ -194,8 +206,9 @@ async function boot(
   hold?: string,
   /** `entries`: a different release list (the deadline cell needs more than a
    *  lane's worth). `delayMs`: every answer arrives that long after it is
-   *  asked, on the clock the cell has faked, and is refused on abort. */
-  options: { entries?: readonly Entry[]; delayMs?: number } = {},
+   *  asked, on the clock the cell has faked, and is refused on abort.
+   *  `windows`: the open windows `clients.matchAll` lists, [`ONE_DOOR`] when absent. */
+  options: { entries?: readonly Entry[]; delayMs?: number; windows?: readonly FakeWindow[] } = {},
 ): Promise<Harness> {
   const code = await workerSource(options.entries);
   const handlers = new Map<string, (event: never) => void>();
@@ -204,6 +217,7 @@ async function boot(
     skipWaiting: vi.fn(),
     claim: vi.fn(),
     posted: [] as unknown[],
+    told: [] as { to: string; message: unknown }[],
     asked: [] as { path: string; init: RequestInit }[],
     matched: [] as unknown[],
   };
@@ -216,7 +230,15 @@ async function boot(
       claim: harness.claim,
       matchAll: async (matchOptions?: unknown) => {
         harness.matched.push(matchOptions);
-        return [{ postMessage: (message: unknown) => harness.posted.push(message) }];
+        return (options.windows ?? ONE_DOOR).map(({ name, url, focused, visibilityState }) => ({
+          url,
+          focused,
+          visibilityState,
+          postMessage: (message: unknown) => {
+            harness.posted.push(message);
+            harness.told.push({ to: name, message });
+          },
+        }));
       },
     },
   };
@@ -296,6 +318,8 @@ describe("the worker's install", () => {
       [...ENTRIES.map((e) => e.path), META_PATH].sort(),
     );
     expect(await (await cache.match("/shell.bin"))!.text()).toBe(BODIES["/shell.bin"]!.body);
+    // And an install that succeeds tells no window anything, the door included (security S3, W-3).
+    expect(worker.posted, "a clean install posts no message").toEqual([]);
   });
 
   // **spec §6.5: "the install's all-or-nothing turned into best-effort".** One
@@ -311,7 +335,7 @@ describe("the worker's install", () => {
     expect(worker.caches.generations.has(CACHE_NAME)).toBe(false);
     // And it SAID why, to the page that is watching.
     expect(worker.posted).toEqual([
-      { yokohama: "install-failed", reason: expect.stringContaining("answered 404") },
+      { yokohama: "install-failed", kind: "failed", reason: expect.stringContaining("answered 404") },
     ]);
   });
 
@@ -399,6 +423,163 @@ describe("the worker's install", () => {
   });
 });
 
+// **W-3: the edge's challenge is named, to ONE door window** (security S3; design §3.1 steps 1, 2 and 7; D-1,
+// D-13). Under the no-Access door Bot Fight Mode challenges the precache's fetch of a path that is not a static
+// resource by extension (`/art/manifest.json` among them) for a browser holding no `cf_clearance`. The
+// install still FAILS — the redundant-worker path is what the door's retry relies on — and its message carries
+// `kind`: `"challenged"` to the one window the worker elects, `"failed"` to every other, the same `reason` to all.
+// The worker elects because it alone sees every window, and it elects by ADDRESS: Chromium lists each window at
+// the address it was loaded at, so what keeps a game screen clear of an overlay is the page's check of its own
+// route (`swRegister.ts`, P-26), and these cells read the addresses alone.
+describe("the worker's install, when the edge challenges it", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const MANIFEST = "/art/manifest.json";
+  const MANIFEST_BODY = '{"art":[]}';
+  /** The release with the path the edge was measured challenging. */
+  const WITH_MANIFEST: readonly Entry[] = [
+    ...ENTRIES,
+    { path: MANIFEST, digest: createHash("sha256").update(MANIFEST_BODY).digest("hex"), type: "application/json" },
+  ];
+  const CHALLENGED_REASON = `${MANIFEST}: the edge asked for a check before it would answer`;
+
+  /** The origin, except that the edge answers the manifest with `said`. */
+  const edgeAnswersManifest =
+    (said: { status: number; body: string; type: string; headers?: Record<string, string> }) => (path: string) =>
+      path === MANIFEST ? said : { status: 200, body: BODIES[path]!.body, type: BODIES[path]!.type };
+  /** The edge's Managed Challenge, as a same-origin fetch reads it. */
+  const challenge = edgeAnswersManifest({
+    status: 403,
+    body: "<!doctype html><title>Just a moment...</title>",
+    type: "text/html",
+    headers: { "cf-mitigated": "challenge" },
+  });
+
+  const win = (name: string, url: string, focused: boolean, visible: boolean): FakeWindow => ({
+    name,
+    url,
+    focused,
+    visibilityState: visible ? "visible" : "hidden",
+  });
+
+  /** A challenged install over `windows`: it must reject with the reason, leave nothing behind, and tell every
+   *  window once. Answers who was told `challenged`. */
+  const challengedOver = async (windows: readonly FakeWindow[]): Promise<string[]> => {
+    const worker = await boot(challenge, undefined, { entries: WITH_MANIFEST, windows });
+    await expect(worker.install()).rejects.toThrow(CHALLENGED_REASON);
+    expect(worker.caches.generations.has(CACHE_NAME), "a challenged install leaves no generation").toBe(false);
+    expect(worker.told.map((t) => t.to), "every window told, once").toEqual(windows.map((w) => w.name));
+    for (const { message } of worker.told) {
+      expect(message).toEqual({
+        yokohama: "install-failed",
+        kind: expect.stringMatching(/^(challenged|failed)$/),
+        reason: CHALLENGED_REASON,
+      });
+    }
+    return worker.told.filter((t) => (t.message as { kind: string }).kind === "challenged").map((t) => t.to);
+  };
+
+  it("names the edge's challenge as its own kind, to one door window, and every other window gets failed", async () => {
+    const worker = await boot(challenge, undefined, {
+      entries: WITH_MANIFEST,
+      windows: [
+        win("game", GAME, true, true),
+        win("visible door", DOOR, false, true),
+        win("hidden door", DOOR, false, false),
+      ],
+    });
+    await expect(worker.install()).rejects.toThrow(CHALLENGED_REASON);
+    expect(worker.told).toEqual([
+      { to: "game", message: { yokohama: "install-failed", kind: "failed", reason: CHALLENGED_REASON } },
+      { to: "visible door", message: { yokohama: "install-failed", kind: "challenged", reason: CHALLENGED_REASON } },
+      { to: "hidden door", message: { yokohama: "install-failed", kind: "failed", reason: CHALLENGED_REASON } },
+    ]);
+    expect(worker.caches.generations.has(CACHE_NAME), "no generation left behind").toBe(false);
+  });
+
+  // **Each list is ordered so the wrong rule picks a DIFFERENT window**: the focused door listed after a visible
+  // one (so "the first visible" and "the first" both miss it), the visible door after a hidden one, and a
+  // focused game beside a hidden door.
+  it("the_election_prefers_a_focused_door_then_a_visible_door_then_any_door_and_never_a_game", async () => {
+    expect(
+      await challengedOver([win("visible door", DOOR, false, true), win("focused door", DOOR, true, true)]),
+      "a focused door before a visible one",
+    ).toEqual(["focused door"]);
+    expect(
+      await challengedOver([win("hidden door", DOOR, false, false), win("visible door", DOOR, false, true)]),
+      "a visible door before a hidden one",
+    ).toEqual(["visible door"]);
+    expect(
+      await challengedOver([win("focused game", GAME, true, true), win("hidden door", DOOR, false, false)]),
+      "any door before a focused game",
+    ).toEqual(["hidden door"]);
+    expect(
+      await challengedOver([win("first door", DOOR, false, false), win("second door", DOOR, false, false)]),
+      "among doors alike, the first",
+    ).toEqual(["first door"]);
+    // Browsers report at most one window focused; two are still ONE election.
+    expect(
+      await challengedOver([win("one", DOOR, true, true), win("another", DOOR, true, true)]),
+      "two focused doors elect one",
+    ).toEqual(["one"]);
+    // A blank window the origin opened is listed too, and is not running the app.
+    expect(
+      await challengedOver([win("blank", "about:blank", true, true), win("hidden door", DOOR, false, false)]),
+      "a blank window is not the door",
+    ).toEqual(["hidden door"]);
+  });
+
+  it("with no door open every window gets failed and nothing is challenged", async () => {
+    expect(
+      await challengedOver([
+        win("focused game", GAME, true, true),
+        win("lobby", "https://yokohama.test/#/lobby", false, true),
+        win("form", "https://yokohama.test/#/new", false, false),
+        win("sign-in", "https://yokohama.test/enter", false, true),
+      ]),
+    ).toEqual([]);
+  });
+
+  // The anti-vacuity partner of the first cell: the same 403 with no `cf-mitigated` is this release's file
+  // refused, a plain failure — the door, focused, is told `failed` like everyone else.
+  it("a 403 without the header is a plain failure to every window", async () => {
+    const worker = await boot(edgeAnswersManifest({ status: 403, body: "refused", type: "text/plain" }), undefined, {
+      entries: WITH_MANIFEST,
+      windows: [win("focused door", DOOR, true, true), win("game", GAME, false, false)],
+    });
+    await expect(worker.install()).rejects.toThrow(/answered 403/);
+    expect(worker.told).toEqual([
+      { to: "focused door", message: { yokohama: "install-failed", kind: "failed", reason: expect.stringContaining(`${MANIFEST}: `) } },
+      { to: "game", message: { yokohama: "install-failed", kind: "failed", reason: expect.stringContaining("answered 403") } },
+    ]);
+  });
+
+  // **Design §3.1 step 7, the owner's rule for the front door: the path costs NO Worker invocation.** Every
+  // fetch the install makes is a precache entry, which the asset layer serves at zero invocations — on a clean
+  // install, and on a challenged one through to the message it posts.
+  it("the install path requests nothing under /api", async () => {
+    const clean = await boot();
+    await clean.install();
+    const challenged = await boot(challenge, undefined, {
+      entries: WITH_MANIFEST,
+      windows: [win("door", DOOR, true, true), win("game", GAME, false, true)],
+    });
+    await expect(challenged.install()).rejects.toThrow(CHALLENGED_REASON);
+    for (const [which, worker] of [["clean", clean], ["challenged", challenged]] as const) {
+      expect(worker.asked.length, `${which}: the install fetched its entries`).toBeGreaterThan(0);
+      expect(
+        worker.asked.map((a) => a.path).filter((path) => path.startsWith("/api")),
+        `${which}: no request under /api`,
+      ).toEqual([]);
+      const listed = new Set(WITH_MANIFEST.map((e) => e.path));
+      expect(
+        worker.asked.map((a) => a.path).filter((path) => !listed.has(path)),
+        `${which}: nothing but the release's own entries`,
+      ).toEqual([]);
+    }
+  });
+});
+
 // **The install's clocks and its small decisions** (M6.5c2 cycle D; `sw.ts`'s
 // header listed these as "pinned by NO cell" — each is a mutation every cell
 // survived). Fake timers for the CLOCK only (`setTimeout` and `Date`), so the
@@ -471,7 +652,7 @@ describe("the worker's install: its clocks and its small decisions", () => {
     expect(message, "the FETCH's clock ended it, not the install's").not.toMatch(/did not finish/);
     // And the page that is watching is told the same words.
     expect(worker.posted).toEqual([
-      { yokohama: "install-failed", reason: "/art/orders/O01.webp: took too long" },
+      { yokohama: "install-failed", kind: "failed", reason: "/art/orders/O01.webp: took too long" },
     ]);
   });
 
@@ -506,6 +687,8 @@ describe("the worker's install: its clocks and its small decisions", () => {
     const message = (state.outcome as { error: Error }).error.message;
     expect(message).toBe(`the install did not finish inside ${INSTALL_DEADLINE_MS} ms`);
     expect(worker.caches.generations.has(CACHE_NAME)).toBe(false);
+    // A deadline is a plain failure, told as one, to the door as to any window.
+    expect(worker.posted).toEqual([{ yokohama: "install-failed", kind: "failed", reason: message }]);
   });
 
   it("fetches every entry with same-origin credentials", async () => {

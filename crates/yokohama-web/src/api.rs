@@ -68,9 +68,10 @@ pub struct Host {
     pub multiplayer_offered: bool,
     /// The host's two table TTLs in whole days (M6.5c2 cycle E, R-6.5c2.42),
     /// which [`Health`] reports and nothing in this layer's routes applies:
-    /// on the Worker an idle table expires after `table_ttl_days`, and one
-    /// still waiting for players after `open_table_ttl_days`, by the shell's
-    /// alarm; on the NAS, by its hourly sweep (cycle F, R-F9;
+    /// on the Worker an idle table expires after `table_ttl_days`, and a
+    /// table that has not started — open, or dealing with a keep outstanding
+    /// — after `open_table_ttl_days` (security S3, D9), by the shell's alarm;
+    /// on the NAS, by its hourly sweep (cycle F, R-F9;
     /// [`crate::sweep`]). `None` on a host that expires no table — the
     /// browser — and both `None` on a NAS or a Worker configured to keep every
     /// table.
@@ -243,6 +244,7 @@ pub fn routes(serves_games: bool) -> Vec<Route> {
         ("GET", "/api/games/{id}/deal"),
         ("POST", "/api/games/{id}/keep"),
         ("POST", "/api/games/{id}/join"),
+        ("POST", "/api/games/{id}/reopen"),
         ("POST", "/api/games/{id}/unlock"),
         ("GET", "/api/games/{id}/chat"),
         ("POST", "/api/games/{id}/chat"),
@@ -435,8 +437,9 @@ pub struct Health {
     /// rather than left out, so a client reads "no TTL", never "a server too
     /// old to say".
     pub table_ttl_days: Option<u64>,
-    /// How many days a table still WAITING for players stands before it is
-    /// closed (R-6.5c2.42): [`Host::open_table_ttl_days`]; `null` as above.
+    /// How many days a table that has not started — open, or dealing with a
+    /// keep outstanding — stands before it is closed (R-6.5c2.42; security
+    /// S3, D9): [`Host::open_table_ttl_days`]; `null` as above.
     pub open_table_ttl_days: Option<u64>,
 }
 
@@ -1042,6 +1045,29 @@ pub fn join(
     let seat = yokohama_core::PlayerId::try_new(req.seat)
         .map_err(|e| ApiError::bad_request(e.to_string()))?;
     Ok(games.join(id, user, seat, req.name.as_deref(), req.password.as_deref())?)
+}
+
+/// The seat the creator turns back into an open one (security S3, D9; design §3.2 rule 1): [`Keep`]'s and [`Join`]'s
+/// `seat`, alone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reopen {
+    pub seat: u8,
+}
+
+/// `POST /api/games/{id}/reopen` — the creator reopens a joiner's seat at an OPEN table, and is answered their own
+/// `TableView` with the seat open. The whole of the ladder is [`Games::reopen`](crate::games::Games::reopen)'s, held
+/// under the table's own lock; this handler parses the seat as `keep` and `join` do, through the fallible constructor,
+/// because the number came off the wire and `PlayerId::new` panics at four and above.
+pub fn reopen(
+    games: &Games,
+    user: &User,
+    id: &str,
+    req: &Reopen,
+) -> Result<crate::table::TableView, ApiError> {
+    let seat = yokohama_core::PlayerId::try_new(req.seat)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+    Ok(games.reopen(id, user, seat)?)
 }
 
 /// The table's password, presented once so this caller may WATCH (M6.3, §3.4).
@@ -2660,6 +2686,8 @@ fn answer(
                     .map(|v| ok_json(200, &v)),
                 "/api/games/{id}/join" => join(games, u, b[0], &parse_json(req.content_type, req.body)?)
                     .map(|v| ok_json(200, &v)),
+                "/api/games/{id}/reopen" => reopen(games, u, b[0], &parse_json(req.content_type, req.body)?)
+                    .map(|v| ok_json(200, &v)),
                 "/api/games/{id}/unlock" => {
                     unlock(games, u, b[0], &parse_json(req.content_type, req.body)?).map(|v| ok_json(200, &v))
                 }
@@ -4131,6 +4159,7 @@ mod tests {
             ("GET", "/api/games/{id}/deal"),
             ("POST", "/api/games/{id}/keep"),
             ("POST", "/api/games/{id}/join"),
+            ("POST", "/api/games/{id}/reopen"),
             ("POST", "/api/games/{id}/unlock"),
             ("GET", "/api/games/{id}/chat"),
             ("POST", "/api/games/{id}/chat"),

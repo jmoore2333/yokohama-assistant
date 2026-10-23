@@ -118,6 +118,10 @@ const DOOR_VARS = `"vars": {
  *  is read OVER by this one; a cell that means its routes to be read replaces this line. */
 const ROUTES = `"routes": [{ "pattern": "yokohama.moore.nyc", "custom_domain": true }]`;
 
+/** The private Worker's custom domain, as the guard's record of that deployment names it (security S3, Task 7: the
+ *  `yokohama-test.moore.nyc`, a custom domain). */
+const PRIVATE_ROUTES = `"routes": [{ "pattern": "yokohama-test.moore.nyc", "custom_domain": true }]`;
+
 /** Production's logs (security S2b, finding D23; decision D-6): query strings redacted, the sampling rate left at its
  *  default. What check 14 holds production to, and what the open and dev files carry by the sibling rule. */
 const OBSERVABILITY = `"observability": { "enabled": true, "redact_query_string": true }`;
@@ -161,11 +165,11 @@ const KEYED = { "assets/build-values.json": STAMP(true) };
 const DEV = PRODUCTION.replace('"ACCESS_AUD": "test-aud"', '"ACCESS_AUD": "test-aud",\n    "YOKOHAMA_DEV_DOOR": "on"');
 
 /** The private Worker's file (the auth cycle, Task 7; plan decision D-1): production's shape under its OWN record —
- *  its own name, bucket and rate-limit namespaces, and no route until the owner names its domain — at the worker
- *  door with source `access`, as production's is today. */
+ *  its own name, bucket, rate-limit namespaces and custom domain `yokohama-test.moore.nyc` (security S3, Task 7) — at
+ *  the worker door with source `access`, as production's is today. */
 const PRIVATE = PRODUCTION.replace("// production", "// the private Worker")
   .replace('"name": "yokohama-web",', '"name": "yokohama-web-private",')
-  .replace(`  ${ROUTES},\n`, "")
+  .replace(ROUTES, PRIVATE_ROUTES)
   .replace('"bucket_name": "yokohama-archive"', '"bucket_name": "yokohama-archive-private"')
   .replace('"namespace_id": "7301"', '"namespace_id": "7303"')
   .replace('"namespace_id": "7302"', '"namespace_id": "7304"');
@@ -1566,19 +1570,21 @@ describe("the deploy guard", () => {
 
   // **The second deployment** (the auth cycle, Task 7; plan decision D-1, the design's §4.7 as amended):
   // `wrangler.private.jsonc` is the LATER private Worker, held to ITS OWN record in the guard's `DEPLOYMENTS` — its
-  // name, its bucket, its rate-limit namespaces at production's figures, its source `access`, and no route until the
-  // owner names its domain — and never to production as a sibling; to production's `assets` and `observability` when
+  // name, its bucket, its rate-limit namespaces at production's figures, its source `access` and its custom domain
+  // `yokohama-test.moore.nyc` (security S3, Task 7) — and never to production as a sibling; to production's `assets` and `observability` when
   // it is the file deployed, and to production's `durable_objects` and `migrations` in every run (check 6's rule:
   // both Workers run the same code). Absent, it is no failure, unless it is the file named. Mutants: the file judged
   // as production's sibling (the pass rows read the name's, the bucket's and the route's drift); a route accepted;
-  // each record field unread; the blocks unread; absence refused.
-  it("wrangler.private.jsonc is held to its own record: name, bucket, namespaces, source access, no route, and production's other blocks", () => {
+  // each record field unread; the blocks unread; absence refused. The route's mutants: the record naming production's
+  // hostname (the private file's own refused); a second or a singular route accepted; an absent route accepted.
+  it("wrangler.private.jsonc is held to its own record: name, bucket, namespaces, source access, its route, and production's other blocks", () => {
     const PRIV = "wrangler.private.jsonc";
     const judged = (text) => configFailures(worker({ [PRIV]: text }), PRIV);
     for (const part of ['"name": "yokohama-web-private"', '"bucket_name": "yokohama-archive-private"', '"namespace_id": "7303"', '"namespace_id": "7304"']) {
       expect(PRIVATE, `premise: ${part}`).toContain(part);
     }
-    expect(PRIVATE, "premise: no route").not.toContain('"routes"');
+    expect(PRIVATE, "premise: its own route").toContain(PRIVATE_ROUTES);
+    expect(PRIVATE, "premise: not production's route").not.toContain("yokohama.moore.nyc");
 
     expect(judged(PRIVATE)).toEqual([]);
     expect(deployGuard(worker(), undefined, PRIV), "the whole guard, keyless").toEqual([]);
@@ -1604,10 +1610,20 @@ describe("the deploy guard", () => {
       limits("7301", "7304", 120),
     ]);
     expect(judged(PRIVATE.replace('"limit": 120', '"limit": 121')), "another figure").toEqual([limits("7303", "7304", 121)]);
-    const noRoute = `${PRIV} binds the route yokohama.moore.nyc — no route until the owner names the private domain`;
-    expect(judged(PRIVATE.replace('"main"', `${ROUTES},\n  "main"`)), "a route").toEqual([noRoute]);
-    expect(judged(PRIVATE.replace('"main"', '"route": "yokohama.moore.nyc",\n  "main"')), "a route, singular").toEqual([noRoute]);
-    expect(judged(PRIVATE.replace('"main"', '"routes": [],\n  "main"')), "an empty list binds none").toEqual([]);
+    const routes = (got) => `${PRIV}'s routes must bind yokohama-test.moore.nyc and nothing else — got ${got}`;
+    expect(judged(PRIVATE.replace(PRIVATE_ROUTES, '"routes": [{ "pattern": "elsewhere.example", "custom_domain": true }]')), "another route").toEqual([
+      routes("elsewhere.example"),
+    ]);
+    expect(judged(PRIVATE.replace(PRIVATE_ROUTES, ROUTES)), "production's route").toEqual([routes("yokohama.moore.nyc")]);
+    expect(
+      judged(PRIVATE.replace(PRIVATE_ROUTES, '"routes": [{ "pattern": "yokohama-test.moore.nyc", "custom_domain": true }, "elsewhere.example/*"]')),
+      "a second route",
+    ).toEqual([routes("yokohama-test.moore.nyc, elsewhere.example/*")]);
+    expect(judged(PRIVATE.replace(`  ${PRIVATE_ROUTES},\n`, "")), "no route").toEqual([routes("none")]);
+    expect(judged(PRIVATE.replace(PRIVATE_ROUTES, '"routes": []')), "an empty list binds none").toEqual([routes("none")]);
+    expect(judged(PRIVATE.replace('"main"', '"route": "elsewhere.example/*",\n  "main"')), "a route, singular, beside the list").toEqual([
+      routes("elsewhere.example/*, yokohama-test.moore.nyc"),
+    ]);
     const source = (got) => `${PRIV}'s vars must set YOKOHAMA_IDENTITY_SOURCE to "access", its deployment's record (plan decision D-1) — got ${got}`;
     expect(judged(atSource(PRIVATE, "workos", CLIENT)), "workos").toEqual([source('"workos"')]);
     expect(judged(PRIVATE.replace(DOOR_VARS, '"vars": { "YOKOHAMA_WEB_IDENTITY": "open" }')), "the open door").toEqual([source("nothing")]);
