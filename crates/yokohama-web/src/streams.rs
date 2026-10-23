@@ -28,7 +28,8 @@
 //! **A stream is classified by its caller's standing when it is admitted, and never again**: the bit is the one the
 //! route's admission read answers ([`crate::api::events_at_seated`]). A joiner's earlier stream counts as a
 //! watcher's until it reconnects, and a stream opened by a seat holder whose seat the creator then reopens counts as
-//! a seated one until it does.
+//! a seated one until it does — so after a reopen the streams counted seated can pass four seats' worth, and the
+//! total then refuses a seat holder as it refuses anyone; the 64 still bounds the room.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -41,8 +42,10 @@ pub const STREAMS_PER_CALLER: usize = 8;
 /// Streams one table may hold open in all: four seats and their watchers at eight each. The Worker's
 /// `SOCKETS_PER_TABLE`.
 pub const STREAMS_PER_TABLE: usize = 64;
-/// Streams one table may hold open for callers who hold no seat at it: the total less four seats at eight each, so
-/// that while watchers sit at this figure the room keeps the seated callers' room (S4-pre, the spec's Issue 1).
+/// Streams one table may hold open for callers who hold no seat at it: the total less four seats at eight each,
+/// which keeps that room in the total from watchers (S4-pre, the spec's Issue 1). After a reopen the streams counted
+/// seated can pass four seats' worth (the module doc), and the total then refuses a seat holder as it refuses anyone;
+/// the 64 still bounds the room.
 pub const WATCHERS_PER_TABLE: usize = 32;
 /// Lobby streams one caller may hold open. The Worker's `LOBBY_PER_CALLER`.
 pub const HOUSE_STREAMS_PER_CALLER: usize = 8;
@@ -351,9 +354,10 @@ mod tests {
     /// **A dropped stream frees its seated slot, and a quiet room leaves nothing in any map** (B8's lesson, the
     /// module doc): one seated slot reads `seated` 1 — and still does when a watcher's slot beside it drops, which
     /// releases no seated count — and its own drop leaves the room at 0 in both counts and every map empty. Mutants:
-    /// the seated count never released, or released for every slot. The house has no seats: it ignores the bit — a stream passed `true` is never counted seated —
-    /// and its figures are its own, so the watchers' figure never refuses a lobby stream (the house fills to its
-    /// total of 256, far past 32, under its own two sentences, whichever bit its callers pass).
+    /// the seated count never released, or released for every slot. The house has no seats: it ignores the bit — a
+    /// stream passed `true` is never counted seated — and its figures are its own, so the watchers' figure never
+    /// refuses a lobby stream (the house fills to its total of 256, far past 32, under its own two sentences,
+    /// whichever bit its callers pass).
     #[test]
     fn a_dropped_stream_frees_its_seated_slot_and_a_quiet_room_leaves_nothing_in_either_map() {
         let streams = Arc::new(Streams::default());

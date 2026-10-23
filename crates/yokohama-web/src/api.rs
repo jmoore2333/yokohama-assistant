@@ -4386,11 +4386,12 @@ mod tests {
 
     /// **`events` answers whether the caller holds a seat, from its one table read** (S4-pre, the spec's Issue 1):
     /// the bit the NAS's stream admission reads, beside the reading and never on it — `Events` gains no field,
-    /// and `wire_fixtures` pins that. It is true for a seat holder at `open`, `dealing` and `playing`, and for a hot
-    /// seat's holder (one key in both seats), and false for a stranger at an open table and a spectator at a
-    /// playing one; and it costs no read: each call reads the table EXACTLY once, the pin above's count, so a bit
-    /// computed from a second read cannot pass. Mutants: the bit forced `false`, or forced `true`, or read from a
-    /// second `table_for_anyone`.
+    /// and `wire_fixtures` pins that. It is true for a seat holder at `open`, `dealing` and `playing`, for the
+    /// joiner who is not the creator at `dealing` and `playing` (so a bit computed as "is the creator" cannot pass),
+    /// and for a hot seat's holder (one key in both seats), and false for a stranger at an open table and a spectator
+    /// at a playing one; and it costs no read: each call reads the table EXACTLY once, the pin above's count, so a bit
+    /// computed from a second read cannot pass. Mutants: the bit forced `false`, or forced `true`, or computed as the
+    /// creator's, or read from a second `table_for_anyone`.
     #[test]
     fn events_at_answers_whether_the_caller_holds_a_seat_from_its_one_table_read() {
         use std::sync::Arc;
@@ -4399,7 +4400,7 @@ mod tests {
         use crate::tables::SeatSpec;
         let store = Arc::new(CountingStore::default());
         let games = Games::new(Arc::new(Rules::standard()), Arc::clone(&store) as Arc<dyn Store>);
-        let (red, green) = (who("red@t.test"), who("green@t.test"));
+        let (red, green, blue) = (who("red@t.test"), who("green@t.test"), who("blue@t.test"));
         let seated = |id: &str, user: &User| {
             let before = store.table_reads();
             let (_, seated) = events_at_seated(&games, id, user).unwrap_or_else(|e| panic!("{id}: {}", e.message));
@@ -4420,7 +4421,9 @@ mod tests {
         assert!(seated("open", &red), "a seat holder at open");
         assert!(!seated("open", &green), "a stranger at open");
         assert!(seated("dealing", &red), "a seat holder at dealing");
+        assert!(seated("dealing", &blue), "the joiner, not the creator, at dealing");
         assert!(seated("playing", &red), "a seat holder at playing");
+        assert!(seated("playing", &blue), "the joiner, not the creator, at playing");
         assert!(!seated("playing", &green), "a spectator at playing");
         assert!(seated("hot", &red), "a hot seat's holder at playing");
         games.evict_for_test("playing");

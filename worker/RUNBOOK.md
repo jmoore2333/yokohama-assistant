@@ -105,10 +105,10 @@ What answers what:
     closed **4429** — `you have too many connections open to this table — close another tab and try
     again` past 8 of the caller's at a table, `this table has as many connections as it can take — try
     again later` past 64 in all, `this table has as many watchers as it can take — try again later` for
-    a caller who holds no seat at it once 32 such sockets are open (S4-pre; a seated caller is refused
-    only by the 64 and by their own 8), and in the lobby `you have too many connections open to the lobby —
-    close another tab and try again` past 8 and `the lobby has as many connections as it can take — try
-    again later` past 1,024.
+    a caller who holds no seat at it once 32 such sockets are open (S4-pre, from `0.7.3`, which deploys
+    with stage 2; a seated caller is refused only by the 64 and by their own 8), and in the lobby `you
+    have too many connections open to the lobby — close another tab and try again` past 8 and `the lobby
+    has as many connections as it can take — try again later` past 1,024.
 
 ## 1. Build
 
@@ -265,21 +265,25 @@ guard run alone meets either. The listing names secrets and never holds a value,
 `deploy`, the safe direction since security S2b, included. A logged-out clone runs `npx wrangler login`
 once, and one with more than one account sets `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them
 and caches nothing). A NEW Worker's first deploy cannot pass it: wrangler answers "Worker not found"
-for a Worker that does not exist yet. **So a NEW Worker's first deploy runs `wrangler deploy --config
-<file>` by hand with neither guard — a Worker that does not exist holds no secret, and the deploy guard
-holds each file to its own deployment identity — production's `yokohama-web` with the bucket
-`yokohama-archive`, and the later private Worker's `yokohama-web-private` with its own bucket and
-rate-limit namespaces (`DEPLOYMENTS`, the auth cycle's Task 7; plan decision D-1) — and the secrets
-guard from the second deploy on** (security S2b, decision D-7 as corrected at Task 9's review; the
-owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
-whatever its door: C3's sibling rule holds every open-door file to production, and F-40 every unlisted
-worker-door file (measured at the review: a renamed open file and a renamed production file, each with
-its own bucket, both refused). This recipe was the private Worker's first deploy (§26); the deploy guard holds
-its record in `DEPLOYMENTS` since the auth cycle's Task 7:
+for a Worker that does not exist yet. **So a NEW Worker's first deploy runs the deploy guard and then
+`wrangler deploy --config <file>` by hand, skipping the secrets guard alone — a Worker that does not
+exist holds no secret, while the deploy guard reads files and judges the new file against its record in
+`DEPLOYMENTS`, which holds each file to its own deployment identity: production's `yokohama-web` with the
+bucket `yokohama-archive`, and the private Worker's `yokohama-web-private` with its own bucket and
+rate-limit namespaces (the auth cycle's Task 7; plan decision D-1) — and from the second deploy on both
+guards, as every `deploy` script in `package.json` chains them.** Security S2b's decision D-7, as corrected
+at Task 9's review (the owner's R-6), read "with neither guard" while the deploy guard held this repository's
+Worker alone, by its name and its bucket; the `DEPLOYMENTS` record superseded it, recorded forward here,
+and the dated S2b plan stays as written. The deploy guard refuses any other Worker's file on its `name`
+and its bucket, whatever its door: C3's sibling rule holds every open-door file to production, and F-40
+every unlisted worker-door file (measured at that review: a renamed open file and a renamed production
+file, each with its own bucket, both refused). This recipe was the private Worker's first deploy (§26,
+step (5)); the deploy guard holds its record in `DEPLOYMENTS` since the auth cycle's Task 7, and §26's
+step (2) named its hostname there:
 
 ```sh
-npx wrangler deploy --config <file>                                                     # a NEW Worker's FIRST deploy: neither guard
-node scripts/secrets-guard.mjs --config <file> && npx wrangler deploy --config <file>   # from its second deploy on
+node scripts/deploy-guard.mjs --config <file> && npx wrangler deploy --config <file>   # a NEW Worker's FIRST deploy: the deploy guard, not the secrets guard
+node scripts/deploy-guard.mjs --config <file> && node scripts/secrets-guard.mjs --config <file> && npx wrangler deploy --config <file>   # from its second deploy on: both guards, as every deploy script in package.json runs them
 ```
 
 - **A deploy restarts every object and closes every socket with 1006** (spec §5.5). The client

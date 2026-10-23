@@ -75,7 +75,7 @@ export function requiredSecrets(judged) {
 /** The refusal of a file whose door the shell refuses (`config.ts`'s `door`: absent, or neither `worker` nor
  *  `open`), in the shell's sentence with the file named; `[]` for either door, or no file. */
 function doorRefusal(judged) {
-  if (judged === undefined || judged.door === "worker" || judged.door === "open") return [];
+  if (judged == null || judged.door === "worker" || judged.door === "open") return [];
   const shell =
     judged.door === undefined
       ? "must be worker or open — it is not set, and there is no default: a door is a deployment decision"
@@ -97,8 +97,8 @@ function sourceRefusal(judged) {
 /** `wrangler secret list`'s output judged against the judged file (`judged`: `{ file, door, source }`, R-48; absent,
  *  the forbidden names alone): one sentence per forbidden name, then the refusal of a file whose door the shell
  *  refuses (`doorRefusal`), then that of a worker-door file whose source the shell refuses (`sourceRefusal`), then
- *  one per secret the file requires that the listing lacks, and `[]` when there is none of the three; ONE sentence when the listing cannot be read — a listing that does not parse is not a
- *  pass, and nothing else is judged of it. */
+ *  one per secret the file requires that the listing lacks, and `[]` when there is none of the four; ONE sentence
+ *  when the listing cannot be read — a listing that does not parse is not a pass, and nothing else is judged of it. */
 export function judgeSecrets(listingJson, judged) {
   let listing;
   try {

@@ -27,8 +27,10 @@ export const SOCKETS_PER_CALLER = 8;
  *  reproduction held 300 and paid 301 module calls per bump; the platform's own ceiling is 32,768. */
 export const SOCKETS_PER_TABLE = 64;
 /** How many sockets one table object holds for callers who hold no seat at it (S4-pre, the spec's Issue 1): the total
- *  less four seats at eight each, so that while the watchers sit at this figure the table keeps its seated players'
- *  room. A cost bound, like the two above, never a budget a feature may lean on. The NAS's `WATCHERS_PER_TABLE`. */
+ *  less four seats at eight each, which keeps that room in the total from watchers. After a reopen the OPEN sockets
+ *  tagged seated can pass four seats' worth (`admit`'s doc), and the total then refuses a seat holder as it refuses
+ *  anyone; the 64 still bounds it. A cost bound, like the two above, never a budget a feature may lean on. The NAS's
+ *  `WATCHERS_PER_TABLE`. */
 export const WATCHERS_PER_TABLE = 32;
 /** The tag a seated caller's socket carries beside the table's id and the caller's tag, which the watchers' figure
  *  reads: a tag no table id can spell (`isSafeId` admits only `[A-Za-z0-9._-]`) and no caller tag either (`u:`). */
@@ -117,12 +119,14 @@ export function withSockets<T extends TableParts>(Base: T) {
      * **A seated caller's socket carries a third tag, `SEATED_TAG`** (S4-pre,
      * the spec's Issue 1), from the reading's `seated` bit, and a caller with no
      * seat is refused by the watchers' arm (`tableVerdict`) once the OPEN
-     * sockets without that tag sit at `WATCHERS_PER_TABLE`, which leaves four
-     * seats at eight their room in the total. A socket is classified by its
-     * caller's standing when it is admitted, and never again. A joiner's earlier
-     * socket counts as a watcher's until it reconnects, and a socket opened by a
-     * seat holder whose seat the creator then reopens stays tagged seated until
-     * it does.
+     * sockets without that tag sit at `WATCHERS_PER_TABLE`, which keeps four
+     * seats at eight their room in the total from watchers. A socket is
+     * classified by its caller's standing when it is admitted, and never again.
+     * A joiner's earlier socket counts as a watcher's until it reconnects, and a
+     * socket opened by a seat holder whose seat the creator then reopens stays
+     * tagged seated until it does — so after a reopen the OPEN sockets tagged
+     * seated can pass four seats' worth, and the total then refuses a seat
+     * holder as it refuses anyone; the 64 still bounds it.
      */
     protected admit(id: string, user: string | undefined, callerTag: string | undefined, reply: Replied): Response {
       const { status, body } = reply;
