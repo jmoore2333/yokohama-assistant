@@ -104,7 +104,9 @@ What answers what:
   - a socket past a cap (security S2b, finding D3): accepted, sent `end` with the cap's sentence and
     closed **4429** — `you have too many connections open to this table — close another tab and try
     again` past 8 of the caller's at a table, `this table has as many connections as it can take — try
-    again later` past 64 in all, and in the lobby `you have too many connections open to the lobby —
+    again later` past 64 in all, `this table has as many watchers as it can take — try again later` for
+    a caller who holds no seat at it once 32 such sockets are open (S4-pre; a seated caller is refused
+    only by the 64 and by their own 8), and in the lobby `you have too many connections open to the lobby —
     close another tab and try again` past 8 and `the lobby has as many connections as it can take — try
     again later` past 1,024.
 
@@ -253,8 +255,10 @@ wrangler secret put <name> --config <file>`; a clean run then ends `…, and the
 them`. A worker-door file with no source, or one the shell does not know, names no arm to judge the listing
 against, so the secrets guard refuses it too, in the shell's sentence with the file named (`secrets-guard:
 <file>'s YOKOHAMA_IDENTITY_SOURCE must be access, oidc or workos …; the secrets it requires cannot be judged
-without one of the three`); the deploy guard refuses such a file first in every deploy script, so only the
-secrets guard run alone meets it. The listing names secrets and never holds a value, so the session secret's
+without one of the three`). A file whose door is absent, or neither `worker` nor `open`, is refused the same
+way (`secrets-guard: <file>'s YOKOHAMA_WEB_IDENTITY must be worker or open …; the secrets it requires cannot be
+judged without a door`). The deploy guard refuses such a file first in every deploy script, so only the secrets
+guard run alone meets either. The listing names secrets and never holds a value, so the session secret's
 32-byte floor stays the shell's to refuse.
 
 **What the secrets guard costs.** Every deploy script is a network step from here on — the plain
@@ -270,8 +274,8 @@ guard from the second deploy on** (security S2b, decision D-7 as corrected at Ta
 owner's R-6). The deploy guard refuses any other Worker's file on its `name` and its bucket,
 whatever its door: C3's sibling rule holds every open-door file to production, and F-40 every unlisted
 worker-door file (measured at the review: a renamed open file and a renamed production file, each with
-its own bucket, both refused). S4's public Worker's first-deploy path is this recipe, and no guard code
-in S2b:
+its own bucket, both refused). This recipe was the private Worker's first deploy (§26); the deploy guard holds
+its record in `DEPLOYMENTS` since the auth cycle's Task 7:
 
 ```sh
 npx wrangler deploy --config <file>                                                     # a NEW Worker's FIRST deploy: neither guard
