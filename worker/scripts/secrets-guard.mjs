@@ -15,9 +15,10 @@
 // missing one refuses the deploy, naming it and its `npx wrangler secret put <name> --config <file>` line. A file
 // whose door is absent or neither `worker` nor `open` has no door to judge the secrets against, and a worker door
 // with no source, or one the shell does not know, names no arm to judge them against, so each refuses too, in the
-// shell's words with the file named, as the deploy guard's own refusal of the same file reads (the deploy guard
-// refuses it first in every deploy script; this guard run alone must not pass a reading it cannot make). The
-// listing names secrets and never holds a value, so the session secret's 32-byte floor stays the shell's to refuse.
+// shell's words with the file named (the deploy guard words an unknown door and both source refusals alike, and
+// words an absent door in its own sentence; it refuses such a file first in every deploy script, and this guard run
+// alone must not pass a reading it cannot make). The listing names secrets and never holds a value, so the session
+// secret's 32-byte floor stays the shell's to refuse.
 // A judged file the command cannot read refuses before wrangler is asked.
 //
 // Pure but for the file read and the one `execFileSync`, which the command alone makes; the cells drive
