@@ -12,10 +12,11 @@
 // directory, where wrangler resolves the same `--config` — and requires, beside the worker door: under `workos`
 // both `YOKOHAMA_OIDC_CLIENT_SECRET` (the WorkOS API key) and `YOKOHAMA_SESSION_SECRET`; under `oidc` the session
 // secret alone (the client secret is optional there: PKCE); under `access`, and at the open door, nothing. A
-// missing one refuses the deploy, naming it and its `npx wrangler secret put <name> --config <file>` line. A worker
-// door with no source, or one the shell does not know, names no arm to judge the secrets against, so it refuses too,
-// in the shell's words with the file named, as the deploy guard's own refusal of the same file reads (the deploy
-// guard refuses it first in every deploy script; this guard run alone must not pass a reading it cannot make). The
+// missing one refuses the deploy, naming it and its `npx wrangler secret put <name> --config <file>` line. A file
+// whose door is absent or neither `worker` nor `open` has no door to judge the secrets against, and a worker door
+// with no source, or one the shell does not know, names no arm to judge them against, so each refuses too, in the
+// shell's words with the file named, as the deploy guard's own refusal of the same file reads (the deploy guard
+// refuses it first in every deploy script; this guard run alone must not pass a reading it cannot make). The
 // listing names secrets and never holds a value, so the session secret's 32-byte floor stays the shell's to refuse.
 // A judged file the command cannot read refuses before wrangler is asked.
 //
@@ -70,6 +71,17 @@ export function requiredSecrets(judged) {
   return REQUIRED_SECRETS[judged.source];
 }
 
+/** The refusal of a file whose door the shell refuses (`config.ts`'s `door`: absent, or neither `worker` nor
+ *  `open`), in the shell's sentence with the file named; `[]` for either door, or no file. */
+function doorRefusal(judged) {
+  if (judged === undefined || judged.door === "worker" || judged.door === "open") return [];
+  const shell =
+    judged.door === undefined
+      ? "must be worker or open — it is not set, and there is no default: a door is a deployment decision"
+      : `must be worker or open — got ${JSON.stringify(judged.door)}`;
+  return [`secrets-guard: ${judged.file}'s YOKOHAMA_WEB_IDENTITY ${shell}; the secrets it requires cannot be judged without a door`];
+}
+
 /** The refusal of a worker-door file whose source the shell refuses (`config.ts`'s `source`: absent, or not one of
  *  the deploy guard's `SOURCES`), in the shell's sentence with the file named; `[]` for any other door, or no file. */
 function sourceRefusal(judged) {
@@ -82,9 +94,9 @@ function sourceRefusal(judged) {
 }
 
 /** `wrangler secret list`'s output judged against the judged file (`judged`: `{ file, door, source }`, R-48; absent,
- *  the forbidden names alone): one sentence per forbidden name, then the refusal of a worker-door file whose source
- *  the shell refuses (`sourceRefusal`), then one per secret the file requires that the listing lacks, and `[]` when
- *  there is none of the three; ONE sentence when the listing cannot be read — a listing that does not parse is not a
+ *  the forbidden names alone): one sentence per forbidden name, then the refusal of a file whose door the shell
+ *  refuses (`doorRefusal`), then that of a worker-door file whose source the shell refuses (`sourceRefusal`), then
+ *  one per secret the file requires that the listing lacks, and `[]` when there is none of the three; ONE sentence when the listing cannot be read — a listing that does not parse is not a
  *  pass, and nothing else is judged of it. */
 export function judgeSecrets(listingJson, judged) {
   let listing;
@@ -107,7 +119,7 @@ export function judgeSecrets(listingJson, judged) {
         `secrets-guard: ${judged.file}'s Worker holds no secret named ${name}, which YOKOHAMA_IDENTITY_SOURCE=${judged.source} requires — ` +
         `${REQUIRED_WHY[name]}; without it the shell answers every request 500: npx wrangler secret put ${name} --config ${judged.file}`,
     );
-  return [...forbidden, ...sourceRefusal(judged), ...missing];
+  return [...forbidden, ...doorRefusal(judged), ...sourceRefusal(judged), ...missing];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
