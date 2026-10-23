@@ -97,8 +97,8 @@ async function openTable(name: string): Promise<DurableObjectStub<Table>> {
 }
 
 /** A 4P game at `name` with `seats` bound one caller each and every seat's card kept, so it is PLAYING and, with no
- *  password, any signed-in caller may watch it: since S4-pre the one shape whose OPEN sockets reach the table's total,
- *  four seats at eight beside the watchers' figure. */
+ *  password, any signed-in caller may watch it: since S4-pre the shape this cell fills the total with, four seats at
+ *  eight beside the watchers' figure. */
 async function playingTable(name: string, seats: string[]): Promise<DurableObjectStub<Table>> {
   const stub = tableStub(name);
   const body = JSON.stringify({ players: 4, colors: ["Red", "Blue", "Yellow", "Green"], start_seat: 0, seed: 20260831, seats: seats.map((user) => ({ user })) });
@@ -207,11 +207,10 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
   });
 
   // **A seated player's room** (S4-pre, the spec's Issue 1): the object tags a seated caller's socket and judges a
-  // caller with no seat by the watchers' figure, so four seats at eight beside 32 watcher sockets fit the 64 and the
-  // total never refuses a seated player while the watchers' figure holds. Mutants: the seat tag left off
-  // `acceptWebSocket` (the seated count reads 0); the seat bit ignored, or `readReply` dropping it (RED refused as a
-  // watcher); the watchers' arm applied to a seated caller (RED refused); the watchers' sentence swapped for the
-  // table's.
+  // caller with no seat by the watchers' figure, so four seats at eight beside 32 watcher sockets fit the 64. Mutants:
+  // the seat tag left off `acceptWebSocket` (the seated count reads 0); the seat bit ignored, or `readReply` dropping
+  // it (RED refused as a watcher); the watchers' arm applied to a seated caller (RED refused); the watchers' sentence
+  // swapped for the table's.
   it("admits a seated player's socket into a table whose watcher sockets sit at their figure, and refuses the next watcher with the watchers' sentence and a 4429 close", async () => {
     const id = "caps-seated";
     const stub = await openTable(id);
