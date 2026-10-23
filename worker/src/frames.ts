@@ -87,8 +87,10 @@ export function closeReason(sentence: string): string {
  *  closes, one more mirror of an HTTP status. */
 export const CLOSE_TOO_MANY = 4429;
 
-/** The four sentences a cap's `end` frame carries (host-written): the caller's own count, and the object's. */
+/** The five sentences a cap's `end` frame carries (host-written): the caller's own count, and the object's — and at a
+ *  table, the watchers' (S4-pre, the spec's Issue 1), for a caller with no seat there. */
 export const TOO_MANY_OWN_TABLE = "you have too many connections open to this table — close another tab and try again";
 export const TOO_MANY_TABLE = "this table has as many connections as it can take — try again later";
+export const TOO_MANY_WATCHERS_TABLE = "this table has as many watchers as it can take — try again later";
 export const TOO_MANY_OWN_LOBBY = "you have too many connections open to the lobby — close another tab and try again";
 export const TOO_MANY_LOBBY = "the lobby has as many connections as it can take — try again later";

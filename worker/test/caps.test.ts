@@ -1,12 +1,12 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import { CLOSE_TOO_MANY, closeReason, TOO_MANY_LOBBY, TOO_MANY_OWN_LOBBY, TOO_MANY_OWN_TABLE, TOO_MANY_TABLE } from "../src/frames";
+import { CLOSE_TOO_MANY, closeReason, TOO_MANY_LOBBY, TOO_MANY_OWN_LOBBY, TOO_MANY_OWN_TABLE, TOO_MANY_TABLE, TOO_MANY_WATCHERS_TABLE } from "../src/frames";
 import { type House, LOBBY_PER_CALLER, LOBBY_TAG, LOBBY_TOTAL } from "../src/house";
 import { callerTag } from "../src/redact";
 import { HOUSE_NAME } from "../src/slot";
 import type { Table } from "../src/table";
-import { SOCKETS_PER_CALLER, SOCKETS_PER_TABLE } from "../src/table/sockets";
+import { SEATED_TAG, SOCKETS_PER_CALLER, SOCKETS_PER_TABLE, WATCHERS_PER_TABLE } from "../src/table/sockets";
 import { BLUE, CREATE_BODY, RED, call, tableStub } from "./helpers";
 
 // **The socket caps** (security S2b, finding D3; decision D-4), in the pool. `Tab`, `upgrade` and `openTab` are
@@ -96,6 +96,21 @@ async function openTable(name: string): Promise<DurableObjectStub<Table>> {
   return stub;
 }
 
+/** A 4P game at `name` with `seats` bound one caller each and every seat's card kept, so it is PLAYING and, with no
+ *  password, any signed-in caller may watch it: since S4-pre the one shape whose OPEN sockets reach the table's total,
+ *  four seats at eight beside the watchers' figure. */
+async function playingTable(name: string, seats: string[]): Promise<DurableObjectStub<Table>> {
+  const stub = tableStub(name);
+  const body = JSON.stringify({ players: 4, colors: ["Red", "Blue", "Yellow", "Green"], start_seat: 0, seed: 20260831, seats: seats.map((user) => ({ user })) });
+  const created = await call(stub, seats[0]!, "POST", "/api/games", body, name);
+  expect(created.status, await created.text()).toBe(201);
+  for (const [seat, user] of seats.entries()) {
+    const kept = await call(stub, user, "POST", `/api/games/${name}/keep`, JSON.stringify({ seat, card: 1 }));
+    expect(kept.status, `seat ${seat}: ${await kept.text()}`).toBe(200);
+  }
+  return stub;
+}
+
 /** How many sockets the object holds under `tag` — or in all with none — read inside it. */
 function held(stub: DurableObjectStub<Table> | DurableObjectStub<House>, tag?: string): Promise<number> {
   return runInDurableObject(stub as DurableObjectStub, (_o, state) => (tag === undefined ? state.getWebSockets().length : state.getWebSockets(tag).length));
@@ -161,14 +176,20 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
 
   it("refuses the sixty-fifth socket of a table whatever its caller, with the table's own sentence", async () => {
     const id = "caps-total";
-    const stub = await openTable(id);
-    const callers = Array.from({ length: SOCKETS_PER_TABLE / SOCKETS_PER_CALLER }, (_, i) => `c${i}@t.test`);
+    // Since S4-pre (the spec's Issue 1) callers with no seat stop at the watchers' figure, so the total is filled as
+    // the figures add up to it: 32 spectators at a game, then its four seated players at eight. A spectator's socket
+    // comes first, so `tabs[0]` frees a watcher's slot below.
+    const seats = Array.from({ length: 4 }, (_, i) => `seat${i}@t.test`);
+    const stub = await playingTable(id, seats);
+    const callers = Array.from({ length: WATCHERS_PER_TABLE / SOCKETS_PER_CALLER }, (_, i) => `c${i}@t.test`);
     const tabs: Tab[] = [];
-    for (const who of callers) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, who, id));
-    expect(await held(stub)).toBe(SOCKETS_PER_TABLE);
+    for (const who of [...callers, ...seats]) for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, who, id));
+    expect([await held(stub), await held(stub, SEATED_TAG)], "the total, half of it seated").toEqual([SOCKETS_PER_TABLE, SOCKETS_PER_TABLE - WATCHERS_PER_TABLE]);
     const more = await openTab(stub, "late@t.test", id);
-    expect(await more.until(1)).toEqual([endWith(TOO_MANY_TABLE)]);
+    expect(await more.until(1), "a watcher, past the watchers' figure too: the table's own sentence").toEqual([endWith(TOO_MANY_TABLE)]);
     expect((await more.closed()).code).toBe(CLOSE_TOO_MANY);
+    const seated = await openTab(stub, seats[0]!, id);
+    expect(await seated.until(1), "a seated caller, past their own figure too: the same sentence").toEqual([endWith(TOO_MANY_TABLE)]);
     // The review's Important 1: a refused socket whose client never answers the close stays CLOSING and is NOT
     // counted — counted, a stranger's unanswered refusals would lock the seated players out (measured: 60 dangling
     // refusals, 68 held). Eight refusals left dangling (their client side never accepted), then one socket closes: the
@@ -183,6 +204,88 @@ describe("D3 — the socket caps (security S2b, decision D-4)", () => {
     const back = await openTab(stub, "late@t.test", id);
     expect((await back.until(1))[0], "admitted past the dangling refusals").toContain('"event":"signal"');
     expect(dangling.length, "held for the cell's life, like the lobby's kept").toBe(8);
+  });
+
+  // **A seated player's room** (S4-pre, the spec's Issue 1): the object tags a seated caller's socket and judges a
+  // caller with no seat by the watchers' figure, so four seats at eight beside 32 watcher sockets fit the 64 and the
+  // total never refuses a seated player while the watchers' figure holds. Mutants: the seat tag left off
+  // `acceptWebSocket` (the seated count reads 0); the seat bit ignored, or `readReply` dropping it (RED refused as a
+  // watcher); the watchers' arm applied to a seated caller (RED refused); the watchers' sentence swapped for the
+  // table's.
+  it("admits a seated player's socket into a table whose watcher sockets sit at their figure, and refuses the next watcher with the watchers' sentence and a 4429 close", async () => {
+    const id = "caps-seated";
+    const stub = await openTable(id);
+    const tabs: Tab[] = [];
+    for (let c = 0; c < WATCHERS_PER_TABLE / SOCKETS_PER_CALLER; c += 1) {
+      for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, `w${c}@t.test`, id));
+    }
+    expect([await heldOpen(stub), await heldOpen(stub, SEATED_TAG)], "four watchers at eight: the watchers' figure, nobody seated").toEqual([WATCHERS_PER_TABLE, 0]);
+    const red = await openTab(stub, RED, id);
+    expect((await red.until(1))[0], "the seated player is admitted").toContain('"event":"signal"');
+    expect(await heldOpen(stub, SEATED_TAG), "under the seated tag").toBe(1);
+    const fifth = await openTab(stub, "w4@t.test", id);
+    expect(fifth.res.status, "accepted, so the browser reads the frame").toBe(101);
+    expect(await fifth.until(1)).toEqual([endWith(TOO_MANY_WATCHERS_TABLE)]);
+    expect(await fifth.closed()).toEqual({ code: CLOSE_TOO_MANY, reason: closeReason(TOO_MANY_WATCHERS_TABLE) });
+    expect(await heldOpen(stub), "the refused socket is not counted: the 32 watchers and the seated one").toBe(WATCHERS_PER_TABLE + 1);
+    expect(tabs.length, "held for the cell's life").toBe(WATCHERS_PER_TABLE);
+  });
+
+  // Mutants: the per-caller arm skipped for a seated caller (RED's ninth admitted); the watchers' count read over
+  // EVERY socket rather than the OPEN ones (the dangling watcher's refusal keeps the next watcher out once a slot has
+  // freed); the seated count read over every socket under its tag (RED's dangling refusal makes room for a watcher).
+  it("still refuses a seated player's ninth socket with the caller's sentence, and counts a dangling refusal toward neither pool", async () => {
+    const id = "caps-seated-own";
+    const stub = await openTable(id);
+    const tabs: Tab[] = [];
+    for (let c = 0; c < WATCHERS_PER_TABLE / SOCKETS_PER_CALLER; c += 1) {
+      for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, `w${c}@t.test`, id));
+    }
+    for (let i = 0; i < SOCKETS_PER_CALLER; i += 1) tabs.push(await openTab(stub, RED, id));
+    /** The two pools' OPEN counts: the seated sockets, and the watchers' (the rest). */
+    const pools = async () => {
+      const seated = await heldOpen(stub, SEATED_TAG);
+      return [seated, (await heldOpen(stub)) - seated];
+    };
+    expect(await pools(), "RED's eight seated, the watchers at their figure").toEqual([SOCKETS_PER_CALLER, WATCHERS_PER_TABLE]);
+    const ninth = await openTab(stub, RED, id);
+    expect(ninth.res.status).toBe(101);
+    expect(await ninth.until(1)).toEqual([endWith(TOO_MANY_OWN_TABLE)]);
+    expect(await ninth.closed()).toEqual({ code: CLOSE_TOO_MANY, reason: closeReason(TOO_MANY_OWN_TABLE) });
+    expect(await held(stub, SEATED_TAG), "the refused socket is not kept").toBe(SOCKETS_PER_CALLER);
+    // Two refusals left dangling, their clients never answering the close: RED's own (tagged seated, refused by their
+    // own figure) and a fifth watcher's (refused by the watchers' figure).
+    const dangling = [await upgrade(stub, RED, id), await upgrade(stub, "w4@t.test", id)];
+    expect(dangling.map((r) => r.status), "accepted, closing").toEqual([101, 101]);
+    expect(await held(stub, SEATED_TAG), "RED's dangling refusal is held under the seated tag, CLOSING").toBe(SOCKETS_PER_CALLER + 1);
+    expect(await pools(), "and neither pool counts either").toEqual([SOCKETS_PER_CALLER, WATCHERS_PER_TABLE]);
+    const refused = await openTab(stub, "w5@t.test", id);
+    expect(await refused.until(1), "RED's dangling refusal makes no room for a watcher").toEqual([endWith(TOO_MANY_WATCHERS_TABLE)]);
+    // A slot frees once a watcher's close has been processed (polled, bounded, as the cells above poll).
+    tabs[0]!.ws.close(1000);
+    for (let i = 0; i < 20 && (await heldOpen(stub)) >= WATCHERS_PER_TABLE + SOCKETS_PER_CALLER; i += 1) await new Promise((r) => setTimeout(r, 50));
+    expect(await pools(), "one watcher's socket closed").toEqual([SOCKETS_PER_CALLER, WATCHERS_PER_TABLE - 1]);
+    const next = await openTab(stub, "w5@t.test", id);
+    expect((await next.until(1))[0], "admitted past the dangling watcher's refusal").toContain('"event":"signal"');
+    expect(dangling.length, "held for the cell's life: a dropped unaccepted client is collected, and its slot with it").toBe(2);
+  });
+
+  // **Classification is by the caller's standing when the socket is admitted, and never again** (the spec's Issue 1,
+  // item 5): a joiner's earlier socket stays a watcher's until it reconnects. Mutants: the seat tag left off
+  // `acceptWebSocket`, or the seat bit ignored (the socket opened after the join reads 0 under the tag).
+  it("counts a joiner's earlier socket as a watcher's until it reconnects, and the one opened after the join as seated", async () => {
+    const id = "caps-joiner";
+    const stub = await openTable(id);
+    const early = await openTab(stub, BLUE, id);
+    expect((await early.until(1))[0], "a stranger admitted at the open table").toContain('"event":"signal"');
+    expect([await heldOpen(stub), await held(stub, SEATED_TAG)], "one socket, a watcher's").toEqual([1, 0]);
+    const joined = await call(stub, BLUE, "POST", `/api/games/${id}/join`, '{"seat":1}', id);
+    expect(joined.status, await joined.text()).toBe(200);
+    expect((await early.until(2))[1], "the join's frame reaches the earlier socket, which stays open").toContain('"event":"signal"');
+    expect([await heldOpen(stub), await held(stub, SEATED_TAG)], "still OPEN, and still a watcher's").toEqual([1, 0]);
+    const late = await openTab(stub, BLUE, id);
+    expect((await late.until(1))[0]).toContain('"event":"signal"');
+    expect([await heldOpen(stub), await held(stub, SEATED_TAG)], "the socket opened after the join is seated").toEqual([2, 1]);
   });
 
   it("caps the lobby per caller the same way, under its own sentence, and counts only OPEN sockets toward its total", async () => {

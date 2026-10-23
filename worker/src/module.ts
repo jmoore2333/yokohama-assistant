@@ -12,10 +12,11 @@ export type Bump =
   | { end: string };
 
 /** A reply as plain data. `archive` (the deferred archive plan), `picker`
- *  (the picker row) and `dropped` (the codes of a picker row `restore_picker`
- *  cleared for its code, `{"stored", "running"}`) are present only when the
- *  module set them. */
-export type Replied = { status: number; body: string; bumps: Bump[]; archive?: string; picker?: string; dropped?: string };
+ *  (the picker row), `dropped` (the codes of a picker row `restore_picker`
+ *  cleared for its code, `{"stored", "running"}`) and `seated` (whether an
+ *  `events` reading's caller holds a seat at the table, set at 200 alone; S4-pre,
+ *  the spec's Issue 1) are present only when the module set them. */
+export type Replied = { status: number; body: string; bumps: Bump[]; archive?: string; picker?: string; dropped?: string; seated?: boolean };
 
 /**
  * One object's module (spec §2.2, §2.4): the factory's instance, built on first
@@ -111,6 +112,7 @@ export function readReply(r: Reply): Replied {
   const archive = r.archive;
   const picker = r.picker;
   const dropped = r.dropped;
+  const seated = r.seated;
   const logs = r.logs;
   r.free();
   const replied: Replied = {
@@ -120,6 +122,7 @@ export function readReply(r: Reply): Replied {
     ...(archive === undefined ? {} : { archive }),
     ...(picker === undefined ? {} : { picker }),
     ...(dropped === undefined ? {} : { dropped }),
+    ...(seated === undefined ? {} : { seated }),
   };
   for (const line of parseLogs(logs)) log(line.event, line.fields);
   return replied;

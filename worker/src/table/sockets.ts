@@ -8,6 +8,7 @@ import {
   sentenceOf,
   TOO_MANY_OWN_TABLE,
   TOO_MANY_TABLE,
+  TOO_MANY_WATCHERS_TABLE,
 } from "../frames";
 import type { Bump, Replied } from "../module";
 import { log, respond } from "../respond";
@@ -25,11 +26,35 @@ export const SOCKETS_PER_CALLER = 8;
 /** How many sockets one table object holds in all: four seats and their spectators at eight each. The review's
  *  reproduction held 300 and paid 301 module calls per bump; the platform's own ceiling is 32,768. */
 export const SOCKETS_PER_TABLE = 64;
+/** How many sockets one table object holds for callers who hold no seat at it (S4-pre, the spec's Issue 1): the total
+ *  less four seats at eight each, so that while the watchers sit at this figure the table keeps its seated players'
+ *  room. A cost bound, like the two above, never a budget a feature may lean on. The NAS's `WATCHERS_PER_TABLE`. */
+export const WATCHERS_PER_TABLE = 32;
+/** The tag a seated caller's socket carries beside the table's id and the caller's tag, which the watchers' figure
+ *  reads: a tag no table id can spell (`isSafeId` admits only `[A-Za-z0-9._-]`) and no caller tag either (`u:`). */
+export const SEATED_TAG = "s:seated";
 
 /** Which cap a new socket would cross — `own` for the caller's, `total` for the object's — or `undefined` to admit.
- *  The total is judged first: at both, closing one's own tab would not help. */
+ *  The total is judged first: at both, closing one's own tab would not help. The lobby's verdict (`house.ts`); a
+ *  table's is `tableVerdict`. */
 export function capVerdict(own: number, total: number, caps: { perCaller: number; total: number }): "own" | "total" | undefined {
   if (total >= caps.total) return "total";
+  if (own >= caps.perCaller) return "own";
+  return undefined;
+}
+
+/** A table's verdict (S4-pre, the spec's Issue 1): `capVerdict`'s two with the watchers' figure between them — the
+ *  object's total first, then, for a caller who holds no seat, `watchers` once the sockets of callers with no seat
+ *  sit at their figure, then the caller's own. A seated caller is refused only by the total and by their own. */
+export function tableVerdict(
+  own: number,
+  total: number,
+  watchers: number,
+  seated: boolean,
+  caps: { perCaller: number; total: number; watchers: number },
+): "own" | "total" | "watchers" | undefined {
+  if (total >= caps.total) return "total";
+  if (!seated && watchers >= caps.watchers) return "watchers";
   if (own >= caps.perCaller) return "own";
   return undefined;
 }
@@ -88,6 +113,16 @@ export function withSockets<T extends TableParts>(Base: T) {
      * announced. Every socket accepted here is tagged with the table's id (spec
      * §2.4); the cap reads the caller's tag (`getWebSockets(callerTag)`);
      * `sendFrames` still frames every socket the object holds.
+     *
+     * **A seated caller's socket carries a third tag, `SEATED_TAG`** (S4-pre,
+     * the spec's Issue 1), from the reading's `seated` bit, and a caller with no
+     * seat is refused by the watchers' arm (`tableVerdict`) once the OPEN
+     * sockets without that tag sit at `WATCHERS_PER_TABLE`, which leaves four
+     * seats at eight their room in the total. A socket is classified by its
+     * caller's standing when it is admitted, and never again. A joiner's earlier
+     * socket counts as a watcher's until it reconnects, and a socket opened by a
+     * seat holder whose seat the creator then reopens stays tagged seated until
+     * it does.
      */
     protected admit(id: string, user: string | undefined, callerTag: string | undefined, reply: Replied): Response {
       const { status, body } = reply;
@@ -102,11 +137,17 @@ export function withSockets<T extends TableParts>(Base: T) {
         // the lobby takes its own socket's (`house.ts`; on its strip since S2c Task 5). Answered unupgraded, the
         // client's ladder would reconnect and hammer. A tag outlives hibernation, so the count does too; OPEN
         // sockets alone are counted (`openCount`: a dangling close must not lock anyone out).
+        // The watchers are the OPEN sockets less the seated ones (S4-pre): a refusal is accepted with the same tags
+        // and closed at once, so it is in neither pool.
         const own = callerTag === undefined ? 0 : openCount(this.ctx.getWebSockets(callerTag));
-        const over = capVerdict(own, openCount(this.ctx.getWebSockets()), { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE });
-        this.ctx.acceptWebSocket(server, callerTag === undefined ? [id] : [id, callerTag]);
+        const total = openCount(this.ctx.getWebSockets());
+        const seated = reply.seated === true;
+        const watchers = total - openCount(this.ctx.getWebSockets(SEATED_TAG));
+        const over = tableVerdict(own, total, watchers, seated, { perCaller: SOCKETS_PER_CALLER, total: SOCKETS_PER_TABLE, watchers: WATCHERS_PER_TABLE });
+        const tags = callerTag === undefined ? [id] : [id, callerTag];
+        this.ctx.acceptWebSocket(server, seated ? [...tags, SEATED_TAG] : tags);
         if (over !== undefined) {
-          const sentence = over === "own" ? TOO_MANY_OWN_TABLE : TOO_MANY_TABLE;
+          const sentence = over === "own" ? TOO_MANY_OWN_TABLE : over === "watchers" ? TOO_MANY_WATCHERS_TABLE : TOO_MANY_TABLE;
           server.send(frame("end", endAtAdmission(sentence)));
           server.close(CLOSE_TOO_MANY, closeReason(sentence));
           return new Response(null, { status: 101, webSocket: client });
