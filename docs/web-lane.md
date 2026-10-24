@@ -496,9 +496,9 @@ day's window (the table above).
   `User-Agent`, the TLS fingerprint being the tell (W-1, trap 42).
 - **The deploy commands name their file to the guard, the secrets guard and wrangler alike** (security S2a,
   finding D18): `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
-  scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `deploy:open`
-  and `deploy:dev` the same three over their files, so wrangler deploys exactly what the guard judged. **The guard
-  refuses a redirect file and a `workers.dev` URL under every door**: `.wrangler/deploy/config.json`, in `worker/`
+  scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `deploy:open`,
+  `deploy:dev` and `deploy:private` the same three over their files, so wrangler deploys exactly
+  what the guard judged. **The guard refuses a redirect file and a `workers.dev` URL under every door**: `.wrangler/deploy/config.json`, in `worker/`
   or at the repository root, would send a bare `wrangler deploy` to a configuration the guard never judged, and a
   `workers.dev` URL goes around Access under `worker` and around the edge rule, the rate limit and Bot Fight Mode
   under `open` (finding C3); every open-door file it is told is held to production as its sibling, and since
@@ -852,7 +852,7 @@ whole; it answers a navigation from `/shell.bin`'s bytes.
 
 ## 14. Getting started
 
-Three ways in:
+Three ways in (`docs/web-guide.md` is the player-facing guide to them):
 1. **Play at a hosted site.** Open the Worker at `https://yokohama.moore.nyc`, or the NAS at
    `https://yokohama-nas.moore.nyc`, and pass Cloudflare Access's login (the `yokohama` application's policy
    decides who may). The door offers the bot, friends, and the games on this device. "Play with friends" goes
