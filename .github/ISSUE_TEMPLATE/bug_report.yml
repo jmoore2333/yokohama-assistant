@@ -33,6 +33,8 @@ body:
     attributes:
       label: What happens today
       description: What you see, and where. Quote an error's text exactly.
+    validations:
+      required: true
   - type: textarea
     id: steps
     attributes:

@@ -6,7 +6,7 @@
 
 - [ ] The per-edit suites and the lint gate (`CONTRIBUTING.md`, "How a change lands"), green with zero warnings.
 - [ ] The web lane's suites (`docs/web-lane.md` §2), if the change reaches what the layer compiles.
-- [ ] A `SEMANTICS_REV` bump in the same commit, with its decision-log row, if which moves are allowed, how a move applies, scoring or setup moved.
+- [ ] A `SEMANTICS_REV` bump in the same commit, with its decision-log row, if legality, application, scoring or setup moved.
 
 ### The documents updated
 

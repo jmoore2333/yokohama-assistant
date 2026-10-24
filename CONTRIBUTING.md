@@ -2,14 +2,14 @@
 
 Yokohama Assistant is a Rust rules engine for the board game Yokohama (Hisashi Hayashi, 2016), with a command-line
 game driver and live tracker, a browser client with two server hosts, and a computer player built to play to win.
-The engine is the one authority on which moves are allowed: every surface asks it, and none computes a rule of its
-own.
+The engine is the one authority on legality: every surface asks it, and none computes a rule of its own.
 
-Three documents carry the project's authority, and a change reads them first:
-- [`guidingpath.md`](guidingpath.md): the mission, the current state, the roadmap and the decision log, which holds
-  every rules ruling.
-- [`docs/handover.md`](docs/handover.md): the board, with the tracks in flight and their next steps.
-- [`CLAUDE.md`](CLAUDE.md): the standing rules every session and every contributor reads, with the commands, the
+Three documents to read before a change:
+- [`guidingpath.md`](guidingpath.md) is the authority: the mission, the current state, the roadmap and the decision
+  log, which holds every rules ruling.
+- [`docs/handover.md`](docs/handover.md) is the board, a pointer to the tracks in flight and their next steps. It
+  never outranks the other two.
+- [`CLAUDE.md`](CLAUDE.md) holds the standing rules every session and every contributor reads: the commands, the
   gates, the STOPs and the conventions.
 
 ## How a change lands
@@ -31,7 +31,8 @@ Three documents carry the project's authority, and a change reads them first:
    ```
 
    The two example targets run under no other command, and the four node suites cover the Board Game Arena
-   bridge's browser half, which no cargo suite reaches.
+   bridge's browser half, which no cargo suite reaches. A clone without the two captures sets the variable in
+   [The capture corpus](#the-capture-corpus) below first.
 4. Run the web lane's suites too whenever a change reaches what the layer compiles: `crates/yokohama-core`,
    `crates/yokohama-cli`, `SEMANTICS_REV` or the workspace version.
    [`docs/web-lane.md` §2](docs/web-lane.md#2-the-suites-and-the-gates) lists them with their order rules.
@@ -49,8 +50,8 @@ never run `cargo fmt`: it would reformat the whole repository.
 Three kinds of change do not land through a pull request alone. A change that touches one is proposed as an issue
 first, and it lands with its row in the decision log.
 
-- **`SEMANTICS_REV`** in `crates/yokohama-core/src/game/semantics.rs`. Any change to which moves are allowed, how
-  a move applies, scoring or setup bumps it in the same commit. Records and saves are keyed to it, so a save stops
+- **`SEMANTICS_REV`** in `crates/yokohama-core/src/game/semantics.rs`. Any behavior-affecting change to legality,
+  application, scoring or setup bumps it in the same commit. Records and saves are keyed to it, so a save stops
   resuming across a bump, by design.
 - **The oracle.** `crates/yokohama-oracle` is an independent reference, authored from rules sources only (the
   English rulebook, the knowledge base's rules reference and the decision log) and never from the engine's logic.
@@ -92,5 +93,5 @@ Open an issue with one of the two forms, **Bug report** or **Rules question**, o
 A security vulnerability is reported privately, never in an issue: [`SECURITY.md`](SECURITY.md) says how. A pull
 request opens on the template's checklist: what changes, the suites run, the documents updated, and the ask above.
 
-The project's issues follow one layout: Context · What happens today · The change · Where · Acceptance · Size ·
-Record to update when it lands.
+A blank issue that proposes a change — a STOP's proposal among them — is written in the project's layout: Context ·
+What happens today · The change · Where · Acceptance · Size · Record to update when it lands.

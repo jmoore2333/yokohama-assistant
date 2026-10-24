@@ -18,8 +18,7 @@ Report a vulnerability privately, through GitHub's private vulnerability reporti
 
 - An acknowledgement within a week.
 - A fix on a branch of its own, reviewed before it merges.
-- A row in [`docs/security-ledger.md`](docs/security-ledger.md), the record of each security finding and its
-  status.
+- A row in [`docs/security-ledger.md`](docs/security-ledger.md).
 - Credit for the finding, if you want it.
 
 ## Out of scope
