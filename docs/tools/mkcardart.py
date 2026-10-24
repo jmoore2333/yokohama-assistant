@@ -5,11 +5,12 @@
     python3 docs/tools/mkcardart.py --check      # compare, write nothing (exit 1 on drift)
 
 Reads the sheets of the Tabletop Simulator upload (Steam Workshop 1840951801),
-which are not in this tree, from `tts-assets/organized/` when a contributor has
-placed them there (`docs/tools/tts-extraction/README.md` says what they were),
-and writes one WebP per card, plus `manifest.json`, into
-`crates/yokohama-web/assets/art/`. **It never writes into `tts-assets/`** --
-repo convention treats that tree as a contributor's own local copy.
+which are not in this tree, from `tts-assets/organized/` (and the raw `images/`
+cache beside it, `tts-assets/images/`) when a contributor has placed them there
+(`docs/tools/tts-extraction/README.md` says what they were), and writes one
+WebP per card, plus `manifest.json`, into `crates/yokohama-web/assets/art/`.
+**It never writes into `tts-assets/`** -- repo convention treats that tree as a
+contributor's own local copy.
 
 WHY A SCRIPT AND NOT A BUILD STEP. The output is committed. A container image
 that had to crop at build time would need Python, Pillow and the 20 MB of

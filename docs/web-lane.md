@@ -419,15 +419,15 @@ deployment is `yokohama-web` itself and keeps the `worker` door throughout, only
 inside the review's known exercises and stays steady operationally after the security process (security S2b, C1; the
 owner's clarification of 2026-10-12; `worker/RUNBOOK.md` §3). Two preconditions that stood here are answered rather
 than owed: the art's decision and the fresh-history repository — the owner ruled on 2026-10-22 that the history is
-kept whole and that the derived crops the application draws stay in the tree and `tts-assets/` left the public tip in S4a (2026-10-23)
-(the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per person is answered the same way. For a
-self-hoster's open-door Worker it is not built: the Worker's own two limits (security S2b, finding C2) count creates
-by the connecting IP and writes by the IP and the name, and a name is free, so there the write limit and the archive's
-share are per NAME, never per IP, and the zone's rate-limit rule and the edge rule are the deployer's tools for that
-(§15). The public Worker needs no further control for it: its door is provider-signed (source `workos`), the write
-limit counts the verified address's digest, the anonymous archive is bounded by the per-key share and the create
-limiter by IP, and a caller is a verified address held to 8 sockets (§15); the ceiling the owner's R-3 asked for is
-the door's (settled 2026-10-22).
+kept whole and that the derived crops the application draws stay in the tree while `tts-assets/` leaves the public
+tip, which it did in S4a (2026-10-23) (the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per
+person is answered the same way. For a self-hoster's open-door Worker it is not built: the Worker's own two limits
+(security S2b, finding C2) count creates by the connecting IP and writes by the IP and the name, and a name is free,
+so there the write limit and the archive's share are per NAME, never per IP, and the zone's rate-limit rule and the
+edge rule are the deployer's tools for that (§15). The public Worker needs no further control for it: its door is
+provider-signed (source `workos`), the write limit counts the verified address's digest, the anonymous archive is
+bounded by the per-key share and the create limiter by IP, and a caller is a verified address held to 8 sockets (§15);
+the ceiling the owner's R-3 asked for is the door's (settled 2026-10-22).
 
 **The provider items, met by the auth cycle's code (2026-10-19, the day stage 1 went live, with the readings
 `worker/RUNBOOK.md` §23's stage-1 record names and the later deployments' readings in §25 and §27; stage 2 is S4c's

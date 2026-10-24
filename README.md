@@ -760,7 +760,9 @@ layouts, and canal geometry — and every owner ruling since is recorded in
 [`guidingpath.md`](guidingpath.md)'s decision log. The engine's registries are generated from
 the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data that produced it.
 
-The code in this repository is Apache-2.0 (`LICENSE`, `NOTICE`); [`ASSETS.md`](ASSETS.md) names the third-party paths that carry no grant and says what a fork has to do about them.
+The code in this repository is Apache-2.0 (`LICENSE`, `NOTICE`);
+[`ASSETS.md`](ASSETS.md) names the third-party paths that carry no grant and says
+what a fork has to do about them.
 
 ## Where truth lives
 
