@@ -664,7 +664,7 @@ Every variable the web lane reads, in one table (R-6.5c2.45). **The kind** says 
 read when the client or a module is built, a *launch variable* by the NAS/Docker binary at start, a *Worker var*
 from `worker/wrangler.jsonc`'s `vars`, a *deploy declaration* from a Worker configuration's `vars` too but by the
 deploy's own scripts and never by the Worker, a *secret* through `wrangler secret put`, an *update variable* by `deploy/update.sh` from the operator's shell
-(cycle F, R-F12), *test-only* by a test or a
+(cycle F, R-F12), a *local-run variable* by `deploy/run-local.sh` from the same shell, *test-only* by a test or a
 harness, and *orchestrator-only* by the live operations of §10. A launch variable or a Worker var with a bad value
 stops the server at start (the NAS, naming it) or answers every API request 500 naming it (the Worker); the
 self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 give each one's refusals. The cell
@@ -715,9 +715,9 @@ self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 giv
 | `YOKOHAMA_WEB_BUILD_ENV` | update variable | none: `deploy/update.sh` refuses to run | the file of build values the update script reads, `NAME=value` lines each taken literally and naming only the six build values above, and passes to `docker build` as `--build-arg`s; an empty file builds with none | the self-host | `deploy/update.sh` |
 | `YOKOHAMA_WEB_ENV` | update variable | none: `deploy/update.sh` refuses to run | the container's environment file, passed to `docker run` as `--env-file` (`YOKOHAMA_WEB_IDENTITY` first); the launch variables above are its lines | the self-host | `deploy/update.sh` |
 | `YOKOHAMA_WEB_IMAGE` | local-run variable | `yokohama-web:local` | the image tag `deploy/run-local.sh` builds and runs; read by that script alone, the update script builds its own | the local machine | `deploy/run-local.sh` |
-| `YOKOHAMA_WEB_CONTAINER` | update variable | `yokohama-web` | the name of the container the update script stops, removes and runs again | the self-host | `deploy/update.sh` |
-| `YOKOHAMA_WEB_VOLUME` | update variable | `yokohama-web-data` | the named volume the update script mounts at `/data` | the self-host | `deploy/update.sh` |
-| `YOKOHAMA_WEB_PUBLISH` | update variable | `127.0.0.1:8080:8080`; set empty to publish no port | the `-p` argument of the update script's `docker run` | the self-host | `deploy/update.sh` |
+| `YOKOHAMA_WEB_CONTAINER` | update variable; local-run variable | `yokohama-web`; the local script's is `yokohama-web-local` | the name of the container the update script stops, removes and runs again, and the local script's own | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
+| `YOKOHAMA_WEB_VOLUME` | update variable; local-run variable | `yokohama-web-data`; the local script's is `yokohama-web-local-data` | the named volume the update script mounts at `/data`, and the local script's own | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
+| `YOKOHAMA_WEB_PUBLISH` | update variable; local-run variable | `127.0.0.1:8080:8080` in both; set empty to publish no port (the update script) | the `-p` argument of the update script's `docker run`, and of the local script's | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
 | `YOKOHAMA_WEB_NETWORK` | update variable | Docker's default network | the `--network` argument of the update script's `docker run`, for a network a tunnel shares | the self-host | `deploy/update.sh` |
 | `YOKOHAMA_WEB_COUNT_WAKES` | orchestrator-only (a Worker var by `--var`) | `off` | `on` counts every wake in `meta.wakes` and logs `wake {id, wakes}`: the exit's window | the Worker | `worker/src/config.ts` |
 | `DEV_DOOR_CLIENT_ID` | secret | none: the dev door shut | the `yokohama-worker` Service Auth credential's client id | the Worker | `worker/src/identity.ts` |
