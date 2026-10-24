@@ -9,7 +9,7 @@ with the record named beside it; the record carries the full account.
 Every bot is a **contestant**: a named identity made of three parts, a controller (the search that picks a move), the
 controller's knobs, and a weight table (the numbers the evaluator prices a position with). The name is the identity.
 The save file, the arena's report and the bot's own explanation all carry the same echo of it (§2), and a change to
-any part of it, one knob or one weight, makes a different contestant under a different name.
+any part of it, one knob or one weight, makes a different contestant, and its echo says so.
 
 **A contestant is honest by construction.** It decides from a `PlayerView`, the game as its own seat sees it, and is
 never handed the engine's raw state. The view masks the five things a seated player cannot know: the order of the
@@ -23,8 +23,9 @@ design unit is one dealt world played twice with the seats exchanged, so the fir
 unit. A cell's figure is θ̂, the first contestant's share of the games averaged over units, so 0.5 is parity at two
 players. The interval around it is a bootstrap over units, never over games, because the two games of a unit are not
 independent. When every unit reads the same value, the arena does not print a zero-width interval: it reports a typed
-refusal carrying a one-sided bound instead. The number of units is fixed before a cell runs, and a master seed whose
-figures get quoted is drawn from the operating system's entropy and recorded before use.
+refusal carrying a one-sided bound instead. The number of units is fixed before a cell runs, and every master seed is
+recorded before use, either committed in advance in the record or drawn from the operating system's entropy. Each
+measured milestone in §5 rests on at least one cell run on an entropy-drawn master.
 
 The rules of evidence on this page are the project's own: a one-sided bound is called one-sided, an observed maximum
 is "max observed under harness X" and never a bound, and no direction is stated where none was measured.
@@ -50,10 +51,10 @@ is "max observed under harness X" and never a bound, and no direction is stated 
   than score one: uniformly, never volunteering a retreat, or weighted by move family. They are the ladder's floor,
   and `family-weighted` is also the policy the fuzzer plays.
 - **The diagnostics and the research identities.** `atomic-diag-v1`, an atomic-depth search kept from the depth
-  experiment, and `mcts-v1`, the tree search measured in §5 and not adopted, are labelled diagnostics. `v2-padded`,
-  the V2 table padded to the sighted evaluator's width, and `v2-refit-padded`, a refit control, are research
-  identities for arena weight comparisons. The terminal refuses all four as a bot seat, each kind with its own
-  sentence.
+  experiment, and `mcts-v1`, a Monte Carlo tree search measured in §5 and not adopted, are labelled diagnostics.
+  `v2-padded`, the V2 table padded to the sighted evaluator's width, and `v2-refit-padded`, a refit control, are
+  research identities for arena weight comparisons. The terminal refuses all four as a bot seat, each kind with its
+  own sentence.
 
 **A name never re-points.** A different weight table is a different named identity, never a knob and never an edit,
 and every figure stays tied to the full echo it was recorded under. The arena's runner seats every name above; its
@@ -72,10 +73,12 @@ development fields, then a freeze of the production identity, then one confirmat
 [`plans/2026-08-11-phase3.5c-scoping-amendment.md`](plans/2026-08-11-phase3.5c-scoping-amendment.md)). V4 is
 production ahead of that post-screening freeze, so the freeze may name a different contestant.
 
-**Games played against V4 keep their bot.** A later build plays an unfinished V4 game on exactly when it still derives
-V4's exact descriptor, with the controller and evaluator versions unmoved. A build that moves either refuses the game
-as drift and says why, rather than playing it as another bot ([`web-lane.md`](web-lane.md) §6 and §15). The terminal
-and the browser apply the same rule.
+**Games played against V4 keep their bot in the browser.** In the browser, a later build at the same engine revision
+continues an unfinished V4 game exactly when it still derives V4's exact descriptor, with the controller and evaluator
+versions unmoved; otherwise it refuses the game as drift and says why ([`web-lane.md`](web-lane.md) §6 and §15). The
+terminal loads the game either way and warns: a seat it cannot rebuild comes back as a human seat, and a seat whose
+versions moved plays on under the current build. Across a change of engine revision, `SEMANTICS_REV`, no save
+resumes in either, by design (the contract in [`CLAUDE.md`](../CLAUDE.md)).
 
 ## 4. Suggest and Why
 
@@ -110,14 +113,17 @@ one-sided bound lies above 0.5. The [3.3 close report](plans/2026-07-27-phase3.3
 θ̂ 1.000000 on the committed master and again on a master freshly drawn from OS entropy, all 200 units swept in each.
 With no variation left to resample, the arena refused an interval; the 3.3 close report gives the rule-of-three bound
 at both arms as 0.985 > 0.5, a ONE-SIDED bound and not a two-sided interval.
-The same record gives the mean VP margins as +67.42 and +68.44.
+The same record gives the mean victory-point margins as +67.42 and +68.44.
 
-**3.4, the architecture experiment (2026-08-05).** The registered claim: MCTS-v1 is adopted only if both node-matched
-arms and the wall-matched cell land entirely above 0.5 and the capped arm is certified as the shipped rung's proxy;
-every other outcome retains the shallow search. The
-[3.4 decision record](plans/2026-08-04-phase3.4-architecture-decision.md) gives the first node-matched arm as
-θ̂ 0.045000 [0.027500, 0.065000].
-The second, on a freshly drawn master, reads θ̂ 0.050000 [0.030000, 0.072500] in the same record.
+**3.4, the architecture experiment (2026-08-05).** The registered claim: MCTS-v1, a Monte Carlo tree search, is adopted
+only if both node-matched arms and the wall-matched cell land entirely above 0.5 and the capped arm is certified as
+the shipped rung's proxy; every other outcome retains the shallow search. The
+[3.4 decision record](plans/2026-08-04-phase3.4-architecture-decision.md) gives the first node-matched arm, against
+the shallow search capped at the same budget, as θ̂ 0.045000 [0.027500, 0.065000].
+The second, on a freshly drawn master and against the same capped search, reads θ̂ 0.050000 [0.030000, 0.072500] in
+the same record.
+That capped search was not certified as the shipped rung's proxy: the same record gives its own cell against the
+shipped rung as θ̂ 0.230000 [0.190000, 0.272500], outside the certification band.
 The wall-matched cell, against the shipped rung, reads θ̂ 0.070000 [0.035000, 0.105000] in the same record.
 All three intervals lie entirely below 0.5: MCTS-v1 is NOT adopted, and the turn-boundary shallow search is retained
 on the merits (§5.5 of that record). `mcts-v1` stays reachable as a labelled diagnostic.
@@ -132,8 +138,8 @@ controller at its shipped knobs (the decision log's 2026-08-11 row in
 
 **V3, two candidate features (2026-08-19).** The registered claim: each candidate is admitted only through its
 pre-registered gates. The [V3 close handover](plans/2026-08-19-phase3.5c-v3-close-handover.md) records the cycle as
-NULL: both candidates washed at their pre-registered gates, terminal-margin awareness at L2 and
-`achievement_race_proximity` at L3. Nothing was admitted, frozen or shipped, and no play behaviour changed.
+NULL: both candidates washed at their pre-registered gates, terminal-margin awareness at the second gate, L2, and
+`achievement_race_proximity` at the third, L3. Nothing was admitted, frozen or shipped, and no play behaviour changed.
 
 **V4, the sighted evaluator (2026-08-30).** The registered claim, in one confirmatory field with one counted attempt:
 `v4-step9-draft1` beats both `v2-padded` (V2's behaviour) and `v2-refit-padded` (the refit control), each 95% interval
@@ -149,11 +155,12 @@ V4 freeze, §7). The V4 freeze §9.9 records the result, both θ̂ above that ed
   diagnosis's self-play rate of 0.30% [0.14%, 0.65%]; they were counted, not refused, as the amended registration
   directs (§9.9, item f).
 
-A first run of the same field was invalid: the self-null refused at its first turn-capped game, which does not spend
-the attempt, and that run's superiority figures were sealed unread. A signed amendment then made a capped game a
-counted event, and the counted attempt ran against the unchanged identity on a fresh master (the V4 freeze, §9.1 to
-§9.8). The escrow re-read is recorded in the V4 close §2.6: three valid arms, each VOID and non-blocking, zero failed
-admitted roots, and each arm's one admitted root read 0/20.
+A first run of the same field was invalid: the self-null refused at its first turn-capped game, which made the run
+invalid. An invalid run does not spend the attempt, and that run's superiority figures were sealed unread. A signed
+amendment then made a capped game a counted event, and the counted attempt ran against the unchanged identity on a
+fresh master (the V4 freeze, §9.1 to §9.8). The escrow re-read is recorded in the V4 close §2.6: three valid arms with
+zero failed admitted roots. Each arm admitted one root, below the four a verdict needs, so each is VOID and
+non-blocking, and each admitted root missed 0 of 20 replications.
 
 ## 6. The bar, not claimed
 
@@ -203,10 +210,9 @@ Each of these is recorded. None carries a claim about strength.
   ahead. The strength milestone is two-player, and three- and four-player strength work lives above the bar (the map,
   §1.2). Nothing has been tuned on, or measured against, a human player (the CLI guide's `suggest` section).
 - **The release roster has outgrown its target.** The fifteen release gates first ran past their ≤420 s target on the
-  M5 laptop at the V4 close, at 492.17 s (the V4 close, §2.7). The latest sequence the board records read 478 s on the
-  same machine, in the after-review record of [the S2c plan](plans/2026-10-13-security-s2c-nas-identity-plan.md)
-  dated 2026-10-17. Restating the target is open as OD-6, and every wall figure belongs to the machine that measured
-  it.
+  M5 laptop at the V4 close, at 492.17 s (the V4 close, §2.7). The latest sequence the decision log records read
+  497 s on the MacBook Air, Apple M5, at the 0.7.0 release (the [decision log](../guidingpath.md)'s 2026-10-19 row).
+  Restating the target is open as OD-6, and every wall figure belongs to the machine that measured it.
 
 The full record of the strength lane, step by step, is the
 [execution ledger](plans/2026-08-09-phase3.5c-execution-ledger.md); the decision log in
