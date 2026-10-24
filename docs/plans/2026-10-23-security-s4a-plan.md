@@ -394,8 +394,8 @@ The design §6.4, §2.6, §2.11, §2.24 and §10.3, §10.6; C-6. The posted issu
 
 - [ ] **Step 5: Verify**
 
-Run: `for f in .github/ISSUE_TEMPLATE/*.yml; do ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts ARGV[0] + ": " + (y["name"] || "config").to_s' "$f"; done && git grep -n -i 'legal\|copyright\|takedown\|@gmail\|@videogame' -- CONTRIBUTING.md SECURITY.md .github/ISSUE_TEMPLATE .github/pull_request_template.md; echo "grep exit $?"`
-Expected: the three YAMLs parse and print their names; the grep prints nothing (exit 1). Every relative link in the four Markdown files resolves (`ls` each path named).
+Run: `for f in .github/ISSUE_TEMPLATE/*.yml; do ruby -ryaml -e 'y = YAML.load_file(ARGV[0]); puts ARGV[0] + ": " + (y["name"] || "config").to_s' "$f"; done && git add -N CONTRIBUTING.md SECURITY.md .github/ISSUE_TEMPLATE .github/pull_request_template.md && git grep -n -i -w -E 'legal|copyright|takedown' -- CONTRIBUTING.md SECURITY.md .github/ISSUE_TEMPLATE .github/pull_request_template.md; echo "grep exit $?"; git grep -n '@' -- CONTRIBUTING.md SECURITY.md .github/ISSUE_TEMPLATE .github/pull_request_template.md; echo "address grep exit $?"`
+Expected: the three YAMLs parse and print their names; both greps print nothing (exit 1). (P-15: `git grep` reads tracked files only, so the new files are intent-added first; the register words are matched WHOLE — the first pattern's `legal` matched the project's own term "legality" in the STOP sentence, which stays "legality", the `SEMANTICS_REV` contract's word; and `@` alone catches any address, not two spellings.) Every relative link in the four Markdown files resolves (`ls` each path named).
 
 - [ ] **Step 6 (the orchestrator, outward; the owner's yes of 2026-10-23):** `gh label create rules --color 0052CC --description "the engine disagrees with the table: a rules question or a rules defect"`, then `gh issue edit 62 --add-label rules`. The style pass over #58–#60 and #62 against the forms' layout is Block B's.
 
