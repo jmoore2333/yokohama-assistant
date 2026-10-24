@@ -21,20 +21,28 @@ describe("release.yml", () => {
   });
 
   it("grants contents: read at the top level and contents: write to the publish job alone", () => {
-    // the top-level permissions block is `contents: read`; `contents: write` appears once, inside the publish job
+    // the top-level permissions block is `contents: read`; the one write grant, in any spelling, sits in the publish job's span
     const top = text.indexOf("\npermissions:\n");
     expect(top).toBeGreaterThan(0);
     expect(text.slice(top, top + 40)).toContain("\npermissions:\n  contents: read\n");
-    expect(text.match(/contents: write/g)).toHaveLength(1);
-    expect(jobsAt("publish")).toBeGreaterThan(0);
-    expect(text.indexOf("contents: write")).toBeGreaterThan(jobsAt("publish"));
+    const writes = [...text.matchAll(/^\s*[a-z-]+:\s*["']?write(-all)?["']?\s*$/gm)];
+    const pub = jobsAt("publish");
+    expect(pub).toBeGreaterThan(0);
+    const rest = text.slice(pub + 1).search(/\n  [a-z][\w-]*:\n/);
+    const end = rest < 0 ? text.length : pub + 1 + rest;
+    expect(writes).toHaveLength(1);
+    expect(writes[0].index).toBeGreaterThan(pub);
+    expect(writes[0].index).toBeLessThan(end);
   });
 
   it("runs on v* tags and refuses a tag off master in a first job every build needs", () => {
     // the trigger and the tag rule
     expect(text).toMatch(/on:\n\s+push:\n\s+tags:\n\s+- "v\*"/);
     expect(jobsAt("tag")).toBeGreaterThan(0);
-    expect(text).toContain('git merge-base --is-ancestor "$GITHUB_SHA" origin/master');
+    // the check sits uncommented inside the tag job's span, with no way to pass around it
+    const tagSpan = text.slice(jobsAt("tag"), jobsAt("ubuntu"));
+    expect(tagSpan).toMatch(/^\s*(run: .*&& )?git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master/m);
+    expect(tagSpan).not.toMatch(/continue-on-error|^\s*if:/m);
     for (const job of ["ubuntu", "macos", "windows"]) {
       expect(text.slice(jobsAt(job), jobsAt(job) + 120)).toContain("needs: [tag]");
     }

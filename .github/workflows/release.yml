@@ -11,8 +11,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   # The three "Test the CLI" steps below run `cargo test -p yokohama-cli`, which
-  # includes fourteen pins backed by the owner's two gitignored BGA captures
-  # (`bridge-captures/895724349.ndjson` and `bridge-captures/896199544.ndjson`).
+  # includes nine pins (the whole of `crates/yokohama-cli/tests/bga_import.rs`)
+  # backed by the owner's two gitignored BGA captures
+  # (`bridge-captures/895724349.ndjson` and `896199544.ndjson`).
   # Absence of either capture is a LOUD panic by default -- deliberately, so a
   # corpus-less run cannot report those pins as `ok` while asserting nothing
   # (3.5b six-lens F6). A release runner never has the captures, so without
@@ -35,7 +36,7 @@ jobs:
       - name: The tag must sit on master
         run: |
           git fetch --no-tags origin master
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "::error::tag ${GITHUB_REF_NAME} (${GITHUB_SHA}) is not an ancestor of origin/master — merge first, then re-run this workflow or push the tag again"; exit 1; }
 
   ubuntu:
     name: Ubuntu x86_64
