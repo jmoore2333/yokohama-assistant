@@ -278,33 +278,58 @@ The design §6.5 (D17, "just before public", R-S3-3) and C-4, C-5. The reader of
 const uses = text.split("\n").filter((l) => /^\s*-?\s*uses:/.test(l));
 expect(uses.length).toBeGreaterThanOrEqual(6);
 for (const l of uses) expect(l, l).toMatch(/uses:\s+\S+@[0-9a-f]{40}\s+#\s*\S/);
-// (P-12) STRUCTURAL pins, on the text with comments blanked to equal-length spaces: the job heads under `jobs:`
-// are EXACTLY the five, bare block keys in order, so a job of any other spelling (`Gate`, `_gate`, `"gate"`,
-// `gate :`, a flow-style job) is red and every span below is exact
+// (P-12, P-13) STRUCTURAL pins. Module level: `code` is the text with comments blanked to equal-length spaces
+// (indices hold); `body` blanks the block-scalar bodies (`run: |`) the same way on top of it, so a shell glob
+// cannot trip the anchor refusal and an anchor or alias token anywhere else is visible; every lookup is bounded
+// under `jobs:` (a decoy `  publish:` line before it moves nothing); the job heads under `jobs:` are EXACTLY the
+// five, bare block keys in order, and every job body is block style (its first line a bare four-space key), so a
+// job of any other spelling, an inserted job, or a flow-style body hiding a key behind a quoted `#` is red
 const code = text.replace(/(^|\s)#.*$/gm, (m, p) => p + " ".repeat(m.length - p.length));
+const body = (() => {
+  const lines = code.split("\n");
+  let indent = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (indent >= 0) {
+      if (lines[i].trim() === "" || lines[i].search(/\S/) > indent) { lines[i] = " ".repeat(lines[i].length); continue; }
+      indent = -1;
+    }
+    const m = /^(\s*)[^\s#][^:]*:\s*[|>][-+]?\s*$/.exec(lines[i]);
+    if (m) indent = m[1].length;
+  }
+  return lines.join("\n");
+})();
 const jobsStart = code.indexOf("\njobs:\n");
-expect(jobsStart).toBeGreaterThan(0);
-expect(code.slice(jobsStart).match(/^  \S.*$/gm)).toEqual(["  tag:", "  ubuntu:", "  macos:", "  windows:", "  publish:"]);
-const jobsAt = (name) => code.indexOf(`\n  ${name}:\n`);
+const HEADS = ["tag", "ubuntu", "macos", "windows", "publish"];
+const jobsAt = (name) => code.indexOf(`\n  ${name}:\n`, jobsStart);
 const span = (name, next) => code.slice(jobsAt(name), next ? jobsAt(next) : code.length);
-// the permissions: the token `permissions` occurs exactly twice in the file, case-blind — the top-level block,
-// pinned as `contents: read` and nothing more, and publish's block, pinned as `contents: write` and nothing
-// more — so a grant under any other key spelling, in any job, is red; the word write/write-all occurs once, in
-// publish (a belt). Not pinned, recorded: a YAML escape that spells a key or a value without its letters
+const expectTheFiveJobHeads = () => {
+  expect(jobsStart).toBeGreaterThan(0);
+  expect(code.slice(jobsStart).match(/^  \S.*$/gm)).toEqual(HEADS.map((h) => `  ${h}:`));
+  for (const h of HEADS) expect(code.slice(jobsAt(h) + 1)).toMatch(/^  [a-z]+:\n    [a-z-]+:/);
+};
+// --- in the permissions cell, after expectTheFiveJobHeads(): the token `permissions` occurs exactly twice in the
+// file, case-blind — the top-level block, pinned as `contents: read` and nothing more, and publish's block,
+// pinned as `contents: write` and nothing more — so a grant under any other key spelling, in any job, is red;
+// the word write/write-all occurs once, in publish (a belt). Not pinned, recorded: a YAML escape that spells a
+// key or a value without its letters
 expect(code.match(/permissions/gi)).toHaveLength(2);
 expect(code).toMatch(/\npermissions:\n  contents: read\n(?! )/);
 expect(span("publish")).toMatch(/\n    permissions:\n      contents: write\n(?!      )/);
 expect(code.match(/\bwrite(-all)?\b/gi)).toHaveLength(1);
 expect(code.search(/\bwrite(-all)?\b/i)).toBeGreaterThan(jobsAt("publish"));
 // nothing conditional, nothing tolerant, nothing by reference — the key `if` in every spelling (quoted, a space
-// before the colon, the explicit `? if` form), `continue-on-error`, anchors, aliases and merge keys
+// before the colon, the explicit `? if` form), `continue-on-error`, and any `&` anchor or `*` alias token at a
+// node start (a sequence entry, a key, a value) or a `<<` merge key, read on `body` so shell globs do not count
 expect(code).not.toMatch(/(^|[\s{,?-])["']?if["']?\s*:/m);
 expect(code).not.toMatch(/continue-on-error/i);
-expect(code).not.toMatch(/:\s*[&*][\w-]|<<\s*:/);
-// the trigger; the tag job's step pinned WHOLE as the last lines of its span (so no wrap, no extra line, no
-// `exit 0`, no `|| true`, nothing moved); the builds' `needs: [tag]`; publish's `needs`
+expect(body).not.toMatch(/(^|[\s\[{,])[&*]/m);
+expect(body).not.toMatch(/<<\s*:/);
+// --- in the tag cell, after expectTheFiveJobHeads(): the trigger; the tag job pinned WHOLE — its name, runner,
+// the checkout at a 40-hex pin with `fetch-depth: 0`, and the one step — so no extra key (`defaults`, `env`,
+// `container`), no pre-step, no wrap, no extra line and no `exit 0` can neuter it; the builds' `needs: [tag]`;
+// publish's `needs`
 expect(text).toMatch(/on:\n\s+push:\n\s+tags:\n\s+- "v\*"/);
-expect(span("tag", "ubuntu")).toMatch(/\n      - name: The tag must sit on master\n        run: \|\n          git fetch --no-tags origin master\n          git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master \|\| \{ echo "[^"\n]*"; exit 1; \}\n\s*$/);
+expect(span("tag", "ubuntu")).toMatch(/^\n  tag:\n    name: Tag is on master\n    runs-on: ubuntu-24\.04\n    steps:\n      - uses: actions\/checkout@[0-9a-f]{40} *\n        with:\n          fetch-depth: 0\n      - name: The tag must sit on master\n        run: \|\n          git fetch --no-tags origin master\n          git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master \|\| \{ echo "[^"\n]*"; exit 1; \}\n\s*$/);
 for (const job of ["ubuntu", "macos", "windows"]) expect(span(job).slice(0, 120)).toContain("needs: [tag]");
 expect(span("publish")).toContain("needs: [ubuntu, macos, windows]");
 ```
@@ -334,7 +359,7 @@ git add docs/security-ledger.md
 git commit -m "docs: D17 fixed in the security ledger, naming its catcher (S4a Task 3)"
 ```
 
-Mutants for the reviewer (on an export): one `@v4` restored (red); `contents: write` moved to the top level (red); a second job given `contents: write` (red); the `tag` job's `merge-base` line removed (red); `needs: [tag]` dropped from `macos` (red); `permissions: write-all` on a build job (red); a quoted `contents: "write"` (red); the one write grant moved to a job placed after `publish` (red); `continue-on-error: true` on the `tag` job (red); the `merge-base` line commented out (red) — the last five P-10's; a flow mapping `permissions: { contents: write }` on a build job (red); `contents: write # x` with a trailing comment on a build job (red); a quoted key `"contents": write` on a build job (red); `contents: !!str write` on a build job (red); an anchor on publish's grant and its alias on a build job (red); `exit 0` or `|| true` appended to the `merge-base` line (red); the check moved into a job inserted between `tag` and `ubuntu` (red); `if: always()` on a build job (red) — these P-11's; the inserted job named `Gate`, `_gate`, `"gate"` or `gate :` (red each); publish's grant removed and a job `_notes:` or `Notes:` after publish carrying it (red); `"if": always()` on a build job, `"if": false`, `if : false` and `? if` / `: false` on the tag step (red each); a second scope `packages: write` inside publish's block (red); `permissions: { contents: "#", packages: write }` on a build job (red); the tag script wrapped in `if false; then … fi` or `; exit 0` appended to the fetch line (red) — these P-12's. The reviewer re-resolves the four SHAs with the Step 3 commands and compares; dry-reads the `tag` job's logic (a tag on a commit that is not on `origin/master` fails `--is-ancestor`; a tag on master passes); confirms `ruby -ryaml` parses; and notes the other three workflows' seven tag pins for S4c's record.
+Mutants for the reviewer (on an export): one `@v4` restored (red); `contents: write` moved to the top level (red); a second job given `contents: write` (red); the `tag` job's `merge-base` line removed (red); `needs: [tag]` dropped from `macos` (red); `permissions: write-all` on a build job (red); a quoted `contents: "write"` (red); the one write grant moved to a job placed after `publish` (red); `continue-on-error: true` on the `tag` job (red); the `merge-base` line commented out (red) — the last five P-10's; a flow mapping `permissions: { contents: write }` on a build job (red); `contents: write # x` with a trailing comment on a build job (red); a quoted key `"contents": write` on a build job (red); `contents: !!str write` on a build job (red); an anchor on publish's grant and its alias on a build job (red); `exit 0` or `|| true` appended to the `merge-base` line (red); the check moved into a job inserted between `tag` and `ubuntu` (red); `if: always()` on a build job (red) — these P-11's; the inserted job named `Gate`, `_gate`, `"gate"` or `gate :` (red each); publish's grant removed and a job `_notes:` or `Notes:` after publish carrying it (red); `"if": always()` on a build job, `"if": false`, `if : false` and `? if` / `: false` on the tag step (red each); a second scope `packages: write` inside publish's block (red); `permissions: { contents: "#", packages: write }` on a build job (red); the tag script wrapped in `if false; then … fi` or `; exit 0` appended to the fetch line (red) — these P-12's; a decoy `  publish:` line under the top-level `env:` (an env var named `publish` with its value on the next line) with publish's grant moved byte for byte into `ubuntu` (red); the same decoy as a block-scalar `name: |` (red); `ubuntu`'s body replaced by a flow mapping under its bare head with `name: "Ubuntu #1"` ahead of `permissions: write-all` or `if: always()` (red); an anchor on a second tag pattern `- &k if` with `*k : always()` on a job (red); `defaults: run: shell: true {0}` on the tag job (red); a pre-step on the tag job putting a stub `git` on `GITHUB_PATH` (red); `env:` or `container:` on the tag job (red) — these P-13's. The reviewer re-resolves the four SHAs with the Step 3 commands and compares; dry-reads the `tag` job's logic (a tag on a commit that is not on `origin/master` fails `--is-ancestor`; a tag on master passes); confirms `ruby -ryaml` parses; and notes the other three workflows' seven tag pins for S4c's record.
 
 ---
 
@@ -591,3 +616,4 @@ The before review (Block A, A3) and every correction the run meets are recorded 
 - **P-10** (2026-10-24, Task 3's review; three rulings) — (i) The Interfaces said the corpus comment reads "FOURTEEN pins … as CLAUDE.md says"; the release workflow runs `cargo test -p yokohama-cli` alone, so the run holds the CLI's NINE (the whole of `bga_import.rs`) — CLAUDE.md's fourteen counts the bridge's five, which the release never runs. The Interfaces say nine now; the first workflow commit `76ae7a39` said fourteen in its comment and its message, which the fix round corrects in the file and this record keeps. (ii) C-4 said "first-parent history" while the Interfaces, the cell and the shipped job check ancestry (`git merge-base --is-ancestor`). Ruling: ANCESTRY — the last three releases were tagged on their branches before the merge; under ancestry such a tag is refused at push time and publishes on a re-run once the merge lands, under first-parent it would be refused forever. C-4 says so; S4c's `0.7.3` is tagged AFTER its merge (the close's S4c-inherits list). (iii) The permissions cell as written pinned one spelling of one scope: `write-all` on a build job, a quoted `"write"`, or the grant on a job placed after `publish` all passed it green (the reviewer's probes X1–X3). The code block carries the reviewer's walked form (exactly one write grant in any spelling, inside the publish job's span) and a span check on the `tag` job (the `merge-base` line uncommented inside it, no `continue-on-error`, no `if:`); the mutant list grew by five. Also folded in: the step's loud failure message (the reviewer's m-3) and the ledger row's boundary clause (m-4: the job covers commits from the workflow commit on; the ruleset covers earlier ones).
 - **P-11** (2026-10-24, Task 3's scoped re-review) — P-10's matcher, a line regex for `<scope>: write`, still read green under spellings GitHub accepts that land write on a build job: a flow mapping, a trailing comment, a quoted key, an explicit `!!str` tag, an alias to publish's grant; and the tag line, anchored only at its start, passed `exit 0`, `|| true` and the check moved into a job inserted before `ubuntu`. The code block carries the re-reviewer's walked and measured form: comments blanked to equal-length spaces, the WORD `write`/`write-all` counted once inside publish's span bounded by the next job head, anchors/aliases/merge keys refused outright; the tag line anchored to end at `origin/master` or the exact loud clause, the span bounded by the next job head, and no `if:` or `continue-on-error` anywhere in the file (the shipped file has none; `if: always()` on a build job could let it run after a failed tag job). The fix round 2 transcribes it; the mutant list grew by eight.
 - **P-12** (2026-10-24, Task 3's second scoped re-review) — P-11's span bounds read a job head as `[a-z][\w-]*:`, so a job named `Gate`, `_gate`, `"gate"` or `gate :` (all GitHub-accepted) carried the moved tag check or a write grant past both spans with the cells green (R-1), and the `if:` refusal was literal (`"if":`, `if :`, `? if` — R-2). A text-level cell cannot win a spelling race against YAML's grammar, so the block pins STRUCTURE instead: every line at two-space indent under `jobs:` is one of the five bare job heads in order (a job of any other spelling is red); the token `permissions` occurs exactly twice, each block pinned byte for byte with no second scope (a grant under any other key spelling is red); the tag step pinned whole as its span's last lines (no wrap, no extra line, no `exit 0`); the `if` key refused in every spelling on comment-blanked text; anchors, aliases and merge keys refused with or without a space after the colon. Recorded, not pinned (the re-review's R-3): a YAML escape that spells a key or a value without its letters — no plain edit produces it. The fix round 3 transcribes the block; the mutant list grew by thirteen. The whole-branch review may still rule for a parse-based cell; this is the strongest text-level form.
+- **P-13** (2026-10-24, Task 3's third scoped re-review) — six of seven items settled; the round's own diff regressed one bound (`jobsAt` searched the whole file, so a decoy `  publish:` line under `env:` moved publish's span to it and a grant on `ubuntu` read green — N3-1), the quoted-`#` half of R-4 stayed open for a flow-style job body under a bare head, an anchor on a sequence entry with an alias used as a key passed the colon-bound refusal (N3-2), and the tag job's environment (`defaults.run.shell`, a pre-step stubbing `git`) could neuter the pinned step (N3-3). The block now bounds every lookup under `jobs:`, requires every job body to be block style, blanks the run bodies before refusing any `&` or `*` token at a node start, and pins the tag job WHOLE (an edit to that job is a deliberate edit to the cell, which is what a gate wants). Fix round 4 went to a fresh Opus implementer by the SDD escalation rule; the mutant list grew by eight; the re-review's twelve legitimate-edit checks are the future editor's guide (recorded in the report).
