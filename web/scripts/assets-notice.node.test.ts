@@ -31,7 +31,10 @@ function pictureDirectories(file: string): string[] {
   const text = readFileSync(join(root, file), "utf8");
   const dirs: string[] = [];
   for (const m of text.matchAll(/\]\(([^)\s]+\.(?:png|webp))\)/g)) {
-    dirs.push(posix.dirname(posix.normalize(posix.join(dirname(file), m[1]))));
+    const ref = m[1];
+    // The pattern's one group always takes part in a match; a miss is a defect in this reader, not a skip.
+    if (ref === undefined) throw new Error(`${file}: a picture reference matched with no path: ${m[0]}`);
+    dirs.push(posix.dirname(posix.normalize(posix.join(dirname(file), ref))));
   }
   return dirs;
 }
