@@ -836,7 +836,7 @@ Their provenance is recorded, and recorded *only* as a pipeline:
  "sheets":"tts-assets/organized/","tile_width":440,"webp_quality":82}
 ```
 
-Every document that discusses the art treats it as a *join* problem: `docs/tools/mkcardart.py:1-70` (crop geometry, key selection, "regenerate, then look"), `CLAUDE.md:66`, `art.rs:328-369`. Not one sentence anywhere names who owns the pictures. `tts-assets/` — the source sheets — is itself tracked (118 files, present on `master` too), so this predates the lane; **what the lane added is 131 derivative works and an MIT declaration over the crate that ships them**, plus a hosting plan.
+Every document that discusses the art treats it as a *join* problem: `docs/tools/mkcardart.py:1-70` (crop geometry, key selection, "regenerate, then look"), `CLAUDE.md:66`, `art.rs:328-369`. Not one sentence anywhere names who owns the pictures. `tts-assets/` — the source sheets — is itself tracked (118 files, present on `master` too), so this predates the lane; **what the lane added is 131 crops cut from the sheets and an MIT declaration over the crate that ships them**, plus a hosting plan.
 
 And the hosting plan considers exactly two constraints — `docs/plans/2026-08-31-web-frontend-m2.md:167-179`: "Nothing may exist only in memory" and "Storage is behind a trait." The art is not one of them. The remote is `https://github.com/jmoore2333/yokohama-assistant.git`.
 

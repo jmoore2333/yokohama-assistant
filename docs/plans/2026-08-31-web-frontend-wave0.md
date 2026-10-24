@@ -167,7 +167,7 @@ MIT-only crates are one-way compatible into an Apache-2.0 work. `LICENSE` is
 byte-identical to apache.org's canonical text except the appendix copyright line
 (diffed, not assumed).
 
-`ASSETS.md` carves out what the grant cannot cover, and the audit found a third
+`ASSETS.md` carves out the third-party paths, and the audit found a third
 path nobody had counted: `tts-assets/` (118 files, ~60 MB), the derived crops
 (132 files), and **`analysis-1/00-yokohama-rulebook.pdf`, the complete published
 rulebook at 6.53 MiB**. It states the situation and explicitly declines to draw
