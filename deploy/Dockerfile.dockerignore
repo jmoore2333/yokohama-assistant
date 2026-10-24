@@ -31,7 +31,7 @@ web/wasm-node/
 # public tip in S4a (2026-10-23), so `tts-assets/` and
 # `analysis-1/00-yokohama-rulebook.pdf` exist only as a contributor's gitignored
 # local copies, and those must not enter an image; `ASSETS.md` carves the rest
-# out of the Apache-2.0 grant, and pushing it to a registry is redistribution.
+# out of the Apache-2.0 grant.
 # `crates/yokohama-web/assets/art/` is the deliberate exception — the running
 # client draws it, so it is COPYed in explicitly by the Dockerfile — and that
 # makes the resulting image itself carved-out material. Do not push this image

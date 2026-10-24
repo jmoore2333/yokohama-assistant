@@ -842,7 +842,7 @@ And the hosting plan considers exactly two constraints — `docs/plans/2026-08-3
 
 **Mitigation the owner should get credit for, and which the report never states either:** m2.md:162-165 records that `yokohama.moore.nyc` "picks up the existing Access rule by itself," so the *site* is identity-gated. The exposure is the *repository*, not the deployment.
 
-**Fix, S:** add a `LICENSE` covering the code, plus a short `ASSETS.md` or a `NOTICE` stating that `tts-assets/` and `crates/yokohama-web/assets/art/` are third-party game components reproduced for personal use and are **not** under the workspace's MIT grant — and set `license = "MIT AND LicenseRef-game-assets"` or exclude `assets/` from the package. Whatever the owner decides, the current state asserts a grant he cannot make.
+**Fix, S:** add a `LICENSE` covering the code, plus a short `ASSETS.md` or a `NOTICE` stating that `tts-assets/` and `crates/yokohama-web/assets/art/` are third-party game components and are **not** under the workspace's MIT grant — and set `license = "MIT AND LicenseRef-game-assets"` or exclude `assets/` from the package. Whatever the owner decides, the current state declares the MIT grant over the crate that ships those components.
 
 ### (b) MEDIUM/LOW — build config
 
