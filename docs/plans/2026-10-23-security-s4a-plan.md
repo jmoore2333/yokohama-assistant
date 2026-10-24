@@ -278,32 +278,35 @@ The design §6.5 (D17, "just before public", R-S3-3) and C-4, C-5. The reader of
 const uses = text.split("\n").filter((l) => /^\s*-?\s*uses:/.test(l));
 expect(uses.length).toBeGreaterThanOrEqual(6);
 for (const l of uses) expect(l, l).toMatch(/uses:\s+\S+@[0-9a-f]{40}\s+#\s*\S/);
-// the top-level permissions block is `contents: read`; with comments blanked to equal-length spaces (so indices
-// hold), the WORD `write`/`write-all` occurs exactly once in the file and inside the publish job's span — every
-// spelling of a grant GitHub accepts (a flow mapping, a quoted key or value, a trailing comment, an explicit
-// `!!str` tag) carries the word, and anchors, aliases and merge keys, which could carry one by reference, are
-// refused outright (P-10, P-11)
-const top = text.indexOf("\npermissions:\n");
-expect(text.slice(top, top + 40)).toContain("\npermissions:\n  contents: read\n");
-const jobsAt = (name) => text.indexOf(`\n  ${name}:\n`);
-const nextJob = (from) => { const r = text.slice(from + 1).search(/\n  [a-z][\w-]*:/); return r < 0 ? text.length : from + 1 + r; };
+// (P-12) STRUCTURAL pins, on the text with comments blanked to equal-length spaces: the job heads under `jobs:`
+// are EXACTLY the five, bare block keys in order, so a job of any other spelling (`Gate`, `_gate`, `"gate"`,
+// `gate :`, a flow-style job) is red and every span below is exact
 const code = text.replace(/(^|\s)#.*$/gm, (m, p) => p + " ".repeat(m.length - p.length));
-expect(code).not.toMatch(/:\s+[&*][\w-]|<<:/);
-const writes = [...code.matchAll(/\bwrite(-all)?\b/g)];
-const pub = jobsAt("publish");
-expect(writes).toHaveLength(1);
-expect(writes[0].index).toBeGreaterThan(pub);
-expect(writes[0].index).toBeLessThan(nextJob(pub));
-// the trigger and the tag rule: the merge-base line sits inside the tag job's OWN span (bounded by the next job
-// head, so an inserted job cannot hold it instead), ends at `origin/master` or at the exact loud clause (so no
-// `exit 0` or `|| true` can follow), and the file carries no `if:` and no `continue-on-error` anywhere (P-10, P-11)
+const jobsStart = code.indexOf("\njobs:\n");
+expect(jobsStart).toBeGreaterThan(0);
+expect(code.slice(jobsStart).match(/^  \S.*$/gm)).toEqual(["  tag:", "  ubuntu:", "  macos:", "  windows:", "  publish:"]);
+const jobsAt = (name) => code.indexOf(`\n  ${name}:\n`);
+const span = (name, next) => code.slice(jobsAt(name), next ? jobsAt(next) : code.length);
+// the permissions: the token `permissions` occurs exactly twice in the file, case-blind — the top-level block,
+// pinned as `contents: read` and nothing more, and publish's block, pinned as `contents: write` and nothing
+// more — so a grant under any other key spelling, in any job, is red; the word write/write-all occurs once, in
+// publish (a belt). Not pinned, recorded: a YAML escape that spells a key or a value without its letters
+expect(code.match(/permissions/gi)).toHaveLength(2);
+expect(code).toMatch(/\npermissions:\n  contents: read\n(?! )/);
+expect(span("publish")).toMatch(/\n    permissions:\n      contents: write\n(?!      )/);
+expect(code.match(/\bwrite(-all)?\b/gi)).toHaveLength(1);
+expect(code.search(/\bwrite(-all)?\b/i)).toBeGreaterThan(jobsAt("publish"));
+// nothing conditional, nothing tolerant, nothing by reference — the key `if` in every spelling (quoted, a space
+// before the colon, the explicit `? if` form), `continue-on-error`, anchors, aliases and merge keys
+expect(code).not.toMatch(/(^|[\s{,?-])["']?if["']?\s*:/m);
+expect(code).not.toMatch(/continue-on-error/i);
+expect(code).not.toMatch(/:\s*[&*][\w-]|<<\s*:/);
+// the trigger; the tag job's step pinned WHOLE as the last lines of its span (so no wrap, no extra line, no
+// `exit 0`, no `|| true`, nothing moved); the builds' `needs: [tag]`; publish's `needs`
 expect(text).toMatch(/on:\n\s+push:\n\s+tags:\n\s+- "v\*"/);
-const t0 = jobsAt("tag");
-expect(t0).toBeGreaterThan(0);
-const tagSpan = text.slice(t0, nextJob(t0));
-expect(tagSpan).toMatch(/^\s*(run: .*&& )?git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master( \|\| \{ echo "[^"]*"; exit 1; \})?$/m);
-expect(text).not.toMatch(/continue-on-error|^\s*if:/m);
-for (const job of ["ubuntu", "macos", "windows"]) expect(text.slice(jobsAt(job), jobsAt(job) + 120)).toContain("needs: [tag]");
+expect(span("tag", "ubuntu")).toMatch(/\n      - name: The tag must sit on master\n        run: \|\n          git fetch --no-tags origin master\n          git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master \|\| \{ echo "[^"\n]*"; exit 1; \}\n\s*$/);
+for (const job of ["ubuntu", "macos", "windows"]) expect(span(job).slice(0, 120)).toContain("needs: [tag]");
+expect(span("publish")).toContain("needs: [ubuntu, macos, windows]");
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -331,7 +334,7 @@ git add docs/security-ledger.md
 git commit -m "docs: D17 fixed in the security ledger, naming its catcher (S4a Task 3)"
 ```
 
-Mutants for the reviewer (on an export): one `@v4` restored (red); `contents: write` moved to the top level (red); a second job given `contents: write` (red); the `tag` job's `merge-base` line removed (red); `needs: [tag]` dropped from `macos` (red); `permissions: write-all` on a build job (red); a quoted `contents: "write"` (red); the one write grant moved to a job placed after `publish` (red); `continue-on-error: true` on the `tag` job (red); the `merge-base` line commented out (red) — the last five P-10's; a flow mapping `permissions: { contents: write }` on a build job (red); `contents: write # x` with a trailing comment on a build job (red); a quoted key `"contents": write` on a build job (red); `contents: !!str write` on a build job (red); an anchor on publish's grant and its alias on a build job (red); `exit 0` or `|| true` appended to the `merge-base` line (red); the check moved into a job inserted between `tag` and `ubuntu` (red); `if: always()` on a build job (red) — these P-11's. The reviewer re-resolves the four SHAs with the Step 3 commands and compares; dry-reads the `tag` job's logic (a tag on a commit that is not on `origin/master` fails `--is-ancestor`; a tag on master passes); confirms `ruby -ryaml` parses; and notes the other three workflows' seven tag pins for S4c's record.
+Mutants for the reviewer (on an export): one `@v4` restored (red); `contents: write` moved to the top level (red); a second job given `contents: write` (red); the `tag` job's `merge-base` line removed (red); `needs: [tag]` dropped from `macos` (red); `permissions: write-all` on a build job (red); a quoted `contents: "write"` (red); the one write grant moved to a job placed after `publish` (red); `continue-on-error: true` on the `tag` job (red); the `merge-base` line commented out (red) — the last five P-10's; a flow mapping `permissions: { contents: write }` on a build job (red); `contents: write # x` with a trailing comment on a build job (red); a quoted key `"contents": write` on a build job (red); `contents: !!str write` on a build job (red); an anchor on publish's grant and its alias on a build job (red); `exit 0` or `|| true` appended to the `merge-base` line (red); the check moved into a job inserted between `tag` and `ubuntu` (red); `if: always()` on a build job (red) — these P-11's; the inserted job named `Gate`, `_gate`, `"gate"` or `gate :` (red each); publish's grant removed and a job `_notes:` or `Notes:` after publish carrying it (red); `"if": always()` on a build job, `"if": false`, `if : false` and `? if` / `: false` on the tag step (red each); a second scope `packages: write` inside publish's block (red); `permissions: { contents: "#", packages: write }` on a build job (red); the tag script wrapped in `if false; then … fi` or `; exit 0` appended to the fetch line (red) — these P-12's. The reviewer re-resolves the four SHAs with the Step 3 commands and compares; dry-reads the `tag` job's logic (a tag on a commit that is not on `origin/master` fails `--is-ancestor`; a tag on master passes); confirms `ruby -ryaml` parses; and notes the other three workflows' seven tag pins for S4c's record.
 
 ---
 
@@ -587,3 +590,4 @@ The before review (Block A, A3) and every correction the run meets are recorded 
 - **P-9** (2026-10-24, Task 2's implementer) — the cell's code block as written (P-5's id check, and the brief's reading rule for `values_after_key`) tripped the lint gate: clippy's `manual_pattern_char_comparison` refuses a `|c: char| matches!(c, …)` closure where a char array is the pattern. The implementer shipped `trim_end_matches([',', '}', ']'])` and `trim_start_matches(['\\', '"', ':', ' '])` with the same semantics (commit `8c66fc98`); the code block above now carries the shipped form, so a transcription from the plan is lint-clean.
 - **P-10** (2026-10-24, Task 3's review; three rulings) — (i) The Interfaces said the corpus comment reads "FOURTEEN pins … as CLAUDE.md says"; the release workflow runs `cargo test -p yokohama-cli` alone, so the run holds the CLI's NINE (the whole of `bga_import.rs`) — CLAUDE.md's fourteen counts the bridge's five, which the release never runs. The Interfaces say nine now; the first workflow commit `76ae7a39` said fourteen in its comment and its message, which the fix round corrects in the file and this record keeps. (ii) C-4 said "first-parent history" while the Interfaces, the cell and the shipped job check ancestry (`git merge-base --is-ancestor`). Ruling: ANCESTRY — the last three releases were tagged on their branches before the merge; under ancestry such a tag is refused at push time and publishes on a re-run once the merge lands, under first-parent it would be refused forever. C-4 says so; S4c's `0.7.3` is tagged AFTER its merge (the close's S4c-inherits list). (iii) The permissions cell as written pinned one spelling of one scope: `write-all` on a build job, a quoted `"write"`, or the grant on a job placed after `publish` all passed it green (the reviewer's probes X1–X3). The code block carries the reviewer's walked form (exactly one write grant in any spelling, inside the publish job's span) and a span check on the `tag` job (the `merge-base` line uncommented inside it, no `continue-on-error`, no `if:`); the mutant list grew by five. Also folded in: the step's loud failure message (the reviewer's m-3) and the ledger row's boundary clause (m-4: the job covers commits from the workflow commit on; the ruleset covers earlier ones).
 - **P-11** (2026-10-24, Task 3's scoped re-review) — P-10's matcher, a line regex for `<scope>: write`, still read green under spellings GitHub accepts that land write on a build job: a flow mapping, a trailing comment, a quoted key, an explicit `!!str` tag, an alias to publish's grant; and the tag line, anchored only at its start, passed `exit 0`, `|| true` and the check moved into a job inserted before `ubuntu`. The code block carries the re-reviewer's walked and measured form: comments blanked to equal-length spaces, the WORD `write`/`write-all` counted once inside publish's span bounded by the next job head, anchors/aliases/merge keys refused outright; the tag line anchored to end at `origin/master` or the exact loud clause, the span bounded by the next job head, and no `if:` or `continue-on-error` anywhere in the file (the shipped file has none; `if: always()` on a build job could let it run after a failed tag job). The fix round 2 transcribes it; the mutant list grew by eight.
+- **P-12** (2026-10-24, Task 3's second scoped re-review) — P-11's span bounds read a job head as `[a-z][\w-]*:`, so a job named `Gate`, `_gate`, `"gate"` or `gate :` (all GitHub-accepted) carried the moved tag check or a write grant past both spans with the cells green (R-1), and the `if:` refusal was literal (`"if":`, `if :`, `? if` — R-2). A text-level cell cannot win a spelling race against YAML's grammar, so the block pins STRUCTURE instead: every line at two-space indent under `jobs:` is one of the five bare job heads in order (a job of any other spelling is red); the token `permissions` occurs exactly twice, each block pinned byte for byte with no second scope (a grant under any other key spelling is red); the tag step pinned whole as its span's last lines (no wrap, no extra line, no `exit 0`); the `if` key refused in every spelling on comment-blanked text; anchors, aliases and merge keys refused with or without a space after the colon. Recorded, not pinned (the re-review's R-3): a YAML escape that spells a key or a value without its letters — no plain edit produces it. The fix round 3 transcribes the block; the mutant list grew by thirteen. The whole-branch review may still rule for a parse-based cell; this is the strongest text-level form.
