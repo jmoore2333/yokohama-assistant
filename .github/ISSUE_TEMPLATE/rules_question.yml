@@ -1,0 +1,45 @@
+name: "Rules question: the engine disagrees with the table"
+description: The engine allows, refuses or scores something differently from the rules or from your table.
+labels: [rules]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the report the project most wants. CONTRIBUTING.md lists the rules sources, and the decision log in
+        guidingpath.md records the rulings the engine follows.
+  - type: dropdown
+    id: source
+    attributes:
+      label: The source
+      description: What says the table is right.
+      options:
+        - The 2017 English rulebook
+        - The Tabletop Simulator edition
+        - Board Game Arena's behaviour
+        - Table experience
+    validations:
+      required: true
+  - type: input
+    id: page
+    attributes:
+      label: The page
+      description: The printed page, when the source is a rulebook.
+  - type: textarea
+    id: table
+    attributes:
+      label: What the table does
+      description: The rule as the table plays it, in the source's words where it has some.
+    validations:
+      required: true
+  - type: textarea
+    id: engine
+    attributes:
+      label: What the engine does — a save file or the move list
+      description: A save file attached here, or the moves that reach the position, and the move the engine allows or refuses.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why they differ, if you know
+      description: An edition difference, a ruling in the decision log, or a reading of the text.
