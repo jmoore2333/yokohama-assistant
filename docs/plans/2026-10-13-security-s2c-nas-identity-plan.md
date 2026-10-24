@@ -3609,7 +3609,7 @@ red.
   update readings: `verdict.json` reads "every check held", `log.txt` holds the `cookies: cleared before close` line
   before its final `closed:` line, and the profile's `Default/Cookies` holds no row.
   (c) **The two-identity block** (S2a's D-8 and AD-5, superseded into here; its slot agreed at the open): profile A
-  the owner's, profile B (the owner's second address), WARP off for this slot only, every probe a page-context
+  the owner's, profile B `myfreemovies@gmail.com`, WARP off for this slot only, every probe a page-context
   `fetch`/`EventSource` from the profile's own tab through Claude in Chrome, the cookie never extracted (a `umask
   077` cookie file the named fallback); on the NAS hostname: D1 — A creates `[A, open]` (no lock: an open table admits any
   stream, `api.rs:2082`); B opens the table's stream from its tab; A joins seat 1 ITSELF (a person may hold two seats):

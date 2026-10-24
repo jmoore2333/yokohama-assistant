@@ -74,7 +74,7 @@ and nothing re-opens them. The owner's words are quoted where they were given.
 - **X4 — the pre-flight.** S1c's shape: the first two tasks' cells executed and every figure measured, the rest to
   the task reviewers ("that should work").
 - **X5 — the two live readings never taken** (D1; B1's withheld `why`) — the owner: "this is tricky, we're on a
-  warp connected endpoint … I added [the owner's second address] and I can sign that into chrome so it can be tested
+  warp connected endpoint … I added myfreemovies@gmail.com and I can sign that into chrome so it can be tested
   with claude in chrome if we disable the warp-cli but moving back and forth between the two identities would be
   complicated depending on how the task itself is structured — unless you can use a service token for one of those
   identities." A service token names nobody on the NAS (the review's V1), so the structure is decision D-8's one
@@ -180,7 +180,7 @@ and nothing re-opens them. The owner's words are quoted where they were given.
   tag. The release is published BEFORE either deploy (the owner's standing order from S1's wrap).
 - **D-8 — the two-identity block of the window** (X5), done LIVE with the owner (the owner's ruling above): WARP
   off for one bounded block whose slot is agreed at the window's start and recorded; two Chrome profiles signed in
-  through Access's login — the owner's and the owner's second address (profile B) — on the NAS hostname (and, for the §8 rows,
+  through Access's login — the owner's and `myfreemovies@gmail.com` — on the NAS hostname (and, for the §8 rows,
   on the Worker's); **each probe runs INSIDE the profile it speaks for**: a page-context `fetch` or `EventSource`
   at the host from that profile's own tab (Claude in Chrome's `javascript_tool`) — Chrome's TLS and Chrome's
   cookie, nothing extracted, nothing printed, nothing logged; nothing switches identity mid-probe. If a probe must
@@ -3055,7 +3055,7 @@ app_version regenerated, the version alone (S2a Task 8)"`.
   `x-content-type-options: nosniff` (DC-F4 closed live); **D14** — `#/t/..` typed in the address bar lands on the
   door; **A1 and B3 re-read** as regressions (cheap: `suggest` carries no seed-like key; a seeded create beside an
   open seat is 400). (d) **The two-identity block (D-8; the owner's ruling: live, in the slot agreed at the window's
-  start)**: WARP off; Chrome profile A signed in as the owner and profile B as the owner's second address through
+  start)**: WARP off; Chrome profile A signed in as the owner and profile B as `myfreemovies@gmail.com` through
   Access's login on the NAS hostname (and on the Worker's, for the §8 rows); every probe a page-context `fetch` or
   `EventSource` from the profile's own tab (Claude in Chrome's `javascript_tool`) — the cookie never extracted,
   printed or logged; the `umask 077` file as the named fallback (D-8). **D1** — A creates `[A, open]` (no lock: an
