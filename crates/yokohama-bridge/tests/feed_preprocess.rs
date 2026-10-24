@@ -83,20 +83,72 @@ fn values_after_key(line: &str, key: &str) -> Vec<String> {
     out
 }
 
+/// Every maximal run of exactly eight ASCII digits whose neighbours are not
+/// alphanumeric: the shape of a BGA player id wherever it sits (a value, a map
+/// key, a channel). A run inside a hex uuid touches hex letters and is skipped.
+/// A single `p` directly before the run, as in the `/player/p<id>` channel, is
+/// part of the id's spelling and does not disqualify it.
+fn standalone_eight_digit_runs(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i - start != 8 {
+            continue;
+        }
+        let before_ok = match start.checked_sub(1).map(|b| chars[b]) {
+            None => true,
+            Some('p') => start < 2 || !chars[start - 2].is_alphanumeric(),
+            Some(c) => !c.is_alphanumeric(),
+        };
+        let after_ok = chars.get(i).is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            out.push(chars[start..i].iter().collect());
+        }
+    }
+    out
+}
+
 /// The two frames the 2026-08 redaction missed were a message on BGA's
 /// general-chat channel and a status notification about a third person on the
 /// capturing player's own channel. Neither author was seated, so both were
 /// folded onto the opponent's placeholder (`Player_B`/`22222222`) and the ids
 /// redacted with the names (ruling R-2, S4a Task 2).
+///
+/// The cell's reach: the two placeholder names at every `player_name` and
+/// `name` site (bar the snapshot's one state name), the placeholder text on the
+/// chat frame, and the two placeholder ids at every `player_id` site and at
+/// every standalone eight-digit run, whatever key or channel carries it.
 #[test]
 fn the_committed_excerpt_names_no_player_but_the_two_placeholders_and_its_chat_line_is_a_placeholder() {
     let mut sites = 0;
     let mut chat_lines = 0;
     let mut ids = std::collections::BTreeSet::new();
+    let mut name_sites = 0;
+    let mut runs = std::collections::BTreeMap::<String, usize>::new();
     for line in EXCERPT.lines() {
         for name in values_after_key(line, "player_name") {
             sites += 1;
             assert!(name == "Player_A" || name == "Player_B", "a player_name that is not a placeholder: {name:?}");
+        }
+        for name in values_after_key(line, "name") {
+            name_sites += 1;
+            assert!(
+                name == "Player_A" || name == "Player_B" || name == "placeAssistantsStep",
+                "a name that is not a placeholder: {name:?}"
+            );
+        }
+        for run in standalone_eight_digit_runs(line) {
+            assert!(run == "11111111" || run == "22222222", "a standalone eight-digit run that is not a placeholder id: {run:?}");
+            *runs.entry(run).or_default() += 1;
         }
         if line.contains(r#"\"type\":\"chat\""#) || line.contains(r#""type":"chat""#) {
             chat_lines += 1;
@@ -112,6 +164,12 @@ fn the_committed_excerpt_names_no_player_but_the_two_placeholders_and_its_chat_l
     assert_eq!(sites, 18, "the excerpt carries eighteen player_name sites (anti-vacuity: the reader found them all)");
     assert_eq!(chat_lines, 1, "one chat frame");
     assert_eq!(ids.len(), 3, "the three placeholder ids are all present (anti-vacuity: the id reader found them)");
+    assert_eq!(name_sites, 3, "the excerpt carries three name sites, all in the snapshot (anti-vacuity: the reader found them all)");
+    let total: usize = runs.values().sum();
+    assert!(
+        runs.contains_key("11111111") && runs.contains_key("22222222") && total >= 100,
+        "both placeholder ids are seen among the standalone eight-digit runs and there are at least 100 (anti-vacuity); read {total}: {runs:?}"
+    );
 }
 
 #[test]
