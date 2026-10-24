@@ -5,8 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        One bug per report. A security vulnerability goes to the private channel SECURITY.md describes, never to an
-        issue. When the engine disagrees with the table about a rule, the Rules question form fits better.
+        A security vulnerability goes to the private channel SECURITY.md describes, never to an issue. When the engine
+        disagrees with the table about a rule, the Rules question form fits better.
   - type: dropdown
     id: surface
     attributes:
@@ -31,17 +31,5 @@ body:
   - type: textarea
     id: today
     attributes:
-      label: What happens today
-      description: What you see, and where. Quote an error's text exactly.
-    validations:
-      required: true
-  - type: textarea
-    id: steps
-    attributes:
-      label: The steps, or a save file
-      description: The steps that reach the bug, or a save file attached here.
-  - type: textarea
-    id: expected
-    attributes:
-      label: What you expected
-      description: What the rules, the guide or the screen led you to expect.
+      label: What happens, and how to reproduce it
+      description: A save file or the move list helps.

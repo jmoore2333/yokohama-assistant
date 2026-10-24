@@ -19,27 +19,8 @@ body:
         - Table experience
     validations:
       required: true
-  - type: input
-    id: page
-    attributes:
-      label: The page
-      description: The printed page, when the source is a rulebook.
   - type: textarea
     id: table
     attributes:
-      label: What the table does
-      description: The rule as the table plays it, in the source's words where it has some.
-    validations:
-      required: true
-  - type: textarea
-    id: engine
-    attributes:
-      label: What the engine does — a save file or the move list
-      description: A save file attached here, or the moves that reach the position, and the move the engine allows or refuses.
-    validations:
-      required: true
-  - type: textarea
-    id: why
-    attributes:
-      label: Why they differ, if you know
-      description: An edition difference, a ruling in the decision log, or a reading of the text.
+      label: What the table does and what the engine does
+      description: The page or the move list helps.
