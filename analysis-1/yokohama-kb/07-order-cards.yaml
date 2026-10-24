@@ -1,7 +1,7 @@
 # Yokohama Order Cards
 # verified: 2026-07-17 — three-way (sprites x rulebook x physical), see docs/plans/2026-07-16-card-verification/
 #
-# Source sprite sheet: tts-assets/organized/cards/order_cards_8x5.jpg (8 cols x 5 rows: 36 cards + 4 backs)
+# Source sprite sheet: order_cards_8x5.jpg in the Tabletop Simulator upload's organized sheets (not in this tree — docs/tools/tts-extraction/; 8 cols x 5 rows: 36 cards + 4 backs)
 #
 # id = the number printed in the card's bottom-right corner (1-36; each appears exactly once).
 #      This is the canonical OrderCardId — adjudicated 2026-07-17: country+requirements does NOT

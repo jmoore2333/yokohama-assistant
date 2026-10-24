@@ -438,7 +438,7 @@
   "card_width": 530,
   "generator": "docs/tools/mkcardart.py",
   "positions": "analysis-1/yokohama-kb/0{7,8,9}-*.yaml",
-  "sheets": "tts-assets/organized/",
+  "sheets": "the Tabletop Simulator upload's organized sheets, outside this tree (docs/tools/tts-extraction/README.md)",
   "site_rotation_ccw": 90,
   "site_width": 799,
   "tile_width": 709,

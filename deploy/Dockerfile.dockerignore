@@ -27,11 +27,14 @@ web/src/local/wasm/
 web/wasm-node/
 
 # **Third-party material that must not enter an image that gets pushed
-# anywhere.** `ASSETS.md` carves these out of the Apache-2.0 grant, and pushing
-# them to a registry is redistribution. `crates/yokohama-web/assets/art/` is the
-# deliberate exception — the running client draws it, so it is COPYed in
-# explicitly by the Dockerfile — and that makes the resulting image itself
-# carved-out material. Do not push this image to a public registry.
+# anywhere.** The Tabletop Simulator sheets left the public tip in S4a
+# (2026-10-23), so `tts-assets/` exists only as a contributor's gitignored local
+# copy, and that copy must not enter an image; `ASSETS.md` carves the rest out of
+# the Apache-2.0 grant, and pushing it to a registry is redistribution.
+# `crates/yokohama-web/assets/art/` is the deliberate exception — the running
+# client draws it, so it is COPYed in explicitly by the Dockerfile — and that
+# makes the resulting image itself carved-out material. Do not push this image
+# to a public registry.
 tts-assets/
 analysis-1/
 
