@@ -9,12 +9,8 @@ root of this repository, or at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-NOT ALL FILES IN THIS REPOSITORY ARE COVERED BY THAT GRANT. The repository
-also contains third-party game components (images and printed materials from
-the published board game Yokohama), which are excluded from the Apache-2.0
-license and carry no license grant of any kind. The excluded paths, and what
-that means for anyone forking or redistributing this repository, are listed in
-ASSETS.md.
+Not every file is covered by that grant. ASSETS.md names the paths that carry
+the game's own artwork and says whose it is.
 
 It also contains third-party material that DOES carry a grant, under a license
 that is not Apache-2.0:
