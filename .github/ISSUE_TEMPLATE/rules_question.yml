@@ -13,8 +13,8 @@ body:
       label: The source
       description: What says the table is right.
       options:
-        - The 2017 English rulebook
-        - The Tabletop Simulator edition
+        - The OKAZU Brand English rulebook (16 pages)
+        - The Tasty Minstrel Games English edition (20 pages, in the Tabletop Simulator upload)
         - Board Game Arena's behaviour
         - Table experience
     validations:

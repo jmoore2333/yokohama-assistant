@@ -25,7 +25,7 @@ players. The interval around it is a bootstrap over units, never over games, bec
 independent. When every unit reads the same value, the arena does not print a zero-width interval: it reports a typed
 refusal carrying a one-sided bound instead. The number of units is fixed before a cell runs, and every master seed is
 recorded before use, either committed in advance in the record or drawn from the operating system's entropy. Each
-measured milestone in §5 rests on at least one cell run on an entropy-drawn master.
+milestone with a figure in §5 (3.3, 3.4, V2, V4) rests on at least one cell run on an entropy-drawn master.
 
 The rules of evidence on this page are the project's own: a one-sided bound is called one-sided, an observed maximum
 is "max observed under harness X" and never a bound, and no direction is stated where none was measured.

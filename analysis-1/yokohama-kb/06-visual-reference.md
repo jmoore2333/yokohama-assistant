@@ -168,7 +168,7 @@ Categories:
 
 ## Alternative: Keep Full PDF
 
-If image extraction is impractical, the full rulebook PDF can serve as reference:
+If image extraction is impractical, a contributor's own copy of the OKAZU Brand English rulebook can serve as reference:
 - VLM can process PDF pages directly (Gemini, Claude)
 - Reference specific pages in prompts
 - Trade-off: Slower processing, more tokens

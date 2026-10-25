@@ -35,11 +35,12 @@ Game Arena captures sets `YOKOHAMA_BGA_CORPUS_OPTIONAL=1`, which turns fourteen 
 `SEMANTICS_REV` (`crates/yokohama-core/src/game/semantics.rs`) is bumped in the same commit as any behavior-affecting
 change to legality, application, scoring or setup, and the oracle (`crates/yokohama-oracle`) is authored from rules
 sources only, never from the engine's logic. A change that touches either, or the computer player's frozen
-identities, is proposed as an issue first.
+identities and pre-registrations, is proposed as an issue first.
 
-The engine answers to the 2017 English rulebook and the Tabletop Simulator edition, neither of which is in the tree,
-to the knowledge base's [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and to the rulings in the
-decision log, which settle the rule where the editions differ or are silent.
+The engine answers to the OKAZU Brand English rulebook (16 pages) and the Tasty Minstrel Games English edition (20
+pages, in the Tabletop Simulator upload), neither of which is in the tree, to the knowledge base's
+[rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and to the rulings in the decision log, which settle
+the rule where the editions differ or are silent.
 
 ## AI-assisted work
 

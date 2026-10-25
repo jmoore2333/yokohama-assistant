@@ -48,11 +48,11 @@ yokohama-game-*.json
 # committed deliberately, under docs/plans/.
 bridge-captures
 
-# The Tabletop Simulator sheets and the 2017 English rulebook. Both left the
-# public tip on 2026-10-23 (S4a). A contributor who obtains them places them here
-# -- `docs/tools/mkcardart.py` reads the sheets from tts-assets/organized/, and
-# the record's page citations are the English PDF's -- and they are never
-# committed again.
+# The Tabletop Simulator sheets and the OKAZU Brand English rulebook (16 pages).
+# Both left the public tip in S4a (`e72492c1`). A contributor who obtains them
+# places them here -- `docs/tools/mkcardart.py` reads the sheets from
+# tts-assets/organized/, and the record's page citations are that rulebook's --
+# and they are never committed again.
 tts-assets/
 analysis-1/00-yokohama-rulebook.pdf
 

@@ -320,9 +320,13 @@ together.
 **Bump it at every release that can change what a save means or which bot plays** — the AI lane's V5 ship
 included. **Tag `vX.Y.Z` on the commit the hosts run:** master's, after the merge — or, on a stack that merges at its
 wrap (security S2), the deployed branch commit, which the wrap's merge brings onto master (the owner, 2026-10-11:
-D-7) — with the release published before either deploy. The tag is annotated, its subject
-`Yokohama CLI vX.Y.Z — <headline>`. It runs `.github/workflows/release.yml`: the CLI built for Linux, macOS and
-Windows, its tests and the `piped_dogfood` gate, then `gh release create` from the tagged commit.
+D-7). The tag is annotated, its subject `Yokohama CLI vX.Y.Z — <headline>`. It runs
+`.github/workflows/release.yml`, whose first job refuses a tag whose commit is not yet on master's history (security
+S4a, the ledger's D17); then the CLI built for Linux, macOS and Windows, its tests and the `piped_dogfood` gate, then
+`gh release create` from the tagged commit. On master's path the release is still published before either deploy;
+on a stack it cannot be, and it publishes after the wrap's merge, by a re-run of the tag's workflow. The re-run
+passes only after a merge commit, which brings the tagged commit onto master's history; after a squash or a rebase
+merge the tagged commit is not on it, so the tag is pushed again on the merged commit on master.
 
 **The bump, as the move to 0.6.0 measured it:**
 1. `Cargo.toml`'s version, then `cargo update --workspace --offline` — the nine members' lock lines, and nothing
@@ -420,7 +424,7 @@ inside the review's known exercises and stays steady operationally after the sec
 owner's clarification of 2026-10-12; `worker/RUNBOOK.md` §3). Two preconditions that stood here are answered rather
 than owed: the art's decision and the fresh-history repository — the owner ruled on 2026-10-22 that the history is
 kept whole and that the derived crops the application draws stay in the tree while `tts-assets/` leaves the public
-tip, which it did in S4a (2026-10-23) (the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per
+tip, which it did in S4a, `e72492c1` (the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per
 person is answered the same way. For a self-hoster's open-door Worker it is not built: the Worker's own two limits
 (security S2b, finding C2) count creates by the connecting IP and writes by the IP and the name, and a name is free,
 so there the write limit and the archive's share are per NAME, never per IP, and the zone's rate-limit rule and the

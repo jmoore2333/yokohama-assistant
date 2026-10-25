@@ -40,10 +40,11 @@ The first screen is the **door**, and it asks the server for nothing. It has thr
 
 ### Signing in
 
-**Go to the lobby** opens the sign-in page, `/enter`, where you give your email address and type the code sent to it.
-The sentence under the link says who signs you in, WorkOS, and what the site keeps: your verified address, which is
-what seats you. The lobby's top corner reads **Playing as** and your name. **change name** sets the name your seats
-and your messages are labelled with (left blank, your address is used), and **sign out** is beside it.
+**Go to the lobby** starts the sign-in at `/enter`, which takes you to WorkOS's page, where you give your email
+address and type the code sent to it. The sentence under the link says who signs you in, WorkOS, and what the site
+keeps: your verified address, which is what seats you. The lobby's top corner reads **Playing as** and your name.
+**change name** sets the name your seats and your messages are labelled with (left blank, your address is used), and
+**sign out** is beside it.
 
 ### The lobby and a table
 
@@ -65,8 +66,9 @@ Each person keeps one of two dealt cards **from their own view**. You are shown 
 table, each with the bot's **Keep score** under it: its preference from the card's printed economics alone,
 hand-set and unmeasured, so a number rather than a recommendation. Nobody else's cards reach your browser. The other
 seats read *chosen* or *waiting*, and a bot seat's two cards are face down. The technologies and the goals are
-revealed once you have chosen, since the rulebook puts them on the table after the step where the two cards are
-dealt and chosen in secret. The game starts when the last person has kept.
+revealed once you have chosen, since the Tasty Minstrel Games English edition (20 pages, in the Tabletop Simulator
+upload) puts them on the table after the step where the two cards are dealt and chosen in secret. The game starts
+when the last person has kept.
 
 ### The game screen
 
@@ -136,11 +138,12 @@ bash deploy/run-local.sh
 ```
 
 It builds the server's image from your checkout and runs it on this machine under the open door, on
-`127.0.0.1:8080`, with the games in a named volume, `yokohama-web-local-data`. It reads the server's health before it
-prints the address to open, `http://127.0.0.1:8080/`. The image is `linux/amd64` by design, so on Apple silicon a
-first build runs under emulation and takes minutes; a rebuild reuses the toolchain layers. `--dry-run` prints every
-command it would run and runs none. `bash deploy/run-local.sh --stop` stops and removes the container and leaves the
-volume, so the next run finds the games where they were.
+`127.0.0.1:8080` (if that port is taken, `YOKOHAMA_WEB_PUBLISH=127.0.0.1:8081:8080` picks another), with the games in
+a named volume, `yokohama-web-local-data`. It reads the server's health before it prints the address to open,
+`http://127.0.0.1:8080/`. The image is `linux/amd64` by design, so on Apple silicon a first build runs under
+emulation and takes minutes; a rebuild reuses the toolchain layers. `--dry-run` prints every command it would run and
+runs none. `bash deploy/run-local.sh --stop` stops and removes the container and leaves the volume, so the next run
+finds the games where they were.
 
 **The trust model is the open door's: anyone who can reach the port may use any name.** On the way to the lobby you
 choose a name once, this browser remembers it, and the name is who you are. The script binds the port to 127.0.0.1,

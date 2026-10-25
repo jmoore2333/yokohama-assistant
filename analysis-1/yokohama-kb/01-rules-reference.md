@@ -539,14 +539,14 @@ Compare assistant count on Church Management Board:
 - 1st place: 6 VP
 - 2nd place: 3 VP
 - Ties: Rightmost assistant wins
-- **2-player games (finding D1):** the dummy player's pawn — a setup-placed assistant of an unused color at faith-7 — COMPETES in this majority [DL 2026-07-21]. Rulebook p.9 NOTE (**Jeremy's edition**; the 2017 English rulebook does NOT carry this NOTE — verbatim quote and provenance in `docs/plans/2026-07-20-phase-2.9-ruling-list.md` §D1): "The dummy player's assistants are taken into account during final scoring to increase competition for majority bonuses." **It sits MID-track, not at the high end:** faith-7 is index 3 of the eight spaces (faith 4–11), leaving four spaces (faith 8–11) to its right. So under the rightmost tie-break it beats a tied real pawn on faith 4–6 and LOSES to a tied real pawn on faith 8–11; holding one pawn, it takes a place only on a tie it wins, and any two real pawns out-count it outright. (Earlier the engine treated it as an eligibility block only and scored over real players — corrected 2026-07-21.)
+- **2-player games (finding D1):** the dummy player's pawn — a setup-placed assistant of an unused color at faith-7 — COMPETES in this majority [DL 2026-07-21]. Rulebook p.9 NOTE (**Jeremy's edition**; the OKAZU Brand English rulebook does NOT carry this NOTE — verbatim quote and provenance in `docs/plans/2026-07-20-phase-2.9-ruling-list.md` §D1): "The dummy player's assistants are taken into account during final scoring to increase competition for majority bonuses." **It sits MID-track, not at the high end:** faith-7 is index 3 of the eight spaces (faith 4–11), leaving four spaces (faith 8–11) to its right. So under the rightmost tie-break it beats a tied real pawn on faith 4–6 and LOSES to a tied real pawn on faith 8–11; holding one pawn, it takes a place only on a tie it wins, and any two real pawns out-count it outright. (Earlier the engine treated it as an eligibility block only and scored over real players — corrected 2026-07-21.)
 
 ### 2. Customs Bonus
 Compare assistant count on Customs Management Board:
 - 1st place: 8 VP
 - 2nd place: 4 VP
 - Ties: Rightmost assistant wins
-- **2-player games (finding D1):** the dummy player's pawn — setup-placed at space-4 — COMPETES in this majority [DL 2026-07-21], by the same rulebook p.9 NOTE (**Jeremy's edition**, not the 2017 English rulebook) as the Church bonus. It is mid-track here too: space-4 is index 3 of the seven spaces, leaving spaces 5–7 to its right, so it wins a tie against a real pawn on spaces 1–3 and loses one against spaces 5–7.
+- **2-player games (finding D1):** the dummy player's pawn — setup-placed at space-4 — COMPETES in this majority [DL 2026-07-21], by the same rulebook p.9 NOTE (**Jeremy's edition**, not the OKAZU Brand English rulebook) as the Church bonus. It is mid-track here too: space-4 is index 3 of the seven spaces, leaving spaces 5–7 to its right, so it wins a tie against a real pawn on spaces 1–3 and loses one against spaces 5–7.
 
 ### 3. Technology Bonus
 Compare total Industry value on Technology cards:
