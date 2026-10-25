@@ -83,27 +83,29 @@ this line is the append:** the V5 ship adds its identity to that list and never 
 that moves either refuses V4 games as DRIFT (the re-entry handover §5, item 12;
 [`web-lane.md`](web-lane.md) §15; [the spec](plans/2026-10-01-cli-grandfathered-identity-hotfix-spec.md)).
 
-**You decide:** D3 · W6 · OD-6 (restate the ≤420 s roster target — the latest sequence read 534 s at cycle F's close) · OD-8's
+**You decide:** D3 · W6 · OD-6 (restate the ≤420 s roster target — 534 s at cycle F's close (an earlier reading; the latest roster sequence read 497 s at the 0.7.0 release, the Air M5, guidingpath's 2026-10-19 row)) · OD-8's
 format (game count, rubric — its inherited "brake behind" line contradicts canon ruling 15).
 
 ## Track 2 — Repo reorganization, licensing, the public split: FOLDED INTO SECURITY S4 (the design `docs/plans/2026-10-22-security-s4-public-release-design.md`, approved 2026-10-23 — S4a the tree, S4b the front door, S4c the flip; S4a LANDED on `security-s4a` — the plan `docs/plans/2026-10-23-security-s4a-plan.md`, the close `docs/plans/2026-10-23-security-s4a-close.md`; the branch unmerged, the PR waits for your word — NEXT: S4b, the front door (the design §7))
 
-**State:** the code is Apache-2.0 end to end; no per-file SPDX headers (deliberate for now — the
-root `LICENSE` + `NOTICE` carry the grant; headers are a public-split-day decision). `ASSETS.md`
-is a notice of facts since S4a (`3e48e591`): it names the third-party paths — `crates/yokohama-web/assets/art/`,
-`web/public/help/`, `worker/docs/img/` and the README's pictures — and `web/scripts/assets-notice.node.test.ts`
-holds the pictures' directories to it. The mixed assets stay in this private repo for now, by your call.
+**State:** the code is Apache-2.0 end to end; no per-file SPDX headers (the S4 design, §10.2 — the
+root `LICENSE` + `NOTICE` carry the grant). `ASSETS.md` is a notice of facts since S4a (`3e48e591`):
+it names the third-party paths — `crates/yokohama-web/assets/art/`, `web/public/help/`, `worker/docs/img/`
+and the README's pictures — and `web/scripts/assets-notice.node.test.ts` holds the pictures' directories to it.
 
 **S4a, the design's §6 by task** (the design `docs/plans/2026-10-22-security-s4-public-release-design.md`; the plan's Review record and the close hold the rulings):
 - [x] The tree: `tts-assets/` and the English PDF out of the tip (`e72492c1`), the references re-pointed to the editions (`00943a82`, `a90642a4`).
 - [x] The notice set: `NOTICE` and `ASSETS.md` written with you (`3e48e591`).
 - [x] The community files: `CONTRIBUTING.md`, `SECURITY.md` and the forms (`03124c9b`, `2adaef24`, lightened at `a6c3d367`).
-- [x] D20, D17 and C4 closed with catchers: `8c66fc98`; `76ae7a39` (final form `efddd869`); `3e48e591`.
+- [x] D20, D17 and C4 closed with catchers: `7d59b532` (the fixture and the first cell `8c66fc98`); `efddd869` (the workflow `76ae7a39`, the nine-pin comment and the loud clause `07464572`); `ad13a1d5` (the notice `3e48e591`; the cell `21033119`, `f1687fb5`, its final form in the whole-branch review's wave).
 - [x] The two guides: `docs/web-guide.md` (`f4bb2047`) and `docs/computer-player.md` (`76472288`, `813525f6`).
 - [x] `deploy/run-local.sh` (`4cdd7fef`).
 - [x] The lab `yokohama-lab`, the verified backup and the merged branches off origin (Block A; the close's relocation map and branch list).
-- [x] The repository's description, topics and preview (Block A; the preview's recipe and digest are in the close).
-- [x] The two sweeps: the copyright register (`60dad0e4`, `d4253c52`) and the owner's address (`84df6c8a`, `5e9762bd`, `f51fe7ea`).
+- [x] The repository's description and topics (Block A, read back).
+- [ ] The social preview: made (the door at 1280×640, P-8; its recipe and digest are in the close), its upload yours (below).
+- [x] The art lane moved aside (Block A, A5): `docs/brand-guide/` and `docs/tools/art/` in the `art-replacement-spec` worktree, the lane's rule toward origin unchanged.
+- [x] The author address: this workstation commits under the GitHub no-reply address (Block A); GitHub's two e-mail settings and the second workstation's recipe are yours (below).
+- [x] The two sweeps: the copyright register (`60dad0e4`, `d4253c52`) and the owner's address (`84df6c8a`, `5e9762bd`, `f51fe7ea`; the four dated plans' lines restored on your ruling, `dca42d26`, the live runbooks' edits kept).
 
 **The questions this track carried, answered by the S4 design on 2026-10-22/23** (the split's shape: three cycles, §6–§8; the root layout: `tts-assets/` and the English rulebook leave the tip in S4a, the rest keep their names and places, §6.2 and §10.15; the rulebooks, §10.1; the README, S4b's §7) — as they stood: the public split's shape and timing;
 the root layout (`analysis-1/`, `tts-assets/`, `bridge/`, `deploy/`, `docs/temp/`); whether the two
@@ -154,6 +156,7 @@ what a public README claims. Session shape: brainstorm → spec → plan, in its
 ## Owner rulings outstanding (one line each; detail in the re-entry handover §5)
 
 **Security S3's items (2026-10-20):** (a) a LAN DNS record for `yokohama-test.moore.nyc` — the LAN resolver is authoritative for `moore.nyc` and answers the new name with nothing, so LAN devices off WARP cannot reach the test host (Cloudflare's resolver answers 104.21.92.62 / 172.67.187.23); (b) the off-WARP reading at the test host — a device off WARP meets `bdvc.cloudflareaccess.com`'s login (the one Task 7 reading only you can take); (c) the two testers open the front page once — DONE, closed 2026-10-22 on your confirmation (D32; the ledger's row); (d) the `waited` head's wording — DONE: the head reads "this table waited 7 days to start and was closed on …", true of an open and of a dealing table (`ae06132b`, S4-pre Task 3; the Worker's alone, the NAS has no marker); (e) the stack's merge — DONE 2026-10-23 on your word (PR #56 `30a9ff45`, PR #57 `00d93d72`; design D-12); (f) the window RAN (`deploy/RUNBOOK.md` §3.23, `worker/RUNBOOK.md` §27) — nothing to carry; (g) your own browser reads, asynchronous and welcome: a creator's reopen of a real joiner's seat and D2's 429 on production (its door is WorkOS, so the window's curl could not sign in), the NAS's next hourly sweep line, and the update reading on a pinned browser.
+**Security S4a's items (2026-10-24):** (a) the repository's social preview — made (the door at 1280×640, P-8), not uploaded: Settings → General → Social preview, then read it back in GitHub; (b) GitHub's two e-mail settings, "Keep my email addresses private" and "Block command line pushes that expose my email"; (c) the second workstation's recipe — the lab as its push default and the no-reply author address. The file, its digest and the recipe are in the close `docs/plans/2026-10-23-security-s4a-close.md`, §6 and §10.
 1. D3 depth re-ask — HOLD; the games are in hand, your ledger annotation is the last input (Track 1).
 2. W6 GO/WAIT — HOLD, ruled together with D3 (Track 1).
 3. OD-6 roster-target restatement — ripe.
