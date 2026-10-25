@@ -27,7 +27,9 @@
 #      --restart unless-stopped --cap-drop ALL
 #      --security-opt no-new-privileges:true --memory 512m "$IMAGE"` — the
 #      Host check on with no list, because loopback is in its default set
-#      (`deploy/README.md` §4), and §1's three hardening flags;
+#      (`deploy/README.md` §4), and §1's three hardening flags. A run that
+#      fails stops here with a sentence naming the usual cause, a port already
+#      taken, and `YOKOHAMA_WEB_PUBLISH`, the remedy, and exits 1;
 #   7. read the start instead of assuming it: poll
 #      `http://<the publish address>/api/health` every second for up to 60 s.
 #      On a 200 it prints `run-local: open http://127.0.0.1:8080/` and the
@@ -38,7 +40,10 @@
 # **`--stop`** runs `docker stop` and `docker rm` on the container and says
 # that the volume stays with the games in it; with no container of its name it
 # says nothing is running. Both exit 0. It never touches the volume or the
-# image: the next run finds the games where they were.
+# image: the next run finds the games where they were. It says nothing is
+# running only on Docker's own "No such container": any other failure to
+# inspect (a daemon that is down, a permission error) is a refusal that prints
+# Docker's message, because then nothing was found out and nothing stopped.
 #
 # **`--dry-run`** prints every command a run would execute and runs none: no
 # build, no container, not even a `docker inspect` to look for one. It reads
@@ -58,7 +63,8 @@
 # script's address: with no host list the server answers loopback names alone,
 # and any other `Host` reads 421.
 #
-# A refusal exits 2; a container that does not answer its health exits 1.
+# A refusal exits 2; a `docker run` that fails, or a container that does not
+# answer its health, exits 1.
 set -euo pipefail
 
 die() { echo "run-local: $*" >&2; exit 2; }
@@ -110,12 +116,18 @@ run() {
 
 # ---- --stop -----------------------------------------------------------------
 if [ "$STOP" = 1 ]; then
-  if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+  if inspected="$(docker container inspect "$CONTAINER" 2>&1)"; then
     run docker stop "$CONTAINER"
     run docker rm "$CONTAINER"
     echo "run-local: $CONTAINER is stopped and removed; the volume $VOLUME stays, with the games in it"
   else
-    echo "run-local: nothing is running — no container is named $CONTAINER; the volume $VOLUME is untouched"
+    case "$inspected" in
+      *"No such container"*)
+        echo "run-local: nothing is running — no container is named $CONTAINER; the volume $VOLUME is untouched" ;;
+      *)
+        # A failed inspect prints `[]` on stdout before its error; the error is what names the cause.
+        die "docker could not say whether $CONTAINER exists, so nothing was stopped: ${inspected#\[\]$'\n'}" ;;
+    esac
   fi
   exit 0
 fi
@@ -130,7 +142,7 @@ case "$src" in
   */*) here="${src%/*}" ;;
   *) here="." ;;
 esac
-ROOT="$(cd "$here/.." && pwd)"
+ROOT="$(CDPATH= cd -- "$here/.." && pwd)"
 [ -f "$ROOT/deploy/Dockerfile" ] \
   || die "no $ROOT/deploy/Dockerfile, the path resolved from this script's own location; run it from a checkout of the repository, where it builds the image from the tree"
 
@@ -164,7 +176,10 @@ run docker build --platform linux/amd64 -f deploy/Dockerfile -t "$IMAGE" .
 run docker run -d --name "$CONTAINER" -p "$PUBLISH" -v "$VOLUME:/data" \
   -e YOKOHAMA_WEB_IDENTITY=open -e YOKOHAMA_WEB_HOSTNAMES_ENABLED=on \
   --restart unless-stopped \
-  --cap-drop ALL --security-opt no-new-privileges:true --memory 512m "$IMAGE"
+  --cap-drop ALL --security-opt no-new-privileges:true --memory 512m "$IMAGE" || {
+  echo "run-local: docker run failed, and the usual cause is a port already taken: \`bash deploy/run-local.sh --stop\` removes what the failed run left, then YOKOHAMA_WEB_PUBLISH picks another port, as in YOKOHAMA_WEB_PUBLISH=127.0.0.1:8081:8080 bash deploy/run-local.sh" >&2
+  exit 1
+}
 
 opened() {
   echo "run-local: open http://$ADDR/"

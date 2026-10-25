@@ -2,7 +2,7 @@
 //!
 //! Two tiers, per the plan's §5 fixture split:
 //!
-//! - **The committed excerpt** (`tests/data/excerpt-895724349.ndjson`): 16 real
+//! - **The committed excerpt** (`tests/data/excerpt-895724349.ndjson`): 15 real
 //!   capture lines from table #895724349, redacted (player ids and display
 //!   names replaced by stable placeholders), covering every envelope arm —
 //!   an xhr history slice, the full undo bracket (packets 121–126), a
@@ -125,8 +125,9 @@ fn standalone_eight_digit_runs(text: &str) -> Vec<String> {
 ///
 /// The cell's reach: the two placeholder names at every `player_name` and
 /// `name` site (bar the snapshot's one state name), the placeholder text on the
-/// chat frame, and the two placeholder ids at every `player_id` site and at
-/// every standalone eight-digit run, whatever key or channel carries it.
+/// chat frame, the two placeholder ids, or BGA's `0`, at every `player_id`
+/// site, and the two placeholder ids at every standalone eight-digit run,
+/// whatever key or channel carries it.
 #[test]
 fn the_committed_excerpt_names_no_player_but_the_two_placeholders_and_its_chat_line_is_a_placeholder() {
     let mut sites = 0;
