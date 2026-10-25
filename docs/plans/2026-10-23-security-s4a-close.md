@@ -122,4 +122,4 @@ The GitHub tag ruleset (who may create `v*`); private vulnerability reporting en
 
 ## 10. The handover for the next planning session (S4b)
 
-Open from the board `docs/handover.md` (Track 2 reads S4a LANDED, NEXT S4b), this close's §5, §8 and §9, and the design's §7. Still the owner's: the social preview upload and the two GitHub e-mail privacy settings (B4); the PR `security-s4a` → master merged on the owner's word (§7 names its number). The pickup memory of the orchestrator points here.
+Open from the board `docs/handover.md` (Track 2 reads S4a LANDED, NEXT S4b), this close's §5, §8 and §9, and the design's §7. Still the owner's: the social preview upload and the two GitHub e-mail privacy settings (B4); PR #63 (`security-s4a` → master), opened at the wrap `015ddf33`, merged on the owner's word at the start of S4b's planning session. The pickup memory of the orchestrator points here.
