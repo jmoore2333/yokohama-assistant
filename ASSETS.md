@@ -3,7 +3,7 @@
 The code in this repository is Apache-2.0 (`LICENSE`, `NOTICE`). These paths are not:
 
 - `crates/yokohama-web/assets/art/` — crops of the game's cards, tiles and tokens, and `manifest.json`
-- `web/public/help/`, `worker/docs/img/` and the README's pictures of the client, which show that art
+- `web/public/help/`, `worker/docs/img/` and the README's pictures of the client where they show that art
   (`docs/images/` holds text renders of the terminal and carries none)
 
 They are the artwork of Yokohama, designed by Hisashi Hayashi and published in 2016 by Okazu Brand

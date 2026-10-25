@@ -387,7 +387,7 @@ whole-branch review, merge.
 8. **The cross-model read.** A model from another family, through the Codex plugin, reads the README, the
    browser guide and the computer-player page as the stranger of §1 and reports where they are unclear, where
    they overclaim, and where a command would not run; findings are triaged as a review wave.
-9. At close: the suites, the lint gate, the whole-branch review, merge.
+9. At close: the suites, the lint gate, the whole-branch review in opus, merge.
 
 ## 8. S4c — the flip (branch `security-s4c`, off master)
 

@@ -15,9 +15,10 @@
 // and is skipped. A path that starts with `/` resolves from the repository
 // root, every other path against the referencing file's own directory; the
 // cell takes the directory and asks that `ASSETS.md` spells every one of them
-// as a whole backtick token, `` `<dir>/` `` — as an excluded path, or in the
+// as a whole backtick token, `` `<dir>/` `` — anywhere in the notice; the cell
+// does not check which sentence carries it (the excluded-path list, or the
 // sentence that says `docs/images/`'s pictures are text renders carrying no
-// art. A directory that occurs only inside a longer token (`docs/img/` inside
+// art). A directory that occurs only inside a longer token (`docs/img/` inside
 // `` `worker/docs/img/` ``) is not named, and a picture in a subdirectory of a
 // named directory reads red until the notice spells the subdirectory.
 //
