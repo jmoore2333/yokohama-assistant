@@ -104,7 +104,8 @@ provider at all is the open door's case, which follows.
 ## 2. The open door: a home network, a LAN or a VPN
 
 `YOKOHAMA_WEB_IDENTITY=open` is for a deployment with **no identity provider at all**. The first screen
-asks for a name, and the name is who you are. You do not need to set up an identity service to play at
+is the door's three cards, and **Play with friends** leads to the lobby through a step where you type a
+name; the name is who you are there. You do not need to set up an identity service to play at
 home.
 
 **The trust model, in full: anyone who can reach the server may use any name.**

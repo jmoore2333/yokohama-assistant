@@ -190,9 +190,10 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         plays in this browser &mdash; nobody signs in, the door lists those games under{" "}
         <strong>On this device</strong>, and the last section of this page is about them.{" "}
         <strong>Play with friends</strong>{" "}
-        goes to the server, which has to know who you are before it will show you a table: on a server
-        with no sign-in of its own you choose a name once and this browser remembers it; behind
-        Cloudflare Access it is your Access sign-in. What you land on
+        goes to the server, which has to know who you are before it will show you a table. On the
+        hosted site you sign in with an e-mail code or a provider; a server you run yourself with no
+        sign-in of its own has you choose a name once and this browser remembers it, and behind Cloudflare
+        Access the sign-in is Access&rsquo;s own. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
         door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
         tables you already sit at; <em>Open tables</em>, every other table on the server still

@@ -147,6 +147,25 @@ describe("the help panel and the lobby", () => {
     expect(text).not.toContain("Sign in first");
   });
 
+  // **The sign-in sentence says what the door does on the public day** (S4b
+  // Task 4; S4a's close §4): the hosted site signs a player in by an e-mail
+  // code or a provider, a self-hosted server with no sign-in of its own asks
+  // for a plain name once, and one behind Cloudflare Access takes Access's
+  // own. A sentence that put the hosted site behind Access would be true only
+  // until the switch, and this panel ships with the release that follows it.
+  it("says how Play with friends signs a player in, on the hosted site and on a self-hosted one", () => {
+    render(<Help />);
+    const text = section("Starting a game");
+    expect(text).toContain("e-mail code or a provider");
+    expect(text).toContain("no sign-in of its own");
+    expect(text).toContain("has you choose a name once");
+    expect(text).toContain("this browser remembers it");
+    expect(text).toContain("Access\u2019s own");
+    // The retired clause, which made the hosted site's sign-in Access's.
+    expect(text).not.toContain("on a server with no sign-in of its own");
+    expect(text).not.toMatch(/behind\s+Cloudflare Access it is/);
+  });
+
   // **The corner, in the paragraph that describes the LOBBY** (spec §6.6's
   // third edit, ruling R-7-1). The same fact is stated again in the Talking
   // section, deliberately — a player setting up a table and a player about to
