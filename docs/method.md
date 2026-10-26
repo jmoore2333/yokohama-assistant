@@ -67,13 +67,14 @@ it is proposed as an issue first.
 ## 4. Pre-registration and the rules of evidence
 
 A strength claim is registered before its field runs. The registration names the claim, the cells that test it, their
-size and masters, and the rule that decides the outcome, and it is committed before any cell it registers has run
-([the 3.4 pre-registration](plans/2026-08-04-phase3.4-preregistration.md) is one). It is never edited after a cell has
-run: a run that departs from it is a new, separately declared attempt, and a change is an amendment, recorded forward.
+size, their masters or how each is drawn, and the rule that decides the outcome. It is committed before any of its
+cells runs and never edited after ([the 3.4 pre-registration](plans/2026-08-04-phase3.4-preregistration.md) is one):
+a run that departs from it is a new, separately declared attempt, and a change is an amendment, recorded forward.
 
 - **Thresholds come from measured variance,** never a preset sample size or an arbitrary percentage (the map, §1.4).
-- **Masters are recorded before use.** An evaluation run whose figures get quoted draws its master from OS entropy and
-  prints it; a fixed master is diagnostic by name, for reproduction and gate cells.
+- **Masters are recorded before use.** Each is committed in advance and labelled diagnostic, the form every gate cell,
+  fixture and reproduction uses, or drawn fresh from OS entropy. Each milestone with a figure on the ladder rests on
+  at least one cell run on a drawn master.
 - **A name never re-points.** A different weight table is a different named contestant, never a knob or an edit, so
   every figure recorded against a name stays comparable.
 - **Nothing is tuned to turn a miss green.** A re-attempt is a counted attempt on a fresh master.
@@ -91,10 +92,9 @@ The bar (map §1.9) is NOT claimed: a shipped milestone is a narrower claim than
 
 The results ladder is [the computer player page, §5](computer-player.md#5-the-results-ladder): one entry per strength
 milestone, oldest first, each with the claim as registered before its field ran, the figure as measured and the record
-that holds both. This page states no figure of its own; the ladder quotes each one with its record. The end result as
-it stands: the shipped bot plays at the hosted site, [yokohama.moore.nyc](https://yokohama.moore.nyc), in the
-command-line client, and in the browser client on your own machine. The suites are the ones §1 names, and the release
-roster is these commands, run as one sequence:
+that holds both. This page states no figure of its own. The end result as it stands: the shipped bot plays at the
+hosted site, [yokohama.moore.nyc](https://yokohama.moore.nyc), in the command-line client, and in the browser client on
+your own machine. The suites are the ones §1 names, and the release roster is these commands, run as one sequence:
 
 ```bash
 cargo test --release -p yokohama-core --test fuzz_full_games -- --ignored

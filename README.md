@@ -136,8 +136,8 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
 - [`guidingpath.md`](guidingpath.md), the authority: the mission, the current state, the roadmap and the decision log,
   which carries every rules ruling.
 - [`docs/README.md`](docs/README.md), the index of the documents.
-- [`docs/method.md`](docs/method.md), how the work is organized, with the strength results and the records that hold
-  them.
+- [`docs/method.md`](docs/method.md), how the work is organized and its rules of evidence; the strength results and
+  their records are in [the computer player, §5](docs/computer-player.md#5-the-results-ladder).
 - [`docs/handover.md`](docs/handover.md), the board: the work in flight and its next steps.
 
 ## Contributing · Security · Licence
