@@ -8,9 +8,9 @@ standing rules are in [`CLAUDE.md`](../CLAUDE.md), and [`guidingpath.md`](../gui
 
 Work moves brainstorm → spec → plan → execute. Specs and plans are dated files in [`plans/`](plans/), named
 `YYYY-MM-DD-topic.md`; once its phase closes a dated artifact is frozen, and a correction is recorded forward in a later
-document, never edited in. The computer player's ladder is built the same way: each sub-phase below the bar is one spec,
-one plan and one test-driven pass, with an executable gate the next waits on (the
-[Phase-3 map](plans/2026-07-25-phase3-map.md), §3 and §5). No phase is called complete until its gate passes.
+document, never edited in. The computer player's ladder of sub-phases is built the same way: each one below the bar, the
+[Phase-3 map](plans/2026-07-25-phase3-map.md)'s §1.9 milestone bar, is one spec, one plan and one test-driven pass, with
+a gate, executable tests the next one waits on (the map, §3 and §5). No phase is called complete until its gate passes.
 
 Execution is test-driven: the failing test comes first, and the commit history keeps that order. After every task the
 per-edit suites, which [`CONTRIBUTING.md`](../CONTRIBUTING.md) lists, and the lint gate,
@@ -75,8 +75,8 @@ a run that departs from it is a new, separately declared attempt, and a change i
 - **Masters are recorded before use.** Each is committed in advance and labelled diagnostic, the form every gate cell,
   fixture and reproduction uses, or drawn fresh from OS entropy. Each milestone with a figure on the ladder rests on
   at least one cell run on a drawn master.
-- **A name never re-points.** A different weight table is a different named contestant, never a knob or an edit, so
-  every figure recorded against a name stays comparable.
+- **An identity never re-points.** A figure is recorded against a contestant's full identity, its name with its
+  versions, knobs and weight table, and a different table is a different identity, never a knob or an edit.
 - **Nothing is tuned to turn a miss green.** A re-attempt is a counted attempt on a fresh master.
 - **Every figure is quoted as recorded, with its record named.**
 - **A one-sided bound is called one-sided,** never presented as a two-sided interval.

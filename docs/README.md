@@ -1,7 +1,8 @@
 # The documents
 
 One line per document a reader may need, grouped by what you came for. The [root README](../README.md) says what the
-project is. A cell in the web client's tests holds every relative link on this page to the tree.
+project is. A test in the web client checks that every relative link on this page leads to a file or folder in the
+tree, and every anchor to a heading in the file it points at.
 
 ## The guides
 

@@ -153,7 +153,8 @@ V4 freeze, §7). The V4 freeze §9.9 records the result, both θ̂ above that ed
   contains 0.5, which is a health reading of the instrument and not a strength claim;
 - three of the self-null's 1,300 games reached the turn cap, 0.23% (Wilson 95% [0.08%, 0.68%]), inside the
   diagnosis's self-play rate of 0.30% [0.14%, 0.65%]; they were counted, not refused, as the amended registration
-  directs (§9.9, item f).
+  directs (§9.9, item f), and each voided the design unit that held it, so the self-null read 647 of its 650
+  scheduled units (§9.6; §9.9, item b′).
 
 A first run of the same field was invalid: the self-null refused at its first turn-capped game, which made the run
 invalid. An invalid run does not spend the attempt, and that run's superiority figures were sealed unread. A signed

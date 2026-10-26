@@ -89,10 +89,10 @@ with a message naming them when they are absent; the variable turns that stop in
 ## The browser client
 
 The browser client is a second frontend over the same engine, never a second engine: the server routes every move
-through the engine's legal list and computes nothing about the game, so the terminal and the browser cannot disagree
-about a rule. It runs at the hosted site, on your own server from one Docker image, or entirely inside the browser
-against the bot, offline once installed. At a table you can play friends or the bot, watch a game, chat, step back
-through the replay, and ask the bot what it would play and why it played what it did.
+through the engine's legal list and computes nothing about the game, so the terminal and the browser, at the same rules
+revision, cannot disagree about a rule. It runs at the hosted site, on your own server from one Docker image, or
+entirely inside the browser against the bot, offline once installed. At a table you can play friends or the bot, watch a
+game, chat, step back through the replay, and ask the bot what it would play and why it played what it did.
 
 ![A two-player game in the browser at the first turn: the area tiles with their site cards on the left and the
 end-trigger strip along the top; on the right the phase ladder, the prompt for Red's additional actions with its two
@@ -120,7 +120,9 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
 ## Status, honestly
 
 - The engine is complete and differentially verified against the oracle at `SEMANTICS_REV` 7, the rules revision
-  every saved game is keyed to.
+  every saved game is keyed to. One rules defect is known, tracked as
+  [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62): the Language School's yen can miss its own
+  order's warehouse take, and its fix bumps the revision.
 - The shipped bot is `v4-step9-draft1`, in the terminal and in the browser. It is production and provisional: the
   route to the bar runs through a later freeze that may name a different contestant
   ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
