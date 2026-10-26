@@ -54,8 +54,10 @@ Mode? (sim/live)
 
 `sim` plays a game the engine deals, and `live` tracks a game on a physical table. To play the bot, answer `sim`, `2`,
 `red`, `blue` and `0`, press Enter twice for a random seed and the default save file, keep a dealt card for each seat
-with `1` and `1`, seat the bot with `1`, and type `confirm`. `abort` leaves the wizard and `q` leaves a game. The
-[CLI guide](docs/cli-guide.md) walks through every question and command.
+with `1` and `1`, seat the bot with `1`, and type `confirm`. The game autosaves after every applied move, to
+`yokohama-game-<seed>.json` in the directory you ran the CLI from, so the file appears with your first move and not
+before. `abort` leaves the wizard and `q` leaves a game. The [CLI guide](docs/cli-guide.md) walks through every
+question and command.
 
 ### The browser client, on your own machine
 
@@ -66,7 +68,8 @@ bash deploy/run-local.sh
 ```
 
 It builds the server's image from the checkout and runs it on this machine; on Apple silicon a first build runs under
-emulation and takes minutes. It ends with these two lines:
+emulation and takes minutes, and Docker prints a `WARNING` that the image's platform (linux/amd64) does not match the
+host's when the container starts, which is expected because the image runs under emulation as it was built. It ends with these two lines:
 
 ```text
 run-local: open http://127.0.0.1:8080/
