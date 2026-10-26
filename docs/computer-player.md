@@ -7,9 +7,9 @@ with the record named beside it; the record carries the full account.
 ## 1. What a contestant is
 
 Every bot is a **contestant**: a named identity made of three parts, a controller (the search that picks a move), the
-controller's knobs, and a weight table (the numbers the evaluator prices a position with). The name is the identity.
-The save file, the arena's report and the bot's own explanation all carry the same echo of it (§2), and a change to
-any part of it, one knob or one weight, makes a different contestant, and its echo says so.
+controller's knobs, and a weight table (the numbers the evaluator prices a position with). The identity is the name
+together with all three. The save file, the arena's report and the bot's own explanation all carry the same echo of it
+(§2), and a change to any part of it, one knob or one weight, makes a different contestant, and its echo says so.
 
 **A contestant is honest by construction.** It decides from a `PlayerView`, the game as its own seat sees it, and is
 never handed the engine's raw state. The view masks the five things a seated player cannot know: the order of the
@@ -56,7 +56,7 @@ is "max observed under harness X" and never a bound, and no direction is stated 
   research identities for arena weight comparisons. The terminal refuses all four as a bot seat, each kind with its
   own sentence.
 
-**A name never re-points.** A different weight table is a different named identity, never a knob and never an edit,
+**An identity never re-points.** A different weight table is a different identity, never a knob and never an edit,
 and every figure stays tied to the full echo it was recorded under. The arena's runner seats every name above; its
 grammar is in [`CLAUDE.md`](../CLAUDE.md)'s Commands section. A new table, in the terminal or in the browser, deals
 the production contestant, and a save names the bot it was played against.
