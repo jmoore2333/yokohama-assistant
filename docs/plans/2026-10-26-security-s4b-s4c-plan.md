@@ -400,6 +400,37 @@ git commit -m "docs: the records at the branch's head — the board's Updated li
 
 ---
 
+### Task 13: the release archives carry `LICENSE` and `NOTICE` · impl: sonnet · review: opus
+
+The owner's ruling of 2026-10-26, during the whole-branch review's wave (P-27): "we should include bringing in these files at the next release, before the public switch." The three CLI archives `v0.7.2` ships pack the binary, `README.md` and `CLI-GUIDE.html` and no licence text; `v0.7.3`, tagged at the window, is the first public download. `release.yml`'s structure cells (S4a, D17) pin the job heads, the permissions blocks and the tag job, not the packaging lines.
+
+**Files:**
+- Modify: `.github/workflows/release.yml` — the three packaging steps: after the `CLI-GUIDE.html` line, `install -m 0644 LICENSE "dist/${package}/LICENSE"` and `install -m 0644 NOTICE "dist/${package}/NOTICE"` (the Ubuntu and macOS jobs), `Copy-Item LICENSE "dist/$package/LICENSE"` and `Copy-Item NOTICE "dist/$package/NOTICE"` (the Windows job); nothing else in the file moves (`git diff` shows six added lines).
+- Modify: `worker/scripts/release-workflow.test.mjs` — a cell in the `release.yml` describe
+- Modify: `README.md` — one clause in the quick start's macOS sentence: a browser download of the archive lands quarantined, and `xattr -d com.apple.quarantine yokohama-cli` clears it (the remedy the clean-sheet README dropped; the wave's D1 left it homeless)
+
+**Interfaces:**
+- Produces: the cell `every release archive packs LICENSE and NOTICE beside the binary` — text-structural: in `release.yml`, exactly three `run:` blocks pack a `dist/${package}` (or `dist/$package`), and each names `LICENSE` and `NOTICE` as a file installed or copied into that directory (the regexes `install -m 0644 (LICENSE|NOTICE) "dist/\$\{package\}/\1"` and `Copy-Item (LICENSE|NOTICE) "dist/\$package/\1"`); six matches in all, two per block; a block without either is red by name.
+- `ASSETS.md` does NOT ride: the CLI archive carries no third-party art (the guide's pictures are text renders).
+
+- [ ] **Step 1: Write the failing cell**; `cd worker && npm run test:scripts -- release-workflow`; RED (no block names the files).
+- [ ] **Step 2: The six lines** as the Files block says; the README's clause.
+- [ ] **Step 3: Verify**
+
+Run: `cd worker && npm run test:scripts && cd .. && ruby -ryaml -e 'YAML.load_file(".github/workflows/release.yml")' && echo parse-ok && git diff --stat && cargo test -p yokohama-web --lib the_readme_quick_start && (cd web && npm run typecheck && npm run test:wasm -- doc-links) && wc -l README.md`
+Expected: `test:scripts` at its baseline + 1 (801 in the checkout); `parse-ok`; the diff three files; the README lib cell green; the link cell green; the README under 200 lines.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add .github/workflows/release.yml worker/scripts/release-workflow.test.mjs README.md
+git commit -m "ci, docs: the three release archives pack LICENSE and NOTICE beside the binary from v0.7.3, held by a cell, and the README names the quarantine remedy for a browser download (S4c Task 13; the owner's ruling P-27)"
+```
+
+Mutants for the reviewer: one `LICENSE` line removed from one job (red, naming the job); `NOTICE` misspelled in one line (red); the two lines moved into a job that packs no archive (red — the count per packing block); the three structure cells still green (`release.yml`'s heads, permissions and tag job unmoved); the reviewer dry-reads the six lines against the three shells (bash ×2, PowerShell ×1) and the paths the archive would hold.
+
+---
+
 ## Block B — the owner present, before the review (the orchestrator's steps)
 
 - [ ] **B1. The triage marks (the design §8.1).** The owner reads Task 9's table and marks each row `private` (the default), `publish` (copied into `docs/` under a dated name with a provenance line — its own commit, listed in the close; the register and the address grep over it first) or `discard` (the owner's own `rm`, in the owner's shell — never the orchestrator's bulk deletion). The marked table goes into the close verbatim.
@@ -479,6 +510,7 @@ The before review (Block A, A3) and every correction the run meets are recorded 
 - **P-22** (2026-10-26, Task 11's implementer) — the exclusion list's `deploy/README.md:243` moved to `:244` when Task 4 edited that file after the pre-flight, so the brief's grep printed one record line; the list is corrected in the SDD workspace. A line number recorded at a pre-flight is a reading at that head, re-read at the task's.
 - **P-20** (2026-10-26, Task 11's review; corrects P-4 forward) — P-4's FIVE red cells were measured while the baseline suites ran concurrently on another export: three of them were vitest TIMEOUTS under load (23,230, 6,913 and 6,179 ms against the 5,000 ms default), not the flip's; re-run alone on the same export, exactly TWO cells go red — "declare YOKOHAMA_TURNSTILE off in five and on in the open file alone" and "pass the whole guard: production, the dev file and the private file over a keyless build, the open file over a keyed one" — as `worker/RUNBOOK.md` §23 stage 2 step 3 predicts. Task 11 moved those two; at the head the guard's cells read 98 of 98 on an export. The lesson: a cell count measured beside a concurrent build is a reading under load, and a red cell is named by its message, never by its count.
 - **P-23** (2026-10-26, Task 11's review, the routing item) — stage 2's flip left four live sentences false of the committed files (`docs/web-lane.md` §12's row, `worker/README.md:1872`, `worker/RUNBOOK.md:365`, `worker/wrangler.test.jsonc:92`), owned by no later step; Task 12's Files block names them now.
+- **P-27** (2026-10-26, the owner, during the whole-branch review's wave) — a reviewer read that the release archives ship `README.md` and `CLI-GUIDE.html` beside the binary and no `LICENSE` or `NOTICE`; the orchestrator had recorded it for the owner. The owner: "we should include bringing in these files at the next release, before the public switch." Task 13 is added: the six packaging lines, a cell, and the README's quarantine clause the wave's D1 left homeless; it lands after the wave, with its own review, before the pull request.
 - **P-24** (2026-10-26, Task 12's review) — (i) the board's `Updated` NEXT, Track 5 and the new row put Block B after the merge and the tag; the plan's Block B heading and the run's ruling put it BEFORE the pull request merges (the owner present at the next session; an item B1 publishes lands as its own commit with a scoped review before the merge) — reordered in fix round 1 (`de7a4351`), the row amended on the branch (the append-only rule binds rows that have landed) and its Part 1 span started at `9e77b423`. (ii) Four identity-source sentences false since the auth cycle's stage 1 (`18d63f28`, production's source `workos`) — `worker/README.md:1864`, `worker/RUNBOOK.md:345`, `docs/web-lane.md:707` and `:163` — routed into the same round, each now stating what each Worker file ships.
 - **P-25** (2026-10-26, the whole-branch review, lens 5's I-3 and lens 1's M-6 and M-7) — the close's archive cut updated `docs/README.md`'s authority group and named the new archive "among the four files", and five live sites count the archives and read false once the fourth lands: `CLAUDE.md:9` ("kept in four files"), `CLAUDE.md:103` ("the three append-closed archives"), `docs/method.md` §3 ("three archives", with three links), `docs/README.md:23` ("three archives that are closed to appending") and `guidingpath.md:76` (the index's "kept in four files"); the step names all five now, and "the four files" reads five. The close's records step also gains `docs/computer-player.md` §8's last bullet, whose "latest sequence the decision log records" turns false when the close's row records this cycle's roster, and one sentence in `docs/web-guide.md` §2 on the edge check stage 2 turns on (`web/src/Challenge.tsx:19`); the commit step's staging line names `docs/method.md`, `docs/computer-player.md` and `docs/web-guide.md`, the last of which the records step already edited without the line naming it.
 - **P-26** (2026-10-26, the whole-branch review, lens 4's I-2 and M-5) — the record's lead says each correction is applied at its site, and four were recorded here and not applied there: P-14 (Task 4's Files block still said "an e-mail code or a provider"), P-15 (Task 5 Step 3's verify still read `wc -l CLAUDE.md`), P-17 (Task 9's Produces and the measured inputs still said 55) and P-18 (no site tag in Task 8's Interfaces). Each is applied at its site now, the executed task text otherwise untouched (Task 4's commit block keeps the subject `f7663920` landed with). Task 12's commit block named three files to stage where its Files block names seven (the commit `2569f188` staged the seven); it names the seven now.
