@@ -118,7 +118,8 @@ api::dispatch(games: &Games, host: &Host, identity: Identity, req: &ApiRequest) 
 each of those four is a trait: a seam a host fills in. The layer routes, scopes and serializes, and
 it computes nothing about the game itself. Every legal move comes from the engine
 (`crates/yokohama-core`) and every word from the terminal client's own model
-(`crates/yokohama-cli`), so the terminal and the browser cannot disagree about a rule.
+(`crates/yokohama-cli`), so the terminal and the browser, at the same rules revision, cannot disagree
+about a rule.
 
 A game is stored as three JSON documents:
 
@@ -309,7 +310,7 @@ first has three sources.
 **The `worker` door has three identity sources, one per deployment** (the auth cycle; design §4.1).
 `YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under it — `access`, `oidc` or `workos` —
 with no default and refused beside `open`; the layer's door stays `worker` and the wire never learns the
-source (`/api/me` reads `cf-access` under all three). `access` is the section below, today's shape.
+source (`/api/me` reads `cf-access` under all three). `access` is the section below, the private Worker's and the pool's source.
 `oidc` signs a player in against ANY issuer that publishes a discovery document (Auth0, Keycloak,
 Authentik, Google and the like): the shell runs the code flow once, at the callback on `/enter`,
 verifies the ID token, and mints its own session cookie — `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID`,
@@ -336,7 +337,8 @@ rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.n
 `yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare
 Access may stay in front of a provider-signed Worker, which then ignores the assertion.
 
-**Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
+**Access — `worker` at source `access`** (`wrangler.private.jsonc` and the pool's `wrangler.test.jsonc`;
+production's `wrangler.jsonc` until the window's stage 1, 2026-10-19).
 - A Cloudflare Access application covers the hostname. The Worker verifies Access's signed assertion
   on every request before anything reads it (§7.6), and the objects' layer runs its `worker` mode,
   trusting only the `X-Yokohama-User` header the Worker sets.

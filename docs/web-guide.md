@@ -174,11 +174,12 @@ These can read like gaps and are not; each is a property the client keeps, with 
   cards, never from the engine's private state. The reason: nobody at the table, the bot included, reads a card the
   physical table would not show them, and walking every position of the replay returns your own hands and no
   other's.
-- **The bot's seat is the production identity, the same one the terminal plays.** A game that is not over opens
-  exactly when this build reconstructs the bot recorded in it: an update that still runs a game's bot keeps the game
-  playable, and one that no longer does refuses it with the reason, never playing it as another bot. A finished game
-  opens whichever bot played it, since no bot moves in it again; a game saved at another rules revision, finished or
-  not, does not open, by design. The reason: a game is one game only if the bot that started it plays all of it.
+- **The bot's seat is the production identity, the same one the terminal plays.** A game that is not over, saved at this
+  build's rules revision, opens exactly when this build reconstructs the bot recorded in it: an update that still runs a
+  game's bot keeps the game playable, and one that no longer does refuses it with the reason, never playing it as
+  another bot. The reason: a game is one game only if the bot that started it plays all of it. A finished game opens,
+  whichever bot played it, since no bot moves in it again; a game saved at another rules revision, finished or not, does
+  not open, by design.
 - **Every move goes through the engine's legal list.** The server routes, scopes and serializes and computes nothing
   about the game: a move the engine did not list is refused, and every list the client shows came from the engine.
   The reason: one engine decides, so the terminal and the browser, at the same rules revision, cannot disagree about

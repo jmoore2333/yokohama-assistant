@@ -8,8 +8,9 @@ with the record named beside it; the record carries the full account.
 
 Every bot is a **contestant**: a named identity made of three parts, a controller (the search that picks a move), the
 controller's knobs, and a weight table (the numbers the evaluator prices a position with). The identity is the name
-together with all three. The save file, the arena's report and the bot's own explanation all carry the same echo of it
-(§2), and a change to any part of it, one knob or one weight, makes a different contestant, and its echo says so.
+together with all three and the versions of the controller and the evaluator. The save file, the arena's report and the
+bot's own explanation all carry the same echo of it (§2), and a change to any part of it, one knob or one weight, makes
+a different contestant, and its echo says so.
 
 **A contestant is honest by construction.** It decides from a `PlayerView`, the game as its own seat sees it, and is
 never handed the engine's raw state. The view masks the five things a seated player cannot know: the order of the

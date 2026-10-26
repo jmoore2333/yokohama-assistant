@@ -16,8 +16,8 @@ name: docker
 # change to the image's inputs (`deploy/Dockerfile`, `deploy/smoke-image.sh`,
 # `crates/`, `web/`, the lockfile, the toolchain file). R-C9's fifteen-minute
 # rule is retired with the trigger, since nothing runs this on a push or pull
-# request any more. GitHub side: disabled since 2026-09-28 and it stays so
-# through E's merge.
+# request any more. GitHub side: disabled since 2026-09-28, and it stays
+# disabled; enabling it again is the owner's decision.
 #
 # **Which runs are COLD, and which are WARM.** `cache-to: type=gha,…,mode=max`
 # exports every layer of every stage, the server stage's build step among

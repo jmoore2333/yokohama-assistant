@@ -8,7 +8,7 @@ standing rules are in [`CLAUDE.md`](../CLAUDE.md), and [`guidingpath.md`](../gui
 
 Work moves brainstorm → spec → plan → execute. Specs and plans are dated files in [`plans/`](plans/), named
 `YYYY-MM-DD-topic.md`; once its phase closes a dated artifact is frozen, and a correction is recorded forward in a later
-document, never edited in. The computer player's ladder of sub-phases is built the same way: each one below the bar, the
+document, never edited in, except where a cycle names an exception and records it. The computer player's ladder of sub-phases is built the same way: each one below the bar, the
 [Phase-3 map](plans/2026-07-25-phase3-map.md)'s §1.9 milestone bar, is one spec, one plan and one test-driven pass, with
 a gate, executable tests the next one waits on (the map, §3 and §5). No phase is called complete until its gate passes.
 
@@ -67,9 +67,9 @@ it is proposed as an issue first.
 ## 4. Pre-registration and the rules of evidence
 
 A strength claim is registered before its field runs. The registration names the claim, the cells that test it, their
-size, their masters or how each is drawn, and the rule that decides the outcome. It is committed before any of its
-cells runs and never edited after ([the 3.4 pre-registration](plans/2026-08-04-phase3.4-preregistration.md) is one):
-a run that departs from it is a new, separately declared attempt, and a change is an amendment, recorded forward.
+size, their masters or how each is drawn, and the rule that decides the outcome. It is committed before any of its cells
+runs and never edited once one has ([the 3.4 pre-registration](plans/2026-08-04-phase3.4-preregistration.md) is one): a
+run that departs from it is a new, separately declared attempt, and a change is an amendment, recorded forward.
 
 - **Thresholds come from measured variance,** never a preset sample size or an arbitrary percentage (the map, §1.4).
 - **Masters are recorded before use.** Each is committed in advance and labelled diagnostic, the form every gate cell,
