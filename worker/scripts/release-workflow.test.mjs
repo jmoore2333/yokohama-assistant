@@ -96,6 +96,9 @@ describe("the four workflows", () => {
     for (const [name, count] of Object.entries(WORKFLOWS)) {
       const uses = workflow(name).split("\n").filter((l) => /^\s*-?\s*uses:/.test(l));
       expect(uses.length, name).toBe(count);
+      // and no step names an action in a spelling that line filter cannot see (a flow-style step, a quoted key): every
+      // live line that names the word `uses` is counted against the same figure
+      expect(workflow(name).split("\n").filter((l) => !/^\s*#/.test(l) && /\buses\b/.test(l)).length, `${name}: a line names uses in a spelling the pin filter does not read`).toBe(count);
       for (const l of uses) {
         if (/uses:\s+\.\//.test(l)) continue;
         expect(l, `${name}: ${l}`).toMatch(/uses:\s+[\w.-]+\/[\w./-]+@[0-9a-f]{40} # \S/);
@@ -118,6 +121,12 @@ describe("the four workflows", () => {
     expect(trigger).toBe(
       `on:\n  push:\n    branches:\n      - master\n    paths:\n${paths}\n  pull_request:\n    paths:\n${paths}\n  workflow_dispatch:\n`,
     );
+    // and the `on:` mapping ends there: YAML continues `on:` past comment lines, so the first live line after the
+    // comment block must be the next top-level key, or a trigger written after the comments reads green
+    expect(
+      t.slice(t.indexOf("\non:\n") + 1 + trigger.length).match(/^(?!\s*(#|$)).*$/m)?.[0],
+      "test.yml: a live line between the on: block and permissions:",
+    ).toBe("permissions:");
     // and the two lists equal, read out of the file rather than out of the literal above
     const listOf = (key) => new RegExp(`\\n  ${key}:\\n(?:    branches:\\n      - master\\n)?    paths:\\n((?:      - .*\\n)+)`).exec(trigger)?.[1];
     expect(listOf("push")).toBeDefined();

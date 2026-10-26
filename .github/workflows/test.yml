@@ -36,7 +36,7 @@ on:
 # pull request had. A docs-only push runs nothing. The lab remote runs no
 # Actions. A pull request's run and its merge's run are two runs by design:
 # on a public repository Actions minutes are not metered, so the second run
-# costs nothing, where it once cost the owner's minutes.
+# costs nothing.
 #
 # **The one coupling, stated.** The lint gate compiles the web layer with the
 # workspace, and the wire corpus pins the engine's wire-visible words; both run
