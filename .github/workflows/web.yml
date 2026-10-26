@@ -84,12 +84,12 @@ jobs:
   web-server:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # M6.5a: the toolchain is named here rather than left to `@stable`, and the
       # wasm target is installed WITH it — `rust-toolchain.toml` pins 1.97.1, so a
       # bare `rustup target add` under `@stable` could land the target on a
       # toolchain cargo never uses. Keep this in step with rust-toolchain.toml.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
@@ -106,7 +106,7 @@ jobs:
       # exactly or the glue refuses the module at load; the cache key carries the
       # version for the same reason, so a bump here invalidates the cache rather
       # than restoring a stale binary.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-0.2.128
@@ -140,7 +140,7 @@ jobs:
       # bytes, and it equals the `.sha256` file binaryen publishes beside the
       # tarball, whose 132 file equals the 132 hash this step pinned before.
       # `deploy/Dockerfile` pins this hash for its own download since M6.5c2.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.local/bin/wasm-opt
           key: binaryen-133-x86_64-linux
@@ -166,7 +166,7 @@ jobs:
       # installs only `web/`, and the `worker` job keys its own cache by its own
       # lock. (M6.5c's P-3 had both locks key one cache while this job installed
       # both packages.)
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -323,11 +323,11 @@ jobs:
   worker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The toolchain is named rather than `@stable`, with the wasm target on
       # it — `web-server`'s reason (M6.5a): `rust-toolchain.toml` pins 1.97.1,
       # and a bare `rustup target add` could land the target elsewhere.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           toolchain: 1.97.1
           targets: wasm32-unknown-unknown
@@ -335,12 +335,12 @@ jobs:
       # `crates/yokohama-worker` depends on (`wasm-bindgen = "=0.2.128"`). The
       # cache key is `web-server`'s, so once either job has saved the binary
       # both restore it.
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cargo/bin/wasm-bindgen
           key: wasm-bindgen-cli-0.2.128
       - run: test -x ~/.cargo/bin/wasm-bindgen || cargo install wasm-bindgen-cli --version 0.2.128 --locked
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -413,8 +413,8 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm

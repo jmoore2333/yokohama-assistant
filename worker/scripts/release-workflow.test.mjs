@@ -6,7 +6,7 @@
 // held at the text level: no YAML library, the file read as the reader reads
 // it. The first public run is S4c's `0.7.3` tag.
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const text = readFileSync(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8");
@@ -42,13 +42,6 @@ const expectTheFiveJobHeads = () => {
 };
 
 describe("release.yml", () => {
-  it("pins every action to a commit SHA with its version beside it", () => {
-    // every line that opens a `uses:` key carries `<owner>/<repo>@<40 hex>` followed by a `# <version>` comment
-    const uses = text.split("\n").filter((l) => /^\s*-?\s*uses:/.test(l));
-    expect(uses.length).toBeGreaterThanOrEqual(6);
-    for (const l of uses) expect(l, l).toMatch(/uses:\s+\S+@[0-9a-f]{40}\s+#\s*\S/);
-  });
-
   it("grants contents: read at the top level and contents: write to the publish job alone", () => {
     expectTheFiveJobHeads();
     // --- in the permissions cell, after expectTheFiveJobHeads(): the token `permissions` occurs exactly twice in the
@@ -85,5 +78,49 @@ describe("release.yml", () => {
     expect(span("tag", "ubuntu")).toMatch(/^\n  tag:\n    name: Tag is on master\n    runs-on: ubuntu-24\.04\n    steps:\n      - uses: actions\/checkout@[0-9a-f]{40} *\n        with:\n          fetch-depth: 0\n      - name: The tag must sit on master\n        run: \|\n          git fetch --no-tags origin master\n          git merge-base --is-ancestor "\$GITHUB_SHA" origin\/master \|\| \{ echo "[^"\n]*"; exit 1; \}\n\s*$/);
     for (const job of ["ubuntu", "macos", "windows"]) expect(span(job).slice(0, 120)).toContain("needs: [tag]");
     expect(span("publish")).toContain("needs: [ubuntu, macos, windows]");
+  });
+});
+
+// (S4c Task 8; the design §2.19, S4a's close §9) The other three workflows, read as text beside `release.yml`: every
+// `uses:` is a commit SHA with its version beside it, and `test.yml`'s trigger is pinned whole. The four are listed by
+// name, so a fifth workflow is a deliberate edit to this cell, not a file that slips past a glob.
+const WORKFLOWS = { "docker.yml": 4, "release.yml": 12, "test.yml": 2, "web.yml": 11 };
+const workflow = (name) => readFileSync(new URL(`../../.github/workflows/${name}`, import.meta.url), "utf8");
+
+describe("the four workflows", () => {
+  it("every workflow pins every action to a commit SHA with its version beside it", () => {
+    // the directory holds exactly the four; each line that opens a `uses:` key carries `<owner>/<repo>@<40 hex>`
+    // followed by ` # ` and a non-empty comment; a local `uses: ./` action is the one permitted exception
+    expect(readdirSync(new URL("../../.github/workflows/", import.meta.url)).filter((f) => /\.ya?ml$/.test(f)).sort())
+      .toEqual(Object.keys(WORKFLOWS));
+    for (const [name, count] of Object.entries(WORKFLOWS)) {
+      const uses = workflow(name).split("\n").filter((l) => /^\s*-?\s*uses:/.test(l));
+      expect(uses.length, name).toBe(count);
+      for (const l of uses) {
+        if (/uses:\s+\.\//.test(l)) continue;
+        expect(l, `${name}: ${l}`).toMatch(/uses:\s+[\w.-]+\/[\w./-]+@[0-9a-f]{40} # \S/);
+      }
+    }
+  });
+
+  it("test.yml runs on a master push and a pull request under one path list", () => {
+    const t = workflow("test.yml");
+    // the `on:` block from `on:` to the line before the first comment, byte for byte
+    const trigger = t.slice(t.indexOf("\non:\n") + 1, t.indexOf("\n#"));
+    const paths = [
+      '      - "crates/yokohama-core/**"',
+      '      - "crates/gen-data/**"',
+      '      - "Cargo.toml"',
+      '      - "Cargo.lock"',
+      '      - "rust-toolchain.toml"',
+      '      - ".github/workflows/test.yml"',
+    ].join("\n");
+    expect(trigger).toBe(
+      `on:\n  push:\n    branches:\n      - master\n    paths:\n${paths}\n  pull_request:\n    paths:\n${paths}\n  workflow_dispatch:\n`,
+    );
+    // and the two lists equal, read out of the file rather than out of the literal above
+    const listOf = (key) => new RegExp(`\\n  ${key}:\\n(?:    branches:\\n      - master\\n)?    paths:\\n((?:      - .*\\n)+)`).exec(trigger)?.[1];
+    expect(listOf("push")).toBeDefined();
+    expect(listOf("push")).toBe(listOf("pull_request"));
   });
 });
