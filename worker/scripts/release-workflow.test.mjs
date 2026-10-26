@@ -85,17 +85,34 @@ describe("release.yml", () => {
     // (S4c Task 13; the owner's ruling P-27) Text-structural, like the cells above: exactly three jobs pack a
     // `dist/${package}` (or `dist/$package`) directory, and each installs or copies `LICENSE` and `NOTICE` into it by
     // its own shell's form (bash `install` twice, PowerShell `Copy-Item` once), so six matches in all, two per job;
-    // a job missing either file is red by name. `ASSETS.md` does not ride: the CLI archive carries no third-party art
+    // a job missing either file is red by name. Each of the three makes ONE archive (`tar -C dist -czf` or
+    // `Compress-Archive`), and its two file lines sit after the directory is made and BEFORE that archive command: a
+    // line below the archive command leaves the directory holding the file and the archive without it. `ASSETS.md`
+    // does not ride: the CLI archive carries no third-party art
     const forms = {
       ubuntu: /^ *install -m 0644 (LICENSE|NOTICE) "dist\/\$\{package\}\/\1"$/gm,
       macos: /^ *install -m 0644 (LICENSE|NOTICE) "dist\/\$\{package\}\/\1"$/gm,
       windows: /^ *Copy-Item (LICENSE|NOTICE) "dist\/\$package\/\1"$/gm,
     };
-    const packers = HEADS.filter((job) => /dist\/\$(\{package\}|package)/.test(span(job, HEADS[HEADS.indexOf(job) + 1])));
-    expect(packers).toEqual(["ubuntu", "macos", "windows"]);
+    const makeDir = {
+      ubuntu: /^ *mkdir -p "dist\/\$\{package\}"$/gm,
+      macos: /^ *mkdir -p "dist\/\$\{package\}"$/gm,
+      windows: /^ *New-Item -ItemType Directory -Force -Path "dist\/\$package" \| Out-Null$/gm,
+    };
+    const archive = /^ *(tar -C dist -czf "dist\/\$\{package\}\.tar\.gz" "\$\{package\}"|Compress-Archive -Path "dist\/\$package" -DestinationPath "dist\/\$package\.zip")$/gm;
+    const next = (job) => HEADS[HEADS.indexOf(job) + 1];
+    const packers = HEADS.filter((job) => /dist\/\$(\{package\}|package)/.test(span(job, next(job))));
+    expect(packers, "the jobs that pack a dist/<package> directory").toEqual(["ubuntu", "macos", "windows"]);
     for (const job of packers) {
-      const names = [...span(job, HEADS[HEADS.indexOf(job) + 1]).matchAll(forms[job])].map((m) => m[1]).sort();
-      expect(names, `${job}: the archive packs LICENSE and NOTICE, once each`).toEqual(["LICENSE", "NOTICE"]);
+      const s = span(job, next(job));
+      const made = [...s.matchAll(archive)].map((m) => m.index);
+      expect(made, `${job}: the job makes one archive`).toHaveLength(1);
+      const dirs = [...s.matchAll(makeDir[job])].map((m) => m.index);
+      expect(dirs, `${job}: the job makes the archive's directory once`).toHaveLength(1);
+      const hits = [...s.matchAll(forms[job])];
+      expect(hits.map((m) => m[1]).sort(), `${job}: the archive packs LICENSE and NOTICE, once each`).toEqual(["LICENSE", "NOTICE"]);
+      expect(hits.filter((m) => m.index > made[0]).map((m) => m[1]), `${job}: LICENSE and NOTICE are in place before the archive is made`).toEqual([]);
+      expect(hits.filter((m) => m.index < dirs[0]).map((m) => m[1]), `${job}: LICENSE and NOTICE come after the directory is made`).toEqual([]);
     }
   });
 });
