@@ -54,7 +54,9 @@ tree, and every anchor to a heading in the file it points at.
 [`plans/`](plans/) holds a dated file for every spec, plan and close, named `YYYY-MM-DD-topic.md`. Each is frozen when
 its phase closes, and a correction is recorded forward in a later file. To read a cycle, start with its spec, then its
 plan with the Review record that carries every correction, then its close, which is the record of record. The Phase-3
-map, [`plans/2026-07-25-phase3-map.md`](plans/2026-07-25-phase3-map.md), governs the computer player's ladder.
+map, [`plans/2026-07-25-phase3-map.md`](plans/2026-07-25-phase3-map.md), governs the computer player's ladder, and
+[`plans/2026-07-20-phase-2.9-ruling-list.md`](plans/2026-07-20-phase-2.9-ruling-list.md) is the register of the rules'
+ambiguities, every one of them ruled.
 
 ## The knowledge base
 
