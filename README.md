@@ -18,10 +18,12 @@ in your browser, with no account.
 On an Apple-silicon Mac, fetch the release archive, unpack it and run the binary:
 
 ```bash
-curl -fLO https://github.com/jmoore2333/yokohama-assistant/releases/latest/download/yokohama-cli-v0.7.2-macos-apple-silicon.tar.gz
-tar xzf yokohama-cli-v0.7.2-macos-apple-silicon.tar.gz
-cd yokohama-cli-v0.7.2-macos-apple-silicon && ./yokohama-cli
+curl -fLO https://github.com/jmoore2333/yokohama-assistant/releases/latest/download/yokohama-cli-v0.7.2-macos-apple-silicon.tar.gz \
+  && tar xzf yokohama-cli-v0.7.2-macos-apple-silicon.tar.gz \
+  && cd yokohama-cli-v0.7.2-macos-apple-silicon && ./yokohama-cli
 ```
+
+If the fetch fails, the release may not be published yet, and the `cargo run` path below works from a clone.
 
 The newest build is always the one on the [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases),
 beside builds for Ubuntu x86_64 and Windows x86_64. Each archive carries the guide as `CLI-GUIDE.html` beside the
