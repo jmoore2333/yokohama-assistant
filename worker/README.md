@@ -1869,9 +1869,10 @@ variables and `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET` its tw
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
 chat variables keep the NAS's defaults;
-`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `off`, a deploy declaration
+`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `on`, a deploy declaration
 the Worker only holds to a string, which the deploy guard holds to the client build's site key and
-to the open door, and which `wrangler.open.jsonc` alone sets `on` (RUNBOOK §3); and
+to the identity, and which `wrangler.dev.jsonc` and `wrangler.open.jsonc` set `on` beside it, the
+private and pool files `off` (RUNBOOK §3); and
 `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files, as does `YOKOHAMA_DIAGNOSTIC_SEEDS`,
 `on` there so the corpus walk's seeded tables with an open seat are honoured, and refused by the
 deploy guard in any deployed file (check 4b). A bad value answers the API's
