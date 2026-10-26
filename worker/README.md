@@ -1861,8 +1861,8 @@ the first deploy, so a class added later needs a tag of its own; and the private
 list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its absence means. In
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
 `ACCESS_AUD` configure Access (§7.6) and are required at source `access` alone;
-`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under `worker` — `access` here, `workos` after
-the window — with `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID` and `YOKOHAMA_SESSION_DAYS` its arms'
+`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under `worker` — `workos` here and in the dev
+file, `access` in the private file and the pool's test file — with `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID` and `YOKOHAMA_SESSION_DAYS` its arms'
 variables and `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET` its two secrets (§1.5; RUNBOOK
 §3); `YOKOHAMA_DEV_DOOR` is `off`, and `wrangler.dev.jsonc` sets it
 `on` for the live tiers (security S2b);
