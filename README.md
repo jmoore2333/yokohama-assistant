@@ -31,7 +31,7 @@ beside builds for Ubuntu x86_64 and Windows x86_64. The three archives end `-mac
 and run `.\yokohama-cli.exe`. Each archive carries the guide as `CLI-GUIDE.html` beside the binary, and the Releases
 page also lists it on its own as `yokohama-cli-guide.html`. A browser download of the macOS archive lands quarantined,
 and macOS then refuses the binary inside, which is ad-hoc signed rather than notarized: fetch it with `curl` as above,
-or build it with `cargo`.
+build it with `cargo`, or clear the mark with `xattr -d com.apple.quarantine yokohama-cli`.
 
 From a clone, with Rust installed through [rustup](https://rustup.rs), which fetches the toolchain the repository pins
 in `rust-toolchain.toml` on the first build:

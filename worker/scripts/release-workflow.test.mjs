@@ -80,6 +80,24 @@ describe("release.yml", () => {
     for (const job of ["ubuntu", "macos", "windows"]) expect(span(job).slice(0, 120)).toContain("needs: [tag]");
     expect(span("publish")).toContain("needs: [ubuntu, macos, windows]");
   });
+
+  it("every release archive packs LICENSE and NOTICE beside the binary", () => {
+    // (S4c Task 13; the owner's ruling P-27) Text-structural, like the cells above: exactly three jobs pack a
+    // `dist/${package}` (or `dist/$package`) directory, and each installs or copies `LICENSE` and `NOTICE` into it by
+    // its own shell's form (bash `install` twice, PowerShell `Copy-Item` once), so six matches in all, two per job;
+    // a job missing either file is red by name. `ASSETS.md` does not ride: the CLI archive carries no third-party art
+    const forms = {
+      ubuntu: /^ *install -m 0644 (LICENSE|NOTICE) "dist\/\$\{package\}\/\1"$/gm,
+      macos: /^ *install -m 0644 (LICENSE|NOTICE) "dist\/\$\{package\}\/\1"$/gm,
+      windows: /^ *Copy-Item (LICENSE|NOTICE) "dist\/\$package\/\1"$/gm,
+    };
+    const packers = HEADS.filter((job) => /dist\/\$(\{package\}|package)/.test(span(job, HEADS[HEADS.indexOf(job) + 1])));
+    expect(packers).toEqual(["ubuntu", "macos", "windows"]);
+    for (const job of packers) {
+      const names = [...span(job, HEADS[HEADS.indexOf(job) + 1]).matchAll(forms[job])].map((m) => m[1]).sort();
+      expect(names, `${job}: the archive packs LICENSE and NOTICE, once each`).toEqual(["LICENSE", "NOTICE"]);
+    }
+  });
 });
 
 // (S4c Task 8; the design §2.19, S4a's close §9) The other three workflows, read as text beside `release.yml`: every

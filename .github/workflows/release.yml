@@ -79,6 +79,8 @@ jobs:
             "dist/${package}/yokohama-cli"
           install -m 0644 README.md "dist/${package}/README.md"
           install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
+          install -m 0644 LICENSE "dist/${package}/LICENSE"
+          install -m 0644 NOTICE "dist/${package}/NOTICE"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
           file "dist/${package}/yokohama-cli"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -116,6 +118,8 @@ jobs:
           codesign --force --sign - "dist/${package}/yokohama-cli"
           install -m 0644 README.md "dist/${package}/README.md"
           install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
+          install -m 0644 LICENSE "dist/${package}/LICENSE"
+          install -m 0644 NOTICE "dist/${package}/NOTICE"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
           file "dist/${package}/yokohama-cli"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -154,6 +158,8 @@ jobs:
           Copy-Item target/x86_64-pc-windows-msvc/release/yokohama-cli.exe "dist/$package/yokohama-cli.exe"
           Copy-Item README.md "dist/$package/README.md"
           Copy-Item docs/cli-guide.html "dist/$package/CLI-GUIDE.html"
+          Copy-Item LICENSE "dist/$package/LICENSE"
+          Copy-Item NOTICE "dist/$package/NOTICE"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
