@@ -336,7 +336,8 @@ merge the tagged commit is not on it, so the tag is pushed again on the merged c
 3. `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures` for health's `server_version` and
    `archive-walk.json`'s records, AND `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --lib backup` for the
    envelope's `app_version` (trap 30). READ the diff: the version and nothing else.
-4. `deploy/Dockerfile.runtime`'s example tag.
+4. `deploy/Dockerfile.runtime`'s example tag, and the release-archive name `yokohama-cli-vX.Y.Z-macos-apple-silicon`
+   in the root `README.md`'s quick start (its `curl`, `tar` and `cd` lines).
 5. Before the suites, `cd web && npm run build:wasm` and `cd worker && npm run build:module:debug`: a stale module
    answers the old version, and goes red.
 6. Before the next live replay, its reset recipe (`worker/RUNBOOK.md` §7, "The replay's reset").

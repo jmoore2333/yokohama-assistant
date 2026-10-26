@@ -84,7 +84,7 @@ YOKOHAMA_BGA_CORPUS_OPTIONAL=1 cargo test -p yokohama-cli
 
 The first is the engine's suite. The CLI suite reads Board Game Arena captures that a clone does not carry, and stops
 with a message naming them when they are absent; the variable turns that stop into a skip.
-[`CONTRIBUTING.md`](CONTRIBUTING.md) lists every suite and the lint gate.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) lists the per-edit suites and the lint gate, and links the web lane's.
 
 ## The browser client
 
