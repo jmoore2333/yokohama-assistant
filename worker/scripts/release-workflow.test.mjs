@@ -4,7 +4,8 @@
 //
 // The workflow runs on a tag push and nothing runs it here, so the shape is
 // held at the text level: no YAML library, the file read as the reader reads
-// it. The first public run is S4c's `0.7.3` tag.
+// it. The first public run is S4c's `0.7.3` tag. The file's second
+// `describe`, below, reads all four workflows (S4c Task 8).
 
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
@@ -101,7 +102,8 @@ describe("the four workflows", () => {
       expect(workflow(name).split("\n").filter((l) => !/^\s*#/.test(l) && /\buses\b/.test(l)).length, `${name}: a line names uses in a spelling the pin filter does not read`).toBe(count);
       for (const l of uses) {
         if (/uses:\s+\.\//.test(l)) continue;
-        expect(l, `${name}: ${l}`).toMatch(/uses:\s+[\w.-]+\/[\w./-]+@[0-9a-f]{40} # \S/);
+        // anchored as the line filter above is, so a floating tag with the old pin's text kept in its comment is red
+        expect(l, `${name}: ${l}`).toMatch(/^\s*-?\s*uses:\s+[\w.-]+\/[\w./-]+@[0-9a-f]{40} # \S/);
       }
     }
   });

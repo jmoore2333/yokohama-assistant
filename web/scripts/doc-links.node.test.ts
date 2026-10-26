@@ -5,34 +5,45 @@
 //
 // It reads the seven documents a newcomer starts from: the root `README.md`,
 // the docs index, the method page, the two guides, `CONTRIBUTING.md` and
-// `SECURITY.md`. From each it collects every markdown reference
-// `](<target>)` (a `<…>` wrapper and a quoted title allowed; a multi-line link
-// text is no obstacle, since the reference starts at `](`) and every
+// `SECURITY.md`. From each it collects every markdown reference `](<target>)`
+// (a `<…>` wrapper and a quoted title allowed; a multi-line link text is no
+// obstacle, since the reference starts at `](`) and every
 // `<a … href="<target>">` value, quoted either way. Fenced code blocks are not
-// read: a link shown as an example is not a link. A target with a URL scheme
-// (`https:`, `mailto:` …) or one that starts with `//` is not in the tree and is
-// skipped. Every other target is resolved — a leading `/` from the repository
-// root, anything else from the referencing file's own directory (a target that
-// is only `#anchor` points into the referencing file itself) — and must exist
-// as a file or a directory. A `#anchor` must name a heading of the target
-// markdown file by GitHub's slug (below), or an `id`/`name` attribute of a
+// read: a link shown as an example is not a link. A file's lines are read alike
+// whether they end in LF or CRLF. A target with a URL scheme (`https:`,
+// `mailto:` …) or one that starts with `//` is not in the tree and is skipped.
+// Every other target is resolved — a leading `/` from the repository root,
+// anything else from the referencing file's own directory (a target that is
+// only `#anchor` points into the referencing file itself) — and must exist as a
+// file or a directory in the tree GitHub serves: every component in its exact
+// case, none a symbolic link, and, when there is a `.git` to ask, tracked by
+// git (a directory when a tracked file lies under it). A `#anchor` must name a
+// heading of the target markdown file by GitHub's slug (below), or an
+// `id`/`name` attribute outside its fences, or an `id`/`name` attribute of a
 // target HTML file.
 //
-// The slug is GitHub's: the heading's text with its markdown stripped (a link
-// keeps its text; backticks and emphasis marks go), lower-cased, every
-// character that is not a letter, a digit, a space, `-` or `_` removed, each
-// space turned into `-`; a slug that repeats within one file takes `-1`, `-2`,
-// … on its later occurrences. The cell `the slug rule …` proves the rule against
-// headings whose anchors the tree already links, so a defect in the rule reads
-// there and not as a "broken" link.
+// The slug is GitHub's: the heading's text with its markdown stripped (a code
+// span keeps its text verbatim, its backticks gone; outside one a link keeps
+// its text, and an HTML tag and the `*` emphasis mark go), lower-cased, every
+// character that is not a letter, a combining mark, a digit, whitespace, `-` or
+// `_` removed, each space turned into `-`; a slug that repeats within one file
+// takes `-1`, `-2`, … on its later occurrences, skipping a suffix that is
+// already some heading's slug (github-slugger's rule). Two divergences are
+// known and recorded (Task 2's re-review): an `_` emphasis mark stays, and a
+// no-break space or a tab stays, where GitHub drops each. The cell
+// `the slug rule …` proves the rule against headings whose anchors the tree
+// already links, so a defect in the rule reads there and not as a "broken"
+// link.
 //
-// The anti-vacuity floor: at least 40 links are read in all, so an empty read
-// can never pass, and the count is printed in the assertion message.
+// The anti-vacuity floors: at least 40 links are read in all, so an empty read
+// can never pass, and the count is printed in the assertion message; and every
+// document yields at least one link, so one whose links drop out of the read
+// cannot hide under the global count.
 //
 // Mutants these cells are written to kill (the plan's Review Focus 3): a link's
 // path broken; an anchor off by one character; an `<a href>` broken; a link
 // under a directory that exists to a file that does not; the floor raised above
-// the count.
+// the count; a broken link after a fence in a CRLF copy of a document.
 
 import {
   existsSync,
@@ -80,14 +91,15 @@ function read(file: string): string {
 }
 
 /**
- * The text without its fenced code blocks. An opener is a line whose first non-space characters are three or more
+ * The text without its fenced code blocks, its lines rejoined with `\n` whatever ending they had (CRLF or LF), so
+ * every reader after this one sees LF alone. An opener is a line whose first non-space characters are three or more
  * backticks (or tildes) with no backtick after them on the line (CommonMark: a line such as ```` ```x``` ```` is inline
  * code); it closes on a line of at least as many of the same character and nothing else. The fence lines go too.
  */
 function withoutFences(text: string): string {
   const kept: string[] = [];
   let fence: string | null = null;
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r?\n/)) {
     if (fence === null) {
       const open = /^ {0,3}(?:(`{3,})(?!.*`)|(~{3,}))/.exec(line);
       if (open) fence = (open[1] ?? open[2])!;
@@ -122,7 +134,7 @@ function slug(heading: string): string {
     .replace(/ /g, "-");
 }
 
-/** Heading text outside code spans: a link's destination, an HTML tag and emphasis marks go; brackets fall to the slug's class. */
+/** Heading text outside code spans: a link's destination, an HTML tag and the `*` emphasis mark go (an `_` stays); brackets fall to the slug's class. */
 function outsideCode(text: string): string {
   return text.replace(/\]\([^)]*\)/g, "]").replace(/<[^>]*>/g, "").replace(/\*/g, "");
 }
@@ -302,7 +314,7 @@ describe("the reader-facing documents and the tree", () => {
   });
 
   it("the slug rule reproduces GitHub's anchors", () => {
-    // Each pair is a heading of this tree and the anchor GitHub gives it; the source is named beside it.
+    // Each pair is a heading of this tree (the θ̂ pair a fragment of one) and the anchor GitHub gives it; the source is named beside it.
     const pairs: [string, string][] = [
       // deploy/README.md §2, linked from SECURITY.md: a colon, a comma, a leading number.
       ["2. The open door: a home network, a LAN or a VPN", "2-the-open-door-a-home-network-a-lan-or-a-vpn"],
@@ -330,6 +342,19 @@ describe("the reader-facing documents and the tree", () => {
     // A real fence still hides what it holds, and closes only on a line of at least as many of the same character.
     const fenced = "````\n```\n[a](in-fence.md)\n```\n[b](still-in-fence.md)\n````\n[c](after.md)\n~~~\n[d](tilde.md)\n~~~\n";
     expect(linksOfText("X.md", fenced).map((l) => l.raw)).toEqual(["after.md"]);
+  });
+
+  it("a CRLF copy of a document reads every link after its fences, and a broken one RED", () => {
+    // A checkout with CRLF line endings (Git for Windows' default) must read what an LF one reads: the fence closer
+    // once failed on a trailing `\r`, so every link after the first fence dropped out and a broken one read green.
+    const lf = `${read("README.md")}\n[a broken link after every fence](no-such-file.md)\n`;
+    expect(lf, "the copy holds a fence before the broken link").toMatch(/\n```/);
+    const crlf = lf.replace(/\n/g, "\r\n");
+    expect(linksOfText("README.md", crlf)).toEqual(linksOfText("README.md", lf));
+    // The existence half alone (no git asked): the appended link is the one broken link of the copy.
+    const tree = openTree(root, null);
+    expect(linksOfText("README.md", crlf).filter((l) => problem(l, tree) !== null).map((l) => l.raw)).toEqual(["no-such-file.md"]);
+    expect(markdownAnchors(crlf)).toEqual(markdownAnchors(lf));
   });
 
   it("the per-file floor names a document that yields no links", () => {
