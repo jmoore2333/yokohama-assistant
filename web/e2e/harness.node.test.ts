@@ -364,9 +364,9 @@ describe("identityHeaders and liveContextOptions", () => {
       }
     });
     it("refuses a cookie for an address that is not a .test one, in either helper", () => {
-      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("jamoore@gmail.com"));
-      for (const call of [() => identityHeaders("jamoore@gmail.com"), () => sessionCookies("jamoore@gmail.com")]) {
-        expect(call).toThrow("YOKOHAMA_SESSION_COOKIE: mint-session: only a .test address may be minted — got jamoore@gmail.com");
+      vi.stubEnv("YOKOHAMA_SESSION_COOKIE", lineFor("someone@example.com"));
+      for (const call of [() => identityHeaders("someone@example.com"), () => sessionCookies("someone@example.com")]) {
+        expect(call).toThrow("YOKOHAMA_SESSION_COOKIE: mint-session: only a .test address may be minted — got someone@example.com");
       }
     });
     it("an empty variable is unset: the dev door's claimed header", () => {
@@ -424,8 +424,8 @@ describe("identityHeaders and liveContextOptions", () => {
     });
     it("refuses an email that is not a .test address, in the script's fence sentence, in either helper", () => {
       vi.stubEnv("YOKOHAMA_SESSION_SECRET", SECRET);
-      for (const call of [() => identityHeaders("jamoore@gmail.com"), () => sessionCookies("jamoore@gmail.com")]) {
-        expect(call).toThrow("mint-session: only a .test address may be minted — got jamoore@gmail.com");
+      for (const call of [() => identityHeaders("someone@example.com"), () => sessionCookies("someone@example.com")]) {
+        expect(call).toThrow("mint-session: only a .test address may be minted — got someone@example.com");
       }
       expect(() => sessionCookies("A@E2E.TEST")).toThrow("only a .test address may be minted");
     });

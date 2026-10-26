@@ -612,18 +612,17 @@ fn cards_of(deal: &[OrderCardId; 2], rules: &Rules) -> Vec<DealCard> {
 
 /// Take the technologies and the achievements back off the previewed table.
 ///
-/// **The choice comes first in the owner's edition**, which is the Tabletop
-/// Simulator upload in this repository — `tts-assets/pdf/` +
-/// `httpssteamusercontentaakamaihdnetugc753716318425766140` +
-/// `37EE3A37AB39CBA5E73B74B7F97C54556D7C7719.PDF`, its setup steps on **p.5**
-/// (three lines because the filename is one 88-character token). At **step 9**
+/// **The choice comes first in the owner's edition**, the Tasty Minstrel Games
+/// English edition (20 pages, in the Tabletop Simulator upload), whose setup
+/// steps are on its **p.5**. At **step 9**
 /// the order deck is built, the port filled, and each player dealt two orders
 /// to choose between IN SECRET; the technology
 /// cards reach the Laboratory only at **step 10** and the achievements the
 /// score track at **step 11** — so a player choosing a starting order has
 /// neither in front of them, and neither does this screen (2026-09-06, R-C3;
-/// `analysis-1/00-yokohama-rulebook.pdf` orders those three differently and is
-/// the outlier of the two editions in this repository).
+/// the OKAZU Brand English rulebook (16 pages), which orders those three
+/// differently, is the outlier of the two editions the record cites; neither
+/// PDF is in the tree).
 ///
 /// **This is a VIEW, not a rule.** Nothing here touches the engine: the seed,
 /// the draw order and the position `new_game` built are exactly what they were,

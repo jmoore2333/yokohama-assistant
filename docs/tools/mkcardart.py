@@ -4,9 +4,13 @@
     python3 docs/tools/mkcardart.py              # from the repo root
     python3 docs/tools/mkcardart.py --check      # compare, write nothing (exit 1 on drift)
 
-Reads the sheets under `tts-assets/organized/` and writes one WebP per card,
-plus `manifest.json`, into `crates/yokohama-web/assets/art/`. **It never writes
-into `tts-assets/`** -- repo convention treats that tree as the owner's files.
+Reads the sheets of the Tabletop Simulator upload (Steam Workshop 1840951801),
+which are not in this tree, from `tts-assets/organized/` (and the raw `images/`
+cache beside it, `tts-assets/images/`) when a contributor has placed them there
+(`docs/tools/tts-extraction/README.md` says what they were), and writes one
+WebP per card, plus `manifest.json`, into `crates/yokohama-web/assets/art/`.
+**It never writes into `tts-assets/`** -- repo convention treats that tree as a
+contributor's own local copy.
 
 WHY A SCRIPT AND NOT A BUILD STEP. The output is committed. A container image
 that had to crop at build time would need Python, Pillow and the 20 MB of
@@ -83,6 +87,12 @@ except ImportError:  # pragma: no cover
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHEETS = ROOT / "tts-assets" / "organized"
+if not SHEETS.is_dir():
+    sys.exit(
+        f"the sprite sheets are not in this tree: place the Tabletop Simulator upload's "
+        f"organized sheets at {SHEETS.relative_to(ROOT)} (gitignored) and run again "
+        "(docs/tools/tts-extraction/README.md)"
+    )
 KB = ROOT / "analysis-1" / "yokohama-kb"
 OUT = ROOT / "crates" / "yokohama-web" / "assets" / "art"
 
@@ -177,7 +187,8 @@ ACHIEVEMENTS = {
 
 # --- area tiles: the mod's own deck listing, verified against the art ------
 #
-# `tts-assets/1840951801.json` name-tags every tile: TTS's `CardID` is
+# the mod's save file (not in the tree; its tile naming is recorded in
+# `docs/tools/tts-extraction/`) name-tags every tile: TTS's `CardID` is
 # `deck_id * 100 + row-major 0-based cell index`, so deck 9 lays out the base
 # sheet, deck 10 the 3+ sheet and deck 11 the 4P sheet, each in reading order.
 #
@@ -245,7 +256,7 @@ TOKENS = {
 # The `_xN` suffixes on the `organized/` filenames are WRONG and mean nothing:
 # `5power_1_import_x3` is really x10 and `5power_3_fish_x1` is really x2. Pool
 # counts come from `board_gen.rs`, never from a filename.
-IMAGES = "../images"  # relative to SHEETS, i.e. tts-assets/images
+IMAGES = "../images"  # relative to SHEETS, the raw `images/` beside `organized/`
 FIVE_POWER = {
     "ImportedGoods_1": "tokens/5power_1_import_x3.jpg",
     "Silk_2": "tokens/5power_2_silk_x2.jpg",
@@ -347,7 +358,7 @@ def main() -> None:
     em = Emitter(check_only)
     manifest: dict = {
         "provenance": {
-            "sheets": "tts-assets/organized/",
+            "sheets": "the Tabletop Simulator upload's organized sheets, outside this tree (docs/tools/tts-extraction/README.md)",
             "positions": "analysis-1/yokohama-kb/0{7,8,9}-*.yaml",
             "generator": "docs/tools/mkcardart.py",
             "card_width": CARD_W,

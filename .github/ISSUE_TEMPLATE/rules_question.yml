@@ -1,0 +1,26 @@
+name: "Rules question: the engine disagrees with the table"
+description: The engine allows, refuses or scores something differently from the rules or from your table.
+labels: [rules]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the report the project most wants. CONTRIBUTING.md lists the rules sources, and the decision log in
+        guidingpath.md records the rulings the engine follows.
+  - type: dropdown
+    id: source
+    attributes:
+      label: The source
+      description: What says the table is right.
+      options:
+        - The OKAZU Brand English rulebook (16 pages)
+        - The Tasty Minstrel Games English edition (20 pages, in the Tabletop Simulator upload)
+        - Board Game Arena's behaviour
+        - Table experience
+    validations:
+      required: true
+  - type: textarea
+    id: table
+    attributes:
+      label: What the table does and what the engine does
+      description: The page or the move list helps.

@@ -17,6 +17,9 @@ What else is in this directory:
   built `web/dist`). That is how the NAS is deployed (RUNBOOK §1–§2).
 - **`smoke-image.sh`** checks an image under each door before you put it anywhere (§5).
 - **`update.sh`** moves a running container to a release tag: fetch, build, smoke, swap (§9).
+- **`run-local.sh`** builds the image from this checkout and runs it on this machine under the open door, on
+  loopback with a named volume — the one command [`docs/web-guide.md`](../docs/web-guide.md) names (`--stop` stops
+  it; the games stay in the volume).
 
 **The image contains the game's own card art**, which carries no licence grant ([`ASSETS.md`](../ASSETS.md)).
 Build it for yourself, and never push it to a public registry.

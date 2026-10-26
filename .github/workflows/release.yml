@@ -6,28 +6,45 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   # The three "Test the CLI" steps below run `cargo test -p yokohama-cli`, which
-  # includes ten pins backed by the owner's gitignored BGA capture
-  # (`bridge-captures/895724349.ndjson`). Absence of that capture is a LOUD
-  # panic by default — deliberately, so a corpus-less run cannot report those
-  # pins as `ok` while asserting nothing (3.5b six-lens F6). A release runner
-  # never has the capture, so without this the whole release build would fail on
-  # all three OSes at the next tag. This is the documented opt-out, and it only
-  # turns ABSENCE into a quiet skip: where the capture IS present the pins still
-  # run and still assert.
+  # includes nine pins (the whole of `crates/yokohama-cli/tests/bga_import.rs`)
+  # backed by the owner's two gitignored BGA captures
+  # (`bridge-captures/895724349.ndjson` and `896199544.ndjson`).
+  # Absence of either capture is a LOUD panic by default -- deliberately, so a
+  # corpus-less run cannot report those pins as `ok` while asserting nothing
+  # (3.5b six-lens F6). A release runner never has the captures, so without
+  # this the whole release build would fail on all three OSes at the next tag.
+  # This is the documented opt-out, and it only turns ABSENCE into a quiet
+  # skip: where the captures ARE present the pins still run and still assert.
   YOKOHAMA_BGA_CORPUS_OPTIONAL: "1"
 
 jobs:
-  ubuntu:
-    name: Ubuntu x86_64
+  # The first job every build needs: a tag whose commit is not on master's
+  # history publishes nothing. `merge-base` peels an annotated tag to its
+  # commit, and `fetch-depth: 0` brings the full history and the tag objects.
+  tag:
+    name: Tag is on master
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: The tag must sit on master
+        run: |
+          git fetch --no-tags origin master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || { echo "::error::tag ${GITHUB_REF_NAME} (${GITHUB_SHA}) is not an ancestor of origin/master — merge first, then re-run this workflow or push the tag again"; exit 1; }
+
+  ubuntu:
+    name: Ubuntu x86_64
+    needs: [tag]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           targets: x86_64-unknown-linux-musl
       # `rust-toolchain.toml` has pinned the compiler at an exact version since
@@ -64,7 +81,7 @@ jobs:
           install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
           file "dist/${package}/yokohama-cli"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ubuntu-release
           path: dist/*.tar.gz
@@ -72,12 +89,13 @@ jobs:
 
   macos:
     name: macOS Apple Silicon
+    needs: [tag]
     runs-on: macos-14
     env:
       RUSTFLAGS: -C target-cpu=native
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           targets: aarch64-apple-darwin
       - name: Test the CLI
@@ -100,7 +118,7 @@ jobs:
           install -m 0644 docs/cli-guide.html "dist/${package}/CLI-GUIDE.html"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
           file "dist/${package}/yokohama-cli"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: macos-release
           path: dist/*.tar.gz
@@ -108,6 +126,7 @@ jobs:
 
   windows:
     name: Windows x86_64
+    needs: [tag]
     runs-on: windows-2022
     steps:
       # The runner's git ships autocrlf-enabled; a CRLF checkout would break
@@ -116,8 +135,8 @@ jobs:
       - name: Force LF checkout
         shell: bash
         run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           targets: x86_64-pc-windows-msvc
       - name: Test the CLI
@@ -136,7 +155,7 @@ jobs:
           Copy-Item README.md "dist/$package/README.md"
           Copy-Item docs/cli-guide.html "dist/$package/CLI-GUIDE.html"
           Compress-Archive -Path "dist/$package" -DestinationPath "dist/$package.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: windows-release
           path: dist/*.zip
@@ -146,9 +165,11 @@ jobs:
     name: Publish GitHub release
     needs: [ubuntu, macos, windows]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: "*-release"
           path: dist

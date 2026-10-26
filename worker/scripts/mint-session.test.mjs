@@ -88,9 +88,9 @@ describe("the .test fence", () => {
   });
 
   it("refuses a real address with exit 2, the brief's sentence, nothing on stdout, and no cookie", () => {
-    const r = mint(["jamoore@gmail.com"]);
+    const r = mint(["someone@example.com"]);
     expect(r.code).toBe(2);
-    expect(r.err).toBe("mint-session: only a .test address may be minted — got jamoore@gmail.com\n");
+    expect(r.err).toBe("mint-session: only a .test address may be minted — got someone@example.com\n");
     expect(r.out).toBe("");
   });
 
@@ -142,7 +142,7 @@ describe("the .test fence", () => {
   });
 
   it("is judged before the secret is looked for", () => {
-    const r = mint(["jamoore@gmail.com"], {});
+    const r = mint(["someone@example.com"], {});
     expect(r.err).toContain("only a .test address may be minted");
   });
 });
@@ -183,7 +183,7 @@ describe("a misplaced secret", () => {
   });
 
   it("an address-shaped value is still echoed, as the brief's sentence reads, and a non-address is not", () => {
-    expect(fenceSentence("jamoore@gmail.com")).toBe("only a .test address may be minted — got jamoore@gmail.com");
+    expect(fenceSentence("someone@example.com")).toBe("only a .test address may be minted — got someone@example.com");
     expect(fenceSentence("a.test")).toBe("only a .test address may be minted — got a value that is not an address");
     expect(fenceSentence("x@y@z")).toBe("only a .test address may be minted — got a value that is not an address");
   });

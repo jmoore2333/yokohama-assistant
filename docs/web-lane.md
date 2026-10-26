@@ -79,7 +79,7 @@ engine's output byte for byte, so an engine change shows here first.
   - **The exit's wake window is two deploys**, run in `worker/`: `node scripts/deploy-guard.mjs --config wrangler.jsonc && node scripts/secrets-guard.mjs --config wrangler.jsonc && npx wrangler deploy --config wrangler.jsonc --var YOKOHAMA_WEB_COUNT_WAKES:on` opens it, and the plain `npm run deploy` closes it; while it is open every counted wake logs `wake {id, wakes}`. Any deploy restarts every object and closes every socket, so the window opens between games.
   - **The live tiers are release-tier by cost**, the orchestrator's alone and over WARP (a `text/html` 403 of about 5 KB is the zone's Bot Fight Mode; Access's 302 "Please authenticate via the warp client" means WARP's device login has EXPIRED, which only the owner re-authorizes): the live corpus replay (`cd worker && node scripts/live-replay.mjs`, run TWICE, sequentially — it forces its three ids before and after, HOLDS only if every named row it runs is byte-identical (since security S1b the production-door walk: 26 of the corpus's 2,213 rows run and 2,187 are skipped and counted, §3), and on a first send's 409 stops and prints its reset recipe) and the live Playwright tier (above). **The quota guard comes first**: read the UTC day's Worker requests and Durable Object rows written from the account's GraphQL analytics (the `date`-filter form, one dataset per call, the figures under `result.viewer` through the Cloudflare MCP; `worker/RUNBOOK.md` §7), and HOLD while either is above the owner's line (80,000, the owner's line since M6.5c; Free's 100,000 is shared with the account's other Workers). The rows' periodic rollup lags by hours, so a window's own requests are read off the Workers Observability query API (§10). A live two-browser game of 2,034 moves read 36,003 invocations in its window in cycle E — 16,082 the game's stateless requests (E's close §3; the rest the objects' and the day's other traffic) — and **7.9 of the Worker's own requests a move** (about 13 in D); its rows could not be separated from the day's (the rollup's lag), so D's ~2 written and ~52 read a move stand; cycle E's whole UTC day of live readings came to 205,709 rows read and 20,839 written. Cycle F's live tier (2026-10-01, under Access with the dev door) played a two-browser game of 1,741 moves in 470 s: the client's own tally read 12,715 `/api` requests, **7.30 a move** over the game's 1,741 moves by the harness's count — E's convention, E's 7.9 was over its game's 2,034 — or 9.53 over the watcher's 1,334 applied moves (§16), and the query API read 31,253 invocations for the tier's window under the filter `$metadata.service eq yokohama-web`.
 
-- Regenerate the web client's card art after a sprite-sheet or KB-YAML change: `python3 docs/tools/mkcardart.py` (needs Pillow + PyYAML; crops `tts-assets/organized/` into `crates/yokohama-web/assets/art/` with a manifest, and **never writes into `tts-assets/`**). **The output is COMMITTED** — **131 WebP files** (~7.7 MB, `deploy/RUNBOOK.md` §3.4) plus `manifest.json` beside them — so a container needs neither Python nor the 20 MB of sheets; that is the arena corpus's `.gitignore` reasoning read the other way round, since only this one is needed at RUNTIME. The crops are cut at SOURCE width (`CARD_W` 530, `TILE_W` 709 — the sheet cell's own size, because anything narrower is an upsample once the fit rule lets a tile reach 22rem at 2×), and the site and achievement crops are rotated a quarter turn counter-clockwise before emit (`SITE_ROTATE_CCW`/`ACH_ROTATE_CCW`) — both families are landscape on the table but stored sideways on their sheets — so no client draws a site card on its side. `crates/yokohama-web/src/art.rs` is what enforces it, not the script: every identifier the engine can produce resolves, nothing in the manifest names an identifier the engine lacks, every entry is a non-empty file, and the emitted aspect matches the sheet cell. **Those tests prove the join is TOTAL, not TRUE** — a wrong-but-complete mapping is exactly what they cannot see, and two such errors (the crop origin, and yellow being COMMERCIAL rather than production on the category-C achievements) were caught only by looking at the pictures. Regenerating and not looking proves nothing.
+- Regenerate the web client's card art after a sprite-sheet or KB-YAML change: `python3 docs/tools/mkcardart.py` (needs Pillow + PyYAML; crops the Tabletop Simulator upload's sheets, outside the tree (`docs/tools/tts-extraction/`), into `crates/yokohama-web/assets/art/` with a manifest, and **never writes into `tts-assets/`**). **The output is COMMITTED** — **131 WebP files** (~7.7 MB, `deploy/RUNBOOK.md` §3.4) plus `manifest.json` beside them — so a container needs neither Python nor the 20 MB of sheets; that is the arena corpus's `.gitignore` reasoning read the other way round, since only this one is needed at RUNTIME. The crops are cut at SOURCE width (`CARD_W` 530, `TILE_W` 709 — the sheet cell's own size, because anything narrower is an upsample once the fit rule lets a tile reach 22rem at 2×), and the site and achievement crops are rotated a quarter turn counter-clockwise before emit (`SITE_ROTATE_CCW`/`ACH_ROTATE_CCW`) — both families are landscape on the table but stored sideways on their sheets — so no client draws a site card on its side. `crates/yokohama-web/src/art.rs` is what enforces it, not the script: every identifier the engine can produce resolves, nothing in the manifest names an identifier the engine lacks, every entry is a non-empty file, and the emitted aspect matches the sheet cell. **Those tests prove the join is TOTAL, not TRUE** — a wrong-but-complete mapping is exactly what they cannot see, and two such errors (the crop origin, and yellow being COMMERCIAL rather than production on the category-C achievements) were caught only by looking at the pictures. Regenerating and not looking proves nothing.
 
 - **The two cells over this file** (cycle E, R-6.5c2.45), both per-edit:
   - `cargo test -p yokohama-web --test lane_document` — **6** cells: §13's rows marked `layer` are EXACTLY
@@ -320,9 +320,13 @@ together.
 **Bump it at every release that can change what a save means or which bot plays** — the AI lane's V5 ship
 included. **Tag `vX.Y.Z` on the commit the hosts run:** master's, after the merge — or, on a stack that merges at its
 wrap (security S2), the deployed branch commit, which the wrap's merge brings onto master (the owner, 2026-10-11:
-D-7) — with the release published before either deploy. The tag is annotated, its subject
-`Yokohama CLI vX.Y.Z — <headline>`. It runs `.github/workflows/release.yml`: the CLI built for Linux, macOS and
-Windows, its tests and the `piped_dogfood` gate, then `gh release create` from the tagged commit.
+D-7). The tag is annotated, its subject `Yokohama CLI vX.Y.Z — <headline>`. It runs
+`.github/workflows/release.yml`, whose first job refuses a tag whose commit is not yet on master's history (security
+S4a, the ledger's D17); then the CLI built for Linux, macOS and Windows, its tests and the `piped_dogfood` gate, then
+`gh release create` from the tagged commit. On master's path the release is still published before either deploy;
+on a stack it cannot be, and it publishes after the wrap's merge, by a re-run of the tag's workflow. The re-run
+passes only after a merge commit, which brings the tagged commit onto master's history; after a squash or a rebase
+merge the tagged commit is not on it, so the tag is pushed again on the merged commit on master.
 
 **The bump, as the move to 0.6.0 measured it:**
 1. `Cargo.toml`'s version, then `cargo update --workspace --offline` — the nine members' lock lines, and nothing
@@ -419,15 +423,15 @@ deployment is `yokohama-web` itself and keeps the `worker` door throughout, only
 inside the review's known exercises and stays steady operationally after the security process (security S2b, C1; the
 owner's clarification of 2026-10-12; `worker/RUNBOOK.md` §3). Two preconditions that stood here are answered rather
 than owed: the art's decision and the fresh-history repository — the owner ruled on 2026-10-22 that the history is
-kept whole and that the derived crops the application draws stay in the tree while `tts-assets/` leaves the public tip
-(the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per person is answered the same way. For a
-self-hoster's open-door Worker it is not built: the Worker's own two limits (security S2b, finding C2) count creates
-by the connecting IP and writes by the IP and the name, and a name is free, so there the write limit and the archive's
-share are per NAME, never per IP, and the zone's rate-limit rule and the edge rule are the deployer's tools for that
-(§15). The public Worker needs no further control for it: its door is provider-signed (source `workos`), the write
-limit counts the verified address's digest, the anonymous archive is bounded by the per-key share and the create
-limiter by IP, and a caller is a verified address held to 8 sockets (§15); the ceiling the owner's R-3 asked for is
-the door's (settled 2026-10-22).
+kept whole and that the derived crops the application draws stay in the tree while `tts-assets/` leaves the public
+tip, which it did in S4a, `e72492c1` (the S4 design, §2.1 and §2.3; the record is S4a's and S4c's). A ceiling per
+person is answered the same way. For a self-hoster's open-door Worker it is not built: the Worker's own two limits
+(security S2b, finding C2) count creates by the connecting IP and writes by the IP and the name, and a name is free,
+so there the write limit and the archive's share are per NAME, never per IP, and the zone's rate-limit rule and the
+edge rule are the deployer's tools for that (§15). The public Worker needs no further control for it: its door is
+provider-signed (source `workos`), the write limit counts the verified address's digest, the anonymous archive is
+bounded by the per-key share and the create limiter by IP, and a caller is a verified address held to 8 sockets (§15);
+the ceiling the owner's R-3 asked for is the door's (settled 2026-10-22).
 
 **The provider items, met by the auth cycle's code (2026-10-19, the day stage 1 went live, with the readings
 `worker/RUNBOOK.md` §23's stage-1 record names and the later deployments' readings in §25 and §27; stage 2 is S4c's
@@ -496,9 +500,9 @@ day's window (the table above).
   `User-Agent`, the TLS fingerprint being the tell (W-1, trap 42).
 - **The deploy commands name their file to the guard, the secrets guard and wrangler alike** (security S2a,
   finding D18): `npm run deploy` is `node scripts/deploy-guard.mjs --config wrangler.jsonc && node
-  scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `deploy:open`
-  and `deploy:dev` the same three over their files, so wrangler deploys exactly what the guard judged. **The guard
-  refuses a redirect file and a `workers.dev` URL under every door**: `.wrangler/deploy/config.json`, in `worker/`
+  scripts/secrets-guard.mjs --config wrangler.jsonc && wrangler deploy --config wrangler.jsonc`, and `deploy:open`,
+  `deploy:dev` and `deploy:private` the same three over their files, so wrangler deploys exactly
+  what the guard judged. **The guard refuses a redirect file and a `workers.dev` URL under every door**: `.wrangler/deploy/config.json`, in `worker/`
   or at the repository root, would send a bare `wrangler deploy` to a configuration the guard never judged, and a
   `workers.dev` URL goes around Access under `worker` and around the edge rule, the rate limit and Bot Fight Mode
   under `open` (finding C3); every open-door file it is told is held to production as its sibling, and since
@@ -664,7 +668,7 @@ Every variable the web lane reads, in one table (R-6.5c2.45). **The kind** says 
 read when the client or a module is built, a *launch variable* by the NAS/Docker binary at start, a *Worker var*
 from `worker/wrangler.jsonc`'s `vars`, a *deploy declaration* from a Worker configuration's `vars` too but by the
 deploy's own scripts and never by the Worker, a *secret* through `wrangler secret put`, an *update variable* by `deploy/update.sh` from the operator's shell
-(cycle F, R-F12), *test-only* by a test or a
+(cycle F, R-F12), a *local-run variable* by `deploy/run-local.sh` from the same shell, *test-only* by a test or a
 harness, and *orchestrator-only* by the live operations of §10. A launch variable or a Worker var with a bad value
 stops the server at start (the NAS, naming it) or answers every API request 500 naming it (the Worker); the
 self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 give each one's refusals. The cell
@@ -714,9 +718,10 @@ self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 giv
 | `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` | launch variable; Worker var | `7`, inert while the first TTL is unset | whole days a table that has not started — open, or dealing with a keep outstanding (status `open` or `dealing`) — stands idle before it expires, with its own marker sentence on the Worker (security S3, D9; §4) | both | the same |
 | `YOKOHAMA_WEB_BUILD_ENV` | update variable | none: `deploy/update.sh` refuses to run | the file of build values the update script reads, `NAME=value` lines each taken literally and naming only the six build values above, and passes to `docker build` as `--build-arg`s; an empty file builds with none | the self-host | `deploy/update.sh` |
 | `YOKOHAMA_WEB_ENV` | update variable | none: `deploy/update.sh` refuses to run | the container's environment file, passed to `docker run` as `--env-file` (`YOKOHAMA_WEB_IDENTITY` first); the launch variables above are its lines | the self-host | `deploy/update.sh` |
-| `YOKOHAMA_WEB_CONTAINER` | update variable | `yokohama-web` | the name of the container the update script stops, removes and runs again | the self-host | `deploy/update.sh` |
-| `YOKOHAMA_WEB_VOLUME` | update variable | `yokohama-web-data` | the named volume the update script mounts at `/data` | the self-host | `deploy/update.sh` |
-| `YOKOHAMA_WEB_PUBLISH` | update variable | `127.0.0.1:8080:8080`; set empty to publish no port | the `-p` argument of the update script's `docker run` | the self-host | `deploy/update.sh` |
+| `YOKOHAMA_WEB_IMAGE` | local-run variable | `yokohama-web:local` | the image tag `deploy/run-local.sh` builds and runs; read by that script alone, the update script builds its own | the local machine | `deploy/run-local.sh` |
+| `YOKOHAMA_WEB_CONTAINER` | update variable; local-run variable | `yokohama-web`; the local script's is `yokohama-web-local` | the name of the container the update script stops, removes and runs again, and the local script's own | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
+| `YOKOHAMA_WEB_VOLUME` | update variable; local-run variable | `yokohama-web-data`; the local script's is `yokohama-web-local-data` | the named volume the update script mounts at `/data`, and the local script's own | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
+| `YOKOHAMA_WEB_PUBLISH` | update variable; local-run variable | `127.0.0.1:8080:8080` in both; set empty to publish no port (the update script) | the `-p` argument of the update script's `docker run`, and of the local script's | the self-host; the local machine | `deploy/update.sh`; `deploy/run-local.sh` |
 | `YOKOHAMA_WEB_NETWORK` | update variable | Docker's default network | the `--network` argument of the update script's `docker run`, for a network a tunnel shares | the self-host | `deploy/update.sh` |
 | `YOKOHAMA_WEB_COUNT_WAKES` | orchestrator-only (a Worker var by `--var`) | `off` | `on` counts every wake in `meta.wakes` and logs `wake {id, wakes}`: the exit's window | the Worker | `worker/src/config.ts` |
 | `DEV_DOOR_CLIENT_ID` | secret | none: the dev door shut | the `yokohama-worker` Service Auth credential's client id | the Worker | `worker/src/identity.ts` |
@@ -851,7 +856,7 @@ whole; it answers a navigation from `/shell.bin`'s bytes.
 
 ## 14. Getting started
 
-Three ways in:
+Three ways in (`docs/web-guide.md` is the player-facing guide to them):
 1. **Play at a hosted site.** Open the Worker at `https://yokohama.moore.nyc`, or the NAS at
    `https://yokohama-nas.moore.nyc`, and pass Cloudflare Access's login (the `yokohama` application's policy
    decides who may). The door offers the bot, friends, and the games on this device. "Play with friends" goes

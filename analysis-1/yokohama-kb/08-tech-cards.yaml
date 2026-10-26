@@ -1,7 +1,7 @@
 # Yokohama Technology Cards
 # verified: 2026-07-17 — three-way (sprites x rulebook x physical), see docs/plans/2026-07-16-card-verification/
 #
-# Source sprite sheet: tts-assets/organized/cards/tech_cards_8x4.jpg (8 cols x 4 rows: 30 cards + 2 backs)
+# Source sprite sheet: tech_cards_8x4.jpg in the Tabletop Simulator upload's organized sheets (not in this tree — docs/tools/tts-extraction/; 8 cols x 4 rows: 30 cards + 2 backs)
 #
 # The physical deck has 30 cards (rulebook: "30 Technology cards"). This file lists the 20 unique
 # titles; `copies` gives the number of physical cards of that title (10 titles x2 + 10 titles x1 = 30).

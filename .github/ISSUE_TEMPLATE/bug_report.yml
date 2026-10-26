@@ -1,0 +1,35 @@
+name: Bug report
+description: Something in the CLI, the browser client, a host or the engine does not do what it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A security vulnerability goes to the private channel SECURITY.md describes, never to an issue. When the engine
+        disagrees with the table about a rule, the Rules question form fits better.
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface
+      description: Where you met the bug.
+      options:
+        - The CLI
+        - The browser client at the hosted site
+        - The browser client, self-hosted
+        - The Cloudflare Worker host
+        - The self-hosted binary or its Docker image
+        - The engine or a save file
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Which version
+      description: "The release tag, or `/api/health`'s `server_version` for a web host."
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens, and how to reproduce it
+      description: A save file or the move list helps.

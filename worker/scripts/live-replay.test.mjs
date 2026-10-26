@@ -502,7 +502,7 @@ describe("readSessionCookie and readIdentity", () => {
   const lineFor = (address) =>
     `__Host-yokohama_session=v2.${Buffer.from(JSON.stringify({ address, sid: null, first: 1, issued: 1, expires: 2 }), "utf8").toString("base64url")}.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`;
   it("refuses a cookie for an address that is not a .test one, naming the variable and the address and the fence", () => {
-    for (const address of ["jamoore@gmail.com", "RED@T.TEST", "red@t.test "]) {
+    for (const address of ["someone@example.com", "RED@T.TEST", "red@t.test "]) {
       expect(() => readSessionCookie({ YOKOHAMA_SESSION_COOKIE: lineFor(address) }), address).toThrow(
         `YOKOHAMA_SESSION_COOKIE: mint-session: only a .test address may be minted — got ${address}`,
       );
@@ -910,9 +910,9 @@ describe("replay", () => {
 
       it("refuses a who that is not a .test address with the script's own fence sentence, before anything is sent", async () => {
         const host = miniHost();
-        const real = { ...TWO_WHOS, walk: [...TWO_WHOS.walk.slice(0, 3), named("jamoore@gmail.com", "GET", "/api/health", 200, null)] };
+        const real = { ...TWO_WHOS, walk: [...TWO_WHOS.walk.slice(0, 3), named("someone@example.com", "GET", "/api/health", 200, null)] };
         await expect(runAs(host, { credential: null, cookie: null, secret: SECRET }, real)).rejects.toThrow(
-          "walk.json row 3: mint-session: only a .test address may be minted — got jamoore@gmail.com",
+          "walk.json row 3: mint-session: only a .test address may be minted — got someone@example.com",
         );
         expect(host.requests, "not even a force").toEqual([]);
       });
