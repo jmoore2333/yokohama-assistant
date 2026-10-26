@@ -313,7 +313,7 @@ CLI resumes and `why` reconstructs. For an evaluation pipeline, this is what it 
 ## 7. The release-version rule
 
 **One release number** (R-6.5c2.19, the owner): the root `Cargo.toml`'s `[workspace.package] version`, which
-every crate inherits, and both npm packages' (`web/package.json`, `worker/package.json`) — `0.6.3` at this
+every crate inherits, and both npm packages' (`web/package.json`, `worker/package.json`) — `0.7.3` at this
 writing. The cell `the_two_npm_packages_carry_the_workspace_version` (`crates/yokohama-web/src/lib.rs`) holds them
 together.
 

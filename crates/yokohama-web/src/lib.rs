@@ -7862,6 +7862,30 @@ mod tests {
         }
     }
 
+    /// **The quick start fetches this build's release archive** (security S4c,
+    /// P-6). The README's `curl`, `tar` and `cd` name the archive
+    /// `yokohama-cli-v<version>-macos-apple-silicon` under GitHub's
+    /// `releases/latest/download/` path, which answers 404 for a name the
+    /// latest release does not carry, so a bump that leaves the name behind
+    /// breaks the first command a reader runs. Every `yokohama-cli-v` token in
+    /// the README is read, and each must carry the workspace's version.
+    #[test]
+    fn the_readme_quick_start_names_the_release_archive_of_the_workspace_version() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let prefix = "yokohama-cli-v";
+        let version = env!("CARGO_PKG_VERSION");
+        let tokens: Vec<&str> = text.match_indices(prefix).map(|(at, _)| &text[at + prefix.len()..]).collect();
+        assert!(!tokens.is_empty(), "README.md names no release archive `{prefix}<version>-…`");
+        for rest in tokens {
+            let named: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '.').collect();
+            assert!(
+                rest.starts_with(&format!("{version}-")),
+                "README.md names the release archive `{prefix}{named}-…`, not the workspace's version {version}"
+            );
+        }
+    }
+
     /// An answer to a prompt the game is no longer asking is REFUSED, not
     /// applied against whatever it is asking instead.
     ///
