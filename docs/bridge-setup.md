@@ -13,8 +13,9 @@ Design authority: `docs/plans/2026-08-07-bga-bridge-design.md`.
 
 ## 1. Start the relay
 
+From the repository's root:
+
 ```bash
-cd /Users/jmoore/Documents/Github/yokohama-assistant
 cargo run -p yokohama-bridge --bin bridge-relay
 ```
 
@@ -22,7 +23,7 @@ It prints where it is listening and where it writes:
 
 ```
 bridge-relay listening on http://127.0.0.1:8787
-  captures -> /Users/jmoore/Documents/Github/yokohama-assistant/bridge-captures
+  captures -> /path/to/yokohama-assistant/bridge-captures
   health   -> curl http://127.0.0.1:8787/health
   read-only: this process never talks to Board Game Arena.
 ```
@@ -52,8 +53,7 @@ curl http://127.0.0.1:8787/health
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (top right).
-3. **Load unpacked** → select
-   `/Users/jmoore/Documents/Github/yokohama-assistant/bridge/extension`.
+3. **Load unpacked** → select the `bridge/extension` folder of your clone.
 4. Pin "Yokohama BGA bridge (capture)" to the toolbar so you can see its badge.
 
 It asks for two hosts and one permission: `boardgamearena.com` (to watch the
