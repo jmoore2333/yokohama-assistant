@@ -9,6 +9,8 @@ tree, and every anchor to a heading in the file it points at.
 - [`cli-guide.md`](cli-guide.md), with its word-identical [`cli-guide.html`](cli-guide.html) twin: the command-line
   game driver and live tracker, the authoritative feature documentation.
 - [`web-guide.md`](web-guide.md): the browser client, for players, hosts and readers.
+- [`engine.md`](engine.md): the rules engine as a library, where legality is decided, what a player may see and how
+  the engine is verified.
 - [`computer-player.md`](computer-player.md): the bot, the names it plays under and how strong it has been measured.
 - [`bridge-setup.md`](bridge-setup.md): the Board Game Arena bridge, a read-only capture of the owner's own Board Game
   Arena sessions, translated by the CLI's `import`.

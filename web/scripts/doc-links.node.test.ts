@@ -3,9 +3,10 @@
 // is read by following its links, so a link to a file that moved, or to a
 // heading that was renamed, is a broken first impression this cell catches.
 //
-// It reads the seven documents a newcomer starts from: the root `README.md`,
-// the docs index, the method page, the two guides, `CONTRIBUTING.md` and
-// `SECURITY.md`. From each it collects every markdown reference `](<target>)`
+// It reads the eight documents a newcomer starts from: the root `README.md`,
+// the docs index, the method page, the engine page, the two guides,
+// `CONTRIBUTING.md` and `SECURITY.md`. From each it collects every markdown
+// reference `](<target>)`
 // (a `<…>` wrapper and a quoted title allowed; a multi-line link text is no
 // obstacle, since the reference starts at `](`) and every
 // `<a … href="<target>">` value, quoted either way. Fenced code blocks are not
@@ -70,6 +71,7 @@ const DOCUMENTS = [
   "README.md",
   "docs/README.md",
   "docs/method.md",
+  "docs/engine.md",
   "docs/web-guide.md",
   "docs/computer-player.md",
   "CONTRIBUTING.md",
