@@ -6,10 +6,14 @@ bot to play against, and for people who build and measure game-playing programs.
 
 [![Latest release](https://img.shields.io/github/v/release/jmoore2333/yokohama-assistant)](https://github.com/jmoore2333/yokohama-assistant/releases) [![Licence](https://img.shields.io/github/license/jmoore2333/yokohama-assistant)](LICENSE) [![Tests](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml)
 
+Yokohama is a merchant trading game for two to four players, set in Meiji-era Yokohama. This repository holds its
+rules as a library, two ways to play it on a screen, and a bot you can ask why it played what it did.
+
 ## Try it
 
 Open [yokohama.moore.nyc](https://yokohama.moore.nyc) and choose **You against the bot**: the bot plays the whole game
-in your browser, with no account.
+in your browser, with no account. **Play with friends** seats two to four people at a table and signs each one in by
+a code sent to their e-mail address.
 
 ## Quick start
 
@@ -23,15 +27,21 @@ curl -fLO https://github.com/jmoore2333/yokohama-assistant/releases/latest/downl
   && cd yokohama-cli-v0.7.3-macos-apple-silicon && ./yokohama-cli
 ```
 
-If the fetch fails, the release may not be published yet, and the `cargo run` path below works from a clone.
+If the fetch answers 404, the release this page names is not the latest one: take the archive from the
+[Releases page](https://github.com/jmoore2333/yokohama-assistant/releases), or build from a clone as below.
 
-The newest build is always the one on the [Releases page](https://github.com/jmoore2333/yokohama-assistant/releases),
-beside builds for Ubuntu x86_64 and Windows x86_64. The three archives end `-macos-apple-silicon.tar.gz`,
-`-ubuntu-x86_64.tar.gz` and `-windows-x86_64.zip`; on Windows, unpack the zip, open PowerShell in the folder it makes
-and run `.\yokohama-cli.exe`. Each archive carries the guide as `CLI-GUIDE.html` beside the binary, and the Releases
-page also lists it on its own as `yokohama-cli-guide.html`. A browser download of the macOS archive lands quarantined,
-and macOS then refuses the binary inside, which is ad-hoc signed rather than notarized: fetch it with `curl` as above,
-build it with `cargo`, or clear the mark with `xattr -d com.apple.quarantine yokohama-cli`.
+The Releases page always carries the newest build, for three platforms:
+
+| Platform | The archive's name ends | Run |
+|---|---|---|
+| macOS, Apple silicon | `-macos-apple-silicon.tar.gz` | `./yokohama-cli` |
+| Ubuntu, x86_64 | `-ubuntu-x86_64.tar.gz` | `./yokohama-cli` |
+| Windows, x86_64 | `-windows-x86_64.zip` | `.\yokohama-cli.exe`, from PowerShell in the unpacked folder |
+
+Each archive carries the guide as `CLI-GUIDE.html` beside the binary, and the Releases page also lists it on its own
+as `yokohama-cli-guide.html`. A browser download of the macOS archive lands quarantined, and macOS then refuses the
+binary inside, which is ad-hoc signed rather than notarized: fetch it with `curl` as above, build it with `cargo`, or
+clear the mark with `xattr -d com.apple.quarantine yokohama-cli`.
 
 From a clone, with Rust installed through [rustup](https://rustup.rs), which fetches the toolchain the repository pins
 in `rust-toolchain.toml` on the first build:
@@ -54,12 +64,22 @@ Either way, the first screen is the setup wizard's first question:
 Mode? (sim/live)
 ```
 
-`sim` plays a game the engine deals, and `live` tracks a game on a physical table. To play the bot, answer `sim`, `2`,
-`red`, `blue` and `0`, press Enter twice for a random seed and the default save file, keep a dealt card for each seat
-with `1` and `1`, seat the bot with `1`, and type `confirm`. The game autosaves after every applied move, to
-`yokohama-game-<seed>.json` in the directory you ran the CLI from, so the file appears with your first move and not
-before. `abort` leaves the wizard and `q` leaves a game. The [CLI guide](docs/cli-guide.md) walks through every
-question and command.
+To play the bot, answer the wizard like this:
+
+| The wizard asks | Answer | What it means |
+|---|---|---|
+| `Mode?` | `sim` | a game the engine deals; `live` tracks a game on a physical table |
+| `Number of players?` | `2` | |
+| `Seat 0 color?` then `Seat 1 color?` | `red` then `blue` | |
+| `Which seat starts?` | `0` | |
+| `Seed?` then `Save path?` | Enter, twice | a random seed and the default save file |
+| `Seat 0: keep card 1 or 2?` then seat 1's | `1` then `1` | each seat keeps one of its two dealt order cards |
+| `Bot seats?` | `1` | the bot takes seat 1 and you play seat 0 |
+| `confirm / edit <section> / abort?` | `confirm` | the game starts |
+
+The game autosaves after every applied move, to `yokohama-game-<seed>.json` in the directory you ran the CLI from, so
+the file appears with your first move and not before. `abort` leaves the wizard and `q` leaves a game. The
+[CLI guide](docs/cli-guide.md) walks through every question and command.
 
 ### The browser client, on your own machine
 
@@ -69,9 +89,9 @@ From a clone, with Docker running and `curl` installed:
 bash deploy/run-local.sh
 ```
 
-It builds the server's image from the checkout and runs it on this machine; on Apple silicon a first build runs under
-emulation and takes minutes, and Docker prints a `WARNING` that the image's platform (linux/amd64) does not match the
-host's when the container starts, which is expected because the image runs under emulation as it was built. It ends with these two lines:
+It builds the server's image from the checkout and runs it on this machine. On Apple silicon a first build runs under
+emulation and takes minutes, and when the container starts Docker prints a `WARNING` that the image's platform
+(linux/amd64) does not match the host's, which is expected. The script ends with these two lines:
 
 ```text
 run-local: open http://127.0.0.1:8080/
@@ -107,47 +127,71 @@ numbered moves and an Undo button, and below them both players' yen, goods and a
 
 The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking the bot, and hosting your own.
 
+## How it is built
+
+- **One engine decides every rule.** The terminal, the browser and the bot all take their moves from the engine's
+  legal-move list and compute no rule of their own ([the engine](docs/engine.md)).
+- **An independent referee checks the engine.** The oracle is a second implementation written from the rules sources
+  alone, never from the engine's code, and a differential harness compares the two on legal moves and final scores
+  ([how it is verified](docs/engine.md#7-how-it-is-verified)).
+- **The bot sees what a player sees.** It decides from its own seat's view and a guess at the hidden cards, never from
+  the engine's private state. `suggest` shows the arithmetic behind the move it would play, and `why` replays the game
+  and re-runs a move it made, refusing to explain a move it cannot reproduce
+  ([the computer player, §4](docs/computer-player.md#4-suggest-and-why)).
+- **A strength claim is registered before it is measured.** Each milestone's claim, its field and the rule that decides
+  it are committed before a game is played, and every figure is quoted as its record states it, the results that came
+  back null among them ([how the work is organized, §4](docs/method.md#4-pre-registration-and-the-rules-of-evidence)).
+
 ## What is inside
 
-- **The engine**, `crates/yokohama-core`: the rules as pure functions over a resumable game state (legal moves, checked
-  application, scoring, seeded setup, saved records and strict replay), and the computer player built on them, which
-  decides from its own seat's view and a guess at the hidden cards, never from the engine's private state.
-- **The command-line client**, `crates/yokohama-cli`: a setup wizard and a prompt for games the engine deals, against
-  the bot or between people, and for tracking a game on a physical table, with save, resume and undo, and `suggest`
-  and `why`, the bot's explained advice for your move and its account of any move it made.
-- **The oracle and the difftest harness**, `crates/yokohama-oracle` and `crates/yokohama-difftest`: an independent
-  referee written from the rules sources alone, never from the engine's code, and the harness that compares the
-  engine's legal moves and final scores against it.
-- **The web layer**, `crates/yokohama-web`, with its WebAssembly build `crates/yokohama-wasm` and the Cloudflare
-  Worker host `crates/yokohama-worker`; the browser client is in `web/` and the Worker's shell in `worker/`.
-- **The data generator and the bridge**: `crates/gen-data` builds the card data from the knowledge base's YAML, and
-  `crates/yokohama-bridge` is a read-only capture of the owner's own Board Game Arena sessions, translated by the
-  CLI's `import`.
+| Path | What it is |
+|---|---|
+| `crates/yokohama-core` | The engine: legal moves, checked application, scoring, seeded setup, saved records and strict replay. The computer player is built on it. |
+| `crates/yokohama-cli` | The command-line client: a setup wizard and a prompt for games the engine deals, against the bot or between people, and for tracking a game on a physical table, with save, resume, undo, `suggest` and `why`. |
+| `crates/yokohama-oracle`, `crates/yokohama-difftest` | The independent referee and the harness that compares the engine against it. |
+| `crates/yokohama-web`, `web/` | The web layer and the browser client. |
+| `crates/yokohama-wasm`, `crates/yokohama-worker`, `worker/` | The same layer compiled to WebAssembly, for the game that runs inside the browser and for the Cloudflare Worker host. |
+| `deploy/` | The Docker image and the scripts for a server of your own. |
+| `analysis-1/yokohama-kb`, `crates/gen-data` | The knowledge base, with the rules reference and the card data as YAML, and the generator that builds the engine's card tables from it. |
+| `crates/yokohama-bridge`, `bridge/` | A read-only capture of the owner's own Board Game Arena sessions, which the CLI's `import` replays through the engine. |
 
-## Status, honestly
+## Status
 
-- The engine is complete and differentially verified against the oracle at `SEMANTICS_REV` 7, the rules revision
+- **The engine** is complete and differentially verified against the oracle at `SEMANTICS_REV` 7, the rules revision
   every saved game is keyed to. One rules defect is known, tracked as
   [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62): the Language School's yen can miss its own
   order's warehouse take, and its fix bumps the revision.
-- The shipped bot is `v4-step9-draft1`, in the terminal and in the browser. It is production and provisional: the
-  route to the bar runs through a later freeze that may name a different contestant
-  ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
-- The milestone bar, set in §1.9 of the [Phase-3 map](docs/plans/2026-07-25-phase3-map.md), asks at two players for
-  a constructed scenario suite, statistical superiority over the preserved baseline players, an explanation for every
-  move, and acceptance play through the CLI ([the computer player, §6](docs/computer-player.md#6-the-bar-not-claimed)).
+- **The command-line client and the browser client** are complete, and the hosted site runs the current release. What
+  is open on the browser client is polish, tracked in the
+  [issues](https://github.com/jmoore2333/yokohama-assistant/issues).
+- **The bot** that ships is `v4-step9-draft1`, in the terminal and in the browser. In its one confirmatory field it
+  beat `v2-padded`, its predecessor's behaviour, the interval entirely above parity
+  ([the results ladder](docs/computer-player.md#5-the-results-ladder)), and nothing has been tuned on, or measured
+  against, a human player. It is production and provisional: the route to the bar runs through a later freeze that may
+  name a different contestant ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
+- **The bar.** The milestone bar, set in §1.9 of the [Phase-3 map](docs/plans/2026-07-25-phase3-map.md), asks at two
+  players for a constructed scenario suite, statistical superiority over the preserved baseline players, an explanation
+  for every move, and acceptance play through the CLI
+  ([the computer player, §6](docs/computer-player.md#6-the-bar-not-claimed)).
   The bar (map §1.9) is NOT claimed: a shipped milestone is a narrower claim than the bar.
-- Next: V4's vetting in played games, then V5 under its own pre-registration
+- **Next:** V4's vetting in played games, then V5 under its own pre-registration
   ([the computer player, §7](docs/computer-player.md#7-what-is-next)).
 
-## The record
+## Documentation
 
-- [`guidingpath.md`](guidingpath.md), the authority: the mission, the current state, the roadmap and the decision log,
-  which carries every rules ruling.
-- [`docs/README.md`](docs/README.md), the index of the documents.
-- [`docs/method.md`](docs/method.md), how the work is organized and its rules of evidence; the strength results and
-  their records are in [the computer player, §5](docs/computer-player.md#5-the-results-ladder).
-- [`docs/handover.md`](docs/handover.md), the board: the work in flight and its next steps.
+| To | Read |
+|---|---|
+| play or track a game in the terminal | the [CLI guide](docs/cli-guide.md) |
+| play in a browser, or host a server of your own | the [browser guide](docs/web-guide.md), then [`deploy/README.md`](deploy/README.md) for Docker and [`worker/README.md`](worker/README.md) for Cloudflare |
+| use the engine as a library, or see how it is verified | [the engine](docs/engine.md) |
+| understand the bot and how strong it has been measured to be | [the computer player](docs/computer-player.md) |
+| look up a rule or a ruling | the [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and the decision log in [`guidingpath.md`](guidingpath.md), which carries every ruling |
+| see how the work is organized and what counts as evidence | [how the work is organized](docs/method.md) |
+| see what is in flight | the board, [`docs/handover.md`](docs/handover.md) |
+| find anything else | the index, [`docs/README.md`](docs/README.md) |
+
+[`guidingpath.md`](guidingpath.md) is the authority: the mission, the current state, the roadmap and the decision log.
+It outranks every other page, this one included.
 
 ## Contributing · Security · Licence
 
