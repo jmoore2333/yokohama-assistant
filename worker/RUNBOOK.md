@@ -1077,7 +1077,7 @@ npm run deploy
 
 - **Opening it is a deploy**, guarded like any other: the guard and the secrets guard run first, as
   `npm run deploy` runs them, each told the file by `--config` as wrangler is (§2), and `--var`
-  deploys one more plain-text variable beside `wrangler.jsonc`'s `vars`, replacing none of them (read in wrangler 4.136.3's source). Like every deploy, it restarts every
+  deploys one more plain-text variable beside `wrangler.jsonc`'s `vars`, replacing none of them (read in wrangler 4.136.3's source, and the same in 4.156.2's on 2026-11-10). Like every deploy, it restarts every
   object and closes every socket (§2): open the window between games, before the exit's run.
 - **Closing it is the exit's last step.** The plain deploy replaces the Worker's variables with
   the file's again, which name no `YOKOHAMA_WEB_COUNT_WAKES`, so the switch reads off. While the

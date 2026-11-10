@@ -2,9 +2,23 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { configDefaults, defineConfig } from "vitest/config";
 
 // **The POOL** (spec §5.2): Cloudflare's Workers Vitest integration,
-// `@cloudflare/vitest-plugin` 1.2.3, whose entry is the `cloudflareTest()`
+// `@cloudflare/vitest-plugin`, whose entry is the `cloudflareTest()`
 // Vite plugin. Every cell runs INSIDE workerd, against the Worker a pool
 // configuration describes — never `wrangler.jsonc`, which is production's.
+//
+// **The plugin and `wrangler` move as a PAIR** (2026-11-10). The plugin pins
+// `wrangler` and `miniflare` at exact versions and Cloudflare publishes the
+// two together, so `package.json` holds both by a caret and ONE command moves
+// them, with the one-week floor every routine move takes (`CONTRIBUTING.md`,
+// Dependencies):
+//   npm update wrangler @cloudflare/vitest-plugin --package-lock-only --before=<the date a week ago>
+// It moves the pair FORWARD: on a lockfile that already holds a release newer
+// than the date npm refuses (ETARGET, measured), so a step back starts from
+// the older lockfile (`git checkout <commit> -- package-lock.json`).
+// Moving one alone makes npm install a second wrangler under the plugin and a
+// second miniflare and workerd under wrangler (measured: wrangler 4.158.0
+// beside plugin 1.6.1), and the pool then tests a toolchain other than the one
+// that deploys. The lockfile still fixes what `npm ci` installs.
 //
 // **Two projects, one per door** (M6.5c2, spec §2.1; review R2.2-M2). Every
 // object builds its configuration from its OWN constructor's `env` — the

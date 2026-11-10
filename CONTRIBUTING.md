@@ -44,6 +44,28 @@ pages, in the Tabletop Simulator upload), neither of which is in the tree, to th
 [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and to the rulings in the decision log, which settle
 the rule where the editions differ or are silent.
 
+## Dependencies
+
+Dependencies move at two moments: when a cycle opens or a release is cut, and when a security advisory reaches
+something that ships. Nothing moves on a schedule, and the repository takes no automated update pull requests.
+
+- **A routine move takes a release at least one week old.** A tampered release is usually caught within days, and
+  passing tests would not show it. For the two npm packages that is one flag, in `web/` and in `worker/`:
+  `npm audit fix --package-lock-only --before=<the date a week ago>`. For Rust it is
+  `cargo update -p <crate> --precise <version>`, one crate at a time and never a blanket `cargo update`, which moves
+  crates no one read — `serde_json` among them, which writes the byte-pinned wire corpus and the records.
+- **The one exception is a fix that is needed.** An advisory that is reachable in what ships — a Rust crate, or the
+  browser client's `react` and `react-dom` — and rated high or critical takes its patched release at once, whatever
+  its age.
+- **Everything development-only waits for the next of those moments.** GitHub's alerts do the watching in between,
+  so no one reads the advisory list at every push: at a batch, read what is marked runtime, and run the commands for
+  the rest.
+- **`wrangler` and `@cloudflare/vitest-plugin` move as a pair**, by the command at the head of
+  [`worker/vitest.config.ts`](worker/vitest.config.ts), which says why.
+
+A lockfile is a change like any other: the per-edit suites above, and the web lane's when `Cargo.lock` or a lockfile
+under `web/` or `worker/` moved.
+
 ## AI-assisted work
 
 AI-assisted work is welcome, from an issue to a pull request. The one ask is the same as for any contribution: the
