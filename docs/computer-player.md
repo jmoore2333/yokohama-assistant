@@ -222,7 +222,8 @@ Each of these is recorded. None carries a claim about strength.
   §1.2). Nothing has been tuned on, or measured against, a human player (the CLI guide's `suggest` section).
 - **The release roster has outgrown its target.** The fifteen release gates first ran past their ≤420 s target on the
   M5 laptop at the V4 close, at 492.17 s (the V4 close, §2.7). The latest sequence the decision log records read
-  497 s on the MacBook Air, Apple M5, at the 0.7.0 release (the [decision log](../guidingpath.md)'s 2026-10-19 row).
+  452 s on the MacBook Air, Apple M5, at the public release's review head (the [decision log](../guidingpath.md)'s
+  2026-11-10 row), beside 497 s on the same machine at the 0.7.0 release (its 2026-10-19 row).
   Restating the target is open as OD-6, and every wall figure belongs to the machine that measured it.
 
 The full record of the strength lane, step by step, is the
