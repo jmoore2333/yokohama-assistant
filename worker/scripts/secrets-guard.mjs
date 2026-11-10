@@ -27,7 +27,7 @@
 // The listing asks the ACCOUNT: every deploy script — the plain `deploy`, the safe direction, included — is a network
 // step from here on — a logged-out clone runs `npx wrangler login` once, and one with more than one account sets
 // `CLOUDFLARE_ACCOUNT_ID` (`npx wrangler whoami` lists them and caches nothing; wrangler 4.136.3's source, Task 6's
-// review, and 4.159.0's `whoami`, read the same on 2026-11-10) — and a NEW Worker's first deploy cannot pass it
+// review, and 4.156.2's `whoami`, read the same on 2026-11-10) — and a NEW Worker's first deploy cannot pass it
 // (wrangler answers "Worker not found"): that deploy runs
 // `wrangler deploy --config <file>` by hand without this guard — a Worker that does not exist holds no secret; the
 // deploy guard still judges a file whose deployment it records (`DEPLOYMENTS`, production's and the private

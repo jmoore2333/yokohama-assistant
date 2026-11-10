@@ -1020,7 +1020,7 @@ export function configFailures(root, config = PRODUCTION_FILE) {
     failures.push("wrangler.jsonc's observability must not set enabled to false — the live readings count invocations through these logs (security S2b, D-6)");
   }
   // wrangler also reads `observability.logs.head_sampling_rate` and `observability.logs.invocation_logs` (Task 7's
-  // run, on 4.136.3; every line of 4.159.0's source that names either key read the same on 2026-11-10): a rate set
+  // run, on 4.136.3; every line of 4.156.2's source that names either key read the same on 2026-11-10): a rate set
   // there samples the same logs, and `invocation_logs: false` drops the lines the readings count — both held, so the
   // top-level clause cannot be sidestepped by the nested key.
   const logs = production ? objectOf(observed?.logs) : undefined;
@@ -1115,7 +1115,7 @@ export function deployGuard(root, repo = join(root, ".."), config = PRODUCTION_F
   // `.wrangler/deploy/config.json` — a build tool's file, which the Cloudflare Vite plugin writes — and follows its
   // `configPath` when the file sits beside the configuration it found: a bare `wrangler deploy` in `worker/` follows
   // `worker/.wrangler/deploy/config.json` (measured, wrangler 4.136.3; the same lookup and the same refusal read in
-  // 4.159.0's source on 2026-11-10, and not measured again). One ABOVE that configuration is wrangler's own refusal
+  // 4.156.2's source on 2026-11-10, and not measured again). One ABOVE that configuration is wrangler's own refusal
   // ("do not share the same base path"), and an explicit `--config` skips the lookup altogether, which is why the
   // deploy scripts name theirs. Both places are refused here — the package's for the hand-run recipes, the
   // repository root's for a run from a directory with no configuration of its own, where the lookup would follow it.
