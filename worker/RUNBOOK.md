@@ -2436,9 +2436,9 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
 
 ---
 
-## 23. The public door opens — the switch to WorkOS (stage 1 a record, 2026-10-19; stage 2 a plan)
+## 23. The public door opens — the switch to WorkOS (stage 1 a record, 2026-10-19; stage 2 a record, 2026-11-10)
 
-**The recipe for the window that moves `yokohama.moore.nyc` from the Access door to the WorkOS-signed Worker.** Its code is the auth cycle's (`docs/plans/2026-10-18-auth-cycle-design.md`, its plan beside it; the Worker's three identity sources are `docs/web-lane.md` §4's bullet); it keeps the fence of the lane's §10 public window's order — the edge rule is in front BEFORE the hostname leaves Access, so the API is never open and unchallenged — but not its steps, because the rule is DISABLED while Access is on (below). Orchestrator-only, through `wrangler`, the WorkOS dashboard or MCP and the Cloudflare API, each step a dated line in the cycle's ledger. **A plan, not a record, for stage 2: none of its steps has run but step 3's commit (`d6db6b3e`, 0.7.3); stage 1's record is below.** It runs in TWO stages (the owner's "both" direction of 2026-10-19, rulings R-51 and R-55): until the public repository is cleaned up Cloudflare Access stays on at the edge over the WorkOS-signed Worker, and the Worker at `workos` never reads Access's assertion. **The window runs against the PRODUCTION WorkOS environment**; the staging environment is not an issuer here.
+**The recipe for the window that moves `yokohama.moore.nyc` from the Access door to the WorkOS-signed Worker.** Its code is the auth cycle's (`docs/plans/2026-10-18-auth-cycle-design.md`, its plan beside it; the Worker's three identity sources are `docs/web-lane.md` §4's bullet); it keeps the fence of the lane's §10 public window's order — the edge rule is in front BEFORE the hostname leaves Access, so the API is never open and unchallenged — but not its steps, because the rule is DISABLED while Access is on (below). Orchestrator-only, through `wrangler`, the WorkOS dashboard or MCP and the Cloudflare API, each step a dated line in the cycle's ledger. **Both stages have run: stage 1 on 2026-10-19 and stage 2 in the public release's window on 2026-11-10 (step 3's commit `d6db6b3e`, 0.7.3); each stage's record is below its recipe's steps.** It runs in TWO stages (the owner's "both" direction of 2026-10-19, rulings R-51 and R-55): until the public repository is cleaned up Cloudflare Access stays on at the edge over the WorkOS-signed Worker, and the Worker at `workos` never reads Access's assertion. **The window runs against the PRODUCTION WorkOS environment**; the staging environment is not an issuer here.
 
 **Why two stages work, and why the rule waits.** At source `workos` the shell names a caller by its own session cookie and nothing else (`answer`, step 5); Access's verifier never runs. Access, hostname-wide on `yokohama.moore.nyc`, still gates every request — `/api/*` and `/enter` included — at the edge, so a visitor passes Access's login, then `/enter` redirects to WorkOS, then the Worker's cookie names the player. The client tells the two challenges apart (`WWW-Authenticate: Yokohama-Session realm="/enter"` against Access's own). Being hostname-wide, the application already covers `/api/leave`; only a PATH-scoped application (the door window's state 2, §19) needs `node scripts/access-paths.mjs`'s eleven lines. **The edge rule stays DISABLED under Access** (`worker/scripts/edge-rule.mjs`: "enabled while the hostname is off Access, DISABLED under Access — the live tiers' service token cannot pass a challenge, and Access already stops every stranger"), so stage 1 ships the KEYLESS build with `YOKOHAMA_TURNSTILE` `off`, and the keyed build, `on` and the rule arrive together at stage 2.
 
@@ -2581,7 +2581,64 @@ The code is master `5cbeb390` — security S2's three cycles merged as three mer
   page fetched after it still renders the email form. Passkeys return with an AuthKit custom domain and an enrollment
   path, which is a cycle of its own.
 
-**What stage 2's recipe does not claim:** nothing in it is READ yet. The Turnstile overlay's behaviour at the sign-in navigation, the WorkOS page's branding, two invocations per sign-in and the stranger's whole path are each a reading the window owes. The session cookie needs `https` or `localhost` (`README.md` §1.5), which the deployed host always is.
+### Stage 2 — the record: the thirty-ninth deployment, 2026-11-10 (the orchestrator, the owner present)
+
+- **Before** (step 1; the owner's "Go worker", after a game dealt on the NAS at `0.7.3`, `deploy/RUNBOOK.md` §3.24):
+  the rule read by id — `dc4c5d3e…` at position 1 of 5 in ruleset `27fcc0c7…` version 16, rule version 2,
+  `managed_challenge`, DISABLED, last updated 2026-10-01; the quota guard for UTC 2026-11-10: 1,540 Worker requests
+  account-wide (`yokohama-web` 1, `yokohama-web-private` 1), 543 Durable Object rows written, 3,590 read; production
+  read over WARP before: `server_version 0.7.2`, the release `yokohama-release-18059a9aeb00abae` (§27).
+- **The keyed build** (step 2; from master `a974a793`, whose crates are the tag's): the SEVEN values in a mode-0600
+  scratch file — the project link, the 226-character blurb, `Not affiliated with Asmodee`,
+  `YOKOHAMA_SITE_URL=https://yokohama.moore.nyc`, the feed derived, `YOKOHAMA_SIGNIN_NOTICE` the WorkOS production
+  branding's legal text (156 characters; the same sentence the live `0.7.2` bundle carried, read over WARP) and
+  `YOKOHAMA_TURNSTILE_SITEKEY` the widget "moore.nyc (Spin)" (mode `managed`, pre-clearance `managed`, `moore.nyc`
+  among its domains), read once from the API. `web`: **the release `yokohama-release-2f01b0f95896254e`**, 153
+  precache entries, 10,103,079 B, the module 1,256,964 B, `debug_trap` 0, the stamp all seven true. `worker`: the
+  module 1,996,213 → 1,323,133 B (−33.7 %), 162 files 10,144,908 B, 153 precache entries verified, `smoke:release`
+  200 `server_version 0.7.3`; `gen/source.json` digest `2c333811…`. `node scripts/edge-rule.mjs` printed the zone's
+  rule byte for byte.
+- **The commit** (step 3): `YOKOHAMA_TURNSTILE` `on` in `wrangler.jsonc` and `wrangler.dev.jsonc` is `d6db6b3e`, with
+  its two moved cells (the plan's P-20).
+- **The rule ENABLED by its id at 02:06:51Z** (step 4; a PATCH with the rule's own action, expression and description
+  and `enabled: true`): the ruleset version 16 → 17, the rule version 3, position 1 of 5; `node scripts/edge-rule.mjs
+  --verify` exit 0, "the zone's rule equals the tree's — expression, action and description".
+- **The deploy** (step 5, ~02:07Z): `npm run deploy` — **Worker version `55c3663b-2c99-4505-a6d6-24ccdea4b287`**, 8 of
+  160 assets new; wrangler's vars `YOKOHAMA_WEB_IDENTITY ("worker")`, `YOKOHAMA_IDENTITY_SOURCE ("workos")`,
+  `YOKOHAMA_DEV_DOOR ("off")`, `YOKOHAMA_TURNSTILE ("on")`. The live smoke over WARP WITH ACCESS STILL ON (02:07:21Z)
+  already read the edge line — a cookie-less `/api/health` 403 `cf-mitigated: challenge`, so the rule answers before
+  Access (the question step 5 left open) — and `/sw.js` and `/sitemap.xml` 200 unchallenged, `/sw.js` naming the new
+  release.
+- **`yokohama.moore.nyc` OFF the Access application at 02:07:57Z** (step 6; a PUT of the application's read-back
+  fields): `domain` → `yokohama-nas.moore.nyc`; `self_hosted_domains` and `destinations` the NAS, CLI and TEST
+  hostnames. Read back: the three hostnames; **the `aud` UNCHANGED**; the five policies by the same ids and
+  precedences; the session 24 h; every other field equal. The live smoke PASSED again (02:08Z). Cookie-less over WARP:
+  `/` 200 (no Access), `/sw.js`, `/build-values.json` and `/robots.txt` 200; `/api/health`, `/api/me`, `/enter`,
+  `/.env` and `/wp-login.php` 403 `cf-mitigated: challenge`. The Open Graph tags read over WARP at 02:08Z (`og:title`
+  Yokohama, the blurb, `og:url`, `og:image` `/icons/icon-512.png`).
+- **The readings as a stranger** (step 7; the owner, WARP off): the door with no Cloudflare login; a bot game dealt
+  and played locally with no account; **Go to the lobby** → the WorkOS sign-in by e-mail code → the lobby; a table
+  created and played; spectating and returning to a game under the right identity; the sign-out landing on the door.
+  The door is static assets, so no Worker invocation happens before the challenge is passed and the multiplayer
+  click. One false alarm, resolved by the owner: a returning sign-in saw the owner's table as a spectator because the
+  browser's autofill had put a DIFFERENT address into WorkOS's form; the same flow in Chrome seated the owner. No
+  defect, and nothing was changed.
+- **The dev door's secret** (step 8, 02:22Z): `DEV_DOOR_CLIENT_ID` deleted (`wrangler secret delete … --config
+  wrangler.jsonc`); the secret list reads THREE names: `YOKOHAMA_OIDC_CLIENT_SECRET`, `YOKOHAMA_SESSION_SECRET`,
+  `YOKOHAMA_WEB_ADMINS`. The scratch key file removed.
+- **A reading for the record:** with WARP off, a plain `curl` is answered 403 `cf-mitigated: challenge` on `/` of
+  production and on the NAS and test hostnames (Bot Fight Mode's challenge to an automated client, ahead of Access on
+  those two), while `/sw.js` reads 200; a browser passes (the owner's reading). A link-preview fetch from a home
+  address therefore reads the challenge; the Open Graph tags above were read over WARP.
+- **Rollback** (step 9): unchanged — the hostname back on the Access application FIRST, then the rule DISABLED by its
+  id, then stage 1's keyless build and `off`; a rollback that reaches `access` puts `DEV_DOOR_CLIENT_ID` back.
+
+**What stage 2's record does not claim:** the profile holding the PREVIOUSLY RELEASED client (step 7's pinned
+profile, W-3's install and its anonymous upload) was not read, nor was the friend's game; two invocations per sign-in
+were not counted in the logs; a socket under the cookie and the Turnstile overlay at the sign-in navigation were not
+recorded as separate readings; rows 108 and 119 (`docs/web-lane.md` §8) were not read with a second signed-in
+address; D32's edge leg (401, then 429) was not read at the stale-client shape. The session cookie needs `https` or
+`localhost` (`README.md` §1.5), which the deployed host always is.
 
 ---
 
@@ -2697,3 +2754,10 @@ browser, takes the cookie from the owner, and runs the three calls — recorded 
 - **The private Worker first** (§26's recipe, every later deploy through both guards): its own keyless build at 0.7.2 (the release `yokohama-release-b5fa1fc286de3e2e`, 153 precache entries, `smoke-release` 200), `npm run deploy:private` through BOTH guards (`secrets-guard: 0 secrets … none named like a switch`) at 11:32:06–11:32:18Z — 6 assets uploaded (154 already), **version `cbb16f3b-0013-4d55-afd4-00e8c030e705`**; read over WARP: `/api/health` `server_version 0.7.2` (identity cf-access, archive r2), `/sw.js` the release; **D2 on the Worker** at a locked table `sim-22a87adc3076d26e`: 21 wrong passwords → 20 × 403 then 429 with the sentence, `no-store`, no `retry-after`; **D9 on the Worker**: the reopen arms (an open seat 409 NO_JOINER; the creator's own seat 409 OWN_SEAT; seat 9 400); abandoned 204.
 - **Production:** the six-value build (the sign-in notice, `YOKOHAMA_SITE_URL=https://yokohama.moore.nyc`, no key) — the release **`yokohama-release-18059a9aeb00abae`**, 153 entries / 10,101,405 B, `smoke-release` 200 at 0.7.2; `npm run deploy` through both guards (the door line `source workos — WorkOS AuthKit`; `4 secrets … the workos arm's YOKOHAMA_OIDC_CLIENT_SECRET and YOKOHAMA_SESSION_SECRET among them`) at 11:33:40Z — 6 assets uploaded (154 already), **version `59cb8e19-9358-4ee1-a1a5-fa8330403d9e`**; read over WARP: `/api/health` 200 `server_version 0.7.2`, `no-store`; `/sw.js` the release; `/api/me` without the Worker's session answers `no signed-in user — sign in at /enter`. **Not read on production:** D2 and D9 through the API (they need the Worker's own session — the owner's browser read; the identical module was read on the private Worker above), and W-3's pass (the public day's, D-17).
 - **Rollback:** `wrangler rollback` to the previous version (`0.7.1`, §25) on either Worker; the code's undo is `git revert` of the branch's commits.
+
+## 28. The thirty-ninth deployment — `0.7.3`, the public release (2026-11-10, a record)
+
+- **The code:** master at `56867df0` (the merge of PR #65 on top of the merge of PR #64 `9cd7f16e`, security S4b and S4c; the plan `docs/plans/2026-10-26-security-s4b-s4c-plan.md`), tagged `v0.7.3` and published by `release.yml` (run 42738362078, five jobs green) at 01:55:32Z, before either Worker was touched; the keyed build was made from master `a974a793`, two documents-only commits past the tag, whose crates are the tag's. What changed for the Worker: S4-pre's seat-aware admission (the ledger's D3: a table holds at most 32 sockets for callers who hold no seat, beside its 64), the keyed build with `YOKOHAMA_TURNSTILE` `on` (`d6db6b3e`), and the hostname off Access with the edge rule enabled in front (§23's stage 2). The NAS went first (`deploy/RUNBOOK.md` §3.24).
+- **Production:** §23's stage-2 record — the release **`yokohama-release-2f01b0f95896254e`**, **version `55c3663b-2c99-4505-a6d6-24ccdea4b287`**, deployed ~02:07Z, the hostname off Access at 02:07:57Z, `DEV_DOOR_CLIENT_ID` deleted at 02:22Z.
+- **The private test Worker at `0.7.3`, after production** (so the three tiers read one version): its own keyless build (`YOKOHAMA_SITE_URL=https://yokohama-test.moore.nyc`, no sign-in notice, no key) — **the release `yokohama-release-60ae1b5a916c48b2`**, 153 precache entries, 10,101,047 B; the module 1,323,133 B; 162 files 10,142,913 B; `smoke:release` 200 `server_version 0.7.3`. `npm run deploy:private` at 02:22:46Z: the guard's door line `wrangler.private.jsonc deploys the worker door, source access — Cloudflare Access, verified by the shell`; `secrets-guard: 0 secrets`; vars `YOKOHAMA_IDENTITY_SOURCE ("access")`, `YOKOHAMA_TURNSTILE ("off")`; **version `c77c486f-1046-4f61-9f90-dc11b12b5f8f`** on `yokohama-test.moore.nyc`, its hostname staying on the Access application. **Not read:** its tunnel reading over WARP (WARP was off on the workstation after the owner's stranger reading; the lab's tracker carries it).
+- **Rollback:** `wrangler rollback` to the previous version (`0.7.2`, §27) on either Worker; on production, §23's stage-2 rollback order first (the hostname back on Access, then the rule disabled).

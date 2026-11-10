@@ -79,6 +79,14 @@ MAPS: dict[str, dict] = {
             "guidingpath-archive-web.md": [{"new": 16}, {"lines": [205, 231]}],
         },
     },
+    # The public release's close: the fourth archive (docs/plans/2026-10-26-security-s4b-s4c-close.md; C-5).
+    "2026-11-10": {
+        "base": "d042bc4b",
+        "files": {
+            "guidingpath.md": [{"lines": [1, 87]}, {"lines": [117, 118]}],
+            "guidingpath-archive-security.md": [{"new": 14}, {"lines": [88, 116]}],
+        },
+    },
 }
 
 

@@ -22,12 +22,14 @@ tree, and every anchor to a heading in the file it points at.
 
 - [`guidingpath.md`](../guidingpath.md): the mission, the current state, the roadmap and the decision log, which
   carries every rules ruling. It outranks every other page.
-- The log is append-only, and its older rows live verbatim in three archives that are closed to appending. An archived
+- The log is append-only, and its older rows live verbatim in four archives that are closed to appending. An archived
   row stays authoritative wherever it is cited.
   - [`guidingpath-archive.md`](../guidingpath-archive.md): the engine era, 2026-07-16 to 2026-08-08.
   - [`guidingpath-archive-phase3.md`](../guidingpath-archive-phase3.md): the computer player's road to its fourth
     version, 2026-08-09 to 2026-08-30.
   - [`guidingpath-archive-web.md`](../guidingpath-archive-web.md): the web lane, 2026-08-31 to 2026-09-28.
+  - [`guidingpath-archive-security.md`](../guidingpath-archive-security.md): the web lane's finish and the security
+    project to the public release, 2026-09-29 to 2026-10-26.
 
 ## The board
 

@@ -49,10 +49,11 @@ new standing rule goes into `CLAUDE.md` in a sentence or two. The security S4a
 ## 3. The decision log and the `SEMANTICS_REV` contract
 
 The decision log in [`guidingpath.md`](../guidingpath.md) carries every rules ruling and the project's design
-decisions. It is append-only: a row is never edited, and a correction is a later row. Older rows live verbatim in three
+decisions. It is append-only: a row is never edited, and a correction is a later row. Older rows live verbatim in four
 archives, each closed to new rows, and an archived row remains authoritative wherever it is cited:
-[the engine era](../guidingpath-archive.md), [the computer player's road to V4](../guidingpath-archive-phase3.md) and
-[the web lane](../guidingpath-archive-web.md).
+[the engine era](../guidingpath-archive.md), [the computer player's road to V4](../guidingpath-archive-phase3.md),
+[the web lane](../guidingpath-archive-web.md) and
+[the web lane's finish and the security project](../guidingpath-archive-security.md).
 
 `SEMANTICS_REV`, in `crates/yokohama-core/src/game/semantics.rs`, is the engine's rules revision. It is bumped in the
 same commit as any behaviour-affecting change to legality, application, scoring or setup, and each revision's scope is
