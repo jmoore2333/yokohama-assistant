@@ -1,13 +1,45 @@
 # Yokohama Assistant
 
-A rules engine, a CLI game tracker and a browser client for the board game Yokohama (Hisashi Hayashi, 2016), with a
-computer player built to play to win. It is for people who play Yokohama and want a game checked move by move or a
-bot to play against, and for people who build and measure game-playing programs.
+A computer player for the board game Yokohama (Hisashi Hayashi, 2016), built to play to win, with the rules engine it
+stands on and a terminal client and a browser client to play it in. It is for people who build and measure
+game-playing programs, and for people who play Yokohama and want a bot across the table or a game checked move by move.
 
 [![Latest release](https://img.shields.io/github/v/release/jmoore2333/yokohama-assistant)](https://github.com/jmoore2333/yokohama-assistant/releases) [![Licence](https://img.shields.io/github/license/jmoore2333/yokohama-assistant)](LICENSE) [![Tests](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml)
 
-Yokohama is a merchant trading game for two to four players, set in Meiji-era Yokohama. This repository holds its
-rules as a library, two ways to play it on a screen, and a bot you can ask why it played what it did.
+Yokohama is a merchant trading game for two to four players, set in Meiji-era Yokohama.
+
+## The point: a bot that plays to win
+
+The goal of this project is a computer player that plays Yokohama to win and can show its work. Everything else here
+serves that: the rules engine, so that a game the bot plays is a real game; the terminal and browser clients, so that
+you can sit across from it; and the record, so that a claim about its strength can be checked.
+
+![An animation of the terminal client through one game against the bot: the opening screen with the board and the
+player's options; the bot's turn, listed move by move with what it changed; the bot's own account of one of its moves,
+with the line it searched and its table of weighted features; the board at seven later turns; and the final scores,
+Red 82 and the bot's Blue 81](docs/images/cli-game.gif)
+
+One game against the bot that ships, in the terminal: its turn, its own account of a move, and the final score. The
+project's owner won this one by a point.
+
+How it is being built:
+
+- **It plays fair.** The bot is handed what its own seat can see, guesses the hidden cards and searches inside that
+  guess. It never reads the engine's private state.
+- **It searches its turn and scores where it lands.** It plays its own turn out several ways and scores each position
+  it reaches with a table of weighted features. `suggest` prints that arithmetic for the move it would play in your
+  seat, and `why` for a move it made, replaying the game to do it and refusing to explain a move it cannot reproduce.
+- **Each version has to earn its place.** Two bots play the same deals from both seats. The claim, the size of the
+  match and the rule that decides it are written down before a game is played, and the result is reported whichever
+  way it falls. So far: a first search bot that swept the players that only sample a move; a tree search that was
+  built, measured and set aside; a second evaluator that beat the first; a round of new features that came back null;
+  and the fourth version, which beat the second's play and is the bot that ships.
+- **It is not finished.** It has not been measured against people, the project's own bar for "plays to win" is not
+  claimed, and the work now is playing it, reading where it goes wrong and building the next version.
+
+[The computer player](docs/computer-player.md) is the full account: what the bot may see, the names it plays under,
+every measured step with its figures, and its known limits.
+[How the work is organized](docs/method.md) says what counts as evidence here.
 
 ## Try it in a browser
 
@@ -107,12 +139,6 @@ The game autosaves after every applied move, to `yokohama-game-<seed>.json` in t
 the file appears with your first move and not before. `abort` leaves the wizard and `q` leaves a game. The
 [CLI guide](docs/cli-guide.md) walks through every question and command.
 
-At the end of a game the screen holds the whole story, here a game the project's owner won against the bot by a point:
-
-![The terminal client at the end of a two-player game: the staggered board of ten areas with each area's pawns and
-building sites, beside it both players' yen, goods, pieces and technologies, the church and customs tracks and the
-three achievements, and under them the final scores, Red 82 and the bot's Blue 81](docs/images/cli-endgame.png)
-
 ### The browser client, on your own machine
 
 From a clone, with Docker running and `curl` installed:
@@ -147,20 +173,13 @@ with a message naming them when they are absent; the variable turns that stop in
 [`CONTRIBUTING.md`](CONTRIBUTING.md) lists the suites to run after an edit and the lint gate, and links the web
 client's.
 
-## How it is built
+## The engine underneath
 
 - **One engine decides every rule.** The terminal, the browser and the bot all take their moves from the engine's
   legal-move list and compute no rule of their own ([the engine](docs/engine.md)).
 - **An independent referee checks the engine.** The oracle is a second implementation written from the rules sources
   alone, never from the engine's code, and a differential harness compares the two on legal moves and final scores
   ([how it is verified](docs/engine.md#7-how-it-is-verified)).
-- **The bot sees what a player sees.** It decides from its own seat's view and a guess at the hidden cards, never from
-  the engine's private state. `suggest` shows the arithmetic behind the move it would play, and `why` replays the game
-  and re-runs a move it made, refusing to explain a move it cannot reproduce
-  ([the computer player, §4](docs/computer-player.md#4-suggest-and-why)).
-- **A strength claim is registered before it is measured.** Each milestone's claim, its field and the rule that decides
-  it are committed before a game is played, and every figure is quoted as its record states it, the results that came
-  back null among them ([how the work is organized, §4](docs/method.md#4-pre-registration-and-the-rules-of-evidence)).
 
 ## What is inside
 
@@ -177,10 +196,12 @@ client's.
 
 ## Status
 
-- **The engine** is complete and differentially verified against the oracle at `SEMANTICS_REV` 7, the rules revision
-  every saved game is keyed to. One rules defect is known, tracked as
-  [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62): the Language School's yen can miss its own
-  order's warehouse take, and its fix bumps the revision.
+- **The engine** implements the whole game as far as we can tell. That is a belief with evidence behind it, not a
+  proof: the engine and the independently written referee agree on legal moves and final scores in every differential
+  run, at `SEMANTICS_REV` 7, the rules revision every saved game is keyed to. One rules defect is already known,
+  tracked as [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62) (the Language School's yen can
+  miss its own order's warehouse take, and its fix bumps the revision), and a
+  [rules question](https://github.com/jmoore2333/yokohama-assistant/issues/new/choose) is welcome if you find another.
 - **The command-line client and the browser client** are complete, and the browser client is live at the hosted site.
   What is open on it is polish, tracked in the [issues](https://github.com/jmoore2333/yokohama-assistant/issues).
 - **The bot** that ships is `v4-step9-draft1`, the fourth version (V4), in the terminal and in the browser. In a match
