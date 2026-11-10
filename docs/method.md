@@ -37,6 +37,8 @@ finding goes back as a fix round, landed as a new commit.
 
 The branch is then read whole before it merges: a whole-branch review, one fix wave that answers its findings, and a
 scoped re-review of that wave. A pull request carries the branch to `master`, and the merge waits on the re-review.
+The project's own branches are developed in a private working repository that runs no CI and reach this one at that
+point, once, as that pull request, where the engine suite runs on it (`.github/workflows/test.yml`).
 
 The close is the record of record: a dated document carrying the run, its measurements, every ruling with its cost,
 the review findings and the lessons. At the close the board ([`handover.md`](handover.md)) is updated, and a genuinely
