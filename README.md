@@ -1,26 +1,25 @@
 # Yokohama Assistant
 
-A computer player for the board game Yokohama (Hisashi Hayashi, 2016), built to play to win, with the rules engine it
-stands on and a terminal client and a browser client to play it in. It is for people who build and measure
-game-playing programs, and for people who play Yokohama and want a bot across the table or a game checked move by move.
+Yokohama Assistant exists to keep building a computer player for the board game Yokohama (Hisashi Hayashi, 2016),
+built to play to win. The current version is centered around a verified rules engine and provides a terminal client,
+and a graphical web version to play in. It is for people who build and measure game-playing programs, and for people
+who play Yokohama and want a bot across the table or a game checked move by move.
 
 [![Latest release](https://img.shields.io/github/v/release/jmoore2333/yokohama-assistant)](https://github.com/jmoore2333/yokohama-assistant/releases) [![Licence](https://img.shields.io/github/license/jmoore2333/yokohama-assistant)](LICENSE) [![Tests](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml)
 
-Yokohama is a merchant trading game for two to four players, set in Meiji-era Yokohama.
-
 ## The point: a bot that plays to win
 
-The goal of this project is a computer player that plays Yokohama to win and can show its work. Nearly everything
-else here serves that: the rules engine, so that a game the bot plays is a real game; the terminal and browser clients, so that
-you can sit across from it; and the record, so that a claim about its strength can be checked.
+The goal of this project is a computer player that plays Yokohama to win and can show its work. Nearly everything else
+here serves that: the rules engine, so that a game the bot plays is a real game; the terminal and browser clients, so
+that you can sit across from it; and the record, so that a claim about its strength can be checked.
 
 ![An animation of the terminal client through one game against the bot: the opening screen with the board and the
 player's options; the bot's turn, listed move by move with what it changed; the bot's own account of one of its moves,
 with the line it searched and its table of weighted features; the board at seven later turns; and the final scores,
 Red 82 and the bot's Blue 81](docs/images/cli-game.gif)
 
-One game against the bot that ships, in the terminal: its turn, its own account of a move, and the final score. The
-project's owner has won every game recorded against it so far, and this one, by a point, was the closest.
+<p align="center"><sub><em>One game against the bot that ships, in the terminal: its turn, its own account of a move,
+and the final score.</em></sub></p>
 
 How it is being built:
 
