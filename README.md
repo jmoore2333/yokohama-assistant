@@ -106,6 +106,12 @@ The game autosaves after every applied move, to `yokohama-game-<seed>.json` in t
 the file appears with your first move and not before. `abort` leaves the wizard and `q` leaves a game. The
 [CLI guide](docs/cli-guide.md) walks through every question and command.
 
+At the end of a game the screen holds the whole story, here a game the project's owner won against the bot by a point:
+
+![The terminal client at the end of a two-player game: the staggered board of ten areas with each area's pawns and
+building sites, beside it both players' yen, goods, pieces and technologies, the church and customs tracks and the
+three achievements, and under them the final scores, Red 82 and the bot's Blue 81](docs/images/cli-endgame.png)
+
 ### The browser client, on your own machine
 
 From a clone, with Docker running and `curl` installed:
