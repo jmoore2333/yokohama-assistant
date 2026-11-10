@@ -25,8 +25,9 @@ loads.
 
 ## 2. Playing at the hosted site
 
-Open `https://yokohama.moore.nyc`. Until the switch that opens the site to the public, Cloudflare Access also stands
-in front of the hostname and asks for its own login first; past it, every step below is the same with or without it.
+Open `https://yokohama.moore.nyc`. When the site's edge checks that a visitor is a person, an overlay reading
+"Checking that this is a person…" opens over the page with a **Cancel** button, and the request it held goes on once
+the check passes.
 
 ### The door
 
