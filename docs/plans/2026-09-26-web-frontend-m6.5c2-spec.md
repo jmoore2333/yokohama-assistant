@@ -1519,7 +1519,7 @@ Taken against the tree cycle C left (`web-room-m6.5c2c` at `014433df`, the revie
 handover `docs/plans/2026-09-28-web-frontend-m6.5c2d-handover.md` is the entry). The session began from §4's row D
 as revision 2.7 wrote it and ended with **row D REDEFINED and a row E ADDED**: the owner read the straw poll of what the
 lane leaves (152 de-duplicated items, compiled read-only from every close since M5.5 by a researcher and published as a
-private triage page, `https://claude.ai/artifact/Sg69JsMaQyXAEwoL4tLGrm`, the owner's decision per row saved on the
+private triage page (a private page of the owner's; its address is not recorded here), the owner's decision per row saved on the
 page and read back into the plans) and set a higher bar than "the wrap-up and polish". Each ruling carries the owner's
 words where the owner gave them, so it can be found by search. None changes a mechanism of §2.1, §2.5–§2.8 or §2.10;
 R-6.5c2.36 reverses one earlier ruling and says so.

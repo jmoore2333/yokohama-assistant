@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **Branch:** `web-frontend`, in the worktree `.claude/worktrees/cli-web-api-port-936d56`. Every command below runs from that worktree root unless it says `cd web`. Stage with explicit paths (`git add <path>`), never `git add -A`. Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01T6ECCjntqUQrLTCidp9e5L`.
+- **Branch:** `web-frontend`, in the worktree `.claude/worktrees/cli-web-api-port-936d56`. Every command below runs from that worktree root unless it says `cd web`. Stage with explicit paths (`git add <path>`), never `git add -A`. Commit messages end with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` and `Claude-Session:` and the session's own private address.
 - **Blast radius:** `git diff master..HEAD -- crates/yokohama-core` stays EMPTY; `SEMANTICS_REV` stays **7**; `crates/yokohama-web` changes only under `assets/art/**` and the one achievements row of `art.rs`'s `emitted_art_keeps_the_sheet_aspect` (`art.rs:404`). Check with `git diff --stat master..HEAD -- crates/` at Task 16.
 - **Per-edit gate (after EVERY task):** `cd web && npm test && npm run typecheck`. When a task touches `crates/`: also `cargo test -p yokohama-web` and `cargo clippy --workspace --all-targets -- -D warnings`. When a task touches `web/e2e/` or the layout: also `cd web && npm run e2e` (needs `npx playwright install chromium` once; it builds `dist` and starts the release server itself).
 - **Below 1201px:** the column stack and the bottom-pinned deck are unchanged (spec R8). Every `@media (max-width: 1200px)` rule that exists at HEAD stays; new layout rules go inside `@media (min-width: 1201px)`.
