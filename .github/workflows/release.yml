@@ -92,9 +92,21 @@ jobs:
   macos:
     name: macOS Apple Silicon
     needs: [tag]
-    runs-on: macos-14
+    # `macos-14` was retired from GitHub Actions on 2026-11-02: a job that names
+    # it is cancelled before it starts ("The configuration 'macos-14-arm64-us-xl'
+    # is not supported", read on the `v0.7.3-rc.1` run). A runner label is a
+    # dependency with an end date; the release candidate tag is what reads it.
+    runs-on: macos-15
     env:
-      RUSTFLAGS: -C target-cpu=native
+      # The baseline every Apple-silicon Mac has, named outright. This read
+      # `native` until 0.7.3, which compiles for whatever CPU the runner
+      # happens to be: on a runner newer than an M1 the published binary may
+      # use instructions an M1 lacks and fault there with an illegal
+      # instruction. The release contract (the decision log's 2026-07-22 row)
+      # promises "M1 or newer"; `native` kept that promise only while the
+      # runner was an M1. `apple-m1` is also this target's default in rustc,
+      # so the line states the default rather than changing it.
+      RUSTFLAGS: -C target-cpu=apple-m1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16

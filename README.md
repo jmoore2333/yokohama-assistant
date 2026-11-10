@@ -2,8 +2,7 @@
 
 Yokohama Assistant exists to keep building a computer player for the board game Yokohama (Hisashi Hayashi, 2016),
 built to play to win. The current version is centered around a verified rules engine and provides a terminal client,
-and a graphical web version to play in. It is for people who build and measure game-playing programs, and for people
-who play Yokohama and want a bot across the table or a game checked move by move.
+and a graphical web version to play in.
 
 [![Latest release](https://img.shields.io/github/v/release/jmoore2333/yokohama-assistant)](https://github.com/jmoore2333/yokohama-assistant/releases) [![Licence](https://img.shields.io/github/license/jmoore2333/yokohama-assistant)](LICENSE) [![Tests](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/jmoore2333/yokohama-assistant/actions/workflows/test.yml)
 
