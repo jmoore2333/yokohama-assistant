@@ -328,6 +328,12 @@ on a stack it cannot be, and it publishes after the wrap's merge, by a re-run of
 passes only after a merge commit, which brings the tagged commit onto master's history; after a squash or a rebase
 merge the tagged commit is not on it, so the tag is pushed again on the merged commit on master.
 
+**Before the bump, the dependencies' batch** (`CONTRIBUTING.md`'s Dependencies; the owner, 2026-11-10): read the
+repository's Dependabot alerts, what is marked runtime first; then `npm audit fix --package-lock-only
+--before=<the date a week ago>` in `web/` and in `worker/`, the Worker's pair by §2's command, and a targeted
+`cargo update -p <crate> --precise <version>` for each Rust advisory — commits of their own ahead of the version's,
+with §2's suites.
+
 **The bump, as the move to 0.6.0 measured it, and step 4's README clause since 0.7.3, which the cell
 `the_readme_quick_start_names_the_release_archive_of_the_workspace_version` (`crates/yokohama-web/src/lib.rs`) holds
 beside the npm cell above:**
