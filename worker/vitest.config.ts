@@ -12,6 +12,9 @@ import { configDefaults, defineConfig } from "vitest/config";
 // them, with the one-week floor every routine move takes (`CONTRIBUTING.md`,
 // Dependencies):
 //   npm update wrangler @cloudflare/vitest-plugin --package-lock-only --before=<the date a week ago>
+// It moves the pair FORWARD: on a lockfile that already holds a release newer
+// than the date npm refuses (ETARGET, measured), so a step back starts from
+// the older lockfile (`git checkout <commit> -- package-lock.json`).
 // Moving one alone makes npm install a second wrangler under the plugin and a
 // second miniflare and workerd under wrangler (measured: wrangler 4.158.0
 // beside plugin 1.6.1), and the pool then tests a toolchain other than the one
