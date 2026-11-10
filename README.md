@@ -10,8 +10,8 @@ Yokohama is a merchant trading game for two to four players, set in Meiji-era Yo
 
 ## The point: a bot that plays to win
 
-The goal of this project is a computer player that plays Yokohama to win and can show its work. Everything else here
-serves that: the rules engine, so that a game the bot plays is a real game; the terminal and browser clients, so that
+The goal of this project is a computer player that plays Yokohama to win and can show its work. Nearly everything
+else here serves that: the rules engine, so that a game the bot plays is a real game; the terminal and browser clients, so that
 you can sit across from it; and the record, so that a claim about its strength can be checked.
 
 ![An animation of the terminal client through one game against the bot: the opening screen with the board and the
@@ -20,7 +20,7 @@ with the line it searched and its table of weighted features; the board at seven
 Red 82 and the bot's Blue 81](docs/images/cli-game.gif)
 
 One game against the bot that ships, in the terminal: its turn, its own account of a move, and the final score. The
-project's owner won this one by a point.
+project's owner has won every game recorded against it so far, and this one, by a point, was the closest.
 
 How it is being built:
 
@@ -31,9 +31,9 @@ How it is being built:
   seat, and `why` for a move it made, replaying the game to do it and refusing to explain a move it cannot reproduce.
 - **Each version has to earn its place.** Two bots play the same deals from both seats. The claim, the size of the
   match and the rule that decides it are written down before a game is played, and the result is reported whichever
-  way it falls. So far: a first search bot that swept the players that only sample a move; a tree search that was
-  built, measured and set aside; a second evaluator that beat the first; a round of new features that came back null;
-  and the fourth version, which beat the second's play and is the bot that ships.
+  way it falls. So far: a first search bot that swept a player that only samples its moves; a tree search that was
+  built, measured and set aside; a second table of weights that beat the first; a round of new features that came
+  back null; and the fourth version, which beat the second's play and is the bot that ships.
 - **It is not finished.** It has not been measured against people, the project's own bar for "plays to win" is not
   claimed, and the work now is playing it, reading where it goes wrong and building the next version.
 
@@ -197,8 +197,8 @@ client's.
 ## Status
 
 - **The engine** implements the whole game as far as we can tell. That is a belief with evidence behind it, not a
-  proof: the engine and the independently written referee agree on legal moves and final scores in every differential
-  run, at `SEMANTICS_REV` 7, the rules revision every saved game is keyed to. One rules defect is already known,
+  proof: the engine and the independently written referee agree on legal moves and final scores across the differential
+  gates that run before every merge, at `SEMANTICS_REV` 7, the rules revision every saved game is keyed to. One rules defect is already known,
   tracked as [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62) (the Language School's yen can
   miss its own order's warehouse take, and its fix bumps the revision), and a
   [rules question](https://github.com/jmoore2333/yokohama-assistant/issues/new/choose) is welcome if you find another.
@@ -206,9 +206,9 @@ client's.
   What is open on it is polish, tracked in the [issues](https://github.com/jmoore2333/yokohama-assistant/issues).
 - **The bot** that ships is `v4-step9-draft1`, the fourth version (V4), in the terminal and in the browser. In a match
   registered in advance it beat `v2-padded`, which plays as its predecessor V2 does, with the whole interval above
-  parity ([the results ladder](docs/computer-player.md#5-the-results-ladder)). Nothing has been tuned on, or measured
-  against, a human player. It is production and provisional: the route to the bar, below, runs through a later freeze
-  that may name a different bot ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
+  parity ([the results ladder](docs/computer-player.md#5-the-results-ladder)). It is production and provisional: the
+  route to the bar, below, runs through a later freeze that may name a different bot
+  ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
 - **The bar.** The milestone bar, set in §1.9 of the [Phase-3 map](docs/plans/2026-07-25-phase3-map.md), asks at two
   players for a constructed scenario suite, statistical superiority over the preserved baseline players, an explanation
   for every move, and the owner's acceptance play through the CLI

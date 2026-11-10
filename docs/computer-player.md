@@ -5,8 +5,8 @@ about a move, and how strong it has been measured to be. Every figure on this pa
 with the record named beside it; the record carries the full account.
 
 **In short.** The first bots only sample a legal move, uniformly or weighted by the kind of move; they are the
-ladder's floor. The first search bot, which plays its own turn out and scores the position it reaches, swept that
-floor (3.3). A
+ladder's floor. The first search bot, which plays its own turn out and scores the position it reaches, swept the
+weighted sampler (3.3). A
 Monte Carlo tree search was then built and measured against that search at a matched budget; it lost, and the shallow
 search was kept (3.4). Three rounds on the evaluator followed: a second weight table that beat the first (V2), two
 candidate features that both washed out at their gates, so nothing shipped (V3), and a wider evaluator that beat V2's

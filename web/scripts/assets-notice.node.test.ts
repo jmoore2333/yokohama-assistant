@@ -86,8 +86,8 @@ describe("the notice and the pictures", () => {
 
     // Anti-vacuity: a reader that finds nothing would pass for the wrong reason, and so would an `<img>` reader
     // that never matches (the Worker README draws its phone pictures as `<img>`). Two directories are read today:
-    // `worker/docs/img/`, which the root README's one picture shares with the Worker README, and the web guide's
-    // `web/public/help/`.
+    // `worker/docs/img/`, which the root README's browser picture shares with the Worker README, and the web guide's
+    // `web/public/help/`; since the README's terminal animation, `docs/images/` is a third.
     expect([...dirs].sort().length).toBeGreaterThanOrEqual(2);
     expect(imgs, "the <img> reader read no picture").toBeGreaterThanOrEqual(1);
 
