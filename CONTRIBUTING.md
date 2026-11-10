@@ -10,7 +10,9 @@ decision log holds every rules ruling; [`CLAUDE.md`](CLAUDE.md), the standing ru
 
 ## How a change lands
 
-Work on a branch and open a pull request to `master`. Write the failing test first, then run the per-edit suites and
+Work on a branch and open a pull request to `master`. The project's own cycles are developed in a private working
+repository and arrive here whole, each as one reviewed pull request, so `master`'s history is the merges of finished
+branches; your pull request is opened here, like theirs. Write the failing test first, then run the per-edit suites and
 the lint gate, each green with zero warnings:
 
 ```bash

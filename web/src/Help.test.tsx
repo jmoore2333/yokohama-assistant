@@ -147,6 +147,39 @@ describe("the help panel and the lobby", () => {
     expect(text).not.toContain("Sign in first");
   });
 
+  // **The sign-in sentence says what the door does on the public day** (S4b
+  // Task 4; S4a's close §4): the hosted site signs a player in by the e-mail
+  // code `docs/web-guide.md` §2 names (a provider is the owner's to turn on, and
+  // the guide and this panel gain the word together), a self-hosted server with
+  // no sign-in of its own has a plain name chosen once, and one behind
+  // Cloudflare Access takes Access's own. A sentence that put the hosted site
+  // behind Access would be true only until the switch, and this panel ships with
+  // the release that makes it.
+  //
+  // **Every needle is a phrase only THIS sentence carries** — "this browser
+  // remembers it" alone is also the corner sentence's, so it would go on
+  // passing with the sign-in clause gone (S4-pre, P-15). The corner's own door
+  // words follow: switch player where a name was chosen, change name and sign
+  // out where the edge signed you in, the hosted site among them
+  // (`Band.tsx`'s `edge = me.mode !== "open"`).
+  it("says how Play with friends signs a player in, and what each door's corner offers", () => {
+    render(<Help />);
+    const text = section("Starting a game");
+    expect(text).toContain("you sign in with a code sent to your e-mail");
+    expect(text).toContain(
+      "no sign-in of its own has you choose a name once and this browser remembers it",
+    );
+    expect(text).toContain("the sign-in is Access\u2019s own");
+    expect(text).not.toContain("or a provider");
+    // The retired clause, which made the hosted site's sign-in Access's.
+    expect(text).not.toContain("on a server with no sign-in of its own");
+    expect(text).not.toMatch(/behind\s+Cloudflare Access it is/);
+    // The corner, under all three doors.
+    expect(text).toContain("with no sign-in, switch player lets you choose another");
+    expect(text).toContain("at the hosted site or behind Access, change name sets the name");
+    expect(text).toContain("Sign out is beside it");
+  });
+
   // **The corner, in the paragraph that describes the LOBBY** (spec §6.6's
   // third edit, ruling R-7-1). The same fact is stated again in the Talking
   // section, deliberately — a player setting up a table and a player about to

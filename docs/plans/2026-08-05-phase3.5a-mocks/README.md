@@ -31,7 +31,7 @@ byte-honest to the recorded setup. **Mocks, not implementation** — nothing her
 
 **View in a terminal (authoritative):** `cat docs/plans/2026-08-05-phase3.5a-mocks/main-frame.ans`
 in a window at least 200 columns wide. **Browser review copy:** the round-1 artifact page
-(https://claude.ai/code/artifact/6d1aded6-7492-4178-9435-401f595b970f) — colors approximate ANSI.
+(a private page of the owner's; its address is not recorded here) — colors approximate ANSI.
 
 **Regenerate / iterate:** `python3 docs/plans/2026-08-05-phase3.5a-mocks/mockgen.py` (from the repo
 root). Every emitted line is asserted ≤ 200 visible columns.

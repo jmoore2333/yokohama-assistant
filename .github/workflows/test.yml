@@ -1,6 +1,16 @@
 name: test
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - "crates/yokohama-core/**"
+      - "crates/gen-data/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/test.yml"
   pull_request:
     paths:
       - "crates/yokohama-core/**"
@@ -12,17 +22,21 @@ on:
   workflow_dispatch:
 
 # **What runs here: the engine crate's suite** (`cargo test -p yokohama-core`),
-# on a pull request that changes one of the Rust inputs listed above, and by
-# hand. A web-only pull request runs nothing.
+# on a pull request or a push to master that changes one of the Rust inputs
+# listed above, and by hand. A web-only or docs-only change runs nothing.
 #
 # **What does NOT run here, and why.** The three web jobs are `web.yml`'s and
 # run on dispatch alone (R-6.5c2.31). The owner's words: "what would the point
 # be of having web even on merge into master - if we're running those full
 # suites locally? The key to ensure consistency are the core crates".
 #
-# There is no `push` trigger: in this repository a master push is a PR merge
-# whose merge ref the pull request's run already tested, and push plus
-# pull_request ran every job twice.
+# **The master push.** From the repository's public switch a push to master
+# runs the engine suite under the same path filters as a pull request, so
+# master carries a live reading of its own and not only the reading its merged
+# pull request had. A docs-only push runs nothing. The lab remote runs no
+# Actions. A pull request's run and its merge's run are two runs by design:
+# on a public repository Actions minutes are not metered, so the second run
+# costs nothing.
 #
 # **The one coupling, stated.** The lint gate compiles the web layer with the
 # workspace, and the wire corpus pins the engine's wire-visible words; both run
@@ -34,8 +48,8 @@ on:
 # the other per-edit Rust suites (the CLI, the oracle, difftest, the bridge and
 # the two example targets) plus the clippy lint gate, as CLAUDE.md's Commands
 # list them; nothing here claims them. GitHub side: this workflow was disabled
-# on 2026-09-28 (the owner's minutes at 90% for the month) and stays so through
-# E's merge.
+# on 2026-09-28 (the owner's minutes at 90% for the month) and is re-enabled
+# at the public switch.
 
 permissions:
   contents: read
@@ -49,10 +63,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Pinned to the version the job then prints (the toolchain file's), not
       # whatever `stable` is that day. Keep this in step with rust-toolchain.toml.
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # the stable branch at 2026-10-16
         with:
           toolchain: 1.97.1
       - run: cargo test -p yokohama-core

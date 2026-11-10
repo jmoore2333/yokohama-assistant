@@ -190,19 +190,22 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         plays in this browser &mdash; nobody signs in, the door lists those games under{" "}
         <strong>On this device</strong>, and the last section of this page is about them.{" "}
         <strong>Play with friends</strong>{" "}
-        goes to the server, which has to know who you are before it will show you a table: on a server
-        with no sign-in of its own you choose a name once and this browser remembers it; behind
-        Cloudflare Access it is your Access sign-in. What you land on
+        goes to the server, which has to know who you are before it will show you a table. On the
+        hosted site you sign in with a code sent to your e-mail; a server you run yourself with no
+        sign-in of its own has you choose a name once and this browser remembers it, and behind Cloudflare
+        Access the sign-in is Access&rsquo;s own. What you land on
         there is the <strong>lobby</strong>, at an address of its own, with one link back to the
         door at the top of it. It has three lists &mdash; <em>Your tables</em>, the
         tables you already sit at; <em>Open tables</em>, every other table on the server still
         waiting for players, whoever opened it; and <em>Being played</em>, the ones you can spectate
         &mdash; and <em>New table</em>, which is the form. Other people&rsquo;s finished games sit
         folded under <em>Finished</em>, with <em>View</em>. The lobby&rsquo;s top corner says who
-        you are <strong>playing as</strong>. Where you chose a name, <em>switch player</em> lets you
-        choose another &mdash; the tables you sat at stay with the old one. Behind Access,{" "}
+        you are <strong>playing as</strong>. Where you chose a name on a server of your own with no
+        sign-in, <em>switch player</em> lets you choose another &mdash; the tables you sat at stay
+        with the old one. Where you signed in, at the hosted site or behind Access,{" "}
         <em>change name</em> sets the name the seats you take and the messages you send are labelled
-        with, and this browser remembers it; leave it blank and your address is used.
+        with, and this browser remembers it; leave it blank and your address is used.{" "}
+        <em>Sign out</em> is beside it.
       </p>
       <p>
         The form is <strong>one row per seat</strong>, in the colours&rsquo; own order &mdash; each

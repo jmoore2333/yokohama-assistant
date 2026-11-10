@@ -89,9 +89,9 @@
     // nothing with it on: a wake is counted only where the object already
     // holds a table (spec §2.4).
     "YOKOHAMA_WEB_COUNT_WAKES": "on",
-    // Production's declaration (cycle F, R-FP2): the pool never deploys, so
-    // never a keyed build — the deploy guard refuses `on` here. The shell holds
-    // it to a string and reads nothing else of it.
+    // The pool never deploys, so never a keyed build, and the deploy guard
+    // refuses `on` here (production's own declaration is `on` since 0.7.3's
+    // stage 2). The shell holds it to a string and reads nothing else of it.
     "YOKOHAMA_TURNSTILE": "off"
   }
 }

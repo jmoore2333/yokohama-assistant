@@ -9,7 +9,7 @@ page is the map around it, and §6 names the documents that go deeper.
 The browser client is the same engine, the same words and the same legal-move gate as the terminal
 ([`docs/cli-guide.md`](cli-guide.md)), served over HTTP and drawn in a browser. It is a second frontend over one
 engine, never a second engine: the server routes, scopes and serializes, and computes nothing about the game, so the
-terminal and the browser cannot disagree about a rule.
+terminal and the browser, at the same rules revision, cannot disagree about a rule.
 
 It runs three ways:
 - **The hosted site**, `https://yokohama.moore.nyc`: tables for two to four players, with friends or against the
@@ -156,9 +156,11 @@ so only this machine reaches it.
   with `deploy/update.sh`.
 - [`worker/README.md`](../worker/README.md), the Cloudflare host: a Worker, Durable Objects and an R2 bucket, its
   doors and identity sources (§1.5), and its build and deploy (§9). **A first deploy of your own Worker records it in
-  the deploy guard's `DEPLOYMENTS` table before the guard runs**: the guard holds each file in that table to its own
-  record, its Worker's name, bucket and routes, and holds any other configuration to this repository's production
-  file, so a Worker it has no record of is refused. The first deploy then runs the deploy guard and `wrangler deploy`
+  the deploy guard's `DEPLOYMENTS` table before the guard runs**: in your own copy of the repository you add a row to
+  that table, in [`worker/scripts/deploy-guard.mjs`](../worker/scripts/deploy-guard.mjs), keyed by your configuration
+  file and naming its Worker, its archive bucket, its two rate-limit namespaces and its routes. The guard holds each
+  file in that table to its own record, and holds any other configuration to this repository's production file, so a
+  Worker it has no record of is refused. The first deploy then runs the deploy guard and `wrangler deploy`
   by hand, skipping the secrets guard alone, since a Worker that does not exist yet holds no secret; from the second
   deploy on, the `npm run deploy` scripts run both guards (§9.3).
 
@@ -172,13 +174,16 @@ These can read like gaps and are not; each is a property the client keeps, with 
   cards, never from the engine's private state. The reason: nobody at the table, the bot included, reads a card the
   physical table would not show them, and walking every position of the replay returns your own hands and no
   other's.
-- **The bot's seat is the production identity, the same one the terminal plays.** A game that is not over opens
-  exactly when this build reconstructs the bot recorded in it: an update that still runs a game's bot keeps the game
-  playable, and one that no longer does refuses it with the reason, never playing it as another bot. A finished game
-  always opens. The reason: a game is one game only if the bot that started it plays all of it.
+- **The bot's seat is the production identity, the same one the terminal plays.** A game that is not over, saved at this
+  build's rules revision, opens exactly when this build reconstructs the bot recorded in it: an update that still runs a
+  game's bot keeps the game playable, and one that no longer does refuses it with the reason, never playing it as
+  another bot. The reason: a game is one game only if the bot that started it plays all of it. A finished game opens,
+  whichever bot played it, since no bot moves in it again; a game saved at another rules revision, finished or not, does
+  not open, by design.
 - **Every move goes through the engine's legal list.** The server routes, scopes and serializes and computes nothing
   about the game: a move the engine did not list is refused, and every list the client shows came from the engine.
-  The reason: one engine decides, so the terminal and the browser cannot disagree about a rule.
+  The reason: one engine decides, so the terminal and the browser, at the same rules revision, cannot disagree about
+  a rule.
 - **Your own server answers only the host names it is told.** An unlisted `Host` is answered 421. The reason: a page
   on another site can make a browser send requests to your server under a name the attacker controls, by changing
   what that name resolves to, and the `Host` the browser sends is the one thing that name cannot forge. Loopback is

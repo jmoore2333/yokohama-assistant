@@ -136,6 +136,21 @@ Answer: Depends on strategy - Ball for Order focus (+2 VP per order),
 
 ---
 
+## Data provenance (cards, boards, tokens)
+
+All static game data is **verified, three ways** (program of 2026-07-16/17, artifacts in
+`docs/plans/2026-07-16-card-verification/`): blind per-cell re-transcription of the TTS sprite
+sheets, diffed against the YAML sources, with counts anchored to the rulebook's printed
+component list ("Contents of the Game": 36 order cards — corner indices 1–36 verified present
+exactly once; 30 technology cards — per-title copy counts summing to the rulebook's 30; 24
+building sites re-modeled to their positional space rewards). Jeremy's physical box check
+(2026-07-18) closed every flagged exception — including the full 5-Power token pool, board
+layouts, and canal geometry — and every owner ruling since is recorded in
+[`guidingpath.md`](../../guidingpath.md)'s decision log. The engine's registries are generated from
+the YAML by `gen-data`; a `rules_hash` stamps every saved game with the data that produced it.
+
+---
+
 ## Version Notes
 
 - Based on OKAZU Brand English rulebook

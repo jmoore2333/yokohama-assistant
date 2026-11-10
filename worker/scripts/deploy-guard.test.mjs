@@ -1291,7 +1291,7 @@ describe("the deploy guard", () => {
       "assets/build-values.json is absent, so nothing says whether the build carries a Turnstile site key — " +
         "run npm run build in web/, then in worker/",
     ]);
-    // The committed production shape: off, keyless, worker.
+    // Off over a keyless build at source access: the private file's committed shape.
     expect(deployGuard(worker({ "wrangler.jsonc": declared(PRODUCTION, '"off"') })), "off, no key, worker").toEqual([]);
     // The door is read as the shell reads it: trimmed, and matched exactly.
     const spaced = OPEN.replace('"YOKOHAMA_WEB_IDENTITY": "open"', '"YOKOHAMA_WEB_IDENTITY": " open ", "YOKOHAMA_TURNSTILE": "on"');
@@ -1877,14 +1877,15 @@ describe("the committed configurations", () => {
       expect(value?.assets?.run_worker_first, name).toEqual(["/api/*", "/enter"]);
     }
   });
-  // Cycle F (R-FP2, R-FP4): the declaration in each of the six, read off the
-  // file — `on` in the open window's file alone, until the window moves
-  // production to `workos` (the auth cycle's Task 10).
-  it("declare YOKOHAMA_TURNSTILE off in five and on in the open file alone", () => {
+  // Cycle F (R-FP2, R-FP4) and the window's stage 2 (`worker/RUNBOOK.md` §23):
+  // the declaration in each of the six, read off the file — `on` where the door
+  // is open or provider-signed (the open file, production and the dev file),
+  // `off` behind Access (the private file) and in the pool, which never deploys.
+  it("declare YOKOHAMA_TURNSTILE off in three and on in production, the dev file and the open file", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     for (const [name, want] of [
-      ["wrangler.jsonc", "off"],
-      ["wrangler.dev.jsonc", "off"],
+      ["wrangler.jsonc", "on"],
+      ["wrangler.dev.jsonc", "on"],
       ["wrangler.private.jsonc", "off"],
       ["wrangler.test.jsonc", "off"],
       ["wrangler.open.test.jsonc", "off"],
@@ -1896,11 +1897,12 @@ describe("the committed configurations", () => {
   });
   // The WHOLE guard over the six committed files, laid into a scratch package
   // beside a tree of each kind (the amendment's cells): production, the dev
-  // file and the private file pass over a keyless build, the open file over a
-  // keyed one — and the open file FAILS check 12 over a keyless tree, by design
-  // (the window builds a keyed client before `npm run deploy:open`), as the
-  // three at source `access` fail over a keyed one.
-  it("pass the whole guard: production, the dev file and the private file over a keyless build, the open file over a keyed one", () => {
+  // file and the open file pass over a keyed build, the private file over a
+  // keyless one — and each of the three that declare `on` FAILS check 12 over a
+  // keyless tree, by design (the window builds a keyed client before it
+  // deploys; `worker/RUNBOOK.md` §23 stage 2), as the private file, at source
+  // `access`, fails over a keyed one.
+  it("pass the whole guard: production, the dev file and the open file over a keyed build, the private file over a keyless one", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
     const committed = Object.fromEntries(
       [
@@ -1915,23 +1917,21 @@ describe("the committed configurations", () => {
         readFileSync(join(root, name), "utf8"),
       ]),
     );
-    expect(deployGuard(worker(committed)), "production, keyless").toEqual([]);
-    expect(deployGuard(worker(committed), undefined, "wrangler.dev.jsonc"), "the dev file, keyless").toEqual([]);
-    expect(deployGuard(worker(committed), undefined, "wrangler.private.jsonc"), "the private file, keyless").toEqual([]);
-    expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.open.jsonc"), "the open file, keyed").toEqual([]);
-    expect(deployGuard(worker(committed), undefined, "wrangler.open.jsonc"), "the open file, keyless").toEqual([
-      "wrangler.open.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
-        "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
-    ]);
-    // Production and the dev file are provider-signed since the window's stage 1 (source `workos`, Turnstile still
-    // `off` under Access): a keyed tree is a DECLARATION mismatch there, not a door mismatch; the private file keeps
-    // Access, where the key itself is refused.
-    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc"]) {
-      expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([
-        `${file} leaves YOKOHAMA_TURNSTILE off but the assets tree's build carries a site key — a keyed build at ` +
-          "the open door or a provider-signed worker door declares on: set the var on, or build the client without the key",
+    // The three that declare `on`: production and the dev file at source `workos`, the open file at the open door.
+    for (const file of ["wrangler.jsonc", "wrangler.dev.jsonc", "wrangler.open.jsonc"]) {
+      expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, file), `${file}, keyed`).toEqual([]);
+      expect(deployGuard(worker(committed), undefined, file), `${file}, keyless`).toEqual([
+        `${file} sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — ` +
+          "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
       ]);
     }
+    // The plain run judges production: refused over a keyless tree as `--config wrangler.jsonc` is.
+    expect(deployGuard(worker(committed)), "production, keyless, the plain run").toEqual([
+      "wrangler.jsonc sets YOKOHAMA_TURNSTILE on but the assets tree's build carries no site key (build-values.json) — " +
+        "build the client with YOKOHAMA_TURNSTILE_SITEKEY set",
+    ]);
+    // The private file keeps Access: it passes keyless, and a keyed tree is refused for the key itself.
+    expect(deployGuard(worker(committed), undefined, "wrangler.private.jsonc"), "the private file, keyless").toEqual([]);
     expect(deployGuard(worker({ ...committed, ...KEYED }), undefined, "wrangler.private.jsonc"), "the private file, keyed").toEqual([
       "wrangler.private.jsonc leaves YOKOHAMA_TURNSTILE off under identity worker, source access but the assets tree's build carries " +
         "a site key — a keyed build is the open door or a provider-signed worker door (R-FP4, narrowed by the auth " +

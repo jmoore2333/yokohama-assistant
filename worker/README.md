@@ -118,7 +118,8 @@ api::dispatch(games: &Games, host: &Host, identity: Identity, req: &ApiRequest) 
 each of those four is a trait: a seam a host fills in. The layer routes, scopes and serializes, and
 it computes nothing about the game itself. Every legal move comes from the engine
 (`crates/yokohama-core`) and every word from the terminal client's own model
-(`crates/yokohama-cli`), so the terminal and the browser cannot disagree about a rule.
+(`crates/yokohama-cli`), so the terminal and the browser, at the same rules revision, cannot disagree
+about a rule.
 
 A game is stored as three JSON documents:
 
@@ -309,7 +310,7 @@ first has three sources.
 **The `worker` door has three identity sources, one per deployment** (the auth cycle; design §4.1).
 `YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under it — `access`, `oidc` or `workos` —
 with no default and refused beside `open`; the layer's door stays `worker` and the wire never learns the
-source (`/api/me` reads `cf-access` under all three). `access` is the section below, today's shape.
+source (`/api/me` reads `cf-access` under all three). `access` is the section below, the private Worker's and the pool's source.
 `oidc` signs a player in against ANY issuer that publishes a discovery document (Auth0, Keycloak,
 Authentik, Google and the like): the shell runs the code flow once, at the callback on `/enter`,
 verifies the ID token, and mints its own session cookie — `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID`,
@@ -336,7 +337,8 @@ rate-limit namespaces, source `access`; the custom domain `yokohama-test.moore.n
 `yokohama.moore.nyc`, a destination of the same Access application; `npm run deploy:private`). Cloudflare
 Access may stay in front of a provider-signed Worker, which then ignores the assertion.
 
-**Access — `worker`, this repository's configuration** (`wrangler.jsonc`).
+**Access — `worker` at source `access`** (`wrangler.private.jsonc` and the pool's `wrangler.test.jsonc`;
+production's `wrangler.jsonc` until the window's stage 1, 2026-10-19).
 - A Cloudflare Access application covers the hostname. The Worker verifies Access's signed assertion
   on every request before anything reads it (§7.6), and the objects' layer runs its `worker` mode,
   trusting only the `X-Yokohama-User` header the Worker sets.
@@ -1861,17 +1863,18 @@ the first deploy, so a class added later needs a tag of its own; and the private
 list; secrets survive a deploy. RUNBOOK §3 gives every variable and what its absence means. In
 brief: `YOKOHAMA_WEB_IDENTITY` names the door, `worker` here (§1.5); `ACCESS_TEAM_DOMAIN` and
 `ACCESS_AUD` configure Access (§7.6) and are required at source `access` alone;
-`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under `worker` — `access` here, `workos` after
-the window — with `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID` and `YOKOHAMA_SESSION_DAYS` its arms'
+`YOKOHAMA_IDENTITY_SOURCE` names who vouches for an address under `worker` — `workos` here and in the dev
+file, `access` in the private file and the pool's test file — with `YOKOHAMA_OIDC_ISSUER`, `YOKOHAMA_OIDC_CLIENT_ID` and `YOKOHAMA_SESSION_DAYS` its arms'
 variables and `YOKOHAMA_OIDC_CLIENT_SECRET` and `YOKOHAMA_SESSION_SECRET` its two secrets (§1.5; RUNBOOK
 §3); `YOKOHAMA_DEV_DOOR` is `off`, and `wrangler.dev.jsonc` sets it
 `on` for the live tiers (security S2b);
 `YOKOHAMA_WEB_ARCHIVE` is `r2`;
 `YOKOHAMA_WEB_TABLE_TTL_DAYS` is `90` and `YOKOHAMA_WEB_OPEN_TABLE_TTL_DAYS` `7`; the NAS's three
 chat variables keep the NAS's defaults;
-`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `off`, a deploy declaration
+`YOKOHAMA_WEB_COUNT_WAKES` is unset (§9.5); `YOKOHAMA_TURNSTILE` is `on`, a deploy declaration
 the Worker only holds to a string, which the deploy guard holds to the client build's site key and
-to the open door, and which `wrangler.open.jsonc` alone sets `on` (RUNBOOK §3); and
+to the identity, and which `wrangler.dev.jsonc` and `wrangler.open.jsonc` set `on` beside it, the
+private and pool files `off` (RUNBOOK §3); and
 `YOKOHAMA_WEB_TEST_CLOCK` exists only in the pool's two files, as does `YOKOHAMA_DIAGNOSTIC_SEEDS`,
 `on` there so the corpus walk's seeded tables with an open seat are honoured, and refused by the
 deploy guard in any deployed file (check 4b). A bad value answers the API's

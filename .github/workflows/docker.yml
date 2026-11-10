@@ -16,8 +16,8 @@ name: docker
 # change to the image's inputs (`deploy/Dockerfile`, `deploy/smoke-image.sh`,
 # `crates/`, `web/`, the lockfile, the toolchain file). R-C9's fifteen-minute
 # rule is retired with the trigger, since nothing runs this on a push or pull
-# request any more. GitHub side: disabled since 2026-09-28 and it stays so
-# through E's merge.
+# request any more. GitHub side: disabled since 2026-09-28, and it stays
+# disabled; enabling it again is the owner's decision.
 #
 # **Which runs are COLD, and which are WARM.** `cache-to: type=gha,…,mode=max`
 # exports every layer of every stage, the server stage's build step among
@@ -64,14 +64,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       # The PATH context (`context: .`), not the action's default Git context.
       # The Git context re-fetches the commit inside BuildKit and ignores the
       # checkout, and this build must read the checkout's
       # `deploy/Dockerfile.dockerignore`.
       - name: Build the image — no project link
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/Dockerfile
@@ -87,7 +87,7 @@ jobs:
       # stage's `build:client` and what follows it re-run: the ARG sits
       # directly above that step.
       - name: Build it again WITH a project link
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: deploy/Dockerfile
