@@ -2,7 +2,7 @@ import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { configDefaults, defineConfig } from "vitest/config";
 
 // **The POOL** (spec §5.2): Cloudflare's Workers Vitest integration,
-// `@cloudflare/vitest-plugin` 1.2.3, whose entry is the `cloudflareTest()`
+// `@cloudflare/vitest-plugin` 1.4.8, whose entry is the `cloudflareTest()`
 // Vite plugin. Every cell runs INSIDE workerd, against the Worker a pool
 // configuration describes — never `wrangler.jsonc`, which is production's.
 //
