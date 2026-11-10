@@ -100,10 +100,12 @@ jobs:
     env:
       # The baseline every Apple-silicon Mac has, named outright. This read
       # `native` until 0.7.3, which compiles for whatever CPU the runner
-      # happens to be: on a runner newer than an M1 the published binary would
-      # use instructions an M1 lacks and die on it with an illegal instruction.
-      # `apple-m1` is also this target's default in rustc, so the line states
-      # the default rather than changing it.
+      # happens to be: on a runner newer than an M1 the published binary may
+      # use instructions an M1 lacks and fault there with an illegal
+      # instruction. The release contract (the decision log's 2026-07-22 row)
+      # promises "M1 or newer"; `native` kept that promise only while the
+      # runner was an M1. `apple-m1` is also this target's default in rustc,
+      # so the line states the default rather than changing it.
       RUSTFLAGS: -C target-cpu=apple-m1
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
