@@ -88,7 +88,7 @@ format (game count, rubric — its inherited "brake behind" line contradicts can
 
 ## Track 2 — The Language School hotfix: issue #62, after V4's vetting and before V5
 
-**State:** one rules defect at `SEMANTICS_REV` 7, found by the technology-card review of 2026-10-04 and ruled a defect by you: Language School's yen can miss its own order's warehouse take. Its fix moves legality, so it bumps the rev to 8 and is a cycle of its own, **after the V4 vetting (Track 1) and before any V5 planning** (rulings, 13). It is tracked as **issue #62**, which summarizes it. The entry document is `docs/plans/2026-10-04-language-school-hotfix-handover.md` on the branch `docs-language-school-hotfix-handover` (`fd3c2074`, on origin and the lab, unmerged until the cycle opens): the ruling, the mechanism, a reproduction, the impact chain, the fix shapes and the open questions.
+**State:** one rules defect at `SEMANTICS_REV` 7, found by the technology-card review of 2026-10-04 and ruled a defect by you: Language School's yen can miss its own order's warehouse take. Its fix moves legality, so it bumps the rev to 8 and is a cycle of its own, **after the V4 vetting (Track 1) and before any V5 planning** (rulings, 13). It is tracked as **issue #62**, which summarizes it. The entry document is `docs/plans/2026-10-04-language-school-hotfix-handover.md` on the branch `docs-language-school-hotfix-handover` (`fd3c2074`, on the lab, unmerged until the cycle opens; off origin since 2026-11-09, by the two-repositories rule): the ruling, the mechanism, a reproduction, the impact chain, the fix shapes and the open questions.
 
 ## Track 3 — The art lane: local, on `art-replacement-spec`, by its own rule
 
@@ -139,7 +139,7 @@ format (game count, rubric — its inherited "brake behind" line contradicts can
 9. The web lane's V5 notes (a sighted Keep; per-good requirement weights) — bot-behaviour changes
    owing their own pre-registration when a cycle takes them up.
 13. The Language School hotfix (2026-10-23) — tracked as issue #62: NOT merged in S4a, the docs branch
-    `docs-language-school-hotfix-handover` stays on origin unmerged, and the `SEMANTICS_REV` 7 → 8 bump waits for its own
+    `docs-language-school-hotfix-handover` lives on the lab unmerged (off origin since 2026-11-09), and the `SEMANTICS_REV` 7 → 8 bump waits for its own
     cycle after the V4 vetting (Track 1) and before any V5 planning.
 
 Rulings 10 (D32), 11 (passkeys) and 12 (the e2e's whole-game spec) are CLOSED; their records are the ledger's rows and the decision log.
