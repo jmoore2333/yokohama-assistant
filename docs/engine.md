@@ -19,6 +19,10 @@ other surface asks the engine and computes no rule of its own: the terminal clie
 ([`web-lane.md` §4](web-lane.md#4-the-architecture-and-the-standing-rules)) apply only moves from the engine's legal
 list, and the bot ([`computer-player.md`](computer-player.md)) chooses among the moves the engine offers.
 
+The same crate also holds the computer player: the evaluator (`eval`), the controllers (`greedy`, `lookahead`, `mcts`),
+the arena that measures them and the driven-fixture harness. They are built on the functions this page describes and
+are no part of the rules.
+
 ## 2. A game through the API
 
 The smallest complete program: build the rules, deal a seeded two-player game, settle the starting orders, loop legal
@@ -66,9 +70,9 @@ non-termination guard, `HONEST_MAX_TURNS`; no pick rule is promised to finish. `
 breakdowns, breaking a tie clockwise from the start player.
 
 For more, `cargo run --release -p yokohama-core --example selfplay -- <games> <players> <base_seed>` plays seeded random
-games and checks every state ([`examples/selfplay.rs`](../crates/yokohama-core/examples/selfplay.rs)); its loop,
-`run_random_game` in [`tests/common/mod.rs`](../crates/yokohama-core/tests/common/mod.rs), is the tree's simplest
-complete game driver.
+games and checks every state ([`examples/selfplay.rs`](../crates/yokohama-core/examples/selfplay.rs)). Its driver is in
+[`tests/common/mod.rs`](../crates/yokohama-core/tests/common/mod.rs), where `run_random_game` is the tree's simplest
+complete game loop.
 
 ## 3. State, moves and the turn
 
@@ -97,14 +101,14 @@ with no decline, since the gain is unconditional; a warehouse icon queues `Wareh
 ## 4. Where legality is decided
 
 **`get_legal_moves` is the authority** ([`game/legal_moves.rs`](../crates/yokohama-core/src/game/legal_moves.rs)): the
-complete, ordered list of legal moves for the current state. Every other legality answer in the crate is defined, and
-tested, as agreeing with it.
+complete, ordered list of legal moves for the current state. Every other legality answer in the crate is defined
+against it: tested as agreeing with it, or documented as deliberately wider (`is_move_legal`, below).
 
 **`apply_move` is the checked boundary** ([`game/apply_move.rs`](../crates/yokohama-core/src/game/apply_move.rs)). It
 rejects a move that is not in the current legal list with `MoveError::NotLegal`, then applies it. Behind it,
-`apply_move_unchecked` is the raw transition: it checks only the structure of the move in hand and reads neither the
-turn phase nor the list, so it returns `Ok` for some moves that are not legal. It is for a caller that has just taken
-the move from the legal list, such as the fuzz driver, which would otherwise build the list twice per move.
+`apply_move_unchecked` is the raw transition: it checks only the structure of the move in hand, not whether the turn
+phase allows it or the list holds it, so it returns `Ok` for some moves that are not legal. It is for a caller that has
+just taken the move from the legal list, such as the fuzz driver, which would otherwise build the list twice per move.
 
 **An untrusted record gets the exact single-move check.** `is_listed_move`
 ([`game/move_legality.rs`](../crates/yokohama-core/src/game/move_legality.rs)) answers whether one move is in the legal
@@ -135,8 +139,8 @@ board derivation version.
 `SEMANTICS_REV`; `push_move` appends each applied move; `stamp_terminal_digest` records a digest of the final state.
 Three functions read a record back:
 
-- `replay` rebuilds the setup and applies every event through `apply_move`, the card reveals of a live-tracked game
-  included; on a rules-hash or revision mismatch it warns and replays anyway.
+- `replay` rebuilds the setup and folds the events in order, every move through `apply_move` and every card reveal of
+  a live-tracked game through its own state method; on a rules-hash or revision mismatch it warns and replays anyway.
 - `replay_strict` refuses a mismatched rules hash and a missing or mismatched revision, checks the invariants after
   every event, and verifies a stamped terminal digest.
 - `state_at(record, k)` is the state after the first `k` events, so `state_at(record, n)` is the position in which event
@@ -164,11 +168,12 @@ field, so a new one fails to compile there until it is classified, and it refuse
 states, `from_view(&view, &rules, seed)` then `sample()` per world, each consistent with what the seat has seen. A
 sampled world is not safe to roll forward across a port or laboratory refill, which reveals a deck card.
 
-**A bot takes a `PlayerView`, never a raw `GameState`.** `HonestAgent`, the agent interface in
-[`game/agent.rs`](../crates/yokohama-core/src/game/agent.rs), cannot name `GameState` in its method signatures, so types
-hold the boundary. One channel stays open by nature: the public board is generated from the seed, so a small seed can be
-recovered from it, and the hidden set with it; an evaluation draws full-range `u64` seeds and records them. How the bot
-uses the view is in [`computer-player.md` §1](computer-player.md#1-what-a-contestant-is).
+**A bot takes a `PlayerView`, never a raw `GameState`.** Neither agent interface names `GameState` in a method
+signature, so types hold the boundary: `HonestAgent` in [`game/agent.rs`](../crates/yokohama-core/src/game/agent.rs),
+and `ArenaAgent` in [`game/arena.rs`](../crates/yokohama-core/src/game/arena.rs), the one the shipped bot and every
+measured contestant implement. One channel stays open by nature: the public board is generated from the seed, so a small
+seed can be recovered from it, and the hidden set with it; an evaluation draws full-range `u64` seeds and records them.
+How the bot uses the view is in [`computer-player.md` §1](computer-player.md#1-what-a-contestant-is).
 
 ## 7. How it is verified
 
@@ -204,7 +209,7 @@ Arena's implementation so that games captured there replay through this engine, 
 2026-08-08 rows.
 
 A rules question, where the engine allows, refuses or scores something differently from the rules or from your table,
-goes in the repository's **Rules question** issue form, one of the two a
+goes in the repository's **Rules question** form, one of the two forms a
 [new issue](https://github.com/jmoore2333/yokohama-assistant/issues/new/choose) offers. One rules defect is known,
 tracked as
 [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62); its fix bumps `SEMANTICS_REV`.

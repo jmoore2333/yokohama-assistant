@@ -9,11 +9,36 @@ bot to play against, and for people who build and measure game-playing programs.
 Yokohama is a merchant trading game for two to four players, set in Meiji-era Yokohama. This repository holds its
 rules as a library, two ways to play it on a screen, and a bot you can ask why it played what it did.
 
-## Try it
+## Try it in a browser
 
 Open [yokohama.moore.nyc](https://yokohama.moore.nyc) and choose **You against the bot**: the bot plays the whole game
 in your browser, with no account. **Play with friends** seats two to four people at a table and signs each one in by
 a code sent to their e-mail address.
+
+![A two-player game in the browser at the first turn: the area tiles with their site cards on the left and the
+end-trigger strip along the top; on the right the phase ladder, the prompt for Red's additional actions with its two
+numbered moves and an Undo button, and below them both players' yen, goods and assistants](worker/docs/img/game-desktop-player.webp)
+
+The browser client is a second frontend over the same engine, never a second engine: the server routes every move
+through the engine's legal list and computes nothing about the game, so the terminal and the browser, at the same rules
+revision, cannot disagree about a rule. It runs at the hosted site, on your own server from one Docker image, or
+entirely inside the browser against the bot, offline once installed. At a table you can play friends or the bot, watch a
+game, chat, step back through the replay, and ask the bot what it would play and why it played what it did.
+
+The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking the bot, and hosting your own.
+
+## Where to go from here
+
+| If you want to | Start with |
+|---|---|
+| play right now | the hosted site above: no install, and no account for a game against the bot |
+| run it yourself | the [quick start](#quick-start) below: the terminal client from a release archive or a clone, the browser client from one Docker command |
+| see how the bot decides, and how it got this far | [the computer player](docs/computer-player.md): what it is allowed to see, how to ask it why it played a move, and each measured step from the first bot to the one that ships |
+| use the rules engine in a program of your own | [the engine](docs/engine.md): a complete game as one short program, where legality is decided, and how the engine is checked against an independent referee |
+| learn the terminal client | the [CLI guide](docs/cli-guide.md): the wizard, entering moves, every command, and tracking a game on a physical table |
+| host a server for your friends | the [browser guide, §4](docs/web-guide.md#4-hosting-your-own), then [`deploy/README.md`](deploy/README.md) for Docker and [`worker/README.md`](worker/README.md) for Cloudflare |
+| look up a rule or a ruling | the [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and the decision log in [`guidingpath.md`](guidingpath.md), which carries every ruling |
+| see how the project is run | [how the work is organized](docs/method.md), the owner's task board with the work in flight ([`docs/handover.md`](docs/handover.md)), and the index of every document ([`docs/README.md`](docs/README.md)) |
 
 ## Quick start
 
@@ -111,21 +136,8 @@ YOKOHAMA_BGA_CORPUS_OPTIONAL=1 cargo test -p yokohama-cli
 
 The first is the engine's suite. The CLI suite reads Board Game Arena captures that a clone does not carry, and stops
 with a message naming them when they are absent; the variable turns that stop into a skip.
-[`CONTRIBUTING.md`](CONTRIBUTING.md) lists the per-edit suites and the lint gate, and links the web lane's.
-
-## The browser client
-
-The browser client is a second frontend over the same engine, never a second engine: the server routes every move
-through the engine's legal list and computes nothing about the game, so the terminal and the browser, at the same rules
-revision, cannot disagree about a rule. It runs at the hosted site, on your own server from one Docker image, or
-entirely inside the browser against the bot, offline once installed. At a table you can play friends or the bot, watch a
-game, chat, step back through the replay, and ask the bot what it would play and why it played what it did.
-
-![A two-player game in the browser at the first turn: the area tiles with their site cards on the left and the
-end-trigger strip along the top; on the right the phase ladder, the prompt for Red's additional actions with its two
-numbered moves and an Undo button, and below them both players' yen, goods and assistants](worker/docs/img/game-desktop-player.webp)
-
-The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking the bot, and hosting your own.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) lists the suites to run after an edit and the lint gate, and links the web
+client's.
 
 ## How it is built
 
@@ -153,7 +165,7 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
 | `crates/yokohama-wasm`, `crates/yokohama-worker`, `worker/` | The same layer compiled to WebAssembly, for the game that runs inside the browser and for the Cloudflare Worker host. |
 | `deploy/` | The Docker image and the scripts for a server of your own. |
 | `analysis-1/yokohama-kb`, `crates/gen-data` | The knowledge base, with the rules reference and the card data as YAML, and the generator that builds the engine's card tables from it. |
-| `crates/yokohama-bridge`, `bridge/` | A read-only capture of the owner's own Board Game Arena sessions, which the CLI's `import` replays through the engine. |
+| `crates/yokohama-bridge`, `bridge/` | A read-only capture of the project owner's own Board Game Arena sessions, which the CLI's `import` replays through the engine. |
 
 ## Status
 
@@ -161,34 +173,20 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
   every saved game is keyed to. One rules defect is known, tracked as
   [issue #62](https://github.com/jmoore2333/yokohama-assistant/issues/62): the Language School's yen can miss its own
   order's warehouse take, and its fix bumps the revision.
-- **The command-line client and the browser client** are complete, and the hosted site runs the current release. What
-  is open on the browser client is polish, tracked in the
-  [issues](https://github.com/jmoore2333/yokohama-assistant/issues).
-- **The bot** that ships is `v4-step9-draft1`, in the terminal and in the browser. In its one confirmatory field it
-  beat `v2-padded`, its predecessor's behaviour, the interval entirely above parity
-  ([the results ladder](docs/computer-player.md#5-the-results-ladder)), and nothing has been tuned on, or measured
-  against, a human player. It is production and provisional: the route to the bar runs through a later freeze that may
-  name a different contestant ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
+- **The command-line client and the browser client** are complete, and the browser client is live at the hosted site.
+  What is open on it is polish, tracked in the [issues](https://github.com/jmoore2333/yokohama-assistant/issues).
+- **The bot** that ships is `v4-step9-draft1`, the fourth version (V4), in the terminal and in the browser. In a match
+  registered in advance it beat `v2-padded`, which plays as its predecessor V2 does, with the whole interval above
+  parity ([the results ladder](docs/computer-player.md#5-the-results-ladder)). Nothing has been tuned on, or measured
+  against, a human player. It is production and provisional: the route to the bar, below, runs through a later freeze
+  that may name a different bot ([the computer player, §3](docs/computer-player.md#3-v4-production-and-provisional)).
 - **The bar.** The milestone bar, set in §1.9 of the [Phase-3 map](docs/plans/2026-07-25-phase3-map.md), asks at two
   players for a constructed scenario suite, statistical superiority over the preserved baseline players, an explanation
-  for every move, and acceptance play through the CLI
+  for every move, and the owner's acceptance play through the CLI
   ([the computer player, §6](docs/computer-player.md#6-the-bar-not-claimed)).
   The bar (map §1.9) is NOT claimed: a shipped milestone is a narrower claim than the bar.
-- **Next:** V4's vetting in played games, then V5 under its own pre-registration
+- **Next:** V4 is vetted in played games, then the next version, V5, opens under a pre-registration of its own
   ([the computer player, §7](docs/computer-player.md#7-what-is-next)).
-
-## Documentation
-
-| To | Read |
-|---|---|
-| play or track a game in the terminal | the [CLI guide](docs/cli-guide.md) |
-| play in a browser, or host a server of your own | the [browser guide](docs/web-guide.md), then [`deploy/README.md`](deploy/README.md) for Docker and [`worker/README.md`](worker/README.md) for Cloudflare |
-| use the engine as a library, or see how it is verified | [the engine](docs/engine.md) |
-| understand the bot and how strong it has been measured to be | [the computer player](docs/computer-player.md) |
-| look up a rule or a ruling | the [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and the decision log in [`guidingpath.md`](guidingpath.md), which carries every ruling |
-| see how the work is organized and what counts as evidence | [how the work is organized](docs/method.md) |
-| see what is in flight | the board, [`docs/handover.md`](docs/handover.md) |
-| find anything else | the index, [`docs/README.md`](docs/README.md) |
 
 [`guidingpath.md`](guidingpath.md) is the authority: the mission, the current state, the roadmap and the decision log.
 It outranks every other page, this one included.

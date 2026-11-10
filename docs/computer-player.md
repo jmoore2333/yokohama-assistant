@@ -4,6 +4,14 @@ The bot that plays Yokohama in the terminal and in the browser: what it is, the 
 about a move, and how strong it has been measured to be. Every figure on this page is quoted as its record states it,
 with the record named beside it; the record carries the full account.
 
+**In short.** The first bots only sample a legal move, uniformly or weighted by the kind of move; they are the floor
+the rest is measured against. The first bot that scores positions, a search one turn deep, swept that floor (3.3). A
+Monte Carlo tree search was then built and measured against that search at a matched budget; it lost, and the shallow
+search was kept (3.4). Three rounds on the evaluator followed: a second weight table that beat the first (V2), two
+candidate features that both washed out at their gates, so nothing shipped (V3), and a wider evaluator that beat V2's
+behaviour in one confirmatory field and is the bot that plays today (V4). §5 gives each step's claim as it was
+registered, its figure and its record; §6 says what is not claimed, and §8 lists the limits on record.
+
 ## 1. What a contestant is
 
 Every bot is a **contestant**: a named identity made of three parts, a controller (the search that picks a move), the
