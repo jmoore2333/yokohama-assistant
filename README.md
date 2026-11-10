@@ -32,12 +32,13 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
 | If you want to | Start with |
 |---|---|
 | play right now | the hosted site above: no install, and no account for a game against the bot |
-| run it yourself | the [quick start](#quick-start) below: the terminal client from a release archive or a clone, the browser client from one Docker command |
+| run it yourself | the [quick start](#quick-start) below: the terminal client from a release archive or a clone, the browser client from one script that drives Docker |
 | see how the bot decides, and how it got this far | [the computer player](docs/computer-player.md): what it is allowed to see, how to ask it why it played a move, and each measured step from the first bot to the one that ships |
 | use the rules engine in a program of your own | [the engine](docs/engine.md): a complete game as one short program, where legality is decided, and how the engine is checked against an independent referee |
 | learn the terminal client | the [CLI guide](docs/cli-guide.md): the wizard, entering moves, every command, and tracking a game on a physical table |
 | host a server for your friends | the [browser guide, §4](docs/web-guide.md#4-hosting-your-own), then [`deploy/README.md`](deploy/README.md) for Docker and [`worker/README.md`](worker/README.md) for Cloudflare |
 | look up a rule or a ruling | the [rules reference](analysis-1/yokohama-kb/01-rules-reference.md), and the decision log in [`guidingpath.md`](guidingpath.md), which carries every ruling |
+| report a bug or ask about a rule | a [new issue](https://github.com/jmoore2333/yokohama-assistant/issues/new/choose), which offers a bug report form and a rules question form; a vulnerability goes privately, as [`SECURITY.md`](SECURITY.md) describes |
 | see how the project is run | [how the work is organized](docs/method.md), the owner's task board with the work in flight ([`docs/handover.md`](docs/handover.md)), and the index of every document ([`docs/README.md`](docs/README.md)) |
 
 ## Quick start
@@ -129,7 +130,8 @@ run-local: open http://127.0.0.1:8080/
 run-local: this is the open door — anyone who can reach this port may use any name; it is bound to 127.0.0.1 (deploy/README.md §2 for a LAN)
 ```
 
-That address opens on the door's three cards: **You against the bot**, **Play with friends** and **On this device**.
+That address opens on the first screen's three cards: **You against the bot**, **Play with friends** and **On this
+device**.
 `bash deploy/run-local.sh --stop` stops the server and keeps its games, and `--dry-run` prints every command a run
 would execute and runs none.
 
