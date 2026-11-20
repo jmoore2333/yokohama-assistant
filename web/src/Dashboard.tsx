@@ -185,9 +185,12 @@ const good = (n: number, cls: string, label: string) => (
  *  technology owned; a flag still on an order in hand does not, so `inHand`
  *  rides beside the count as `+n`, muted, and never added into it.
  *
- *  The row is ONE group with ONE sentence for a name, and every cell inside is
+ *  The row is ONE object with ONE sentence for a name, and every cell inside is
  *  `aria-hidden`, so a screen reader hears the tally once rather than as
- *  fifteen fragments. */
+ *  fifteen fragments. It takes a tile's role for that (`Pieces.tsx`):
+ *  `role="img"` keeps it one object, where a `group` with every cell hidden
+ *  would have nothing in it to enter, and a reader in browse mode can skip such
+ *  a group and never say its name. */
 function Flags({ flags, inHand }: { flags: FlagCounts; inHand?: FlagCounts }) {
   const heldWords = inHand
     ? MERCENARIES.filter(([, field]) => inHand[field] > 0).map(
@@ -198,7 +201,7 @@ function Flags({ flags, inHand }: { flags: FlagCounts; inHand?: FlagCounts }) {
     `Flags: ${MERCENARIES.map(([, field, word]) => `${word} ${flags[field]}`).join(", ")}` +
     (heldWords.length > 0 ? `; in hand: ${heldWords.join(", ")}` : "");
   return (
-    <div className="flags" role="group" aria-label={name}>
+    <div className="flags" role="img" aria-label={name}>
       {MERCENARIES.map(([key, field, word]) => {
         const held = inHand?.[field] ?? 0;
         return (

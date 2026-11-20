@@ -749,7 +749,7 @@ describe("a seat's flags", () => {
       const { container } = showPlayers(wire.gameOver);
       const seat0 = rowsOf(container)[0]!;
       const group = nameOf(seat0);
-      expect(group.getAttribute("role")).toBe("group");
+      expect(group.getAttribute("role")).toBe("img");
       expect(group.getAttribute("aria-label")).toBe(
         "Flags: Britain 2, America 1, France 0, Germany 1, Netherlands 1",
       );
@@ -903,7 +903,7 @@ describe("the claim band in the Achievements panel", () => {
       const card = faces(panel(art))[0]!;
       const { band } = pictureOf(card, art);
       expect(band).not.toBeNull();
-      expect(within(card as HTMLElement).getByRole("group", { name: FOUR_WORDS.join(" · ") })).toBe(band);
+      expect(within(card as HTMLElement).getByRole("img", { name: FOUR_WORDS.join(" · ") })).toBe(band);
       const cubes = [...band!.querySelectorAll(":scope > .claim")];
       expect(cubes.map(seatOf)).toEqual([["seat-yellow"], ["seat-red"], ["seat-green"], ["seat-blue"]]);
       expect(cubes.map((c) => c.classList.contains("first"))).toEqual([true, false, false, false]);

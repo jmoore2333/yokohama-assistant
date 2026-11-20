@@ -700,15 +700,18 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * so twelve pictures need no coordinates and an art-less card draws the same
  * band over its blank.
  *
- * **Every length inside is in `cqw` of the picture box**, which is what makes
- * the fit hold by construction rather than by measurement: the band is the same
- * fraction of the box at every card width, so four cubes and both numbers that
- * fit one card fit all of them. Four is the most a card can carry (a seat
- * claims a card once). The numbers' font is clamped, and the clamp is the one
- * place the proportion can break; where it does, the CUBES give way first —
- * they shrink (`flex: 0 1`, `min-width: 0`) while the numbers, the divider and
- * the padding keep their size (`flex: none`) — and `max-width` caps the band
- * inside the box, so it can narrow but never overflow it or wrap
+ * **Every length inside except the 1-px lines and the numbers' clamped font is
+ * in `cqw` of the picture box**, which is what makes the fit hold by
+ * construction rather than by measurement: those terms are the same fraction of
+ * the box at every card width, so four cubes and both numbers that fit one card
+ * fit all of them. Four is the most a card can carry (a seat claims a card
+ * once). The fixed terms are the band's 1-px border, the 1-px divider, the
+ * ring's `max(1px, …)` floor and the numbers' `clamp()`; the pill's `999px`
+ * radius rounds the corners and takes no width. The fixed terms take a smaller
+ * share as the box grows; where they take a larger one (a narrow box), the
+ * CUBES give way first — they shrink (`flex: 0 1`, `min-width: 0`) while the
+ * numbers and the divider keep their size (`flex: none`) — and `max-width`
+ * caps the band inside the box, so it can narrow but never overflow it or wrap
  * (`flex-wrap: nowrap`).
  *
  * The containment is `inline-size`, so the box's WIDTH may not come from its

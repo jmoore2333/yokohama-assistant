@@ -304,7 +304,7 @@ describe("the claim band in the goals index", () => {
     expect(cards).toHaveLength(3);
     const band = cards[0]!.querySelector("figure.card-face.achievement > .card-pic > .claims");
     expect(band, "the claimed card draws its band on the picture box").not.toBeNull();
-    expect(band!.getAttribute("role")).toBe("group");
+    expect(band!.getAttribute("role")).toBe("img");
     expect(band!.getAttribute("aria-label")).toBe("Blue claimed first — 8 VP");
     const cubes = [...band!.querySelectorAll(":scope > .claim")];
     expect(cubes).toHaveLength(1);

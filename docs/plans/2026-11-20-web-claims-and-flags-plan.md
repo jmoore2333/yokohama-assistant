@@ -287,7 +287,7 @@ fn goals_claimed_4p() -> Value {
 - Modify: `web/src/Cards.tsx`, `web/src/styles.css`
 - Test: `web/src/Strips.test.tsx`, `web/src/Dashboard.test.tsx`, `web/src/Index.test.tsx`
 
-**Interfaces — consumes:** `wire.goalsClaimed4p` (Task 3). **Produces** (Tasks 5 and 6 rely on these): on a claimed card, over the picture box, one `.claims` node with `role="group"` and an `aria-label`; inside it one `.claim` per claimant in claim order, each holding the board's `CubeIcon` and carrying the seat's colour class (`seatClass`) and a `title`; the first has the class `first`; `.claims-vp.first` holds `first_place_vp` and, only when a later claim exists, `.claims-vp.later` holds `subsequent_vp` after a divider.
+**Interfaces — consumes:** `wire.goalsClaimed4p` (Task 3). **Produces** (Tasks 5 and 6 rely on these): on a claimed card, over the picture box, one `.claims` node with `role="img"` and an `aria-label`; inside it one `.claim` per claimant in claim order, each holding the board's `CubeIcon` and carrying the seat's colour class (`seatClass`) and a `title`; the first has the class `first`; `.claims-vp.first` holds `first_place_vp` and, only when a later claim exists, `.claims-vp.later` holds `subsequent_vp` after a divider.
 
 **The words, exactly:** the first claim is `Red claimed first — 6 VP`, a later one `Blue claimed — 3 VP`; the colour word is `colors[seat]`, or `seat N` where the array has none; the numbers are the model's. Each is its cube's `title`; the band's `aria-label` is all of them in claim order joined by ` · `.
 

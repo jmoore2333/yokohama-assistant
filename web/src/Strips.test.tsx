@@ -224,9 +224,9 @@ describe.each([
     const card = faces(strip(art))[0]!;
     const { band } = pictureOf(card, art);
     expect(band, "a claimed card draws its band on the picture box").not.toBeNull();
-    expect(band!.getAttribute("role")).toBe("group");
+    expect(band!.getAttribute("role")).toBe("img");
     expect(band!.getAttribute("aria-label")).toBe(FOUR_WORDS.join(" · "));
-    expect(within(card as HTMLElement).getByRole("group", { name: FOUR_WORDS.join(" · ") })).toBe(band);
+    expect(within(card as HTMLElement).getByRole("img", { name: FOUR_WORDS.join(" · ") })).toBe(band);
     const cubes = [...band!.querySelectorAll(":scope > .claim")];
     expect(cubes.map(seatOf), "claim order: seats 2, 0, 3, 1").toEqual([["seat-yellow"], ["seat-red"], ["seat-green"], ["seat-blue"]]);
     expect(cubes.map((c) => c.classList.contains("first")), "only the first claim is ringed").toEqual([true, false, false, false]);

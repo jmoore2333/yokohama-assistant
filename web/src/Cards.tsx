@@ -234,9 +234,13 @@ function claimWords(model: AchievementModel, colors: PlayerColor[]): string[] {
  *  band.
  *
  *  The cube is the board's own `CubeIcon`, coloured by the seat's class exactly
- *  as a tile's pieces are (`currentColor`). The words are the group's one
- *  reading: every node inside is hidden from a screen reader, and each cube
- *  still carries its own claim as a `title` for a mouse. */
+ *  as a tile's pieces are (`currentColor`). The words are the band's one
+ *  reading, and it takes the tile's role for it (`Pieces.tsx`): `role="img"`
+ *  with the words as its name keeps the band ONE object. A `group` would not —
+ *  every node inside is hidden from a screen reader, so a group would have
+ *  nothing in it to enter, and a reader in browse mode can skip such a group
+ *  and never say its name. Each cube still carries its own claim as a `title`
+ *  for a mouse. */
 function ClaimBand({ model, colors }: { model: AchievementModel; colors: PlayerColor[] }) {
   const [first, ...later] = model.claimed_by;
   if (first === undefined) return null;
@@ -252,7 +256,7 @@ function ClaimBand({ model, colors }: { model: AchievementModel; colors: PlayerC
     </span>
   );
   return (
-    <div className="claims" role="group" aria-label={words.join(" · ")}>
+    <div className="claims" role="img" aria-label={words.join(" · ")}>
       {cube(first, 0)}
       <span className="claims-vp first" aria-hidden="true">
         {model.first_place_vp}
