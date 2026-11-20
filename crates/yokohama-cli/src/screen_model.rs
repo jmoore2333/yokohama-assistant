@@ -4051,19 +4051,30 @@ mod tests {
             "orders 1, 12, 2, 3",
         );
 
-        let tech = rules.techs.iter().next().expect("a technology in the registry").clone();
-        p.technologies.push(tech.id);
-        let after = face_up_flags(p, &rules);
-        for c in Country::ALL {
-            let raised = u8::from(c == tech.country);
-            assert_eq!(
-                flag_of(after, c),
-                flag_of(before, c) + raised,
-                "technology {:?} is {:?}: {c:?} moves by {raised}",
-                tech.id,
-                tech.country,
-            );
+        // Every technology in turn, in id order — the registry is a HashMap, so
+        // "the first one" would be a different card on every run — each pushed
+        // alone onto the same seat.
+        let mut techs: Vec<&TechCard> = rules.techs.iter().collect();
+        techs.sort_by_key(|t| t.id.0);
+        assert!(!techs.is_empty(), "a technology in the registry");
+        let mut countries = std::collections::BTreeSet::new();
+        for tech in techs {
+            let mut seat = p.clone();
+            seat.technologies.push(tech.id);
+            let after = face_up_flags(&seat, &rules);
+            for c in Country::ALL {
+                let raised = u8::from(c == tech.country);
+                assert_eq!(
+                    flag_of(after, c),
+                    flag_of(before, c) + raised,
+                    "technology {:?} is {:?}: {c:?} moves by {raised}",
+                    tech.id,
+                    tech.country,
+                );
+            }
+            countries.insert(tech.country);
         }
+        assert_eq!(countries.len(), Country::ALL.len(), "the technologies span every country");
     }
 
     /// A card in hand is not face up: a seat whose only English card is in its
