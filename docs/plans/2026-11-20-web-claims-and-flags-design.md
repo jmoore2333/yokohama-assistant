@@ -1,6 +1,6 @@
 # Design — the claim on the card and the flag tally (issues #75, #76) (2026-11-20)
 
-**Status: DRAFT, not yet accepted.** Nothing is built from this until the owner accepts it; the plan is written after. Revised once, the same day, after an independent review of the first draft (§12).
+**Status: ACCEPTED by the owner, 2026-11-20**, as revised the same day after an independent review of the first draft (§12), and with the pictures made a task of the plan (§7). The plan is `docs/plans/2026-11-20-web-claims-and-flags-plan.md`.
 
 **What this is.** The first of two cycles answering feedback from play on the browser client. This one makes two things readable that a table shows at a glance: who has claimed which achievement (#75) and how many flags of each country a seat has (#76). The second cycle, the area-action choosers (#77, widened), has its own spec and plan, written against the tree this one merges (§11). Branch `web-evaluator-feedback`, cut from master `e600f5f4`, on the lab.
 
@@ -92,7 +92,7 @@ On `HandPanel`, as `Option`: `None` whenever `hidden`. Rejected: a masked field 
 
 - `web/src/Help.tsx` and `docs/web-guide.md` where a sentence describes the goals or a seat's row.
 - `docs/web-lane.md`: §2's corpus count (110 becomes 111) and any list of the model's fields.
-- **The pictures.** The help panel's screenshots (`web/public/help/`, cut by `web/e2e/shots.spec.ts`) and the README's (`readme_shots.spec.ts`) show the Goals strip and the players panel as they were. That spec's own rule is that a re-cut picture nobody looks at is the error, and no agent opens these. So they are re-cut at the wrap only if the owner runs and reads them, captions with them; otherwise they are recorded in the close as showing the earlier card and row. **The owner's choice, asked with this draft.**
+- **The pictures are re-cut, as a task of the plan** (the owner, at acceptance). The help panel's five (`web/public/help/`, cut by `web/e2e/shots.spec.ts` and `docs/tools/mkhelpart.py`) and the Worker README's ten (`worker/docs/img/`, cut by `readme_shots.spec.ts`), three of which show a game, picture the Goals strip and the players panel as they were. Every run photographs a different game, so each picture's `alt` and caption (`web/src/Help.tsx`, `worker/README.md`) is re-read against the new picture, which is that spec's own rule. No agent opens a picture: the generator writes the page's accessibility snapshot as text beside each one, the alt and caption are checked against that text, and the pictures themselves are the owner's reading before they are committed. The README's committed pictures are the Worker's, so they are cut once the release is live.
 - At the close: a decision-log row in `guidingpath.md` and the board. The CLI guide pair and `docs/engine.md` do not move.
 
 ## 8. The suites and the gates
