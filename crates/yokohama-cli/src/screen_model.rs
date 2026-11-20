@@ -301,6 +301,68 @@ pub struct TechModel {
     pub printed: Option<TechCard>,
 }
 
+/// One count per country, in `Country::ALL` order — the shape `MercenarySupply` has.
+///
+/// **A flag** is the country printed on an Order or a Technology card. The
+/// counts the engine awards mercenaries on (one per two flags of a country,
+/// while that country's supply lasts) and scores the country bonus from are
+/// the FACE-UP flags, [`face_up_flags`]: fulfilled orders and owned
+/// technologies. The engine counts them inline, in private code; this is a
+/// mirror of that count, held to the engine's public outputs at every position
+/// of seeded self-play by
+/// `the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus`
+/// (the `placement_fee` precedent: a mirror plus a drift pin, no engine edit).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlagCounts {
+    pub english: u8,
+    pub american: u8,
+    pub french: u8,
+    pub german: u8,
+    pub dutch: u8,
+}
+
+impl FlagCounts {
+    /// English, American, French, German, Dutch — `Country::ALL`'s order.
+    pub fn as_array(&self) -> [u8; 5] {
+        [self.english, self.american, self.french, self.german, self.dutch]
+    }
+
+    /// One more flag of `country`. Saturating: a display model is no place to
+    /// panic, and no real seat holds 255 cards.
+    fn add(&mut self, country: Country) {
+        let slot = match country {
+            Country::English => &mut self.english,
+            Country::American => &mut self.american,
+            Country::French => &mut self.french,
+            Country::German => &mut self.german,
+            Country::Dutch => &mut self.dutch,
+        };
+        *slot = slot.saturating_add(1);
+    }
+}
+
+/// The countries of a list of order ids, read from `rules.orders`. An id the
+/// registry does not know contributes no flag (the [`TechModel::printed`]
+/// posture: the model invents nothing for a corrupt record).
+pub fn order_flags(ids: &[OrderCardId], rules: &Rules) -> FlagCounts {
+    let mut flags = FlagCounts::default();
+    for card in ids.iter().filter_map(|&id| rules.orders.get(id)) {
+        flags.add(card.country);
+    }
+    flags
+}
+
+/// A seat's face-up flags: its `completed_orders` and its `technologies`,
+/// each read from the registries. Never its hand — an order in hand does not
+/// count until it is fulfilled.
+pub fn face_up_flags(p: &PlayerState, rules: &Rules) -> FlagCounts {
+    let mut flags = order_flags(&p.completed_orders, rules);
+    for card in p.technologies.iter().filter_map(|&id| rules.techs.get(id)) {
+        flags.add(card.country);
+    }
+    flags
+}
+
 /// One seat's dashboard row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerModel {
@@ -335,6 +397,11 @@ pub struct PlayerModel {
     pub is_current: bool,
     pub is_bot: bool,
     pub hand_hidden: bool,
+    /// This seat's face-up flags ([`face_up_flags`]), on every seat and never
+    /// masked: fulfilled orders and technologies are face up on the table. The
+    /// flags of the orders in hand are [`HandPanel::flags_in_hand`]'s, which
+    /// masks. The LAST field, so the wire gains one key at the row's end.
+    pub flags: FlagCounts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +518,14 @@ pub struct HandPanel {
     pub cards: Vec<HandCardModel>,
     /// The true card count, masked or not.
     pub card_count: usize,
+    /// The flags of the orders in hand, the kept starting order included —
+    /// [`order_flags`] over `order_cards_in_hand`, so a function of this
+    /// panel's own `cards` and of nothing else. **`None` whenever `hidden`**,
+    /// with the cards and for the same reason: at the opening a hand is the
+    /// starting order alone, so a per-country count would name that card's
+    /// country. They do not count yet (a flag counts once its order is
+    /// fulfilled), which is why they are apart from [`PlayerModel::flags`].
+    pub flags_in_hand: Option<FlagCounts>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2195,6 +2270,7 @@ fn build_player(
         is_current: p.id == state.current_player,
         is_bot: facts.is_bot,
         hand_hidden: facts.hand_hidden,
+        flags: face_up_flags(p, rules),
     }
 }
 
@@ -2336,6 +2412,7 @@ pub fn build_hand(
                 .collect()
         },
         card_count: p.order_cards_in_hand.len(),
+        flags_in_hand: if hidden { None } else { Some(order_flags(&p.order_cards_in_hand, rules)) },
     })
 }
 
@@ -3852,6 +3929,16 @@ mod tests {
             );
         }
         assert!(json.contains("\"card_count\":1"), "the COUNT still crosses: {json}");
+
+        // The in-hand flag count is masked with the cards: at the opening a hand
+        // is the starting order alone, so a per-country count would name that
+        // card's country. Asserted in memory AND in the bytes.
+        assert_eq!(hidden.flags_in_hand, None, "a hidden hand carries no in-hand count");
+        assert!(
+            json.contains("\"flags_in_hand\":null"),
+            "the masked count crosses as null: {json}",
+        );
+        assert!(open.flags_in_hand.is_some(), "an open hand carries its count");
     }
 
     /// An observer must not be handed the acting seat's option list. The list
@@ -3935,5 +4022,177 @@ mod tests {
 
         let acting = serde_json::to_string(&build_decision(&state, &rules, &legal)).unwrap();
         assert!(acting.len() > json.len(), "the actor's zone is the larger document");
+    }
+
+    // -----------------------------------------------------------------------
+    // The flag tally (issue #76)
+    // -----------------------------------------------------------------------
+
+    /// The count for `country` in `flags`, read through `as_array` in
+    /// `Country::ALL` order (the order the wire and the drift pin use).
+    fn flag_of(flags: FlagCounts, country: Country) -> u8 {
+        let i = Country::ALL.iter().position(|&c| c == country).expect("a country");
+        flags.as_array()[i]
+    }
+
+    /// Literal counts for a seat with known cards: the ids' countries are the
+    /// ones `game/scoring.rs`'s cells use ({1, 12} American, {2, 5} French,
+    /// {3, 10} English). Then one technology raises exactly its own country.
+    #[test]
+    fn the_face_up_flags_count_fulfilled_orders_and_technologies_by_country() {
+        let (mut state, rules) = state_np(2);
+        let p = &mut state.players[0];
+        p.completed_orders = [1, 12, 2, 3].map(OrderCardId).to_vec();
+        p.technologies.clear();
+        let before = face_up_flags(p, &rules);
+        assert_eq!(
+            before,
+            FlagCounts { english: 1, american: 2, french: 1, german: 0, dutch: 0 },
+            "orders 1, 12, 2, 3",
+        );
+
+        let tech = rules.techs.iter().next().expect("a technology in the registry").clone();
+        p.technologies.push(tech.id);
+        let after = face_up_flags(p, &rules);
+        for c in Country::ALL {
+            let raised = u8::from(c == tech.country);
+            assert_eq!(
+                flag_of(after, c),
+                flag_of(before, c) + raised,
+                "technology {:?} is {:?}: {c:?} moves by {raised}",
+                tech.id,
+                tech.country,
+            );
+        }
+    }
+
+    /// A card in hand is not face up: a seat whose only English card is in its
+    /// hand reads zero English.
+    #[test]
+    fn the_face_up_flags_do_not_count_an_order_in_hand() {
+        let (mut state, rules) = state_np(2);
+        let p = &mut state.players[0];
+        p.completed_orders = vec![OrderCardId(1)]; // American
+        p.technologies.clear();
+        p.order_cards_in_hand = vec![OrderCardId(3)]; // English
+        assert_eq!(rules.orders.get(OrderCardId(3)).map(|c| c.country), Some(Country::English));
+        let flags = face_up_flags(p, &rules);
+        assert_eq!(flags.english, 0, "the English card is in hand: {flags:?}");
+        assert_eq!(flags.american, 1, "the fulfilled American card counts: {flags:?}");
+    }
+
+    /// The face-up count is public: it rides every seat's row, a masked one
+    /// included.
+    #[test]
+    fn the_face_up_flags_ride_a_seat_whose_hand_is_hidden() {
+        for n in [2u8, 3, 4] {
+            let (mut state, rules) = state_np(n);
+            for (i, p) in state.players.iter_mut().enumerate() {
+                p.completed_orders = [1, 12, 2, 3, 10][..=i].iter().copied().map(OrderCardId).collect();
+            }
+            let seats = vec![SeatFacts { hand_hidden: true, ..SeatFacts::default() }; n as usize];
+            let panel = build_players(&state, &rules, &seats);
+            assert_eq!(panel.players.len(), state.players.len());
+            for (row, p) in panel.players.iter().zip(&state.players) {
+                assert!(row.hand_hidden, "{n}P seat {:?} is masked", p.id);
+                assert_eq!(row.flags, face_up_flags(p, &rules), "{n}P seat {:?}", p.id);
+                assert_ne!(row.flags, FlagCounts::default(), "{n}P seat {:?} has flags", p.id);
+            }
+        }
+    }
+
+    /// At the opening a hand is the kept starting order alone, and its flag
+    /// counts: one flag, in that card's country.
+    #[test]
+    fn the_flags_in_hand_count_the_hand_and_include_the_starting_order() {
+        for n in [2u8, 3, 4] {
+            let (state, rules) = state_np(n);
+            for p in &state.players {
+                let start = p.starting_order.expect("a kept starting order");
+                assert_eq!(p.order_cards_in_hand, vec![start], "{n}P: the hand is the deal alone");
+                let country = rules.orders.get(start).expect("a printed order").country;
+                let hand = build_hand(&state, &rules, p.id, false).expect("a hand");
+                let flags = hand.flags_in_hand.expect("an open hand carries its count");
+                let total: u8 = flags.as_array().iter().sum();
+                assert_eq!(total, 1, "{n}P seat {:?}: exactly one flag, {flags:?}", p.id);
+                assert_eq!(flag_of(flags, country), 1, "{n}P seat {:?}: it is {country:?}", p.id);
+            }
+        }
+    }
+
+    /// Review focus 1: an id the registry does not know contributes no flag and
+    /// does not panic — for an order, and for a technology.
+    #[test]
+    fn an_order_id_the_registry_does_not_know_counts_as_no_flag() {
+        let empty = Rules::empty_for_tests();
+        let every: Vec<OrderCardId> = (0..=u8::MAX).map(OrderCardId).collect();
+        assert_eq!(order_flags(&every, &empty), FlagCounts::default());
+
+        let (mut state, _) = state_np(2);
+        let p = &mut state.players[0];
+        p.completed_orders = every;
+        p.technologies = (0..=u8::MAX).map(TechCardId).collect();
+        assert_eq!(face_up_flags(p, &empty), FlagCounts::default());
+    }
+
+    /// **"Each seat's five counts equal the engine's"** (design §6), with no engine
+    /// function opened: three legs against public outputs, at every position.
+    /// The mercenary leg is the one that says WHICH country a flag belongs to —
+    /// the bonus is symmetric in the countries and cannot.
+    #[test]
+    fn the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus() {
+        let rules = Rules::standard();
+        let (mut compared, mut nonzero, mut supply_out) = (0usize, 0usize, 0usize);
+        for n in [2u8, 3, 4] {
+            for seed in 0..6u64 {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    let engine = final_result(&state, &rules);
+                    for p in &state.players {
+                        let arr = face_up_flags(p, &rules).as_array();
+                        let sum: usize = arr.iter().map(|&x| x as usize).sum();
+                        assert_eq!(sum, p.completed_orders.len() + p.technologies.len());
+                        let b = &engine.standings.iter().find(|s| s.player == p.id).unwrap().breakdown;
+                        assert_eq!(yokohama_core::eval::set_bonus(arr), i64::from(b.country));
+                        for (i, c) in Country::ALL.into_iter().enumerate() {
+                            let held = p.mercenaries.available.get(&c).copied().unwrap_or(0)
+                                + p.mercenaries.used.get(&c).copied().unwrap_or(0);
+                            let supply = match c {
+                                Country::English => state.mercenary_supply.english,
+                                Country::American => state.mercenary_supply.american,
+                                Country::French => state.mercenary_supply.french,
+                                Country::German => state.mercenary_supply.german,
+                                Country::Dutch => state.mercenary_supply.dutch,
+                            };
+                            if supply > 0 {
+                                assert_eq!(held, arr[i] / 2, "seat {:?} {c:?}", p.id);
+                            } else {
+                                supply_out += 1;
+                                assert!(held <= arr[i] / 2, "seat {:?} {c:?}", p.id);
+                            }
+                        }
+                        compared += 1;
+                        if sum > 0 {
+                            nonzero += 1;
+                        }
+                    }
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        // Anti-vacuity: an empty sweep, or one that never met a spent supply, proves nothing.
+        assert!(compared > 100_000, "compared {compared}");
+        assert!(nonzero > 50_000, "nonzero {nonzero}");
+        assert!(supply_out > 1_000, "supply-out rows {supply_out}");
     }
 }

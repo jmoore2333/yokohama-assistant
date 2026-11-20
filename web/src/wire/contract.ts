@@ -64,6 +64,7 @@ import type {
   Events,
   HouseFrame,
   GamesList,
+  HandPanel,
   IndexCard,
   IndexGroup,
   DecisionModel,
@@ -639,8 +640,12 @@ const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
   "shophouses", "trading_houses", "technologies", "mercenaries_unused",
   "mercenaries_used", "five_power_tokens", "president", "orders_in_hand",
-  "orders_filled", "is_current", "is_bot", "hand_hidden",
+  "orders_filled", "is_current", "is_bot", "hand_hidden", "flags",
 ] as const;
+// The viewer's own hand (issue #76). A root of its own because it gained a
+// field, `flags_in_hand`, that must ride HERE and never on a seat's row: the
+// row reaches every reader, and the hand panel is masked.
+const HAND = ["seat", "hidden", "cards", "card_count", "flags_in_hand"] as const;
 const TILE = [
   "area", "area_type", "grid_position", "token", "site", "presidents",
   "has_station", "assistants", "reachable", "canal_crossings",
@@ -750,6 +755,7 @@ const _fr: KeysOf<FrameModel, typeof FRAME> = FRAME;
 const _de: KeysOf<DecisionModel, typeof DECISION> = DECISION;
 const _or: KeysOf<OptionRow, typeof OPTION_ROW> = OPTION_ROW;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
+const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
 const _tr: KeysOf<TracksPanel, typeof TRACKS> = TRACKS;
 const _po: KeysOf<PortsPanel, typeof PORTS> = PORTS;
@@ -801,7 +807,7 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+void [_cs, _fr, _de, _or, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -816,6 +822,7 @@ export const KEYS = {
   decision: DECISION,
   optionRow: OPTION_ROW,
   player: PLAYER,
+  hand: HAND,
   tile: TILE,
   tracks: TRACKS,
   ports: PORTS,

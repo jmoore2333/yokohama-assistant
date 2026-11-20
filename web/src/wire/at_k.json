@@ -905,6 +905,13 @@
               },
               "color": "Red",
               "five_power_tokens": 0,
+              "flags": {
+                "american": 0,
+                "dutch": 1,
+                "english": 1,
+                "french": 0,
+                "german": 0
+              },
               "goods": {
                 "copper": 0,
                 "imports": 0,
@@ -950,6 +957,13 @@
               },
               "color": "Blue",
               "five_power_tokens": 0,
+              "flags": {
+                "american": 1,
+                "dutch": 0,
+                "english": 1,
+                "french": 1,
+                "german": 0
+              },
               "goods": {
                 "copper": 0,
                 "imports": 0,
@@ -1245,6 +1259,13 @@
               }
             }
           ],
+          "flags_in_hand": {
+            "american": 0,
+            "dutch": 0,
+            "english": 0,
+            "french": 1,
+            "german": 1
+          },
           "hidden": false,
           "seat": 0
         }

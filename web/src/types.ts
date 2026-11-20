@@ -155,6 +155,15 @@ export interface PlayerModel {
   is_current: boolean;
   is_bot: boolean;
   hand_hidden: boolean;
+  /** Face-up flags (fulfilled orders and technologies) per country, on every
+   *  seat and never masked — the count the engine awards mercenaries and scores
+   *  the country bonus from. Counted by the model, never here. */
+  flags: FlagCounts;
+}
+
+/** One count per country, in the engine's `Country::ALL` order. */
+export interface FlagCounts {
+  english: number; american: number; french: number; german: number; dutch: number;
 }
 
 /** `occupant` may be `DUMMY_SEAT`. */
@@ -225,6 +234,9 @@ export interface HandPanel {
   cards: HandCardModel[];
   /** Truthful whether masked or not. */
   card_count: number;
+  /** The countries of this panel's own `cards`, the starting order included;
+   *  they do not count until the order is fulfilled. `null` whenever `hidden`. */
+  flags_in_hand: FlagCounts | null;
 }
 
 /** Externally tagged: exactly one key. `Hand` is ABSENT, not empty, for a seat

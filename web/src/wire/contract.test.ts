@@ -14,10 +14,39 @@
 import { describe, expect, it } from "vitest";
 import { EVERY_STATE, KEYS, wire } from "./contract";
 import { achievementsOf } from "../test/panels";
-import type { ArtEntry, HandPanel, Panel } from "../types";
+import type { ArtEntry, Country, FlagCounts, HandPanel, Panel, PlayerModel } from "../types";
 
 const keys = (v: unknown): string[] => Object.keys(v as object).sort();
 const listed = (l: readonly string[]): string[] => [...l].sort();
+
+/** Every Hand panel and every seat's row ANYWHERE in the committed corpus —
+ *  the play states, the replay stops, the run's frames, the deal views — found
+ *  by walking each payload rather than by naming where a frame sits in it, so
+ *  a payload added later is covered without a list to extend. */
+function corpusPanels(): { hands: [string, HandPanel][]; players: [string, PlayerModel][] } {
+  const hands: [string, HandPanel][] = [];
+  const players: [string, PlayerModel][] = [];
+  const walk = (name: string, v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(name, x);
+      return;
+    }
+    if (v === null || typeof v !== "object") return;
+    for (const [k, x] of Object.entries(v)) {
+      if (k === "Hand") hands.push([name, x as HandPanel]);
+      if (k === "Players") {
+        for (const p of (x as { players: PlayerModel[] }).players) players.push([name, p]);
+      }
+      walk(name, x);
+    }
+  };
+  for (const [name, payload] of Object.entries(wire)) walk(name, payload);
+  return { hands, players };
+}
+
+const FLAG_KEY: Record<Country, keyof FlagCounts> = {
+  English: "english", American: "american", French: "french", German: "german", Dutch: "dutch",
+};
 
 describe("the payload roots carry exactly the fields the client declares", () => {
   it.each(
@@ -57,6 +86,59 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     expect(panel).toBeDefined();
     for (const player of panel!.Players.players) {
       expect(keys(player)).toEqual(listed(KEYS.player));
+    }
+  });
+
+  // The hand root, over every state (the play states the loop below reads) and
+  // then over every Hand panel the corpus holds anywhere.
+  it("HandPanel", () => {
+    let seen = 0;
+    for (const state of EVERY_STATE) {
+      for (const p of state.frame.dashboard) {
+        if (!("Hand" in p)) continue;
+        expect(keys(p.Hand), `${state.prompt.kind} · seat ${state.seat}`).toEqual(listed(KEYS.hand));
+        seen += 1;
+      }
+    }
+    // Anti-vacuity: every seated state carries its viewer's hand.
+    expect(seen).toBe(EVERY_STATE.filter((s) => s.seat !== null).length);
+    expect(seen).toBeGreaterThan(0);
+    const { hands } = corpusPanels();
+    expect(hands.length).toBeGreaterThan(seen);
+    for (const [name, hand] of hands) expect(keys(hand), name).toEqual(listed(KEYS.hand));
+  });
+
+  // Issue #76. The in-hand count is a function of the panel's OWN cards and of
+  // nothing else, which is what keeps it inside the existing mask: recounting
+  // `cards[].printed.country` must give the count exactly, and a hidden panel
+  // (none reaches a browser today) carries none.
+  it("a hand's flag count is the countries of its own cards", () => {
+    const { hands } = corpusPanels();
+    let flagged = 0;
+    for (const [name, hand] of hands) {
+      if (hand.hidden) {
+        expect(hand.flags_in_hand, `${name}: a hidden hand`).toBeNull();
+        continue;
+      }
+      const want: FlagCounts = { english: 0, american: 0, french: 0, german: 0, dutch: 0 };
+      for (const card of hand.cards) {
+        const country = card.printed?.country;
+        if (country !== undefined) want[FLAG_KEY[country]] += 1;
+      }
+      expect(hand.flags_in_hand, `${name}: seat ${hand.seat}`).toEqual(want);
+      if (hand.cards.length > 0) flagged += 1;
+    }
+    expect(flagged, "hands with cards to count").toBeGreaterThan(0);
+  });
+
+  // The seat's row reaches every reader, a watcher included, so the in-hand
+  // count must never ride it: the row carries the face-up count alone.
+  it("no seat's row carries an in-hand count", () => {
+    const { players } = corpusPanels();
+    expect(players.length).toBeGreaterThan(0);
+    for (const [name, p] of players) {
+      expect(Object.keys(p), `${name}: seat ${p.seat}`).not.toContain("flags_in_hand");
+      expect(Object.keys(p), `${name}: seat ${p.seat}`).toContain("flags");
     }
   });
 
