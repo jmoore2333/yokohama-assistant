@@ -34,8 +34,9 @@ import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
+import { redactSidecar } from "./aria_redact";
 import { signIn, who } from "./harness";
 import { abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 import { expect, newContextWithoutWorker, test } from "./sw";
@@ -53,18 +54,46 @@ const OUT = process.env.YOKOHAMA_WEB_README_SHOTS_DIR ?? fileURLToPath(new URL("
  *  the gitignored `web/help-shots/readme/`, whatever `OUT` is. Not beside the
  *  picture, because `OUT` is a committed directory (or a scratch one a dry run
  *  may discard) and the PNG intermediates' scratch is removed when the run ends.
- *  It is how the README's alts are checked without opening a picture. **Unlike
- *  the picture it is not masked**: live, it reads any stranger's lobby row,
- *  which is one more reason it stays in a gitignored directory, never committed. */
+ *  It is how the README's alts are checked without opening a picture, so an
+ *  agent reads it. **It leaves out exactly what the picture masks, for the
+ *  same reason**: every
+ *  lobby row that is not one of this run's tables is replaced by one
+ *  `[masked: not this run's table]` line, keyed by the same row link the mask
+ *  is, and the text is refused, unwritten, if a table id or an address the run
+ *  did not make still survives in it (`aria_redact.ts`). */
 const ARIA = fileURLToPath(new URL("../help-shots/readme", import.meta.url));
 
-/** Write `page`'s accessibility snapshot as `ARIA/<base name of name>.aria.txt`.
- *  An empty snapshot fails the run rather than writing an empty file. */
-async function ariaBeside(page: Page, name: string): Promise<void> {
+/** The sidecar's path for the README picture `name`. */
+const ariaPath = (name: string): string => join(ARIA, `${name.replace(/\.(png|webp)$/, "")}.aria.txt`);
+
+/** Remove `name`'s earlier sidecar, if there is one, before its picture is
+ *  taken: a run that fails after the screenshot then leaves no older text
+ *  beside the newer picture, and a dry run's text cannot pass for a live run's
+ *  at a picture this run re-took. */
+function forgetAria(name: string): void {
+  try {
+    unlinkSync(ariaPath(name));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+}
+
+/** Write `page`'s accessibility snapshot as `ariaPath(name)`, with every row
+ *  `masked` covers left out (`aria_redact.ts`). The masked rows' links are read
+ *  off the page at the same moment as the snapshot. An empty snapshot, a masked
+ *  row with no table link to key it by, or a foreign id or address left in the
+ *  text fails the run rather than writing the file. */
+async function ariaBeside(page: Page, name: string, masked: Locator): Promise<void> {
   const aria = await page.locator("body").ariaSnapshot();
   if (aria.trim() === "") throw new Error(`readme_shots: the accessibility snapshot for ${name} is empty`);
+  const hrefs = await masked.evaluateAll((rows) => rows.map((r) => r.querySelector("a.row-link")?.getAttribute("href") ?? null));
+  if (hrefs.some((h) => h === null)) {
+    throw new Error(`readme_shots: a masked lobby row in ${name} has no table link, so its sidecar cannot leave it out; nothing was written`);
+  }
+  const people = ["alice", "ben", "carol"].map((n) => who(n, "readme"));
+  const text = redactSidecar(aria, hrefs as string[], { ids: ownTables, addresses: people });
   mkdirSync(ARIA, { recursive: true });
-  writeFileSync(join(ARIA, `${name.replace(/\.(png|webp)$/, "")}.aria.txt`), `${aria}\n`);
+  writeFileSync(ariaPath(name), `${text}\n`);
 }
 
 /** The table this run is opening — the module's one, as `live.node.test.ts`
@@ -111,17 +140,19 @@ const ownTables = new Set<string>();
 async function shoot(page: Page, name: string, scratch: string): Promise<string> {
   await settled(page);
   const own = [...ownTables].map((id) => `a.row-link[href$="#/t/${id}"]`).join(", ");
-  const mask = [page.locator(own === "" ? "li.lobby-row" : `li.lobby-row:not(:has(${own}))`)];
+  const masked = page.locator(own === "" ? "li.lobby-row" : `li.lobby-row:not(:has(${own}))`);
+  const mask = [masked];
   const target = join(OUT, name);
+  forgetAria(name);
   if (name.endsWith(".webp")) {
     const png = join(scratch, name.replace(/\.webp$/, ".png"));
     await page.screenshot({ path: png, animations: "disabled", mask });
-    await ariaBeside(page, name);
+    await ariaBeside(page, name, masked);
     toWebp(png, target);
     unlinkSync(png);
   } else {
     await page.screenshot({ path: target, animations: "disabled", mask });
-    await ariaBeside(page, name);
+    await ariaBeside(page, name, masked);
   }
   return target;
 }

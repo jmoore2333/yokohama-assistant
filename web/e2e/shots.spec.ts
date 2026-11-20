@@ -37,7 +37,7 @@
 // these are what a reader is told the product looks like. The second half is
 // this file's own: the server draws the seed, so every run photographs a
 // DIFFERENT game, and each shot carries an `alt` and a `caption` in
-// `web/src/Help.tsx` (two of them also in `README.md`) that claim what is in
+// `web/src/Help.tsx` (and `screen`'s alt also in `docs/web-guide.md`) that claim what is in
 // frame. Those were written against a picture and stayed behind when the
 // picture moved on. Regenerating without re-reading them ships a description of
 // a screenshot that no longer exists.
@@ -46,7 +46,7 @@
 // written to disk and shipped as documentation; they check that the thing being
 // photographed is on screen, not that it is correct.
 
-import { writeFileSync } from "node:fs";
+import { unlinkSync, writeFileSync } from "node:fs";
 import { type Page } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
@@ -99,6 +99,13 @@ async function playAFew(page: Page, moves: number, seed: number) {
  *  empty file a reader would take for "nothing on screen". The file is in the
  *  gitignored `help-shots/` with its PNG; `mkhelpart.py` reads `*.png` only. */
 async function shot(page: Page, name: string): Promise<void> {
+  // The earlier run's text goes first, so a run that fails after the
+  // screenshot leaves no older text beside the newer picture.
+  try {
+    unlinkSync(`${SHOTS}/${name}.aria.txt`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
   const aria = await page.locator("body").ariaSnapshot();
   if (aria.trim() === "") throw new Error(`shot: the accessibility snapshot for ${name} is empty`);
