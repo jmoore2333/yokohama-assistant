@@ -1,12 +1,14 @@
 // The rail: who has what, and the three things it must not round off.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Dashboard, riderWords } from "./Dashboard";
+import { Achievements, Dashboard, riderWords } from "./Dashboard";
 import { wire } from "./wire/contract";
 import { handOf, playersOf, tracksOf } from "./test/panels";
 import {
   DUMMY_SEAT,
+  type AchievementModel,
+  type ArtManifest,
   type ClientState,
   type HandPanel,
   type Panel,
@@ -852,5 +854,100 @@ describe("a seat's flags", () => {
         ),
       ).toEqual(["english", "american", "french", "german"]);
     });
+  });
+});
+
+// ---- #75: the claim drawn on the card, in the Achievements panel ---------
+//
+// The same component the Goals strip and the goals index draw, so the same
+// fixture and the same readings: `goals_claimed_4p.json`'s first card was
+// claimed by seats 2, 0, 3, 1, its second by seat 3 alone, its third by
+// nobody. The premise is asserted, since the cells are only as strong as it.
+describe("the claim band in the Achievements panel", () => {
+  const G = wire.goalsClaimed4p;
+  const G_COLORS = G.players.players.map((p) => p.color);
+  const [FOUR, ONE, NONE] = G.achievements.cards as [AchievementModel, AchievementModel, AchievementModel];
+  const FOUR_WORDS = ["Yellow claimed first — 8 VP", "Red claimed — 6 VP", "Green claimed — 6 VP", "Blue claimed — 6 VP"];
+  const premise = () => {
+    expect(G_COLORS).toEqual(["Red", "Blue", "Yellow", "Green"]);
+    expect(FOUR.claimed_by).toEqual([2, 0, 3, 1]);
+    expect([FOUR.first_place_vp, FOUR.subsequent_vp]).toEqual([8, 6]);
+    expect(ONE.claimed_by).toEqual([3]);
+    expect(ONE.first_place_vp).toBe(9);
+    expect(NONE.claimed_by).toEqual([]);
+  };
+  const panel = (art: ArtManifest | null, colors: PlayerColor[] = G_COLORS) =>
+    render(<Achievements cards={G.achievements.cards} art={art} labels={wire.labels} colors={colors} />).container;
+  const faces = (root: Element) => [...root.querySelectorAll(".panel figure.card-face.achievement")];
+  const seatOf = (el: Element) => [...el.classList].filter((k) => k.startsWith("seat-"));
+  const kind = (el: Element) =>
+    el.classList.contains("claim")
+      ? el.classList.contains("first") ? "cube first" : "cube"
+      : el.classList.contains("claims-vp")
+        ? el.classList.contains("first") ? "vp first" : el.classList.contains("later") ? "vp later" : "vp ?"
+        : el.classList.contains("claims-sep") ? "divider" : `? ${el.className}`;
+  const pictureOf = (card: Element, art: ArtManifest | null) => {
+    const pic = card.querySelector(":scope > .card-pic");
+    expect(pic, "the card draws its picture box").not.toBeNull();
+    expect(pic!.querySelector(art ? ":scope > img" : ":scope > .card-blank"), "the picture the art calls for").not.toBeNull();
+    expect(pic!.querySelector(art ? ".card-blank" : "img")).toBeNull();
+    return { pic: pic!, band: pic!.querySelector(":scope > .claims") };
+  };
+
+  describe.each([
+    ["with art", wire.artManifest],
+    ["without art", null],
+  ] as const)("%s", (_, art) => {
+    it("four claims: a cube per claimant in claim order, the first ringed, the words in that order", () => {
+      premise();
+      const card = faces(panel(art))[0]!;
+      const { band } = pictureOf(card, art);
+      expect(band).not.toBeNull();
+      expect(within(card as HTMLElement).getByRole("group", { name: FOUR_WORDS.join(" · ") })).toBe(band);
+      const cubes = [...band!.querySelectorAll(":scope > .claim")];
+      expect(cubes.map(seatOf)).toEqual([["seat-yellow"], ["seat-red"], ["seat-green"], ["seat-blue"]]);
+      expect(cubes.map((c) => c.classList.contains("first"))).toEqual([true, false, false, false]);
+      expect(cubes.map((c) => c.getAttribute("title"))).toEqual(FOUR_WORDS);
+      for (const c of cubes) expect(c.querySelector("svg.piece.cube")).not.toBeNull();
+      for (const c of band!.children) expect(c.getAttribute("aria-hidden"), `${kind(c)} is hidden`).toBe("true");
+      expect([...band!.children].map(kind)).toEqual(["cube first", "vp first", "divider", "cube", "cube", "cube", "vp later"]);
+      expect(band!.querySelector(".claims-vp.first")!.textContent).toBe("8");
+      expect(band!.querySelector(".claims-vp.later")!.textContent).toBe("6");
+    });
+
+    it("one claim: seat 3 in the ringed place, no divider and no later VP", () => {
+      premise();
+      const { band } = pictureOf(faces(panel(art))[1]!, art);
+      expect(band!.getAttribute("aria-label")).toBe("Green claimed first — 9 VP");
+      expect([...band!.querySelectorAll(":scope > .claim")].map(seatOf)).toEqual([["seat-green"]]);
+      expect([...band!.children].map(kind)).toEqual(["cube first", "vp first"]);
+    });
+
+    it("no claim: no band, and the unclaimed chip", () => {
+      premise();
+      const card = faces(panel(art))[2]!;
+      expect(pictureOf(card, art).band).toBeNull();
+      expect([...card.querySelectorAll("figcaption .chip")].map((c) => c.textContent)).toContain("unclaimed");
+    });
+  });
+
+  it("names a claimant the colours do not as seat N, and still draws its cube", () => {
+    premise();
+    const { band } = pictureOf(faces(panel(wire.artManifest, ["Red", "Blue"]))[0]!, wire.artManifest);
+    const words = ["seat 2 claimed first — 8 VP", "Red claimed — 6 VP", "seat 3 claimed — 6 VP", "Blue claimed — 6 VP"];
+    expect(band!.getAttribute("aria-label")).toBe(words.join(" · "));
+    const cubes = [...band!.querySelectorAll(":scope > .claim")];
+    expect(cubes.map((c) => c.getAttribute("title"))).toEqual(words);
+    for (const c of cubes) expect(c.querySelector("svg.piece.cube")).not.toBeNull();
+  });
+
+  it("draws no first or also chip in any caption", () => {
+    premise();
+    const root = panel(wire.artManifest);
+    const chips = [...root.querySelectorAll(".chip")];
+    expect(chips.length).toBeGreaterThan(0);
+    expect(root.querySelectorAll(".chip.claimed")).toHaveLength(0);
+    for (const c of chips) expect(c.textContent).not.toMatch(/^(first|also) /);
+    expect(root.querySelectorAll(".claims")).toHaveLength(2);
   });
 });

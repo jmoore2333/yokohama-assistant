@@ -618,7 +618,6 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .chip.station { color: var(--yellow); border-color: color-mix(in oklab, var(--yellow) 45%, transparent); }
 .chip.gear { color: var(--fg); border-color: var(--fg-faint); font-weight: 700; }
 .chip.tech, .chip.order { color: var(--fg-dim); }
-.chip.claimed { font-weight: 700; }
 .chip.muted { color: var(--fg-faint); border-color: var(--line); }
 .chip.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
 .chip.zone-low { color: var(--seafood); }
@@ -643,7 +642,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * sites are W0b's; the ACHIEVEMENTS are W0's own gap — landscape since that
  * commit and cropped ever since in the Goals index (`Index.tsx`) and the rail's
  * Achievements panel (`Dashboard.tsx`), which no test can see because jsdom has
- * no layout. `.panel .card-face.achievement img` keeps its 3.4rem WIDTH; that
+ * no layout. `.panel .card-face.achievement .card-pic` keeps the art's 3.4rem WIDTH; that
  * is now ~2.25rem tall instead of ~5.1rem, which is the intent of the row
  * layout rather than a cost. */
 .card-face.site img, .card-face.site .card-blank,
@@ -670,8 +669,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * `width: 100%`, so a wrapping strip still puts one per line) and was not
  * shipped, and at 3P/4P the strip is caption-bound at 3.4rem (caption 92/109px
  * against 82px of art), so shrinking recovers nothing. */
-.panel .card-face.achievement img { width: 3.4rem; flex: 0 0 3.4rem; }
-.panel .card-face.achievement .card-blank { width: 5.2rem; flex: 0 0 5.2rem; }
+.panel .card-face.achievement .card-pic { flex: 0 0 3.4rem; width: 3.4rem; }
+.panel .card-face.achievement .card-pic.blank { flex: 0 0 5.2rem; width: 5.2rem; }
 .panel .card-face.achievement figcaption { flex: 1 1 auto; min-width: 0; }
 .panel .card-strip { flex-direction: column; }
 .card-blank {
@@ -693,6 +692,58 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .progress-row .bar { flex: 1 1 auto; height: 0.35rem; background: var(--line); border-radius: 2px; overflow: hidden; }
 .progress-row .fill { display: block; height: 100%; background: currentColor; }
 .progress-row .num { color: var(--fg-faint); min-width: 2.4rem; text-align: right; }
+
+/* ---- the claim band (#75) ------------------------------------------------
+ *
+ * An achievement's picture and its blank sit in one PICTURE BOX, `.card-pic`,
+ * and the band is positioned against that box and never against the picture,
+ * so twelve pictures need no coordinates and an art-less card draws the same
+ * band over its blank.
+ *
+ * **Every length inside is in `cqw` of the picture box**, which is what makes
+ * the fit hold by construction rather than by measurement: the band is the same
+ * fraction of the box at every card width, so four cubes and both numbers that
+ * fit one card fit all of them. Four is the most a card can carry (a seat
+ * claims a card once). The numbers' font is clamped, and the clamp is the one
+ * place the proportion can break; where it does, the CUBES give way first —
+ * they shrink (`flex: 0 1`, `min-width: 0`) while the numbers, the divider and
+ * the padding keep their size (`flex: none`) — and `max-width` caps the band
+ * inside the box, so it can narrow but never overflow it or wrap
+ * (`flex-wrap: nowrap`).
+ *
+ * The containment is `inline-size`, so the box's WIDTH may not come from its
+ * content: every place that draws the card gives it one — the column of a
+ * strip or an index stretches it, and the panel's row sets it below.
+ *
+ * **The band carries its own ground.** The picture behind it is whatever the
+ * card prints, so the numbers are read against `--bg-sunken`, opaque, never
+ * against the art: `--vp` on it is 8.00:1, well above AA's 4.5:1, and
+ * `--bg-sunken` is not redefined by the light scheme, so the figure holds in
+ * both. The ring (`--fg` on the same ground, 16.62:1) is the first claim's
+ * place; every `.claim` has the same box and border width, the later ones'
+ * border transparent, so the ring moves no cube off the row's line. */
+.card-pic { position: relative; container-type: inline-size; }
+.claims {
+  position: absolute; z-index: 1; left: 3cqw; bottom: 3cqw; max-width: 94cqw;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 1.6cqw;
+  padding: 1.2cqw 2.4cqw; overflow: hidden;
+  background: var(--bg-sunken); border: 1px solid var(--line-bright); border-radius: 999px;
+  /* A claimant the colours do not name has no seat class, so its cube takes this. */
+  color: var(--fg-dim);
+}
+.claim {
+  display: block; flex: 0 1 12cqw; min-width: 0;
+  padding: 0.9cqw; border: max(1px, 0.7cqw) solid transparent; border-radius: 50%;
+}
+.claim.first { border-color: var(--fg); }
+/* `.piece` sizes a TILE's pieces from the band's `--piece-h`, which is not set
+ * here: the cube fills its place instead, square by its own viewBox. */
+.claim .piece.cube { display: block; width: 100%; height: auto; }
+.claims-vp {
+  flex: none; font-family: var(--mono); font-weight: 700; line-height: 1;
+  font-size: clamp(9px, 8cqw, 15px); color: var(--vp);
+}
+.claims-sep { flex: none; align-self: stretch; width: 1px; background: var(--line-bright); }
 
 /* ---- panels ------------------------------------------------------------ */
 .panel {

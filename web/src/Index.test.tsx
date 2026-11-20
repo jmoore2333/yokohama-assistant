@@ -286,3 +286,44 @@ describe("the printed spaces read as the terminal reads them", () => {
     expect(all.some((w) => /warehouse tokens/.test(w))).toBe(false);
   });
 });
+
+// ---- #75: the claim drawn on the card, in the goals index ----------------
+describe("the claim band in the goals index", () => {
+  const goals = wire.indexGoals.groups.flatMap((g) => g.cards).map((c) => {
+    if (!("Achievement" in c.face)) throw new Error("the goals index carries achievements");
+    return c.face.Achievement;
+  });
+
+  it("draws the corpus's one claim as a band with one cube in the ringed place", () => {
+    // The premise, from the corpus's own index payload: one card is claimed,
+    // by seat 1 (Blue at this 2P table), and the other two are not.
+    expect(goals.map((g) => g.claimed_by)).toEqual([[1], [], []]);
+    expect(goals[0]!.first_place_vp).toBe(8);
+    const { container } = index("goals", wire.indexGoals);
+    const cards = [...container.querySelectorAll("li.index-card")];
+    expect(cards).toHaveLength(3);
+    const band = cards[0]!.querySelector("figure.card-face.achievement > .card-pic > .claims");
+    expect(band, "the claimed card draws its band on the picture box").not.toBeNull();
+    expect(band!.getAttribute("role")).toBe("group");
+    expect(band!.getAttribute("aria-label")).toBe("Blue claimed first — 8 VP");
+    const cubes = [...band!.querySelectorAll(":scope > .claim")];
+    expect(cubes).toHaveLength(1);
+    expect(cubes[0]!.classList.contains("first")).toBe(true);
+    expect(cubes[0]!.classList.contains("seat-blue")).toBe(true);
+    expect(cubes[0]!.getAttribute("title")).toBe("Blue claimed first — 8 VP");
+    expect(cubes[0]!.querySelector("svg.piece.cube")).not.toBeNull();
+    expect(band!.querySelector(".claims-vp.later")).toBeNull();
+    for (const c of cards.slice(1)) {
+      expect(c.querySelector(".card-pic"), "an unclaimed card still draws its picture box").not.toBeNull();
+      expect(c.querySelector(".claims")).toBeNull();
+    }
+  });
+
+  it("draws no first or also chip in any caption", () => {
+    const { container } = index("goals", wire.indexGoals);
+    const chips = [...container.querySelectorAll(".card-face.achievement .chip")];
+    expect(chips.length).toBeGreaterThan(0);
+    expect(container.querySelectorAll(".chip.claimed")).toHaveLength(0);
+    for (const c of chips) expect(c.textContent).not.toMatch(/^(first|also) /);
+  });
+});
