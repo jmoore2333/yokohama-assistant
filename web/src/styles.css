@@ -713,11 +713,13 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .stat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.25rem; }
 /* A seat's face-up flags: five cells, the country's word and its count. The row
  * wraps and its cells carry no fixed width, so it never widens its `.seat` at a
- * phone's width. A zero is dimmed; `+n` is a flag still on an order in hand and
- * does not count yet, so it is muted and italic beside the count. */
+ * phone's width. A zero's word and count are dimmed, never the cell, so a `+n`
+ * inside it keeps `--fg-faint`'s measured AA contrast. `+n` is a flag still on
+ * an order in hand and does not count yet, so it is muted and italic beside the
+ * count. */
 .flags { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; margin-top: 0.25rem; font-size: 10px; }
 .flag { display: inline-flex; align-items: baseline; gap: 0.2rem; color: var(--fg-dim); }
-.flag.none { opacity: 0.45; }
+.flag.none .flag-word, .flag.none .flag-n { opacity: 0.45; }
 .flag-n { color: var(--fg); font-weight: 700; }
 .flag.none .flag-n { color: inherit; font-weight: 400; }
 .flag-hand { color: var(--fg-faint); font-style: italic; }
