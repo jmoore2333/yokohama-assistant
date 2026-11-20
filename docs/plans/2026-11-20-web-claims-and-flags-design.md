@@ -97,7 +97,7 @@ On `HandPanel`, as `Option`: `None` whenever `hidden`. Rejected: a masked field 
 
 ## 8. The suites and the gates
 
-Every per-edit suite with the lint gate (`CLAUDE.md`'s Commands), and the web lane's suites (`docs/web-lane.md` §2) since the change reaches `crates/yokohama-cli` and the client, the browser walk included. The new corpus file is listed in four places: the two exact-set lists of files no script names (`web/src/local/corpus.node.test.ts`, `worker/scripts/factory-glue.mjs`), `contract.ts`'s imports and `contract.test.ts`. Before the merge, the fifteen release gates as one sequence, by the two-tier rule; no fenced crate's bytes move, so they are expected to read as at master. Origin's `test.yml` runs only on a core change, so nothing runs there by itself for this branch: `web.yml` is dispatched before the release, as the lane does.
+Every per-edit suite with the lint gate (`CLAUDE.md`'s Commands), and the web lane's suites (`docs/web-lane.md` §2) since the change reaches `crates/yokohama-cli` and the client, the browser walk included. The new corpus file is listed in four places: the two exact-set lists of files no script names (`NOT_SERVED` in `web/src/local/corpus.node.test.ts`, `THIRD_COLUMN` in `worker/test/corpus.test.ts`), `contract.ts`'s imports and `contract.test.ts`. Before the merge, the fifteen release gates as one sequence, by the two-tier rule; no fenced crate's bytes move, so they are expected to read as at master. Origin's `test.yml` runs only on a core change, so nothing runs there by itself for this branch: `web.yml` is dispatched before the release, as the lane does.
 
 ## 9. Left to the builder
 
