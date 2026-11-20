@@ -199,10 +199,10 @@ describe("heldChanges", () => {
     const f11 = clone(f10);
     f11.index = 11;
     f11.to_move = 0;
-    claim(f11, "Seafood7", 0);
+    claim(f11, "Technologies4", 1);
     const f12 = clone(f11);
     f12.index = 12;
-    claim(f12, "Technologies4", 0);
+    claim(f12, "Seafood7", 0);
     const f13 = clone(f12);
     f13.index = 13;
     claim(f13, "Commercial4", 0);
@@ -218,13 +218,13 @@ describe("heldChanges", () => {
     // The premises: three steps, moved by 1, 0, 0, each naming its own claim.
     expect(run.steps.map((s) => s.mover)).toEqual([1, 0, 0]);
     expect(run.steps.map((s) => [...s.changes.goals])).toEqual([
-      ["Seafood7"],
       ["Technologies4"],
+      ["Seafood7"],
       ["Commercial4"],
     ]);
     const held = heldChanges(run)!;
-    expect(held.goals).toEqual(new Set(["Technologies4", "Commercial4"]));
-    expect(held.goals.has("Seafood7")).toBe(false);
+    expect(held.goals).toEqual(new Set(["Seafood7", "Commercial4"]));
+    expect(held.goals.has("Technologies4")).toBe(false);
     expect(held.any).toBe(true);
   });
 });

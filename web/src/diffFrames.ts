@@ -124,13 +124,14 @@ const cardsOnOffer = (f: HistoricalFrame): Record<"port" | "lab", Set<number>> =
 
 /** The walk is over `b`: a tile, seat, slot, technology, hand card or
  *  achievement card present in `a` and ABSENT from `b` is silent. Acceptable
- *  because the first three sets are fixed at setup — the board's areas, the
- *  seats, and the six slots per port and laboratory board do not come and go
- *  during a game — so the two frames of one game always carry the same keys,
- *  and a disappearance would be a server bug rather than a move. The fourth
- *  and the sixth are not fixed sets but only ever GROW: a technology, once
- *  owned, is never returned, and a claim, once made, is never withdrawn in
- *  play, so `goals` reads "longer in `b`" in the same direction as the rest. */
+ *  because the first three sets, and the achievement cards, are fixed at
+ *  setup — the board's areas, the seats, the six slots per port and laboratory
+ *  board and the three achievement cards do not come and go during a game — so
+ *  the two frames of one game always carry the same keys, and a disappearance
+ *  would be a server bug rather than a move. The fourth is not a fixed set but
+ *  only ever GROWS: a technology, once owned, is never returned. What grows on
+ *  an achievement card is its list of claims: a claim, once made, is never
+ *  withdrawn in play, and the read is still "longer in `b`". */
 export function diffFrames(a: HistoricalFrame, b: HistoricalFrame): Changes {
   const tiles = new Set<AreaId>();
   const wasTile = new Map(a.frame.board.tiles.map((t) => [t.area, tileKey(t)]));
@@ -195,9 +196,11 @@ export function diffFrames(a: HistoricalFrame, b: HistoricalFrame): Changes {
   // owner's row, `techs` non-empty implies `seats` non-empty, and dropping that
   // term leaves every cell in this module green (measured). It is written
   // anyway, because `any` is a statement about the six sets and not about
-  // which of them happen to be correlated today. `goals` is like `hand`: the
-  // Achievements panel is its own panel and `seatKey` never reads it, so a
-  // claim landing can be the ONLY thing a step changes.
+  // which of them happen to be correlated today. `goals` joins `techs` on that
+  // side: a claim also moves its claimant's `assistants` (`on_achievements`)
+  // and `victory_points`, which `seatKey` reads, so on every served step a
+  // non-empty `goals` implies a non-empty `seats`. The cell that proves the
+  // term moves `claimed_by` alone on a clone, which no served pair does.
   return {
     tiles,
     seats,

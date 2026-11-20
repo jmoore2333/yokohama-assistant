@@ -313,7 +313,7 @@ describe("diffFrames", () => {
       expect(diffFrames(wire.atK, b).goals.size).toBe(0);
     });
 
-    it("carries `any` by itself: a claim pushed and nothing else moved", () => {
+    it("carries `any` by the goals alone, on a clone that moves `claimed_by` and nothing else", () => {
       premise();
       const b = clone(wire.atK);
       goalsOf(b).find((c) => c.achievement_type === "Commercial4")!.claimed_by.push(1);
@@ -323,13 +323,34 @@ describe("diffFrames", () => {
       expect(d.any).toBe(true);
     });
 
-    it("names no card that `a` does not carry, and none when `a` has no Achievements panel", () => {
+    it("names nothing when `a` has no Achievements panel", () => {
       premise();
       const b = clone(wire.atK);
       const a = clone(wire.atK);
       a.frame.dashboard = a.frame.dashboard.filter((p) => !("Achievements" in p));
       expect(a.frame.dashboard.some((p) => "Achievements" in p)).toBe(false);
       expect(diffFrames(a, b).goals.size).toBe(0);
+    });
+
+    it("names nothing for a card absent from a PRESENT panel of `a`, though `b` holds a claim on it", () => {
+      premise();
+      const a = clone(wire.atK);
+      const panel = a.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p)!;
+      panel.Achievements.cards = panel.Achievements.cards.filter((c) => c.achievement_type !== "Technologies4");
+      expect(goalsOf(a).map((c) => c.achievement_type)).toEqual(["Seafood7", "Commercial4"]);
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Technologies4")!.claimed_by.push(0);
+      expect(diffFrames(a, b).goals.size).toBe(0);
+    });
+
+    it("keys a card by its type and not by its place in the panel", () => {
+      premise();
+      const b = clone(wire.atK);
+      const panel = b.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p)!;
+      panel.Achievements.cards.reverse();
+      expect(goalsOf(b).map((c) => c.achievement_type)).toEqual(["Commercial4", "Technologies4", "Seafood7"]);
+      goalsOf(b).find((c) => c.achievement_type === "Technologies4")!.claimed_by.push(0);
+      expect(diffFrames(wire.atK, b).goals).toEqual(new Set(["Technologies4"]));
     });
   });
 });
