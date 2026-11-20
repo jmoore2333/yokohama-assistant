@@ -844,15 +844,20 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
   expect(GOALS_CLAIMED_4P.achievements.cards[0]!.claimed_by).toEqual([2, 0, 3, 1]);
 
   // **The four widths walk ONE card size, and it is the narrowest.** The strip's
-  // achievement card is `calc(var(--card-w) * 1.5)`, and on the table
-  // `--card-w` is `clamp(8rem, (100cqw - 13rem) / 12, 12rem)` (`styles.css`'s
-  // `.table-sections`): at 390, 1024, 1201 and 1440 px it sits at its 8rem
-  // floor, so the card is 192 px wide with a 177.22 px picture box at all four
-  // (measured; the review's export read the same), and it is wider only on
-  // wider screens (237.59 px at 1800, 222 px at 2560 by the review). That floor
-  // IS "the Goals strip's narrowest card width" the spec names (§5.1, §6), so
-  // this walk shows the band holds at the narrowest card at every viewport the
-  // file walks — not at four different card sizes.
+  // achievement card is `calc(var(--card-w) * 1.5)`. At 390, 1024, 1201 and
+  // 1440 px the rule in force is `.table-sections`' own `--card-w: clamp(8rem,
+  // 12cqw, 12rem)` (`styles.css`, the M5 strips block), and its `12cqw` term
+  // is under 8rem at all four, so it sits at its 8rem floor: the card is 192 px
+  // wide with a 177.22 px picture box at all four (measured; the review's
+  // export read the same). It is wider only on wider screens, by the review:
+  // 237.59 px at 1800, still under that rule with `12cqw` past the floor, and
+  // 222 px at 2560, where the table is at least 108rem wide and the
+  // `@container (min-width: 108rem)` arm below it takes over with `--card-w:
+  // clamp(8rem, (100cqw - 13rem) / 12, 12rem)`, the regime that puts two
+  // strips side by side. That 8rem floor IS "the Goals strip's narrowest card
+  // width" the spec names (§5.1, §6), so this walk shows the band holds at the
+  // narrowest card at every viewport the file walks — not at four different
+  // card sizes.
   for (const width of [390, 1024, 1201, 1440]) {
     await page.setViewportSize({ width, height: 844 });
     await settle(page);
@@ -918,11 +923,13 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
     //
     // **The line is the cubes' vertical span, and a number lies within it** (±1
     // px). Measured before this was set (2026-11-20, every width alike): a cube
-    // 21.27 px tall, a number 14.17 px, the band 27.52 px; at 390 px the cubes
-    // span 394.09–415.36 and each number 397.64–411.81, so a number is SHORTER
-    // than a cube and `align-items: center` places it inside the cubes' span
-    // (its centre and theirs coincide, 404.73, which is the other form and
-    // holds too — recorded below, not gated). Containment is the form chosen
+    // 21.27 px tall, a number 14.17 px, the band 27.52 px. A number is SHORTER
+    // than a cube and `align-items: center` centres it on the cubes' line, so it
+    // sits 3.55 px inside their span at top and bottom alike — the centre offset
+    // read 0.00 px, which is the other form and holds too (recorded below, not
+    // gated). (One run's page positions at 390 px, for the record only: the
+    // cubes spanned 394.09–415.36 and each number 397.64–411.81; they move with
+    // the scroll.) Containment is the form chosen
     // because it is the one a number on a second line cannot meet: dropped
     // under the cubes, its bottom passes theirs.
     const lineTop = Math.min(...read.claims.map((c) => c.top));
