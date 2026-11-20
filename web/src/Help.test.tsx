@@ -424,3 +424,19 @@ describe("the help panel and talking (M6.4)", () => {
     expect(words.container.textContent).toContain("The three parts of the screen");
   });
 });
+
+describe("the help panel and the claims and flags", () => {
+  // **The two sentences the claims-and-flags cycle added (issues #75, #76), and
+  // the clause its turn walk made necessary.** Each needle is a phrase only its
+  // own sentence carries, so a sentence cut or reworded away fails here rather
+  // than leaving the page silent on a card or a row the player can see.
+  it("says where a claimant's assistant stands, what a seat's flags count, and that the walk marks a claimed goal", () => {
+    render(<Help />);
+    const text = section("The three parts of the screen");
+    expect(text).toContain("stands in the ringed place beside the first-place points");
+    expect(text).toContain("later claimants follow beside theirs");
+    expect(text).toContain("which earn mercenaries and score the country sets");
+    expect(text).toContain("they count once the order is fulfilled");
+    expect(text).toContain("and a goal a player has just claimed");
+  });
+});

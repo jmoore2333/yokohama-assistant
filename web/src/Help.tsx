@@ -57,13 +57,16 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         laboratory, six card slots to a board, the church and customs tracks, the goals in play,
         and the building sites at full size. They sit side by side only on a very wide screen
         &mdash; at 1710px across they stack, at 2560px they do not &mdash; so on a laptop the
-        table scrolls down to them. The <strong>side column</strong> on the right holds the{" "}
+        table scrolls down to them. A claimed goal shows the claimant&rsquo;s assistant on the
+        card. The first to claim stands in the ringed place beside the first-place points; later
+        claimants follow beside theirs. The <strong>side column</strong> on the right holds the{" "}
         <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
         always there &mdash; then the account of the last turn, which, when the opponent has just
         moved, first plays out on the table one step at a time, at the pace the account&rsquo;s
         cadence control sets. Each step marks what it changed, with an outline that pulses once
         and then stays until the next step replaces it: the pieces that moved, the seat rows
-        whose values changed, and the cards a take moved. A take marks its two ENDS. In the port
+        whose values changed, the cards a take moved, and a goal a player has just claimed. A
+        take marks its two ENDS. In the port
         or laboratory it lights the card the deck turned over to refill the strip &mdash; the
         arrival &mdash; and not the card that left, which is no longer there to point at. The
         taken card is marked where it went instead: a technology in its new owner&rsquo;s list,
@@ -75,7 +78,10 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         them, not just its last step&rsquo;s &mdash; stay on the live table until you answer
         again, so you play on a board that still shows what your opponent did. Skip lands you on
         your prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
-        pieces, and your own hand. Hover or focus any tile to see it, and any site card on it,
+        pieces, and your own hand. Each player&rsquo;s row counts their flags by country: the
+        flags on fulfilled orders and on technologies, which earn mercenaries and score the
+        country sets. On your own row, +n is the flags on orders still in your hand; they count
+        once the order is fulfilled. Hover or focus any tile to see it, and any site card on it,
         at full size.
       </p>
       <p>

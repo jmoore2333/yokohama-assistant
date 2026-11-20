@@ -78,12 +78,16 @@ left, each tile the printed area art with its building-site card, its pieces and
 the right carries the answer bar at its top, with the phase ladder, the seat to move and the numbered moves it
 offers, above the last move and both seats' goods, money and pieces.](../web/public/help/screen.webp)
 
-The **table** fills the left: the area tiles laid out as the staggered pyramid the real board makes, each the
-printed tile with any building-site card and pieces on it, and under the pyramid whichever boards you have switched
-on. The **side column** on the right holds the **answer bar** pinned at its top, so whatever the game is asking you
-is always on screen. Under it come the account of the last turn, every seat's goods, money and pieces, and your own
-hand. When an opponent moves, the turn plays out across your table one step at a time. On a narrow window the same
-parts stack, with the answer bar pinned along the bottom edge.
+The **table** fills the left: the area tiles laid out as the staggered pyramid the real board makes, each the printed
+tile with any building-site card and pieces on it, and under the pyramid whichever boards you have switched on. A
+claimed goal shows the claimant's assistant on the card. The first to claim stands in the ringed place beside the
+first-place points; later claimants follow beside theirs. The **side column** on the right holds the **answer bar**
+pinned at its top, so whatever the game is asking you is always on screen. Under it come the account of the last turn,
+every seat's goods, money and pieces, and your own hand. Each player's row counts their flags by country: the flags on
+fulfilled orders and on technologies, which earn mercenaries and score the country sets. On your own row, `+n` is the
+flags on orders still in your hand; they count once the order is fulfilled. When an opponent moves, the turn plays out
+across your table one step at a time. On a narrow window the same parts stack, with the answer bar pinned along the
+bottom edge.
 
 The answer bar lists the moves the engine offers, numbered: press one. While a placement picker is open the table
 itself is the input, and the cost of your selection is printed before you commit to it.
