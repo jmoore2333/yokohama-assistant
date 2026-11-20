@@ -785,9 +785,8 @@ describe("a seat's flags", () => {
       );
     });
 
-    it("lists two countries in hand in the table's order, not the wire's key order", () => {
-      // `atK`'s hand holds France and Germany; the wire's keys run alphabetically
-      // (american, dutch, english, french, german), the table's do not.
+    it("names the two countries a hand holds, each with its own mark", () => {
+      // `atK`'s hand holds France and Germany, and its seat is not the acting one.
       const dashboard = wire.atK.frame.dashboard;
       const players = dashboard.find((p): p is Extract<Panel, { Players: unknown }> => "Players" in p)!
         .Players.players;
@@ -819,6 +818,39 @@ describe("a seat's flags", () => {
         ["french", "+1"],
         ["german", "+1"],
       ]);
+    });
+
+    it("lists the countries in hand in the table's order: Britain, America, France, Germany", () => {
+      // The table's order puts Britain before America; the wire's keys
+      // (`Object.keys`) and the country words sorted both put America first, so
+      // only the table's order reads Britain first. `atK`'s hand holds France and
+      // Germany; the clone adds one English and one American flag in hand, the
+      // cards untouched, as the cell above reads the payload's own.
+      const clone: ClientState["frame"] = JSON.parse(JSON.stringify(wire.atK.frame));
+      const own = clone.dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p)!.Hand;
+      expect(own.seat).toBe(0);
+      expect(own.flags_in_hand).toEqual({ english: 0, american: 0, french: 1, german: 1, dutch: 0 });
+      own.flags_in_hand!.english = 1;
+      own.flags_in_hand!.american = 1;
+
+      const { container } = render(
+        <Dashboard
+          panels={clone.dashboard}
+          art={wire.artManifest}
+          labels={wire.labels}
+          colors={COLORS}
+          only={["Players"]}
+        />,
+      );
+      const row = rowsOf(container)[0]!;
+      expect(nameOf(row).getAttribute("aria-label")).toBe(
+        "Flags: Britain 1, America 0, France 0, Germany 0, Netherlands 1; in hand: Britain 1, America 1, France 1, Germany 1",
+      );
+      expect(
+        [...row.querySelectorAll<HTMLElement>(".flag-hand")].map(
+          (m) => m.closest<HTMLElement>(".flag")!.dataset.country,
+        ),
+      ).toEqual(["english", "american", "french", "german"]);
     });
   });
 });
