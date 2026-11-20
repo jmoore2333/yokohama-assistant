@@ -2,7 +2,8 @@
 //
 // **A generator, not a test.** Nothing here asserts a product property; it
 // drives the shipped client in real Chromium against the real release binary
-// and writes the five `web/help-shots/*.png`. It lives in `e2e/` because that
+// and writes the five `web/help-shots/*.png`, each with the page's
+// accessibility snapshot beside it as `<name>.aria.txt` (see `shot`). It lives in `e2e/` because that
 // is where the browser and the server already are, and because a screenshot
 // generator that needed its own harness would be a second driver of the same
 // app.
@@ -45,6 +46,7 @@
 // written to disk and shipped as documentation; they check that the thing being
 // photographed is on screen, not that it is correct.
 
+import { writeFileSync } from "node:fs";
 import { type Page } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
@@ -83,6 +85,24 @@ async function playAFew(page: Page, moves: number, seed: number) {
     if (screen.over) break;
     if ((await act(page, screen, pick)) === null) break;
   }
+}
+
+/** Photograph the page as `help-shots/<name>.png`, and write its accessibility
+ *  snapshot beside it as `help-shots/<name>.aria.txt`.
+ *
+ *  **The text is how the words beside a picture are checked without opening
+ *  it.** No agent views these pictures, so the `alt` and `caption` in
+ *  `Help.tsx` are re-read against this text instead, and the pictures are the
+ *  owner's reading. The snapshot is taken with nothing between it and the
+ *  screenshot, so it is the page that was photographed and not one a step
+ *  before or after. An empty snapshot fails the run rather than writing an
+ *  empty file a reader would take for "nothing on screen". The file is in the
+ *  gitignored `help-shots/` with its PNG; `mkhelpart.py` reads `*.png` only. */
+async function shot(page: Page, name: string): Promise<void> {
+  await page.screenshot({ path: `${SHOTS}/${name}.png` });
+  const aria = await page.locator("body").ariaSnapshot();
+  if (aria.trim() === "") throw new Error(`shot: the accessibility snapshot for ${name} is empty`);
+  writeFileSync(`${SHOTS}/${name}.aria.txt`, `${aria}\n`);
 }
 
 const raf = (page: Page) =>
@@ -219,7 +239,7 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   await expect(page.locator(".board .tile").first()).toBeVisible();
   await expect(page.locator(".deck")).toBeVisible();
   await expect(page.getByRole("button", { name: "Log", exact: true })).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/screen.png` });
+  await shot(page, "screen");
 
   // **The same table, scrolled to what is under the pyramid** (ruling R-T14d).
   // `screen.png` is the first view and stays unfaked, and at 2P/1710x869 the
@@ -239,7 +259,7 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   // loaded branch.
   await expect(page.locator(".board-row").last().locator(".tile").first()).toBeVisible();
   await expect(page.locator(".table-sec.ports .board-strip").first()).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/strips.png` });
+  await shot(page, "strips");
 
   // Walk on until a placement picker is open, so the "the board is the input"
   // paragraph has the picture it describes. Bounded, and it says so if it never
@@ -266,7 +286,7 @@ test("the whole screen, and a placement picker", async ({ page }) => {
   // warnings block is `.decision` too, and it is the FIRST one.
   await expect(page.locator(".deck")).toContainText(/Option [AB] —/);
   await expect(page.getByRole("button", { name: "Confirm" })).toBeVisible();
-  await page.screenshot({ path: `${SHOTS}/placement.png` });
+  await shot(page, "placement");
 });
 
 test("the explanation, and the replay track", async ({ page }) => {
@@ -277,7 +297,7 @@ test("the explanation, and the replay track", async ({ page }) => {
   await page.getByRole("button", { name: "Suggest", exact: true }).click();
   // The chart, not just the panel: the bars ARE the paragraph's subject.
   await expect(page.locator(".surface .bar").first()).toBeVisible({ timeout: 30_000 });
-  await page.screenshot({ path: `${SHOTS}/explain.png` });
+  await shot(page, "explain");
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: "Log", exact: true }).click();
@@ -293,5 +313,5 @@ test("the explanation, and the replay track", async ({ page }) => {
   // in it; without this the outlined pyramid is photographed mid-scroll.
   await scrollToTop(page);
   await park(page);
-  await page.screenshot({ path: `${SHOTS}/replay.png` });
+  await shot(page, "replay");
 });

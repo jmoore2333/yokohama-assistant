@@ -30,7 +30,7 @@
 // under the `readme.test` addresses, and are taken away.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,24 @@ const PASSWORD = "sesame";
 
 /** Where the pictures go: the README's own directory, or the run's scratch. */
 const OUT = process.env.YOKOHAMA_WEB_README_SHOTS_DIR ?? fileURLToPath(new URL("../../worker/docs/img", import.meta.url));
+
+/** Where each picture's accessibility snapshot goes, as `<base name>.aria.txt`:
+ *  the gitignored `web/help-shots/readme/`, whatever `OUT` is. Not beside the
+ *  picture, because `OUT` is a committed directory (or a scratch one a dry run
+ *  may discard) and the PNG intermediates' scratch is removed when the run ends.
+ *  It is how the README's alts are checked without opening a picture. **Unlike
+ *  the picture it is not masked**: live, it reads any stranger's lobby row,
+ *  which is one more reason it stays in a gitignored directory, never committed. */
+const ARIA = fileURLToPath(new URL("../help-shots/readme", import.meta.url));
+
+/** Write `page`'s accessibility snapshot as `ARIA/<base name of name>.aria.txt`.
+ *  An empty snapshot fails the run rather than writing an empty file. */
+async function ariaBeside(page: Page, name: string): Promise<void> {
+  const aria = await page.locator("body").ariaSnapshot();
+  if (aria.trim() === "") throw new Error(`readme_shots: the accessibility snapshot for ${name} is empty`);
+  mkdirSync(ARIA, { recursive: true });
+  writeFileSync(join(ARIA, `${name.replace(/\.(png|webp)$/, "")}.aria.txt`), `${aria}\n`);
+}
 
 /** The table this run is opening — the module's one, as `live.node.test.ts`
  *  requires; the scratch table is abandoned on screen and then set to null. */
@@ -98,10 +116,12 @@ async function shoot(page: Page, name: string, scratch: string): Promise<string>
   if (name.endsWith(".webp")) {
     const png = join(scratch, name.replace(/\.webp$/, ".png"));
     await page.screenshot({ path: png, animations: "disabled", mask });
+    await ariaBeside(page, name);
     toWebp(png, target);
     unlinkSync(png);
   } else {
     await page.screenshot({ path: target, animations: "disabled", mask });
+    await ariaBeside(page, name);
   }
   return target;
 }
