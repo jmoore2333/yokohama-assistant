@@ -445,6 +445,9 @@ export interface HouseFrame {
   rev: number;
 }
 
+/** A 4P position's Achievements and Players panels, built in process. */
+export interface GoalsClaimedFixture { achievements: { cards: AchievementModel[] }; players: { players: PlayerModel[] } }
+
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.
  *

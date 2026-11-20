@@ -1,0 +1,300 @@
+{
+  "achievements": {
+    "cards": [
+      {
+        "achievement_type": "Seafood7",
+        "category": "A",
+        "claimed_by": [
+          2,
+          0,
+          3,
+          1
+        ],
+        "first_place_vp": 8,
+        "progress": [
+          [
+            0,
+            1,
+            7
+          ],
+          [
+            1,
+            1,
+            7
+          ],
+          [
+            2,
+            1,
+            7
+          ],
+          [
+            3,
+            1,
+            7
+          ]
+        ],
+        "subsequent_vp": 6
+      },
+      {
+        "achievement_type": "Technologies4",
+        "category": "B",
+        "claimed_by": [
+          3
+        ],
+        "first_place_vp": 9,
+        "progress": [
+          [
+            0,
+            0,
+            4
+          ],
+          [
+            1,
+            0,
+            4
+          ],
+          [
+            2,
+            0,
+            4
+          ],
+          [
+            3,
+            0,
+            4
+          ]
+        ],
+        "subsequent_vp": 7
+      },
+      {
+        "achievement_type": "Commercial4",
+        "category": "C",
+        "claimed_by": [],
+        "first_place_vp": 10,
+        "progress": [
+          [
+            0,
+            0,
+            4
+          ],
+          [
+            1,
+            0,
+            4
+          ],
+          [
+            2,
+            0,
+            4
+          ],
+          [
+            3,
+            0,
+            4
+          ]
+        ],
+        "subsequent_vp": 8
+      }
+    ]
+  },
+  "players": {
+    "players": [
+      {
+        "assistants": {
+          "in_hand": 8,
+          "in_warehouse": 12,
+          "on_achievements": 0,
+          "on_board": 0,
+          "on_church": 0,
+          "on_customs": 0
+        },
+        "color": "Red",
+        "five_power_tokens": 0,
+        "flags": {
+          "american": 0,
+          "dutch": 0,
+          "english": 0,
+          "french": 0,
+          "german": 0
+        },
+        "goods": {
+          "copper": 1,
+          "imports": 0,
+          "seafood": 1,
+          "silk": 1,
+          "tea": 1
+        },
+        "hand_hidden": false,
+        "is_bot": false,
+        "is_current": true,
+        "mercenaries_unused": 0,
+        "mercenaries_used": 0,
+        "money": 3,
+        "orders_filled": [],
+        "orders_in_hand": 1,
+        "president": "InHand",
+        "seat": 0,
+        "shophouses": {
+          "built": 0,
+          "in_hand": 2,
+          "in_warehouse": 6
+        },
+        "technologies": [],
+        "trading_houses": {
+          "built": 0,
+          "in_hand": 0,
+          "in_warehouse": 4,
+          "next_take_cost": 4
+        },
+        "victory_points": 0
+      },
+      {
+        "assistants": {
+          "in_hand": 8,
+          "in_warehouse": 12,
+          "on_achievements": 0,
+          "on_board": 0,
+          "on_church": 0,
+          "on_customs": 0
+        },
+        "color": "Blue",
+        "five_power_tokens": 0,
+        "flags": {
+          "american": 0,
+          "dutch": 0,
+          "english": 0,
+          "french": 0,
+          "german": 0
+        },
+        "goods": {
+          "copper": 1,
+          "imports": 0,
+          "seafood": 1,
+          "silk": 1,
+          "tea": 1
+        },
+        "hand_hidden": false,
+        "is_bot": false,
+        "is_current": false,
+        "mercenaries_unused": 0,
+        "mercenaries_used": 0,
+        "money": 4,
+        "orders_filled": [],
+        "orders_in_hand": 1,
+        "president": "InHand",
+        "seat": 1,
+        "shophouses": {
+          "built": 0,
+          "in_hand": 2,
+          "in_warehouse": 6
+        },
+        "technologies": [],
+        "trading_houses": {
+          "built": 0,
+          "in_hand": 0,
+          "in_warehouse": 4,
+          "next_take_cost": 4
+        },
+        "victory_points": 0
+      },
+      {
+        "assistants": {
+          "in_hand": 8,
+          "in_warehouse": 12,
+          "on_achievements": 0,
+          "on_board": 0,
+          "on_church": 0,
+          "on_customs": 0
+        },
+        "color": "Yellow",
+        "five_power_tokens": 0,
+        "flags": {
+          "american": 0,
+          "dutch": 0,
+          "english": 0,
+          "french": 0,
+          "german": 0
+        },
+        "goods": {
+          "copper": 1,
+          "imports": 0,
+          "seafood": 1,
+          "silk": 1,
+          "tea": 1
+        },
+        "hand_hidden": false,
+        "is_bot": false,
+        "is_current": false,
+        "mercenaries_unused": 0,
+        "mercenaries_used": 0,
+        "money": 4,
+        "orders_filled": [],
+        "orders_in_hand": 1,
+        "president": "InHand",
+        "seat": 2,
+        "shophouses": {
+          "built": 0,
+          "in_hand": 2,
+          "in_warehouse": 6
+        },
+        "technologies": [],
+        "trading_houses": {
+          "built": 0,
+          "in_hand": 0,
+          "in_warehouse": 4,
+          "next_take_cost": 4
+        },
+        "victory_points": 0
+      },
+      {
+        "assistants": {
+          "in_hand": 8,
+          "in_warehouse": 12,
+          "on_achievements": 0,
+          "on_board": 0,
+          "on_church": 0,
+          "on_customs": 0
+        },
+        "color": "Green",
+        "five_power_tokens": 0,
+        "flags": {
+          "american": 0,
+          "dutch": 0,
+          "english": 0,
+          "french": 0,
+          "german": 0
+        },
+        "goods": {
+          "copper": 1,
+          "imports": 0,
+          "seafood": 1,
+          "silk": 1,
+          "tea": 1
+        },
+        "hand_hidden": false,
+        "is_bot": false,
+        "is_current": false,
+        "mercenaries_unused": 0,
+        "mercenaries_used": 0,
+        "money": 4,
+        "orders_filled": [],
+        "orders_in_hand": 1,
+        "president": "InHand",
+        "seat": 3,
+        "shophouses": {
+          "built": 0,
+          "in_hand": 2,
+          "in_warehouse": 6
+        },
+        "technologies": [],
+        "trading_houses": {
+          "built": 0,
+          "in_hand": 0,
+          "in_warehouse": 4,
+          "next_take_cost": 4
+        },
+        "victory_points": 0
+      }
+    ]
+  }
+}

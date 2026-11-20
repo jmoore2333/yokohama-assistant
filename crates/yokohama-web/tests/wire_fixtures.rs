@@ -2164,8 +2164,8 @@ fn partial_of(record_text: &str, events: usize) -> String {
 
 /// The payloads the walk does not route, built in process.
 ///
-/// **Eight of them, not the two this doc used to claim** (M6.5b, then cycle E
-/// and security S1a), each for its own reason:
+/// **Nine of them, not the two this doc used to claim** (M6.5b, then cycle E,
+/// security S1a and issue #75), each for its own reason:
 ///
 /// - `watching`: a BOT must be the acting seat, and a bot's seed is entropy.
 /// - `locked`: a driver or engine fault.
@@ -2175,6 +2175,8 @@ fn partial_of(record_text: &str, events: usize) -> String {
 /// - `why_refusals`: every refusal kind, from the enum.
 /// - `explanation_terminal`: a finished position's explanation.
 /// - `house_frame`: a stream frame, and the walk reads no stream.
+/// - `goals_claimed_4p`: a card with four claims, which no short deterministic
+///   game reaches — see [`goals_claimed_4p`].
 ///
 /// They are therefore third-column files in spec §5's table — constructed, not
 /// routed — which the browser host's replay asserts by name.
@@ -2382,7 +2384,33 @@ fn constructed() -> Vec<(String, Value)> {
         ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
         ("house_frame".to_string(), house_frame_fixture()),
+        ("goals_claimed_4p".to_string(), goals_claimed_4p()),
     ]
+}
+
+/// `goals_claimed_4p`: the claim band's fixture (issue #75). The corpus's walk
+/// is a two-player game whose cards carry at most one claim, and no short
+/// deterministic game reaches four, so the claim order is set on the cards of
+/// a fresh 4P position and the panels are the model's own builders'. The order
+/// is 2, 0, 3, 1 on purpose: neither seat order nor "the lowest seat first"
+/// can pass for claim order. Constructed, not routed: a third-column file.
+fn goals_claimed_4p() -> Value {
+    use yokohama_cli::screen_model::{build_achievements, build_players, SeatFacts};
+    use yokohama_core::{finalize_setup, new_game, GameConfig, PlayerColor, PlayerId, Rules, StartingOrderChoice};
+    let rules = Rules::standard();
+    let mut config = GameConfig::for_player_count(4);
+    config.player_colors =
+        vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+    config.start_player = PlayerId::new(0);
+    let pending = new_game(config, &rules, SETUP_SEED).expect("a fixture game");
+    let mut state =
+        finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).expect("a fixture game");
+    state.achievements[0].claimed_by = [2, 0, 3, 1].map(PlayerId::new).to_vec();
+    state.achievements[1].claimed_by = vec![PlayerId::new(3)];
+    serde_json::json!({
+        "achievements": build_achievements(&state),
+        "players": build_players(&state, &rules, &SeatFacts::all_open(4)),
+    })
 }
 
 /// **The house frame, as the lobby's socket or stream delivers it** (M6.5c2

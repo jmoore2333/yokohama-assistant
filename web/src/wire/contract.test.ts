@@ -228,6 +228,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["events", wire.events, KEYS.events],
     ["events_dealing", wire.eventsDealing, KEYS.events],
     ["house_frame", wire.houseFrame, KEYS.houseFrame],
+    // Issue #75: the four-claim fixture's root and each of its four seat rows.
+    // `corpusPanels()` does not reach these rows — the root names its panels
+    // `players` and `achievements`, not the `Players` tag a frame's dashboard
+    // carries — so the row's key set, `flags` in and `flags_in_hand` out, is
+    // checked here.
+    ["goals_claimed_4p", wire.goalsClaimed4p, KEYS.goalsClaimed],
+    ["goals_claimed_4p.players.0", wire.goalsClaimed4p.players.players[0], KEYS.player],
+    ["goals_claimed_4p.players.1", wire.goalsClaimed4p.players.players[1], KEYS.player],
+    ["goals_claimed_4p.players.2", wire.goalsClaimed4p.players.players[2], KEYS.player],
+    ["goals_claimed_4p.players.3", wire.goalsClaimed4p.players.players[3], KEYS.player],
     // The dealt CARD, reached through the one payload that still carries one:
     // a caller's own `deal`. It used to be reached through `preview.deals`,
     // which served every seat's at once and is retired (M6.1 §8).

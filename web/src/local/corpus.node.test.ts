@@ -134,8 +134,8 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   terminal's words, the key grammar's verdicts, the id grammar's verdicts, a
  *   seed's verdict).
  * - `watching`, `locked`, `why`, `why_withheld`, `why_refused`, `explanation_terminal`,
- *   `why_refusals` and `house_frame` are built in process by `constructed()`, because a router
- *   cannot reach them from a deterministic bot-free game. The ROUTES exist on
+ *   `why_refusals`, `house_frame` and `goals_claimed_4p` are built in process by `constructed()`,
+ *   because a router cannot reach them from a deterministic bot-free game. The ROUTES exist on
  *   this host — the `why` ones are what the committed pair is reconstructed
  *   through — and it is the walk that cannot ask for them.
  * - `events`, `events_dealing` and `events_open` are the TRANSPORT route, which
@@ -167,6 +167,7 @@ const NOT_SERVED = [
   "explanation_terminal",
   "why_refusals",
   "house_frame",
+  "goals_claimed_4p",
   "events",
   "events_dealing",
   "events_open",

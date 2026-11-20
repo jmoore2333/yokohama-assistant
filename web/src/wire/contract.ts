@@ -62,6 +62,7 @@ import type {
   DealingErrorBody,
   DealView,
   Events,
+  GoalsClaimedFixture,
   HouseFrame,
   GamesList,
   HandPanel,
@@ -124,6 +125,7 @@ import whyForeign from "./why_foreign.json";
 import error from "./error.json";
 import events from "./events.json";
 import houseFrame from "./house_frame.json";
+import goalsClaimed4p from "./goals_claimed_4p.json";
 import eventsDealing from "./events_dealing.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
@@ -313,6 +315,10 @@ const _eventsDealing: Widen<Events> = eventsDealing;
 const _eventsOpen: Widen<Events> = eventsOpen;
 // The house frame, constructed by `wire_fixtures.rs` from `signal::house_frame`.
 const _houseFrame: Widen<HouseFrame> = houseFrame;
+// The claim band's fixture (issue #75), constructed by `wire_fixtures.rs`: a
+// fresh 4P position whose first card is claimed by seats 2, 0, 3, 1 in that
+// order, its second by seat 3 alone, its third by nobody.
+const _goalsClaimed4p: Widen<GoalsClaimedFixture> = goalsClaimed4p;
 // **The three payloads whose `seat` is null**, which is the M6.3 shape and the
 // reason that field became a union: a watcher holds no seat, so a type that
 // declared a number here would have been wrong about every one of these while
@@ -573,7 +579,7 @@ void [
   _tableOpen, _tableTwoOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
   _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
-  _events, _eventsDealing, _eventsOpen, _houseFrame,
+  _events, _eventsDealing, _eventsOpen, _houseFrame, _goalsClaimed4p,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
   _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _idCases, _seedCases, _feeNonzero,
@@ -703,6 +709,8 @@ const GAMES_LIST = ["games", "next"] as const;
 // do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
 const HOUSE_FRAME = ["seq", "chat", "rev"] as const;
+// The four-claim fixture's two panels (issue #75), a constructed root.
+const GOALS_CLAIMED = ["achievements", "players"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn", "chat", "chat_rev"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
@@ -775,6 +783,7 @@ const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
 const _ev: KeysOf<Events, typeof EVENTS> = EVENTS;
 const _hfk: KeysOf<HouseFrame, typeof HOUSE_FRAME> = HOUSE_FRAME;
+const _gck: KeysOf<GoalsClaimedFixture, typeof GOALS_CLAIMED> = GOALS_CLAIMED;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
 const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
@@ -808,7 +817,7 @@ const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
 void [_cs, _fr, _de, _or, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
-      _ev, _hfk,
+      _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
@@ -840,6 +849,7 @@ export const KEYS = {
   gamesList: GAMES_LIST,
   events: EVENTS,
   houseFrame: HOUSE_FRAME,
+  goalsClaimed: GOALS_CLAIMED,
   dealingError: DEALING_ERROR,
   dealCard: DEAL_CARD,
   apiError: API_ERROR,
@@ -939,6 +949,10 @@ export const wire = {
   eventsDealing: as<Events>(eventsDealing),
   eventsOpen: as<Events>(eventsOpen),
   houseFrame: as<HouseFrame>(houseFrame),
+  /** Not a route's payload: a 4P position's Achievements and Players panels,
+   *  built in process, its first card claimed by seats 2, 0, 3, 1 in that
+   *  order (issue #75). See that fixture's doc in `wire_fixtures.rs`. */
+  goalsClaimed4p: as<GoalsClaimedFixture>(goalsClaimed4p),
   spectator: as<ClientState>(spectator),
   spectatorOver: as<ClientState>(spectatorOver),
   spectatorAtK: as<HistoricalFrame>(spectatorAtK),
