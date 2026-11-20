@@ -843,6 +843,16 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
   expect(serverClaims!, "the server's own first card already had four claims").toBeLessThan(4);
   expect(GOALS_CLAIMED_4P.achievements.cards[0]!.claimed_by).toEqual([2, 0, 3, 1]);
 
+  // **The four widths walk ONE card size, and it is the narrowest.** The strip's
+  // achievement card is `calc(var(--card-w) * 1.5)`, and on the table
+  // `--card-w` is `clamp(8rem, (100cqw - 13rem) / 12, 12rem)` (`styles.css`'s
+  // `.table-sections`): at 390, 1024, 1201 and 1440 px it sits at its 8rem
+  // floor, so the card is 192 px wide with a 177.22 px picture box at all four
+  // (measured; the review's export read the same), and it is wider only on
+  // wider screens (237.59 px at 1800, 222 px at 2560 by the review). That floor
+  // IS "the Goals strip's narrowest card width" the spec names (§5.1, §6), so
+  // this walk shows the band holds at the narrowest card at every viewport the
+  // file walks — not at four different card sizes.
   for (const width of [390, 1024, 1201, 1440]) {
     await page.setViewportSize({ width, height: 844 });
     await settle(page);
@@ -859,6 +869,7 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
       return {
         client: document.documentElement.clientWidth,
         inner: window.innerWidth,
+        face: rect(face)!,
         pic: rect(pic ?? null),
         band: rect(band),
         claims: [...(band?.querySelectorAll(":scope > .claim") ?? [])].map((c) => rect(c)!),
@@ -898,10 +909,39 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
     expect(outside(band, pic), `${at}: the band is not inside the picture box`).toBeNull();
     expect(outside(read.vpFirst!, pic), `${at}: the first-place number is not inside the picture box`).toBeNull();
     expect(outside(read.vpLater!, pic), `${at}: the later number is not inside the picture box`).toBeNull();
+    // **And both numbers are DRAWN, on the cubes' line** (spec §5.1, §6: "four
+    // cubes and both numbers on one line"). Inside the picture box is not
+    // evidence a number is seen: the band clips with `overflow: hidden`, so a
+    // number pushed past its edge is inside the picture box and invisible — hence
+    // inside the BAND too. And the shared top above reads only the cubes, so a
+    // wrap that moves only a number goes unseen there — hence the line.
+    //
+    // **The line is the cubes' vertical span, and a number lies within it** (±1
+    // px). Measured before this was set (2026-11-20, every width alike): a cube
+    // 21.27 px tall, a number 14.17 px, the band 27.52 px; at 390 px the cubes
+    // span 394.09–415.36 and each number 397.64–411.81, so a number is SHORTER
+    // than a cube and `align-items: center` places it inside the cubes' span
+    // (its centre and theirs coincide, 404.73, which is the other form and
+    // holds too — recorded below, not gated). Containment is the form chosen
+    // because it is the one a number on a second line cannot meet: dropped
+    // under the cubes, its bottom passes theirs.
+    const lineTop = Math.min(...read.claims.map((c) => c.top));
+    const lineBottom = Math.max(...read.claims.map((c) => c.bottom));
+    const centre = (r: Rect) => (r.top + r.bottom) / 2;
+    for (const [name, vp] of [["first-place number", read.vpFirst!], ["later number", read.vpLater!]] as const) {
+      expect(outside(vp, band), `${at}: the ${name} is not inside the band that clips it`).toBeNull();
+      expect(vp.top, `${at}: the ${name}'s top is above the cubes' line (${lineTop.toFixed(2)})`).toBeGreaterThanOrEqual(lineTop - 1);
+      expect(vp.bottom, `${at}: the ${name}'s bottom is below the cubes' line (${lineBottom.toFixed(2)})`).toBeLessThanOrEqual(lineBottom + 1);
+    }
+    const centreOff = Math.max(
+      Math.abs(centre(read.vpFirst!) - (lineTop + lineBottom) / 2),
+      Math.abs(centre(read.vpLater!) - (lineTop + lineBottom) / 2),
+    );
     // eslint-disable-next-line no-console
     console.log(
-      `claim band at ${width}px: cube ${read.claims[0]!.width.toFixed(2)}px wide · band ${band.width.toFixed(2)}px ` +
-        `in a ${pic.width.toFixed(2)}px picture box · document ${read.client}px (recorded)`,
+      `claim band at ${width}px: cube ${read.claims[0]!.width.toFixed(2)}px wide · band ${band.width.toFixed(2)}x${band.height.toFixed(2)}px ` +
+        `in a ${pic.width.toFixed(2)}px picture box of a ${read.face.width.toFixed(2)}px card · numbers ${read.vpFirst!.height.toFixed(2)}px tall, ` +
+        `centred ${centreOff.toFixed(2)}px off the cubes' · document ${read.client}px (recorded)`,
     );
   }
   expect(watch.failures).toEqual([]);
@@ -954,9 +994,10 @@ test("each seat's flag row stays inside its seat at a phone's width and widens n
     // And its cells inside it: a row is a block as wide as its seat, so a row
     // whose cells ran past it (a `nowrap` that cannot fit) would still pass
     // the line above.
-    s.cellBoxes.forEach((c, j) =>
-      expect(outside(c, row), `seat ${i}'s flag cell ${j} is not inside its row`).toBeNull(),
-    );
+    s.cellBoxes.forEach((c, j) => {
+      expect(c.width > 0 && c.height > 0, `seat ${i}'s flag cell ${j} has no size (${c.width}x${c.height})`).toBe(true);
+      expect(outside(c, row), `seat ${i}'s flag cell ${j} is not inside its row`).toBeNull();
+    });
   }
 
   // The page delta, with the rows and without them.
