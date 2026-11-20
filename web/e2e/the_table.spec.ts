@@ -6,7 +6,8 @@ import { type Locator, type Page } from "@playwright/test";
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
 import { act, atTheGame, blame, newGameForm, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
@@ -749,5 +750,239 @@ test("the set table shows the port, hides the bot's cards and withholds the tech
   // (the owner's edition's step 11). The exact count, for the reason the six
   // above are exact — "more than none" would pass on a strip that lost two.
   await expect(page.locator(".table-sec.achievements .card-face")).toHaveCount(3);
+  expect(watch.failures).toEqual([]);
+});
+
+// ---- issues #75 and #76: the claim band and the flag tally, measured -------
+//
+// Both are drawn and unit-tested in jsdom, which has no layout: whether four
+// cubes and both numbers stand on ONE line inside the picture box, and whether
+// five flag cells with a `+n` beside a count fit a phone's seat row, are
+// questions only a real layout answers. Boxes are read with
+// `getBoundingClientRect`; what is not asserted is printed "(recorded)".
+
+/** A box as numbers, carried out of the page. */
+interface Rect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
+/** **Rounding tolerance for "inside": 0.5 px on each of the four edges.** A
+ *  border box is fractional and two boxes laid out from the same `cqw` lengths
+ *  can disagree in the last sub-pixel; half a pixel is under anything a reader
+ *  can see and well under any real overflow (a cube one step too wide, a row
+ *  one cell too long). */
+const INSIDE_TOLERANCE_PX = 0.5;
+
+function outside(inner: Rect, outer: Rect): string | null {
+  const t = INSIDE_TOLERANCE_PX;
+  const misses = [
+    inner.left < outer.left - t && `left ${inner.left.toFixed(2)} < ${outer.left.toFixed(2)}`,
+    inner.top < outer.top - t && `top ${inner.top.toFixed(2)} < ${outer.top.toFixed(2)}`,
+    inner.right > outer.right + t && `right ${inner.right.toFixed(2)} > ${outer.right.toFixed(2)}`,
+    inner.bottom > outer.bottom + t && `bottom ${inner.bottom.toFixed(2)} > ${outer.bottom.toFixed(2)}`,
+  ].filter(Boolean);
+  return misses.length ? misses.join(", ") : null;
+}
+
+/** The committed four-claim card (Task 3): the Achievements PANEL's content as a
+ *  server emits it, card 0 claimed by seats 2, 0, 3, 1 in that order. */
+const GOALS_CLAIMED_4P = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../src/wire/goals_claimed_4p.json", import.meta.url)), "utf8"),
+) as { achievements: { cards: { claimed_by: number[] }[] } };
+
+/** **The floor is a READING halved, set after it was measured** (the plan's
+ *  Task 6). Measured on the first run of this cell, with the floor recording
+ *  only (2026-11-20, macOS, Chromium headless): the cube's box at 390 px read
+ *  21.27 px wide — and the same at 1024, 1201 and 1440, since the strip's card
+ *  is one width at all four (a 177.22 px picture box). The floor is half that
+ *  reading, 10.635 px. It is a floor and not an equality because the width is
+ *  the layout's to choose; what it must not do is collapse, which is how a
+ *  nowrap band that cannot fit gives way (its cubes shrink, `flex: 0 1`). */
+const CUBE_FLOOR_PX = 21.27 / 2;
+
+test("four claims stand on one line inside the picture box of the Goals strip's first card, at every width", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // **The game's state reaches the page as `GET /api/games/{id}`'s reply**
+  // (`api.get`, a `ClientState`), and the Goals strip draws its cards from that
+  // reply's `frame.dashboard` Achievements panel (`TableSections.tsx`) — no
+  // fetch of its own. So the rewrite is of that reply, and of nothing in it but
+  // that one panel's content: the rest stays the server's own. A four-seat
+  // game is a SERVER game (a local game is two seats), so the reply is a real
+  // HTTP response `page.route` can see.
+  let rewritten = 0;
+  let serverClaims: number | null = null;
+  await page.route(
+    (url) => /^\/api\/games\/[^/]+$/.test(url.pathname),
+    async (route) => {
+      if (route.request().method() !== "GET") return route.fallback();
+      const response = await route.fetch();
+      const body = (await response.json()) as { frame?: { dashboard?: Record<string, unknown>[] } };
+      const panel = body.frame?.dashboard?.find((p) => "Achievements" in p);
+      if (!panel) return route.fulfill({ response, json: body });
+      const own = (panel.Achievements as { cards: { claimed_by: number[] }[] }).cards;
+      serverClaims = own[0]?.claimed_by.length ?? 0;
+      panel.Achievements = GOALS_CLAIMED_4P.achievements;
+      rewritten += 1;
+      return route.fulfill({ response, json: body });
+    },
+  );
+  await startGame(page, { players: 4 });
+
+  // Anti-vacuity. The rewrite RAN, the server's own first card had fewer than
+  // four claims (a fresh game has none), and the strip's first card now draws
+  // the four — so the four boxes below are the fixture's and nothing else's.
+  const card = page.locator(".table-sec.achievements .card-face.achievement").first();
+  await expect(card.locator(".card-pic > .claims > .claim")).toHaveCount(4);
+  expect(rewritten, "no game-state reply was rewritten").toBeGreaterThan(0);
+  expect(serverClaims, "the server's own reply carried no Achievements panel").not.toBeNull();
+  expect(serverClaims!, "the server's own first card already had four claims").toBeLessThan(4);
+  expect(GOALS_CLAIMED_4P.achievements.cards[0]!.claimed_by).toEqual([2, 0, 3, 1]);
+
+  for (const width of [390, 1024, 1201, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    await settle(page);
+    await card.scrollIntoViewIfNeeded();
+    await settle(page);
+    const read = await card.evaluate((face) => {
+      const rect = (el: Element | null) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      const pic = face.querySelector(":scope > .card-pic");
+      const band = pic?.querySelector(":scope > .claims") ?? null;
+      return {
+        client: document.documentElement.clientWidth,
+        inner: window.innerWidth,
+        pic: rect(pic ?? null),
+        band: rect(band),
+        claims: [...(band?.querySelectorAll(":scope > .claim") ?? [])].map((c) => rect(c)!),
+        firstIsFirst: !!band?.querySelector(":scope > .claim:first-of-type.first"),
+        vpFirst: rect(band?.querySelector(":scope > .claims-vp.first") ?? null),
+        vpLater: rect(band?.querySelector(":scope > .claims-vp.later") ?? null),
+      };
+    });
+    const at = `at ${width}px`;
+    // The viewport the page laid out at is the one asked for.
+    expect(read.inner, `${at}: the window is not the width asked for`).toBe(width);
+    expect(read.client, `${at}: the document lays out wider than the window`).toBeLessThanOrEqual(width);
+    expect(read.pic, `${at}: no picture box`).not.toBeNull();
+    expect(read.band, `${at}: no claim band in the picture box`).not.toBeNull();
+    expect(read.vpFirst, `${at}: no first-place number`).not.toBeNull();
+    expect(read.vpLater, `${at}: no later-claims number`).not.toBeNull();
+    expect(read.claims, `${at}: the band does not hold four cubes`).toHaveLength(4);
+    expect(read.firstIsFirst, `${at}: the leading cube is not the ringed first place`).toBe(true);
+    const pic = read.pic!;
+    const band = read.band!;
+    // No zero-size box can pass a containment check vacuously.
+    for (const [name, r] of [["picture box", pic], ["band", band], ["first VP", read.vpFirst!], ["later VP", read.vpLater!]] as const) {
+      expect(r.width > 0 && r.height > 0, `${at}: the ${name} has no size (${r.width}x${r.height})`).toBe(true);
+    }
+    // ONE line: the four share a top, and they are side by side — a stack at
+    // one point shares a top too.
+    const tops = read.claims.map((c) => c.top);
+    expect(Math.max(...tops) - Math.min(...tops), `${at}: the cubes do not share a top (${tops.map((t) => t.toFixed(2)).join(", ")})`).toBeLessThanOrEqual(1);
+    for (let i = 1; i < 4; i++) {
+      expect(read.claims[i]!.left, `${at}: cube ${i} is not to the right of cube ${i - 1}`).toBeGreaterThan(read.claims[i - 1]!.left);
+    }
+    read.claims.forEach((c, i) => {
+      expect(c.height, `${at}: cube ${i} has no height`).toBeGreaterThan(0);
+      expect(outside(c, band), `${at}: cube ${i} is not inside the band`).toBeNull();
+      expect(c.width, `${at}: cube ${i} is ${c.width.toFixed(2)}px wide, under the ${CUBE_FLOOR_PX}px floor`).toBeGreaterThanOrEqual(CUBE_FLOOR_PX);
+    });
+    expect(outside(band, pic), `${at}: the band is not inside the picture box`).toBeNull();
+    expect(outside(read.vpFirst!, pic), `${at}: the first-place number is not inside the picture box`).toBeNull();
+    expect(outside(read.vpLater!, pic), `${at}: the later number is not inside the picture box`).toBeNull();
+    // eslint-disable-next-line no-console
+    console.log(
+      `claim band at ${width}px: cube ${read.claims[0]!.width.toFixed(2)}px wide · band ${band.width.toFixed(2)}px ` +
+        `in a ${pic.width.toFixed(2)}px picture box · document ${read.client}px (recorded)`,
+    );
+  }
+  expect(watch.failures).toEqual([]);
+});
+
+test("each seat's flag row stays inside its seat at a phone's width and widens nothing", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // **Two seats, you and the bot**: the viewer holds exactly one seat, so the
+  // frame's hand — and with it the `+n` cells, the widest a row gets — is on
+  // one row, the case the design names; the other row is a seat whose hand is
+  // hidden and draws its five cells bare. A few moves make it a running game.
+  await startGame(page, { players: 2 });
+  await playAFew(page, 6, 0x464c_4147); // "FLAG"
+  await page.setViewportSize({ width: 390, height: 844 });
+  await settle(page);
+
+  const read = () =>
+    page.evaluate(() => {
+      const rect = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      return {
+        inner: window.innerWidth,
+        seats: [...document.querySelectorAll(".seat")].map((s) => ({
+          seat: rect(s),
+          rows: [...s.querySelectorAll(":scope .flags")].map(rect),
+          cellBoxes: [...s.querySelectorAll(".flags > .flag")].map(rect),
+          cells: s.querySelectorAll(".flags > .flag[data-country]").length,
+          hand: s.querySelectorAll(".flags .flag-hand").length,
+        })),
+      };
+    });
+  const before = await read();
+  // Anti-vacuity: the page is a phone's width, each seat draws one row of five
+  // cells, and the viewer's row carries the `+n` this cell exists for (the kept
+  // starting order is in hand).
+  expect(before.inner, "the window is not 390px").toBe(390);
+  expect(before.seats, "the players panel draws a row per seat").toHaveLength(2);
+  for (const [i, s] of before.seats.entries()) {
+    expect(s.rows, `seat ${i} draws no flag row, or more than one`).toHaveLength(1);
+    expect(s.cells, `seat ${i}'s flag row is not five cells`).toBe(5);
+  }
+  expect(before.seats.reduce((n, s) => n + s.hand, 0), "no row shows a flag still in hand").toBeGreaterThan(0);
+  for (const [i, s] of before.seats.entries()) {
+    const row = s.rows[0]!;
+    expect(row.width > 0 && row.height > 0, `seat ${i}'s flag row has no size`).toBe(true);
+    expect(s.seat.width, `seat ${i} has no width`).toBeGreaterThan(0);
+    expect(outside(row, s.seat), `seat ${i}'s flag row is not inside its seat`).toBeNull();
+    // And its cells inside it: a row is a block as wide as its seat, so a row
+    // whose cells ran past it (a `nowrap` that cannot fit) would still pass
+    // the line above.
+    s.cellBoxes.forEach((c, j) =>
+      expect(outside(c, row), `seat ${i}'s flag cell ${j} is not inside its row`).toBeNull(),
+    );
+  }
+
+  // The page delta, with the rows and without them.
+  const withRows = await readOverflow(page);
+  // Hidden through the CSSOM, one element at a time: the page's CSP refuses an
+  // injected `<style>` (`style-src 'self'` and a hash), and a property set from
+  // script is not an inline style sheet. Restored the same way.
+  const setRows = (display: string) =>
+    page.locator(".flags").evaluateAll((els, d) => els.forEach((e) => ((e as HTMLElement).style.display = d)), display);
+  await setRows("none");
+  await settle(page);
+  expect(await page.locator(".flags").evaluateAll((els) => els.filter((e) => e.getClientRects().length > 0).length), "the rows did not hide").toBe(0);
+  const withoutRows = await readOverflow(page);
+  await setRows("");
+  await settle(page);
+  expect(await page.locator(".flags:visible").count(), "the rows did not come back").toBe(2);
+  const overflowWith = withRows.docScrollWidth - withRows.docClientWidth;
+  const overflowWithout = withoutRows.docScrollWidth - withoutRows.docClientWidth;
+  expect(overflowWith, `the flag rows widen the page at 390px: ${blame(withRows)}`).toBeLessThanOrEqual(overflowWithout);
+  // eslint-disable-next-line no-console
+  console.log(
+    `flag rows at 390px: page overflow ${overflowWith}px with the rows, ${overflowWithout}px without (gated: with <= without) · ` +
+      before.seats
+        .map((s, i) => `seat ${i} row ${s.rows[0]!.width.toFixed(2)}x${s.rows[0]!.height.toFixed(2)} in ${s.seat.width.toFixed(2)}px, ${s.hand} in hand`)
+        .join(" · ") +
+      " (recorded)",
+  );
   expect(watch.failures).toEqual([]);
 });
