@@ -3,6 +3,7 @@ import type {
   ArtManifest,
   ChurchSpaceModel,
   CustomsSpaceModel,
+  FlagCounts,
   HandPanel,
   Labels,
   MercenarySupply,
@@ -44,6 +45,13 @@ export type PanelName = NameOf<Panel>;
  *  denylist of what this client has never heard of — see `wanted`. Typed as
  *  `PanelName[]`, so it moves with the wire for the same reason. */
 const KNOWN: PanelName[] = ["Players", "Tracks", "Achievements", "Hand"];
+
+/** The hand's flag count and whose hand it is — what `Players` needs to put
+ *  `+n` on one row. */
+interface HandFlags {
+  seat: PlayerId;
+  flags: FlagCounts;
+}
 
 export function Dashboard({
   panels,
@@ -93,6 +101,16 @@ export function Dashboard({
   // that fallback and shows itself.
   const wanted = (p: Panel) =>
     !only || only.some((name) => name in p) || !KNOWN.some((name) => name in p);
+  // **The hand is looked for in the WHOLE list, not the filtered one**: the side
+  // column may ask for Players alone, and the `+n` on the viewer's row must
+  // still be drawn. The test is at run time because a server one release back
+  // omits the count, whatever `types.ts` says; then nothing is drawn and nothing
+  // else changes.
+  const handPanel = panels.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p);
+  const handFlags: HandFlags | undefined =
+    handPanel && handPanel.Hand.flags_in_hand != null
+      ? { seat: handPanel.Hand.seat, flags: handPanel.Hand.flags_in_hand }
+      : undefined;
   return (
     <>
       {panels.filter(wanted).map((panel, i) => {
@@ -105,6 +123,7 @@ export function Dashboard({
               changedSeats={changedSeats}
               changedTechs={changedTechs}
               bots={bots}
+              handFlags={handFlags}
             />
           );
         if ("Tracks" in panel)
@@ -160,6 +179,49 @@ const good = (n: number, cls: string, label: string) => (
   </span>
 );
 
+/** A seat's face-up flags, one cell per country in `MERCENARIES`' order.
+ *
+ *  A flag counts toward the country set bonus once its order is fulfilled or its
+ *  technology owned; a flag still on an order in hand does not, so `inHand`
+ *  rides beside the count as `+n`, muted, and never added into it.
+ *
+ *  The row is ONE group with ONE sentence for a name, and every cell inside is
+ *  `aria-hidden`, so a screen reader hears the tally once rather than as
+ *  fifteen fragments. */
+function Flags({ flags, inHand }: { flags: FlagCounts; inHand?: FlagCounts }) {
+  const heldWords = inHand
+    ? MERCENARIES.filter(([, field]) => inHand[field] > 0).map(
+        ([, field, word]) => `${word} ${inHand[field]}`,
+      )
+    : [];
+  const name =
+    `Flags: ${MERCENARIES.map(([, field, word]) => `${word} ${flags[field]}`).join(", ")}` +
+    (heldWords.length > 0 ? `; in hand: ${heldWords.join(", ")}` : "");
+  return (
+    <div className="flags" role="group" aria-label={name}>
+      {MERCENARIES.map(([key, field, word]) => {
+        const held = inHand?.[field] ?? 0;
+        return (
+          <span
+            className={`flag${flags[field] === 0 ? " none" : ""}`}
+            data-country={field}
+            aria-hidden="true"
+            key={key}
+          >
+            <span className="flag-word">{word}</span>
+            <span className="flag-n">{flags[field]}</span>
+            {held > 0 && (
+              <span className="flag-hand" title={`${held} in hand \u2014 counts when the order is fulfilled`}>
+                +{held}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Where a seat's president is: in hand, or on a named area.
  *
  *  Not an `Option` on the wire — a president is always somewhere — so this
@@ -175,12 +237,15 @@ function Players({
   changedSeats,
   changedTechs,
   bots,
+  handFlags,
 }: {
   players: PlayerModel[];
   labels: Labels | null;
   changedSeats?: Set<number>;
   changedTechs?: Set<string>;
   bots?: readonly SeatBot[];
+  /** The viewer's flags in hand, with the seat whose hand it is. */
+  handFlags?: HandFlags;
 }) {
   return (
     <section className="panel">
@@ -218,6 +283,13 @@ function Players({
               <span className="chip yen">&#165;{p.money}</span>
               <span className="chip vp">{p.victory_points} VP</span>
             </div>
+
+            {p.flags != null && (
+              <Flags
+                flags={p.flags}
+                inHand={handFlags?.seat === p.seat ? handFlags.flags : undefined}
+              />
+            )}
 
             <div className="stat-row">
               {good(p.goods.copper, "copper", "copper")}
