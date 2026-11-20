@@ -5,6 +5,7 @@
 
 import type {
   AchievementModel,
+  AchievementType,
   AreaCard,
   AreasPanel,
   ArtManifest,
@@ -131,13 +132,13 @@ export function TracksStrip({ tracks, art, colors }: { tracks: TracksPanel; art:
   );
 }
 
-export function GoalsStrip({ cards, art, labels, colors }: { cards: AchievementModel[]; art: ArtManifest | null; labels: Labels | null; colors: PlayerColor[] }) {
+export function GoalsStrip({ cards, art, labels, colors, changed }: { cards: AchievementModel[]; art: ArtManifest | null; labels: Labels | null; colors: PlayerColor[]; changed?: Set<AchievementType> }) {
   return (
     <section className="table-sec achievements" aria-label="Goals">
       <h2>Goals <span className="meta">one per category, first / later VP</span></h2>
       <div className="card-strip">
         {cards.map((c) => (
-          <AchievementCardView key={c.achievement_type} model={c} art={art} labels={labels} colors={colors} />
+          <AchievementCardView key={c.achievement_type} model={c} art={art} labels={labels} colors={colors} changed={changed?.has(c.achievement_type)} />
         ))}
       </div>
     </section>

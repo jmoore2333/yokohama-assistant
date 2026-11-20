@@ -330,7 +330,7 @@ export interface Changes { /* … */ goals: Set<AchievementType>; any: boolean }
 
 - [ ] **Step 1: Write the cells.**
   - `diffFrames.test.ts`, one edit per fresh clone of `wire.atK`: a claim pushed onto one card names that card and no other; a claim popped names nothing; a claim's seat changed at the same length names nothing; with a claim pushed and nothing else moved, `any` is true; the self-diff cell's sum gains `goals`.
-  - `walk.test.ts`: `heldChanges` carries the union of the mover's steps' `goals`, in the manner of its `techs` cell.
+  - `walk.test.ts`: `heldChanges` carries the union of the mover's steps' `goals` (the file had no `heldChanges` cell before this task: the run is `buildRun`'s over clones of a corpus frame, one claim pushed per step).
   - `Strips.test.tsx`, `Dashboard.test.tsx`: the card the set names has the class `changed` and no other card does; with no set, none does.
   - `TableSections.test.tsx`: `changedGoals` reaches the Goals strip.
 - [ ] **Step 2: Run red.**

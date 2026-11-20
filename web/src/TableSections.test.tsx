@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { TableSections } from "./TableSections";
 import { stubApi } from "./test/harness";
 import { wire } from "./wire/contract";
-import type { ClientState, HistoricalFrame, PlayerColor } from "./types";
+import type { AchievementModel, AchievementType, ClientState, HistoricalFrame, Panel, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
@@ -17,9 +17,10 @@ function show(
   replaying = false,
   view: ClientState | HistoricalFrame = state ?? wire.options,
   scrubbing = replaying,
+  changedGoals?: Set<AchievementType>,
 ) {
   return render(
-    <TableSections enabled={enabled} game={state?.id ?? null} state={state} replaying={replaying} scrubbing={scrubbing} view={view} art={wire.artManifest} labels={wire.labels} colors={COLORS} />,
+    <TableSections enabled={enabled} game={state?.id ?? null} state={state} replaying={replaying} scrubbing={scrubbing} view={view} art={wire.artManifest} labels={wire.labels} colors={COLORS} changedGoals={changedGoals} />,
   );
 }
 
@@ -78,6 +79,21 @@ describe("the sections on the table", () => {
     expect(screen.getByText(/hidden while replaying/)).toBeInTheDocument();
     expect(document.querySelector(".table-sec.tracks")).not.toBeNull();
     expect(stub.calls).toHaveLength(0);
+  });
+
+  // #75: the walk's set of claimed cards reaches the Goals strip.
+  it("hand the claimed cards the walk names to the Goals strip", () => {
+    stubApi(() => {
+      throw new Error("a position that carries its goals needs no fetch");
+    });
+    const panel = wire.atK.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+    if (!panel) throw new Error("the fixture carries no Achievements panel");
+    const goals: AchievementModel[] = panel.Achievements.cards;
+    expect(goals.map((c) => c.achievement_type)).toEqual(["Seafood7", "Technologies4", "Commercial4"]);
+    show(["achievements"], wire.options, true, wire.atK, true, new Set([goals[1]!.achievement_type]));
+    const faces = [...document.querySelectorAll(".table-sec.achievements .card-face.achievement")];
+    expect(faces).toHaveLength(goals.length);
+    expect(faces.map((f) => f.classList.contains("changed"))).toEqual([false, true, false]);
   });
 
   it("say so about the building sites when there is no game yet, and fetch nothing", async () => {

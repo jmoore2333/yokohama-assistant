@@ -179,15 +179,18 @@ export function AchievementCardView({
   model,
   labels,
   colors,
+  changed,
 }: {
   art: ArtManifest | null;
   model: AchievementModel;
   labels: Labels | null;
   colors: PlayerColor[];
+  /** The walk is lighting this card: a claim just landed on it (#75). */
+  changed?: boolean;
 }) {
   const src = achievementArt(art, model.achievement_type);
   return (
-    <figure className="card-face achievement">
+    <figure className={`card-face achievement${changed ? " changed" : ""}`}>
       {/* The PICTURE BOX: the art or the blank, and the claim band positioned
           against it, so a card without art draws the same band over its blank. */}
       <div className={src ? "card-pic" : "card-pic blank"}>

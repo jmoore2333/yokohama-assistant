@@ -7,7 +7,7 @@ import { riderWords } from "./Dashboard";
 import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { achievementsOf, tracksOf } from "./test/panels";
 import { wire } from "./wire/contract";
-import type { AchievementModel, ArtManifest, PlayerColor } from "./types";
+import type { AchievementModel, AchievementType, ArtManifest, Panel, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
@@ -334,5 +334,33 @@ describe("the Areas panel's companions", () => {
       expect(SECTION_KEYS).toContain(key);
       expect(SECTION_LABELS[key]).toBe(heading);
     }
+  });
+});
+
+// ---- #75: the walk lights the card whose claims grew ---------------------
+/** `wire.atK`'s Achievements panel: three cards, `Seafood7` claimed by seat 1. */
+const atKGoals = (): AchievementModel[] => {
+  const panel = wire.atK.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+  if (!panel) throw new Error("the fixture carries no Achievements panel");
+  return panel.Achievements.cards;
+};
+
+describe("the walk's marks on the goals strip", () => {
+  const cards = atKGoals();
+  const lit = (changed?: Set<AchievementType>) => {
+    const { container } = render(
+      <GoalsStrip cards={cards} art={wire.artManifest} labels={wire.labels} colors={COLORS} changed={changed} />,
+    );
+    return [...container.querySelectorAll("figure.card-face.achievement")].map((f) => f.classList.contains("changed"));
+  };
+
+  it("lights the card the set names, and no other", () => {
+    expect(cards.map((c) => c.achievement_type)).toEqual(["Seafood7", "Technologies4", "Commercial4"]);
+    expect(lit(new Set<AchievementType>(["Technologies4"]))).toEqual([false, true, false]);
+  });
+
+  it("lights nothing with no set, and nothing with an empty one", () => {
+    expect(lit()).toEqual([false, false, false]);
+    expect(lit(new Set())).toEqual([false, false, false]);
   });
 });

@@ -167,12 +167,13 @@ export function walkReducer(s: WalkState, a: WalkAction, last: number): WalkStat
  *  needing an arm — its last mover is the player, and the union is over its own
  *  steps.
  *
- *  **Every grain is unioned, `hand` included**, which is five sets and not the
- *  four a diff of tiles, seats, slots and technologies would name: a port take
- *  by the run's mover puts a card in the viewer's own hand, and the mark on it
- *  is one half of that move. `any` is recomputed from the union rather than
- *  or-ed across the steps, so it stays the statement the field is — whether
- *  these five sets name anything at all. */
+ *  **Every grain is unioned, `hand` and `goals` included**, which is six sets
+ *  and not the four a diff of tiles, seats, slots and technologies would name:
+ *  a port take by the run's mover puts a card in the viewer's own hand, and the
+ *  mark on it is one half of that move; a claim the mover made lights its
+ *  achievement card the same way. `any` is recomputed from the union rather
+ *  than or-ed across the steps, so it stays the statement the field is —
+ *  whether these six sets name anything at all. */
 export function heldChanges(run: Run): Changes | null {
   const last = run.steps[run.steps.length - 1];
   if (!last) return null;
@@ -184,12 +185,14 @@ export function heldChanges(run: Run): Changes | null {
   const slots = union((c) => c.slots);
   const techs = union((c) => c.techs);
   const hand = union((c) => c.hand);
+  const goals = union((c) => c.goals);
   return {
     tiles,
     seats,
     slots,
     techs,
     hand,
-    any: tiles.size + seats.size + slots.size + techs.size + hand.size > 0,
+    goals,
+    any: tiles.size + seats.size + slots.size + techs.size + hand.size + goals.size > 0,
   };
 }

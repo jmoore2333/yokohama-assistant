@@ -1,5 +1,6 @@
 import type {
   AchievementModel,
+  AchievementType,
   ArtManifest,
   ChurchSpaceModel,
   CustomsSpaceModel,
@@ -62,6 +63,7 @@ export function Dashboard({
   changedSeats,
   changedTechs,
   changedHand,
+  changedGoals,
   bots,
 }: {
   panels: Panel[];
@@ -84,6 +86,10 @@ export function Dashboard({
   /** The order ids the walk is lighting in the VIEWER's hand (R-GC-2) — a
    *  masked hand carries no identities, so a bot's take marks nothing here. */
   changedHand?: Set<number>;
+  /** The achievement cards the walk is lighting (#75) — `diffFrames`' own
+   *  `goals`: the cards whose claims grew. Lights the Achievements panel's
+   *  cards and nothing else; it is never read off `changedSeats`. */
+  changedGoals?: Set<AchievementType>;
   /** The RECORD's bot seats, each with its bot's short label (M6.5c2, spec
    *  §2.2 and §2.4; mock 10) — `ClientState.bots`, shown and never chosen, so
    *  a finished game against V2 says V2 while this build runs V4. A bot seat
@@ -136,6 +142,7 @@ export function Dashboard({
               art={art}
               labels={labels}
               colors={colors}
+              changed={changedGoals}
             />
           );
         if ("Hand" in panel)
@@ -618,11 +625,13 @@ export function Achievements({
   art,
   labels,
   colors,
+  changed,
 }: {
   cards: AchievementModel[];
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
+  changed?: Set<AchievementType>;
 }) {
   return (
     <section className="panel">
@@ -635,6 +644,7 @@ export function Achievements({
             art={art}
             labels={labels}
             colors={colors}
+            changed={changed?.has(c.achievement_type)}
           />
         ))}
       </div>

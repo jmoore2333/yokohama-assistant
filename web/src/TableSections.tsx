@@ -48,6 +48,7 @@ import { api, ApiError } from "./api";
 import { SECTION_KEYS, SECTION_LABELS, type SectionKey } from "./sections";
 import { GoalsStrip, LabStrip, PortStrip, SitesStrip, TracksStrip } from "./Strips";
 import type {
+  AchievementType,
   AreasPanel,
   ArtManifest,
   ClientState,
@@ -70,6 +71,7 @@ export function TableSections({
   labels,
   colors,
   changedSlots,
+  changedGoals,
   live = null,
   runFor = null,
 }: {
@@ -91,6 +93,8 @@ export function TableSections({
   colors: PlayerColor[];
   /** `port:<board>:<slot>` / `lab:<board>:<slot>` keys the walk is lighting. */
   changedSlots?: Set<string>;
+  /** The achievement cards the walk is lighting (#75): those a claim just landed on. */
+  changedGoals?: Set<AchievementType>;
   /** The newest run's LAST frame for this game — the live position when its
    *  `index` is the state's count, and then the port and the laboratory are
    *  drawn from it with no request (R-E9). */
@@ -259,7 +263,7 @@ export function TableSections({
             return game === null ? (
               withheld(key)
             ) : (
-              <GoalsStrip key={key} cards={goals} art={art} labels={labels} colors={colors} />
+              <GoalsStrip key={key} cards={goals} art={art} labels={labels} colors={colors} changed={changedGoals} />
             );
         }
       })}

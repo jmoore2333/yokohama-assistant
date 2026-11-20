@@ -8,6 +8,7 @@ import { handOf, playersOf, tracksOf } from "./test/panels";
 import {
   DUMMY_SEAT,
   type AchievementModel,
+  type AchievementType,
   type ArtManifest,
   type ClientState,
   type HandPanel,
@@ -949,5 +950,31 @@ describe("the claim band in the Achievements panel", () => {
     expect(root.querySelectorAll(".chip.claimed")).toHaveLength(0);
     for (const c of chips) expect(c.textContent).not.toMatch(/^(first|also) /);
     expect(root.querySelectorAll(".claims")).toHaveLength(2);
+  });
+});
+
+// ---- #75: the walk lights the card whose claims grew, in the panel --------
+describe("the walk's marks on the Achievements panel", () => {
+  const panel = wire.atK.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+  if (!panel) throw new Error("the fixture carries no Achievements panel");
+  const cards = panel.Achievements.cards;
+  const lit = (props: { changedGoals?: Set<AchievementType>; changedSeats?: Set<number> }) => {
+    const { container } = render(
+      <Dashboard panels={wire.atK.frame.dashboard} art={wire.artManifest} labels={wire.labels} colors={COLORS} {...props} />,
+    );
+    return [...container.querySelectorAll("figure.card-face.achievement")].map((f) => f.classList.contains("changed"));
+  };
+
+  it("lights the card the set names, and no other", () => {
+    expect(cards.map((c) => c.achievement_type)).toEqual(["Seafood7", "Technologies4", "Commercial4"]);
+    expect(lit({ changedGoals: new Set<AchievementType>(["Commercial4"]) })).toEqual([false, false, true]);
+  });
+
+  it("lights nothing with no set", () => {
+    expect(lit({})).toEqual([false, false, false]);
+  });
+
+  it("does not light a card from the seats the walk is lighting", () => {
+    expect(lit({ changedSeats: new Set([0, 1]) })).toEqual([false, false, false]);
   });
 });
