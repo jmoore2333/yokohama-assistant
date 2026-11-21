@@ -797,9 +797,12 @@ mod tests {
     }
 
     /// **A Church chooser survives a new instance, selection and all** (plan 2a,
-    /// Task 8; design §3). The lines `1`, `2`, `1`, `4` leave silk and seafood
-    /// selected: a restore that drops a repeated line, or the first, reads three
-    /// kinds. `confirm` after the restore commits the payment those kinds name.
+    /// Task 8; design §3). The entry is `1` at this table, so the toggles are
+    /// `3`, `2`, `3`, `4` (tea on, silk on, tea off again, seafood on) and the
+    /// repeated line is not the entry's twin: they leave silk and seafood
+    /// selected, where a restore that feeds each distinct line once reads tea
+    /// too, and one that drops a repeated line or the first reads three kinds.
+    /// `confirm` after the restore commits the payment those kinds name.
     #[test]
     fn restore_picker_rebuilds_a_church_chooser_with_its_selection() {
         let _s = serial();
@@ -807,14 +810,15 @@ mod tests {
         two_player_table("church");
         let entry = to_chooser("church", "Church", "church");
         let mut row = entry.picker.expect("the entry's list");
-        for line in ["1", "2", "1", "4"] {
+        for line in ["3", "2", "3", "4"] {
             let r = input(RED, "church", line, Some("church"));
             assert_eq!(r.status, 200, "{}", r.body);
             row = r.picker.expect("the grown list");
         }
         let before = body(&call(RED, "GET", "/api/games/church", None));
-        assert_eq!(church_selected(&before), [2, 4], "premise: silk and seafood, copper off again");
+        assert_eq!(church_selected(&before), [2, 4], "premise: silk and seafood, tea off again");
         assert_eq!(lines_of(&row).len(), 5, "the entry and the four toggles, a repeated line kept");
+        assert_eq!(lines_of(&row).iter().filter(|l| *l == "3").count(), 2, "premise: the repeated line is not the entry's `1`");
         let (stored_table, stored) = (table("church"), record("church"));
 
         fresh("church", &stored_table, &stored);
