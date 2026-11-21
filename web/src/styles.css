@@ -898,6 +898,56 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .option .num { color: var(--vp); font-weight: 700; min-width: 1.6rem; }
 .option .more { color: var(--fg-faint); margin-left: auto; }
 
+/* ---- the choosers (plan 2a) ---------------------------------------------
+ * The accepted mockup's look, in this file's conventions. A token is a ring
+ * in the good's colour holding its letters, or the manifest's picture
+ * (`.has-img`) with the ring dropped; a group overlaps its copies. The kinds
+ * are a three-column grid of buttons at least 48px tall, so a finger lands on
+ * one. `.kind[data-unavailable]` is a kind the payload says no listed move
+ * pays; a merely busy chooser is dimmed by `:disabled` alone. */
+.tokens { display: inline-flex; flex: none; vertical-align: middle; }
+.tok {
+  --c: var(--fg-dim);
+  display: inline-grid; place-items: center; flex: none; overflow: hidden;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: color-mix(in srgb, var(--c) 22%, var(--bg)); border: 2px solid var(--c);
+  color: var(--c); font-size: 10px; font-weight: 700; vertical-align: middle;
+}
+.tok img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tok.has-img { background: none; border-color: transparent; border-radius: 0; }
+.tok.sm { width: 22px; height: 22px; font-size: 8px; border-width: 1.5px; }
+.tok.copper { --c: var(--copper); }
+.tok.silk { --c: var(--silk); }
+.tok.tea { --c: var(--tea); }
+.tok.seafood { --c: var(--seafood); }
+.tok.imports { --c: var(--imports); }
+.tok.yen { --c: var(--yen); }
+.tokens .tok + .tok { margin-left: -10px; }
+.tokens .tok.sm + .tok.sm { margin-left: -7px; }
+
+.chooser .kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.kind {
+  display: flex; align-items: center; gap: 0.5rem; min-height: 48px;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.45rem 0.5rem; font: inherit; text-align: left; cursor: pointer;
+}
+.kind:hover:not(:disabled) { border-color: var(--line-bright); }
+.kind:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+.kind[aria-pressed="true"] {
+  border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
+}
+.kind:disabled { opacity: 0.38; cursor: default; }
+.kind .lbl { display: flex; flex-direction: column; line-height: 1.25; }
+.kind .have { font-size: 10px; color: var(--fg-faint); }
+
+.chooser .verdict { margin-top: 0.7rem; font-size: 12px; min-height: 2.6em; }
+.chooser .verdict.ok { color: var(--fg); }
+.chooser .verdict.bad { color: var(--warn); }
+.chooser .verdict .tag { color: var(--reachable); }
+.chooser .verdict.bad .tag { color: var(--warn); }
+.chooser .verdict .faiths { color: var(--fg-dim); }
+
 .near-miss { margin-top: 0.7rem; font-size: 11px; color: var(--fg-dim); max-width: 62rem; }
 .near-miss b { color: var(--fg); }
 

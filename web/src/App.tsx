@@ -2596,6 +2596,7 @@ export function App() {
             busy={busy}
             outcome={outcome}
             spectating={spectating}
+            art={art}
             onSend={(l) => void send(l)}
           />
         )}

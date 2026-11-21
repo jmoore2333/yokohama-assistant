@@ -1,6 +1,9 @@
 import { seatClass } from "./Cards";
 import { OutcomeView } from "./Index";
+import { Tokens } from "./Token";
 import type {
+  ArtManifest,
+  ChooserPreview,
   ClientState,
   Outcome,
   Deciding,
@@ -90,6 +93,7 @@ export function Decision({
   busy,
   outcome,
   spectating = false,
+  art = null,
   onSend,
 }: {
   state: ClientState;
@@ -117,6 +121,9 @@ export function Decision({
    *  **A default of `false`, so the fence is opt-in and no existing caller
    *  changes meaning.** */
   spectating?: boolean;
+  /** The server's art manifest, for the choosers' tokens. A default of `null`
+   *  (the typed marks) so no existing caller changes. */
+  art?: ArtManifest | null;
   onSend: (line: string) => void;
 }) {
   const d = state.frame.decision;
@@ -308,6 +315,38 @@ export function Decision({
           )
         ))}
 
+      {/* **The Church's chooser** (plan 2a): six kinds of payment, each a toggle.
+          Everything on it is the payload's — the number a click sends, the
+          words, what the seat has, whether the kind is selected and whether any
+          listed move pays it. A kind no listed move pays is `unavailable` by
+          the payload and a busy chooser is merely disabled; the walks tell the
+          two apart by `data-unavailable`. */}
+      {!spectating && prompt.kind === "church" && (
+        <div className="chooser church">
+        <div className="kinds">
+          {prompt.kinds.map((k) => (
+            <button
+              type="button"
+              className="kind"
+              key={k.number}
+              data-good={k.good}
+              aria-pressed={k.selected}
+              disabled={busy || !k.offered}
+              data-unavailable={k.offered ? undefined : "true"}
+              onClick={() => onSend(String(k.number))}
+            >
+              <Tokens good={k.good} amount={k.amount} art={art} />
+              <span className="lbl">
+                <span>{k.words}</span>
+                <span className="have">you have {k.have}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <Verdict preview={prompt.preview} faiths={prompt.offered_faiths} />
+        </div>
+      )}
+
       {/* The near-miss rows say why an area is NOT on the list a watcher was
           never offered, so they go with it. */}
       {!spectating && (d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
@@ -363,6 +402,10 @@ export function Decision({
         </div>
       )}
 
+      {!spectating && prompt.kind === "church" && (
+        <ChooserControls legal={prompt.preview.legal} busy={busy} onSend={onSend} />
+      )}
+
       {/* Undo lives here, so a watcher loses it with the rest of the bar
           (spec §5.2). The server refuses one from a caller holding no seat
           either way — this is the screen not offering what cannot work. */}
@@ -378,6 +421,63 @@ export function Decision({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** What stands under a chooser's selection, from the arm's own preview.
+ *
+ *  Nothing is worked out here: `legal` and `words` are the engine's reading of
+ *  the legal list, and `faiths` (the Church's line, when the selection names no
+ *  listed move) is the server's own sentence. A `status` region, so the verdict
+ *  a click changes is announced as the terminal prints it. */
+function Verdict({ preview, faiths }: { preview: ChooserPreview; faiths?: string | null }) {
+  return (
+    <div className={`verdict ${preview.legal ? "ok" : "bad"}`} role="status">
+      {preview.legal ? (
+        <>
+          <span className="tag">legal &mdash; </span>
+          {preview.words}
+        </>
+      ) : (
+        <>
+          <span className="tag">not offered &mdash; </span>
+          adjust the selection
+          {faiths && <div className="faiths">{faiths}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Confirm and Cancel for a chooser. Confirm is live exactly when the preview
+ *  is legal; the server still decides, since `confirm` commits only a listed
+ *  move. **`data-unavailable` is what the PAYLOAD said** (the preview is not
+ *  legal) and not that a request is in flight, so a walk can tell a chooser
+ *  that is busy from one that cannot be confirmed; Cancel is never unavailable. */
+function ChooserControls({
+  legal,
+  busy,
+  onSend,
+}: {
+  legal: boolean;
+  busy: boolean;
+  onSend: (line: string) => void;
+}) {
+  return (
+    <div className="controls">
+      <button
+        type="button"
+        className="primary"
+        disabled={busy || !legal}
+        data-unavailable={legal ? undefined : "true"}
+        onClick={() => onSend("confirm")}
+      >
+        Confirm
+      </button>
+      <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
+        Cancel
+      </button>
     </div>
   );
 }
@@ -408,6 +508,8 @@ function asking(state: ClientState, labels: Labels | null): string {
       return "Placement — Option A.";
     case "place_b":
       return "Placement — Option B.";
+    case "church":
+      return "The Church — what do you pay?";
     case "reveal":
       return "A card reveal is pending (live mode).";
     case "locked":

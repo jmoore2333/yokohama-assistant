@@ -469,7 +469,7 @@ export interface ChinatownRow { number: number; sells: boolean; spend: ChooserAm
 - Modify: `web/src/Decision.tsx`, `web/src/App.tsx` (hands `art` to `Decision`), `web/src/styles.css`
 - Test: `web/src/Decision.test.tsx`
 
-**Interfaces — consumes:** `wire.church`, `wire.churchSelected`, the `church` arm's types (Task 3); `tokenArt` (`web/src/art.ts`). **Produces** (Task 7 measures these):
+**Interfaces — consumes:** `wire.church`, `wire.churchSelected`, `wire.churchLegal`, the `church` arm's types (Task 3); `tokenArt` (`web/src/art.ts`). **Produces** (Task 7 measures these):
 
 ```tsx
 /** `amount` copies of one good's token, read as ONE node: role="img", aria-label
@@ -495,15 +495,15 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
   `Decision.test.tsx`, `describe("the Church's chooser")`:
   4. Six kind buttons in the payload's order, each named by its `words` and `you have N` from the payload.
   5. A click on a kind sends its `number` and nothing else; on `wire.churchSelected` the selected kind has `aria-pressed="true"` and the rest `false`.
-  6. A clone with one kind's `offered` false draws that button disabled with `data-unavailable`, and a click sends nothing. With `busy` on an offered kind: disabled, and no `data-unavailable`.
-  7. Confirm is disabled on a payload whose preview is not legal and enabled on one that is (clone `wire.churchSelected` both ways, asserting which the fixture is); pressing it sends `confirm`; Cancel sends `cancel`.
-  8. The verdict reads `legal — ` and the payload's words; on a clone with `legal: false, words: null, offered_faiths: "the list offers faith 8 to 11 here"` it reads the not-offered line and that sentence.
+  6. On `wire.church` the imported-good kind is not offered (assert it): its button is disabled with `data-unavailable`, and a click sends nothing. With `busy`, an offered kind is disabled and carries no `data-unavailable`, and the not-offered kind still carries it.
+  7. Confirm is disabled with `data-unavailable` on `wire.churchSelected`, whose preview is not legal though a kind is selected (assert both), and enabled on `wire.churchLegal`, whose preview is legal (assert it); pressing it there sends `confirm`; Cancel sends `cancel` and never carries `data-unavailable`. With `busy` on `wire.churchLegal`, Confirm is disabled and carries no `data-unavailable`.
+  8. On `wire.churchLegal` the verdict reads `legal — ` and the payload's words; on `wire.churchSelected` it reads `not offered — adjust the selection` and, on its own line, the payload's `offered_faiths` (`the list offers faith 4 to 7 here`: assert the fixture holds it). On a clone of `wire.churchSelected` with `offered_faiths` null, the second line is absent.
   9. A watcher's render (`spectating`) draws no kind button and no Confirm.
   10. No `button.option` is drawn for a `church` prompt, and the asking line is the one above.
 - [ ] **Step 2: Run red.** `cd web && npx vitest run src/Token.test.tsx src/Decision.test.tsx`.
 - [ ] **Step 3: Implement.** **Step 4: run green**, then `npm run typecheck && npm test` whole. **Step 5: commit.**
 
-**Mutants:** the click sending the kind's index or its good's name (cell 5). A not-offered kind left enabled (cell 6). Confirm enabled whenever anything is selected (cell 7, the not-legal clone with one kind selected). The token's inner pictures exposed with their own `alt` (cell 1's name). Confirm drawn for a watcher (cell 9).
+**Mutants:** the click sending the kind's index or its good's name (cell 5). A not-offered kind left enabled (cell 6). Confirm enabled whenever anything is selected (cell 7: `wire.churchSelected` has a kind selected and is not legal). The token's inner pictures exposed with their own `alt` (cell 1's name). Confirm drawn for a watcher (cell 9).
 
 ---
 
