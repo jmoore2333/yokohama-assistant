@@ -45,6 +45,15 @@ const NOUN: Record<ChooserGood, string> = {
   Yen: "yen",
 };
 
+/** What a reader hears for `amount` of `good`: `2 yen`, `1 imported good`,
+ *  `2 imported goods`. The five mass nouns never change; `imported good` takes
+ *  its plural when the amount is not 1 (0 included). Exported for a row that
+ *  labels an amount which is not the number of pictures drawn. */
+export function tokenLabel(good: ChooserGood, amount: number): string {
+  const noun = good === "Imports" && amount !== 1 ? "imported goods" : NOUN[good];
+  return `${amount} ${noun}`;
+}
+
 /** `amount` copies of one good's token, read as ONE node: `role="img"`,
  *  `aria-label` `2 yen`. */
 export function Tokens({
@@ -64,7 +73,7 @@ export function Tokens({
     <span
       className="tokens"
       role="img"
-      aria-label={`${amount} ${NOUN[good]}`}
+      aria-label={tokenLabel(good, amount)}
       data-good={good}
     >
       {Array.from({ length: amount }, (_, i) => (

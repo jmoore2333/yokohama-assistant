@@ -5,7 +5,7 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { Tokens } from "./Token";
+import { Tokens, tokenLabel } from "./Token";
 import { wire } from "./wire/contract";
 import type { ArtManifest } from "./types";
 
@@ -50,5 +50,9 @@ describe("a token group", () => {
   it("names an imported good by its own noun, one of them", () => {
     render(<Tokens good="Imports" amount={1} art={null} />);
     expect(screen.getByRole("img", { name: "1 imported good" })).toBeInTheDocument();
+    expect(tokenLabel("Imports", 2)).toBe("2 imported goods");
+    expect(tokenLabel("Imports", 0)).toBe("0 imported goods");
+    expect(tokenLabel("Yen", 4)).toBe("4 yen");
+    expect(tokenLabel("Copper", 2)).toBe("2 copper");
   });
 });

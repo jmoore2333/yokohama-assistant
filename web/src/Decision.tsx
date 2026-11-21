@@ -331,6 +331,7 @@ export function Decision({
               key={k.number}
               data-good={k.good}
               aria-pressed={k.selected}
+              aria-label={`${k.words}, you have ${k.have}`}
               disabled={busy || !k.offered}
               data-unavailable={k.offered ? undefined : "true"}
               onClick={() => onSend(String(k.number))}

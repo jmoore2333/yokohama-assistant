@@ -431,8 +431,8 @@ describe("the Church's chooser", () => {
       expect(b.getAttribute("data-good")).toBe(k.good);
       expect(b.querySelector(".lbl")!.firstElementChild!.textContent).toBe(k.words);
       expect(b.querySelector(".lbl .have")!.textContent).toBe(`you have ${k.have}`);
-      expect(b).toHaveAccessibleName(expect.stringContaining(k.words));
-      expect(b).toHaveAccessibleName(expect.stringContaining(`you have ${k.have}`));
+      // Said once: the button names itself, so the token inside is not read again.
+      expect(b).toHaveAccessibleName(`${k.words}, you have ${k.have}`);
     });
     // The yen kind is the one that costs two, and its token group says so.
     expect(p.kinds[4]!.amount).toBe(2);

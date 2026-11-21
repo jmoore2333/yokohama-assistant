@@ -479,8 +479,9 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 ```
 
 - Art keys: `Copper` `good_copper`, `Silk` `good_silk`, `Tea` `good_tea`, `Seafood` `good_seafood`, `Imports` `good_imports`, `Yen` `yen_1`. The plain mark is a ring in the good's colour (`--copper` and its five siblings in `styles.css`) holding `Cu`, `Si`, `Te`, `Sf`, `Im` or `¥`.
-- The label's noun: `copper`, `silk`, `tea`, `seafood`, `yen`, `imported good`. Each inner picture or mark is `aria-hidden`.
+- The label's noun: `copper`, `silk`, `tea`, `seafood`, `yen`, `imported good`. Each inner picture or mark is `aria-hidden`. The label is `tokenLabel(good, amount)`, exported for Task 6's stock row: the amount and the noun, `imported goods` in the plural when the amount is not 1.
 - The Church's DOM: `.decision` › `.chooser.church` › `.kinds` › six `button.kind[data-good]` with `aria-pressed`, each holding `Tokens` and a `.lbl` of the kind's `words` over a `.have` reading `you have N`; then `.verdict[role="status"]`. Layout as the accepted mockup: a three-column grid of buttons at least 48 px tall.
+- A kind button's accessible name is exactly `{words}, you have {N}`, set as its `aria-label`, so the token's own label is not read a second time inside it.
 - A kind is disabled when `busy` or not `offered`. A click sends the kind's `number`.
 - **A control disabled by what the payload says carries `data-unavailable`** (a kind not offered; Confirm while the preview is not legal), whether or not a request is in flight. A control disabled only because a request is in flight does not. Cancel never carries it. Task 7's walks tell a busy chooser from an idle one by this.
 - The verdict: `legal — {preview.words}`, or `not offered — adjust the selection` with `offered_faiths` on its own line under it when present.
@@ -490,10 +491,10 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 - [ ] **Step 1: Write the cells.** `Token.test.tsx`:
   1. With the corpus's manifest (`art_manifest.json`, which holds the key: assert it), two yen draw two `img` elements with empty `alt` inside one `role="img"` node named `2 yen`.
   2. With `art` null, or a manifest without the key, the node holds two plain marks reading `¥` and the same name; no `img`.
-  3. One imported good is named `1 imported good`.
+  3. One imported good is named `1 imported good`. `tokenLabel` reads `2 imported goods`, `0 imported goods`, `4 yen` and `2 copper`.
 
   `Decision.test.tsx`, `describe("the Church's chooser")`:
-  4. Six kind buttons in the payload's order, each named by its `words` and `you have N` from the payload.
+  4. Six kind buttons in the payload's order, each with the accessible name exactly `{words}, you have {N}` from the payload, and a `.have` reading `you have N`.
   5. A click on a kind sends its `number` and nothing else; on `wire.churchSelected` the selected kind has `aria-pressed="true"` and the rest `false`.
   6. On `wire.church` the imported-good kind is not offered (assert it): its button is disabled with `data-unavailable`, and a click sends nothing. With `busy`, an offered kind is disabled and carries no `data-unavailable`, and the not-offered kind still carries it.
   7. Confirm is disabled with `data-unavailable` on `wire.churchSelected`, whose preview is not legal though a kind is selected (assert both), and enabled on `wire.churchLegal`, whose preview is legal (assert it); pressing it there sends `confirm`; Cancel sends `cancel` and never carries `data-unavailable`. With `busy` on `wire.churchLegal`, Confirm is disabled and carries no `data-unavailable`.
@@ -503,7 +504,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 - [ ] **Step 2: Run red.** `cd web && npx vitest run src/Token.test.tsx src/Decision.test.tsx`.
 - [ ] **Step 3: Implement.** **Step 4: run green**, then `npm run typecheck && npm test` whole. **Step 5: commit.**
 
-**Mutants:** the click sending the kind's index or its good's name (cell 5). A not-offered kind left enabled (cell 6). Confirm enabled whenever anything is selected (cell 7: `wire.churchSelected` has a kind selected and is not legal). The token's inner pictures exposed with their own `alt` (cell 1's name). Confirm drawn for a watcher (cell 9).
+**Mutants:** the click sending the kind's index or its good's name (cell 5). A not-offered kind left enabled (cell 6). Confirm enabled whenever anything is selected (cell 7: `wire.churchSelected` has a kind selected and is not legal). The token's inner pictures exposed with their own `alt` (cell 1's name). Confirm drawn for a watcher (cell 9). A kind button named by its content, so the name repeats the token's label (cell 4's exact name). `imported good` left singular at 2 (`Token.test.tsx` cell 3).
 
 ---
 
