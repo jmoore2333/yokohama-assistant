@@ -1452,3 +1452,69 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
   await expect(page.locator(".turn-account .messages li").filter({ hasText: "Church: pay " })).toHaveCount(1);
   expect(watch.failures).toEqual([]);
 });
+
+/** A phone held sideways: the window is the deck's limit (its cap is 62vh). */
+const LANDSCAPE = { width: 844, height: 390 };
+
+for (const [area, players] of [["Church", 2], ["Chinatown", 4]] as const) {
+  test(`on a phone held sideways the ${area} chooser keeps Confirm and Cancel in the deck and the window, and what it cuts scrolls into view inside the deck`, async ({ page }) => {
+    // **The rule (ruling R38): the controls are always inside the deck and the
+    // window; when the deck is too short, the chooser is what gives way.** At
+    // 844x390 the deck is capped at 241.8 px, and both choosers once pushed
+    // their controls wholly below the window (Chinatown's 10.5rem floor bound;
+    // the Church's grid would not shrink), so a player could neither confirm
+    // nor cancel. The product fix this cell drove is this task's (R38).
+    const watch = watchForBreakage(page);
+    await startGame(page, { players });
+    await openChooser(page, area);
+    await page.setViewportSize(LANDSCAPE);
+    await settle(page);
+    const at = `${area} at ${LANDSCAPE.width}x${LANDSCAPE.height}`;
+    const deckBox = await page.locator(".deck").evaluate((d) => {
+      const r = d.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    });
+    const controls = await page.evaluate(controlsRead);
+    expect(controls.h, `${at}: the window is not the height asked for`).toBe(LANDSCAPE.height);
+    for (const [name, box, hit] of [["Confirm", controls.confirm, controls.confirmHit], ["Cancel", controls.cancel, controls.cancelHit]] as const) {
+      expect(box, `${at}: no ${name}`).not.toBeNull();
+      expect(outside(box!, VIEWPORT_OF(controls.w, controls.h)), `${at}: ${name} is not inside the viewport`).toBeNull();
+      expect(outside(box!, deckBox), `${at}: ${name} is not inside the deck`).toBeNull();
+      expect(hit, `${at}: a press at ${name}'s centre lands on something else`).toBe(true);
+    }
+    // What the chooser cuts is reachable by scrolling INSIDE the deck: every
+    // box inside the chooser that scrolls (and the chooser itself) is scrolled
+    // to its end, and its last kind or exchange is then inside the deck, inside
+    // every scrolling box around it, and what a press at its centre lands on.
+    const last = await page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`).evaluate((chooser) => {
+      const scrollers = [chooser, ...chooser.querySelectorAll("*")].filter((el) => el.scrollHeight > el.clientHeight + 1);
+      for (const el of scrollers) el.scrollTop = el.scrollHeight;
+      const items = chooser.querySelectorAll(".kinds > button.kind, .rows > .ex");
+      const item = items[items.length - 1]!;
+      const rect = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      const r = item.getBoundingClientRect();
+      const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+      return {
+        what: item.getAttribute("data-good") ?? `row ${item.getAttribute("data-number")}`,
+        items: items.length,
+        box: rect(item),
+        around: scrollers.filter((s) => s.contains(item)).map((s) => ({ cls: s.className, box: rect(s) })),
+        scrolled: scrollers.map((s) => `${s.className} ${s.scrollHeight}/${s.clientHeight}`),
+        hit: !!hit && item.contains(hit),
+      };
+    });
+    expect(last.items, `${at}: the chooser draws no kinds or exchanges`).toBe(area === "Church" ? 6 : 9);
+    expect(outside(last.box, deckBox), `${at}: the last item (${last.what}) is not inside the deck after scrolling (${last.scrolled.join("; ")})`).toBeNull();
+    for (const s of last.around) {
+      expect(outside(last.box, s.box), `${at}: the last item (${last.what}) is cut by its scrolling box ${s.cls}`).toBeNull();
+    }
+    expect(last.hit, `${at}: a press at the last item's (${last.what}) centre lands on something else`).toBe(true);
+    // And the controls stayed where they were while the chooser scrolled.
+    const after = await page.evaluate(controlsRead);
+    expect(after.confirmHit && after.cancelHit, `${at}: scrolling the chooser moved its controls out of reach`).toBe(true);
+    expect(watch.failures).toEqual([]);
+  });
+}

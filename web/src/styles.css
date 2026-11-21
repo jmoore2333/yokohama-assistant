@@ -933,7 +933,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   padding: 0.45rem 0.5rem; font: inherit; text-align: left; cursor: pointer;
 }
 .kind:hover:not(:disabled) { border-color: var(--line-bright); }
-.kind:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+/* The ring is drawn INSIDE the button (ruling R38): the kinds sit in a box
+ * that scrolls when the deck is short, and a scrolling box clips whatever is
+ * drawn outside it, which a ring at the grid's edge would be. */
+.kind:focus-visible { outline: 2px solid var(--vp); outline-offset: -3px; }
 .kind[aria-pressed="true"] {
   border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
 }
@@ -948,20 +951,43 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .chooser .verdict.bad .tag { color: var(--warn); }
 .chooser .verdict .faiths { color: var(--fg-dim); }
 
+/* **When the deck is short, the chooser gives way and the controls do not**
+ * (ruling R38). Confirm and Cancel are siblings after the chooser, and a
+ * chooser that would not shrink pushed them out of the deck: measured at
+ * 844x390, a phone held sideways, the deck is capped at 241.8 px (62vh) and the
+ * Church's controls sat at 380–414 px in a 390 px window, Chinatown's wholly
+ * below it. So the Church's chooser may shrink (it never grows), its kinds are
+ * the box that scrolls, at most down to one row of kinds, and the chooser
+ * itself scrolls only as a last resort; the verdict stays in view. Where it
+ * fits nothing here applies: at 390x844 and 1440x900 every box is as before. */
+.decision > .chooser.church {
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+}
+.chooser.church .kinds {
+  flex: 0 1 auto; min-height: 48px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.church .verdict { flex: none; }
+
 /* Chinatown: the stock, then the rows in the deck's one scrolling box, then
  * the verdict. `.options.scrolls`' contract: the chooser takes what the deck
- * has left (`flex: 1 1 auto`), its `.rows` are the only thing inside it that
- * scrolls, and the stock above and the verdict below keep their size. The
- * chooser's floor (10.5rem) buys room for the stock, the verdict's reserved
- * lines and about two exchanges; whether that suits a short screen is Task 7's
- * measurement. Confirm and Cancel are siblings after the chooser, never inside
- * the clip. */
+ * has left (`flex: 1 1 auto`), its `.rows` are what scrolls, and the stock
+ * above and the verdict below keep their size. **The chooser has no floor of
+ * its own** (ruling R38): its old 10.5rem bound at 844x390, where the deck is
+ * capped at 241.8 px and the chooser is left about 103 px of it, so the
+ * controls were pushed wholly below the window. The stock (25 px) and the
+ * verdict's reserved lines (42 px) leave the rows about 35 px there, less than
+ * one exchange (40 px, and its 4 px gap), so the rows keep a floor of exactly
+ * one exchange, 2.75rem, and the chooser itself scrolls the few pixels left
+ * over, as the last resort. Confirm and Cancel are siblings after the
+ * chooser, never inside the clip. */
 .decision > .chooser.chinatown {
-  flex: 1 1 auto; min-height: 10.5rem; display: flex; flex-direction: column; max-width: 62rem;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; max-width: 62rem;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
 .chooser.chinatown .stock { flex: none; }
 .chooser.chinatown .rows {
-  flex: 1 1 auto; min-height: 4.5rem; overflow-y: auto;
+  flex: 1 1 auto; min-height: 2.75rem; overflow-y: auto;
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
 .chooser.chinatown .verdict { flex: none; }
