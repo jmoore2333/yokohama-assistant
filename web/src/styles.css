@@ -933,10 +933,14 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   padding: 0.45rem 0.5rem; font: inherit; text-align: left; cursor: pointer;
 }
 .kind:hover:not(:disabled) { border-color: var(--line-bright); }
-/* The ring is drawn INSIDE the button (ruling R38): the kinds sit in a box
- * that scrolls when the deck is short, and a scrolling box clips whatever is
- * drawn outside it, which a ring at the grid's edge would be. */
-.kind:focus-visible { outline: 2px solid var(--vp); outline-offset: -3px; }
+/* The ring is drawn INSIDE the button (rulings R38, R39): the kinds' box is a
+ * scroll container at every viewport, and a scroll container clips whatever is
+ * drawn outside it, which a ring at the grid's edge would be. It is in the
+ * foreground colour, 3 to 5 px in from the edge, so it keeps 1 px of the
+ * button's own ground clear of the pressed band (the border and the inset
+ * shadow, 0 to 2 px, in `--vp`): focus and selection read apart, and both at
+ * once read as both. */
+.kind:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
 .kind[aria-pressed="true"] {
   border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
 }
@@ -956,10 +960,15 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * chooser that would not shrink pushed them out of the deck: measured at
  * 844x390, a phone held sideways, the deck is capped at 241.8 px (62vh) and the
  * Church's controls sat at 380–414 px in a 390 px window, Chinatown's wholly
- * below it. So the Church's chooser may shrink (it never grows), its kinds are
- * the box that scrolls, at most down to one row of kinds, and the chooser
- * itself scrolls only as a last resort; the verdict stays in view. Where it
- * fits nothing here applies: at 390x844 and 1440x900 every box is as before. */
+ * below it. So the Church's chooser may shrink (it never grows), and it and its
+ * kinds are scroll containers at every viewport. Where the chooser fits, no box
+ * moves and nothing scrolls: at 390x844 and 1440x900 every box is as it was.
+ * When the deck is short, the kinds scroll first, down to one row of kinds
+ * (at 844x390 they are 56 px tall, holding 102), and then the chooser itself
+ * scrolls: at 667x375 and below the kinds are at that one-row floor and the
+ * verdict is under the chooser's fold until it is scrolled (measured there: the
+ * kinds 48 px holding 102, the chooser showing 71 of its 95 px, the verdict's
+ * top 12 px above the fold — the review read the same 71 of 95). */
 .decision > .chooser.church {
   flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
 }

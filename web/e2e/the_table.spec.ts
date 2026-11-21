@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, atTheGame, blame, DESKTOP, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
+import { act, atTheGame, blame, DESKTOP, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage, type Screen } from "./harness";
 import { hasMove } from "./shared_table";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
@@ -1142,19 +1142,31 @@ const CHOOSER_ENTRY: Record<ChooserArea, RegExp> = {
  * by its label's printed name (`A05 Church · …`, `Board.tsx`'s load-bearing
  * prefix) and its id read off it, so the President's row is the one naming
  * THAT tile. Returns the tile's id. Any screen the route does not expect is an
- * error quoting the answer bar, never a guess.
+ * error quoting the answer bar, never a guess. `seen`, when given, collects the
+ * screen `readScreen` returned at each list the route answered, by what it
+ * answered there (`movement` the President's row, `entry` the chooser's).
  */
-async function openChooser(page: Page, area: ChooserArea): Promise<string> {
+async function openChooser(
+  page: Page,
+  area: ChooserArea,
+  seen?: { at: "movement" | "entry"; screen: Screen }[],
+): Promise<string> {
   const chooser = page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`);
   let tile: string | null = null;
   for (let step = 0; step < 12; step++) {
-    await readScreen(page);
+    const screen = await readScreen(page);
     if (await chooser.count()) {
       if (tile === null) throw new Error(`the ${area} chooser opened before this route placed anything`);
       return tile;
     }
-    if (await answer(page, CHOOSER_ENTRY[area])) continue;
-    if (tile !== null && (await answer(page, new RegExp(`President.*\\(${tile}\\)`)))) continue;
+    if (await answer(page, CHOOSER_ENTRY[area])) {
+      seen?.push({ at: "entry", screen });
+      continue;
+    }
+    if (tile !== null && (await answer(page, new RegExp(`President.*\\(${tile}\\)`)))) {
+      seen?.push({ at: "movement", screen });
+      continue;
+    }
     if (tile === null && (await answer(page, /Option B/))) {
       await expect(page.locator('.tile[role="button"]').first()).not.toHaveAttribute("aria-disabled", "true");
       const labels = await page
@@ -1290,6 +1302,62 @@ test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and u
     expect(outside(controls.confirm!, frame), `${at}: Confirm is not inside the viewport`).toBeNull();
     expect(outside(controls.cancel!, frame), `${at}: Cancel is not inside the viewport`).toBeNull();
   }
+
+  // **A focused kind and a pressed one read apart (ruling R39).** The ring is
+  // drawn INSIDE the button (the kinds' box is a scroll container and clips
+  // anything outside it), so it must keep clear of the pressed band — the
+  // border and the inset shadow, in `--vp` — by colour AND by place: 2 px in
+  // the foreground colour, its outer edge at least 1 px inside the band. The
+  // kind is focused from the KEYBOARD (Shift+Tab then Tab), so `:focus-visible`
+  // applies as it does for a player, then pressed with Space and focused the
+  // same way again: a kind is `disabled` while its request is in flight, and a
+  // disabled button lets focus go. Computed lengths are whole pixels here;
+  // 0.01 px is allowed for the parse.
+  const kind = page.locator(".decision .chooser.church button.kind:not([disabled])").first();
+  const keyboardFocus = async () => {
+    await kind.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+  };
+  await keyboardFocus();
+  const ring = () =>
+    kind.evaluate((k) => {
+      const css = getComputedStyle(k);
+      return {
+        focused: k.matches(":focus-visible"),
+        pressed: k.getAttribute("aria-pressed"),
+        color: css.color,
+        outlineColor: css.outlineColor,
+        outlineStyle: css.outlineStyle,
+        outlineWidth: parseFloat(css.outlineWidth),
+        outlineOffset: parseFloat(css.outlineOffset),
+        borderColor: css.borderTopColor,
+        borderWidth: parseFloat(css.borderTopWidth),
+        boxShadow: css.boxShadow,
+      };
+    });
+  const focused = await ring();
+  expect(focused.focused, "the kind took no keyboard focus, so :focus-visible reads nothing").toBe(true);
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  await keyboardFocus();
+  const both = await ring();
+  expect(both.pressed, "Space did not press the focused kind").toBe("true");
+  expect(both.focused, "the pressed kind lost its keyboard focus").toBe(true);
+  // The pressed band: the border, then the inset shadow's spread (its fourth length).
+  expect(both.boxShadow, "the pressed kind draws no inset band").toContain("inset");
+  const spread = Number([...both.boxShadow.matchAll(/(-?\d+(?:\.\d+)?)px/g)][3]?.[1] ?? NaN);
+  const band = both.borderWidth + spread;
+  for (const [when, r] of [["focused", focused], ["focused and pressed", both]] as const) {
+    expect(r.outlineStyle, `${when}: the ring is not solid`).toBe("solid");
+    expect(r.outlineWidth, `${when}: the ring is ${r.outlineWidth}px wide`).toBeCloseTo(2, 2);
+    expect(r.outlineColor, `${when}: the ring is not in the foreground colour`).toBe(r.color);
+    expect(r.outlineColor, `${when}: the ring is the pressed border's colour`).not.toBe(both.borderColor);
+    // An inside ring of width w at offset o (< 0) spans -o-w to -o px in from
+    // the edge; its outer edge must clear the band by a pixel of ground.
+    const outerEdge = -r.outlineOffset - r.outlineWidth;
+    expect(outerEdge, `${when}: the ring's outer edge is ${outerEdge}px in, the pressed band ${band}px`).toBeGreaterThanOrEqual(band + 1 - 0.01);
+  }
   expect(watch.failures).toEqual([]);
 });
 
@@ -1315,6 +1383,12 @@ test("Chinatown's chooser keeps each stepper and first token inside its row, ste
         token: rect(ex.querySelector(".what .tokens")!),
       }));
     });
+    // The rows' box keeps its height where the chooser fits (Task 7 measured
+    // 247 px at 390x844 and 129 px at 1440x900): a rule that collapsed the rows
+    // to one exchange everywhere would pass every containment below.
+    const rowsHeight = await page.locator(".decision .chooser.chinatown .rows").evaluate((el) => el.getBoundingClientRect().height);
+    const rowsFloor = vp === PHONE ? 200 : 100;
+    expect(rowsHeight, `${at}: the rows' box is ${rowsHeight.toFixed(2)}px tall`).toBeGreaterThanOrEqual(rowsFloor);
     // Anti-vacuity: the nine exchanges, in the Sell-then-Buy order the panel draws.
     expect(read.map((r) => r.number), `${at}: the rows`).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
     for (const r of read) {
@@ -1408,7 +1482,12 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
   // Chinatown, opened: nothing chosen, so Confirm is disabled by the payload and
   // `readScreen`'s wait must still return.
   await startGame(page, { players: 4 });
-  await openChooser(page, "Chinatown");
+  const seen: { at: "movement" | "entry"; screen: Screen }[] = [];
+  await openChooser(page, "Chinatown", seen);
+  // Off a chooser `chooser` reads false: at the Movement list and at the list
+  // holding the entry, before it is pressed.
+  expect(seen.map((s) => s.at), "the route's lists").toEqual(["movement", "entry"]);
+  for (const s of seen) expect(s.screen.chooser, `chooser reads true at the ${s.at} list`).toBe(false);
   const chosen = () =>
     page
       .locator(".decision .chooser.chinatown .rows > .ex .n")
@@ -1426,6 +1505,10 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
   expect(await act(page, town, rng(0x4348_4f4f)), "the policy's answer at an opened chooser").toBe("chooser"); // "CHOO"
   await readScreen(page);
   expect(await chosen(), "the policy pressed an add, so one exchange is chosen").toBe(1);
+  // Now a minus is live, and the policy still never counts one among its adds.
+  const pressedOnce = await readScreen(page);
+  expect(await page.locator(".decision .chooser.chinatown button.minus:not([disabled])").count(), "no minus is enabled after an add").toBeGreaterThan(0);
+  expect(pressedOnce.adds, "adds counts a minus").toBe(await page.locator(".decision .chooser.chinatown button.plus:not([disabled])").count());
   await expect(page.locator(".decision .chooser.chinatown"), "and the chooser is still open").toHaveCount(1);
 
   // The Church, with every offered kind pressed: nothing is left to add, so the
@@ -1455,9 +1538,16 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
 
 /** A phone held sideways: the window is the deck's limit (its cap is 62vh). */
 const LANDSCAPE = { width: 844, height: 390 };
+/** A smaller phone on its side (R39's second height): there the Church's kinds
+ *  shrink to their floor, one row of kinds, which at 844x390 they do not. */
+const SMALL_LANDSCAPE = { width: 667, height: 375 };
 
-for (const [area, players] of [["Church", 2], ["Chinatown", 4]] as const) {
-  test(`on a phone held sideways the ${area} chooser keeps Confirm and Cancel in the deck and the window, and what it cuts scrolls into view inside the deck`, async ({ page }) => {
+for (const [area, players, vp] of [
+  ["Church", 2, LANDSCAPE],
+  ["Chinatown", 4, LANDSCAPE],
+  ["Church", 2, SMALL_LANDSCAPE],
+] as const) {
+  test(`on a phone held sideways the ${area} chooser keeps Confirm and Cancel in the deck and the window, and what it cuts scrolls into view inside the deck, at ${vp.width}x${vp.height}`, async ({ page }) => {
     // **The rule (ruling R38): the controls are always inside the deck and the
     // window; when the deck is too short, the chooser is what gives way.** At
     // 844x390 the deck is capped at 241.8 px, and both choosers once pushed
@@ -1467,15 +1557,26 @@ for (const [area, players] of [["Church", 2], ["Chinatown", 4]] as const) {
     const watch = watchForBreakage(page);
     await startGame(page, { players });
     await openChooser(page, area);
-    await page.setViewportSize(LANDSCAPE);
+    await page.setViewportSize(vp);
     await settle(page);
-    const at = `${area} at ${LANDSCAPE.width}x${LANDSCAPE.height}`;
+    const at = `${area} at ${vp.width}x${vp.height}`;
     const deckBox = await page.locator(".deck").evaluate((d) => {
       const r = d.getBoundingClientRect();
       return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
     });
     const controls = await page.evaluate(controlsRead);
-    expect(controls.h, `${at}: the window is not the height asked for`).toBe(LANDSCAPE.height);
+    expect(controls.h, `${at}: the window is not the height asked for`).toBe(vp.height);
+    if (vp === SMALL_LANDSCAPE) {
+      // The kinds' floor binds here: their box is exactly one row of kinds
+      // (0.5 px), which is what keeps one row visible on the shortest deck.
+      const kinds = await page.locator(".decision .chooser.church .kinds").evaluate((el) => ({
+        box: el.getBoundingClientRect().height,
+        kind: el.querySelector("button.kind")!.getBoundingClientRect().height,
+        scroll: el.scrollHeight,
+      }));
+      expect(kinds.scroll, `${at}: the kinds do not overflow their box, so no floor is tested`).toBeGreaterThan(kinds.box + 1);
+      expect(Math.abs(kinds.box - kinds.kind), `${at}: the kinds' box is ${kinds.box.toFixed(2)}px, one kind ${kinds.kind.toFixed(2)}px`).toBeLessThanOrEqual(INSIDE_TOLERANCE_PX);
+    }
     for (const [name, box, hit] of [["Confirm", controls.confirm, controls.confirmHit], ["Cancel", controls.cancel, controls.cancelHit]] as const) {
       expect(box, `${at}: no ${name}`).not.toBeNull();
       expect(outside(box!, VIEWPORT_OF(controls.w, controls.h)), `${at}: ${name} is not inside the viewport`).toBeNull();
@@ -1483,14 +1584,17 @@ for (const [area, players] of [["Church", 2], ["Chinatown", 4]] as const) {
       expect(hit, `${at}: a press at ${name}'s centre lands on something else`).toBe(true);
     }
     // What the chooser cuts is reachable by scrolling INSIDE the deck: every
-    // box inside the chooser that scrolls (and the chooser itself) is scrolled
-    // to its end, and its last kind or exchange is then inside the deck, inside
+    // box inside the chooser that scrolls is scrolled to its end, the chooser
+    // (the last resort) as far as its last kind or exchange needs —
+    // `scrollIntoView` at `nearest`, since scrolling a chooser to ITS end can
+    // cut the box it holds — and that item is then inside the deck, inside
     // every scrolling box around it, and what a press at its centre lands on.
     const last = await page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`).evaluate((chooser) => {
       const scrollers = [chooser, ...chooser.querySelectorAll("*")].filter((el) => el.scrollHeight > el.clientHeight + 1);
-      for (const el of scrollers) el.scrollTop = el.scrollHeight;
+      for (const el of scrollers) if (el !== chooser) el.scrollTop = el.scrollHeight;
       const items = chooser.querySelectorAll(".kinds > button.kind, .rows > .ex");
       const item = items[items.length - 1]!;
+      item.scrollIntoView({ block: "nearest", inline: "nearest" });
       const rect = (el: Element) => {
         const r = el.getBoundingClientRect();
         return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
@@ -1507,6 +1611,12 @@ for (const [area, players] of [["Church", 2], ["Chinatown", 4]] as const) {
       };
     });
     expect(last.items, `${at}: the chooser draws no kinds or exchanges`).toBe(area === "Church" ? 6 : 9);
+    // The deck's box again, after the scroll (it is pinned, so this is a check).
+    const deckAfter = await page.locator(".deck").evaluate((d) => {
+      const r = d.getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+    });
+    expect(outside(deckAfter, deckBox), `${at}: the deck moved when the chooser scrolled`).toBeNull();
     expect(outside(last.box, deckBox), `${at}: the last item (${last.what}) is not inside the deck after scrolling (${last.scrolled.join("; ")})`).toBeNull();
     for (const s of last.around) {
       expect(outside(last.box, s.box), `${at}: the last item (${last.what}) is cut by its scrolling box ${s.cls}`).toBeNull();

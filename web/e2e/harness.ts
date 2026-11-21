@@ -639,9 +639,11 @@ export async function readScreen(page: Page): Promise<Screen> {
   // timed out after 15 s at the first chooser every walk met. Each of those
   // carries `data-unavailable` (`Decision.tsx`), set from the payload alone and
   // never from `busy`, and the wait passes over it. A chooser in flight still
-  // reads busy: its Cancel is disabled by `busy` alone and never carries the
-  // attribute, and nothing but a chooser's kinds, steppers and Confirm carries
-  // it at all, so every other control in the zone is read as before.
+  // reads busy: `data-busy`, below, is what holds that — the client's own
+  // in-flight state, the same window — and Cancel, disabled by `busy` alone and
+  // never carrying the attribute, is a second guard. Nothing but a chooser's
+  // kinds, steppers and Confirm carries the attribute at all, so every other
+  // control in the zone is read as before.
   //
   // **And `data-busy` beside it, because `disabled` is only a signal on a
   // screen that HAS a control (M5.5).** The finished game's deck is a standing
