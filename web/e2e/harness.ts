@@ -600,21 +600,48 @@ export interface Screen {
    *  Neither is answerable, and neither is "nothing left to click" — a walk that
    *  reported them that way would name the wrong defect. */
   inert: "watching" | "locked" | null;
+  /** A chooser is open in the answer bar (plan 2a): the Church's payment or
+   *  Chinatown's exchanges, a `.chooser` inside `.decision`. */
+  chooser: boolean;
+  /** What the open chooser can still ADD to its selection: the enabled kinds
+   *  not yet pressed (the Church) and the enabled pluses (Chinatown) —
+   *  [`CHOOSER_ADDS`]. Never a pressed kind and never a minus, since either
+   *  would take something away; zero when no chooser is open. */
+  adds: number;
 }
+
+/** The controls that grow a chooser's selection, and only those: a kind the
+ *  payload offers that is not pressed, and a plus the payload says can add.
+ *  `:not([disabled])` drops both what the payload refuses (`data-unavailable`)
+ *  and anything in flight. One selector, read by `readScreen` and clicked by
+ *  `act`, so the count and the click cannot disagree. */
+export const CHOOSER_ADDS =
+  '.decision .chooser button.kind:not([disabled])[aria-pressed="false"], .decision .chooser button.plus:not([disabled])';
 
 export async function readScreen(page: Page): Promise<Screen> {
   // **Wait for the request in flight FIRST.** Every control in the decision zone
-  // — and every board tile — is `disabled` exactly while `busy`, which is the
-  // client's own in-flight state. A read taken between the click and the
-  // response therefore sees a screen with nothing enabled on it and reports
-  // "nothing left to click", which is a true statement about that instant and a
-  // false one about the game. Measured: the first walk failed at its first move,
-  // with the decision zone plainly showing "End additional-action phase" in the
-  // failure message.
+  // — and every board tile — is `disabled` while `busy`, which is the client's
+  // own in-flight state. A read taken between the click and the response
+  // therefore sees a screen with nothing enabled on it and reports "nothing left
+  // to click", which is a true statement about that instant and a false one
+  // about the game. Measured: the first walk failed at its first move, with the
+  // decision zone plainly showing "End additional-action phase" in the failure
+  // message.
   //
   // `disabled` is the signal rather than a sleep because it is the SAME
   // condition the client renders from, so this cannot drift from what a player
   // can actually press.
+  //
+  // **Except where the PAYLOAD disabled it (plan 2a).** A chooser always has
+  // some control disabled by what the payload says rather than by `busy` — a
+  // kind no listed move pays, a plus that cannot add, a minus at zero, Confirm
+  // on a selection the list does not hold — so a wait on every `disabled`
+  // timed out after 15 s at the first chooser every walk met. Each of those
+  // carries `data-unavailable` (`Decision.tsx`), set from the payload alone and
+  // never from `busy`, and the wait passes over it. A chooser in flight still
+  // reads busy: its Cancel is disabled by `busy` alone and never carries the
+  // attribute, and nothing but a chooser's kinds, steppers and Confirm carries
+  // it at all, so every other control in the zone is read as before.
   //
   // **And `data-busy` beside it, because `disabled` is only a signal on a
   // screen that HAS a control (M5.5).** The finished game's deck is a standing
@@ -628,7 +655,7 @@ export async function readScreen(page: Page): Promise<Screen> {
   await page.waitForFunction(
     () =>
       !document.querySelector("[data-busy]") &&
-      !document.querySelector(".decision button[disabled]"),
+      !document.querySelector(".decision button[disabled]:not([data-unavailable])"),
     null,
     { timeout: 15_000 },
   );
@@ -650,7 +677,7 @@ export async function readScreen(page: Page): Promise<Screen> {
       .catch(() => {});
     await page.locator(".decision.walking").waitFor({ state: "detached", timeout: 15_000 });
   }
-  return page.evaluate(() => {
+  return page.evaluate((addsSelector) => {
     const many = (sel: string) => document.querySelectorAll(sel).length;
     const named = (name: string) =>
       [...document.querySelectorAll<HTMLButtonElement>(".decision button:not([disabled])")].some(
@@ -681,13 +708,15 @@ export async function readScreen(page: Page): Promise<Screen> {
         : text.includes("This game is LOCKED")
           ? ("locked" as const)
           : null,
+      chooser: !!document.querySelector(".decision .chooser"),
+      adds: many(addsSelector),
     };
-  });
+  }, CHOOSER_ADDS);
 }
 
 /** Which affordance a move went through — so a walk can say what it exercised
  *  rather than only that it finished. */
-export type Affordance = "option" | "only" | "placement" | "count" | "confirm" | "cancel";
+export type Affordance = "option" | "only" | "placement" | "count" | "confirm" | "cancel" | "chooser";
 
 /**
  * One move, chosen from WHAT IS ON THE SCREEN.
@@ -767,6 +796,29 @@ export async function act(
       .nth(nth(screen.counts))
       .click();
     return "count";
+  }
+
+  // **A chooser** (plan 2a): the Church's payment, Chinatown's exchanges.
+  // Confirm when it is live and either nothing is left to add or the coin says
+  // so — so a walk pays both a full selection and a partial one; else one of the
+  // adds ([`CHOOSER_ADDS`]); else back out through Cancel, the way a stuck
+  // placement picker is backed out of. **The visit ends**: an add only ever
+  // GROWS the selection — the policy never presses a pressed kind and never a
+  // minus — and a selection is bounded (six kinds; the exchanges up to the most
+  // one listed move holds, past which no plus can add), so it reaches Confirm or
+  // Cancel within a few presses. A visit that loops anyway is the whole-game
+  // walk's move cap failing, by design.
+  if (screen.chooser) {
+    if (screen.confirm && (screen.adds === 0 || pick() < 0.5)) {
+      await page.getByRole("button", { name: "Confirm" }).click();
+      return "chooser";
+    }
+    if (screen.adds > 0) {
+      await page.locator(CHOOSER_ADDS).nth(nth(screen.adds)).click();
+      return "chooser";
+    }
+    await page.locator(".decision .controls button.ghost", { hasText: "Cancel" }).first().click();
+    return "cancel";
   }
 
   if (screen.confirm) {

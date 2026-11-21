@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, atTheGame, blame, newGameForm, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
+import { act, atTheGame, blame, DESKTOP, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -1111,5 +1111,319 @@ test("each seat's flag row stays inside its seat at a phone's width and widens n
         .join(" · ") +
       " (recorded)",
   );
+  expect(watch.failures).toEqual([]);
+});
+
+// ---- issue #77 (plan 2a): the goods choosers, reached and measured --------
+//
+// The Church's payment and Chinatown's exchanges are each ONE entry on the main
+// list that opens a chooser in the answer bar (Tasks 5 and 6). jsdom drew both
+// and has no layout; these cells reach each chooser through the screen, as a
+// player does, measure its boxes at a phone's and a desktop's width, answer it
+// through the screen, and drive the walks' own policy at it.
+
+type ChooserArea = "Church" | "Chinatown";
+
+/** The chooser's own class, beside `.chooser`. */
+const CHOOSER_CLASS: Record<ChooserArea, string> = { Church: "church", Chinatown: "chinatown" };
+
+/** The entry that opens it, as the plan's words section spells it. */
+const CHOOSER_ENTRY: Record<ChooserArea, RegExp> = {
+  Church: /Church — choose what to pay \(/,
+  Chinatown: /Chinatown — choose exchanges \(up to /,
+};
+
+/**
+ * Reach `area`'s chooser on a fresh table, through the screen: end the
+ * additional phase, Option B's two assistants on the area's tile, the Movement
+ * row naming the tile with the President, then the entry — the route the wire
+ * corpus's own Chinatown capture takes (`wire_fixtures.rs`). The tile is found
+ * by its label's printed name (`A05 Church · …`, `Board.tsx`'s load-bearing
+ * prefix) and its id read off it, so the President's row is the one naming
+ * THAT tile. Returns the tile's id. Any screen the route does not expect is an
+ * error quoting the answer bar, never a guess.
+ */
+async function openChooser(page: Page, area: ChooserArea): Promise<string> {
+  const chooser = page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`);
+  let tile: string | null = null;
+  for (let step = 0; step < 12; step++) {
+    await readScreen(page);
+    if (await chooser.count()) {
+      if (tile === null) throw new Error(`the ${area} chooser opened before this route placed anything`);
+      return tile;
+    }
+    if (await answer(page, CHOOSER_ENTRY[area])) continue;
+    if (tile !== null && (await answer(page, new RegExp(`President.*\\(${tile}\\)`)))) continue;
+    if (tile === null && (await answer(page, /Option B/))) {
+      await expect(page.locator('.tile[role="button"]').first()).not.toHaveAttribute("aria-disabled", "true");
+      const labels = await page
+        .locator('.tile[role="button"]')
+        .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""));
+      const at = labels.findIndex((l) => new RegExp(`^A\\d\\d ${area}( |$)`).test(l));
+      if (at < 0) throw new Error(`no ${area} tile to place on: ${labels.map((l) => l.slice(0, 14)).join(" | ")}`);
+      tile = labels[at]!.slice(0, 3);
+      await page.locator('.tile[role="button"]').nth(at).click();
+      expect((await readScreen(page)).pressed, `Option B did not take ${tile} ${area}`).toBe(1);
+      await page.getByRole("button", { name: "Confirm" }).click();
+      continue;
+    }
+    if (await answer(page, /End additional-action phase/)) continue;
+    break;
+  }
+  throw new Error(
+    `no scripted answer on the way to the ${area} chooser (tile ${tile ?? "not placed"}):\n` +
+      (await page.locator(".decision:not(.notices)").first().innerText()),
+  );
+}
+
+/** The window as a box, for "inside the viewport" (with `outside`'s 0.5 px). */
+const VIEWPORT_OF = (w: number, h: number): Rect => ({ left: 0, top: 0, right: w, bottom: h, width: w, height: h });
+
+/** Two boxes overlap when they share more than the rounding tolerance on both
+ *  axes: kinds laid out in a grid with a 6px gap touch nowhere. */
+function overlaps(a: Rect, b: Rect): boolean {
+  const t = INSIDE_TOLERANCE_PX;
+  return a.left < b.right - t && b.left < a.right - t && a.top < b.bottom - t && b.top < a.bottom - t;
+}
+
+/** The thumb's floor for a kind's height (the plan's cell 1): 44 px, WCAG's
+ *  target size; the stylesheet's `min-height: 48px` sits above it. */
+const KIND_MIN_HEIGHT_PX = 44;
+/** A stepper's floor, both ways (the plan's cell 2): the stylesheet's 28 px,
+ *  read with `outside`'s 0.5 px of rounding. */
+const STEP_MIN_PX = 28;
+
+/** The chooser's controls, read in ONE round trip: Confirm and Cancel found by
+ *  their words anywhere in the answer bar — not by their place in it, so a
+ *  Confirm that moved (into the rows' scrolling box, say) is still the one
+ *  measured, and fails on where it is rather than on not being found. */
+const controlsRead = () => {
+  const rect = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const named = (name: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>(".decision:not(.notices) button")].find(
+      (b) => b.textContent?.trim() === name,
+    ) ?? null;
+  const confirm = named("Confirm");
+  const cancel = named("Cancel");
+  const hitAt = (el: Element | null) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    return !!hit && (hit === el || el.contains(hit));
+  };
+  return {
+    w: window.innerWidth,
+    h: window.innerHeight,
+    confirm: confirm ? rect(confirm) : null,
+    cancel: cancel ? rect(cancel) : null,
+    confirmHit: hitAt(confirm),
+    cancelHit: hitAt(cancel),
+  };
+};
+
+test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and unclipped, with Confirm and Cancel in the frame, at 390 and 1440", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Church");
+  for (const vp of [PHONE, DESKTOP]) {
+    await page.setViewportSize(vp);
+    await settle(page);
+    const at = `at ${vp.width}x${vp.height}`;
+    const read = await page.evaluate(() => {
+      const rect = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      const chooser = document.querySelector(".decision .chooser.church")!;
+      return {
+        chooser: rect(chooser),
+        kinds: [...chooser.querySelectorAll(".kinds > button.kind")].map((k) => {
+          const lbl = k.querySelector(".lbl")!;
+          return { good: k.getAttribute("data-good") ?? "", box: rect(k), scrollWidth: lbl.scrollWidth, clientWidth: lbl.clientWidth };
+        }),
+      };
+    });
+    const controls = await page.evaluate(controlsRead);
+    expect(controls.w, `${at}: the window is not the width asked for`).toBe(vp.width);
+    // Anti-vacuity: six kinds, each with a size, so no containment below passes
+    // over a box that was never drawn.
+    expect(read.kinds.map((k) => k.good), `${at}: the kinds`).toEqual(["Copper", "Silk", "Tea", "Seafood", "Yen", "Imports"]);
+    for (const k of read.kinds) {
+      expect(k.box.width > 0 && k.box.height > 0, `${at}: the ${k.good} kind has no size`).toBe(true);
+      expect(outside(k.box, read.chooser), `${at}: the ${k.good} kind is not inside the chooser`).toBeNull();
+      expect(k.box.height, `${at}: the ${k.good} kind is ${k.box.height.toFixed(2)}px tall`).toBeGreaterThanOrEqual(KIND_MIN_HEIGHT_PX);
+      // 1px of slack: `clientWidth` is an integer and `scrollWidth` rounds up.
+      expect(k.scrollWidth, `${at}: the ${k.good} kind's label is clipped (${k.scrollWidth} in ${k.clientWidth})`).toBeLessThanOrEqual(k.clientWidth + 1);
+    }
+    for (let i = 0; i < read.kinds.length; i++) {
+      for (let j = i + 1; j < read.kinds.length; j++) {
+        expect(overlaps(read.kinds[i]!.box, read.kinds[j]!.box), `${at}: ${read.kinds[i]!.good} overlaps ${read.kinds[j]!.good}`).toBe(false);
+      }
+    }
+    const frame = VIEWPORT_OF(controls.w, controls.h);
+    expect(controls.confirm, `${at}: no Confirm`).not.toBeNull();
+    expect(controls.cancel, `${at}: no Cancel`).not.toBeNull();
+    expect(outside(controls.confirm!, frame), `${at}: Confirm is not inside the viewport`).toBeNull();
+    expect(outside(controls.cancel!, frame), `${at}: Cancel is not inside the viewport`).toBeNull();
+  }
+  expect(watch.failures).toEqual([]);
+});
+
+test("Chinatown's chooser keeps each stepper and first token inside its row, steppers 28px square, and Confirm pressable with the rows at their top, at 390 and 1440", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 4 });
+  await openChooser(page, "Chinatown");
+  for (const vp of [PHONE, DESKTOP]) {
+    await page.setViewportSize(vp);
+    await settle(page);
+    const at = `at ${vp.width}x${vp.height}`;
+    const read = await page.evaluate(() => {
+      const rect = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+      };
+      return [...document.querySelectorAll(".decision .chooser.chinatown .rows > .ex")].map((ex) => ({
+        number: ex.getAttribute("data-number") ?? "",
+        ex: rect(ex),
+        step: rect(ex.querySelector(":scope > .step")!),
+        minus: rect(ex.querySelector(".step > button.minus")!),
+        plus: rect(ex.querySelector(".step > button.plus")!),
+        token: rect(ex.querySelector(".what .tokens")!),
+      }));
+    });
+    // Anti-vacuity: the nine exchanges, in the Sell-then-Buy order the panel draws.
+    expect(read.map((r) => r.number), `${at}: the rows`).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+    for (const r of read) {
+      expect(r.ex.width > 0 && r.ex.height > 0, `${at}: row ${r.number} has no size`).toBe(true);
+      expect(outside(r.step, r.ex), `${at}: row ${r.number}'s stepper is not inside its row`).toBeNull();
+      expect(outside(r.token, r.ex), `${at}: row ${r.number}'s first token is not inside its row`).toBeNull();
+      for (const [name, b] of [["minus", r.minus], ["plus", r.plus]] as const) {
+        expect(Math.min(b.width, b.height), `${at}: row ${r.number}'s ${name} is ${b.width.toFixed(2)}x${b.height.toFixed(2)}px`).toBeGreaterThanOrEqual(STEP_MIN_PX - INSIDE_TOLERANCE_PX);
+      }
+    }
+    // With the rows scrolled to their top — the chooser as it opens — Confirm is
+    // in the frame and is what a press at its centre lands on.
+    await page.locator(".decision .chooser.chinatown .rows").evaluate((el) => (el.scrollTop = 0));
+    await settle(page);
+    const controls = await page.evaluate(controlsRead);
+    expect(controls.confirm, `${at}: no Confirm`).not.toBeNull();
+    expect(outside(controls.confirm!, VIEWPORT_OF(controls.w, controls.h)), `${at}: Confirm is not inside the viewport`).toBeNull();
+    expect(controls.confirmHit, `${at}: a press at Confirm's centre lands on something else`).toBe(true);
+  }
+  expect(watch.failures).toEqual([]);
+});
+
+/** The verdict's `legal — ` tag, as the panel draws it (the plan's words). */
+const LEGAL = "legal — ";
+
+test("a Church payment through the screen: kinds pressed to a legal verdict, Confirm, and the turn's account holds its words", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Church");
+  const verdict = page.locator(".decision .chooser.church .verdict");
+  // Anti-vacuity: the chooser opens on a verdict that is NOT legal (power 3
+  // reaches no space on its own), so the words below are earned by a press.
+  expect((await verdict.textContent()) ?? "", "the chooser opened already legal").not.toContain(LEGAL);
+  let words: string | null = null;
+  for (let press = 0; press < 6 && words === null; press++) {
+    const kind = page.locator('.decision .chooser.church button.kind:not([disabled])[aria-pressed="false"]').first();
+    expect(await kind.count(), "no kind left to press, and the verdict was never legal").toBe(1);
+    await kind.click();
+    await readScreen(page);
+    const text = (await verdict.textContent()) ?? "";
+    if (text.startsWith(LEGAL)) words = text.slice(LEGAL.length);
+  }
+  expect(words, "no selection of kinds read legal").not.toBeNull();
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await readScreen(page);
+  await expect(page.locator(".decision .chooser.church"), "the chooser closes on its commit").toHaveCount(0);
+  await expect(page.locator(".turn-account .messages li").filter({ hasText: words! })).toHaveCount(1);
+  expect(watch.failures).toEqual([]);
+});
+
+test("a Chinatown exchange through the screen on a four-player table: plus, legal, minus, Confirm disabled, plus, Confirm, and the account holds it", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 4 });
+  await openChooser(page, "Chinatown");
+  const rows = page.locator(".decision .chooser.chinatown .rows > .ex");
+  const first = rows.filter({ has: page.locator("button.plus:not([disabled])") }).first();
+  const number = await first.getAttribute("data-number");
+  expect(number, "no exchange can be added").not.toBeNull();
+  const row = page.locator(`.decision .chooser.chinatown .rows > .ex[data-number="${number}"]`);
+  const rowWords = ((await row.locator(".words").textContent()) ?? "").trim();
+  expect(rowWords, `row ${number} has no words`).not.toBe("");
+  const verdict = page.locator(".decision .chooser.chinatown .verdict");
+  const confirm = page.getByRole("button", { name: "Confirm" });
+
+  await row.locator("button.plus").click();
+  await readScreen(page);
+  await expect(row.locator(".n")).toHaveText("1");
+  await expect(verdict).toHaveClass(/\bok\b/);
+  expect((await verdict.textContent()) ?? "").toMatch(new RegExp(`^${LEGAL}`));
+
+  await row.locator("button.minus").click();
+  await readScreen(page);
+  await expect(row.locator(".n")).toHaveText("0");
+  await expect(confirm).toBeDisabled();
+  await expect(confirm).toHaveAttribute("data-unavailable", "true");
+
+  await row.locator("button.plus").click();
+  await readScreen(page);
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await readScreen(page);
+  await expect(page.locator(".decision .chooser.chinatown"), "the chooser closes on its commit").toHaveCount(0);
+  await expect(
+    page.locator(".turn-account .messages li").filter({ hasText: "Chinatown: " }).filter({ hasText: rowWords }),
+  ).toHaveCount(1);
+  expect(watch.failures).toEqual([]);
+});
+
+test("the walks' policy settles on a chooser and answers it: an add where Confirm is disabled, Confirm where nothing is left to add", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // Chinatown, opened: nothing chosen, so Confirm is disabled by the payload and
+  // `readScreen`'s wait must still return.
+  await startGame(page, { players: 4 });
+  await openChooser(page, "Chinatown");
+  const chosen = () =>
+    page
+      .locator(".decision .chooser.chinatown .rows > .ex .n")
+      .evaluateAll((ns) => ns.reduce((sum, n) => sum + Number(n.textContent), 0));
+  const town = await readScreen(page);
+  expect(town.chooser, "readScreen does not see the chooser").toBe(true);
+  expect(town.confirm, "Confirm is pressable with nothing chosen").toBe(false);
+  expect(town.adds, "the chooser offers nothing to add").toBeGreaterThan(0);
+  expect(town.adds, "adds counts the enabled pluses").toBe(await page.locator(".decision .chooser.chinatown button.plus:not([disabled])").count());
+  expect(await chosen()).toBe(0);
+  expect(await act(page, town, rng(0x4348_4f4f)), "the policy's answer at an opened chooser").toBe("chooser"); // "CHOO"
+  await readScreen(page);
+  expect(await chosen(), "the policy pressed an add, so one exchange is chosen").toBe(1);
+  await expect(page.locator(".decision .chooser.chinatown"), "and the chooser is still open").toHaveCount(1);
+
+  // The Church, with every offered kind pressed: nothing is left to add, so the
+  // policy confirms — without asking the coin, which is asked only while an add
+  // is still on offer.
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Church");
+  const unpressed = page.locator('.decision .chooser.church button.kind:not([disabled])[aria-pressed="false"]');
+  for (let press = 0; press < 6 && (await unpressed.count()) > 0; press++) {
+    await unpressed.first().click();
+    await readScreen(page);
+  }
+  expect(await unpressed.count(), "an offered kind is still unpressed").toBe(0);
+  const church = await readScreen(page);
+  expect(church.chooser).toBe(true);
+  expect(church.adds, "every offered kind is pressed").toBe(0);
+  expect(church.confirm, "the whole offered set is not a payment the list holds").toBe(true);
+  const noCoin = () => {
+    throw new Error("the policy asked the coin with nothing left to add");
+  };
+  expect(await act(page, church, noCoin)).toBe("chooser");
+  await readScreen(page);
+  await expect(page.locator(".decision .chooser.church"), "the policy's Confirm closed the chooser").toHaveCount(0);
+  await expect(page.locator(".turn-account .messages li").filter({ hasText: "Church: pay " })).toHaveCount(1);
   expect(watch.failures).toEqual([]);
 });
