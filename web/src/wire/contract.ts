@@ -115,6 +115,7 @@ import choiceChurchSpace from "./choice_ChurchSpace.json";
 import choiceWarehouseTake from "./choice_WarehouseTake.json";
 import church from "./church.json";
 import churchSelected from "./church_selected.json";
+import churchLegal from "./church_legal.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -266,6 +267,7 @@ const _choiceChurchSpace: Widen<ClientState> = choiceChurchSpace;
 const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
 const _church: Widen<ClientState> = church;
 const _churchSelected: Widen<ClientState> = churchSelected;
+const _churchLegal: Widen<ClientState> = churchLegal;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -530,6 +532,7 @@ const _pChoiceWarehouseTake: PromptOf<"options"> = choiceWarehouseTake.prompt;
 const _pChoiceChurchSpace: PromptOf<"options"> = choiceChurchSpace.prompt;
 const _pChurch: PromptOf<"church"> = church.prompt;
 const _pChurchSelected: PromptOf<"church"> = churchSelected.prompt;
+const _pChurchLegal: PromptOf<"church"> = churchLegal.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -576,7 +579,7 @@ void [
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
   _pSpectator, _pSpectatorOver,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
-  _pChurch, _pChurchSelected,
+  _pChurch, _pChurchSelected, _pChurchLegal,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -594,7 +597,7 @@ void [
   _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _idCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
-  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected,
+  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected, _churchLegal,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -947,6 +950,9 @@ export const wire = {
   church: as<ClientState>(church),
   /** The same chooser after its first kind is switched on. */
   churchSelected: as<ClientState>(churchSelected),
+  /** The first chooser on the walk whose preview is legal: copper and silk on,
+   *  with `describe`'s words for the listed move they name. */
+  churchLegal: as<ClientState>(churchLegal),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -1080,6 +1086,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
   wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
-  wire.church, wire.churchSelected,
+  wire.church, wire.churchSelected, wire.churchLegal,
   wire.spectator, wire.spectatorOver,
 ];

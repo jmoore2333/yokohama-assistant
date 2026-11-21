@@ -191,9 +191,14 @@ enum PromptOption {
     Church { count: usize },
 }
 
-/// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
-/// they assemble is exact-matched against `session.legal()` before `commit`, so
-/// neither can construct-and-apply anything the engine didn't offer.
+/// An in-progress sub-prompt, from any of three phases: Movement's route pick
+/// and guided retreat, Placement's two pickers, the AreaAction phase's Church
+/// chooser, plus the numbered pick a queued assistant-move choice or a
+/// Telegram bonus opens and the guided `reveal` flow. Every variant but
+/// `Reveal` is an ENTRY HELPER over the legal list: whatever it assembles or
+/// names is exact-matched against `session.legal()` before `commit`, so none
+/// can construct-and-apply anything the engine didn't offer (`Reveal` records
+/// a standalone reveal event instead; its own doc says why).
 pub enum SubPrompt {
     None,
     /// A numbered pick over a captured slice of the legal list (route labels,
@@ -1032,9 +1037,11 @@ impl Repl {
             // still there when it closes.
             text.push_str(&self.overlay_text());
         } else if !matches!(self.sub, SubPrompt::None) {
-            // Inside a Movement sub-prompt: append the sub-prompt screen (route
-            // list / current recovery question / confirm line) instead of the
-            // main numbered list -- symmetric with the `pending` reveal branch.
+            // Inside a sub-prompt: append its screen (a pick list, the current
+            // recovery question or confirm line, a placement picker's
+            // directory and preview, the Church chooser's kinds and preview,
+            // the reveal menu) instead of the main numbered list -- symmetric
+            // with the `pending` reveal branch.
             text.push_str(&self.sub_prompt_text());
         } else if matches!(self.pending, Pending::None) {
             text.push_str(&self.prompt());
@@ -9347,22 +9354,6 @@ mod tests {
         }
     }
 
-    /// Task 1's issue position (`chooser::test_support::issue_position`) as a
-    /// `Session` can play on: its faith 4, 5 and 6 spaces held by the other
-    /// seat rather than by the setup dummy. The legal list is the same 42
-    /// payments and the decline, and the Session's checked apply runs the
-    /// engine's invariants after every move, whose I9 clause allows the 2P
-    /// dummy on faith 7 alone — so a payment committed from the fixture as it
-    /// stands locks the session down instead of recording.
-    fn church_position() -> GameState {
-        let mut state = issue_position();
-        for slot in 0..3 {
-            state.church_track.slots[slot] = None;
-        }
-        occupy(&mut state, 0..3);
-        state
-    }
-
     /// The Church move paying exactly the named kinds, spelled out field by
     /// field — never through `church_flags`/`church_match`, so a cell that
     /// compares against it does not share the code it checks.
@@ -9419,7 +9410,7 @@ mod tests {
 
     #[test]
     fn the_church_folds_to_one_entry_and_the_decline() {
-        let r = repl_at(church_position());
+        let r = repl_at(issue_position());
         let rows = r.option_rows();
         assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
         assert_eq!(rows[0].words, "Church — choose what to pay (42 payment sets)");
@@ -9431,7 +9422,7 @@ mod tests {
     #[test]
     fn a_church_with_one_payment_stays_a_direct_row() {
         // Only space 11 is empty, so only the six-kind payment is listed.
-        let mut state = church_position();
+        let mut state = issue_position();
         occupy(&mut state, 4..7);
         let r = repl_at(state);
         let six = church_move(true, true, true, true, true, true);
@@ -9452,7 +9443,7 @@ mod tests {
 
         // With nothing but the copper and the silk in hand no payment reaches
         // an empty space, so the list holds the decline alone.
-        let mut state = church_position();
+        let mut state = issue_position();
         let me = state.current_player.0 as usize;
         let p = &mut state.players[me];
         (p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0);
@@ -9465,7 +9456,7 @@ mod tests {
 
     #[test]
     fn a_number_switches_its_kind_on_and_off() {
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         let opened = r.step(&church_entry(&r).to_string());
         assert_eq!(church_selection(&r), [false; 6]);
         assert_eq!(opened.text, church_screen(&r), "opening prints the screen and nothing before it");
@@ -9483,7 +9474,7 @@ mod tests {
 
     #[test]
     fn a_kind_not_offered_and_a_number_out_of_range_are_refused_and_keep_the_selection() {
-        let mut state = church_position();
+        let mut state = issue_position();
         let me = state.current_player.0 as usize;
         state.players[me].money = 1;
         let mut r = repl_at(state);
@@ -9511,7 +9502,10 @@ mod tests {
 
     #[test]
     fn confirm_commits_the_listed_move_and_the_space_choice_follows() {
-        let mut r = repl_at(church_position());
+        // The shared fixture passes the engine's invariants as built, before
+        // any move: the checked apply below runs the same check after it.
+        assert_eq!(check_invariants(&issue_position(), &Rules::standard()), Ok(()));
+        let mut r = repl_at(issue_position());
         // Four kinds reach faith 9, so spaces 8 and 9 both qualify and the
         // engine QUEUES the space choice (three kinds would reach space 8
         // alone, which it places without asking).
@@ -9546,7 +9540,7 @@ mod tests {
 
     #[test]
     fn confirm_on_a_selection_the_list_does_not_hold_applies_nothing() {
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         let events = r.session.record().events.len();
         r.step(&church_entry(&r).to_string());
         r.step("2");
@@ -9566,7 +9560,7 @@ mod tests {
 
     #[test]
     fn cancel_and_undo_return_to_the_folded_list() {
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         r.step(&church_entry(&r).to_string());
         r.step("2");
         let out = r.step("cancel");
@@ -9592,7 +9586,7 @@ mod tests {
 
     #[test]
     fn words_that_are_not_an_answer_are_refused_inside_the_chooser() {
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         r.step(&church_entry(&r).to_string());
         r.step("2");
         let events = r.session.record().events.len();
@@ -9613,7 +9607,7 @@ mod tests {
 
     #[test]
     fn the_card_index_opens_over_the_chooser_and_returns_to_it() {
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         r.step(&church_entry(&r).to_string());
         r.step("2");
         r.step("?");
@@ -9627,7 +9621,7 @@ mod tests {
 
     #[test]
     fn a_mercenary_s_sub_turn_at_the_church_folds_too() {
-        let mut state = church_position();
+        let mut state = issue_position();
         let church = *state
             .board_layout
             .areas
@@ -9734,7 +9728,7 @@ mod tests {
             }
         }
         // And the issue's own position, all 42.
-        let state = church_position();
+        let state = issue_position();
         let legal = get_legal_moves(&state, &rules);
         let listed: Vec<&Move> = legal.iter().filter(|m| flags_by_hand(m).is_some()).collect();
         assert_eq!(listed.len(), 42);
@@ -9761,7 +9755,7 @@ mod tests {
     fn the_empty_selection_can_be_a_listed_payment() {
         // Power 4 (three assistants and the President) with space 4 empty:
         // the power alone reaches it.
-        let mut state = church_position();
+        let mut state = issue_position();
         let church = *state
             .board_layout
             .areas
@@ -9794,7 +9788,7 @@ mod tests {
 
         // On the issue position paying nothing reaches faith 5, and spaces 4
         // to 7 are taken.
-        let mut r = repl_at(church_position());
+        let mut r = repl_at(issue_position());
         assert!(!r.session.legal().contains(&nothing), "premise: not listed here");
         let events = r.session.record().events.len();
         r.step(&church_entry(&r).to_string());

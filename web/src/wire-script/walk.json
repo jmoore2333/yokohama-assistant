@@ -970,7 +970,7 @@
       "line": "2"
     },
     "status": 200,
-    "fixture": null
+    "fixture": "church_legal"
   },
   {
     "who": "blue@wire.test",

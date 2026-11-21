@@ -361,8 +361,15 @@ pub(crate) mod test_support {
     /// A 2P position at the Church with 42 listed Church moves: the acting
     /// seat's president on the Church with 4 assistants there (power 5), stock
     /// copper 1, silk 5, tea 2, seafood 3, money 2, imported goods 1, the
-    /// track's faith 4, 5 and 6 slots filled like the dummy's faith-7 slot, so
-    /// only faith 8 and up reaches an empty space (three kinds or more).
+    /// track's faith 4, 5 and 6 spaces held by the OTHER seat's assistants
+    /// (taken from its warehouse, so its twenty are conserved) beside the
+    /// dummy's faith 7, so only faith 8 and up reaches an empty space (three
+    /// kinds or more).
+    ///
+    /// **Other seat's assistants, not copies of the dummy's slot**: a
+    /// `Session` runs the engine's invariants after every apply, and their I9
+    /// clause allows the 2P dummy on faith 7 alone, so a position with the
+    /// dummy on faith 4 to 6 locks a session down at its first move.
     pub(crate) fn issue_position() -> GameState {
         let rules = Rules::standard();
         let pending = new_game(GameConfig::for_player_count(2), &rules, 1).unwrap();
@@ -389,9 +396,14 @@ pub(crate) mod test_support {
         p.seafood = 3;
         p.money = 2;
         p.imported_goods = 1;
-        let dummy = state.church_track.slots[3].expect("the 2P dummy holds faith 7");
+        let other = PlayerId::new(1 - me.0);
         for slot in 0..3 {
-            state.church_track.slots[slot] = Some(dummy);
+            let arrival_order = state.church_track.next_arrival_order;
+            state.church_track.slots[slot] = Some(ChurchSlot { player: other, arrival_order });
+            state.church_track.next_arrival_order += 1;
+            let q = &mut state.players[other.0 as usize];
+            q.assistants.in_warehouse -= 1;
+            q.assistants.on_church += 1;
         }
         state.turn_phase = TurnPhase::AreaAction;
         state.current_action_power = Some(calculate_power(&state, me, church));

@@ -1571,6 +1571,12 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                             .await;
                         assert_eq!(chooser["prompt"]["kind"], "church", "the entry opens the chooser: {chooser}");
                         capture(&mut out, &mut seen, "church", &chooser);
+                        // The first chooser whose preview is LEGAL, so the
+                        // corpus holds a legal preview in `describe`'s words.
+                        let legal = |c: &Value| c["prompt"]["preview"]["legal"] == Value::Bool(true);
+                        if legal(&chooser) {
+                            capture(&mut out, &mut seen, "church_legal", &chooser);
+                        }
                         let flags = &mv["ExecuteAreaAction"]["action"]["Church"];
                         for (number, field) in
                             [(1, "copper"), (2, "silk"), (3, "tea"), (4, "seafood"), (5, "yen"), (6, "imported_good")]
@@ -1583,6 +1589,9 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                                     "kind {number} ({field}) switched on: {chooser}",
                                 );
                                 capture(&mut out, &mut seen, "church_selected", &chooser);
+                                if legal(&chooser) {
+                                    capture(&mut out, &mut seen, "church_legal", &chooser);
+                                }
                             }
                         }
                         assert_eq!(
@@ -1737,6 +1746,7 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         "spectator",
         "church",
         "church_selected",
+        "church_legal",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),

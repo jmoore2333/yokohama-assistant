@@ -88,15 +88,27 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
   });
 
-  it("the corpus's two church states: as it opens, and with its first kind on", () => {
+  it("the corpus's three church states: as it opens, with its first kind on, and its first legal one", () => {
     const churches = EVERY_STATE.filter((state) => state.prompt.kind === "church");
-    expect(churches).toEqual([wire.church, wire.churchSelected]);
-    const selected = (state: typeof wire.church): number => {
+    expect(churches).toEqual([wire.church, wire.churchSelected, wire.churchLegal]);
+    const prompt = (state: typeof wire.church) => {
       if (state.prompt.kind !== "church") throw new Error(`not a church prompt: ${state.prompt.kind}`);
-      return state.prompt.kinds.filter((k) => k.selected).length;
+      return state.prompt;
     };
+    const selected = (state: typeof wire.church): number => prompt(state).kinds.filter((k) => k.selected).length;
     expect(selected(wire.church)).toBe(0);
     expect(selected(wire.churchSelected)).toBe(1);
+    expect(selected(wire.churchLegal)).toBe(2);
+    // Neither of the first two names a listed move.
+    for (const state of [wire.church, wire.churchSelected]) {
+      expect(prompt(state).preview.legal).toBe(false);
+      expect(prompt(state).preview.words).toBeNull();
+    }
+    // The third does, in `describe`'s words, and so carries no offered-faiths line.
+    const legal = prompt(wire.churchLegal);
+    expect(legal.preview.legal).toBe(true);
+    expect(legal.preview.words).toMatch(/^Church: pay /);
+    expect(legal.offered_faiths).toBeNull();
   });
 
   it("a church preview has words exactly when it is legal", () => {
