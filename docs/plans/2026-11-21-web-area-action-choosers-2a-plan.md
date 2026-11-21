@@ -545,7 +545,7 @@ Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`
 
 **Tier:** impl opus · review opus.
 
-**Files:** Modify `web/e2e/harness.ts`, `web/e2e/the_table.spec.ts`.
+**Files:** Modify `web/e2e/harness.ts`, `web/e2e/the_table.spec.ts`, `web/e2e/shared_table.ts` (ruling R37: the walks that steer two pages by its `hasMove` would idle at an opened chooser, where no older term holds).
 
 **Interfaces — consumes:** the DOM of Tasks 5 and 6.
 
@@ -558,13 +558,13 @@ Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`
   2. **Chinatown's boxes**, at 390 and 1440 px: each `.step` lies inside its `.ex` row; plus and minus are at least 28 px square; each row's first token lies inside the row; and with the rows scrolled to their top, Confirm lies inside the viewport and `elementFromPoint` at its centre is the button.
   3. **A Church payment through the screen**: press kinds until the verdict reads `legal — `, keep its words, Confirm; the turn's account then holds those words.
   4. **A Chinatown exchange through the screen**, on the four-player game: plus on the first row with an enabled plus; the verdict is legal; minus on it and Confirm is disabled; plus again; Confirm; the account holds `Chinatown: ` and that row's words.
-  5. **The policy**, a browser cell (`act` takes a page): at the opened Chinatown chooser, where Confirm is disabled, `readScreen` returns within its wait with `chooser` true and `adds` above zero, and `act` presses an add and returns `"chooser"`; at the Church chooser of cell 3 with every offered kind pressed, `adds` reads 0 and `act` presses Confirm.
+  5. **The policy**, a browser cell (`act` takes a page): at the opened Chinatown chooser, where Confirm is disabled, `readScreen` returns within its wait with `chooser` true and `adds` above zero, and `act` presses an add and returns `"chooser"`; at the Church chooser of cell 3 with every offered kind pressed, `adds` reads 0 and `act` presses Confirm. At that opened chooser `hasMove` (`shared_table.ts`) reads true, though Confirm is disabled and no older term of it holds.
 - [ ] **Step 2: Implement the settle wait and the policy**, then run the cells. Cells 1 to 4 measure the product as built: a failing measurement there is a finding, so STOP with the numbers and do not edit `web/src/` or loosen the assertion. A cell that cannot reach its chooser is the harness's and is yours to fix.
 - [ ] **Step 3: Run the five cells green.**
 - [ ] **Step 4: The whole browser suite**, `cd web && npm run e2e`: every walk still reaches its end. State the count and the wall.
 - [ ] **Step 5: Commit.**
 
-**Mutants:** the settle wait left as it was (every cell times out at its chooser). A `.kind` grid of six columns at 390 px (cell 1's label inside its kind; it survived the `.lbl` reading alone, which is why that reading has the kind's box beside it). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (cell 5: with every offered kind pressed, `adds` reads 5, not 0; the whole-game walk is not its catcher, since the coin still ends a visit at any legal selection — Task 7 measured it finishing at 451 moves with `chooser`×7, its move bound unreached; it fails only on a game whose single kinds are never legal). The policy removed (cell 5: `act` returns `null` at the opened Chinatown chooser; a walk reports a dead end only when its game opens a chooser on a disabled Confirm — Task 7 measured the reload walk's dead end at move 5 and the whole-game walk finishing at 383 moves).
+**Mutants:** the settle wait left as it was (every cell times out at its chooser). A `.kind` grid of six columns at 390 px (cell 1's label inside its kind; it survived the `.lbl` reading alone, which is why that reading has the kind's box beside it). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (cell 5: with every offered kind pressed, `adds` reads 5, not 0; the whole-game walk is not its catcher, since the coin still ends a visit at any legal selection — Task 7 measured it finishing at 451 moves with `chooser`×7, its move bound unreached; it fails only on a game whose single kinds are never legal). The policy removed (cell 5: `act` returns `null` at the opened Chinatown chooser; a walk reports a dead end only when its game opens a chooser on a disabled Confirm — Task 7 measured the reload walk's dead end at move 5 and the whole-game walk finishing at 383 moves). `hasMove` left without the chooser (cell 5; the two-browser walk idles to its limit at the first Church).
 
 ---
 

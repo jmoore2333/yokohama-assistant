@@ -51,10 +51,15 @@ export async function ownHand(page: Page): Promise<string[]> {
  * the window between the two pages' reads — measured: the walk picked the page
  * that had begun walking, `act` found no affordance and reported a dead end on
  * a game that was fine. So the turn is chosen by what can actually be pressed.
+ *
+ * **A chooser counts as a move on its own** (plan 2a, ruling R37): one that has
+ * just opened has Confirm disabled by the payload and nothing else the older
+ * terms count, yet it is the acting seat's move — without the term, a walk that
+ * steers two pages by this idled to its limit at the first Church.
  */
 export function hasMove(s: Screen): boolean {
   return (
-    s.inert === null && (s.options > 0 || s.tiles > 0 || s.counts > 0 || s.confirm || s.only)
+    s.inert === null && (s.options > 0 || s.tiles > 0 || s.counts > 0 || s.confirm || s.only || s.chooser)
   );
 }
 

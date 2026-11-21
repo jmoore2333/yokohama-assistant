@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
 import { act, atTheGame, blame, DESKTOP, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage } from "./harness";
+import { hasMove } from "./shared_table";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -1417,6 +1418,10 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
   expect(town.confirm, "Confirm is pressable with nothing chosen").toBe(false);
   expect(town.adds, "the chooser offers nothing to add").toBeGreaterThan(0);
   expect(town.adds, "adds counts the enabled pluses").toBe(await page.locator(".decision .chooser.chinatown button.plus:not([disabled])").count());
+  // And the two-page walks see it as a move (R37): no older term of `hasMove`
+  // holds here — no option row, no tile, no count, no live Confirm, no only.
+  expect([town.options, town.tiles, town.counts, town.confirm, town.only], "an older term of hasMove holds").toEqual([0, 0, 0, false, false]);
+  expect(hasMove(town), "hasMove reads an opened chooser as no move").toBe(true);
   expect(await chosen()).toBe(0);
   expect(await act(page, town, rng(0x4348_4f4f)), "the policy's answer at an opened chooser").toBe("chooser"); // "CHOO"
   await readScreen(page);
