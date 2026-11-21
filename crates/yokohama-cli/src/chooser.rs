@@ -7,11 +7,13 @@
 //! DISPLAYED only, as `describe`'s Church arm reads them.
 
 use serde::{Deserialize, Serialize};
-use yokohama_core::game::actions::calculate_church_faith;
+use std::collections::HashMap;
+
+use yokohama_core::game::actions::{calculate_church_faith, chinatown_rate, ChinatownGood};
 use yokohama_core::*;
 
-use crate::describe::{acting_area, church_kind_words, describe_move};
-use crate::screen_model::CHURCH_YEN_COST;
+use crate::describe::{acting_area, chinatown_exchange_text, church_kind_words, describe_move};
+use crate::screen_model::{ChinatownOffer, CHURCH_YEN_COST};
 
 /// A thing a chooser spends or gains: a trade good, yen, or an imported good.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +184,172 @@ pub fn church_text(model: &ChurchModel) -> String {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChinatownRow {
+    /// What to send to add one: 1 to 9.
+    pub number: usize,
+    /// The exchange gains yen.
+    pub sells: bool,
+    /// `chinatown_rate`'s, at the printed rate.
+    pub spend: Amount,
+    pub gain: Amount,
+    /// `describe`'s: "1 copper -> 2 yen".
+    pub words: String,
+    /// How many of it are chosen.
+    pub count: u8,
+    /// The list holds the selection with one more of it.
+    pub can_add: bool,
+    /// Some listed move uses it.
+    pub offered: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChinatownModel {
+    /// The most exchanges in one listed move.
+    pub max_exchanges: usize,
+    /// The selection's total.
+    pub chosen: usize,
+    /// The acting seat's six holdings, in `CHURCH_KINDS` order.
+    pub stock: Vec<Amount>,
+    /// Always nine, in `ChinatownOffer::all()` order.
+    pub rows: Vec<ChinatownRow>,
+    pub preview: Preview,
+}
+
+/// The engine's good, as the chooser's: no `_` arm, so a seventh good stops
+/// this file compiling.
+fn good_of(good: ChinatownGood) -> Good {
+    match good {
+        ChinatownGood::Copper => Good::Copper,
+        ChinatownGood::Silk => Good::Silk,
+        ChinatownGood::Tea => Good::Tea,
+        ChinatownGood::Seafood => Good::Seafood,
+        ChinatownGood::Money => Good::Yen,
+        ChinatownGood::Imported => Good::Imports,
+    }
+}
+
+/// A listed Chinatown move's count per exchange, by `ChinatownOffer::index`;
+/// `None` for any other move.
+pub fn chinatown_counts(mv: &Move) -> Option<[u8; 9]> {
+    match mv {
+        Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => {
+            let mut counts = [0u8; 9];
+            for e in exchanges {
+                let slot = &mut counts[ChinatownOffer::index(*e)];
+                *slot = slot.saturating_add(1);
+            }
+            Some(counts)
+        }
+        _ => None,
+    }
+}
+
+/// The listed move holding exactly `counts`, in whatever order the engine
+/// listed it. The legal list decides: counts the list does not hold match
+/// nothing.
+pub fn chinatown_match(legal: &[Move], counts: [u8; 9]) -> Option<Move> {
+    legal.iter().find(|mv| chinatown_counts(mv) == Some(counts)).cloned()
+}
+
+/// `legal` is walked ONCE into a map from count arrays to the first listed move
+/// holding them; `can_add`, `offered`, `max_exchanges` and the preview are each
+/// answered from that map, never from the stock, the rate or the power.
+pub fn chinatown_model(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    counts: [u8; 9],
+) -> ChinatownModel {
+    let mut sets: HashMap<[u8; 9], &Move> = HashMap::new();
+    for mv in legal {
+        if let Some(c) = chinatown_counts(mv) {
+            sets.entry(c).or_insert(mv);
+        }
+    }
+    let total = |c: &[u8; 9]| c.iter().map(|&n| n as usize).sum::<usize>();
+    let rows = ChinatownOffer::all()
+        .into_iter()
+        .enumerate()
+        .map(|(i, exchange)| {
+            let rate = chinatown_rate(exchange);
+            let mut one_more = counts;
+            one_more[i] = one_more[i].saturating_add(1);
+            ChinatownRow {
+                number: i + 1,
+                sells: rate.gain == ChinatownGood::Money,
+                spend: Amount { good: good_of(rate.spend), amount: rate.spend_amount },
+                gain: Amount { good: good_of(rate.gain), amount: rate.gain_amount },
+                words: chinatown_exchange_text(exchange).to_string(),
+                count: counts[i],
+                can_add: one_more[i] > counts[i] && sets.contains_key(&one_more),
+                offered: sets.keys().any(|c| c[i] > 0),
+            }
+        })
+        .collect();
+    let matched = sets.get(&counts).copied();
+    let preview = Preview {
+        legal: matched.is_some(),
+        words: matched.map(|mv| describe_move(mv, state, rules)),
+    };
+    ChinatownModel {
+        max_exchanges: sets.keys().map(total).max().unwrap_or(0),
+        chosen: total(&counts),
+        stock: CHURCH_KINDS
+            .iter()
+            .map(|&good| Amount { good, amount: stock(state, good) })
+            .collect(),
+        rows,
+        preview,
+    }
+}
+
+/// The terminal's screen for the model (plan 2a, "The words"). Ends with a
+/// newline, as every sub-prompt screen in `repl.rs` does.
+pub fn chinatown_text(model: &ChinatownModel) -> String {
+    let mut out = format!(
+        "Chinatown — up to {} exchanges (add by number):\n",
+        model.max_exchanges
+    );
+    for r in &model.rows {
+        let lead = match r.number {
+            1 => "  sell  ",
+            5 => "  buy   ",
+            _ => "        ",
+        };
+        let mark = if r.count > 0 {
+            format!("x{}", r.count)
+        } else if !r.offered {
+            "(not offered)".to_string()
+        } else {
+            String::new()
+        };
+        let row = format!("{lead}[{}] {:<28}{mark}", r.number, r.words);
+        out.push_str(row.trim_end());
+        out.push('\n');
+    }
+    let chosen: Vec<&str> = model
+        .rows
+        .iter()
+        .flat_map(|r| std::iter::repeat_n(r.words.as_str(), r.count as usize))
+        .collect();
+    let chosen_words = if chosen.is_empty() { "(none)".to_string() } else { chosen.join(", ") };
+    out.push_str(&format!(
+        "Selected ({} of {}): {chosen_words}\n",
+        model.chosen, model.max_exchanges
+    ));
+    if model.chosen == 0 {
+        out.push_str("  -> add an exchange to preview it\n");
+    } else {
+        match &model.preview.words {
+            Some(words) => out.push_str(&format!("  -> legal — {words}\n")),
+            None => out.push_str("  -> NOT currently offered (adjust the selection)\n"),
+        }
+    }
+    out.push_str("> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'\n");
+    out
+}
+
 /// Test fixtures shared with other modules' cells (`pub(crate)` so `describe.rs`
 /// and, later, `repl.rs` reach the same position).
 #[cfg(test)]
@@ -227,11 +395,69 @@ pub(crate) mod test_support {
         state.current_action_power = Some(calculate_power(&state, me, church));
         state
     }
+
+    /// A position at Chinatown for `players` seats: the acting seat's president
+    /// on the first Chinatown a seeded board holds, `assistants` of its
+    /// assistants there (power `1 + assistants`), the stock as `[copper, silk,
+    /// tea, seafood, money, imported goods]`, `AreaAction` and the action power
+    /// set.
+    fn chinatown_position(players: u8, assistants: u8, stock: [u32; 6]) -> GameState {
+        let rules = Rules::standard();
+        let (pending, chinatown) = (1u64..200)
+            .find_map(|seed| {
+                let pending =
+                    new_game(GameConfig::for_player_count(players), &rules, seed).unwrap();
+                let town = pending
+                    .state
+                    .board_layout
+                    .areas
+                    .iter()
+                    .find(|(_, c)| c.area_type == AreaType::Chinatown)
+                    .map(|(id, _)| *id);
+                town.map(|t| (pending, t))
+            })
+            .expect("a seeded board holds a Chinatown");
+        let choices = vec![StartingOrderChoice::Keep(0); players as usize];
+        let mut state = finalize_setup(pending, &choices).unwrap();
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(chinatown);
+        if assistants > 0 {
+            p.assistants.on_board.insert(chinatown, assistants);
+            p.assistants.in_hand -= assistants;
+        }
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) =
+            (stock[0], stock[1], stock[2], stock[3], stock[4], stock[5]);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, chinatown));
+        state
+    }
+
+    /// A 3P position with the acting seat's president on Chinatown with 2 of its
+    /// assistants there (power 3), stock copper 1, silk 0, tea 2, seafood 1,
+    /// money 3, imported goods 0: 103 listed moves, 102 of them Chinatown moves,
+    /// the longest of 3 exchanges.
+    pub(crate) fn ordinary_position() -> GameState {
+        chinatown_position(3, 2, [1, 0, 2, 1, 3, 0])
+    }
+
+    /// `ordinary_position`'s stock with no assistant on the tile (power 1).
+    pub(crate) fn ordinary_position_power_1() -> GameState {
+        chinatown_position(3, 0, [1, 0, 2, 1, 3, 0])
+    }
+
+    /// A 4P position at power 5 with copper, silk, tea and seafood 5, money 20,
+    /// imported goods 2: a long list of Chinatown moves.
+    pub(crate) fn rich_position() -> GameState {
+        chinatown_position(4, 4, [5, 5, 5, 5, 20, 2])
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::issue_position;
+    use super::test_support::{
+        issue_position, ordinary_position, ordinary_position_power_1, rich_position,
+    };
     use super::*;
     use crate::describe::describe_move;
     use crate::screen_model::CHURCH_YEN_COST;
@@ -433,5 +659,310 @@ Selected: silk
         broke.players[me].money = 1;
         let screen = church_text(&church_model(&broke, &rules, &legal_of(&broke), [false; 6]));
         assert!(screen.contains("\n  [5] 2 yen            have 1    (not offered)\n"), "{screen}");
+    }
+    fn chinatown_moves(legal: &[Move]) -> Vec<&Move> {
+        legal.iter().filter(|m| chinatown_counts(m).is_some()).collect()
+    }
+
+    /// The listed move's exchanges, or panic.
+    fn exchanges_of(mv: &Move) -> Vec<ChinatownExchange> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => {
+                exchanges.clone()
+            }
+            other => panic!("not a Chinatown move: {other:?}"),
+        }
+    }
+
+    /// `describe`'s unit word for a good.
+    fn unit_words(good: Good) -> &'static str {
+        match good {
+            Good::Copper => "copper",
+            Good::Silk => "silk",
+            Good::Tea => "tea",
+            Good::Seafood => "seafood",
+            Good::Yen => "yen",
+            Good::Imports => "imported good",
+        }
+    }
+
+    /// `legal` without every listed Chinatown move holding a sale of tea.
+    fn without_tea_sales(legal: &[Move]) -> Vec<Move> {
+        legal
+            .iter()
+            .filter(|mv| chinatown_counts(mv).is_none_or(|c| c[2] == 0))
+            .cloned()
+            .collect()
+    }
+
+    fn can_add_of(model: &ChinatownModel) -> Vec<bool> {
+        model.rows.iter().map(|r| r.can_add).collect()
+    }
+
+    #[test]
+    fn the_ordinary_position_lists_102_exchange_sets_of_at_most_three() {
+        let state = ordinary_position();
+        assert_eq!(state.current_action_power, Some(3));
+        let legal = legal_of(&state);
+        assert_eq!(legal.len(), 103, "102 Chinatown moves and the decline");
+        let moves = chinatown_moves(&legal);
+        assert_eq!(moves.len(), 102);
+        assert_eq!(moves.iter().map(|m| exchanges_of(m).len()).max(), Some(3));
+    }
+
+    #[test]
+    fn every_listed_set_matches_itself_whatever_its_order() {
+        let state = ordinary_position();
+        let legal = legal_of(&state);
+        let mut reversed_differs = 0;
+        for mv in chinatown_moves(&legal) {
+            let counts = chinatown_counts(mv).expect("a Chinatown move has counts");
+            assert_eq!(chinatown_match(&legal, counts).as_ref(), Some(mv));
+            let mut backwards = exchanges_of(mv);
+            backwards.reverse();
+            if backwards != exchanges_of(mv) {
+                reversed_differs += 1;
+            }
+            let reversed = Move::ExecuteAreaAction {
+                action: AreaAction::Chinatown { exchanges: backwards },
+            };
+            assert_eq!(chinatown_counts(&reversed), Some(counts));
+        }
+        assert!(reversed_differs > 0, "the list holds sets whose order matters to a vector compare");
+        assert_eq!(
+            chinatown_counts(&Move::ExecuteAreaAction { action: AreaAction::Skip }),
+            None
+        );
+    }
+
+    #[test]
+    fn one_more_can_be_added_exactly_when_the_list_holds_it() {
+        let state = ordinary_position();
+        let rules = Rules::standard();
+        let legal = legal_of(&state);
+        // No silk to sell, and 3 yen does not buy an imported good.
+        let model = chinatown_model(&state, &rules, &legal, [0; 9]);
+        assert_eq!(
+            can_add_of(&model),
+            [true, false, true, true, true, true, true, true, false]
+        );
+        // Selling first is what makes the purchase addable.
+        let mut sold = [0u8; 9];
+        sold[0] = 1;
+        let model = chinatown_model(&state, &rules, &legal, sold);
+        assert!(model.rows[8].can_add);
+    }
+
+    #[test]
+    fn a_selection_left_by_taking_the_sale_back_is_not_offered() {
+        let state = ordinary_position();
+        let rules = Rules::standard();
+        let legal = legal_of(&state);
+        let mut counts = [0u8; 9];
+        counts[8] = 1;
+        let model = chinatown_model(&state, &rules, &legal, counts);
+        assert!(!model.preview.legal);
+        assert_eq!(model.preview.words, None);
+        assert_eq!(model.chosen, 1);
+    }
+
+    #[test]
+    fn offered_is_read_from_the_list() {
+        let rules = Rules::standard();
+        let state = ordinary_position();
+        let legal = legal_of(&state);
+        let model = chinatown_model(&state, &rules, &legal, [0; 9]);
+        // Row 9 is listed behind a sale and row 2 behind a silk purchase, yet
+        // neither can be added from nothing: `offered` is not `can_add`.
+        assert!(model.rows.iter().all(|r| r.offered));
+        assert!(!model.rows[1].can_add && !model.rows[8].can_add);
+
+        let state = ordinary_position_power_1();
+        assert_eq!(state.current_action_power, Some(1));
+        let legal = legal_of(&state);
+        assert_eq!(chinatown_moves(&legal).len(), 7);
+        let model = chinatown_model(&state, &rules, &legal, [0; 9]);
+        let offered: Vec<bool> = model.rows.iter().map(|r| r.offered).collect();
+        assert_eq!(offered, [true, false, true, true, true, true, true, true, false]);
+    }
+
+    #[test]
+    fn the_rows_carry_the_engine_s_rates_and_describe_s_words() {
+        let rules = Rules::standard();
+        let mut state = ordinary_position();
+        // The Mining Technology adds a copper to the copper-gaining exchange
+        // when it is APPLIED; the row shows the printed rate, as the words do.
+        let mining = rules.techs.by_code("tech_mining_technology").expect("Mining").id;
+        let me = state.current_player.0 as usize;
+        state.players[me].technologies.push(mining);
+        let legal = legal_of(&state);
+        let model = chinatown_model(&state, &rules, &legal, [0; 9]);
+        assert_eq!(model.rows.len(), 9);
+        for (i, (exchange, row)) in ChinatownOffer::all().into_iter().zip(&model.rows).enumerate() {
+            let rate = chinatown_rate(exchange);
+            assert_eq!(row.number, i + 1);
+            assert_eq!(row.spend.amount, rate.spend_amount);
+            assert_eq!(row.gain.amount, rate.gain_amount);
+            assert_eq!(row.spend.good, good_of(rate.spend));
+            assert_eq!(row.gain.good, good_of(rate.gain));
+            let single = Move::ExecuteAreaAction {
+                action: AreaAction::Chinatown { exchanges: vec![exchange] },
+            };
+            assert_eq!(
+                format!("Chinatown: {}", row.words),
+                describe_move(&single, &state, &rules)
+            );
+            assert_eq!(
+                row.words,
+                format!(
+                    "{} {} -> {} {}",
+                    row.spend.amount,
+                    unit_words(row.spend.good),
+                    row.gain.amount,
+                    unit_words(row.gain.good)
+                )
+            );
+            assert_eq!(row.sells, i < 4, "row {} sells", i + 1);
+        }
+        assert_eq!(model.rows[4].gain, Amount { good: Good::Copper, amount: 1 });
+    }
+
+    #[test]
+    fn the_stock_is_the_acting_seat_s_six_holdings() {
+        let rules = Rules::standard();
+        let state = ordinary_position();
+        let model = chinatown_model(&state, &rules, &legal_of(&state), [0; 9]);
+        let amounts: Vec<u32> = model.stock.iter().map(|a| a.amount).collect();
+        assert_eq!(amounts, [1, 0, 2, 1, 3, 0]);
+        assert_eq!(model.stock.iter().map(|a| a.good).collect::<Vec<_>>(), CHURCH_KINDS);
+
+        // The position's own holdings repeat (copper and seafood 1, silk and
+        // imported goods 0): six different ones tell two swapped entries apart.
+        let mut state = ordinary_position();
+        let p = &mut state.players[state.current_player.0 as usize];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (1, 2, 3, 4, 5, 6);
+        let model = chinatown_model(&state, &rules, &legal_of(&state), [0; 9]);
+        let amounts: Vec<u32> = model.stock.iter().map(|a| a.amount).collect();
+        assert_eq!(amounts, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(model.stock.iter().map(|a| a.good).collect::<Vec<_>>(), CHURCH_KINDS);
+    }
+
+    #[test]
+    fn the_chinatown_screen_is_the_plan_s() {
+        let rules = Rules::standard();
+        let state = ordinary_position();
+        let legal = legal_of(&state);
+
+        let screen = "\
+Chinatown — up to 3 exchanges (add by number):
+  sell  [1] 1 copper -> 2 yen           x1
+        [2] 1 silk -> 2 yen
+        [3] 1 tea -> 1 yen
+        [4] 1 seafood -> 1 yen
+  buy   [5] 2 yen -> 1 copper
+        [6] 2 yen -> 1 silk             x2
+        [7] 1 yen -> 1 tea
+        [8] 1 yen -> 1 seafood
+        [9] 4 yen -> 1 imported good
+Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
+  -> legal — Chinatown: 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
+> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'
+";
+        let mut counts = [0u8; 9];
+        (counts[0], counts[5]) = (1, 2);
+        let listed = chinatown_match(&legal, counts).expect("the list holds it");
+        assert_eq!(
+            exchanges_of(&listed),
+            [
+                ChinatownExchange::CopperToYen,
+                ChinatownExchange::YenToSilk,
+                ChinatownExchange::YenToSilk
+            ]
+        );
+        assert_eq!(chinatown_text(&chinatown_model(&state, &rules, &legal, counts)), screen);
+
+        let empty = chinatown_text(&chinatown_model(&state, &rules, &legal, [0; 9]));
+        assert!(
+            empty.contains("\nSelected (0 of 3): (none)\n  -> add an exchange to preview it\n"),
+            "{empty}"
+        );
+
+        // A selection the list does not hold.
+        let mut row9 = [0u8; 9];
+        row9[8] = 1;
+        let refused = chinatown_text(&chinatown_model(&state, &rules, &legal, row9));
+        assert!(
+            refused.contains(
+                "\nSelected (1 of 3): 4 yen -> 1 imported good\n  -> NOT currently offered (adjust the selection)\n"
+            ),
+            "{refused}"
+        );
+
+        let low = ordinary_position_power_1();
+        let screen = chinatown_text(&chinatown_model(&low, &rules, &legal_of(&low), [0; 9]));
+        assert!(
+            screen.contains("\n        [2] 1 silk -> 2 yen             (not offered)\n"),
+            "{screen}"
+        );
+        // The selection's mark wins over `(not offered)`.
+        let mut silk = [0u8; 9];
+        silk[1] = 1;
+        let screen = chinatown_text(&chinatown_model(&low, &rules, &legal_of(&low), silk));
+        assert!(screen.contains("\n        [2] 1 silk -> 2 yen             x1\n"), "{screen}");
+    }
+
+    #[test]
+    fn a_long_list_costs_what_it_costs() {
+        let rules = Rules::standard();
+        let state = rich_position();
+        assert_eq!(state.current_action_power, Some(5));
+        let legal = legal_of(&state);
+        assert_eq!(chinatown_moves(&legal).len(), 2001);
+        let mut one = [0u8; 9];
+        one[0] = 1;
+        let started = std::time::Instant::now();
+        let model = chinatown_model(&state, &rules, &legal, one);
+        let elapsed = started.elapsed();
+        println!("a_long_list_costs_what_it_costs: model over 2001 listed moves built in {elapsed:?}");
+        assert_eq!(model.rows.len(), 9);
+        assert_eq!(model.chosen, 1);
+    }
+
+    #[test]
+    fn the_flags_and_the_heading_are_read_from_the_list_handed_in() {
+        let rules = Rules::standard();
+        let state = ordinary_position();
+        let legal = legal_of(&state);
+
+        // The seat holds 2 tea, yet the slice holds no tea sale.
+        let cut = without_tea_sales(&legal);
+        assert!(cut.len() < legal.len());
+        let model = chinatown_model(&state, &rules, &cut, [0; 9]);
+        assert_eq!(model.stock[2].amount, 2);
+        assert!(!model.rows[2].can_add && !model.rows[2].offered);
+        for (i, row) in model.rows.iter().enumerate() {
+            if i != 2 {
+                assert_eq!(
+                    row.can_add,
+                    [true, false, false, true, true, true, true, true, false][i],
+                    "row {}",
+                    i + 1
+                );
+            }
+        }
+
+        // A list cut to its one-exchange moves: the heading is 1 at power 3,
+        // and nothing can be added to a copper sale.
+        let singles: Vec<Move> = legal
+            .iter()
+            .filter(|mv| chinatown_counts(mv).is_some_and(|c| c.iter().sum::<u8>() == 1))
+            .cloned()
+            .collect();
+        let model = chinatown_model(&state, &rules, &singles, [0; 9]);
+        assert_eq!(model.max_exchanges, 1);
+        let mut sold = [0u8; 9];
+        sold[0] = 1;
+        let model = chinatown_model(&state, &rules, &singles, sold);
+        assert!(model.rows.iter().all(|r| !r.can_add), "{:?}", can_add_of(&model));
     }
 }

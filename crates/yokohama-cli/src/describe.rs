@@ -489,7 +489,7 @@ fn warehouse_item_cost(p: &PlayerState, item: WarehouseItem) -> u32 {
 }
 
 /// Plain-words trade text for a single Chinatown exchange.
-fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
+pub(crate) fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     match exchange {
         ChinatownExchange::CopperToYen => "1 copper -> 2 yen",
         ChinatownExchange::SilkToYen => "1 silk -> 2 yen",
