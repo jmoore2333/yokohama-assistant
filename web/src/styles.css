@@ -903,8 +903,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * in the good's colour holding its letters, or the manifest's picture
  * (`.has-img`) with the ring dropped; a group overlaps its copies. The kinds
  * are a three-column grid of buttons at least 48px tall, so a finger lands on
- * one. `.kind[data-unavailable]` is a kind the payload says no listed move
- * pays; a merely busy chooser is dimmed by `:disabled` alone. */
+ * one. A kind the payload says no listed move pays carries `data-unavailable`
+ * for the browser walks, and is dimmed by `:disabled` exactly as a busy one is. */
 .tokens { display: inline-flex; flex: none; vertical-align: middle; }
 .tok {
   --c: var(--fg-dim);

@@ -323,28 +323,28 @@ export function Decision({
           two apart by `data-unavailable`. */}
       {!spectating && prompt.kind === "church" && (
         <div className="chooser church">
-        <div className="kinds">
-          {prompt.kinds.map((k) => (
-            <button
-              type="button"
-              className="kind"
-              key={k.number}
-              data-good={k.good}
-              aria-pressed={k.selected}
-              aria-label={`${k.words}, you have ${k.have}`}
-              disabled={busy || !k.offered}
-              data-unavailable={k.offered ? undefined : "true"}
-              onClick={() => onSend(String(k.number))}
-            >
-              <Tokens good={k.good} amount={k.amount} art={art} />
-              <span className="lbl">
-                <span>{k.words}</span>
-                <span className="have">you have {k.have}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-        <Verdict preview={prompt.preview} faiths={prompt.offered_faiths} />
+          <div className="kinds">
+            {prompt.kinds.map((k) => (
+              <button
+                type="button"
+                className="kind"
+                key={k.number}
+                data-good={k.good}
+                aria-pressed={k.selected}
+                aria-label={`${k.words}, you have ${k.have}`}
+                disabled={busy || !k.offered}
+                data-unavailable={k.offered ? undefined : "true"}
+                onClick={() => onSend(String(k.number))}
+              >
+                <Tokens good={k.good} amount={k.amount} art={art} />
+                <span className="lbl">
+                  <span>{k.words}</span>
+                  <span className="have">you have {k.have}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <Verdict preview={prompt.preview} faiths={prompt.offered_faiths} />
         </div>
       )}
 

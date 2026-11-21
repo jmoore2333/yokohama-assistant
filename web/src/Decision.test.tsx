@@ -8,11 +8,16 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Decision } from "./Decision";
 import { wire } from "./wire/contract";
-import type { ClientState, PlayerColor } from "./types";
+import type { ArtManifest, ClientState, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
-function show(state: ClientState, busy = false, spectating = false) {
+function show(
+  state: ClientState,
+  busy = false,
+  spectating = false,
+  art: ArtManifest | null = null,
+) {
   const onSend = vi.fn();
   const { container } = render(
     <Decision
@@ -21,6 +26,7 @@ function show(state: ClientState, busy = false, spectating = false) {
       colors={COLORS}
       busy={busy}
       spectating={spectating}
+      art={art}
       onSend={onSend}
     />,
   );
@@ -439,6 +445,16 @@ describe("the Church's chooser", () => {
     expect(buttons[4]!.querySelector("[role=img]")).toHaveAccessibleName("2 yen");
   });
 
+  it("reads a kind's words from the payload, never rebuilt from its good and amount", () => {
+    const changed = clone(wire.church);
+    if (changed.prompt.kind !== "church") throw new Error("fixture moved");
+    changed.prompt.kinds[4]!.words = "a pair of yen";
+    const { container } = show(changed);
+    const yen = kindButtons(container)[4]!;
+    expect(yen.querySelector(".lbl")!.firstElementChild!.textContent).toBe("a pair of yen");
+    expect(yen).toHaveAccessibleName(`a pair of yen, you have ${changed.prompt.kinds[4]!.have}`);
+  });
+
   it("sends a kind's number and nothing else, and marks only the selected kind pressed", async () => {
     const p = churchPrompt(wire.churchSelected);
     expect(p.kinds.map((k) => k.selected)).toEqual([true, false, false, false, false, false]);
@@ -468,6 +484,23 @@ describe("the Church's chooser", () => {
     }
   });
 
+  it("marks a kind unavailable by the payload's `offered`, not by what the seat holds", async () => {
+    // On the real fixture the one kind not offered is also the one the seat has
+    // none of, so a rule worked from `have` would pass the reading above.
+    const held = clone(wire.church);
+    if (held.prompt.kind !== "church") throw new Error("fixture moved");
+    const silk = held.prompt.kinds[1]!;
+    expect(silk.good).toBe("Silk");
+    expect(silk.have, "the seat holds silk").toBeGreaterThan(0);
+    silk.offered = false;
+    const { container, onSend, user } = show(held);
+    const button = kindButtons(container)[1]!;
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-unavailable");
+    await user.click(button);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("disables an offered kind while a request is in flight without calling it unavailable", () => {
     const { container } = show(wire.church, true);
     const buttons = kindButtons(container);
@@ -485,6 +518,22 @@ describe("the Church's chooser", () => {
     expect(button("Confirm")).toHaveAttribute("data-unavailable");
     await first.user.click(button("Confirm"));
     expect(first.onSend).not.toHaveBeenCalled();
+    // Cancel is never unavailable, where Confirm is.
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // The two fixtures differ in more than legality (how many kinds are
+    // selected, whether the faith line is there). One field apart: the legal
+    // fixture made not legal, two kinds still selected and no faith line.
+    const unlegal = clone(wire.churchLegal);
+    if (unlegal.prompt.kind !== "church") throw new Error("fixture moved");
+    expect(unlegal.prompt.kinds.filter((k) => k.selected)).toHaveLength(2);
+    expect(unlegal.prompt.offered_faiths).toBeNull();
+    unlegal.prompt.preview = { legal: false, words: null };
+    show(unlegal);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
     cleanup();
 
     expect(churchPrompt(wire.churchLegal).preview.legal).toBe(true);
@@ -511,6 +560,8 @@ describe("the Church's chooser", () => {
     const first = show(wire.churchLegal);
     const verdict = first.container.querySelector(".verdict")!;
     expect(verdict).toHaveAttribute("role", "status");
+    expect(verdict).toHaveClass("ok");
+    expect(verdict).not.toHaveClass("bad");
     expect(verdict.textContent).toBe(`legal — ${legal.preview.words}`);
     cleanup();
 
@@ -518,6 +569,8 @@ describe("the Church's chooser", () => {
     expect(notOffered.offered_faiths).toBe("the list offers faith 4 to 7 here");
     const second = show(wire.churchSelected);
     const v2 = second.container.querySelector(".verdict")!;
+    expect(v2).toHaveClass("bad");
+    expect(v2).not.toHaveClass("ok");
     const lines = [...v2.children].filter((c) => c.tagName === "DIV");
     expect(lines.map((l) => l.textContent)).toEqual([notOffered.offered_faiths]);
     // The first line is everything but that second one.
@@ -548,5 +601,13 @@ describe("the Church's chooser", () => {
     expect(container.querySelector(".asking")!.textContent).toBe("The Church — what do you pay?");
     expect(container.querySelectorAll("button.option")).toHaveLength(0);
     expect(container.querySelector(".decision > .chooser.church")).not.toBeNull();
+  });
+
+  it("hands the art manifest to its tokens", () => {
+    const { container } = show(wire.church, false, false, wire.artManifest);
+    for (const b of kindButtons(container)) expect(b.querySelector(".tokens img")).not.toBeNull();
+    cleanup();
+    const plain = show(wire.church);
+    for (const b of kindButtons(plain.container)) expect(b.querySelector(".tokens img")).toBeNull();
   });
 });
