@@ -29,6 +29,7 @@
 - **A cell's data must tell the right answer from the nearest wrong one** (cycle 1's close, §7). Where a cell could pass under a plausible wrong rule, its fixture is chosen so it cannot; the tasks below name the wrong rule each fixture is chosen against.
 - **Two stale-module traps.** `npm run test:wasm` (in `web/`) and the Worker's pool (`npm test` in `worker/`) replay the corpus through a COMPILED module: after any Rust change run `cd web && npm run build:wasm` before the first and `cd worker && npm run build:module:debug` before the second.
 - **The suites of a task that moves Rust** ("the Rust suites" below): `cargo test -p yokohama-cli`, `-p yokohama-web`, `-p yokohama-wasm`, `-p yokohama-worker`; `cd web && npm run build:wasm && npm run typecheck && npm test && npm run test:wasm`; `cd worker && npm run build:module:debug && npm run typecheck && npm run test:scripts && npm test`; the lint gate; both fence checks. A task that moves no Rust file runs the web commands its steps name and the fence checks.
+- **The browser suite is red from Task 3 until Task 7 lands, by design.** Once a list folds, a walk in `web/e2e/` meets a prompt it cannot answer until the panels (Tasks 5, 6) and the walks' policy (Task 7) exist. No task between them runs `npm run e2e`; Task 7 runs it whole.
 - **Counts are readings.** Re-count every suite at your own HEAD and state the counts in the report; a count that differs from the board's is a finding to explain.
 
 ## Review focus
@@ -38,7 +39,7 @@ Five conditions the design implies and no cell of its §6 exercises; each has it
 1. **A number outside the chooser's range** (`0` or `7` at the Church, `10` at Chinatown) is refused with the range, and the selection is kept (Task 3 cell 4; Task 4 cell 3).
 2. **The queued church-space choice after a confirm**: the chooser closes and the next prompt is the engine's space choice, not the chooser again (Task 3 cell 5).
 3. **`undo` after a chooser's commit** returns to the main list with the entry folded, not into the chooser (Task 3 cell 7).
-4. **Someone who is not the acting seat while a chooser is open** (the other player, a watcher) receives `watching` and no chooser arm (Task 3 cell 12).
+4. **Someone who is not the acting seat while a chooser is open** (the other player, a watcher) receives `watching` and no chooser arm (Task 3 cell 13).
 5. **A phone's width**: with Chinatown's nine rows open at 390 px, Confirm is on screen and can be pressed (Task 7 cell 2).
 
 ## The words
@@ -67,7 +68,7 @@ Selected: silk, tea, 2 yen
 > type a number to toggle, 'confirm' to pay, or 'cancel'
 ```
 
-With nothing selected the line reads `Selected: (none)`. A selection the list does not hold reads:
+With nothing selected the line reads `Selected: (none)`. That empty selection can itself be a listed move: at power 4 or more with an empty space the power alone reaches, the chooser opens on `  -> legal — Church: pay nothing -> faith 4 (power 4 + 0 kinds)` and `confirm` pays nothing. A selection the list does not hold reads:
 
 ```
 Selected: silk
@@ -126,7 +127,7 @@ This is the screen of Task 2's fixture with one copper sale and two silk purchas
 | `crates/yokohama-cli/src/screen_model.rs` | `CHURCH_YEN_COST`, the mirror | 1 |
 | `crates/yokohama-cli/src/describe.rs` | the kind's words from one table; two helpers made `pub(crate)` | 1, 2 |
 | `crates/yokohama-cli/src/repl.rs` | the fold, the two sub-prompts, their input, `chooser_screen`, `HELP_TEXT` | 3, 4 |
-| `crates/yokohama-cli/tests/piped_dogfood.rs` | the driver learns the two screens | 3, 4 |
+| `crates/yokohama-cli/tests/piped_dogfood.rs` | the driver learns the Church's screen | 3 |
 | `docs/cli-guide.md`, `docs/cli-guide.html` | the choosers, in the commits that move the REPL | 3, 4 |
 | `crates/yokohama-web/src/client.rs`, `api.rs` | the two `PromptState` arms; a chooser's screen left out of `messages` | 3, 4 |
 | `crates/yokohama-web/src/lib.rs` (tests), `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs` | every driver that answers by row number; the corpus walk | 3, 4 |
@@ -353,7 +354,9 @@ export interface ChurchKind { number: number; good: ChooserGood; amount: number;
 **How it behaves.**
 - `group_options` sends the AreaAction phase with no choice queued to `group_area_action`. The decline stays the last row. A Church with one listed payment, or none, reads as today.
 - The entry's number opens `SubPrompt::Church` with nothing selected and prints no line before the screen.
-- A number 1 to 6 switches its kind. Switching ON a kind that is not `offered` is refused; switching off is always taken. `confirm` commits `church_match`'s move through `commit`, closes the chooser and resets the page; with no match it refuses and keeps the selection. `cancel` closes it. `quit` and `q` behave as in the placement pickers.
+- A number 1 to 6 switches its kind. Switching ON a kind that is not `offered` is refused; switching off is always taken. `confirm` closes the chooser and resets the page and THEN commits `church_match`'s move through `commit`, in `step_place_a`'s order; with no match it refuses and keeps the selection. The order matters: `out` appends the main prompt only when no sub-prompt is open, so only this order makes the reply read as the old row's did. `cancel` closes it. `quit` and `q` behave as in the placement pickers.
+- `index_target` answers `None` for a chooser: no card registry is being asked about.
+- Three doc comments in `repl.rs` say the area-action list is one row per move (on `PromptOption`, on `option_rows`, on `display_options`). The fold makes them false; correct them in this task.
 - `api.rs`: where a chooser is open after the step, the reply's text loses `chooser_screen()`'s suffix by identity, as the main prompt's is lost today; what stands before it (a refusal, a cancel line) is kept. The placement pickers' and the pick's replies are not touched.
 
 **The drivers that answer by number** (found by a search of the tree for this plan; run the suites to find any other, and name it in the report):
@@ -363,9 +366,10 @@ export interface ChurchKind { number: number; good: ChooserGood; amount: number;
 - `crates/yokohama-cli/tests/piped_dogfood.rs`: on a screen holding `type a number to toggle, 'confirm' to pay`: `confirm` when it holds `-> legal`; else a random shown number, at most six times in one visit; then `cancel`.
 - `crates/yokohama-web/tests/wire_fixtures.rs`'s walk, below.
 
-**The corpus walk plays the same game.** The walk draws a random row at every main prompt. With the fold a Church prompt has two rows where it had dozens, so a naive walk would play a different game from its first Church visit on and every later fixture would change. Instead, at a main prompt where the Church family is folded (the prompt has fewer rows than `frame.decision.options`, and one of those options is a Church move), the walk draws its index over `frame.decision.options`, the list the rows were one-per-move over before, and then plays THAT move: for a Church move it opens the entry (the row whose `opens_picker` is true), sends the number of each kind the move's flags hold, and confirms; for the decline it sends the row whose `opens_picker` is false. The draw consumes the generator exactly as before, so the game is the one the committed corpus already holds.
+**The corpus walk plays the same game.** The walk draws a random row at every main prompt. With the fold a Church prompt has two rows where it had dozens, so a naive walk would play a different game from its first Church visit on and every later fixture would change. Instead, at a main prompt where the Church family is folded (the prompt has fewer rows than `frame.decision.options`, and one of those options is a Church move), the walk draws its index over `frame.decision.options`, the list the rows were one-per-move over before, and then plays THAT move: for a Church move it opens the entry (the row whose `opens_picker` is true), sends the number of each kind the move's flags hold, and confirms; for the decline it sends the row whose `opens_picker` is false. A Church move reads `{"ExecuteAreaAction":{"action":{"Church":{"copper":true,…}}}}` and the decline `{"ExecuteAreaAction":{"action":"Skip"}}`; the flags are read BY FIELD NAME (copper 1, silk 2, tea 3, seafood 4, yen 5, imported_good 6), since the corpus sorts an object's keys. The draw consumes the generator exactly as before, so the game is the one the committed corpus already holds.
   - Captures, first sighting each: `church` (the chooser as it opens) and `church_selected` (after its first kind is switched on). Both join the walk's `owed` list.
-  - The committed game takes a five-kind Church payment at its event 18 (`web/src/wire/log.json`), so both are reached at the seeds as they are. If either is not, STOP and report; do not move a seed.
+  - Measured by the plan's review on an export: the walk meets 95 area-action prompts, the rows there equal `frame.decision.options` one for one, three of them fold (events 18, 251 and 387), and all three draws land on a Church move. So both captures are reached at the seeds as they are, and the walk's decline branch never runs at these seeds: say so in its comment. If a capture is not reached, STOP and report; do not move a seed.
+  - The witness is `choice_ChurchSpace.json`: it holds the reply to the event-18 payment, so it is byte-identical exactly when the chooser's `confirm` answers as the old row did.
 
 - [ ] **Step 1: Write the REPL's cells** in `repl.rs`'s test module, on Task 1's `issue_position()` (lift it to a helper both modules reach) unless a cell says otherwise.
   1. `the_church_folds_to_one_entry_and_the_decline`: two displayed entries, the first worded `Church — choose what to pay (42 payment sets)`, the second the decline in `describe`'s words.
@@ -377,32 +381,32 @@ export interface ChurchKind { number: number; good: ChooserGood; amount: number;
   7. `cancel_and_undo_return_to_the_folded_list`: `cancel` prints the cancel line over the main prompt; after a committed payment, `undo` shows the two-entry list and `r.sub` is `None`.
   8. `words_that_are_not_an_answer_are_refused_inside_the_chooser`: `back`, `more`, `list`, `help` and `undo` each answer the catch-all refusal, apply nothing and leave the chooser open.
   9. `the_card_index_opens_over_the_chooser_and_returns_to_it`: `2`, `?`, `cancel`: the chooser is open with silk selected.
-  10. `a_mercenary_s_sub_turn_at_the_church_folds_too`: the fixture with `is_mercenary_action = true`, `mercenary_target_area = Some(church)` and the president standing elsewhere: the entry is there whenever more than one Church move is listed (assert the precondition).
-  11. `every_listed_church_move_commits_through_the_chooser`, the sweep (design §6's first cell). Seeded random self-play at 2, 3 and 4 players, in the manner of `screen_model.rs`'s `the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus`. At every position in the AreaAction phase with no choice queued and more than one listed Church move, for EVERY listed Church move: a fresh `Repl::new(Session::for_test_from_state(..))`, the entry, the number of each kind its flags hold, `confirm`; the record's last event equals that move. At the same positions, for the empty selection and after each toggle of the walk to one sampled move, every kind's `offered` equals "some listed move's flags hold it". Count positions and moves, print both, and set two anti-vacuity floors at about half of what your run reads; size the seeds so the cell stays under about ten seconds in a debug build, and state the readings.
+  10. `a_mercenary_s_sub_turn_at_the_church_folds_too`: the fixture with the President moved to another area, `is_mercenary_action = true`, `mercenary_target_area = Some(church)`, and `current_action_power` set again from `calculate_power` (measured: it reads 4 and 22 Church moves are listed; left at 5 the engine and `describe` would disagree about the power): the entry reads `Church — choose what to pay (22 payment sets)`.
+  11. `every_listed_church_move_commits_through_the_chooser`, the sweep (design §6's first cell). Seeded random self-play at 2, 3 and 4 players, in the manner of `screen_model.rs`'s `the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus`. At every position in the AreaAction phase with no choice queued and more than one listed Church move, for EVERY listed Church move: a fresh `Repl::new(Session::for_test_from_state(..))`, the entry, the number of each kind its flags hold, `confirm`; the record's last event equals that move. At the same positions, for the empty selection and after each toggle of the walk to one sampled move, every kind's `offered` equals "some listed move's flags hold it". Then the issue position in full, all 42 (design §6). Count positions and moves, print both, and set two anti-vacuity floors at about half of what your run reads; size the seeds so the cell stays under about ten seconds in a debug build, and state the readings.
+  12. `the_empty_selection_can_be_a_listed_payment`: at power 4 with space 4 empty, the chooser opens on `-> legal — Church: pay nothing -> faith 4 (power 4 + 0 kinds)` and `confirm` commits the move whose six flags are false. On the issue position the empty selection is NOT listed (faith 5, spaces 4 to 7 taken), and `confirm` there is refused.
 - [ ] **Step 2: Write the web layer's cells** (`client.rs`'s and `api.rs`'s test modules; use the table helpers those modules already have to reach a Church chooser through `api::input`).
-  12. `a_chooser_is_the_acting_seat_s_alone`: with the chooser open, the acting seat's payload has `prompt.kind == "church"`, and the other seat's and a watcher's have `watching`.
-  13. `the_church_arm_is_the_repl_s_model_by_value`: the arm's JSON equals `serde_json::to_value(chooser::church_model(..))` with `"kind": "church"` added.
-  14. `a_chooser_reply_carries_no_line_of_the_terminal_s_screen`: the reply that opens the chooser has empty `messages`; the reply to a refused kind carries exactly the refusal line; in neither does any line of `chooser_screen()` appear. And a `place_a` reply still carries its `> type an area id to toggle` line.
-  15. `every_line_the_client_sends_at_the_church_passes_the_fence`: `1` to `6`, `confirm` and `cancel` pass `grammar::is_gameplay_line`.
+  13. `a_chooser_is_the_acting_seat_s_alone`: with the chooser open, the acting seat's payload has `prompt.kind == "church"`, and the other seat's and a watcher's have `watching`.
+  14. `the_church_arm_is_the_repl_s_model_by_value`: the arm's JSON equals `serde_json::to_value(chooser::church_model(..))` with `"kind": "church"` added.
+  15. `a_chooser_reply_carries_no_line_of_the_terminal_s_screen`: the reply that opens the chooser has empty `messages`; the reply to a refused kind carries exactly the refusal line; in neither does any line of `chooser_screen()` appear. And a `place_a` reply still carries its `> type an area id to toggle` line.
+  16. `every_line_the_client_sends_at_the_church_passes_the_fence`: `1` to `6`, `confirm` and `cancel` pass `grammar::is_gameplay_line`.
 - [ ] **Step 3: Run red.** `cargo test -p yokohama-cli --lib repl` — expected: does not compile, naming `SubPrompt::Church`.
 - [ ] **Step 4: Implement the REPL**, then `HELP_TEXT`'s `cancel` line. `cargo test -p yokohama-cli`: the `repl.rs` cells green. `guide_sync` now reads red on the §5 block: that is Step 7's.
-- [ ] **Step 5: Implement the web layer**: the arm in `prompt_of`, `kind()`, `api.rs`'s suffix, `every_prompt_variant` and `prompt_ordinal` in `wire_fixtures.rs`, the drivers' rules, the walk.
+- [ ] **Step 5: Implement the web layer**: the arm in `prompt_of`, `kind()`, `api.rs`'s suffix; in `wire_fixtures.rs` `every_prompt_variant`, `prompt_ordinal` and the literal count in `the_variant_list_is_every_variant_exactly_once` (9 today, 10 after this task); the drivers' rules; the walk.
 - [ ] **Step 6: Regenerate the corpus and read the diff.** `UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`, then the plain run green. Then:
 
 ```bash
-git status --short web/src/wire web/src/wire-script      # expected: two new files under wire/, the walk scripts modified
-git diff --stat -- web/src/wire/log.json web/src/wire/game_over.json web/src/wire/result.json   # expected: nothing — the same game
-git diff --stat -- web/src/wire | tail -1
+git status --short web/src/wire web/src/wire-script   # expected: two untracked files under wire/, NO modified file there; the walk scripts modified
+git diff --stat -- web/src/wire                        # expected: nothing
 ```
 
-  Any existing fixture that moved is named in the report with the reason it moved. A moved `log.json` means the walk no longer plays the same game: STOP and report.
+  No committed fixture is expected to move: the walk plays the same game and a chooser's `confirm` answers as the old row did. A modified fixture is a finding, named in the report with its reason. A moved `log.json` (a different game) or a moved `choice_ChurchSpace.json` (a different reply) is a STOP.
 - [ ] **Step 7: The guide pair.** In §4 of both formats, a paragraph after the placement pickers' on the area-action choosers: what the entry reads, the Church's screen quoted from "The words", that a kind the list does not offer is marked, what `confirm` and `cancel` do, and that the legal list still decides. §5's command block takes `HELP_TEXT`'s new `cancel` line. `cargo test -p yokohama-cli --test guide_sync` green.
-- [ ] **Step 8: The client's contract.** The four types and the arm in `types.ts`. In `contract.ts`: the two imports with their `Widen<ClientState>` and `PromptOf<"church">` assertions, `wire.church` and `wire.churchSelected`, and key sets `KEYS.churchKind` and `KEYS.chooserPreview` in the manner of `KEYS.optionRow`. In `contract.test.ts`: every `church` state has six kinds whose `Object.keys` equal `KEYS.churchKind` and whose numbers are 1 to 6; `wire.church` has no kind selected and `wire.churchSelected` exactly one; a legal preview has words and one that is not has `null`.
-- [ ] **Step 9: The lane document.** §1's fence sentence gains this cycle as the one that moved the REPL on purpose, naming the design. §2: the prompt kinds where it lists them. The corpus's JSON count is a second commit that names the first, as §2's counts do. §2's suite counts are the cycle's close's, as cycle 1 left them.
+- [ ] **Step 8: The client's contract.** The four types and the arm in `types.ts`. In `contract.ts`: the two imports with their `Widen<ClientState>` and `PromptOf<"church">` assertions, `wire.church` and `wire.churchSelected`, both added to `EVERY_STATE` so the corpus-wide key-set and hand-mask cells cover them, and key sets `KEYS.churchKind` and `KEYS.chooserPreview` in the manner of `KEYS.optionRow`. In `contract.test.ts`: every `church` state has six kinds whose `Object.keys` equal `KEYS.churchKind` and whose numbers are 1 to 6; `wire.church` has no kind selected and `wire.churchSelected` exactly one; a legal preview has words and one that is not has `null`.
+- [ ] **Step 9: The lane document.** §1's fence sentence gains this cycle as the one that moved the REPL on purpose, naming the design. §2: the prompt kinds where it lists them. The corpus's JSON count is a second commit that names the first, as §2's counts do. §2's suite counts are the cycle's close's, as cycle 1 left them. No suite pins the corpus count or the prompt kinds in that file (`lane_document` reads §13 and §16 only): read the count with `ls web/src/wire/*.json | wc -l` and state it.
 - [ ] **Step 10: The suites.** The Rust suites; then the piped-dogfood gate, `cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored`, and state how many Church payments the transcript confirmed through the chooser (a count, not an assertion).
 - [ ] **Step 11: Commit** by explicit paths (`web/src/wire` and `web/src/wire-script` are directories this task owns whole).
 
-**Mutants:** the fold applied when one Church move is listed (cell 2). The decline folded into the entry (cell 1). `confirm` committing a `Move` built from the flags instead of the listed one: the reviewer makes `church_match` return a clone with one flag flipped and cell 5 and the sweep must fail. A not-offered kind accepted at the toggle (cell 4). The chooser left open after a commit (cell 5). `prompt_of_seat`'s scoping bypassed for the new arm (cell 12). `chooser_screen` returning `None` so the screen rides `messages` (cell 14). The walk drawing over `prompt.rows` at a folded prompt (Step 6's `log.json` check).
+**Mutants:** the fold applied when one Church move is listed (cell 2). The decline folded into the entry (cell 1). `confirm` committing a `Move` built from the flags instead of the listed one: the reviewer makes `church_match` return a clone with one flag flipped and cell 5 and the sweep must fail. A not-offered kind accepted at the toggle (cell 4). The chooser left open after a commit (cell 5). `prompt_of_seat`'s scoping bypassed for the new arm (cell 13). `chooser_screen` returning `None` so the screen rides `messages` (cell 15). `confirm` committing before it closes the chooser (Step 6: `choice_ChurchSpace.json` moves). The walk drawing over `prompt.rows` at a folded prompt (Step 6's `log.json` check).
 
 ---
 
@@ -410,7 +414,7 @@ git diff --stat -- web/src/wire | tail -1
 
 **Tier:** impl opus · review opus.
 
-**Files:** the same as Task 3's, less `docs/web-lane.md` §1.
+**Files:** the same as Task 3's, less `crates/yokohama-cli/tests/piped_dogfood.rs` and `docs/web-lane.md` §1.
 
 **Interfaces — consumes:** Task 2's functions; Task 3's `group_area_action`, `chooser_screen` and the walk's folded-prompt rule. **Produces:**
 
@@ -429,9 +433,9 @@ export interface ChinatownRow { number: number; sells: boolean; spend: ChooserAm
 
 **How it behaves.** `group_area_action` folds a Chinatown family of more than one listed move the same way. A number 1 to 9 adds one of its exchange when `can_add`, and is refused otherwise. `back N` takes one of exchange N back when one is chosen. `confirm` commits `chinatown_match`'s move, the engine's own listed order. Everything else is Task 3's shape. `chooser_screen` serves both choosers, so `api.rs` needs no further change.
 
-**The drivers.** `choose` and the `lib.rs` walk: `confirm` when `preview.legal`; else a row's number among those with `can_add` (random, or the first); `cancel` when there is none. The piped-dogfood driver: on a screen holding `a number adds one`: `confirm` when it holds `-> legal`; else a random shown number, at most five times in one visit; then `cancel`.
+**The drivers.** `choose` and the `lib.rs` walk: `confirm` when `preview.legal`; else a row's number among those with `can_add` (random, or the first); `cancel` when there is none. The piped-dogfood driver is not changed in this task: its gate plays two-player games, whose board has no Chinatown, so an arm there could never run. Chinatown's whole-game coverage in the terminal is cell 8's sweep.
 
-**The corpus.** Chinatown is not on the two-player board, so its fixtures are routed on the walk's four-player table `wire4`, after `options_4p` and `areas_4p` are captured: `1` (end the additional phase); `b` and the id of the tile whose `area_type` is `Chinatown`, read from the payload; the Movement row whose words name that tile; then the row whose `opens_picker` is true, captured as `chinatown`; then `1`, captured as `chinatown_selected`; then `confirm`. Seat 0 opens with one of each good and 3 yen, so at power 3 the entry reads `Chinatown — choose exchanges (up to 3; 127 combinations)` (measured for this plan); assert those words in the walk. The walk's folded-prompt rule extends to a Chinatown move for a table that reaches one: it adds each exchange in the move's own order.
+**The corpus.** Chinatown is not on the two-player board, so its fixtures are routed on the walk's four-player table `wire4`, after `options_4p` and `areas_4p` are captured: `1` (end the additional phase); `b` and the id of the tile whose `area_type` is `Chinatown`, read from the payload; the Movement row whose words name that tile; then the row whose `opens_picker` is true, captured as `chinatown`; then `1`, captured as `chinatown_selected`; then `confirm`. The walk's `send_as` and `as_actor` are fixed to the table `wire`, so these lines are posted to `/api/games/wire4/input` with `call_as(Some(WALKER), …)`. Seat 0 opens with one of each good and 3 yen, so at power 3 the entry reads `Chinatown — choose exchanges (up to 3; 127 combinations)` (measured for this plan); assert those words in the walk. The walk's folded-prompt rule extends to a Chinatown move for a table that reaches one: it adds each exchange in the move's own order.
 
 - [ ] **Step 1: Write the REPL's cells**, on Task 2's `ordinary_position()`.
   1. `chinatown_folds_to_one_entry_and_the_decline`: `Chinatown — choose exchanges (up to 3; 102 combinations)` and the decline.
@@ -442,10 +446,10 @@ export interface ChinatownRow { number: number; sells: boolean; spend: ChooserAm
   6. `confirm_with_nothing_chosen_is_refused`; `bare_back_and_other_words_are_refused_inside_the_chooser` (`back`, `more`, `list`, `help`, `undo`); `cancel_returns_to_the_folded_list`.
   7. `back_and_a_number_at_the_main_prompt_applies_nothing`: at the folded main list, `back 3` answers `Unrecognized input` and records no event.
   8. `every_listed_chinatown_move_commits_through_the_chooser`, the sweep, at 3 and 4 players (and 2 with a precondition that no Chinatown is met). At each folded position: every listed move when the family holds at most 64, else 64 spread evenly with the first and the last; each is named by sending its exchanges' numbers in its own listed order, then `confirm`; the record's last event equals it. At each step of each walk, every row's `can_add` equals "the list holds the selection with one more of it". Then the ordinary position in full, all 102. Floors and sizing as Task 3's cell 11.
-- [ ] **Step 2: Write the web layer's cells**: Task 3's cells 12 to 14 for `chinatown`, and `every_line_the_client_sends_at_chinatown_passes_the_fence` (`1` to `9`, `back 1` to `back 9`, `confirm`, `cancel`).
-- [ ] **Step 3: Run red**, **Step 4: implement the REPL**, **Step 5: implement the web layer and the walk.**
-- [ ] **Step 6: Regenerate and read the diff**, as Task 3's Step 6: two new files (`chinatown.json`, `chinatown_selected.json`), the walk scripts, `log.json` unmoved. A lobby or table fixture that lists `wire4` and moved is named with its reason.
-- [ ] **Step 7: The guide pair**: the paragraph gains Chinatown's screen, `back <number>`, and the sentence that selling first is what makes a purchase addable. **Step 8: the client's contract** (`KEYS.chinatownRow`; nine rows numbered 1 to 9; `wire.chinatown` has `chosen` 0 and `wire.chinatownSelected` has 1; `stock` has six entries; rows 1 to 4 are the ones with `sells`). **Step 9: the lane document's counts and prompt kinds.** **Step 10: the suites and the piped-dogfood gate. Step 11: commit.**
+- [ ] **Step 2: Write the web layer's cells**: Task 3's cells 13 to 15 for `chinatown`, and `every_line_the_client_sends_at_chinatown_passes_the_fence` (`1` to `9`, `back 1` to `back 9`, `confirm`, `cancel`).
+- [ ] **Step 3: Run red**, **Step 4: implement the REPL**, **Step 5: implement the web layer and the walk** (the variant count's literal reads 11 after this task).
+- [ ] **Step 6: Regenerate and read the diff**, as Task 3's Step 6: two new files (`chinatown.json`, `chinatown_selected.json`), the walk scripts, and no committed fixture modified. A lobby or table fixture that lists `wire4` and moved is named with its reason.
+- [ ] **Step 7: The guide pair**: the paragraph gains Chinatown's screen, `back <number>`, and the sentence that selling first is what makes a purchase addable. **Step 8: the client's contract** (the two fixtures in `EVERY_STATE`; `KEYS.chinatownRow`; nine rows numbered 1 to 9; `wire.chinatown` has `chosen` 0 and `wire.chinatownSelected` has 1; `stock` has six entries; rows 1 to 4 are the ones with `sells`). **Step 9: the lane document's counts and prompt kinds.** **Step 10: the suites. Step 11: commit.**
 
 **Mutants:** an exchange added without the lookup (cell 3). `back N` dropping below zero or taking a different row (cells 2, 3). `confirm` committing the exchanges in the order typed (cell 5). The match made on the order typed (the sweep still passes, since it types the listed order: cell 5 is the catcher). `back 3` at the main prompt treated as `undo` (cell 7). The sweep sampling only the first 64 rows (the reviewer plants a matcher that fails for moves of five exchanges; the spread must catch it on a power-5 position, so assert the sweep met one).
 
@@ -473,6 +477,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 - The label's noun: `copper`, `silk`, `tea`, `seafood`, `yen`, `imported good`. Each inner picture or mark is `aria-hidden`.
 - The Church's DOM: `.decision` › `.chooser.church` › `.kinds` › six `button.kind[data-good]` with `aria-pressed`, each holding `Tokens` and a `.lbl` of the kind's `words` over a `.have` reading `you have N`; then `.verdict[role="status"]`. Layout as the accepted mockup: a three-column grid of buttons at least 48 px tall.
 - A kind is disabled when `busy` or not `offered`. A click sends the kind's `number`.
+- **A control disabled by what the payload says carries `data-unavailable`** (a kind not offered; Confirm while the preview is not legal), whether or not a request is in flight. A control disabled only because a request is in flight does not. Cancel never carries it. Task 7's walks tell a busy chooser from an idle one by this.
 - The verdict: `legal — {preview.words}`, or `not offered — adjust the selection` with `offered_faiths` on its own line under it when present.
 - Confirm and Cancel serve the new kind. Confirm is disabled unless `preview.legal`; the server still decides.
 - The asking line: `The Church — what do you pay?`
@@ -485,7 +490,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
   `Decision.test.tsx`, `describe("the Church's chooser")`:
   4. Six kind buttons in the payload's order, each named by its `words` and `you have N` from the payload.
   5. A click on a kind sends its `number` and nothing else; on `wire.churchSelected` the selected kind has `aria-pressed="true"` and the rest `false`.
-  6. A clone with one kind's `offered` false draws that button disabled, and a click sends nothing.
+  6. A clone with one kind's `offered` false draws that button disabled with `data-unavailable`, and a click sends nothing. With `busy` on an offered kind: disabled, and no `data-unavailable`.
   7. Confirm is disabled on a payload whose preview is not legal and enabled on one that is (clone `wire.churchSelected` both ways, asserting which the fixture is); pressing it sends `confirm`; Cancel sends `cancel`.
   8. The verdict reads `legal — ` and the payload's words; on a clone with `legal: false, words: null, offered_faiths: "the list offers faith 8 to 11 here"` it reads the not-offered line and that sentence.
   9. A watcher's render (`spectating`) draws no kind button and no Confirm.
@@ -505,7 +510,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 
 **Interfaces — consumes:** `Tokens` (Task 5); `wire.chinatown`, `wire.chinatownSelected` (Task 4). **Produces:** `.decision` › `.chooser.chinatown` › `.stock` (six entries: a small token and the amount as text); a `.side-h` reading `Sell` over the rows with `sells`, one reading `Buy` over the rest; each row `.ex[data-number]` (class `on` when its `count` is above zero) holding `.what` (the spend's tokens, an arrow, the gain's tokens, `.words`) and `.step` (`button.minus`, `.n` with the count, `button.plus`); then `.verdict[role="status"]`.
 
-- Plus is disabled when `busy` or not `can_add`, and sends the row's `number`. Minus is disabled when `busy` or the count is zero, and sends `back {number}`. Their names are `one more: {words}` and `one fewer: {words}`.
+- Plus is disabled when `busy` or not `can_add`, and sends the row's `number`. Minus is disabled when `busy` or the count is zero, and sends `back {number}`. A plus that cannot add and a minus at zero carry `data-unavailable`, by Task 5's rule. Their names are `one more: {words}` and `one fewer: {words}`.
 - The verdict is empty when `chosen` is 0; otherwise Task 5's two forms (with no faith line).
 - The asking line: `Chinatown — up to {max_exchanges} exchanges · {chosen} of {max_exchanges} chosen`.
 - The rows are the deck's scrolling box while the chooser is open, as `.options.scrolls` is for a list; Confirm and Cancel stay outside it.
@@ -513,7 +518,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 - [ ] **Step 1: Write the cells**, `describe("Chinatown's chooser")`:
   1. Nine rows; the four with `sells` under `Sell` and the five others under `Buy`, in the payload's order; each row's words the payload's.
   2. Plus sends the row's `number`; minus sends `back ` and the number; on `wire.chinatown` every minus is disabled; on `wire.chinatownSelected` exactly the chosen row's minus is enabled and its `.n` reads its count.
-  3. A row whose `can_add` is false has its plus disabled, and a click sends nothing. `wire.chinatown` has one, the imported-good purchase, which is `offered`; `wire.chinatownSelected` has the copper sale already chosen. Assert both preconditions.
+  3. A row whose `can_add` is false has its plus disabled with `data-unavailable`, and a click sends nothing. `wire.chinatown` has one, the imported-good purchase, which is `offered`; `wire.chinatownSelected` has the copper sale already chosen. Assert both preconditions.
   4. The stock row reads the payload's six amounts in its order.
   5. Confirm is disabled on `wire.chinatown` and enabled on `wire.chinatownSelected`; the verdict is empty on the first and reads `legal — ` with the payload's words on the second.
   6. The asking line on both fixtures, with their own numbers.
@@ -528,23 +533,26 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 
 **Tier:** impl opus · review opus.
 
-**Files:** Modify `web/e2e/harness.ts` (and `web/e2e/harness.node.test.ts` where it cells the policy), `web/e2e/the_table.spec.ts`.
+**Files:** Modify `web/e2e/harness.ts`, `web/e2e/the_table.spec.ts`.
 
 **Interfaces — consumes:** the DOM of Tasks 5 and 6.
 
-**The walks' policy** (`readScreen` and `act`). A walk that meets a chooser today finds no option row and no enabled Confirm, and reports a dead end. `readScreen` gains `chooser` (a `.chooser` is on screen) and `adds` (the count of enabled, unpressed `.chooser .kind` buttons plus enabled `.chooser .plus` buttons). `act`, before its generic Confirm arm: with a chooser on screen, press Confirm when it is enabled and either `adds` is 0 or a coin says so; else press one of the adds; else Cancel. Adds only ever grow a selection, so a visit ends. `Affordance` gains `"chooser"`.
+**Two things stop a walk at a chooser.**
+- **The settle wait.** `readScreen` waits until no button in the decision zone is disabled (`harness.ts`, the `waitForFunction` at its head), which today means "no request is in flight", since every `disabled` in `Decision.tsx` was `busy`. A chooser always has some control disabled by what the payload says, so that wait would time out after 15 s at the first chooser every walk meets. The wait ignores a button carrying `data-unavailable` (Tasks 5 and 6). Cancel never carries it, so a busy chooser still reads busy.
+- **The policy.** `act` has no arm for a chooser. `readScreen` gains `chooser` (a `.chooser` is on screen) and `adds` (the count of enabled, unpressed `.chooser .kind` buttons plus enabled `.chooser .plus` buttons). `act`, before its generic Confirm arm: with a chooser on screen, press Confirm when it is enabled and either `adds` is 0 or a coin says so; else press one of the adds; else Cancel. Adds only ever grow a selection, so a visit ends. `Affordance` gains `"chooser"`.
 
 - [ ] **Step 1: Write the cells** in `the_table.spec.ts`. Reach the positions through the screen as that spec's helpers do: on a two-player game, end the additional phase, Option B on the Church's tile, the Movement row naming the Church, then the entry; on a four-player game the same with Chinatown.
   1. **The Church's boxes**, at 390 and 1440 px wide: each of the six `.kind` boxes lies inside `.chooser` on all four edges (0.5 px of rounding, stated in the test); no two overlap; each is at least 44 px tall; no `.lbl` is clipped (`scrollWidth <= clientWidth + 1`); Confirm and Cancel lie inside the viewport.
   2. **Chinatown's boxes**, at 390 and 1440 px: each `.step` lies inside its `.ex` row; plus and minus are at least 28 px square; each row's first token lies inside the row; and with the rows scrolled to their top, Confirm lies inside the viewport and `elementFromPoint` at its centre is the button.
   3. **A Church payment through the screen**: press kinds until the verdict reads `legal — `, keep its words, Confirm; the turn's account then holds those words.
   4. **A Chinatown exchange through the screen**, on the four-player game: plus on the first row with an enabled plus; the verdict is legal; minus on it and Confirm is disabled; plus again; Confirm; the account holds `Chinatown: ` and that row's words.
-  5. **The policy**: a node cell or a browser cell, as `harness.node.test.ts` does for the rest, that `act` on a chooser screen with no enabled Confirm presses an add and returns `"chooser"`, and with none of either presses Cancel.
-- [ ] **Step 2: Run red** (cells 1 to 4 pass or fail on the product as built; a failing measurement is a finding: STOP with the numbers, do not edit `web/src/` or loosen the assertion). **Step 3: implement the policy.**
+  5. **The policy**, a browser cell (`act` takes a page): at the opened Chinatown chooser, where Confirm is disabled, `readScreen` returns within its wait with `chooser` true and `adds` above zero, and `act` presses an add and returns `"chooser"`; at the Church chooser of cell 3 with every offered kind pressed, `adds` reads 0 and `act` presses Confirm.
+- [ ] **Step 2: Implement the settle wait and the policy**, then run the cells. Cells 1 to 4 measure the product as built: a failing measurement there is a finding, so STOP with the numbers and do not edit `web/src/` or loosen the assertion. A cell that cannot reach its chooser is the harness's and is yours to fix.
+- [ ] **Step 3: Run the five cells green.**
 - [ ] **Step 4: The whole browser suite**, `cd web && npm run e2e`: every walk still reaches its end. State the count and the wall.
 - [ ] **Step 5: Commit.**
 
-**Mutants:** a `.kind` grid of six columns at 390 px (cell 1's overlap or label clip). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (the visit can then loop: the reviewer plants it and the whole-game walk's own move bound must fail). The policy removed (a whole-game walk reports a dead end).
+**Mutants:** the settle wait left as it was (every cell times out at its chooser). A `.kind` grid of six columns at 390 px (cell 1's overlap or label clip). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (the visit can then loop: the reviewer plants it and the whole-game walk's own move bound must fail). The policy removed (a whole-game walk reports a dead end).
 
 ---
 
@@ -577,7 +585,7 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
   - S2: `A control is live only where the engine's list holds that choice, so selling first is what lights a purchase you could not yet afford, and Confirm is live once the list holds exactly what you have chosen.`
 - [ ] **Step 2: The cell**, in `Help.test.tsx`: needles only these sentences carry (`opens a chooser`, `take them back with minus`, `selling first is what lights a purchase`, `holds exactly what you have chosen`), and each cut sentence fails it.
 - [ ] **Step 3: Re-read the neighbours.** Any sentence in either file that the choosers make false is corrected, and named in the report. The pictures are the wrap's and are not re-cut.
-- [ ] **Step 4:** `cd web && npm run typecheck && npm test && npm run test:wasm`; `cargo test -p yokohama-web --test lane_document`. **Step 5: commit.**
+- [ ] **Step 4:** `cd web && npm run typecheck && npm test && npm run test:wasm` (the last holds the documents' link check). **Step 5: commit.**
 
 **Mutants:** S2 cut from `Help.tsx` (the cell). The two files' sentences differing by a word (the reviewer diffs them).
 
@@ -591,3 +599,13 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 4. **The board** (`docs/handover.md`), and what this build taught recorded for plan 2b, which is written against this branch's reviewed head.
 
 Not this plan's: the Port, the Laboratory, the terminal's flag counts (plan 2b); `CLAUDE.md`'s grammars line and the cycle's close (after 2b); the help's pictures, origin, the release and the decision-log rows (the wrap).
+
+## The plan's review (2026-11-21)
+
+An independent reviewer measured this plan against the tree on an export before any task ran: no Critical finding, three Important, eleven Minor, and every figure quoted here reproduced. All are settled in the text above.
+
+- **The corpus walk does play the same game** (measured, Task 3): 95 area-action prompts, the rows equal to the frame's options one for one, three folded prompts, all three draws on a Church move.
+- **The browser walks would have timed out at their first chooser**: `readScreen` waits for no disabled button in the decision zone, and a chooser always has one. Tasks 5 and 6 now mark a control the payload disables, and Task 7 changes the wait.
+- **`confirm`'s order was left open**: only "close, then commit" makes the reply read as the old row's did. Task 3 now fixes the order, and its Step 6 holds every committed fixture unmoved, `choice_ChurchSpace.json` as the witness.
+- **Task 7's policy cell cited a precedent that does not exist** and is now a browser cell.
+- From the Minors: the mercenary cell recomputes its power; the empty Church selection can be a listed payment and has its cell; the reported position's 42 sets go through the REPL's lines; the walk reads a move's flags by field name; the variant count's literal, `EVERY_STATE` and three stale comments in `repl.rs` are named; the piped-dogfood driver takes no Chinatown arm, since its games have no Chinatown; `wire4`'s lines are posted to that table's own route.
