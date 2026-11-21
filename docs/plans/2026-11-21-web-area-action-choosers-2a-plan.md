@@ -564,7 +564,7 @@ Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`
 - [ ] **Step 4: The whole browser suite**, `cd web && npm run e2e`: every walk still reaches its end. State the count and the wall.
 - [ ] **Step 5: Commit.**
 
-**Mutants:** the settle wait left as it was (every cell times out at its chooser). A `.kind` grid of six columns at 390 px (cell 1's label inside its kind; it survived the `.lbl` reading alone, which is why that reading has the kind's box beside it). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (the visit can then loop: the reviewer plants it and the whole-game walk's own move bound must fail). The policy removed (a whole-game walk reports a dead end).
+**Mutants:** the settle wait left as it was (every cell times out at its chooser). A `.kind` grid of six columns at 390 px (cell 1's label inside its kind; it survived the `.lbl` reading alone, which is why that reading has the kind's box beside it). Confirm placed inside the scrolling box (cell 2 at 390 px). The policy pressing a PRESSED kind (cell 5: with every offered kind pressed, `adds` reads 5, not 0; the whole-game walk is not its catcher, since the coin still ends a visit at any legal selection — Task 7 measured it finishing at 451 moves with `chooser`×7, its move bound unreached; it fails only on a game whose single kinds are never legal). The policy removed (cell 5: `act` returns `null` at the opened Chinatown chooser; a walk reports a dead end only when its game opens a chooser on a disabled Confirm — Task 7 measured the reload walk's dead end at move 5 and the whole-game walk finishing at 383 moves).
 
 ---
 
