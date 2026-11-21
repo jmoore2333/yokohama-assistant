@@ -586,6 +586,15 @@ describe("the Church's chooser", () => {
     const v3 = third.container.querySelector(".verdict")!;
     expect(v3.textContent).toBe("not offered — adjust the selection");
     expect(v3.querySelector("div")).toBeNull();
+    cleanup();
+
+    // Nothing selected is still a verdict at the Church, never the empty form
+    // Chinatown draws at `chosen` 0.
+    expect(churchPrompt(wire.church).kinds.some((k) => k.selected)).toBe(false);
+    const idle = show(wire.church);
+    const v4 = idle.container.querySelector(".verdict")!;
+    expect(v4).toHaveClass("bad");
+    expect(v4.querySelector(".faiths")!.textContent).toBe(churchPrompt(wire.church).offered_faiths);
   });
 
   it("draws neither a kind button nor Confirm for a watcher", () => {
@@ -670,9 +679,9 @@ describe("Chinatown's chooser", () => {
       expect(pics.contains(el.querySelector(".words"))).toBe(false);
       expect(el.querySelector(".words")!.closest("[aria-hidden='true']")).toBeNull();
     }
-    expect(screen.getAllByRole("img").map((n) => n.getAttribute("aria-label"))).toEqual(
-      p.stock.map((s) => `${s.amount} ${s.good === "Imports" ? "imported goods" : s.good.toLowerCase()}`),
-    );
+    expect(screen.getAllByRole("img").map((n) => n.getAttribute("aria-label"))).toEqual([
+      "1 copper", "1 silk", "1 tea", "1 seafood", "3 yen", "0 imported goods",
+    ]);
     cleanup();
 
     // The split reads the flag, not the position: with the rows reversed the
@@ -683,10 +692,10 @@ describe("Chinatown's chooser", () => {
     expect(grouped(flipped.container)).toEqual({ Sell: [4, 3, 2, 1], Buy: [9, 8, 7, 6, 5] });
     cleanup();
 
-    // The words are the payload's, and so are the amounts the pictures show.
+    // The words are the payload's. ONE fact apart: row 1's words changed and
+    // nothing else, so its gain token still reads what the amount says.
     const reworded = cloneChina(wire.chinatown, (c) => {
       c.rows[0]!.words = "one copper for two yen";
-      c.rows[0]!.gain.amount = 3;
     });
     const edited = show(reworded);
     const first = rowEls(edited.container)[0]!;
@@ -695,8 +704,32 @@ describe("Chinatown's chooser", () => {
     expect(minus(first)).toHaveAccessibleName("one fewer: one copper for two yen");
     const [spend, gain] = [...first.querySelectorAll(".what .tokens")];
     expect(spend!.getAttribute("aria-label")).toBe("1 copper");
-    expect(gain!.getAttribute("aria-label")).toBe("3 yen");
-    expect(gain!.querySelectorAll(".tok")).toHaveLength(3);
+    expect(gain!.getAttribute("aria-label")).toBe("2 yen");
+    cleanup();
+
+    // And the amount is the payload's. ONE fact apart again: row 1's gain
+    // amount set to 3 with its words untouched (still `... -> 2 yen`), so an
+    // amount parsed out of the words would read 2.
+    const regained = cloneChina(wire.chinatown, (c) => {
+      c.rows[0]!.gain.amount = 3;
+    });
+    expect(chinaPrompt(regained).rows[0]!.words).toBe("1 copper -> 2 yen");
+    const counted = show(regained);
+    const row = rowEls(counted.container)[0]!;
+    expect(row.querySelector(".words")!.textContent).toBe("1 copper -> 2 yen");
+    const [, three] = [...row.querySelectorAll(".what .tokens")];
+    expect(three!.getAttribute("aria-label")).toBe("3 yen");
+    expect(three!.querySelectorAll(".tok")).toHaveLength(3);
+    cleanup();
+
+    // One row's flag flipped, nothing else: row 5 (a purchase, gaining copper)
+    // now sells, so it sits under Sell; a split made by what a row gains or by
+    // its place keeps it under Buy.
+    const flippedRow = cloneChina(wire.chinatown, (c) => {
+      c.rows[4]!.sells = true;
+    });
+    const flag = show(flippedRow);
+    expect(grouped(flag.container)).toEqual({ Sell: [1, 2, 3, 4, 5], Buy: [6, 7, 8, 9] });
   });
 
   it("sends a plus's number and a minus's `back` and number, and marks the chosen row", async () => {
@@ -712,6 +745,28 @@ describe("Chinatown's chooser", () => {
     await first.user.click(plus(rowEls(first.container)[1]!));
     await first.user.click(plus(rowEls(first.container)[5]!));
     expect(first.onSend.mock.calls).toEqual([["2"], ["6"]]);
+    cleanup();
+
+    // The rows reversed: row 8 is now the second purchase drawn, so its place
+    // is neither 8 nor its index. The number it sends is the row's own.
+    const reversed = cloneChina(wire.chinatown, (c) => c.rows.reverse());
+    const flipped = show(reversed);
+    const eight = rowEls(flipped.container).find((el) => el.dataset.number === "8")!;
+    await flipped.user.click(plus(eight));
+    expect(flipped.onSend.mock.calls).toEqual([["8"]]);
+    cleanup();
+
+    // A count that is not the row's number: row 6 chosen twice. Its minus
+    // sends `back 6`, not `back 2` and not `back 5`.
+    const twice = cloneChina(wire.chinatownSelected, (c) => {
+      c.rows[5]!.count = 2;
+    });
+    const counted = show(twice);
+    const six = rowEls(counted.container).find((el) => el.dataset.number === "6")!;
+    expect(six.querySelector(".n")!.textContent).toBe("2");
+    expect(minus(six)).toBeEnabled();
+    await counted.user.click(minus(six));
+    expect(counted.onSend.mock.calls).toEqual([["back 6"]]);
     cleanup();
 
     const some = chinaPrompt(wire.chinatownSelected);
@@ -779,6 +834,18 @@ describe("Chinatown's chooser", () => {
     expect(second.onSend.mock.calls).toEqual([["9"]]);
     cleanup();
 
+    // `chosen` at the most the list allows, nothing else moved: row 1's plus is
+    // still live, because plus reads the payload's `can_add` and nothing more.
+    const atMost = cloneChina(wire.chinatown, (c) => {
+      c.chosen = c.max_exchanges;
+    });
+    const full = show(atMost);
+    const top = rowEls(full.container)[0]!;
+    expect(chinaPrompt(atMost).rows[0]!.can_add).toBe(true);
+    expect(plus(top)).toBeEnabled();
+    expect(plus(top)).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
     // In flight: every plus is disabled, and only the cannot-add one is
     // unavailable.
     const busy = show(wire.chinatown, true);
@@ -801,9 +868,15 @@ describe("Chinatown's chooser", () => {
     expect(entries.map((e) => e.getAttribute("data-good"))).toEqual(p.stock.map((s) => s.good));
     expect(entries.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["1", "1", "1", "1", "3", "0"]);
     // ONE small token, never `amount` copies (three yen draw one).
+    // That token is decorative: no role and no label of its own, so nothing
+    // hidden in an entry of 3 yen says `1 yen`.
     for (const e of entries) {
       expect(e.querySelectorAll(".tok")).toHaveLength(1);
       expect(e.querySelector(".tok")).toHaveClass("sm");
+      const token = e.querySelector(".tokens")!;
+      expect(token).toHaveAttribute("aria-hidden", "true");
+      expect(token).not.toHaveAttribute("role");
+      expect(token).not.toHaveAttribute("aria-label");
     }
     cleanup();
 
@@ -867,6 +940,18 @@ describe("Chinatown's chooser", () => {
     expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
     cleanup();
 
+    // `chosen` set apart from the rows' counts: the first fixture with
+    // `chosen` 1 and every count still 0. The verdict reads `chosen`.
+    const claimed = cloneChina(wire.chinatown, (c) => {
+      c.chosen = 1;
+    });
+    expect(chinaPrompt(claimed).rows.every((r) => r.count === 0)).toBe(true);
+    const fourth = show(claimed);
+    const loud = fourth.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(loud).toHaveClass("bad");
+    expect(loud.textContent).toBe("not offered — adjust the selection");
+    cleanup();
+
     // One fact apart: the selected fixture with its preview not legal. A
     // Confirm worked out from `chosen` passes both fixtures and fails this.
     const unlegal = cloneChina(wire.chinatownSelected, (c) => {
@@ -910,6 +995,16 @@ describe("Chinatown's chooser", () => {
     const third = show(one);
     expect(third.container.querySelector(".asking")!.textContent).toBe(
       "Chinatown — up to 1 exchange · 0 of 1 chosen",
+    );
+    cleanup();
+
+    // `chosen` is the payload's, not a sum of the rows' counts (which total 1).
+    const two = cloneChina(wire.chinatownSelected, (c) => {
+      c.chosen = 2;
+    });
+    const fourth = show(two);
+    expect(fourth.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 2 of 3 chosen",
     );
   });
 

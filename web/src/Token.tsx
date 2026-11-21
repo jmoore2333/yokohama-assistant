@@ -55,25 +55,31 @@ export function tokenLabel(good: ChooserGood, amount: number): string {
 }
 
 /** `amount` copies of one good's token, read as ONE node: `role="img"`,
- *  `aria-label` `2 yen`. */
+ *  `aria-label` `2 yen`. With `decorative` the node is `aria-hidden` and has
+ *  neither role nor label, for a place whose reading is something else's (a
+ *  stock entry's own label says how many are held, and its one token only
+ *  decorates it); the copies are drawn all the same. */
 export function Tokens({
   good,
   amount,
   art,
   small = false,
+  decorative = false,
 }: {
   good: ChooserGood;
   amount: number;
   art: ArtManifest | null;
   small?: boolean;
+  decorative?: boolean;
 }) {
   const src = tokenArt(art, ART_KEY[good]);
   const kind = good.toLowerCase();
   return (
     <span
       className="tokens"
-      role="img"
-      aria-label={tokenLabel(good, amount)}
+      {...(decorative
+        ? { "aria-hidden": "true" as const }
+        : { role: "img", "aria-label": tokenLabel(good, amount) })}
       data-good={good}
     >
       {Array.from({ length: amount }, (_, i) => (

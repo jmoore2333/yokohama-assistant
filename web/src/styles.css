@@ -952,9 +952,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * the verdict. `.options.scrolls`' contract: the chooser takes what the deck
  * has left (`flex: 1 1 auto`), its `.rows` are the only thing inside it that
  * scrolls, and the stock above and the verdict below keep their size. The
- * chooser's floor is the stock, the rows' own floor of about two rows and the
- * verdict's reserved lines, so nothing inside it ever spills over Confirm;
- * Confirm and Cancel are siblings after it, never inside the clip. */
+ * chooser's floor (10.5rem) buys room for the stock, the verdict's reserved
+ * lines and about two exchanges; whether that suits a short screen is Task 7's
+ * measurement. Confirm and Cancel are siblings after the chooser, never inside
+ * the clip. */
 .decision > .chooser.chinatown {
   flex: 1 1 auto; min-height: 10.5rem; display: flex; flex-direction: column; max-width: 62rem;
 }

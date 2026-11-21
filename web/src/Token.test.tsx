@@ -78,6 +78,16 @@ describe("a token group", () => {
     }
   });
 
+  it("hides a decorative group: no role, no label, its copies still drawn", () => {
+    const { container } = render(<Tokens good="Yen" amount={3} art={null} decorative />);
+    const group = container.querySelector(".tokens")!;
+    expect(group).toHaveAttribute("aria-hidden", "true");
+    expect(group).not.toHaveAttribute("role");
+    expect(group).not.toHaveAttribute("aria-label");
+    expect(group.querySelectorAll(".tok")).toHaveLength(3);
+    expect(screen.queryAllByRole("img")).toHaveLength(0);
+  });
+
   it("names an imported good by its own noun, one of them", () => {
     render(<Tokens good="Imports" amount={1} art={null} />);
     expect(screen.getByRole("img", { name: "1 imported good" })).toBeInTheDocument();

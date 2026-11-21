@@ -361,8 +361,8 @@ export function Decision({
         <div className="chooser chinatown">
           <div className="stock">
             {prompt.stock.map((s) => (
-              /* One node a reader hears once (`3 yen`); the small token inside
-                 is hidden so it is not read a second time. */
+              /* One node a reader hears once (`3 yen`); the one small token
+                 inside is decorative, so it is not read a second time. */
               <span
                 className="item"
                 key={s.good}
@@ -370,9 +370,7 @@ export function Decision({
                 aria-label={tokenLabel(s.good, s.amount)}
                 data-good={s.good}
               >
-                <span aria-hidden="true">
-                  <Tokens good={s.good} amount={1} art={art} small />
-                </span>
+                <Tokens good={s.good} amount={1} art={art} small decorative />
                 <span className="amt">{s.amount}</span>
               </span>
             ))}
