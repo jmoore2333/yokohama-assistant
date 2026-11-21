@@ -674,6 +674,263 @@ mod tests {
         assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
     }
 
+    /// The id of the one tile of `area_type` on an `areas` payload, read off the
+    /// payload (never hard-coded: the board's layout is the seed's).
+    fn tile_of(areas: &Value, area_type: &str) -> u64 {
+        fn walk(v: &Value, area_type: &str, out: &mut Vec<u64>) {
+            match v {
+                Value::Object(m) => {
+                    if m.get("area_type") == Some(&json!(area_type)) {
+                        if let Some(id) = m.get("area").and_then(Value::as_u64) {
+                            out.push(id);
+                        }
+                    }
+                    m.values().for_each(|x| walk(x, area_type, out));
+                }
+                Value::Array(a) => a.iter().for_each(|x| walk(x, area_type, out)),
+                _ => {}
+            }
+        }
+        let mut ids = Vec::new();
+        walk(areas, area_type, &mut ids);
+        assert_eq!(ids.len(), 1, "premise: one {area_type} tile on this board: {ids:?}");
+        ids[0]
+    }
+
+    /// The `number` of the first row of `state`'s prompt that `pick` accepts —
+    /// asserted, so a cell that never reached its prompt fails loudly.
+    fn row_number(state: &Value, pick: impl Fn(&Value) -> bool, what: &str) -> String {
+        state["prompt"]["rows"]
+            .as_array()
+            .unwrap_or_else(|| panic!("premise: a prompt with rows ({what}): {state}"))
+            .iter()
+            .find(|r| pick(r))
+            .unwrap_or_else(|| panic!("premise: no row {what}: {state}"))["number"]
+            .as_u64()
+            .expect("a number")
+            .to_string()
+    }
+
+    /// RED drives the table at `id` — its game dealt, red to move at the
+    /// opening — to the `area_type` chooser, the route the web layer's own
+    /// cells use: `1` ends the additional phase, `b` and the tile's id places
+    /// two assistants there, the Movement row naming the tile puts the
+    /// President in, and the row that opens a picker is the entry. Every id and
+    /// number is read off a payload as it is taken. Answers the ENTRY's reply:
+    /// the chooser open and its list begun by that one line.
+    fn to_chooser(id: &str, area_type: &str, kind: &str) -> ReplyData {
+        let r = input(RED, id, "1", None);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let areas = call(RED, "GET", &format!("/api/games/{id}/areas"), None);
+        assert_eq!(areas.status, 200, "{}", areas.body);
+        let tile = tile_of(&body(&areas), area_type);
+        let r = input(RED, id, &format!("b {tile}"), None);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let label = format!("(A{tile:02})");
+        let place = row_number(
+            &body(&r),
+            |r| r["words"].as_str().is_some_and(|w| w.contains(&label) && w.contains("President")),
+            &format!("placing the President in {label}"),
+        );
+        let r = input(RED, id, &place, None);
+        assert_eq!(r.status, 200, "{}", r.body);
+        let entry = row_number(&body(&r), |r| r["opens_picker"] == json!(true), "that opens a chooser");
+        let r = input(RED, id, &entry, None);
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(body(&r)["prompt"]["kind"], json!(kind), "premise: the entry opens the {kind} chooser: {}", r.body);
+        assert_eq!(lines(&r), [entry.clone()], "the entry begins the list");
+        r
+    }
+
+    /// The two-player table of `at_place_a_from`, dealt and kept, red to move.
+    fn two_player_table(id: &str) {
+        let r = create_inner(Some(RED), CREATE.as_bytes(), id, Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        let r = call(BLUE, "POST", &format!("/api/games/{id}/join"), Some(r#"{"seat":1}"#));
+        assert_eq!(r.status, 200, "{}", r.body);
+        for (who, seat) in [(RED, 0), (BLUE, 1)] {
+            let r = call(who, "POST", &format!("/api/games/{id}/keep"), Some(&json!({ "seat": seat, "card": 1 }).to_string()));
+            assert_eq!(r.status, 200, "{}", r.body);
+        }
+        assert!(read_inner("record", id).unwrap().is_some(), "premise: the last keep finalized the game");
+    }
+
+    /// A four-player table every seat of which RED holds — the CLI's "one
+    /// operator driving the table" — dealt and kept, red to move. Only here does
+    /// the board carry a Chinatown.
+    fn four_player_table(id: &str) {
+        let create = json!({
+            "players": 4, "colors": ["Red", "Blue", "Yellow", "Green"], "start_seat": 0, "seed": 20260831,
+            "seats": [{"user": RED}, {"user": RED}, {"user": RED}, {"user": RED}],
+        });
+        let r = create_inner(Some(RED), create.to_string().as_bytes(), id, Some("application/json"));
+        assert_eq!(r.status, 201, "{}", r.body);
+        for seat in 0..4 {
+            let r = call(RED, "POST", &format!("/api/games/{id}/keep"), Some(&json!({ "seat": seat, "card": 1 }).to_string()));
+            assert_eq!(r.status, 200, "seat {seat}: {}", r.body);
+        }
+        assert!(read_inner("record", id).unwrap().is_some(), "premise: the last keep finalized the game");
+    }
+
+    /// The Church chooser's kinds that read selected, by their `number`.
+    fn church_selected(state: &Value) -> Vec<u64> {
+        assert_eq!(state["prompt"]["kind"], json!("church"), "premise: the acting seat's payload reads church: {state}");
+        state["prompt"]["kinds"]
+            .as_array()
+            .expect("six kinds")
+            .iter()
+            .filter(|k| k["selected"] == json!(true))
+            .map(|k| k["number"].as_u64().expect("a number"))
+            .collect()
+    }
+
+    /// Chinatown's chooser, as `(number, count)` for every row with a count.
+    fn chinatown_counts(state: &Value) -> Vec<(u64, u64)> {
+        assert_eq!(state["prompt"]["kind"], json!("chinatown"), "premise: the acting seat's payload reads chinatown: {state}");
+        state["prompt"]["rows"]
+            .as_array()
+            .expect("nine rows")
+            .iter()
+            .filter(|r| r["count"].as_u64().is_some_and(|c| c > 0))
+            .map(|r| (r["number"].as_u64().expect("a number"), r["count"].as_u64().unwrap()))
+            .collect()
+    }
+
+    /// **A Church chooser survives a new instance, selection and all** (plan 2a,
+    /// Task 8; design §3). The lines `1`, `2`, `1`, `4` leave silk and seafood
+    /// selected: a restore that drops a repeated line, or the first, reads three
+    /// kinds. `confirm` after the restore commits the payment those kinds name.
+    #[test]
+    fn restore_picker_rebuilds_a_church_chooser_with_its_selection() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("church");
+        let entry = to_chooser("church", "Church", "church");
+        let mut row = entry.picker.expect("the entry's list");
+        for line in ["1", "2", "1", "4"] {
+            let r = input(RED, "church", line, Some("church"));
+            assert_eq!(r.status, 200, "{}", r.body);
+            row = r.picker.expect("the grown list");
+        }
+        let before = body(&call(RED, "GET", "/api/games/church", None));
+        assert_eq!(church_selected(&before), [2, 4], "premise: silk and seafood, copper off again");
+        assert_eq!(lines_of(&row).len(), 5, "the entry and the four toggles, a repeated line kept");
+        let (stored_table, stored) = (table("church"), record("church"));
+
+        fresh("church", &stored_table, &stored);
+        let r = restore_picker_inner("church", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, nothing moved");
+        assert_eq!(record("church"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/church", None));
+        assert_eq!(church_selected(&after), [2, 4], "silk and seafood and no other kind: {after}");
+        assert_eq!(after["prompt"], before["prompt"], "the whole prompt reads as it did");
+
+        let r = input(RED, "church", "confirm", Some("church"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
+        assert_ne!(record("church"), stored, "premise: `confirm` APPLIED the payment");
+        assert_ne!(s["prompt"]["kind"], json!("church"), "the chooser closes on its commit: {}", r.body);
+        let said = s["messages"].to_string().to_lowercase();
+        assert!(said.contains("silk") && said.contains("seafood") && !said.contains("copper"), "the move those kinds name: {said}");
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
+    }
+
+    /// The `line` of each entry in a stored row.
+    fn lines_of(row: &str) -> Vec<String> {
+        let row: Value = serde_json::from_str(row).unwrap();
+        row["lines"].as_array().expect("lines").iter().map(|l| l["line"].as_str().unwrap().to_string()).collect()
+    }
+
+    /// **A Chinatown chooser survives a new instance, counts and all** (plan 2a,
+    /// Task 8), on a four-player table one caller holds. `1`, `6`, `back 6` leave
+    /// one copper sale; **order matters**: the same toggles fed last to first
+    /// (`back 6` refused, `6`, `1`) leave a silk purchase beside it, which the
+    /// control reads off a restore of that reordered list.
+    #[test]
+    fn restore_picker_rebuilds_a_chinatown_chooser_with_its_counts() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        four_player_table("town");
+        let entry = to_chooser("town", "Chinatown", "chinatown");
+        let mut row = entry.picker.expect("the entry's list");
+        for line in ["1", "6", "back 6"] {
+            let r = input(RED, "town", line, Some("chinatown"));
+            assert_eq!(r.status, 200, "{}", r.body);
+            row = r.picker.expect("the grown list");
+        }
+        let before = body(&call(RED, "GET", "/api/games/town", None));
+        assert_eq!(chinatown_counts(&before), [(1, 1)], "premise: one copper sale and nothing else");
+        let (stored_table, stored) = (table("town"), record("town"));
+
+        // THE CONTROL: the same three toggles, last to first. `back 6` is refused
+        // (nothing to take back), `6` buys silk, `1` sells copper.
+        let mut reordered: Value = serde_json::from_str(&row).unwrap();
+        let toggles = reordered["lines"].as_array().unwrap()[1..].to_vec();
+        let mut lines = vec![reordered["lines"][0].clone()];
+        lines.extend(toggles.into_iter().rev());
+        reordered["lines"] = Value::Array(lines);
+        fresh("town", &stored_table, &stored);
+        let r = restore_picker_inner("town", &reordered.to_string());
+        assert_eq!((r.status, r.picker.as_deref()), (200, None), "the reordered list is kept too");
+        let control = body(&call(RED, "GET", "/api/games/town", None));
+        assert_eq!(chinatown_counts(&control), [(1, 1), (6, 1)], "the reordered lines leave a silk purchase beside the sale");
+
+        fresh("town", &stored_table, &stored);
+        let r = restore_picker_inner("town", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, nothing moved");
+        assert_eq!(record("town"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/town", None));
+        assert_eq!(chinatown_counts(&after), [(1, 1)], "one copper sale and nothing else: {after}");
+        assert_eq!(after["prompt"], before["prompt"], "the whole prompt reads as it did");
+
+        let r = input(RED, "town", "confirm", Some("chinatown"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
+        assert_ne!(record("town"), stored, "premise: `confirm` APPLIED the exchange");
+        assert_ne!(s["prompt"]["kind"], json!("chinatown"), "the chooser closes on its commit: {}", r.body);
+        assert!(s["messages"].to_string().to_lowercase().contains("copper"), "the sale it names: {}", s["messages"]);
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
+    }
+
+    /// **A REFUSED toggle is a line the list keeps, and re-feeding it changes
+    /// nothing** (plan 2a, Task 8). At the Church on turn 1 the seat holds no
+    /// imported good, so `6` is refused — a 200 that leaves the chooser open —
+    /// and sits in the list. `2` goes first, so the selection the restore must
+    /// reproduce is silk alone, and not the empty one a restore that fed nothing
+    /// would also show.
+    #[test]
+    fn a_refused_toggle_is_refed_and_changes_nothing() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("refused");
+        to_chooser("refused", "Church", "church");
+        let r = input(RED, "refused", "2", Some("church"));
+        assert_eq!(church_selected(&body(&r)), [2], "premise: silk selected");
+        let r = input(RED, "refused", "6", Some("church"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["prompt"]["kind"]), (200, &json!("church")), "the refusal is a 200 that leaves the chooser open: {}", r.body);
+        assert!(
+            s["messages"].to_string().contains("imported good is not in any payment the list offers here"),
+            "premise: `6` is REFUSED here: {}",
+            s["messages"],
+        );
+        assert_eq!(church_selected(&s), [2], "the refusal changed nothing");
+        let row = r.picker.expect("the grown list");
+        assert_eq!(lines_of(&row).len(), 3, "the refused line sits in the list beside the entry and `2`");
+        let before = body(&call(RED, "GET", "/api/games/refused", None));
+        let (stored_table, stored) = (table("refused"), record("refused"));
+
+        fresh("refused", &stored_table, &stored);
+        let r = restore_picker_inner("refused", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, refused line and all");
+        assert_eq!(record("refused"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/refused", None));
+        assert_eq!(church_selected(&after), [2], "silk alone: {after}");
+        assert_eq!(after["prompt"], before["prompt"], "the selection equals the one before the restore");
+        let r = input(RED, "refused", "5", Some("church"));
+        assert_eq!(lines(&r).len(), 4, "the restored list grows from the refused line");
+    }
+
     /// **A list is only ever re-fed at the exact record it was built at** (the
     /// plan's guard, spec §2.4). A row built before a move, restored after it, is
     /// cleared WITHOUT re-feeding a line — and its first line, `1`, APPLIES a
