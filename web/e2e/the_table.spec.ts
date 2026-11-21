@@ -1242,7 +1242,16 @@ test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and u
         chooser: rect(chooser),
         kinds: [...chooser.querySelectorAll(".kinds > button.kind")].map((k) => {
           const lbl = k.querySelector(".lbl")!;
-          return { good: k.getAttribute("data-good") ?? "", box: rect(k), scrollWidth: lbl.scrollWidth, clientWidth: lbl.clientWidth };
+          return {
+            good: k.getAttribute("data-good") ?? "",
+            box: rect(k),
+            lbl: rect(lbl),
+            token: rect(k.querySelector(".tokens")!),
+            scrollWidth: lbl.scrollWidth,
+            clientWidth: lbl.clientWidth,
+            buttonScroll: k.scrollWidth,
+            buttonClient: k.clientWidth,
+          };
         }),
       };
     });
@@ -1257,6 +1266,17 @@ test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and u
       expect(k.box.height, `${at}: the ${k.good} kind is ${k.box.height.toFixed(2)}px tall`).toBeGreaterThanOrEqual(KIND_MIN_HEIGHT_PX);
       // 1px of slack: `clientWidth` is an integer and `scrollWidth` rounds up.
       expect(k.scrollWidth, `${at}: the ${k.good} kind's label is clipped (${k.scrollWidth} in ${k.clientWidth})`).toBeLessThanOrEqual(k.clientWidth + 1);
+      // **And the label is inside its BUTTON, which the line above cannot see.**
+      // A `.lbl` is a flex item that grows with its text, so it never reads
+      // clipped itself: a column too narrow for the token and the words pushes
+      // the label past the button's edge instead (measured on a six-column grid
+      // at 390 px: every label ran out of its kind, Imports' to 426 px in a
+      // 390 px window, while each `.lbl` read 24 to 62 px in the same 24 to 62).
+      // So the label and the token must lie inside the kind, and the kind's
+      // own content must not overflow it.
+      expect(outside(k.lbl, k.box), `${at}: the ${k.good} kind's label runs out of its button`).toBeNull();
+      expect(outside(k.token, k.box), `${at}: the ${k.good} kind's token runs out of its button`).toBeNull();
+      expect(k.buttonScroll, `${at}: the ${k.good} kind's content overflows it (${k.buttonScroll} in ${k.buttonClient})`).toBeLessThanOrEqual(k.buttonClient + 1);
     }
     for (let i = 0; i < read.kinds.length; i++) {
       for (let j = i + 1; j < read.kinds.length; j++) {
