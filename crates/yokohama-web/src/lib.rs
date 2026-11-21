@@ -8552,22 +8552,13 @@ mod tests {
                             .map_or_else(|| "cancel".to_string(), |n| n.to_string())
                     }
                 }
-                // Chinatown's chooser (plan 2a, Task 4): confirm a selection
-                // the list holds, else add the first exchange the list holds
-                // one more of, else back out.
-                "chinatown" => {
-                    if state["prompt"]["preview"]["legal"] == serde_json::json!(true) {
-                        "confirm".to_string()
-                    } else {
-                        state["prompt"]["rows"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .find(|r| r["can_add"] == serde_json::json!(true))
-                            .and_then(|r| r["number"].as_u64())
-                            .map_or_else(|| "cancel".to_string(), |n| n.to_string())
-                    }
-                }
+                // Chinatown's chooser (plan 2a, Task 4, ruling R28): refused,
+                // not answered. These walks play two-player games, whose board
+                // has no Chinatown, so an arm that answered it could never run.
+                "chinatown" => panic!(
+                    "a `chinatown` prompt in a two-player game, whose board has no Chinatown: the board or \
+                     the fold changed, and this walk needs a Chinatown rule written with a game that runs it: {state}"
+                ),
                 _ => state["prompt"]["rows"][0]["number"]
                     .as_u64()
                     .map(|n| n.to_string())

@@ -207,29 +207,13 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
                 }
             }
         }
-        // Chinatown's chooser (plan 2a, Task 4): confirm a selection the
-        // list holds; else add an exchange drawn at random among those the
-        // list holds one more of; back out when there is none. Every flag is
-        // the arm's own. This game is two-player and that board has no
-        // Chinatown, so the arm stands for a table that reaches one.
-        "chinatown" => {
-            if prompt["preview"]["legal"] == Value::Bool(true) {
-                "confirm".to_string()
-            } else {
-                let open: Vec<u64> = prompt["rows"]
-                    .as_array()
-                    .expect("rows")
-                    .iter()
-                    .filter(|r| r["can_add"] == Value::Bool(true))
-                    .map(|r| r["number"].as_u64().expect("a number"))
-                    .collect();
-                if open.is_empty() {
-                    "cancel".to_string()
-                } else {
-                    open[rng.below(open.len())].to_string()
-                }
-            }
-        }
+        // Chinatown's chooser (plan 2a, Task 4, ruling R28): refused, not
+        // answered. This gate's games are two-player and that board has no
+        // Chinatown, so an arm that answered the chooser could never run.
+        "chinatown" => panic!(
+            "a `chinatown` prompt in a two-player game, whose board has no Chinatown: the board or the \
+             fold changed, and this gate needs a Chinatown rule written with a game that runs it: {state}"
+        ),
         // Recover none from each area in turn, then commit the retreat.
         "retreat" => {
             if prompt["remaining"].as_u64().unwrap_or(0) > 0 {
