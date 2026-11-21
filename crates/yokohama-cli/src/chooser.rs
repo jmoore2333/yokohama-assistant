@@ -307,10 +307,9 @@ pub fn chinatown_model(
 /// The terminal's screen for the model (plan 2a, "The words"). Ends with a
 /// newline, as every sub-prompt screen in `repl.rs` does.
 pub fn chinatown_text(model: &ChinatownModel) -> String {
-    let mut out = format!(
-        "Chinatown — up to {} exchanges (add by number):\n",
-        model.max_exchanges
-    );
+    let unit = if model.max_exchanges == 1 { "exchange" } else { "exchanges" };
+    let mut out =
+        format!("Chinatown — up to {} {unit} (add by number):\n", model.max_exchanges);
     for r in &model.rows {
         let lead = match r.number {
             1 => "  sell  ",
@@ -918,6 +917,11 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
 
         let low = ordinary_position_power_1();
         let screen = chinatown_text(&chinatown_model(&low, &rules, &legal_of(&low), [0; 9]));
+        assert!(
+            screen.starts_with("Chinatown — up to 1 exchange (add by number):\n"),
+            "{screen}"
+        );
+        assert!(screen.contains("\nSelected (0 of 1): (none)\n"), "{screen}");
         assert!(
             screen.contains("\n        [2] 1 silk -> 2 yen             (not offered)\n"),
             "{screen}"
