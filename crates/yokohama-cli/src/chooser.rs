@@ -729,6 +729,24 @@ Selected: silk
             assert_eq!(chinatown_counts(&reversed), Some(counts));
         }
         assert!(reversed_differs > 0, "the list holds sets whose order matters to a vector compare");
+
+        // A list that holds every set with its exchanges the other way round
+        // still matches each by its counts, and returns the move as listed.
+        let backwards_list: Vec<Move> = legal
+            .iter()
+            .map(|mv| match mv {
+                Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => {
+                    let mut e = exchanges.clone();
+                    e.reverse();
+                    Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges: e } }
+                }
+                other => other.clone(),
+            })
+            .collect();
+        for mv in chinatown_moves(&backwards_list) {
+            let counts = chinatown_counts(mv).expect("a Chinatown move has counts");
+            assert_eq!(chinatown_match(&backwards_list, counts).as_ref(), Some(mv));
+        }
         assert_eq!(
             chinatown_counts(&Move::ExecuteAreaAction { action: AreaAction::Skip }),
             None
