@@ -738,7 +738,7 @@ mod tests {
         let r = input(RED, id, &entry, None);
         assert_eq!(r.status, 200, "{}", r.body);
         assert_eq!(body(&r)["prompt"]["kind"], json!(kind), "premise: the entry opens the {kind} chooser: {}", r.body);
-        assert_eq!(lines(&r), [entry.clone()], "the entry begins the list");
+        assert_eq!(lines(&r), std::slice::from_ref(&entry), "the entry begins the list");
         r
     }
 
