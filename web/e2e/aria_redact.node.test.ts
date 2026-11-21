@@ -13,7 +13,7 @@
 // link with its `/url`); the stranger and their table are invented.
 
 import { describe, expect, it } from "vitest";
-import { MASKED_ROW, redactSidecar } from "./aria_redact";
+import { MASKED_CHAT, MASKED_ROW, redactSidecar } from "./aria_redact";
 
 const OWN_ID = "sim-e905ce3afac6a66a";
 const STRANGER_ID = "sim-0123456789abcdef";
@@ -62,6 +62,26 @@ const tail = `- heading "Being played" [level=3]
   - button "show"
 `;
 
+/** The folded lobby chat as the dry run's `lobby-desktop.aria.txt` ends: the
+ *  `log` region the fold clips but does not hide, here holding one stranger's
+ *  message (the dry run's was empty: nobody had posted). */
+const strangerMessage = "someone · a1b2 2 min ago hello from a stranger";
+const chatLog = `- log:
+  - list:
+    - listitem: ${strangerMessage}
+  - textbox "Say something"
+  - button "send" [disabled]
+`;
+
+/** A row with table id `id`, seated by `label`, in the stranger row's shape. */
+const rowFor = (id: string, label: string) => `  - listitem:
+    - link "Another table":
+      - /url: "#/t/${id}"
+    - text: 2 players · opened just now
+    - img "Red"
+    - text: ${label} open seat
+`;
+
 describe("the README sidecar leaves out what the picture masks", () => {
   it("a stranger's row loses its name, link and seat labels, and the run's own row stays whole", () => {
     const text = redactSidecar(head + strangerRow + ownRow + tail, [`#/t/${STRANGER_ID}`], OWN);
@@ -100,14 +120,72 @@ ${strangerRow}`;
   });
 
   it("refuses a text that names an address that is not one of the run's people", () => {
-    const chat = `- log:\n  - list:\n    - listitem: ${STRANGER} hello\n`;
-    const run = () => redactSidecar(head + ownRow + chat, [], OWN);
+    // Outside a chat log, which goes whole before the guard runs: a seat label
+    // on the table's own page, where no row mask reaches.
+    const seat = `- text: Blue ${STRANGER}\n`;
+    const run = () => redactSidecar(head + ownRow + seat, [], OWN);
     expect(run).toThrow(/address that is not one of this run's people/);
     try {
       run();
     } catch (e) {
       expect(String(e)).not.toContain(STRANGER);
     }
+  });
+
+  // ---- every chat log goes whole (the whole-branch review, W-1) ----------
+  it("premise: the chat fixture is a log block holding a stranger's message", () => {
+    // Without this the two cells below could pass on a snapshot with no chat.
+    expect(chatLog.split("\n")[0]).toBe("- log:");
+    expect(chatLog).toContain(strangerMessage);
+    expect((head + ownRow + tail + chatLog).match(/^- log:$/gm)).toHaveLength(1);
+  });
+
+  it("a chat log becomes one masked line, and every other byte stays", () => {
+    const text = redactSidecar(head + ownRow + tail + chatLog, [], OWN);
+    expect(text).not.toContain("hello from a stranger");
+    expect(text).not.toContain("someone · a1b2");
+    expect(text).toBe(head + ownRow + tail + `- log: ${MASKED_CHAT}\n`);
+  });
+
+  it("a table link quoted in a chat line goes with the log, so it cannot refuse the run", () => {
+    const quoting = chatLog.replace(strangerMessage, `someone · a1b2 join me at #/t/${STRANGER_ID}`);
+    expect(quoting).toContain(`#/t/${STRANGER_ID}`);
+    const text = redactSidecar(head + ownRow + tail + quoting, [], OWN);
+    expect(text).not.toContain(STRANGER_ID);
+    expect(text).toBe(head + ownRow + tail + `- log: ${MASKED_CHAT}\n`);
+  });
+
+  it("a log nested in a page keeps its indent, and what follows it stays", () => {
+    const nested = `- region "Table chat":\n${chatLog.replace(/^/gm, "  ").replace(/  $/, "")}- button "Leave"\n`;
+    expect(redactSidecar(nested, [], OWN)).toBe(`- region "Table chat":\n  - log: ${MASKED_CHAT}\n- button "Leave"\n`);
+  });
+
+  // ---- the guard's matches are exact (the whole-branch review, W-4 / MB-3 /
+  // MB-4). Each text below reports NO masked row, so only the guard stands
+  // between it and the file.
+  it("refuses a stranger's id that is the run's own id with a character added", () => {
+    const run = () => redactSidecar(head + rowFor(`${OWN_ID}0`, "dana") + ownRow + tail, [], OWN);
+    expect(run).toThrow(/table id that is not this run's/);
+  });
+
+  it("refuses a stranger's id that is the run's own id with its last character cut", () => {
+    const run = () => redactSidecar(head + rowFor(OWN_ID.slice(0, -1), "dana") + ownRow + tail, [], OWN);
+    expect(run).toThrow(/table id that is not this run's/);
+  });
+
+  it("refuses an address in the run's own domain that is not one of its people", () => {
+    const run = () => redactSidecar(head + ownRow + `- text: Blue mallory@readme.test\n`, [], OWN);
+    expect(run).toThrow(/address that is not one of this run's people/);
+  });
+
+  it("refuses a stranger's address written with capitals", () => {
+    const run = () => redactSidecar(head + ownRow + `- text: Blue Dana@Example.test\n`, [], OWN);
+    expect(run).toThrow(/address that is not one of this run's people/);
+  });
+
+  it("keeps one of the run's own addresses written with capitals: the match ignores case", () => {
+    const page = head + ownRow + `- text: Blue Ben@Readme.test\n`;
+    expect(redactSidecar(page, [], OWN)).toBe(page);
   });
 
   it("keeps the run's own ids where they appear outside a row — the invite link", () => {

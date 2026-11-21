@@ -4,8 +4,13 @@
 // one of the run's own tables MASKED: live, the lobby is shared, and a
 // stranger's table with its seat addresses must never reach a picture. The page's
 // accessibility snapshot, written beside the picture as text, is read by an
-// agent in the picture's place, so it must leave out exactly what the picture
-// masks. This is that step, as a pure function a node cell holds
+// agent in the picture's place, so it must leave out what the picture masks —
+// and every chat log besides, which the picture does not show and the text
+// would (the whole-branch review, W-1): a folded chat panel is clipped to
+// nothing (`max-height: 0; overflow: hidden`), not hidden from the
+// accessibility tree, so every message it holds is in the snapshot, and live a
+// house chat's messages are strangers' names and free text. This is that step,
+// as a pure function a node cell holds
 // (`aria_redact.node.test.ts`). The spec takes the screenshot, then the
 // snapshot, then reads the masked rows' links off the page, and hands the last
 // two here. That order is the safe one: a row that arrives between the snapshot
@@ -13,21 +18,31 @@
 // row that leaves in between keeps its link in the text with nothing to redact
 // it, and the guard below refuses the file.
 //
-// Two halves, neither the other's fallback:
+// Three steps, in this order, the last no other's fallback:
 //
-//   1. **Redaction, keyed the way the mask is**: by the row's `#/t/<id>` link.
+//   1. **Every chat log goes whole**: each `log` block of the snapshot (the log
+//      line and every line indented under it) becomes one line, `- log:
+//      [masked: chat]`, at its indent. The run posts no chat, so nothing an alt
+//      needs is lost; and it goes BEFORE the guard, so a stranger who quotes a
+//      table link in the chat cannot make the guard refuse the run.
+//   2. **Redaction, keyed the way the mask is**: by the row's `#/t/<id>` link.
 //      Every `listitem` block of the snapshot whose `/url` is a masked row's
 //      href is replaced by one line, `- listitem: [masked: not this run's
 //      table]` at the row's indent, so the row's name, link, seat labels and
 //      button names all go and the list still reads as having had a row there.
-//   2. **A guard over what is left**: any `#/t/<id>` that is not one of the
+//   3. **A guard over what is left**: any `#/t/<id>` that is not one of the
 //      run's own tables, or any e-mail address that is not one of the run's
-//      people, throws before the file is written. That is what stops a new
-//      kind of row the mask does not know about from slipping through silently.
-//      Its message counts what it found and NEVER names it, since a test log is
+//      people, throws before the file is written — the id matched exactly and
+//      the address exactly, ignoring case. That is what stops a new kind of row
+//      the mask does not know about from slipping through silently, as long as
+//      it carries a table link or an address. **It sees nothing else**: a
+//      person's name or a line of free text is invisible to it, which is why
+//      the chat goes whole in step 1 rather than being left to the guard. Its
+//      message counts what it found and NEVER names it, since a test log is
 //      read too.
 
 export const MASKED_ROW = "[masked: not this run's table]";
+export const MASKED_CHAT = "[masked: chat]";
 
 /** What the run made: its tables' ids and its people's addresses. */
 export interface Own {
@@ -41,6 +56,32 @@ const indentOf = (line: string): number => line.length - line.trimStart().length
 function urlOf(line: string): string | null {
   const m = /^\s*- \/url: (?:"([^"]*)"|(\S+))\s*$/.exec(line);
   return m ? (m[1] ?? m[2] ?? null) : null;
+}
+
+/** The end (exclusive) of the block whose first line is `lines[i]`: every
+ *  following line indented deeper than it, up to a blank line. */
+function blockEnd(lines: readonly string[], i: number): number {
+  const indent = indentOf(lines[i] ?? "");
+  let end = i + 1;
+  while (end < lines.length && (lines[end] ?? "").trim() !== "" && indentOf(lines[end] ?? "") > indent) end++;
+  return end;
+}
+
+/** Replace every `log` block (a chat panel's messages, its box and its send
+ *  button) with one `- log: [masked: chat]` line at its indent. */
+function redactLogs(snapshot: string): string {
+  const lines = snapshot.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (/^\s*- '?log\b/.test(line)) {
+      out.push(`${" ".repeat(indentOf(line))}- log: ${MASKED_CHAT}`);
+      i = blockEnd(lines, i) - 1;
+    } else {
+      out.push(line);
+    }
+  }
+  return out.join("\n");
 }
 
 /** Replace every `listitem` block holding a link to one of `maskedHrefs`. */
@@ -90,10 +131,11 @@ function guard(text: string, own: Own): void {
   }
 }
 
-/** The text to write beside a README picture: `snapshot` with every row whose
- *  link is in `maskedHrefs` left out, refused if anything foreign survives. */
+/** The text to write beside a README picture: `snapshot` with every chat log
+ *  and every row whose link is in `maskedHrefs` left out, refused if a table id
+ *  or an address the run did not make survives. */
 export function redactSidecar(snapshot: string, maskedHrefs: readonly string[], own: Own): string {
-  const text = redactRows(snapshot, maskedHrefs);
+  const text = redactRows(redactLogs(snapshot), maskedHrefs);
   guard(text, own);
   return text;
 }

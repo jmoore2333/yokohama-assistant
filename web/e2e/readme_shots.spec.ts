@@ -24,12 +24,36 @@
 // directory and converted through Pillow (`docs/tools/mkhelpart.py`'s
 // precedent); a run without Pillow FAILS, naming it.
 //
+// **A local-only stranger** (the whole-branch review, W-6): under
+// `YOKOHAMA_WEB_README_SHOTS_STRANGER=1` a fourth person, Dave, opens a table of
+// his own and posts one lobby chat line before any lobby picture, so the
+// redaction meets a real stranger's row and a real chat message in a real
+// browser before a live run ever does. It is REFUSED live: a live run never
+// adds a table or a message to the shared lobby that is not the cut's own.
+//
+//     YOKOHAMA_WEB_README_SHOTS=1 YOKOHAMA_WEB_README_SHOTS_STRANGER=1 YOKOHAMA_WEB_README_SHOTS_DIR=<dir> npx playwright test readme_shots
+//
+// **A failed run writes no stranger's text or pixels** (the whole-branch review,
+// W-2): Playwright 1.62.1 writes `test-results/<test>/error-context.md` with an
+// unredacted accessibility snapshot of the first context's first page unless
+// `PLAYWRIGHT_NO_COPY_PROMPT` is set — read from `process.env` in the worker,
+// when a context closes and when the test finishes, so setting it at this
+// module's top, which the worker loads before it runs the test, is in time —
+// and the config's `screenshot: "only-on-failure"` shoots every open page,
+// unmasked. So this file sets the variable, turns screenshots, video and the
+// trace off for itself, and `play` sends every page to `about:blank` in its
+// `finally`, before anything after the test body can photograph or snapshot
+// one. What it cannot reach: a failing assertion's message, which prints what
+// it received, to the reporter and into `error-context.md` (the snapshot is
+// gone, the messages stay).
+//
 // It is a live spec for `live.node.test.ts`'s rules: every `request.*` through
 // `liveRequest` (there are none), every create armed through `awaitCreate`, and
 // the table abandoned in `afterEach`. Live the tables land in the shared lobby
 // under the `readme.test` addresses, and are taken away.
 
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,14 +62,31 @@ import type { Locator, Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
 import { redactSidecar } from "./aria_redact";
 import { signIn, who } from "./harness";
-import { abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
+import { LIVE, abandonOpened, awaitCreate, createdTable, liveContextOptions, type Opening } from "./live";
 import { expect, newContextWithoutWorker, test } from "./sw";
+
+// **Before the first test, so a run cannot forget it** (W-2; the header says
+// when Playwright reads each).
+process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1";
+test.use({ screenshot: "off", video: "off", trace: "off" });
+
+/** The local-only stranger arm (the header). */
+const STRANGER = process.env.YOKOHAMA_WEB_README_SHOTS_STRANGER === "1";
+if (STRANGER && LIVE) {
+  throw new Error("readme_shots: YOKOHAMA_WEB_README_SHOTS_STRANGER=1 is local only — a live run opens no stranger's table in the shared lobby");
+}
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
 const DESKTOP = { width: 1280, height: 832 };
 const PHONE = { width: 390, height: 844 };
-const PASSWORD = "sesame";
+/** **Drawn per run, never written down** (the whole-branch review, W-3): the
+ *  repository is public and the lobby lists the locked table to everyone, so a
+ *  committed password would be a key any reader holds to the table's seat, its
+ *  watching and its chat for the length of the cut. The README's alts do not
+ *  quote it, the join picture's field draws dots, and the table is abandoned
+ *  at the end. */
+const PASSWORD = randomBytes(12).toString("base64url");
 
 /** Where the pictures go: the README's own directory, or the run's scratch. */
 const OUT = process.env.YOKOHAMA_WEB_README_SHOTS_DIR ?? fileURLToPath(new URL("../../worker/docs/img", import.meta.url));
@@ -55,12 +96,13 @@ const OUT = process.env.YOKOHAMA_WEB_README_SHOTS_DIR ?? fileURLToPath(new URL("
  *  picture, because `OUT` is a committed directory (or a scratch one a dry run
  *  may discard) and the PNG intermediates' scratch is removed when the run ends.
  *  It is how the README's alts are checked without opening a picture, so an
- *  agent reads it. **It leaves out exactly what the picture masks, for the
- *  same reason**: every
- *  lobby row that is not one of this run's tables is replaced by one
- *  `[masked: not this run's table]` line, keyed by the same row link the mask
- *  is, and the text is refused, unwritten, if a table id or an address the run
- *  did not make still survives in it (`aria_redact.ts`). */
+ *  agent reads it. **It leaves out what the picture masks, for the same
+ *  reason, and every chat log besides**: every lobby row that is not one of
+ *  this run's tables is replaced by one `[masked: not this run's table]` line,
+ *  keyed by the same row link the mask is; every chat panel's log — folded in
+ *  the picture, but still in the accessibility tree, messages and all — by one
+ *  `[masked: chat]` line; and the text is refused, unwritten, if a table id or
+ *  an address the run did not make still survives in it (`aria_redact.ts`). */
 const ARIA = fileURLToPath(new URL("../help-shots/readme", import.meta.url));
 
 /** The sidecar's path for the README picture `name`. */
@@ -189,6 +231,31 @@ async function openTable(alice: Page, name: string, password: string | null): Pr
   return id;
 }
 
+/** The local-only stranger (the header): Dave opens "Dave's table", its Blue
+ *  seat open, through the New table form — but not through `openTable`, which
+ *  would count it among the run's own — and posts one line in the lobby chat.
+ *  Locally the server's directory is emptied at launch, so nothing is left. */
+async function strangerInTheLobby(dave: Page): Promise<void> {
+  await signIn(dave, who("dave", "readme"));
+  await dave.goto("/#/lobby");
+  await dave.getByRole("button", { name: "New table" }).click();
+  await expect(dave.getByRole("heading", { name: "New table", exact: true, level: 3 })).toBeVisible();
+  await dave.getByRole("combobox", { name: "Blue seat", exact: true }).selectOption("open");
+  await dave.getByLabel("Name", { exact: true }).fill("Dave's table");
+  opened = awaitCreate(dave);
+  await dave.getByRole("button", { name: "Open table" }).click();
+  await createdTable(opened);
+  // Local only, so there is nothing to abandon; and `opened` is the run's own.
+  opened = null;
+  await dave.goto("/#/lobby");
+  const chat = dave.locator("section.panel.chat");
+  await expect(chat).toHaveCount(1);
+  await chat.getByRole("button", { name: "show" }).click();
+  await chat.getByLabel("Say something", { exact: true }).fill("hello from dave");
+  await chat.getByRole("button", { name: "send" }).click();
+  await expect(chat.getByText("hello from dave")).toBeVisible({ timeout: 30_000 });
+}
+
 test("the README's ten pictures", async ({ browser }) => {
   test.setTimeout(5 * 60 * 1000);
   mkdirSync(OUT, { recursive: true });
@@ -211,73 +278,89 @@ async function play(browser: Parameters<typeof person>[0], scratch: string, writ
   const ALICE = who("alice", "readme");
   const BEN = who("ben", "readme");
   const CAROL = who("carol", "readme");
-  const alice = await person(browser, ALICE);
-  const ben = await person(browser, BEN);
-  const carol = await person(browser, CAROL);
+  /** Every page the run opens, so the `finally` can empty each one. */
+  const pages: Page[] = [];
+  const open = async (email: string): Promise<Page> => {
+    const page = await person(browser, email);
+    pages.push(page);
+    return page;
+  };
+  try {
+    const alice = await open(ALICE);
+    const ben = await open(BEN);
+    const carol = await open(CAROL);
+    if (STRANGER) await strangerInTheLobby(await open(who("dave", "readme")));
 
-  // ---- the marker: a scratch table Alice abandons under Ben's eyes ---------
-  await signIn(alice, ALICE);
-  await signIn(ben, BEN);
-  const scratchId = await openTable(alice, "Scratch table", null);
-  await ben.goto(`/#/t/${scratchId}`);
-  await expect(ben.getByRole("heading", { name: "Scratch table", exact: true, level: 3 })).toBeVisible();
-  await alice.getByRole("button", { name: /^abandon( and save)? Scratch table$/ }).click();
-  await alice.getByRole("button", { name: /^confirm abandon( and save)? Scratch table$/ }).click();
-  await expect(alice).toHaveURL(/#\/lobby$/);
-  opened = null;
-  await expect(ben.getByText(/was abandoned/)).toBeVisible({ timeout: 30_000 });
-  const markerPath = await shoot(ben, "marker-404.png", scratch);
-  written.push(markerPath);
+    // ---- the marker: a scratch table Alice abandons under Ben's eyes ---------
+    await signIn(alice, ALICE);
+    await signIn(ben, BEN);
+    const scratchId = await openTable(alice, "Scratch table", null);
+    await ben.goto(`/#/t/${scratchId}`);
+    await expect(ben.getByRole("heading", { name: "Scratch table", exact: true, level: 3 })).toBeVisible();
+    await alice.getByRole("button", { name: /^abandon( and save)? Scratch table$/ }).click();
+    await alice.getByRole("button", { name: /^confirm abandon( and save)? Scratch table$/ }).click();
+    await expect(alice).toHaveURL(/#\/lobby$/);
+    opened = null;
+    await expect(ben.getByText(/was abandoned/)).toBeVisible({ timeout: 30_000 });
+    const markerPath = await shoot(ben, "marker-404.png", scratch);
+    written.push(markerPath);
 
-  // ---- the door ------------------------------------------------------------
-  await alice.goto("/#/");
-  await expect(alice.getByRole("heading", { name: "Yokohama", level: 1 })).toBeVisible();
-  await expect(alice.locator(".door-cards")).toBeVisible();
-  written.push(await shoot(alice, "door-desktop.png", scratch));
-  await alice.setViewportSize(PHONE);
-  written.push(await shoot(alice, "door-phone.png", scratch));
-  await alice.setViewportSize(DESKTOP);
+    // ---- the door ------------------------------------------------------------
+    await alice.goto("/#/");
+    await expect(alice.getByRole("heading", { name: "Yokohama", level: 1 })).toBeVisible();
+    await expect(alice.locator(".door-cards")).toBeVisible();
+    written.push(await shoot(alice, "door-desktop.png", scratch));
+    await alice.setViewportSize(PHONE);
+    written.push(await shoot(alice, "door-phone.png", scratch));
+    await alice.setViewportSize(DESKTOP);
 
-  // ---- Friday game: Alice opens it, locked, one seat open ------------------
-  const id = await openTable(alice, "Friday game", PASSWORD);
-  written.push(await shoot(alice, "open-table-desktop.png", scratch));
+    // ---- Friday game: Alice opens it, locked, one seat open ------------------
+    const id = await openTable(alice, "Friday game", PASSWORD);
+    written.push(await shoot(alice, "open-table-desktop.png", scratch));
 
-  // ---- Ben's lobby lists it ------------------------------------------------
-  await ben.goto("/#/lobby");
-  await ben.reload();
-  await expect(ben.getByText("Friday game").first()).toBeVisible({ timeout: 30_000 });
-  written.push(await shoot(ben, "lobby-desktop.png", scratch));
+    // ---- Ben's lobby lists it ------------------------------------------------
+    await ben.goto("/#/lobby");
+    await ben.reload();
+    await expect(ben.getByText("Friday game").first()).toBeVisible({ timeout: 30_000 });
+    written.push(await shoot(ben, "lobby-desktop.png", scratch));
 
-  // ---- Ben, at the locked table --------------------------------------------
-  await ben.goto(`/#/t/${id}`);
-  await expect(ben.getByRole("heading", { name: "Friday game", exact: true, level: 3 })).toBeVisible();
-  await ben.getByLabel("Table password", { exact: true }).fill(PASSWORD);
-  written.push(await shoot(ben, "join-desktop.png", scratch));
-  await ben.getByRole("button", { name: "Join as Blue" }).click();
+    // ---- Ben, at the locked table --------------------------------------------
+    await ben.goto(`/#/t/${id}`);
+    await expect(ben.getByRole("heading", { name: "Friday game", exact: true, level: 3 })).toBeVisible();
+    await ben.getByLabel("Table password", { exact: true }).fill(PASSWORD);
+    written.push(await shoot(ben, "join-desktop.png", scratch));
+    await ben.getByRole("button", { name: "Join as Blue" }).click();
 
-  // ---- the deal: Alice chooses her card ------------------------------------
-  await expect(alice.locator('.deal-seat[data-seat="1"]')).toContainText(BEN, { timeout: 30_000 });
-  const keepA = alice.getByRole("button", { name: /^keep O\d\d/ }).first();
-  await expect(keepA).toBeVisible({ timeout: 30_000 });
-  written.push(await shoot(alice, "deal-desktop.webp", scratch));
-  for (const p of [alice, ben]) {
-    const keep = p.getByRole("button", { name: /^keep O\d\d/ }).first();
-    await expect(keep).toBeVisible({ timeout: 30_000 });
-    await keep.click();
+    // ---- the deal: Alice chooses her card ------------------------------------
+    await expect(alice.locator('.deal-seat[data-seat="1"]')).toContainText(BEN, { timeout: 30_000 });
+    const keepA = alice.getByRole("button", { name: /^keep O\d\d/ }).first();
+    await expect(keepA).toBeVisible({ timeout: 30_000 });
+    written.push(await shoot(alice, "deal-desktop.webp", scratch));
+    for (const p of [alice, ben]) {
+      const keep = p.getByRole("button", { name: /^keep O\d\d/ }).first();
+      await expect(keep).toBeVisible({ timeout: 30_000 });
+      await keep.click();
+    }
+    await expect(alice.getByText(/end triggers:/)).toBeVisible({ timeout: 30_000 });
+    await expect(ben.getByText(/end triggers:/)).toBeVisible({ timeout: 30_000 });
+
+    // ---- Alice's first turn, at desktop width and at a phone's ---------------
+    written.push(await shoot(alice, "game-desktop-player.webp", scratch));
+    await alice.setViewportSize(PHONE);
+    written.push(await shoot(alice, "game-phone.webp", scratch));
+    await alice.setViewportSize(DESKTOP);
+
+    // ---- Carol watches -------------------------------------------------------
+    await signIn(carol, CAROL, `/#/t/${id}`);
+    await carol.getByLabel("Table password", { exact: true }).fill(PASSWORD);
+    await carol.getByRole("button", { name: "Spectate" }).click();
+    await expect(carol.getByText("You are spectating")).toBeVisible({ timeout: 30_000 });
+    written.push(await shoot(carol, "game-desktop-watcher.webp", scratch));
+  } finally {
+    // **Every page to `about:blank` before anything else can photograph or
+    // snapshot it** (W-2): whatever Playwright takes after the test body, or a
+    // later option turns on, then sees an empty page. The afterEach's abandon
+    // goes through `page.request`, which reads no page's address.
+    await Promise.all(pages.map((p) => p.goto("about:blank").catch(() => undefined)));
   }
-  await expect(alice.getByText(/end triggers:/)).toBeVisible({ timeout: 30_000 });
-  await expect(ben.getByText(/end triggers:/)).toBeVisible({ timeout: 30_000 });
-
-  // ---- Alice's first turn, at desktop width and at a phone's ---------------
-  written.push(await shoot(alice, "game-desktop-player.webp", scratch));
-  await alice.setViewportSize(PHONE);
-  written.push(await shoot(alice, "game-phone.webp", scratch));
-  await alice.setViewportSize(DESKTOP);
-
-  // ---- Carol watches -------------------------------------------------------
-  await signIn(carol, CAROL, `/#/t/${id}`);
-  await carol.getByLabel("Table password", { exact: true }).fill(PASSWORD);
-  await carol.getByRole("button", { name: "Spectate" }).click();
-  await expect(carol.getByText("You are spectating")).toBeVisible({ timeout: 30_000 });
-  written.push(await shoot(carol, "game-desktop-watcher.webp", scratch));
 }
