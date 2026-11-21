@@ -583,7 +583,7 @@ Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`
   3. `a_refused_toggle_is_refed_and_changes_nothing`: at the Church on turn 1 the seat holds no imported good, so `6` is refused; the refusal is a 200 that leaves the picker open, so the line sits in the list, and the restored selection equals the one before the restore. Send `2` before the refused `6`, so the selection the restore must reproduce is silk alone and not the empty one a restore that fed nothing would also show.
 - [ ] **Step 2: Run.** These cells are expected green on the code as Tasks 3 and 4 left it; that is the finding (design §3: "the mechanism covers it unchanged"). **Step 3:** `cargo test -p yokohama-worker`, then `cd worker && npm run build:module:debug && npm test`. **Step 4: commit.**
 
-**Mutants** (the reviewer's, on an export, since the task adds no product code): `chooser_screen`'s sub-prompts treated as closed by `is_open` (cells 1, 2). The list's first line dropped at restore (the chooser never opens: cells 1, 2). A restore that feeds each distinct line once (cell 1's lines: tea stays on). A restore that feeds a refused line's neighbours but skips 200s that changed nothing (cell 3).
+**Mutants** (the reviewer's, on an export, since the task adds no product code): `chooser_screen`'s sub-prompts treated as closed by `is_open` (cells 1, 2). The list's first line dropped at restore (the chooser never opens: cells 1, 2). A restore that feeds each distinct line once (cell 1's lines: tea stays on). A restore that takes a refused line's 200 for a failed re-feed and gives up (cell 3); one that merely skips a refused line is an equivalent mutant, since a refused line leaves no trace to miss.
 
 ---
 
