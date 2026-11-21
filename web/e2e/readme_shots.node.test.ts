@@ -134,14 +134,28 @@ describe("readme_shots.spec.ts writes nothing of a stranger's when it fails", ()
   });
 
   it("refuses the stranger arm at the module's top when the target is live", () => {
+    // The condition EXACTLY `STRANGER && LIVE` and the branch a lone `throw`:
+    // a looser read (both names somewhere in the condition) let `STRANGER &&
+    // LIVE && false` pass when this cell was probed.
     const refusal = top.find(
-      (s) =>
+      (s): s is ts.IfStatement =>
         ts.isIfStatement(s) &&
-        /\bSTRANGER\b/.test(s.expression.getText(sf)) &&
-        /\bLIVE\b/.test(s.expression.getText(sf)) &&
-        /\bthrow\b/.test(s.thenStatement.getText(sf)),
+        s.expression.getText(sf) === "STRANGER && LIVE" &&
+        s.elseStatement === undefined &&
+        ts.isBlock(s.thenStatement) &&
+        s.thenStatement.statements.length === 1 &&
+        ts.isThrowStatement(s.thenStatement.statements[0]!),
     );
-    expect(refusal, "no top-level if (STRANGER && LIVE) throw").toBeDefined();
+    expect(refusal, "no top-level if (STRANGER && LIVE) { throw … }").toBeDefined();
+    // And STRANGER is the variable itself, read where it is declared.
+    const declared = top.some(
+      (s) =>
+        ts.isVariableStatement(s) &&
+        s.declarationList.declarations.some(
+          (d) => ts.isIdentifier(d.name) && d.name.text === "STRANGER" && d.initializer?.getText(sf) === 'process.env.YOKOHAMA_WEB_README_SHOTS_STRANGER === "1"',
+        ),
+    );
+    expect(declared, 'STRANGER is not process.env.YOKOHAMA_WEB_README_SHOTS_STRANGER === "1"').toBe(true);
     expect(top.indexOf(refusal!), "it comes after the first test").toBeLessThan(firstTest);
   });
 });

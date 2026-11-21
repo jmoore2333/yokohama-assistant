@@ -756,6 +756,7 @@ self-host guide's §3–§4 (`deploy/README.md`) and `worker/RUNBOOK.md` §3 giv
 | `EXIT_SCREEN` | orchestrator-only | `1280x832` | the screen's logical size for the exit game's three windows | the Worker | `web/e2e/exit_game.spec.ts` |
 | `YOKOHAMA_WEB_README_SHOTS` | test-only | off | `1` collects `readme_shots.spec.ts`, which writes the ten README pictures on the run's target | local or live | `web/e2e/live.ts`, `web/playwright.config.ts` |
 | `YOKOHAMA_WEB_README_SHOTS_DIR` | test-only | `worker/docs/img` | where those pictures go | local or live | `web/e2e/readme_shots.spec.ts` |
+| `YOKOHAMA_WEB_README_SHOTS_STRANGER` | test-only | off | `1` adds a fourth person, Dave, who opens a table of his own and posts one lobby chat line before the lobby pictures, so the sidecar's redaction meets a stranger's row and message in a real browser; the spec refuses it, at its top, when the target is live | local only | `web/e2e/readme_shots.spec.ts` |
 | `YOKOHAMA_WEB_STATE1_GAME` | orchestrator-only | off | `1` collects `state1_game.spec.ts`: a plain two-person game through the open door, with the tally | the Worker in state 1; local | `web/e2e/live.ts` |
 | `YOKOHAMA_WEB_STATE1_OUT` | orchestrator-only | none | a file that game writes its table id to, for the query API | the same | `web/e2e/state1_game.spec.ts` |
 | `YOKOHAMA_WEB_TALLY` | test-only | no tally | a file each page appends one JSON line per request to; `web/scripts/tally-report.mjs` reads it as requests per move and 10-second peaks | local or live | `web/e2e/harness.ts` |
