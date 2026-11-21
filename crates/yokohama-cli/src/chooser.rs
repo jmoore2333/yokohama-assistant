@@ -327,6 +327,20 @@ mod tests {
         let model = church_model(&state, &rules, &legal_of(&state), [false; 6]);
         let copper = &model.kinds[0];
         assert_eq!((copper.have, copper.offered), (0, false));
+
+        // Where a stock rule and the list PART: copper and silk are in hand,
+        // but with everything else gone no payment reaches an empty space, so
+        // the list holds no Church move. `have >= amount` would read both as
+        // offered.
+        let mut state = issue_position();
+        let p = &mut state.players[me];
+        (p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0);
+        let legal = legal_of(&state);
+        assert!(church_moves(&legal).is_empty(), "no Church move is listed");
+        let model = church_model(&state, &rules, &legal, [false; 6]);
+        assert_eq!((model.kinds[0].have, model.kinds[0].offered), (1, false));
+        assert_eq!((model.kinds[1].have, model.kinds[1].offered), (5, false));
+        assert_eq!(model.offered_faiths, None);
     }
 
     #[test]
@@ -346,6 +360,31 @@ mod tests {
             ["copper", "silk", "tea", "seafood", "2 yen", "imported good"]
         );
         assert_eq!(model.kinds.iter().map(|k| k.have).collect::<Vec<_>>(), [1, 5, 2, 3, 2, 1]);
+
+        // The fixture's own stocks repeat (copper and imported goods 1, tea and
+        // money 2), so a swap of two fields in `stock` passes the reading
+        // above: six different stocks tell them apart.
+        let mut state = issue_position();
+        let p = &mut state.players[state.current_player.0 as usize];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (1, 5, 2, 3, 4, 6);
+        let model = church_model(&state, &rules, &legal_of(&state), [false; 6]);
+        assert_eq!(model.kinds.iter().map(|k| k.have).collect::<Vec<_>>(), [1, 5, 2, 3, 4, 6]);
+    }
+
+    #[test]
+    fn a_list_offering_one_faith_says_so() {
+        let rules = Rules::standard();
+        let mut state = issue_position();
+        let dummy = state.church_track.slots[3].expect("the 2P dummy holds faith 7");
+        for slot in 4..7 {
+            state.church_track.slots[slot] = Some(dummy);
+        }
+        let legal = legal_of(&state);
+        // Only space 11 is empty, so only the six-kind payment is listed.
+        assert_eq!(church_moves(&legal).len(), 1);
+        let model = church_model(&state, &rules, &legal, flags(&[Good::Silk]));
+        assert!(!model.preview.legal);
+        assert_eq!(model.offered_faiths.as_deref(), Some("the list offers faith 11 here"));
     }
 
     #[test]
