@@ -520,20 +520,22 @@ export function Tokens(props: { good: ChooserGood; amount: number; art: ArtManif
 
 - Plus is disabled when `busy` or not `can_add`, and sends the row's `number`. Minus is disabled when `busy` or the count is zero, and sends `back {number}`. A plus that cannot add and a minus at zero carry `data-unavailable`, by Task 5's rule. Their names are `one more: {words}` and `one fewer: {words}`.
 - The verdict is empty when `chosen` is 0; otherwise Task 5's two forms (with no faith line).
-- The asking line: `Chinatown — up to {max_exchanges} exchanges · {chosen} of {max_exchanges} chosen`.
+- The asking line: `Chinatown — up to {max_exchanges} exchanges · {chosen} of {max_exchanges} chosen`. With `max_exchanges` 1 it reads `exchange`, in the singular, as the terminal's heading does.
 - The rows are the deck's scrolling box while the chooser is open, as `.options.scrolls` is for a list; Confirm and Cancel stay outside it.
 
 - [ ] **Step 1: Write the cells**, `describe("Chinatown's chooser")`:
-  1. Nine rows; the four with `sells` under `Sell` and the five others under `Buy`, in the payload's order; each row's words the payload's.
+  1. Nine rows; the four with `sells` under `Sell` and the five others under `Buy`, in the payload's order; each row's words the payload's. Each row's pictures and arrow are inside one `aria-hidden` wrapper, so the row's words are its one reading. On a clone of `wire.chinatown` with its rows reversed, the four rows with `sells` are still under `Sell`: the split reads the flag, not the position. On a clone with row 1's `words` changed, the row's `.words` and its plus and minus names read the changed words; on a clone with row 1's `gain` amount set to 3, its gain token is labelled `3 yen`.
   2. Plus sends the row's `number`; minus sends `back ` and the number; on `wire.chinatown` every minus is disabled; on `wire.chinatownSelected` exactly the chosen row's minus is enabled and its `.n` reads its count.
-  3. A row whose `can_add` is false has its plus disabled with `data-unavailable`, and a click sends nothing. `wire.chinatown` has one, the imported-good purchase, which is `offered`; `wire.chinatownSelected` has the copper sale already chosen. Assert both preconditions.
-  4. The stock row reads the payload's six amounts in its order.
-  5. Confirm is disabled on `wire.chinatown` and enabled on `wire.chinatownSelected`; the verdict is empty on the first and reads `legal — ` with the payload's words on the second.
-  6. The asking line on both fixtures, with their own numbers.
+  3. A row whose `can_add` is false has its plus disabled with `data-unavailable`, and a click sends nothing. `wire.chinatown` has one, the imported-good purchase, which is `offered`; `wire.chinatownSelected` has the copper sale already chosen. Assert both preconditions. On `wire.chinatownSelected`, row 1's plus is disabled with `data-unavailable` though the stock still shows 1 copper, and row 9's plus is enabled though the stock shows 3 yen against a spend of 4: a rule worked from the stock and the spend fails both.
+  4. The stock row reads the payload's six amounts in its order. Each entry is one `role="img"` node named by `tokenLabel` (`3 yen`, `0 imported goods` on the fixtures) holding one small token and the amount. On a clone with the six stock amounts set to 1, 2, 3, 4, 5 and 6, the entries read those in the payload's order: four of the fixture's own amounts are 1.
+  5. Confirm is disabled on `wire.chinatown` and enabled on `wire.chinatownSelected`; the verdict is empty on the first and reads `legal — ` with the payload's words on the second. On a clone of `wire.chinatownSelected` with its preview set to `{ legal: false, words: null }`, Confirm is disabled with `data-unavailable` though `chosen` is 1, and the verdict reads `not offered — adjust the selection`: Confirm worked out from `chosen` passes the two fixtures and fails this one. Cancel carries no `data-unavailable` there.
+  6. The asking line on both fixtures, with their own numbers. On a clone of `wire.chinatown` with `max_exchanges` 1 it reads `Chinatown — up to 1 exchange · 0 of 1 chosen`.
   7. A watcher's render draws no stepper and no Confirm.
 - [ ] **Step 2: run red. Step 3: implement. Step 4: green, then `npm run typecheck && npm test`. Step 5: commit.**
 
 **Mutants:** minus sending the bare number (cell 2). Plus enabled from `offered` instead of `can_add` (cell 3: the fixture's imported-good row is offered and cannot be added). Rows split at index 4 instead of by `sells` (the reviewer reverses a clone's rows; cell 1 must still group by the flag). Confirm enabled at `chosen` 0 (cell 5).
+The asking line left plural at one exchange (cell 6's clone). A row's pictures read aloud beside its words (cell 1's accessible reading).
+Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`). Confirm live whenever `chosen` is above zero (cell 5's clone). The stock entries out of the payload's order (cell 4's clone). A row's words or amounts rebuilt in the client (cell 1's clones). Cancel mirroring Confirm's `data-unavailable` (cell 5's clone).
 
 ---
 

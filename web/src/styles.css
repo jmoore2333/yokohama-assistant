@@ -948,6 +948,48 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .chooser .verdict.bad .tag { color: var(--warn); }
 .chooser .verdict .faiths { color: var(--fg-dim); }
 
+/* Chinatown: the stock, then the rows in the deck's one scrolling box, then
+ * the verdict. `.options.scrolls`' contract: the chooser takes what the deck
+ * has left (`flex: 1 1 auto`), its `.rows` are the only thing inside it that
+ * scrolls, and the stock above and the verdict below keep their size. The
+ * chooser's floor is the stock, the rows' own floor of about two rows and the
+ * verdict's reserved lines, so nothing inside it ever spills over Confirm;
+ * Confirm and Cancel are siblings after it, never inside the clip. */
+.decision > .chooser.chinatown {
+  flex: 1 1 auto; min-height: 10.5rem; display: flex; flex-direction: column; max-width: 62rem;
+}
+.chooser.chinatown .stock { flex: none; }
+.chooser.chinatown .rows {
+  flex: 1 1 auto; min-height: 4.5rem; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.chinatown .verdict { flex: none; }
+.side-h { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-faint); margin: 0.7rem 0 0.3rem; }
+.side-h:first-child { margin-top: 0.2rem; }
+.ex {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.3rem 0.5rem; margin-bottom: 4px;
+}
+.ex.on { border-color: var(--vp); }
+.ex .what { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.ex .pics { display: inline-flex; align-items: center; gap: 0.35rem; flex: none; }
+.ex .arrow { color: var(--fg-faint); }
+.ex .words {
+  color: var(--fg-dim); font-size: 11px; margin-left: 0.3rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.step { display: flex; align-items: center; gap: 0.3rem; }
+.step button {
+  width: 28px; height: 28px; border-radius: var(--radius); border: 1px solid var(--line-bright);
+  background: var(--bg); color: var(--fg); cursor: pointer; font: inherit; font-weight: 700; padding: 0;
+}
+.step button:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+.step button:disabled { opacity: 0.3; cursor: default; }
+.step .n { min-width: 1.4rem; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stock { display: flex; flex-wrap: wrap; gap: 0.7rem; font-size: 11.5px; color: var(--fg-dim); margin-bottom: 0.2rem; }
+.stock .item { display: inline-flex; align-items: center; gap: 0.25rem; }
+
 .near-miss { margin-top: 0.7rem; font-size: 11px; color: var(--fg-dim); max-width: 62rem; }
 .near-miss b { color: var(--fg); }
 

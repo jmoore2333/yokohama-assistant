@@ -611,3 +611,313 @@ describe("the Church's chooser", () => {
     for (const b of kindButtons(plain.container)) expect(b.querySelector(".tokens img")).toBeNull();
   });
 });
+
+describe("Chinatown's chooser", () => {
+  // Two real replies from a four-player table (`wire/chinatown*.json`). What
+  // each IS is asserted before a cell relies on it. A clone changes ONE fact,
+  // and each exists to tell a payload read from a rule worked out in the client.
+  const chinaPrompt = (s: ClientState) => {
+    if (s.prompt.kind !== "chinatown") throw new Error("fixture moved");
+    return s.prompt;
+  };
+  const clone = (s: ClientState): ClientState => JSON.parse(JSON.stringify(s)) as ClientState;
+  const cloneChina = (s: ClientState, edit: (p: ReturnType<typeof chinaPrompt>) => void) => {
+    const c = clone(s);
+    edit(chinaPrompt(c));
+    return c;
+  };
+  const rowEls = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLElement>(".chooser.chinatown .ex")];
+  const plus = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("button.plus")!;
+  const minus = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("button.minus")!;
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  /** Which heading each row stands under, read off the DOM in document order. */
+  const grouped = (container: HTMLElement) => {
+    const out: Record<string, number[]> = {};
+    let heading = "";
+    for (const el of container.querySelectorAll<HTMLElement>(".chooser.chinatown .side-h, .chooser.chinatown .ex")) {
+      if (el.classList.contains("side-h")) {
+        heading = el.textContent ?? "";
+        out[heading] = [];
+      } else {
+        out[heading]!.push(Number(el.dataset.number));
+      }
+    }
+    return out;
+  };
+
+  it("draws nine rows, sales under Sell and purchases under Buy, in the payload's words", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.rows).toHaveLength(9);
+    expect(p.rows.map((r) => r.sells)).toEqual([true, true, true, true, false, false, false, false, false]);
+    const { container } = show(wire.chinatown);
+    const els = rowEls(container);
+    expect(els).toHaveLength(9);
+    expect(grouped(container)).toEqual({ Sell: [1, 2, 3, 4], Buy: [5, 6, 7, 8, 9] });
+    els.forEach((el, i) => {
+      expect(el.dataset.number).toBe(String(p.rows[i]!.number));
+      expect(el.querySelector(".what .words")!.textContent).toBe(p.rows[i]!.words);
+    });
+
+    // Said once: the pictures and the arrow sit inside ONE hidden wrapper and
+    // the words after it are the row's reading. What a reader meets as an image
+    // is the six stock entries and nothing in a row.
+    for (const el of els) {
+      const pics = el.querySelector(".what > [aria-hidden='true']")!;
+      expect(pics.querySelectorAll(".tokens")).toHaveLength(2);
+      expect(pics.querySelector(".arrow")).not.toBeNull();
+      expect(pics.contains(el.querySelector(".words"))).toBe(false);
+      expect(el.querySelector(".words")!.closest("[aria-hidden='true']")).toBeNull();
+    }
+    expect(screen.getAllByRole("img").map((n) => n.getAttribute("aria-label"))).toEqual(
+      p.stock.map((s) => `${s.amount} ${s.good === "Imports" ? "imported goods" : s.good.toLowerCase()}`),
+    );
+    cleanup();
+
+    // The split reads the flag, not the position: with the rows reversed the
+    // four sales (now last in the payload) are still under Sell.
+    const reversed = cloneChina(wire.chinatown, (c) => c.rows.reverse());
+    const flipped = show(reversed);
+    expect(chinaPrompt(reversed).rows.map((r) => r.number)).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    expect(grouped(flipped.container)).toEqual({ Sell: [4, 3, 2, 1], Buy: [9, 8, 7, 6, 5] });
+    cleanup();
+
+    // The words are the payload's, and so are the amounts the pictures show.
+    const reworded = cloneChina(wire.chinatown, (c) => {
+      c.rows[0]!.words = "one copper for two yen";
+      c.rows[0]!.gain.amount = 3;
+    });
+    const edited = show(reworded);
+    const first = rowEls(edited.container)[0]!;
+    expect(first.querySelector(".words")!.textContent).toBe("one copper for two yen");
+    expect(plus(first)).toHaveAccessibleName("one more: one copper for two yen");
+    expect(minus(first)).toHaveAccessibleName("one fewer: one copper for two yen");
+    const [spend, gain] = [...first.querySelectorAll(".what .tokens")];
+    expect(spend!.getAttribute("aria-label")).toBe("1 copper");
+    expect(gain!.getAttribute("aria-label")).toBe("3 yen");
+    expect(gain!.querySelectorAll(".tok")).toHaveLength(3);
+  });
+
+  it("sends a plus's number and a minus's `back` and number, and marks the chosen row", async () => {
+    const none = chinaPrompt(wire.chinatown);
+    expect(none.rows.map((r) => r.count)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const first = show(wire.chinatown);
+    for (const el of rowEls(first.container)) {
+      expect(minus(el)).toBeDisabled();
+      expect(el).not.toHaveClass("on");
+      expect(el.querySelector(".n")!.textContent).toBe("0");
+    }
+    // Rows 2 and 6: their numbers are neither their index nor a count.
+    await first.user.click(plus(rowEls(first.container)[1]!));
+    await first.user.click(plus(rowEls(first.container)[5]!));
+    expect(first.onSend.mock.calls).toEqual([["2"], ["6"]]);
+    cleanup();
+
+    const some = chinaPrompt(wire.chinatownSelected);
+    expect(some.rows.map((r) => r.count)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const { container, onSend, user } = show(wire.chinatownSelected);
+    const els = rowEls(container);
+    expect(els.map((el) => el.classList.contains("on"))).toEqual([true, false, false, false, false, false, false, false, false]);
+    expect(els.map((el) => !minus(el).disabled)).toEqual([true, false, false, false, false, false, false, false, false]);
+    expect(els.map((el) => el.querySelector(".n")!.textContent)).toEqual(["1", "0", "0", "0", "0", "0", "0", "0", "0"]);
+    // A minus at zero is unavailable by the payload; one with something to
+    // take back is neither unavailable nor disabled.
+    expect(minus(els[0]!)).not.toHaveAttribute("data-unavailable");
+    for (const el of els.slice(1)) expect(minus(el)).toHaveAttribute("data-unavailable");
+    await user.click(minus(els[0]!));
+    await user.click(minus(els[3]!));
+    expect(onSend.mock.calls).toEqual([["back 1"]]);
+    cleanup();
+
+    // In flight: the chosen row's minus is disabled but nothing the payload
+    // said made it unavailable.
+    const busy = show(wire.chinatownSelected, true);
+    const b = rowEls(busy.container);
+    expect(minus(b[0]!)).toBeDisabled();
+    expect(minus(b[0]!)).not.toHaveAttribute("data-unavailable");
+    expect(minus(b[1]!)).toHaveAttribute("data-unavailable");
+    for (const el of b) expect(plus(el)).toBeDisabled();
+  });
+
+  it("disables a plus the list cannot take, by the payload's `can_add`", async () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.rows.map((r) => r.can_add)).toEqual([true, true, true, true, true, true, true, true, false]);
+    expect(p.rows[8]!.offered, "the purchase is offered though it cannot be added").toBe(true);
+    const first = show(wire.chinatown);
+    const els = rowEls(first.container);
+    expect(plus(els[8]!)).toBeDisabled();
+    expect(plus(els[8]!)).toHaveAttribute("data-unavailable");
+    expect(plus(els[8]!)).toHaveAccessibleName("one more: 4 yen -> 1 imported good");
+    await first.user.click(plus(els[8]!));
+    expect(first.onSend).not.toHaveBeenCalled();
+    for (const el of els.slice(0, 8)) {
+      expect(plus(el)).toBeEnabled();
+      expect(plus(el)).not.toHaveAttribute("data-unavailable");
+    }
+    cleanup();
+
+    // With the copper sale chosen, the one copper is spent: row 1 cannot take
+    // another. The stock still reads 1 copper and 3 yen, so a rule worked from
+    // the stock and the spend fails BOTH readings below: row 1 (1 copper held,
+    // 1 to spend) would be addable, and row 9 (3 yen held, 4 to spend) not.
+    const chosen = chinaPrompt(wire.chinatownSelected);
+    expect(chosen.rows[0]!.count).toBe(1);
+    expect(chosen.rows[0]!.can_add).toBe(false);
+    expect(chosen.stock[0]).toEqual({ good: "Copper", amount: 1 });
+    expect(chosen.rows[8]!.can_add).toBe(true);
+    expect(chosen.stock[4]).toEqual({ good: "Yen", amount: 3 });
+    expect(chosen.rows[8]!.spend.amount).toBe(4);
+    const second = show(wire.chinatownSelected);
+    const sel = rowEls(second.container);
+    expect(plus(sel[0]!)).toBeDisabled();
+    expect(plus(sel[0]!)).toHaveAttribute("data-unavailable");
+    expect(plus(sel[8]!)).toBeEnabled();
+    expect(plus(sel[8]!)).not.toHaveAttribute("data-unavailable");
+    await second.user.click(plus(sel[0]!));
+    await second.user.click(plus(sel[8]!));
+    expect(second.onSend.mock.calls).toEqual([["9"]]);
+    cleanup();
+
+    // In flight: every plus is disabled, and only the cannot-add one is
+    // unavailable.
+    const busy = show(wire.chinatown, true);
+    const b = rowEls(busy.container);
+    for (const el of b) expect(plus(el)).toBeDisabled();
+    for (const el of b.slice(0, 8)) expect(plus(el)).not.toHaveAttribute("data-unavailable");
+    expect(plus(b[8]!)).toHaveAttribute("data-unavailable");
+  });
+
+  it("reads the stock from the payload, one image node per good", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.stock.map((s) => s.amount)).toEqual([1, 1, 1, 1, 3, 0]);
+    const { container } = show(wire.chinatown);
+    const entries = [...container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(entries).toHaveLength(6);
+    expect(entries.map((e) => e.getAttribute("role"))).toEqual(Array(6).fill("img"));
+    expect(entries.map((e) => e.getAttribute("aria-label"))).toEqual([
+      "1 copper", "1 silk", "1 tea", "1 seafood", "3 yen", "0 imported goods",
+    ]);
+    expect(entries.map((e) => e.getAttribute("data-good"))).toEqual(p.stock.map((s) => s.good));
+    expect(entries.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["1", "1", "1", "1", "3", "0"]);
+    // ONE small token, never `amount` copies (three yen draw one).
+    for (const e of entries) {
+      expect(e.querySelectorAll(".tok")).toHaveLength(1);
+      expect(e.querySelector(".tok")).toHaveClass("sm");
+    }
+    cleanup();
+
+    // Four of the fixture's own amounts are 1; these six differ, so an entry
+    // that took its amount from anywhere else reads wrong.
+    const counted = cloneChina(wire.chinatown, (c) => {
+      c.stock.forEach((s, i) => (s.amount = i + 1));
+    });
+    const edited = show(counted);
+    const read = [...edited.container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(read.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(read.map((e) => e.getAttribute("aria-label"))).toEqual([
+      "1 copper", "2 silk", "3 tea", "4 seafood", "5 yen", "6 imported goods",
+    ]);
+    cleanup();
+
+    // And the payload's order is the order drawn.
+    const reversed = cloneChina(counted, (c) => c.stock.reverse());
+    const flipped = show(reversed);
+    const back = [...flipped.container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(back.map((e) => e.getAttribute("data-good"))).toEqual(["Imports", "Yen", "Seafood", "Tea", "Silk", "Copper"]);
+    expect(back.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["6", "5", "4", "3", "2", "1"]);
+  });
+
+  it("enables Confirm only where the preview is legal, and reads the verdict from it", async () => {
+    const empty = chinaPrompt(wire.chinatown);
+    expect(empty.chosen).toBe(0);
+    expect(empty.preview).toEqual({ legal: false, words: null });
+    const first = show(wire.chinatown);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    const quiet = first.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(quiet).toHaveAttribute("role", "status");
+    expect(quiet.textContent).toBe("");
+    cleanup();
+
+    const legal = chinaPrompt(wire.chinatownSelected);
+    expect(legal.preview).toEqual({ legal: true, words: "Chinatown: 1 copper -> 2 yen" });
+    const second = show(wire.chinatownSelected);
+    expect(button("Confirm")).toBeEnabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    const verdict = second.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(verdict).toHaveAttribute("role", "status");
+    expect(verdict).toHaveClass("ok");
+    expect(verdict.textContent).toBe("legal — Chinatown: 1 copper -> 2 yen");
+    // Confirm and Cancel stay outside the box that scrolls.
+    expect(button("Confirm").closest(".rows")).toBeNull();
+    expect(button("Confirm").closest(".chooser")).toBeNull();
+    await second.user.click(button("Confirm"));
+    await second.user.click(button("Cancel"));
+    expect(second.onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    cleanup();
+
+    // In flight: disabled, but nothing the payload said made it unavailable.
+    show(wire.chinatownSelected, true);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeDisabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // One fact apart: the selected fixture with its preview not legal. A
+    // Confirm worked out from `chosen` passes both fixtures and fails this.
+    const unlegal = cloneChina(wire.chinatownSelected, (c) => {
+      c.preview = { legal: false, words: null };
+    });
+    expect(chinaPrompt(unlegal).chosen).toBe(1);
+    const third = show(unlegal);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    const v = third.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(v).toHaveClass("bad");
+    expect(v).not.toHaveClass("ok");
+    expect(v.textContent).toBe("not offered — adjust the selection");
+    expect(v.querySelector("div")).toBeNull();
+  });
+
+  it("asks how many exchanges are chosen, in the singular at one", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect([p.max_exchanges, p.chosen]).toEqual([3, 0]);
+    const first = show(wire.chinatown);
+    expect(first.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 0 of 3 chosen",
+    );
+    expect(first.container.querySelectorAll("button.option")).toHaveLength(0);
+    expect(first.container.querySelector(".decision > .chooser.chinatown")).not.toBeNull();
+    cleanup();
+
+    const q = chinaPrompt(wire.chinatownSelected);
+    expect([q.max_exchanges, q.chosen]).toEqual([3, 1]);
+    const second = show(wire.chinatownSelected);
+    expect(second.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 1 of 3 chosen",
+    );
+    cleanup();
+
+    const one = cloneChina(wire.chinatown, (c) => {
+      c.max_exchanges = 1;
+    });
+    const third = show(one);
+    expect(third.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 1 exchange · 0 of 1 chosen",
+    );
+  });
+
+  it("draws no stepper and no Confirm for a watcher", () => {
+    const { container } = show(wire.chinatownSelected, false, true);
+    expect(container.querySelector(".chooser")).toBeNull();
+    expect(container.querySelectorAll("button.plus, button.minus")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+});

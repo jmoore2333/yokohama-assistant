@@ -1,8 +1,9 @@
 import { seatClass } from "./Cards";
 import { OutcomeView } from "./Index";
-import { Tokens } from "./Token";
+import { Tokens, tokenLabel } from "./Token";
 import type {
   ArtManifest,
+  ChinatownRow,
   ChooserPreview,
   ClientState,
   Outcome,
@@ -348,6 +349,52 @@ export function Decision({
         </div>
       )}
 
+      {/* **Chinatown's chooser** (plan 2a): the seat's stock, then nine exchanges,
+          four sales under Sell and five purchases under Buy, each with a minus,
+          the count chosen and a plus. Everything on it is the payload's — the
+          words, the amounts, the count, whether one more can be added and the
+          stock; the split is the row's own `sells` flag, never a position.
+          **The rows are the deck's scrolling box** (`.rows`, as `.options.scrolls`
+          is for a list): the stock and the verdict above and below it do not
+          scroll, and Confirm and Cancel are outside the chooser altogether. */}
+      {!spectating && prompt.kind === "chinatown" && (
+        <div className="chooser chinatown">
+          <div className="stock">
+            {prompt.stock.map((s) => (
+              /* One node a reader hears once (`3 yen`); the small token inside
+                 is hidden so it is not read a second time. */
+              <span
+                className="item"
+                key={s.good}
+                role="img"
+                aria-label={tokenLabel(s.good, s.amount)}
+                data-good={s.good}
+              >
+                <span aria-hidden="true">
+                  <Tokens good={s.good} amount={1} art={art} small />
+                </span>
+                <span className="amt">{s.amount}</span>
+              </span>
+            ))}
+          </div>
+          <div className="rows">
+            <div className="side-h">Sell</div>
+            {prompt.rows
+              .filter((r) => r.sells)
+              .map((r) => (
+                <Exchange key={r.number} row={r} art={art} busy={busy} onSend={onSend} />
+              ))}
+            <div className="side-h">Buy</div>
+            {prompt.rows
+              .filter((r) => !r.sells)
+              .map((r) => (
+                <Exchange key={r.number} row={r} art={art} busy={busy} onSend={onSend} />
+              ))}
+          </div>
+          <Verdict preview={prompt.preview} empty={prompt.chosen === 0} />
+        </div>
+      )}
+
       {/* The near-miss rows say why an area is NOT on the list a watcher was
           never offered, so they go with it. */}
       {!spectating && (d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
@@ -403,7 +450,7 @@ export function Decision({
         </div>
       )}
 
-      {!spectating && prompt.kind === "church" && (
+      {!spectating && (prompt.kind === "church" || prompt.kind === "chinatown") && (
         <ChooserControls legal={prompt.preview.legal} busy={busy} onSend={onSend} />
       )}
 
@@ -432,7 +479,18 @@ export function Decision({
  *  the legal list, and `faiths` (the Church's line, when the selection names no
  *  listed move) is the server's own sentence. A `status` region, so the verdict
  *  a click changes is announced as the terminal prints it. */
-function Verdict({ preview, faiths }: { preview: ChooserPreview; faiths?: string | null }) {
+function Verdict({
+  preview,
+  faiths,
+  empty = false,
+}: {
+  preview: ChooserPreview;
+  faiths?: string | null;
+  /** Nothing chosen yet (Chinatown at `chosen` 0): the region stays mounted
+   *  and says nothing, so the first selection is announced against it. */
+  empty?: boolean;
+}) {
+  if (empty) return <div className="verdict" role="status" />;
   return (
     <div className={`verdict ${preview.legal ? "ok" : "bad"}`} role="status">
       {preview.legal ? (
@@ -447,6 +505,61 @@ function Verdict({ preview, faiths }: { preview: ChooserPreview; faiths?: string
           {faiths && <div className="faiths">{faiths}</div>}
         </>
       )}
+    </div>
+  );
+}
+
+/** One of Chinatown's nine exchanges: the spend, an arrow and the gain as
+ *  tokens, the payload's words, and a minus, the count and a plus. The
+ *  pictures and the arrow are ONE hidden wrapper, so the words are the row's
+ *  single reading. A plus is live exactly where the payload says one more can
+ *  be added (`can_add`) and a minus where something is chosen (`count`); each
+ *  is `data-unavailable` by what the payload said, and merely disabled while a
+ *  request is in flight. A plus sends the row's number, a minus `back` and it. */
+function Exchange({
+  row,
+  art,
+  busy,
+  onSend,
+}: {
+  row: ChinatownRow;
+  art: ArtManifest | null;
+  busy: boolean;
+  onSend: (line: string) => void;
+}) {
+  return (
+    <div className={`ex${row.count > 0 ? " on" : ""}`} data-number={row.number}>
+      <span className="what">
+        <span className="pics" aria-hidden="true">
+          <Tokens good={row.spend.good} amount={row.spend.amount} art={art} small />
+          <span className="arrow">&rarr;</span>
+          <Tokens good={row.gain.good} amount={row.gain.amount} art={art} small />
+        </span>
+        <span className="words">{row.words}</span>
+      </span>
+      <span className="step">
+        <button
+          type="button"
+          className="minus"
+          aria-label={`one fewer: ${row.words}`}
+          disabled={busy || row.count === 0}
+          data-unavailable={row.count === 0 ? "true" : undefined}
+          onClick={() => onSend(`back ${row.number}`)}
+        >
+          &minus;
+        </button>
+        <span className="n">{row.count}</span>
+        <button
+          type="button"
+          className="plus"
+          aria-label={`one more: ${row.words}`}
+          disabled={busy || !row.can_add}
+          data-unavailable={row.can_add ? undefined : "true"}
+          onClick={() => onSend(String(row.number))}
+        >
+          +
+        </button>
+      </span>
     </div>
   );
 }
@@ -511,6 +624,10 @@ function asking(state: ClientState, labels: Labels | null): string {
       return "Placement — Option B.";
     case "church":
       return "The Church — what do you pay?";
+    case "chinatown": {
+      const { max_exchanges: max, chosen } = state.prompt;
+      return `Chinatown — up to ${max} exchange${max === 1 ? "" : "s"} · ${chosen} of ${max} chosen`;
+    }
     case "reveal":
       return "A card reveal is pending (live mode).";
     case "locked":
