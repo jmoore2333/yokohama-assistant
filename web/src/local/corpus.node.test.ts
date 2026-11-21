@@ -134,10 +134,14 @@ const HOST_FIELDS: Record<string, string[]> = {
  *   terminal's words, the key grammar's verdicts, the id grammar's verdicts, a
  *   seed's verdict).
  * - `watching`, `locked`, `why`, `why_withheld`, `why_refused`, `explanation_terminal`,
- *   `why_refusals`, `house_frame` and `goals_claimed_4p` are built in process by `constructed()`,
+ *   `why_refusals` and `house_frame` are built in process by `constructed()`,
  *   because a router cannot reach them from a deterministic bot-free game. The ROUTES exist on
  *   this host — the `why` ones are what the committed pair is reconstructed
  *   through — and it is the walk that cannot ask for them.
+ * - `goals_claimed_4p` is built in process by `constructed()` too, and is no
+ *   route's payload on any host: it is two panels, Achievements and Players,
+ *   of a fresh 4P position with claims set on its cards, a fixture for the
+ *   claim band, as `contract.ts` names it.
  * - `events`, `events_dealing` and `events_open` are the TRANSPORT route, which
  *   axum serves and `api::dispatch` has no row for. A browser host has no
  *   stream to signal on, so it has nothing to answer here.

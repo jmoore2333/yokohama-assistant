@@ -2487,6 +2487,8 @@ export function App() {
           changedSeats={highlights?.seats}
           changedTechs={highlights?.techs}
           changedHand={highlights?.hand}
+          // Dormant on this Dashboard: `only` never draws the Achievements
+          // panel, so it lights nothing here; kept for a caller without `only`.
           changedGoals={highlights?.goals}
           // **`state`, the live game, and never `view`**: the record's bot
           // seats do not change with the position walked or scrubbed, and a

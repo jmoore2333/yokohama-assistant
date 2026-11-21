@@ -87,7 +87,7 @@ export interface FlagCounts { english: number; american: number; french: number;
 // PlayerModel gains `flags: FlagCounts`; HandPanel gains `flags_in_hand: FlagCounts | null`
 ```
 
-The fields go LAST in each struct: serde writes keys in field order, and the corpus diff measured for this design is those two keys appended.
+The fields go LAST in each struct: serde writes keys in field order, so on the live wire the two keys are appended; the committed corpus sorts its keys (it is written through `serde_json::Value`), so there each lands in its alphabetical place (`flags` between `five_power_tokens` and `goods`), and the corpus diff measured for this design is those two keys added and nothing else.
 
 - [ ] **Step 1: Write the cells** in `screen_model.rs`'s test module.
 
@@ -260,6 +260,9 @@ The fixture's content is fixed here, because two of Task 4's mutants survive any
 /// a fresh 4P position and the panels are the model's own builders'. The order
 /// is 2, 0, 3, 1 on purpose: neither seat order nor "the lowest seat first"
 /// can pass for claim order. Constructed, not routed: a third-column file.
+/// **Only `claimed_by` is set**: the seats' rows (`on_achievements`, the
+/// points) and the cards' `progress` are the fresh setup's, so the file is a
+/// fixture for the band and not a position a game reaches.
 fn goals_claimed_4p() -> Value {
     use yokohama_cli::screen_model::{build_achievements, build_players, SeatFacts};
     use yokohama_core::{finalize_setup, new_game, GameConfig, PlayerColor, PlayerId, Rules, StartingOrderChoice};

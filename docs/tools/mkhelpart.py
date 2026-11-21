@@ -54,9 +54,10 @@ nobody touched; that is a re-cut to take deliberately, not a defect to chase.
 
 WHAT THIS DOES NOT PROVE. That the pictures are still the pictures the words
 beside them describe. `web/src/Help.tsx` gives each shot an `alt` and a
-`caption`, two of them are in `README.md`, and the server draws the game's seed
--- so every regeneration photographs a DIFFERENT game. Re-cutting is mechanical;
-checking that the caption still describes what is in frame is not, and
+`caption`, one of them (`screen.webp`) is also in `docs/web-guide.md`, and the
+server draws the game's seed -- so every regeneration photographs a DIFFERENT
+game. Re-cutting is mechanical; checking that the caption still describes what
+is in frame is not, and
 `shots.spec.ts`'s own header is where that warning is written at length.
 
 REQUIREMENTS: Pillow. Nothing in the workspace's Rust build or test path touches

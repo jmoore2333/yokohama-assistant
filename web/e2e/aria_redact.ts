@@ -6,8 +6,12 @@
 // accessibility snapshot, written beside the picture as text, is read by an
 // agent in the picture's place, so it must leave out exactly what the picture
 // masks. This is that step, as a pure function a node cell holds
-// (`aria_redact.node.test.ts`); the spec collects the masked rows' links from
-// the page at the moment it shoots, and hands them here.
+// (`aria_redact.node.test.ts`). The spec takes the screenshot, then the
+// snapshot, then reads the masked rows' links off the page, and hands the last
+// two here. That order is the safe one: a row that arrives between the snapshot
+// and the link read is in the list and not in the text, which costs nothing; a
+// row that leaves in between keeps its link in the text with nothing to redact
+// it, and the guard below refuses the file.
 //
 // Two halves, neither the other's fallback:
 //

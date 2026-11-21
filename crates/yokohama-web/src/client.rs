@@ -446,10 +446,10 @@ fn built_for(state: &GameState, viewer: Viewer) -> PlayerId {
 /// **A spectator's dashboard carries no `Hand` panel at all.**
 ///
 /// The facts hide every hand, but hiding is not removing: `build_hand` returns
-/// `Some(HandPanel { hidden: true, cards: [], card_count })` for the seat the
-/// frame was built for, so a spectator's screen would draw one seat's masked
-/// hand under the caption every other payload puts the READER's hand under —
-/// singling out a seat as "yours" that is nobody's. The other panels are
+/// `Some(HandPanel { hidden: true, cards: [], card_count, flags_in_hand: None })`
+/// for the seat the frame was built for, so a spectator's screen would draw one
+/// seat's masked hand under the caption every other payload puts the READER's
+/// hand under — singling out a seat as "yours" that is nobody's. The other panels are
 /// untouched, because the Players panel already carries every seat's masked
 /// count and that is the honest picture.
 fn drop_hand_for(viewer: Viewer, frame: &mut FrameModel) {

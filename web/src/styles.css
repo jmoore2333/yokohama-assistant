@@ -716,7 +716,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  *
  * The containment is `inline-size`, so the box's WIDTH may not come from its
  * content: every place that draws the card gives it one — the column of a
- * strip or an index stretches it, and the panel's row sets it below.
+ * strip or an index stretches it, and the panel's row sets it above
+ * (`.panel .card-face.achievement .card-pic`).
  *
  * **The band carries its own ground.** The picture behind it is whatever the
  * card prints, so the numbers are read against `--bg-sunken`, opaque, never

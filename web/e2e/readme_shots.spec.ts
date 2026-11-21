@@ -79,10 +79,14 @@ function forgetAria(name: string): void {
 }
 
 /** Write `page`'s accessibility snapshot as `ariaPath(name)`, with every row
- *  `masked` covers left out (`aria_redact.ts`). The masked rows' links are read
- *  off the page at the same moment as the snapshot. An empty snapshot, a masked
- *  row with no table link to key it by, or a foreign id or address left in the
- *  text fails the run rather than writing the file. */
+ *  `masked` covers left out (`aria_redact.ts`). Three reads in this order: the
+ *  screenshot (`shoot`), then the snapshot, then the masked rows' links off the
+ *  page. **The order is what makes it fail closed**: a row that arrives between
+ *  the snapshot and the link read is in the list and not in the text, which
+ *  costs nothing; a row that leaves in between keeps its link in the text with
+ *  nothing to redact it, and the guard refuses the file. An empty snapshot, a
+ *  masked row with no table link to key it by, or a foreign id or address left
+ *  in the text fails the run rather than writing the file. */
 async function ariaBeside(page: Page, name: string, masked: Locator): Promise<void> {
   const aria = await page.locator("body").ariaSnapshot();
   if (aria.trim() === "") throw new Error(`readme_shots: the accessibility snapshot for ${name} is empty`);

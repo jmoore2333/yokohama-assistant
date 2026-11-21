@@ -2394,6 +2394,9 @@ fn constructed() -> Vec<(String, Value)> {
 /// a fresh 4P position and the panels are the model's own builders'. The order
 /// is 2, 0, 3, 1 on purpose: neither seat order nor "the lowest seat first"
 /// can pass for claim order. Constructed, not routed: a third-column file.
+/// **Only `claimed_by` is set**: the seats' rows (`on_achievements`, the
+/// points) and the cards' `progress` are the fresh setup's, so the file is a
+/// fixture for the band and not a position a game reaches.
 fn goals_claimed_4p() -> Value {
     use yokohama_cli::screen_model::{build_achievements, build_players, SeatFacts};
     use yokohama_core::{finalize_setup, new_game, GameConfig, PlayerColor, PlayerId, Rules, StartingOrderChoice};
