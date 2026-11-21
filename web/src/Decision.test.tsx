@@ -756,6 +756,16 @@ describe("Chinatown's chooser", () => {
     expect(flipped.onSend.mock.calls).toEqual([["8"]]);
     cleanup();
 
+    // The same for a minus: the selected fixture reversed draws row 1, the one
+    // with a count, last. Its minus sends `back 1`, not `back 9`.
+    const turned = cloneChina(wire.chinatownSelected, (c) => c.rows.reverse());
+    const back = show(turned);
+    const one = rowEls(back.container).find((el) => el.dataset.number === "1")!;
+    expect(rowEls(back.container).indexOf(one), "row 1 is drawn last of its heading").toBe(3);
+    await back.user.click(minus(one));
+    expect(back.onSend.mock.calls).toEqual([["back 1"]]);
+    cleanup();
+
     // A count that is not the row's number: row 6 chosen twice. Its minus
     // sends `back 6`, not `back 2` and not `back 5`.
     const twice = cloneChina(wire.chinatownSelected, (c) => {
