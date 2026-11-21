@@ -3906,7 +3906,7 @@ fn drift_line(label: &str, committed: &str, emitted: &str, makes: &str) -> Strin
 /// **Every seat row's `flags` is the countries of that row's OWN face-up cards,
 /// by value, in every payload the corpus emits** (issue #76; the whole-branch
 /// review, W-8). The corpus's other cells pin a row's `flags` by key name only,
-/// and the golden above sees a wrong count only as DRIFT — which
+/// and the golden below sees a wrong count only as DRIFT — which
 /// `UPDATE_WIRE_FIXTURES=1` erases, freezing the wrong count as faithfully as a
 /// right one (the M6.1 lesson). This recount reads what a regeneration cannot
 /// make agree with a wrong count: each row's own `orders_filled`, through

@@ -771,7 +771,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * phone's width. A zero's word and count are dimmed, never the cell, so a `+n`
  * inside it keeps its own colour's full contrast. `+n` is a flag still on an
  * order in hand and does not count yet, so it is `--fg-dim` and italic beside
- * the bold `--fg` count. It is `--fg-dim` and not `--fg-faint` because it sits
+ * the count (bold `--fg` where the count is not zero). It is `--fg-dim` and not `--fg-faint` because it sits
  * on the viewer's own row, the row the walk tints (`.seat.changed`, 10% of
  * `--green` over the panel) and holds tinted until the player answers:
  * `--fg-dim` reads 6.01:1 on the dark `--bg-raised` and 5.08:1 on it lit, and

@@ -1,17 +1,24 @@
 // **What a failed README run may write, held by the spec's own source** (the
 // whole-branch review, W-2 and W-3; `readme_shots.spec.ts`'s header).
 //
-// The README generator is about to run against a public host. A FAILED run must
-// not leave a stranger's text or pixels behind: Playwright 1.62.1 writes an
-// unredacted accessibility snapshot into `error-context.md` unless
-// `PLAYWRIGHT_NO_COPY_PROMPT` is set, and the config's failure screenshots shoot
-// every open page unmasked. The spec carries its own switches so a run cannot
-// forget them, and these cells read the spec's source, parsed by the TypeScript
-// compiler (`live.node.test.ts`'s manner), so the switches cannot quietly go:
+// The README generator is about to run against a public host. A FAILED run that
+// can meet a stranger must not leave the page behind, as text or as pixels.
+// Playwright 1.62.1 writes an unredacted accessibility snapshot into
+// `error-context.md` unless `PLAYWRIGHT_NO_COPY_PROMPT` is set; a locator
+// assertion that fails unmatched carries a snapshot of the whole page on its
+// error, written into the same file whatever that variable says, and its message
+// prints what it received; and the config's failure screenshots shoot every open
+// page unmasked. The spec carries its own switches so a run cannot forget them,
+// and these cells read the spec's source, parsed by the TypeScript compiler
+// (`live.node.test.ts`'s manner), so the switches cannot quietly go:
 //
 //   - `process.env.PLAYWRIGHT_NO_COPY_PROMPT = "1"` and
 //     `test.use({ screenshot: "off", video: "off", trace: "off" })` are
 //     statements of the module itself, before its first `test(…)`;
+//   - the test body catches a failure and, on a run that can meet a stranger
+//     (`WITHHOLD`, `LIVE || STRANGER`), throws a fresh `Error` built from a
+//     literal and the last picture's name alone — never from the caught error —
+//     and otherwise rethrows the caught error unchanged;
 //   - `play`'s body is a `try` whose `finally` sends every page to
 //     `about:blank`;
 //   - `PASSWORD` is drawn at run time: no string literal is ever assigned to it,
@@ -98,6 +105,54 @@ describe("readme_shots.spec.ts writes nothing of a stranger's when it fails", ()
     const at = top.findIndex(turnsArtifactsOff);
     expect(at, 'no top-level test.use({ screenshot: "off", video: "off", trace: "off" })').toBeGreaterThan(-1);
     expect(at, "it comes after the first test").toBeLessThan(firstTest);
+  });
+
+  it("withholds a failure's error on a run that can meet a stranger, rethrowing one built from a literal and the stage", () => {
+    // WITHHOLD is exactly the two runs whose pages can hold a stranger.
+    const withhold = top.some(
+      (s) =>
+        ts.isVariableStatement(s) &&
+        s.declarationList.declarations.some((d) => ts.isIdentifier(d.name) && d.name.text === "WITHHOLD" && d.initializer?.getText(sf) === "LIVE || STRANGER"),
+    );
+    expect(withhold, "WITHHOLD is not declared at the module's top as LIVE || STRANGER").toBe(true);
+
+    // The test body's try, and its catch clause.
+    const body = top.filter(isTestCall).map((s) => ((s as ts.ExpressionStatement).expression as ts.CallExpression).arguments[1])[0];
+    expect(body !== undefined && ts.isArrowFunction(body) && ts.isBlock(body.body), "the test's body is not a block").toBe(true);
+    const tries = ((body as ts.ArrowFunction).body as ts.Block).statements.filter((s): s is ts.TryStatement => ts.isTryStatement(s));
+    expect(tries, "the test's body holds no try, or more than one").toHaveLength(1);
+    const clause = tries[0]!.catchClause;
+    expect(clause?.variableDeclaration, "the try has no catch (e)").toBeDefined();
+    const caught = clause!.variableDeclaration!.name.getText(sf);
+    const [first, ...rest] = clause!.block.statements;
+
+    // An ordinary run gets the caught error back unchanged, and first.
+    expect(first?.getText(sf), "the catch does not begin by rethrowing the caught error unless WITHHOLD").toBe(`if (!WITHHOLD) throw ${caught};`);
+
+    // Past that line the caught error is never read: not its message, its
+    // matcher's snapshot, or anything else.
+    const reads: string[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isIdentifier(n) && n.text === caught) reads.push(n.parent.getText(sf));
+      ts.forEachChild(n, visit);
+    };
+    for (const s of rest) visit(s);
+    expect(reads, "the withheld path reads the caught error").toEqual([]);
+
+    // And it throws a fresh Error whose message is a literal, interpolating at
+    // most the stage, `where`.
+    const thrown = rest.filter((s): s is ts.ThrowStatement => ts.isThrowStatement(s));
+    expect(thrown, "the withheld path throws no error, or more than one").toHaveLength(1);
+    const made = thrown[0]!.expression;
+    expect(ts.isNewExpression(made) && made.expression.getText(sf) === "Error", "the withheld path throws something other than new Error(…)").toBe(true);
+    const args = (made as ts.NewExpression).arguments ?? ts.factory.createNodeArray();
+    expect(args, "new Error takes one argument").toHaveLength(1);
+    const message = args[0]!;
+    const literal =
+      ts.isStringLiteralLike(message) ||
+      (ts.isTemplateExpression(message) && message.templateSpans.every((span) => ts.isIdentifier(span.expression) && span.expression.text === "where"));
+    expect(literal, `the withheld message is not a literal and the stage: ${message.getText(sf)}`).toBe(true);
+    expect(message.getText(sf), "the withheld message does not say the error is withheld").toContain("withheld");
   });
 
   it("empties every page in play's finally", () => {

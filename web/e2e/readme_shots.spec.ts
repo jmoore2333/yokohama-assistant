@@ -33,19 +33,35 @@
 //
 //     YOKOHAMA_WEB_README_SHOTS=1 YOKOHAMA_WEB_README_SHOTS_STRANGER=1 YOKOHAMA_WEB_README_SHOTS_DIR=<dir> npx playwright test readme_shots
 //
-// **A failed run writes no stranger's text or pixels** (the whole-branch review,
-// W-2): Playwright 1.62.1 writes `test-results/<test>/error-context.md` with an
-// unredacted accessibility snapshot of the first context's first page unless
-// `PLAYWRIGHT_NO_COPY_PROMPT` is set — read from `process.env` in the worker,
-// when a context closes and when the test finishes, so setting it at this
-// module's top, which the worker loads before it runs the test, is in time —
-// and the config's `screenshot: "only-on-failure"` shoots every open page,
-// unmasked. So this file sets the variable, turns screenshots, video and the
-// trace off for itself, and `play` sends every page to `about:blank` in its
-// `finally`, before anything after the test body can photograph or snapshot
-// one. What it cannot reach: a failing assertion's message, which prints what
-// it received, to the reporter and into `error-context.md` (the snapshot is
-// gone, the messages stay).
+// **A failed run that can meet a stranger writes none of the page** (the
+// whole-branch review, W-2, and its re-review). Playwright 1.62.1 has three
+// ways to put a failed run's page on disk, and this file closes each:
+//
+//   1. `test-results/<test>/error-context.md` gets a `# Page snapshot` — an
+//      unredacted accessibility snapshot of the first context's first page —
+//      unless `PLAYWRIGHT_NO_COPY_PROMPT` is set. It is read from `process.env`
+//      in the worker when a context closes and when the test finishes, so this
+//      module's top, which the worker loads before it runs the test, is in time.
+//   2. A locator assertion that fails unmatched carries a snapshot of the WHOLE
+//      page on its error (`matcherResult.ariaSnapshot`), which goes into that
+//      same file under `# Error details` whatever the variable says, and the
+//      assertion's message prints what it received to the terminal. So on a
+//      run that can meet a stranger — live, or the local stranger arm — the
+//      test body catches any failure and throws a fresh `Error` in its place,
+//      naming only the last picture the run took, a name this file sets: a
+//      fresh `Error` carries no `matcherResult`, so nothing of the page rides
+//      on it. The original is withheld because it can quote the page. On an
+//      ordinary local run (a lobby holding only the run's own tables) it is
+//      rethrown unchanged, so a developer can still read it.
+//   3. The config's `screenshot: "only-on-failure"` shoots every open page,
+//      unmasked; `test.use` below turns screenshots, video and the trace off
+//      for this file, and `play` sends every page to `about:blank` in its
+//      `finally`, before anything after the test body can photograph or
+//      snapshot one.
+//
+// What remains on such a run: `error-context.md` with the withheld message and
+// a frame of this file's own source, the reporter's line for the same message,
+// and `.last-run.json`'s test id.
 //
 // It is a live spec for `live.node.test.ts`'s rules: every `request.*` through
 // `liveRequest` (there are none), every create armed through `awaitCreate`, and
@@ -56,7 +72,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import { haveBrowser } from "../playwright.config";
@@ -75,6 +91,11 @@ const STRANGER = process.env.YOKOHAMA_WEB_README_SHOTS_STRANGER === "1";
 if (STRANGER && LIVE) {
   throw new Error("readme_shots: YOKOHAMA_WEB_README_SHOTS_STRANGER=1 is local only — a live run opens no stranger's table in the shared lobby");
 }
+
+/** A run whose pages can hold a stranger's row or message — live, or the local
+ *  stranger arm — and whose failure is therefore reported without its error
+ *  (the header, way 2). */
+const WITHHOLD = LIVE || STRANGER;
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -263,6 +284,13 @@ test("the README's ten pictures", async ({ browser }) => {
   const written: string[] = [];
   try {
     await play(browser, scratch, written);
+  } catch (e) {
+    if (!WITHHOLD) throw e;
+    // A fresh error, from a literal and the last picture's name alone (the
+    // header, way 2): never the caught error, its message or its matcher's
+    // snapshot, which can quote the page.
+    const where = written.length === 0 ? "before its first picture" : `after ${basename(written[written.length - 1]!)}`;
+    throw new Error(`readme_shots: the run failed ${where}; its error is withheld, since an assertion's error can quote the page and this run's pages can hold a stranger's row or message`);
   } finally {
     // The scratch directory holds only the PNG intermediates: each file by
     // its explicit path, then the empty directory (never a recursive remove).
