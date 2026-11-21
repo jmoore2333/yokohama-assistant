@@ -687,6 +687,12 @@ pub const LADDER_POWERS: [u8; 5] = [1, 2, 3, 4, 5];
 /// nothing, owner-adjudicated 2026-07-18), which the renderer says in words.
 pub const PORT_TAKE_VP_AT_FULL_POWER: u8 = 3;
 
+/// What the Church's yen payment kind costs. The engine holds it as a literal
+/// inside `validate_church_action` (`p.money < 2`); this is its mirror, held to
+/// the engine by `the_church_yen_kind_costs_what_an_apply_charges`
+/// (the `placement_fee` precedent: a mirror plus a pin, no engine edit).
+pub const CHURCH_YEN_COST: u32 = 2;
+
 /// How many Chinatown exchanges one action buys at `power` — the surface's
 /// SECOND hand-worded residue, and the second one pinned.
 ///
@@ -4215,5 +4221,59 @@ mod tests {
         assert!(compared > 100_000, "compared {compared}");
         assert!(nonzero > 50_000, "nonzero {nonzero}");
         assert!(supply_out > 1_000, "supply-out rows {supply_out}");
+    }
+
+    /// **The Church's yen kind costs what an apply charges.** `CHURCH_YEN_COST` is
+    /// a mirror of a literal inside the engine's `validate_church_action`
+    /// (`p.money < 2`); this applies the yen-only payment through the engine and
+    /// reads the money it took (the `placement_fee` precedent: a mirror plus a
+    /// pin, no engine edit). Power 3 over a track holding only the 2P dummy: one
+    /// kind of faith 1 reaches the empty faith-4 space.
+    #[test]
+    fn the_church_yen_kind_costs_what_an_apply_charges() {
+        let (mut state, rules) = state_np(2);
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(church);
+        p.assistants.on_board.insert(church, 2);
+        p.assistants.in_hand -= 2;
+        p.money = CHURCH_YEN_COST;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, church));
+        assert_eq!(state.current_action_power, Some(3), "the fixture's power");
+
+        let yen_only = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: false,
+                silk: false,
+                tea: false,
+                seafood: false,
+                yen: true,
+                imported_good: false,
+            },
+        };
+        assert!(get_legal_moves(&state, &rules).contains(&yen_only), "yen-only is listed at exactly the cost");
+        let before = state.players[me.0 as usize].clone();
+        let after = apply_move(&state, &yen_only, &rules).expect("the listed payment applies");
+        let a = &after.players[me.0 as usize];
+        assert_eq!(a.money, 0, "an apply took exactly CHURCH_YEN_COST");
+        assert_eq!(
+            (a.copper, a.silk, a.tea, a.seafood, a.imported_goods),
+            (before.copper, before.silk, before.tea, before.seafood, before.imported_goods),
+            "no good was spent"
+        );
+
+        state.players[me.0 as usize].money = CHURCH_YEN_COST - 1;
+        let pays_yen = get_legal_moves(&state, &rules).iter().any(|m| {
+            matches!(m, Move::ExecuteAreaAction { action: AreaAction::Church { yen: true, .. } })
+        });
+        assert!(!pays_yen, "one yen short of the cost, no listed move pays yen");
     }
 }

@@ -8,7 +8,9 @@ use yokohama_core::game::actions::{
 };
 
 use crate::card_render::plural;
+use crate::chooser::{Good, CHURCH_KINDS};
 use crate::render;
+use crate::screen_model::CHURCH_YEN_COST;
 use crate::style::glyph;
 
 pub fn area_type_name(t: AreaType) -> &'static str {
@@ -510,7 +512,7 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
 /// legal `ExecuteAreaAction`/`BuildShophouse`/`BuildTradingHouse` move
 /// (both phases require the President on board first) but kept as a
 /// defensive fallback for direct state construction (fixtures/tests).
-fn acting_area(state: &GameState) -> Option<AreaId> {
+pub(crate) fn acting_area(state: &GameState) -> Option<AreaId> {
     if state.is_mercenary_action {
         state.mercenary_target_area
     } else {
@@ -518,6 +520,20 @@ fn acting_area(state: &GameState) -> Option<AreaId> {
             PresidentLocation::OnBoard(a) => Some(a),
             PresidentLocation::InHand => None,
         }
+    }
+}
+
+/// A Church payment kind's words -- the ONE table, read by `describe_move`'s
+/// Church arm and the Church chooser, so the yen kind's price is written in one
+/// place (`screen_model::CHURCH_YEN_COST`).
+pub(crate) fn church_kind_words(good: Good) -> String {
+    match good {
+        Good::Copper => "copper".to_string(),
+        Good::Silk => "silk".to_string(),
+        Good::Tea => "tea".to_string(),
+        Good::Seafood => "seafood".to_string(),
+        Good::Yen => format!("{CHURCH_YEN_COST} yen"),
+        Good::Imports => "imported good".to_string(),
     }
 }
 
@@ -692,28 +708,17 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             format!("Chinatown: {parts}")
         }
         AreaAction::Church { copper, silk, tea, seafood, yen, imported_good } => {
-            let mut parts = Vec::new();
-            if *copper {
-                parts.push("copper");
-            }
-            if *silk {
-                parts.push("silk");
-            }
-            if *tea {
-                parts.push("tea");
-            }
-            if *seafood {
-                parts.push("seafood");
-            }
-            if *yen {
-                // D1 (2026-08-08): the yen payment type costs 2 Yen (rulebook
-                // p.12 printed church board), so the label carries the price —
-                // "yen" alone would under-state what the option spends.
-                parts.push("2 yen");
-            }
-            if *imported_good {
-                parts.push("imported good");
-            }
+            // D1 (2026-08-08): the yen payment kind costs 2 Yen (rulebook
+            // p.12 printed church board), so its words carry the price --
+            // "yen" alone would under-state what the option spends. All six
+            // kinds' words come from `church_kind_words`, the one table.
+            let flags = [*copper, *silk, *tea, *seafood, *yen, *imported_good];
+            let parts: Vec<String> = CHURCH_KINDS
+                .iter()
+                .zip(flags)
+                .filter(|(_, on)| *on)
+                .map(|(&good, _)| church_kind_words(good))
+                .collect();
             // Faith preview (Task 6): the engine's own power + faith
             // arithmetic (`calculate_power` + `calculate_church_faith`), so
             // the number shown is exactly the `ChurchSpace { total_faith }`
@@ -2547,6 +2552,34 @@ mod tests {
         assert_eq!(
             text4,
             format!("Move President to {} — pay 2 yen (1 to Blue, 1 canal toll)", area_label(&state, fee_dest))
+        );
+    }
+
+    /// A Church payment's words come from the ONE table (`church_kind_words`),
+    /// so the price of the yen kind is written in one place
+    /// (`screen_model::CHURCH_YEN_COST`), and `describe_move`'s output is
+    /// unchanged by the move.
+    #[test]
+    fn describe_words_a_church_payment_from_the_one_table() {
+        assert_eq!(
+            church_kind_words(Good::Yen),
+            format!("{} yen", crate::screen_model::CHURCH_YEN_COST)
+        );
+        let state = crate::chooser::test_support::issue_position();
+        let rules = Rules::standard();
+        let all = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true,
+                silk: true,
+                tea: true,
+                seafood: true,
+                yen: true,
+                imported_good: true,
+            },
+        };
+        assert_eq!(
+            describe_move(&all, &state, &rules),
+            "Church: pay copper, silk, tea, seafood, 2 yen, imported good -> faith 11 (power 5 + 6 kinds)"
         );
     }
 }
