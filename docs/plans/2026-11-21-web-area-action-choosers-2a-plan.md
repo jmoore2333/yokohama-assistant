@@ -595,13 +595,13 @@ Plus worked out from the stock and the spend (cell 3 on `wire.chinatownSelected`
 **Files:** Modify `web/src/Help.tsx`, `web/src/Help.test.tsx`, `docs/web-guide.md`.
 
 - [ ] **Step 1: The sentences.** In `Help.tsx`, after the sentence on the placement picker, and in `docs/web-guide.md` after its counterpart, the same two sentences:
-  - S1: `At the Church and at Chinatown the list is one entry that opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.`
-  - S2: `A control is live only where the engine's list holds that choice, so selling first is what lights a purchase you could not yet afford, and Confirm is live once the list holds exactly what you have chosen.`
-- [ ] **Step 2: The cell**, in `Help.test.tsx`: needles only these sentences carry (`opens a chooser`, `take them back with minus`, `selling first is what lights a purchase`, `holds exactly what you have chosen`), and each cut sentence fails it.
+  - S1: `At the Church and at Chinatown, when more than one payment or set of exchanges is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.`
+  - S2: `A kind or a plus is live only where the engine's list holds that choice, so selling first is what lights a purchase you could not yet afford; a minus is live whenever you have one to take back, and Confirm is live once the list holds exactly what you have chosen.`
+- [ ] **Step 2: The cell**, in `Help.test.tsx`: needles only these sentences carry (`when more than one payment or set of exchanges is on offer`, `beside the decline`, `opens a chooser`, `take them back with minus`, `selling first is what lights a purchase`, `a minus is live whenever you have one to take back`, `holds exactly what you have chosen`), and each cut sentence fails it. S1 comes before S2 in the rendered text, and both are there when the help is drawn without its pictures.
 - [ ] **Step 3: Re-read the neighbours.** Any sentence in either file that the choosers make false is corrected, and named in the report. The pictures are the wrap's and are not re-cut.
 - [ ] **Step 4:** `cd web && npm run typecheck && npm test && npm run test:wasm` (the last holds the documents' link check). **Step 5: commit.**
 
-**Mutants:** S2 cut from `Help.tsx` (the cell). The two files' sentences differing by a word (the reviewer diffs them).
+**Mutants:** S2 cut from `Help.tsx` (the cell). The two files' sentences differing by a word (the reviewer diffs them). S1's condition cut, or its "beside the decline" (the cell). S2's sentence on the minus cut (the cell). S1 and S2 in the other order (the cell). The paragraph drawn only with the pictures (the cell, on the render without them).
 
 ---
 

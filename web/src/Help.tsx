@@ -126,11 +126,13 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         />
       )}
       <p>
-        At the Church and at Chinatown the list is one entry that opens a chooser: at the Church
-        you switch on what you pay, at Chinatown you add exchanges with plus and take them back
-        with minus. A control is live only where the engine&rsquo;s list holds that choice, so
-        selling first is what lights a purchase you could not yet afford, and Confirm is live
-        once the list holds exactly what you have chosen.
+        At the Church and at Chinatown, when more than one payment or set of exchanges is on
+        offer, the list shows a single entry beside the decline, and that entry opens a chooser:
+        at the Church you switch on what you pay, at Chinatown you add exchanges with plus and
+        take them back with minus. A kind or a plus is live only where the engine&rsquo;s list
+        holds that choice, so selling first is what lights a purchase you could not yet afford;
+        a minus is live whenever you have one to take back, and Confirm is live once the list
+        holds exactly what you have chosen.
       </p>
 
       <h3>Looking things up</h3>

@@ -314,39 +314,72 @@ describe("the help panel's prose", () => {
   });
 });
 // **The two sentences that say the goods choosers (issue #77, plan 2a Task 9).**
-// At the Church and at Chinatown the answer bar holds ONE entry that opens a
-// chooser, and the page says so after its words on the placement picker. Each
-// needle below is carried by exactly one of the two sentences (S1 the entry and
-// the plus and minus, S2 what lights a control and when Confirm is live), so a
-// cut sentence reads red; and each must occur ONCE in the turn section, since a
-// needle a neighbouring sentence also carried would pin nothing.
+// At the Church and at Chinatown, when more than one payment or set of
+// exchanges is on offer, the answer bar holds ONE entry beside the decline, and
+// the entry opens a chooser; the page says so after its words on the placement
+// picker. Each needle below is carried by exactly one of the two sentences, so
+// a cut sentence reads red, and each must occur ONCE in the turn section, since
+// a needle a neighbouring sentence also carried would pin nothing. S1's two
+// needles are its condition (the entry exists only with several choices) and
+// its decline; S2's are what lights a plus, the minus's own rule (live whenever
+// there is one to take back, which the engine's list does NOT govern) and when
+// Confirm is live.
 describe("the help panel and the goods choosers (issue #77)", () => {
   const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
-  it("says the Church and Chinatown open a chooser, and what its controls are", () => {
-    render(<Help />);
-    const text = section("Taking a turn");
-    expect(text).toContain("opens a chooser");
-    expect(text).toContain("take them back with minus");
-    expect(occurrences(text, "opens a chooser")).toBe(1);
-    expect(occurrences(text, "take them back with minus")).toBe(1);
-    // The words as a whole, so a space lost at a line end reads here too.
-    expect(text).toContain(
-      "At the Church and at Chinatown the list is one entry that opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.",
-    );
-  });
+  const s1 = [
+    "when more than one payment or set of exchanges is on offer",
+    "beside the decline",
+    "opens a chooser",
+    "take them back with minus",
+  ] as const;
+  const s2 = [
+    "selling first is what lights a purchase",
+    "a minus is live whenever you have one to take back",
+    "holds exactly what you have chosen",
+  ] as const;
 
-  it("says a control is live only where the engine's list holds the choice, and when Confirm is", () => {
-    render(<Help />);
-    const text = section("Taking a turn");
-    expect(text).toContain("selling first is what lights a purchase");
-    expect(text).toContain("holds exactly what you have chosen");
-    expect(occurrences(text, "selling first is what lights a purchase")).toBe(1);
-    expect(occurrences(text, "holds exactly what you have chosen")).toBe(1);
-    expect(text).toContain(
-      "A control is live only where the engine\u2019s list holds that choice, so selling first is what lights a purchase you could not yet afford, and Confirm is live once the list holds exactly what you have chosen.",
-    );
-  });
+  // **Both renders.** The game's surface draws the help with its pictures and
+  // the door's "How to play" without them; a paragraph that only the first
+  // drew (`{shots && ...}`) would read green on the first alone.
+  for (const [how, ui] of [
+    ["with its pictures", <Help key="a" />],
+    ["without its pictures", <Help key="b" shots={false} />],
+  ] as const) {
+    describe(how, () => {
+      it("says the Church and Chinatown open a chooser, when, and what its controls are", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of s1) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        // The words as a whole, so a space lost at a line end reads here too.
+        expect(text).toContain(
+          "At the Church and at Chinatown, when more than one payment or set of exchanges is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.",
+        );
+      });
+
+      it("says which controls the engine's list lights, that a minus is not one of them, and when Confirm is live", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of s2) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        expect(text).toContain(
+          "A kind or a plus is live only where the engine\u2019s list holds that choice, so selling first is what lights a purchase you could not yet afford; a minus is live whenever you have one to take back, and Confirm is live once the list holds exactly what you have chosen.",
+        );
+      });
+
+      it("says the entry first and the controls after it", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        expect(text.indexOf(s1[0])).toBeGreaterThan(-1);
+        expect(text.indexOf(s1[3])).toBeLessThan(text.indexOf(s2[0]));
+      });
+    });
+  }
 });
 
 describe("the help panel and talking (M6.4)", () => {
