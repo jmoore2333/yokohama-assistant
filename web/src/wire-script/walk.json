@@ -945,7 +945,73 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "26"
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": "church"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": "church_selected"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "2"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "3"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "4"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "5"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": "choice_ChurchSpace"
@@ -6451,7 +6517,51 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
       "line": "2"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "3"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "5"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null
@@ -9767,7 +9877,62 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "2"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "3"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "4"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
       "line": "5"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null

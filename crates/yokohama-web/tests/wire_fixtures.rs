@@ -1539,7 +1539,72 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
             "options" | "pick" => {
                 let rows = state["prompt"]["rows"].as_array().expect("rows");
                 assert!(!rows.is_empty(), "an answerable prompt must offer something: {state}");
-                rows[rng.below(rows.len())]["number"].as_u64().expect("a number").to_string()
+                let options =
+                    state["frame"]["decision"]["options"].as_array().cloned().unwrap_or_default();
+                let church = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Church"].is_object();
+                // **The Church's payments fold into one entry** (cycle 2, plan
+                // 2a), and this walk must play the SAME game across the fold:
+                // a draw over the two rows left would play a different game
+                // from the first Church visit on, and every later fixture
+                // would move. So at a folded prompt the draw is taken over
+                // `frame.decision.options` — the list the rows were one per
+                // move over before — consuming the stream exactly as before,
+                // and the move it names is played through the chooser: the
+                // entry, the number of each kind its flags hold (read BY
+                // FIELD NAME, since the corpus sorts an object's keys),
+                // `confirm`. Measured at these seeds: 95 area-action
+                // prompts, three of them folded (events 18, 251 and 387), and
+                // every draw lands on a Church move, so the decline branch
+                // below never runs here; it stays for a seed that reaches it.
+                if kind == "options"
+                    && rows.len() < options.len()
+                    && options.iter().any(|o| church(&o["mv"]))
+                {
+                    let mv = options[rng.below(options.len())]["mv"].clone();
+                    if church(&mv) {
+                        let entry = rows
+                            .iter()
+                            .find(|r| r["opens_picker"] == Value::Bool(true))
+                            .unwrap_or_else(|| panic!("a folded Church prompt has its entry: {state}"));
+                        let mut chooser = api
+                            .send_as(mover, &entry["number"].as_u64().expect("a number").to_string())
+                            .await;
+                        assert_eq!(chooser["prompt"]["kind"], "church", "the entry opens the chooser: {chooser}");
+                        capture(&mut out, &mut seen, "church", &chooser);
+                        let flags = &mv["ExecuteAreaAction"]["action"]["Church"];
+                        for (number, field) in
+                            [(1, "copper"), (2, "silk"), (3, "tea"), (4, "seafood"), (5, "yen"), (6, "imported_good")]
+                        {
+                            if flags[field] == Value::Bool(true) {
+                                chooser = api.send_as(mover, &number.to_string()).await;
+                                assert_eq!(
+                                    chooser["prompt"]["kinds"][number - 1]["selected"],
+                                    Value::Bool(true),
+                                    "kind {number} ({field}) switched on: {chooser}",
+                                );
+                                capture(&mut out, &mut seen, "church_selected", &chooser);
+                            }
+                        }
+                        assert_eq!(
+                            chooser["prompt"]["preview"]["legal"],
+                            Value::Bool(true),
+                            "the drawn move is listed, so its selection previews legal: {chooser}",
+                        );
+                        "confirm".to_string()
+                    } else {
+                        assert_eq!(
+                            mv,
+                            json!({ "ExecuteAreaAction": { "action": "Skip" } }),
+                            "a folded Church prompt lists its payments and the decline: {state}",
+                        );
+                        let direct: Vec<&Value> =
+                            rows.iter().filter(|r| r["opens_picker"] == Value::Bool(false)).collect();
+                        assert_eq!(direct.len(), 1, "the decline is the one direct row: {state}");
+                        direct[0]["number"].as_u64().expect("a number").to_string()
+                    }
+                } else {
+                    rows[rng.below(rows.len())]["number"].as_u64().expect("a number").to_string()
+                }
             }
             "place_a" => {
                 let already = state["prompt"]["selected"].as_array().map_or(0, Vec::len);
@@ -1670,6 +1735,8 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         "wrong_seat_403",
         "undo_refused_403",
         "spectator",
+        "church",
+        "church_selected",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),
@@ -4297,6 +4364,11 @@ fn every_prompt_variant() -> Vec<yokohama_web::client::PromptState> {
         PromptState::GameOver,
         PromptState::Locked { reason: String::new() },
         PromptState::Watching { to_move: PlayerId::new(0) },
+        PromptState::Church(yokohama_cli::chooser::ChurchModel {
+            kinds: Vec::new(),
+            preview: yokohama_cli::chooser::Preview { legal: false, words: None },
+            offered_faiths: None,
+        }),
     ]
 }
 
@@ -4313,6 +4385,7 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
         PromptState::GameOver => 6,
         PromptState::Locked { .. } => 7,
         PromptState::Watching { .. } => 8,
+        PromptState::Church(_) => 9,
     }
 }
 
@@ -4320,14 +4393,14 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
 ///
 /// The compile-error match is half the guard and this is the other half: a new
 /// arm added to `prompt_ordinal` without a value added to `every_prompt_variant`
-/// would otherwise leave the list nine long and every check below still green.
-/// **`9` is load-bearing and moves with the enum.**
+/// would otherwise leave the list ten long and every check below still green.
+/// **`10` is load-bearing and moves with the enum.**
 #[test]
 fn the_variant_list_is_every_variant_exactly_once() {
     let all = every_prompt_variant();
     assert_eq!(
         all.len(),
-        9,
+        10,
         "a `PromptState` variant was added or removed: `every_prompt_variant`, this count, and \
          the EXEMPT list in `every_prompt_the_client_can_be_shown_has_a_fixture` move together",
     );

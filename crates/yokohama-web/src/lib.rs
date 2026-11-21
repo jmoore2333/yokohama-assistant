@@ -8535,6 +8535,23 @@ mod tests {
                         }
                     }
                 }
+                // The Church's chooser (plan 2a): confirm a selection the
+                // list holds, else switch on the first kind some listed move
+                // pays that is not yet on, else back out. Every flag is the
+                // arm's own, so nothing here restates a rule.
+                "church" => {
+                    if state["prompt"]["preview"]["legal"] == serde_json::json!(true) {
+                        "confirm".to_string()
+                    } else {
+                        state["prompt"]["kinds"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|k| k["offered"] == serde_json::json!(true) && k["selected"] == serde_json::json!(false))
+                            .and_then(|k| k["number"].as_u64())
+                            .map_or_else(|| "cancel".to_string(), |n| n.to_string())
+                    }
+                }
                 _ => state["prompt"]["rows"][0]["number"]
                     .as_u64()
                     .map(|n| n.to_string())

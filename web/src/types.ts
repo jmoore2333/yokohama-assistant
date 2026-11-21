@@ -320,6 +320,31 @@ export interface OptionRow {
   fee: FeeModel | null;
 }
 
+/** A thing a chooser spends or gains: the CLI's `chooser::Good`, by name. The
+ *  client maps it to the token art it already holds. */
+export type ChooserGood = "Copper" | "Silk" | "Tea" | "Seafood" | "Yen" | "Imports";
+
+/** A good and how many of it (`chooser::Amount`). */
+export interface ChooserAmount { good: ChooserGood; amount: number }
+
+/** What stands under a chooser's selection (`chooser::Preview`): whether the
+ *  legal list holds a move the selection names, and that move in `describe`'s
+ *  words — `null` exactly when it does not. */
+export interface ChooserPreview { legal: boolean; words: string | null }
+
+/** One of the Church's six payment kinds (`chooser::ChurchKind`). `number` is
+ *  what to send to switch it (1 to 6); `amount` is 1, or 2 for the yen kind;
+ *  `offered` is "some listed Church move pays this kind", read off the list. */
+export interface ChurchKind {
+  number: number;
+  good: ChooserGood;
+  amount: number;
+  words: string;
+  have: number;
+  selected: boolean;
+  offered: boolean;
+}
+
 /** INTERNALLY tagged — the one exception on the wire. */
 export type PromptState =
   | { kind: "options"; rows: OptionRow[] }
@@ -327,6 +352,11 @@ export type PromptState =
   | { kind: "retreat"; area: AreaId; area_label: string; max: number; answered: number[]; remaining: number }
   | { kind: "place_a"; selected: AreaId[]; max_areas: number; fee: FeeModel | null }
   | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null; fee: FeeModel | null }
+  /** The Church chooser (plan 2a): the REPL's own model. Six kinds in a fixed
+   *  order, the preview of the listed move the selection names, and — when the
+   *  selection names none — the faiths the list does offer. The server still
+   *  decides: `confirm` commits only a listed move. */
+  | { kind: "church"; kinds: ChurchKind[]; preview: ChooserPreview; offered_faiths: string | null }
   | { kind: "reveal" }
   | { kind: "game_over" }
   /** The session is locked after a driver or engine fault. Nothing this client

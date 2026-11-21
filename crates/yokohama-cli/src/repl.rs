@@ -150,14 +150,18 @@ impl ViewSurface {
     }
 }
 
-/// One line in the Movement phase's collapsed numbered list
-/// (docs/plans/2026-07-18-phase2-cli-driver-design.md, destination-first).
-/// Outside Movement -- and inside it whenever a choice is
-/// queued -- every option is a bare `Direct`, so the list is byte-identical to
-/// the ungrouped `legal()` rendering; the two collapsing variants only ever
-/// appear in the Movement main list. The legal list stays the SOLE authority:
-/// `Route`/`Retreat` are entry helpers whose selections are exact-matched
-/// against `legal()` before anything commits (`find_placement_match`).
+/// One line in a main prompt's numbered list. Four lists collapse a family
+/// behind one entry: the Movement main list (destination-first,
+/// docs/plans/2026-07-18-phase2-cli-driver-design.md: `Route`, `Retreat`),
+/// the Placement main list (`PlacementA`, `PlacementB`), a queued
+/// assistant-move choice (`MoveFrom`), and the AreaAction main list with no
+/// choice queued (`Church`, cycle 2's area-action choosers,
+/// docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
+/// else every option is a bare `Direct`, so the list is byte-identical to the
+/// ungrouped `legal()` rendering. The legal list stays the SOLE authority:
+/// every collapsing variant is an entry helper whose selection is
+/// exact-matched against `legal()` before anything commits
+/// (`find_placement_match`, `chooser::church_match`).
 enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
@@ -182,6 +186,9 @@ enum PromptOption {
     /// A pending assistant-move choice's options for ONE source, collapsed
     /// (>1 destination); selecting it opens a numbered destination pick.
     MoveFrom { from: MoveSource, moves: Vec<Move> },
+    /// The Church's payment family collapsed: more than one `AreaAction::Church`
+    /// move is listed. `count` is how many.
+    Church { count: usize },
 }
 
 /// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
@@ -230,6 +237,11 @@ pub enum SubPrompt {
     /// with the other guided entry helpers. It is live-only for the ordinary
     /// reason: no seat has a hidden starting order in a simulation.
     Reveal { seats: Vec<PlayerId>, seat: Option<PlayerId> },
+    /// The Church chooser: which of `chooser::CHURCH_KINDS` are switched on.
+    /// A number toggles a kind (switching ON one no listed move pays is
+    /// refused); `confirm` commits `chooser::church_match`'s listed move, or
+    /// refuses and keeps the selection.
+    Church { selected: [bool; 6] },
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -707,11 +719,12 @@ impl Repl {
     /// draws them itself.
     ///
     /// **This is the list a number means.** `pick_option` indexes THESE
-    /// entries, and outside `AdditionalAction`/`AreaAction`/etc. they are not
-    /// one-per-legal-move: Movement collapses to one entry per destination with
-    /// the whole retreat family folded into one row, Placement collapses to
-    /// Option A / Option B / place-none, and a queued `AssistantMove` groups by
-    /// source. A consumer that numbered `DecisionModel::options` instead —
+    /// entries, and in four lists they are not one-per-legal-move: Movement
+    /// collapses to one entry per destination with the whole retreat family
+    /// folded into one row, Placement collapses to Option A / Option B /
+    /// place-none, a queued `AssistantMove` groups by source, and the
+    /// AreaAction list folds the Church's payments into one entry when more
+    /// than one is listed. A consumer that numbered `DecisionModel::options` instead —
     /// which IS one per legal move — would send back a number meaning a
     /// different move, and in the Movement phase it would usually still be a
     /// legal one. That is the failure this accessor exists to prevent.
@@ -1176,14 +1189,23 @@ impl Repl {
                 };
                 self.enter_pick_subprompt(format!("Assistant destinations from {from_label}"), moves)
             }
+            // No line of its own: the screen's first line says what to do.
+            Some(PromptOption::Church { .. }) => {
+                self.sub = SubPrompt::Church { selected: [false; 6] };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
             None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
 
-    /// Build the numbered entries for the current prompt. Outside the Movement
-    /// phase -- and inside it while a choice is queued -- every legal move is a
-    /// bare `Direct` (byte-identical to the old ungrouped rendering). In the
-    /// Movement main list it collapses the family
+    /// Build the numbered entries for the current prompt. Outside the
+    /// Movement, Placement and AreaAction main lists and a queued
+    /// assistant-move choice, every legal move is a bare `Direct`
+    /// (byte-identical to the old ungrouped rendering); Placement, the
+    /// assistant-move choice and AreaAction group as `group_options` routes
+    /// them (AreaAction folds the Church's payments, `group_area_action`). In
+    /// the Movement main list it collapses the family
     /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
     /// label, else the single move `Direct`), each `PlacePresident`/other move
@@ -1211,10 +1233,39 @@ impl Repl {
             match state.turn_phase {
                 TurnPhase::Movement => return Self::group_movement(legal),
                 TurnPhase::Placement => return Self::group_placement(legal),
+                // A mercenary's sub-turn included: it runs in this phase.
+                TurnPhase::AreaAction => return Self::group_area_action(legal),
                 _ => {}
             }
         }
         legal.into_iter().map(PromptOption::Direct).collect()
+    }
+
+    /// The area-action main list: a family with more than one listed move
+    /// becomes one entry at its first move's place; every other move stays `Direct`.
+    ///
+    /// The Church's payments are the one family folded (plan 2a). A Church
+    /// with one listed payment, or none, reads exactly as the ungrouped list
+    /// did (design §4.4), so "Enter applies the only option" stays true; the
+    /// decline keeps its own place, last, as the engine lists it.
+    fn group_area_action(legal: Vec<Move>) -> Vec<PromptOption> {
+        let count = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
+        if count <= 1 {
+            return legal.into_iter().map(PromptOption::Direct).collect();
+        }
+        let mut out = Vec::new();
+        let mut entered = false;
+        for mv in legal {
+            if crate::chooser::church_flags(&mv).is_some() {
+                if !entered {
+                    out.push(PromptOption::Church { count });
+                    entered = true;
+                }
+            } else {
+                out.push(PromptOption::Direct(mv));
+            }
+        }
+        out
     }
 
     /// Movement main-list grouping (destination-first,
@@ -1368,6 +1419,7 @@ impl Repl {
                 };
                 format!("Move an assistant from {from_label} — {} destinations", moves.len())
             }
+            PromptOption::Church { count } => format!("Church — choose what to pay ({count} payment sets)"),
         }
     }
 
@@ -1530,6 +1582,7 @@ impl Repl {
             SubPrompt::PlaceA { .. } => self.step_place_a(words),
             SubPrompt::PlaceB { .. } => self.step_place_b(words),
             SubPrompt::Reveal { .. } => self.step_reveal(words),
+            SubPrompt::Church { .. } => self.step_church(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
@@ -1706,7 +1759,9 @@ impl Repl {
             | SubPrompt::Pick { .. }
             | SubPrompt::Retreat { .. }
             | SubPrompt::PlaceA { .. }
-            | SubPrompt::PlaceB { .. } => None,
+            | SubPrompt::PlaceB { .. }
+            // A chooser asks about goods, not about a card registry.
+            | SubPrompt::Church { .. } => None,
         }
     }
 
@@ -2337,6 +2392,91 @@ impl Repl {
         }
     }
 
+    /// Church chooser input (plan 2a, "The words"): a number 1 to 6 switches
+    /// that kind; switching ON a kind no listed move pays is refused and the
+    /// selection kept, switching off is always taken. `confirm` closes the
+    /// chooser and resets the page and THEN commits the listed move whose
+    /// flags equal the selection, in `step_place_a`'s order — `out` appends
+    /// the main prompt only once no sub-prompt is open, so only this order
+    /// makes the reply read as the old row's did; with no match it refuses
+    /// and keeps the selection. `cancel` closes it. Every "offered" and every
+    /// match is a lookup in `session.legal()` (`chooser`), never a rule.
+    fn step_church(&mut self, words: &[&str]) -> StepOutput {
+        let selected = match &self.sub {
+            SubPrompt::Church { selected } => *selected,
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Church
+        };
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Church payment cancelled — back to the main options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["confirm"] => match crate::chooser::church_match(&self.session.legal(), selected) {
+                Some(mv) => {
+                    self.sub = SubPrompt::None;
+                    self.page = 0;
+                    self.commit(mv)
+                }
+                None => self.out(
+                    "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                    false,
+                ),
+            },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                let Some(i) = tok.parse::<usize>().ok().filter(|n| (1..=6).contains(n)).map(|n| n - 1) else {
+                    return self.out("! pick a kind 1-6, 'confirm', or 'cancel'".to_string(), false);
+                };
+                if !selected[i] {
+                    let model = crate::chooser::church_model(
+                        self.session.state(),
+                        self.session.rules(),
+                        &self.session.legal(),
+                        selected,
+                    );
+                    if !model.kinds[i].offered {
+                        return self.out(
+                            format!("! {} is not in any payment the list offers here", model.kinds[i].words),
+                            false,
+                        );
+                    }
+                }
+                if let SubPrompt::Church { selected } = &mut self.sub {
+                    selected[i] = !selected[i];
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! toggle a kind by number, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// The screen an open chooser appended to the last reply, exactly as `out`
+    /// appended it; `None` when no chooser is open.
+    ///
+    /// `out` appends a sub-prompt's screen only when the session is not
+    /// locked and no overlay is drawn over it, so the same two conditions
+    /// answer `None` here: what is returned is always the reply's own suffix,
+    /// which is what lets a caller strip it by identity (`yokohama-web`'s
+    /// `input`, as it strips `prompt()` from a main-list reply).
+    pub fn chooser_screen(&self) -> Option<String> {
+        if self.locked || self.overlay.is_some() {
+            return None;
+        }
+        match self.sub {
+            SubPrompt::Church { .. } => Some(self.sub_prompt_text()),
+            SubPrompt::None
+            | SubPrompt::Pick { .. }
+            | SubPrompt::Retreat { .. }
+            | SubPrompt::PlaceA { .. }
+            | SubPrompt::PlaceB { .. }
+            | SubPrompt::Reveal { .. } => None,
+        }
+    }
+
     /// Every legal `PlaceTwoSameArea` in `area` (one, unless a Telegram owner
     /// also has adjacent-bonus variants). Shared by the Option-B picker's
     /// preview line and its `confirm`, so what the screen promises and what
@@ -2456,6 +2596,14 @@ impl Repl {
         let rules = self.session.rules();
         match &self.sub {
             SubPrompt::None => String::new(),
+            // Task 1's model over the same legal list `confirm` matches in,
+            // and its screen, which ends with a newline like every arm here.
+            SubPrompt::Church { selected } => crate::chooser::church_text(&crate::chooser::church_model(
+                state,
+                rules,
+                &self.session.legal(),
+                *selected,
+            )),
             SubPrompt::Pick { title, moves } => {
                 // Same 20/page + footer machinery the main list uses (brief item
                 // 5). Bounded ~16 in real play, so this rarely pages -- but when
@@ -3555,7 +3703,7 @@ Commands:
   save [path]     save to path (or to the last-used path if omitted)
   reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
   reveal <seat> <O..>  the same thing in one line, for anyone who knows both halves
-  cancel          back out of whatever is open: either reveal (live), the view menu, a card index, a full-screen view, a numbered pick, a Placement picker, guided retreat
+  cancel          back out of whatever is open: either reveal (live), the view menu, a card index, a full-screen view, a numbered pick, a Placement picker, guided retreat, an area-action chooser
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -5616,12 +5764,22 @@ mod tests {
             .expect("President can reach Church turn 1");
         r.step(&idx.to_string());
 
-        let church_mv = r.session.legal().iter().position(|m| matches!(m, Move::ExecuteAreaAction {
-            action: AreaAction::Church {
-                copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
-            }
-        })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
-        r.step(&menu_number(church_mv).to_string());
+        assert!(
+            r.session.legal().iter().any(|m| matches!(m, Move::ExecuteAreaAction {
+                action: AreaAction::Church {
+                    copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
+                }
+            })),
+            "paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)"
+        );
+        // Plan 2a: the Church's payments fold into one entry, which opens the
+        // chooser; copper, silk and yen are kinds 1, 2 and 5.
+        let entry = display_number_containing(r, "Church — choose what to pay")
+            .expect("the Church's payments fold into one entry");
+        r.step(&entry.to_string());
+        for line in ["1", "2", "5", "confirm"] {
+            r.step(line);
+        }
 
         if matches!(r.session.state().pending_choices.first(), Some(PendingChoice::ChurchSpace { .. })) {
             let space6 = r.session.legal().iter().position(|m| matches!(m, Move::ChooseChurchSpace { space: 6 }))
@@ -9161,5 +9319,492 @@ mod tests {
             HELP_TEXT.lines().any(|l| l.trim_start().starts_with("areas ") && l.contains("AREAS")),
             "and its row says what the surface is",
         );
+    }
+
+    // -----------------------------------------------------------------
+    // The Church's chooser (cycle 2, plan 2a, Task 3)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::issue_position;
+    use crate::chooser::{church_model, church_text};
+
+    /// A `Repl` over a constructed position, all seats human.
+    fn repl_at(state: GameState) -> Repl {
+        Repl::new(Session::for_test_from_state(state, Rules::standard()))
+    }
+
+    /// `state` with the Church spaces at `slots` held by the OTHER seat's
+    /// assistants, taken from its warehouse so its twenty are conserved.
+    fn occupy(state: &mut GameState, slots: std::ops::Range<usize>) {
+        let other = PlayerId::new(1 - state.current_player.0);
+        for slot in slots {
+            let arrival_order = state.church_track.next_arrival_order;
+            state.church_track.slots[slot] = Some(ChurchSlot { player: other, arrival_order });
+            state.church_track.next_arrival_order += 1;
+            let p = &mut state.players[other.0 as usize];
+            p.assistants.in_warehouse -= 1;
+            p.assistants.on_church += 1;
+        }
+    }
+
+    /// Task 1's issue position (`chooser::test_support::issue_position`) as a
+    /// `Session` can play on: its faith 4, 5 and 6 spaces held by the other
+    /// seat rather than by the setup dummy. The legal list is the same 42
+    /// payments and the decline, and the Session's checked apply runs the
+    /// engine's invariants after every move, whose I9 clause allows the 2P
+    /// dummy on faith 7 alone — so a payment committed from the fixture as it
+    /// stands locks the session down instead of recording.
+    fn church_position() -> GameState {
+        let mut state = issue_position();
+        for slot in 0..3 {
+            state.church_track.slots[slot] = None;
+        }
+        occupy(&mut state, 0..3);
+        state
+    }
+
+    /// The Church move paying exactly the named kinds, spelled out field by
+    /// field — never through `church_flags`/`church_match`, so a cell that
+    /// compares against it does not share the code it checks.
+    fn church_move(copper: bool, silk: bool, tea: bool, seafood: bool, yen: bool, imported_good: bool) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Church { copper, silk, tea, seafood, yen, imported_good },
+        }
+    }
+
+    /// The flags a Church move pays, read by pattern rather than by
+    /// `church_flags`, for the same reason.
+    fn flags_by_hand(mv: &Move) -> Option<[bool; 6]> {
+        match mv {
+            Move::ExecuteAreaAction {
+                action: AreaAction::Church { copper, silk, tea, seafood, yen, imported_good },
+            } => Some([*copper, *silk, *tea, *seafood, *yen, *imported_good]),
+            _ => None,
+        }
+    }
+
+    /// The selection an open Church chooser holds, or panic.
+    fn church_selection(r: &Repl) -> [bool; 6] {
+        match &r.sub {
+            SubPrompt::Church { selected } => *selected,
+            _ => panic!("the Church chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 1's model over
+    /// the repl's own legal list.
+    fn church_screen(r: &Repl) -> String {
+        church_text(&church_model(
+            r.session.state(),
+            r.session.rules(),
+            &r.session.legal(),
+            church_selection(r),
+        ))
+    }
+
+    /// The last recorded move, or panic.
+    fn last_move(r: &Repl) -> Move {
+        match r.session.record().events.last() {
+            Some(RecordedEvent::Move(mv)) => mv.clone(),
+            other => panic!("the last event is not a move: {other:?}"),
+        }
+    }
+
+    /// The display number of the folded Church entry.
+    fn church_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Church — choose what to pay").expect("the Church entry is listed")
+    }
+
+    const SKIP: Move = Move::ExecuteAreaAction { action: AreaAction::Skip };
+
+    #[test]
+    fn the_church_folds_to_one_entry_and_the_decline() {
+        let r = repl_at(church_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Church — choose what to pay (42 payment sets)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+        assert_eq!(rows[1].words, describe::describe_move(&SKIP, r.session.state(), r.session.rules()));
+    }
+
+    #[test]
+    fn a_church_with_one_payment_stays_a_direct_row() {
+        // Only space 11 is empty, so only the six-kind payment is listed.
+        let mut state = church_position();
+        occupy(&mut state, 4..7);
+        let r = repl_at(state);
+        let six = church_move(true, true, true, true, true, true);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| flags_by_hand(m).is_some()).collect::<Vec<_>>(),
+            vec![&six],
+            "premise: exactly one Church move is listed",
+        );
+        let rows = r.option_rows();
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            rows.iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(six.clone()), describe::describe_move(&six, state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+
+        // With nothing but the copper and the silk in hand no payment reaches
+        // an empty space, so the list holds the decline alone.
+        let mut state = church_position();
+        let me = state.current_player.0 as usize;
+        let p = &mut state.players[me];
+        (p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0);
+        let mut r = repl_at(state);
+        assert_eq!(r.session.legal(), vec![SKIP], "premise: the decline alone");
+        assert_eq!(r.option_rows().len(), 1);
+        r.step("");
+        assert_eq!(last_move(&r), SKIP, "bare Enter applies the only row");
+    }
+
+    #[test]
+    fn a_number_switches_its_kind_on_and_off() {
+        let mut r = repl_at(church_position());
+        let opened = r.step(&church_entry(&r).to_string());
+        assert_eq!(church_selection(&r), [false; 6]);
+        assert_eq!(opened.text, church_screen(&r), "opening prints the screen and nothing before it");
+
+        let on = r.step("2");
+        assert_eq!(church_selection(&r), [false, true, false, false, false, false]);
+        assert_eq!(on.text, church_screen(&r));
+        assert!(on.text.contains("\nSelected: silk\n"), "{}", on.text);
+
+        let off = r.step("2");
+        assert_eq!(church_selection(&r), [false; 6]);
+        assert_eq!(off.text, church_screen(&r));
+        assert!(off.text.contains("\nSelected: (none)\n"), "{}", off.text);
+    }
+
+    #[test]
+    fn a_kind_not_offered_and_a_number_out_of_range_are_refused_and_keep_the_selection() {
+        let mut state = church_position();
+        let me = state.current_player.0 as usize;
+        state.players[me].money = 1;
+        let mut r = repl_at(state);
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let silk = [false, true, false, false, false, false];
+
+        let refused = r.step("5");
+        assert_eq!(church_selection(&r), silk, "the selection is kept");
+        assert_eq!(
+            refused.text,
+            format!("! 2 yen is not in any payment the list offers here\n{}", church_screen(&r)),
+        );
+
+        for out_of_range in ["0", "7"] {
+            let refused = r.step(out_of_range);
+            assert_eq!(church_selection(&r), silk, "{out_of_range}: the selection is kept");
+            assert_eq!(
+                refused.text,
+                format!("! pick a kind 1-6, 'confirm', or 'cancel'\n{}", church_screen(&r)),
+                "{out_of_range}",
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_commits_the_listed_move_and_the_space_choice_follows() {
+        let mut r = repl_at(church_position());
+        // Four kinds reach faith 9, so spaces 8 and 9 both qualify and the
+        // engine QUEUES the space choice (three kinds would reach space 8
+        // alone, which it places without asking).
+        let paid = church_move(false, true, true, true, true, false);
+        assert!(r.session.legal().contains(&paid), "premise: the four-kind payment is listed");
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        for n in ["2", "3", "4", "5"] {
+            r.step(n);
+        }
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1);
+        assert_eq!(last_move(&r), paid, "the listed move, field for field");
+        assert!(matches!(r.sub, SubPrompt::None), "the chooser closes on a commit");
+        assert_eq!(
+            r.session.state().pending_choices.first(),
+            Some(&PendingChoice::ChurchSpace { total_faith: 9 }),
+        );
+        let spaces: Vec<Move> = r
+            .option_rows()
+            .into_iter()
+            .filter_map(|row| row.mv)
+            .filter(|m| matches!(m, Move::ChooseChurchSpace { .. }))
+            .collect();
+        assert_eq!(spaces.len(), 2, "the next prompt lists the two spaces: {spaces:?}");
+        assert!(
+            out.text.ends_with(&r.prompt()),
+            "the reply reads as a main-list row's did, the main prompt last:\n{}",
+            out.text,
+        );
+    }
+
+    #[test]
+    fn confirm_on_a_selection_the_list_does_not_hold_applies_nothing() {
+        let mut r = repl_at(church_position());
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        r.step("3");
+        // Faith 7 is a taken space.
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(church_selection(&r), [false, true, true, false, false, false], "still open, as it was");
+        assert_eq!(
+            out.text,
+            format!(
+                "! that selection is not currently available — adjust it or 'cancel'.\n{}",
+                church_screen(&r)
+            ),
+        );
+    }
+
+    #[test]
+    fn cancel_and_undo_return_to_the_folded_list() {
+        let mut r = repl_at(church_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(
+            out.text,
+            format!("Church payment cancelled — back to the main options.\n{}", r.prompt()),
+        );
+
+        r.step(&church_entry(&r).to_string());
+        for n in ["2", "3", "5", "confirm"] {
+            r.step(n);
+        }
+        assert_eq!(last_move(&r), church_move(false, true, true, false, true, false));
+        let undone = r.step("undo");
+        assert!(undone.text.contains("Undid"), "{}", undone.text);
+        assert!(matches!(r.sub, SubPrompt::None), "undo returns to the main list, not into the chooser");
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Church — choose what to pay (42 payment sets)");
+        assert_eq!(rows[1].mv, Some(SKIP));
+    }
+
+    #[test]
+    fn words_that_are_not_an_answer_are_refused_inside_the_chooser() {
+        let mut r = repl_at(church_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let events = r.session.record().events.len();
+        for word in ["back", "more", "list", "help", "undo"] {
+            let out = r.step(word);
+            assert_eq!(
+                out.text,
+                format!(
+                    "! toggle a kind by number, 'confirm', or 'cancel' (cancel first to use views/help)\n{}",
+                    church_screen(&r)
+                ),
+                "{word}",
+            );
+            assert_eq!(r.session.record().events.len(), events, "{word}: nothing applied");
+            assert_eq!(church_selection(&r), [false, true, false, false, false, false], "{word}");
+        }
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_chooser_and_returns_to_it() {
+        let mut r = repl_at(church_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        r.step("?");
+        assert!(r.overlay.is_some(), "the index is open");
+        assert_eq!(r.index_target(), None, "no card registry is being asked about");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(church_selection(&r), [false, true, false, false, false, false]);
+        assert!(back.text.ends_with(&church_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn a_mercenary_s_sub_turn_at_the_church_folds_too() {
+        let mut state = church_position();
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != church && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church);
+        state.current_action_power = Some(calculate_power(&state, me, church));
+        assert_eq!(state.current_action_power, Some(4), "premise: the assistants alone");
+        let r = repl_at(state);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| flags_by_hand(m).is_some()).count(),
+            22,
+            "premise: 22 Church moves listed",
+        );
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Church — choose what to pay (22 payment sets)");
+    }
+
+    /// Commit `mv` through the chooser on a fresh `Repl` over `state`: the
+    /// entry, the number of each kind its flags hold, `confirm`.
+    fn commit_through_the_chooser(state: &GameState, flags: [bool; 6]) -> Repl {
+        let mut r = repl_at(state.clone());
+        r.step(&church_entry(&r).to_string());
+        for (i, on) in flags.iter().enumerate() {
+            if *on {
+                r.step(&(i + 1).to_string());
+            }
+        }
+        r.step("confirm");
+        r
+    }
+
+    /// Every kind's `offered` on the open chooser against "some listed move's
+    /// flags hold it", read by hand off the list.
+    fn assert_offered_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let model = church_model(r.session.state(), r.session.rules(), &legal, church_selection(r));
+        for (i, kind) in model.kinds.iter().enumerate() {
+            let listed = legal.iter().filter_map(flags_by_hand).any(|f| f[i]);
+            assert_eq!(kind.offered, listed, "{at}: kind {} offered", i + 1);
+        }
+    }
+
+    #[test]
+    fn every_listed_church_move_commits_through_the_chooser() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        let (mut positions, mut moves) = (0usize, 0usize);
+        for n in [2u8, 3, 4] {
+            for seed in 0..8u64 {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let church: Vec<&Move> = legal.iter().filter(|m| flags_by_hand(m).is_some()).collect();
+                    if state.turn_phase == TurnPhase::AreaAction
+                        && state.pending_choices.is_empty()
+                        && church.len() > 1
+                    {
+                        positions += 1;
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        for mv in &church {
+                            let r = commit_through_the_chooser(&state, flags_by_hand(mv).unwrap());
+                            assert_eq!(&last_move(&r), *mv, "{at}");
+                            moves += 1;
+                        }
+                        // The flags tell the truth along the walk to one
+                        // sampled move: on the empty selection and after
+                        // each toggle.
+                        let sampled = flags_by_hand(church[(k % church.len() as u64) as usize]).unwrap();
+                        let mut r = repl_at(state.clone());
+                        r.step(&church_entry(&r).to_string());
+                        assert_offered_is_the_list_s(&r, &at);
+                        for (i, on) in sampled.iter().enumerate() {
+                            if *on {
+                                r.step(&(i + 1).to_string());
+                                assert_offered_is_the_list_s(&r, &at);
+                            }
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        // And the issue's own position, all 42.
+        let state = church_position();
+        let legal = get_legal_moves(&state, &rules);
+        let listed: Vec<&Move> = legal.iter().filter(|m| flags_by_hand(m).is_some()).collect();
+        assert_eq!(listed.len(), 42);
+        for mv in listed {
+            let r = commit_through_the_chooser(&state, flags_by_hand(mv).unwrap());
+            assert_eq!(&last_move(&r), mv, "the issue position");
+        }
+        println!(
+            "every_listed_church_move_commits_through_the_chooser: {positions} positions, {moves} moves, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= SWEEP_POSITIONS_FLOOR, "only {positions} folded Church positions");
+        assert!(moves >= SWEEP_MOVES_FLOOR, "only {moves} Church moves committed");
+    }
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 68 folded positions and 1,007 Church moves over seeds 0..8 at 2, 3 and
+    /// 4 players, in about 5 s of a debug build (the issue position's 42 are
+    /// committed on top and not counted).
+    const SWEEP_POSITIONS_FLOOR: usize = 34;
+    const SWEEP_MOVES_FLOOR: usize = 500;
+
+    #[test]
+    fn the_empty_selection_can_be_a_listed_payment() {
+        // Power 4 (three assistants and the President) with space 4 empty:
+        // the power alone reaches it.
+        let mut state = church_position();
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.assistants.on_board.insert(church, 3);
+        p.assistants.in_hand += 1;
+        let other = PlayerId::new(1 - me.0);
+        let q = &mut state.players[other.0 as usize];
+        q.assistants.on_church -= 1;
+        q.assistants.in_warehouse += 1;
+        state.church_track.slots[0] = None;
+        state.current_action_power = Some(calculate_power(&state, me, church));
+        assert_eq!(state.current_action_power, Some(4), "premise");
+        let mut r = repl_at(state);
+        let nothing = church_move(false, false, false, false, false, false);
+        assert!(r.session.legal().contains(&nothing), "premise: paying nothing is listed");
+        let opened = r.step(&church_entry(&r).to_string());
+        assert!(
+            opened.text.contains("\n  -> legal — Church: pay nothing -> faith 4 (power 4 + 0 kinds)\n"),
+            "{}",
+            opened.text,
+        );
+        r.step("confirm");
+        assert_eq!(last_move(&r), nothing);
+
+        // On the issue position paying nothing reaches faith 5, and spaces 4
+        // to 7 are taken.
+        let mut r = repl_at(church_position());
+        assert!(!r.session.legal().contains(&nothing), "premise: not listed here");
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events);
+        assert!(
+            out.text.starts_with("! that selection is not currently available — adjust it or 'cancel'.\n"),
+            "{}",
+            out.text,
+        );
+        assert_eq!(church_selection(&r), [false; 6]);
     }
 }

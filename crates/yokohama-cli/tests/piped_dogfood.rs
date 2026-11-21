@@ -12,8 +12,9 @@
 //! The driver is adaptive: it reads each prompt and answers it (random
 //! numbered pick from what is SHOWN, one toggled area + confirm in the
 //! Option-A picker, one typed area id + confirm in the Option-B picker,
-//! max recovery in the guided retreat, Enter on forced options), with a
-//! hard input cap so a regression can never hang the suite.
+//! max recovery in the guided retreat, random kinds + confirm in the
+//! Church chooser, Enter on forced options), with a hard input cap so a
+//! regression can never hang the suite.
 //!
 //! TWO games run here, sharing that one driver: all-human, and (Phase 3.2
 //! Task 12) human-vs-bot with seat 1 played by whatever the WIZARD configures
@@ -143,6 +144,10 @@ fn option_b_area_ids(screen: &str) -> Vec<u8> {
 /// list carries no `[N]` numbering at all, so the generic numbered-pick
 /// fallback below cannot answer this prompt).
 const OPTION_B_HEADER: &str = "Option B — place 2 assistants in one area (by id):";
+
+/// The Church chooser's last line (plan 2a, "The words"), which no other
+/// screen carries.
+const CHURCH_CHOOSER_HINT: &str = "type a number to toggle, 'confirm' to pay";
 
 /// The `[0-N]` max of a guided-retreat question.
 fn recover_max(screen: &str) -> Option<u32> {
@@ -285,6 +290,9 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
     }
 
     let mut won = false;
+    // The Church chooser's toggles in the current visit, and the payments
+    // confirmed through it over the whole game (a count, not an assertion).
+    let (mut church_toggles, mut church_confirms) = (0usize, 0usize);
     for _input in 0..20_000 {
         let screen = read_to_prompt(&rx, &mut transcript);
 
@@ -292,7 +300,26 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
             won = true;
             break;
         }
-        let answer: String = if screen.contains("type an area id to toggle") {
+        let at_the_church = screen.contains(CHURCH_CHOOSER_HINT);
+        if !at_the_church {
+            church_toggles = 0;
+        }
+        let answer: String = if at_the_church {
+            // The Church chooser (plan 2a): pay a selection the list holds;
+            // else toggle a random kind shown, at most six times in one visit;
+            // then back out, and the main list draws again.
+            if screen.contains("-> legal") {
+                church_confirms += 1;
+                "confirm".to_string()
+            } else if church_toggles < 6 {
+                church_toggles += 1;
+                let shown = shown_indices(&screen);
+                assert!(!shown.is_empty(), "the chooser numbers its kinds:\n{screen}");
+                shown[rng.gen_range(0..shown.len())].to_string()
+            } else {
+                "cancel".to_string()
+            }
+        } else if screen.contains("type an area id to toggle") {
             // Option-A picker: with nothing selected, toggle one random area;
             // once a VALID area is selected, place it. §3.1 made the picker keep
             // the selection open when a toggled area is not a legal placement
@@ -345,6 +372,7 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
         &full[full.len().saturating_sub(2000)..]
     );
 
+    println!("{label}: {church_confirms} Church payment(s) confirmed through the chooser");
     send("quit", &mut stdin);
     drop(stdin);
     let status = child.wait().expect("child exits");

@@ -56,6 +56,8 @@ import type {
   ChatAuthor,
   ChatMessage,
   ChatPage,
+  ChooserPreview,
+  ChurchKind,
   ClientState,
   Counter,
   DealCard,
@@ -111,6 +113,8 @@ import areas from "./areas.json";
 import choiceAssistantMove from "./choice_AssistantMove.json";
 import choiceChurchSpace from "./choice_ChurchSpace.json";
 import choiceWarehouseTake from "./choice_WarehouseTake.json";
+import church from "./church.json";
+import churchSelected from "./church_selected.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -260,6 +264,8 @@ const _feeNonzero: Widen<ClientState> = feeNonzero;
 const _choiceAssistantMove: Widen<ClientState> = choiceAssistantMove;
 const _choiceChurchSpace: Widen<ClientState> = choiceChurchSpace;
 const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
+const _church: Widen<ClientState> = church;
+const _churchSelected: Widen<ClientState> = churchSelected;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -522,6 +528,8 @@ const _pFeeNonzero: PromptOf<"place_a"> = feeNonzero.prompt;
 const _pChoiceAssistantMove: PromptOf<"options"> = choiceAssistantMove.prompt;
 const _pChoiceWarehouseTake: PromptOf<"options"> = choiceWarehouseTake.prompt;
 const _pChoiceChurchSpace: PromptOf<"options"> = choiceChurchSpace.prompt;
+const _pChurch: PromptOf<"church"> = church.prompt;
+const _pChurchSelected: PromptOf<"church"> = churchSelected.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -568,6 +576,7 @@ void [
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
   _pSpectator, _pSpectatorOver,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
+  _pChurch, _pChurchSelected,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -585,7 +594,7 @@ void [
   _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _idCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
-  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
+  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -642,6 +651,8 @@ const DECISION = [
   "not_offered", "not_offered_suppressed", "viewer_is_deciding",
 ] as const;
 const OPTION_ROW = ["number", "words", "opens_picker", "fee"] as const;
+const CHURCH_KIND = ["number", "good", "amount", "words", "have", "selected", "offered"] as const;
+const CHOOSER_PREVIEW = ["legal", "words"] as const;
 const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
   "shophouses", "trading_houses", "technologies", "mercenaries_unused",
@@ -762,6 +773,8 @@ const _cs: KeysOf<ClientState, typeof CLIENT_STATE> = CLIENT_STATE;
 const _fr: KeysOf<FrameModel, typeof FRAME> = FRAME;
 const _de: KeysOf<DecisionModel, typeof DECISION> = DECISION;
 const _or: KeysOf<OptionRow, typeof OPTION_ROW> = OPTION_ROW;
+const _chk: KeysOf<ChurchKind, typeof CHURCH_KIND> = CHURCH_KIND;
+const _chp: KeysOf<ChooserPreview, typeof CHOOSER_PREVIEW> = CHOOSER_PREVIEW;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
 const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
@@ -816,7 +829,7 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+void [_cs, _fr, _de, _or, _chk, _chp, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -830,6 +843,8 @@ export const KEYS = {
   historicalFrame: HISTORICAL_FRAME,
   decision: DECISION,
   optionRow: OPTION_ROW,
+  churchKind: CHURCH_KIND,
+  chooserPreview: CHOOSER_PREVIEW,
   player: PLAYER,
   hand: HAND,
   tile: TILE,
@@ -928,6 +943,10 @@ export const wire = {
   choiceAssistantMove: as<ClientState>(choiceAssistantMove),
   choiceChurchSpace: as<ClientState>(choiceChurchSpace),
   choiceWarehouseTake: as<ClientState>(choiceWarehouseTake),
+  /** The Church chooser as it opens (plan 2a): nothing selected. */
+  church: as<ClientState>(church),
+  /** The same chooser after its first kind is switched on. */
+  churchSelected: as<ClientState>(churchSelected),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -1061,5 +1080,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
   wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
+  wire.church, wire.churchSelected,
   wire.spectator, wire.spectatorOver,
 ];

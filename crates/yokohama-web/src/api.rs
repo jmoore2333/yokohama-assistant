@@ -1553,9 +1553,17 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // it carries the live legality verdict and the placement fee, which have no
     // structured equivalent on the wire yet, so dropping it would lose the only
     // statement of a cost the player is about to pay.
+    //
+    // **An area-action chooser's screen is stripped the same way** (cycle 2,
+    // design §5.6): its arm carries the preview structured, so the terminal's
+    // screen would be a second, dead copy of it. `chooser_screen()` returns
+    // exactly what `out` appended, and what stands before it — a refusal — is
+    // kept. The placement pickers' and the pick's blocks are left as they are.
     let body = if matches!(repl.sub, yokohama_cli::repl::SubPrompt::None) {
         let tail = repl.prompt();
         out.text.strip_suffix(&tail).unwrap_or(&out.text).to_string()
+    } else if let Some(screen) = repl.chooser_screen() {
+        out.text.strip_suffix(&screen).unwrap_or(&out.text).to_string()
     } else {
         out.text.clone()
     };
@@ -4576,6 +4584,126 @@ mod tests {
             Err(_) => panic!("the request panicked"),
             Ok(Err(e)) => panic!("the hot seat's holder was refused between two lock takes: {} {}", e.status, e.message),
             Ok(Ok(_)) => {}
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The Church chooser's replies (cycle 2, plan 2a, Task 3)
+    // -----------------------------------------------------------------------
+
+    /// A two-person table at the corpus seed with red at the Church's folded
+    /// payments, stepped there on the resident handle, and the entry's
+    /// number. Every line after this goes through `input`.
+    fn at_the_church(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, two_people, CORPUS_SEED};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_church(&mut repl)
+    }
+
+    /// One line through `input`, as red.
+    fn send(games: &Games, id: &str, line: &str) -> serde_json::Value {
+        let body = serde_json::json!({ "line": line }).to_string();
+        let (status, reply) = ask(games, "red@t.test", "POST", &format!("/api/games/{id}/input"), "", &body);
+        assert_eq!(status, 200, "{line:?}: {reply}");
+        reply
+    }
+
+    /// The reply's `messages`, as strings.
+    fn messages_of(reply: &serde_json::Value) -> Vec<String> {
+        reply["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|m| m.as_str().expect("a line").to_string())
+            .collect()
+    }
+
+    /// **A chooser's reply carries no line of the terminal's chooser screen**
+    /// (design §5.6): the screen is stripped by identity, as the main prompt
+    /// is, and what stands before it — a refusal — is kept. The placement
+    /// pickers' replies are untouched: `place_a`'s still carries its verdict
+    /// block, which has no structured form on the wire.
+    #[test]
+    fn a_chooser_reply_carries_no_line_of_the_terminal_s_screen() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_church(&games, "church");
+
+        let opened = send(&games, "church", &entry);
+        assert_eq!(opened["prompt"]["kind"], "church", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let screen = {
+            let handle = games.handle("church").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+
+        // A kind the list does not offer, from the payload's own flags.
+        let refused_kind = opened["prompt"]["kinds"]
+            .as_array()
+            .expect("kinds")
+            .iter()
+            .find(|k| k["offered"] == false)
+            .unwrap_or_else(|| panic!("premise: a kind no listed move pays: {}", opened["prompt"]));
+        let words = refused_kind["words"].as_str().expect("words").to_string();
+        let refused = send(&games, "church", &refused_kind["number"].to_string());
+        assert_eq!(refused["prompt"]["kind"], "church");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! {words} is not in any payment the list offers here")],
+            "exactly the refusal line",
+        );
+        let after = {
+            let handle = games.handle("church").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("still open")
+        };
+        assert_eq!(after, screen, "premise: the refusal kept the selection, so the screen did not move");
+        for reply in [&opened, &refused] {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+
+        // Option A's picker keeps its block: its verdict line rides.
+        let handle = crate::games::test_support::playing(
+            &games,
+            &crate::games::test_support::two_people("placing", crate::games::test_support::CORPUS_SEED),
+            &["red@t.test", "blue@t.test"],
+        );
+        let option_a = {
+            let mut repl = handle.lock().expect("a game");
+            let end = repl
+                .option_rows()
+                .iter()
+                .position(|r| r.mv == Some(yokohama_core::Move::EndAdditionalPhase))
+                .expect("the additional actions can end");
+            repl.step(&yokohama_cli::screen_model::menu_number(end).to_string());
+            let i = repl
+                .option_rows()
+                .iter()
+                .position(|r| r.words.starts_with("Option A"))
+                .expect("Option A's entry");
+            yokohama_cli::screen_model::menu_number(i).to_string()
+        };
+        let picker = send(&games, "placing", &option_a);
+        assert_eq!(picker["prompt"]["kind"], "place_a", "{picker}");
+        assert!(
+            messages_of(&picker).iter().any(|m| m.starts_with("> type an area id to toggle")),
+            "{:?}",
+            messages_of(&picker),
+        );
+    }
+
+    /// **Every line the client composes at the Church passes the fence as it
+    /// stands**: the six kinds' numbers, `confirm` and `cancel`.
+    #[test]
+    fn every_line_the_client_sends_at_the_church_passes_the_fence() {
+        for line in ["1", "2", "3", "4", "5", "6", "confirm", "cancel"] {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
         }
     }
 }

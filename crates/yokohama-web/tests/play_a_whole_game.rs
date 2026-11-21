@@ -185,6 +185,28 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
         "place_a" => "confirm".to_string(),
         // Back out; the next pass picks a different entry.
         "place_b" => "cancel".to_string(),
+        // The Church's chooser (cycle 2, plan 2a): confirm a selection the
+        // list holds; else switch on a kind drawn at random among those some
+        // listed move pays and not yet on; back out when there is none. Every
+        // flag is the arm's own, so nothing here restates a rule.
+        "church" => {
+            if prompt["preview"]["legal"] == Value::Bool(true) {
+                "confirm".to_string()
+            } else {
+                let open: Vec<u64> = prompt["kinds"]
+                    .as_array()
+                    .expect("kinds")
+                    .iter()
+                    .filter(|k| k["offered"] == Value::Bool(true) && k["selected"] == Value::Bool(false))
+                    .map(|k| k["number"].as_u64().expect("a number"))
+                    .collect();
+                if open.is_empty() {
+                    "cancel".to_string()
+                } else {
+                    open[rng.below(open.len())].to_string()
+                }
+            }
+        }
         // Recover none from each area in turn, then commit the retreat.
         "retreat" => {
             if prompt["remaining"].as_u64().unwrap_or(0) > 0 {

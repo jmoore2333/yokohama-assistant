@@ -73,6 +73,45 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     for (const row of prompt.rows) expect(keys(row)).toEqual(listed(KEYS.optionRow));
   });
 
+  // The Church chooser's arm (plan 2a): its kinds and its preview carry the
+  // fields `types.ts` declares, on every `church` state in the corpus.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "church").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("ChurchKind and ChooserPreview (church state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "church") throw new Error("filtered to church states");
+    expect(prompt.kinds.length).toBe(6);
+    for (const kind of prompt.kinds) expect(keys(kind)).toEqual(listed(KEYS.churchKind));
+    expect(prompt.kinds.map((k) => k.number)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+  });
+
+  it("the corpus's two church states: as it opens, and with its first kind on", () => {
+    const churches = EVERY_STATE.filter((state) => state.prompt.kind === "church");
+    expect(churches).toEqual([wire.church, wire.churchSelected]);
+    const selected = (state: typeof wire.church): number => {
+      if (state.prompt.kind !== "church") throw new Error(`not a church prompt: ${state.prompt.kind}`);
+      return state.prompt.kinds.filter((k) => k.selected).length;
+    };
+    expect(selected(wire.church)).toBe(0);
+    expect(selected(wire.churchSelected)).toBe(1);
+  });
+
+  it("a church preview has words exactly when it is legal", () => {
+    for (const state of EVERY_STATE) {
+      const prompt = state.prompt;
+      if (prompt.kind !== "church") continue;
+      if (prompt.preview.legal) {
+        expect(typeof prompt.preview.words).toBe("string");
+        expect(prompt.preview.words).not.toBe("");
+      } else {
+        expect(prompt.preview.words).toBeNull();
+      }
+    }
+  });
+
   it("TileModel", () => {
     const tiles = wire.options.frame.board.tiles;
     expect(tiles.length).toBeGreaterThan(0);

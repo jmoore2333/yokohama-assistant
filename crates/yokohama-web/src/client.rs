@@ -88,6 +88,14 @@ pub enum PromptState {
         selected: Option<AreaId>,
         fee: Option<screen_model::FeeModel>,
     },
+    /// The Church chooser (cycle 2, plan 2a): six kinds switched on and off by
+    /// number, then `confirm`. The fields are the REPL's own model
+    /// (`yokohama_cli::chooser::ChurchModel`) — per kind its number, good,
+    /// amount, words, holding, selection and whether any listed move pays it;
+    /// the preview; the offered-faiths line — so the client reads no rule.
+    /// Like every arm here it rides the acting seat's payload alone
+    /// ([`prompt_of_seat`]).
+    Church(yokohama_cli::chooser::ChurchModel),
     /// A live-mode card reveal. v1 does not create live games, so this is here
     /// to be reported honestly rather than rendered.
     Reveal,
@@ -299,6 +307,7 @@ impl PromptState {
             PromptState::Retreat { .. } => "retreat",
             PromptState::PlaceA { .. } => "place_a",
             PromptState::PlaceB { .. } => "place_b",
+            PromptState::Church(_) => "church",
             PromptState::Reveal => "reveal",
             PromptState::GameOver => "game_over",
             PromptState::Locked { .. } => "locked",
@@ -566,6 +575,14 @@ fn prompt_of(repl: &Repl) -> PromptState {
             selected: *selected,
         },
         SubPrompt::Reveal { .. } => PromptState::Reveal,
+        // The REPL's model over the same legal list its screen and `confirm`
+        // read, so the arm and the terminal cannot say two things.
+        SubPrompt::Church { selected } => PromptState::Church(yokohama_cli::chooser::church_model(
+            state,
+            rules,
+            &repl.session.legal(),
+            *selected,
+        )),
     }
 }
 
@@ -911,6 +928,59 @@ impl HistoricalFrame {
             options_omitted,
         }
     }
+}
+
+/// What the Church chooser's cells share (cycle 2, plan 2a, Task 3).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use yokohama_cli::repl::Repl;
+    use yokohama_cli::screen_model::menu_number;
+    use yokohama_core::{AreaType, Move};
+
+    /// The display number of the main-list row whose move `pick` names.
+    fn number_of(repl: &Repl, pick: impl Fn(&Move) -> bool) -> String {
+        let rows = repl.option_rows();
+        let i = rows
+            .iter()
+            .position(|r| r.mv.as_ref().is_some_and(&pick))
+            .unwrap_or_else(|| panic!("no row names the move: {:?}", rows.iter().map(|r| &r.words).collect::<Vec<_>>()));
+        menu_number(i).to_string()
+    }
+
+    /// Steps the corpus-seed 2P game's opening seat (red) from its first
+    /// prompt to the Church's folded payments: the additional actions ended,
+    /// Option B's two assistants at the Church, the President placed there
+    /// (power 3, so every payment of at least one kind but the four-kind
+    /// faith 7 is listed). Returns the display number of the Church's entry.
+    pub(crate) fn to_the_church(repl: &mut Repl) -> String {
+        let church = *repl
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("a 2P board has a Church")
+            .0;
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", church.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == church)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == church)
+        });
+        repl.step(&place);
+        church_entry(repl).unwrap_or_else(|| panic!("the Church's payments fold: {}", repl.prompt()))
+    }
+
+    /// The display number of the folded Church entry, if the list holds one.
+    pub(crate) fn church_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Church — choose what to pay"))
+            .map(|i| menu_number(i).to_string())
+    }
+
 }
 
 #[cfg(test)]
@@ -1507,5 +1577,75 @@ mod tests {
         let folded = Folded { listed: Vec::new(), folded: 5, capped: 2 };
         assert_eq!(folded.for_viewer(false), 5, "a viewer who is not deciding reads the fold's count alone");
         assert_eq!(folded.for_viewer(true), 7, "the deciding viewer reads the fold's and the cap's together");
+    }
+
+    // ---------------------------------------------------------------------
+    // The Church chooser on the wire (cycle 2, plan 2a, Task 3)
+    // ---------------------------------------------------------------------
+
+    /// The corpus-seed 2P game with the Church's chooser open on red's turn.
+    fn church_chooser_open() -> Repl {
+        let mut repl = two_human_repl();
+        let entry = super::test_support::to_the_church(&mut repl);
+        repl.step(&entry);
+        assert!(matches!(repl.sub, SubPrompt::Church { .. }), "premise: the chooser is open");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(0), "premise: red is acting");
+        repl
+    }
+
+    /// **A chooser is the acting seat's alone** (Review Focus 4): with it open,
+    /// the actor's payload carries the `church` arm, and the other seat's and
+    /// a watcher's carry `watching` and nothing of the chooser.
+    #[test]
+    fn a_chooser_is_the_acting_seat_s_alone() {
+        let repl = church_chooser_open();
+        let acting = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(acting.prompt.kind(), "church");
+        for viewer in [Viewer::Seat(PlayerId::new(1)), Viewer::Spectator] {
+            let payload = ClientState::of("t", &repl, viewer, Vec::new());
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == PlayerId::new(0)),
+                "{viewer:?}: {:?}",
+                payload.prompt.kind(),
+            );
+            let json = serde_json::to_value(&payload).expect("a payload");
+            assert!(json["prompt"].get("kinds").is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
+        }
+    }
+
+    /// **The `church` arm is the REPL's model, by value** — the six kinds, the
+    /// preview and the offered-faiths line, with nothing added but the tag —
+    /// on the empty selection and on one the toggles built.
+    #[test]
+    fn the_church_arm_is_the_repl_s_model_by_value() {
+        let mut repl = church_chooser_open();
+        for line in [None, Some("2"), Some("1")] {
+            if let Some(line) = line {
+                repl.step(line);
+            }
+            let selected = match repl.sub {
+                SubPrompt::Church { selected } => selected,
+                _ => panic!("the chooser closed"),
+            };
+            let model = yokohama_cli::chooser::church_model(
+                repl.session.state(),
+                repl.session.rules(),
+                &repl.session.legal(),
+                selected,
+            );
+            let mut expected = serde_json::to_value(&model).expect("a model");
+            expected
+                .as_object_mut()
+                .expect("an object")
+                .insert("kind".to_string(), serde_json::json!("church"));
+            let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+            assert_eq!(serde_json::to_value(&payload.prompt).expect("a prompt"), expected, "after {line:?}");
+        }
+        // The toggles reached the arm: silk and copper.
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        let selected: Vec<bool> =
+            json["kinds"].as_array().expect("kinds").iter().map(|k| k["selected"] == true).collect();
+        assert_eq!(selected, [true, true, false, false, false, false]);
     }
 }
