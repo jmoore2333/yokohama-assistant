@@ -76,7 +76,8 @@ when the last person has kept.
 ![The client at two players on a desktop screen: the staggered pyramid of ten area tiles fills the table on the
 left, each tile the printed area art with its building-site card, its pieces and an id badge, and the side column on
 the right carries the answer bar at its top, with the phase ladder, the seat to move and the numbered moves it
-offers, above the last move and both seats' goods, money and pieces.](../web/public/help/screen.webp)
+offers, above the last move and both seats' goods, money and pieces, each seat's row carrying its flag count by
+country, yours with the flags still in hand too.](../web/public/help/screen.webp)
 
 The **table** fills the left: the area tiles laid out as the staggered pyramid the real board makes, each the printed
 tile with any building-site card and pieces on it, and under the pyramid whichever boards you have switched on. A
