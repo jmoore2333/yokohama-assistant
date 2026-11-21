@@ -125,6 +125,13 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
           caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
         />
       )}
+      <p>
+        At the Church and at Chinatown the list is one entry that opens a chooser: at the Church
+        you switch on what you pay, at Chinatown you add exchanges with plus and take them back
+        with minus. A control is live only where the engine&rsquo;s list holds that choice, so
+        selling first is what lights a purchase you could not yet afford, and Confirm is live
+        once the list holds exactly what you have chosen.
+      </p>
 
       <h3>Looking things up</h3>
       <p>

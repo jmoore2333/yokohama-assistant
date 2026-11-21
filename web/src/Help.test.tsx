@@ -313,6 +313,42 @@ describe("the help panel's prose", () => {
     expect(within(container).getAllByRole("heading").length).toBeGreaterThan(3);
   });
 });
+// **The two sentences that say the goods choosers (issue #77, plan 2a Task 9).**
+// At the Church and at Chinatown the answer bar holds ONE entry that opens a
+// chooser, and the page says so after its words on the placement picker. Each
+// needle below is carried by exactly one of the two sentences (S1 the entry and
+// the plus and minus, S2 what lights a control and when Confirm is live), so a
+// cut sentence reads red; and each must occur ONCE in the turn section, since a
+// needle a neighbouring sentence also carried would pin nothing.
+describe("the help panel and the goods choosers (issue #77)", () => {
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  it("says the Church and Chinatown open a chooser, and what its controls are", () => {
+    render(<Help />);
+    const text = section("Taking a turn");
+    expect(text).toContain("opens a chooser");
+    expect(text).toContain("take them back with minus");
+    expect(occurrences(text, "opens a chooser")).toBe(1);
+    expect(occurrences(text, "take them back with minus")).toBe(1);
+    // The words as a whole, so a space lost at a line end reads here too.
+    expect(text).toContain(
+      "At the Church and at Chinatown the list is one entry that opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.",
+    );
+  });
+
+  it("says a control is live only where the engine's list holds the choice, and when Confirm is", () => {
+    render(<Help />);
+    const text = section("Taking a turn");
+    expect(text).toContain("selling first is what lights a purchase");
+    expect(text).toContain("holds exactly what you have chosen");
+    expect(occurrences(text, "selling first is what lights a purchase")).toBe(1);
+    expect(occurrences(text, "holds exactly what you have chosen")).toBe(1);
+    expect(text).toContain(
+      "A control is live only where the engine\u2019s list holds that choice, so selling first is what lights a purchase you could not yet afford, and Confirm is live once the list holds exactly what you have chosen.",
+    );
+  });
+});
+
 describe("the help panel and talking (M6.4)", () => {
   // **Where it is and that it is SHUT.** A panel folded by default is a panel a
   // player may never find, so the page has to say where it sits and that the

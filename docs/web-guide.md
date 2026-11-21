@@ -91,7 +91,11 @@ across your table one step at a time. On a narrow window the same parts stack, w
 bottom edge.
 
 The answer bar lists the moves the engine offers, numbered: press one. While a placement picker is open the table
-itself is the input, and the cost of your selection is printed before you commit to it.
+itself is the input, and the cost of your selection is printed before you commit to it. At the Church and at
+Chinatown the list is one entry that opens a chooser: at the Church you switch on what you pay, at Chinatown you add
+exchanges with plus and take them back with minus. A control is live only where the engine's list holds that choice,
+so selling first is what lights a purchase you could not yet afford, and Confirm is live once the list holds exactly
+what you have chosen.
 
 - **Boards**, along the top, is one menu with a switch for each board that can sit under the pyramid: the port, the
   laboratory, the tracks, the goals and the building sites.
