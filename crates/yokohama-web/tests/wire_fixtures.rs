@@ -3900,6 +3900,100 @@ fn drift_line(label: &str, committed: &str, emitted: &str, makes: &str) -> Strin
     )
 }
 
+/// **Every seat row's `flags` is the countries of that row's OWN face-up cards,
+/// by value, in every payload the corpus emits** (issue #76; the whole-branch
+/// review, W-8). The corpus's other cells pin a row's `flags` by key name only,
+/// and the golden above sees a wrong count only as DRIFT — which
+/// `UPDATE_WIRE_FIXTURES=1` erases, freezing the wrong count as faithfully as a
+/// right one (the M6.1 lesson). This recount reads what a regeneration cannot
+/// make agree with a wrong count: each row's own `orders_filled`, through
+/// `Rules::standard()`'s order registry, and its own `technologies[*].printed`
+/// country, never the model's counting functions. It walks every JSON object
+/// carrying a seat row's two marks (`hand_hidden` and `orders_filled`), so it
+/// reaches the rows inside a `Players` panel and the constructed fixture's
+/// untagged `players` root alike, and it counts the rows it checked and how
+/// many were non-zero: an empty sweep, or one whose every row is zero (which
+/// any count would match), fails.
+#[tokio::test]
+async fn every_seat_row_s_flags_are_the_countries_of_its_own_face_up_cards() {
+    use yokohama_core::{Country, OrderCardId};
+    fn word(c: Country) -> &'static str {
+        match c {
+            Country::English => "english",
+            Country::American => "american",
+            Country::French => "french",
+            Country::German => "german",
+            Country::Dutch => "dutch",
+        }
+    }
+    fn rows<'a>(v: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
+        match v {
+            Value::Object(m) => {
+                if m.contains_key("hand_hidden") && m.contains_key("orders_filled") {
+                    out.push((path.clone(), v));
+                }
+                for (k, x) in m {
+                    rows(x, format!("{path}/{k}"), out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    rows(x, format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let rules = Rules::standard();
+    let (mut checked, mut nonzero) = (0usize, 0usize);
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, value) in corpus().await.payloads {
+        let mut found = Vec::new();
+        rows(&value, String::new(), &mut found);
+        for (path, row) in found {
+            let mut counts = [("english", 0u64), ("american", 0), ("french", 0), ("german", 0), ("dutch", 0)];
+            let mut add = |c: Country| {
+                counts.iter_mut().find(|(k, _)| *k == word(c)).expect("a country").1 += 1;
+            };
+            for id in row["orders_filled"].as_array().expect("orders_filled is a list") {
+                let id: OrderCardId = serde_json::from_value(id.clone()).expect("an order id");
+                let card = rules
+                    .orders
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{name}{path}: order {id:?} is not in the registry"));
+                add(card.country);
+            }
+            for tech in row["technologies"].as_array().expect("technologies is a list") {
+                let country: Country = serde_json::from_value(tech["printed"]["country"].clone())
+                    .unwrap_or_else(|e| panic!("{name}{path}: a technology's printed country: {e}"));
+                add(country);
+            }
+            let expected: Value =
+                Value::Object(counts.iter().map(|(k, n)| (k.to_string(), json!(n))).collect());
+            checked += 1;
+            if counts.iter().any(|(_, n)| *n > 0) {
+                nonzero += 1;
+            }
+            if row.get("flags") != Some(&expected) {
+                wrong.push(format!(
+                    "  {name}.json{path}: flags {} where its own orders_filled and technologies make {expected}",
+                    row.get("flags").map_or("absent".to_string(), |f| f.to_string()),
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {checked} seat row(s) carry a flag count that is not their own face-up cards':\n{}",
+        wrong.len(),
+        wrong.join("\n"),
+    );
+    assert!(checked > 0, "the sweep found no seat row in any payload");
+    assert!(nonzero > 0, "every one of the {checked} seat rows is all zero, which any count would match");
+    eprintln!("seat rows recounted: {checked}, non-zero: {nonzero}");
+}
+
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     let dir = wire_dir();

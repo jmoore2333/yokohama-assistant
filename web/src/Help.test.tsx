@@ -426,19 +426,23 @@ describe("the help panel and talking (M6.4)", () => {
 });
 
 describe("the help panel and the claims and flags", () => {
-  // **The two sentences the claims-and-flags cycle added (issues #75, #76), and
-  // the clause its turn walk made necessary.** Each needle is a phrase only its
-  // own sentence carries, so a sentence cut or reworded away fails here rather
-  // than leaving the page silent on a card or a row the player can see. Each
-  // of the four sentences has a needle, the two that a semicolon joins (the
-  // second of each pair) have one for each half, and the walk's clause has its
-  // own, so cutting any sentence, either half, or the clause fails the cell.
+  // **The four sentences the claims-and-flags cycle added, two for each issue
+  // (#75 the claim, #76 the flags), and the clause its turn walk made
+  // necessary.** Each needle is a phrase only its own sentence carries, so a
+  // sentence cut or reworded away fails here rather than leaving the page
+  // silent on a card or a row the player can see. Every sentence has a needle;
+  // each issue's second sentence is two halves a semicolon joins, and each half
+  // has its own; the flag row's first sentence is a head clause and a colon's
+  // tail, and each has its own; and the walk's clause has its own. So cutting
+  // any sentence, any half, either side of the colon, or the clause fails the
+  // cell.
   it("says where a claimant's assistant stands, what a seat's flags count, and that the walk marks a claimed goal", () => {
     render(<Help />);
     const text = section("The three parts of the screen");
     expect(text).toContain("assistant on the card");
     expect(text).toContain("stands in the ringed place beside the first-place points");
     expect(text).toContain("later claimants follow beside theirs");
+    expect(text).toContain("counts their flags by country");
     expect(text).toContain("which earn mercenaries and score the country sets");
     expect(text).toContain("is the flags on orders still in your hand");
     expect(text).toContain("they count once the order is fulfilled");

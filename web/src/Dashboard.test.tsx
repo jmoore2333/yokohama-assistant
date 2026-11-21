@@ -749,16 +749,16 @@ describe("a seat's flags", () => {
     it("is one sentence of the five countries, zeros included", () => {
       const { container } = showPlayers(wire.gameOver);
       const seat0 = rowsOf(container)[0]!;
-      const group = nameOf(seat0);
-      expect(group.getAttribute("role")).toBe("img");
-      expect(group.getAttribute("aria-label")).toBe(
+      const tally = nameOf(seat0);
+      expect(tally.getAttribute("role")).toBe("img");
+      expect(tally.getAttribute("aria-label")).toBe(
         "Flags: Britain 2, America 1, France 0, Germany 1, Netherlands 1",
       );
       // Seat 0 holds no hand panel here, so nothing is appended.
       expect(handFor(wire.gameOver).seat).toBe(1);
-      expect(group.getAttribute("aria-label")).not.toContain("in hand");
+      expect(tally.getAttribute("aria-label")).not.toContain("in hand");
       // Each cell is hidden from the reader, so the sentence is heard once.
-      for (const cell of group.querySelectorAll(".flag")) {
+      for (const cell of tally.querySelectorAll(".flag")) {
         expect(cell.getAttribute("aria-hidden")).toBe("true");
       }
     });
@@ -826,15 +826,19 @@ describe("a seat's flags", () => {
     it("lists the countries in hand in the table's order: Britain, America, France, Germany", () => {
       // The table's order puts Britain before America; the wire's keys
       // (`Object.keys`) and the country words sorted both put America first, so
-      // only the table's order reads Britain first. `atK`'s hand holds France and
-      // Germany; the clone adds one English and one American flag in hand, the
-      // cards untouched, as the cell above reads the payload's own.
+      // only the table's order reads Britain first. And America holds TWO, the
+      // most of any country, so an order by count (descending) puts America
+      // first too: three wrong orders and none of them the table's (the
+      // whole-branch review, MB-2 — with every count 1, a count order read the
+      // same as the table's). `atK`'s hand holds France and Germany; the clone
+      // adds one English and two American flags in hand, the cards untouched,
+      // as the cell above reads the payload's own.
       const clone: ClientState["frame"] = JSON.parse(JSON.stringify(wire.atK.frame));
       const own = clone.dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p)!.Hand;
       expect(own.seat).toBe(0);
       expect(own.flags_in_hand).toEqual({ english: 0, american: 0, french: 1, german: 1, dutch: 0 });
       own.flags_in_hand!.english = 1;
-      own.flags_in_hand!.american = 1;
+      own.flags_in_hand!.american = 2;
 
       const { container } = render(
         <Dashboard
@@ -847,7 +851,7 @@ describe("a seat's flags", () => {
       );
       const row = rowsOf(container)[0]!;
       expect(nameOf(row).getAttribute("aria-label")).toBe(
-        "Flags: Britain 1, America 0, France 0, Germany 0, Netherlands 1; in hand: Britain 1, America 1, France 1, Germany 1",
+        "Flags: Britain 1, America 0, France 0, Germany 0, Netherlands 1; in hand: Britain 1, America 2, France 1, Germany 1",
       );
       expect(
         [...row.querySelectorAll<HTMLElement>(".flag-hand")].map(

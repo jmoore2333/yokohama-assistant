@@ -319,6 +319,61 @@ describe("the claim band in the goals index", () => {
     }
   });
 
+  // Design §6 asks for the band "in the strip, the panel and the index, with
+  // art and without", and for the four-claim card: the two cells below are the
+  // index's (the whole-branch review, L-2 / MB-9). The corpus's index payload is
+  // a 2P walk whose cards carry at most one claim, so the four-claim card is a
+  // JSON round-trip clone of it with one field changed, the first card's
+  // `claimed_by`, set to the committed fixture's claim order 2, 0, 3, 1 — which
+  // neither seat order nor "the lowest seat first" can pass for.
+  it("draws a card claimed four times in claim order, the first claim in the ringed place", () => {
+    const FOUR_COLORS: PlayerColor[] = ["Red", "Blue", "Yellow", "Green"];
+    expect(wire.goalsClaimed4p.achievements.cards[0]!.claimed_by, "the fixture's claim order").toEqual([2, 0, 3, 1]);
+    const clone: typeof wire.indexGoals = JSON.parse(JSON.stringify(wire.indexGoals));
+    const first = clone.groups.flatMap((g) => g.cards)[0]!.face;
+    if (!("Achievement" in first)) throw new Error("the goals index carries achievements");
+    first.Achievement.claimed_by = [2, 0, 3, 1];
+    expect([first.Achievement.first_place_vp, first.Achievement.subsequent_vp]).toEqual([8, 6]);
+    const { container } = render(
+      <IndexView first={clone} kind="goals" game="wire" art={wire.artManifest} labels={wire.labels} colors={FOUR_COLORS} />,
+    );
+    const card = container.querySelectorAll("li.index-card")[0]!;
+    const band = card.querySelector("figure.card-face.achievement > .card-pic > .claims");
+    expect(band, "the claimed card draws its band on the picture box").not.toBeNull();
+    const words = ["Yellow claimed first — 8 VP", "Red claimed — 6 VP", "Green claimed — 6 VP", "Blue claimed — 6 VP"];
+    expect(band!.getAttribute("aria-label")).toBe(words.join(" · "));
+    const cubes = [...band!.querySelectorAll(":scope > .claim")];
+    expect(
+      cubes.map((c) => [...c.classList].filter((k) => k.startsWith("seat-"))),
+      "claim order: seats 2, 0, 3, 1",
+    ).toEqual([["seat-yellow"], ["seat-red"], ["seat-green"], ["seat-blue"]]);
+    expect(cubes.map((c) => c.classList.contains("first")), "only the first claim is ringed").toEqual([true, false, false, false]);
+    expect(cubes.map((c) => c.getAttribute("title"))).toEqual(words);
+    expect(band!.querySelector(".claims-vp.first")!.textContent).toBe("8");
+    expect(band!.querySelector(".claims-vp.later")!.textContent).toBe("6");
+  });
+
+  it("draws the one claim's band over the blank when there is no art", () => {
+    expect(goals[0]!.claimed_by).toEqual([1]);
+    const { container } = render(
+      <IndexView first={wire.indexGoals} kind="goals" game="wire" art={null} labels={wire.labels} colors={COLORS} />,
+    );
+    const cards = [...container.querySelectorAll("li.index-card")];
+    expect(cards).toHaveLength(3);
+    const pic = cards[0]!.querySelector("figure.card-face.achievement > .card-pic.blank");
+    expect(pic, "with no art the picture box is the blank").not.toBeNull();
+    expect(pic!.querySelector(":scope > .card-blank"), "the picture is the blank").not.toBeNull();
+    expect(pic!.querySelector("img")).toBeNull();
+    const band = pic!.querySelector(":scope > .claims");
+    expect(band, "the band stands on the blank").not.toBeNull();
+    expect(band!.getAttribute("aria-label")).toBe("Blue claimed first — 8 VP");
+    const cubes = [...band!.querySelectorAll(":scope > .claim")];
+    expect(cubes).toHaveLength(1);
+    expect(cubes[0]!.classList.contains("first")).toBe(true);
+    expect(cubes[0]!.classList.contains("seat-blue")).toBe(true);
+    for (const c of cards.slice(1)) expect(c.querySelector(".claims")).toBeNull();
+  });
+
   it("draws no first or also chip in any caption", () => {
     const { container } = index("goals", wire.indexGoals);
     const chips = [...container.querySelectorAll(".card-face.achievement .chip")];

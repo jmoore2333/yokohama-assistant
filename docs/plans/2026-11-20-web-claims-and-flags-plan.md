@@ -114,14 +114,24 @@ fn the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus() {
             let mut state =
                 finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
             let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-            for _ in 0..4000 {
+            for step in 0..4000 {
                 let engine = final_result(&state, &rules);
                 for p in &state.players {
                     let arr = face_up_flags(p, &rules).as_array();
                     let sum: usize = arr.iter().map(|&x| x as usize).sum();
-                    assert_eq!(sum, p.completed_orders.len() + p.technologies.len());
+                    assert_eq!(
+                        sum,
+                        p.completed_orders.len() + p.technologies.len(),
+                        "{n}P seed {seed} step {step} seat {:?}: the five counts do not sum to its fulfilled orders and technologies",
+                        p.id,
+                    );
                     let b = &engine.standings.iter().find(|s| s.player == p.id).unwrap().breakdown;
-                    assert_eq!(yokohama_core::eval::set_bonus(arr), i64::from(b.country));
+                    assert_eq!(
+                        yokohama_core::eval::set_bonus(arr),
+                        i64::from(b.country),
+                        "{n}P seed {seed} step {step} seat {:?}: the set bonus over the counts {arr:?} is not final_result's country bonus",
+                        p.id,
+                    );
                     for (i, c) in Country::ALL.into_iter().enumerate() {
                         let held = p.mercenaries.available.get(&c).copied().unwrap_or(0)
                             + p.mercenaries.used.get(&c).copied().unwrap_or(0);
@@ -133,10 +143,10 @@ fn the_models_flags_agree_with_the_engines_mercenaries_and_country_bonus() {
                             Country::Dutch => state.mercenary_supply.dutch,
                         };
                         if supply > 0 {
-                            assert_eq!(held, arr[i] / 2, "seat {:?} {c:?}", p.id);
+                            assert_eq!(held, arr[i] / 2, "{n}P seed {seed} step {step} seat {:?} {c:?}: the mercenaries held against half the count", p.id);
                         } else {
                             supply_out += 1;
-                            assert!(held <= arr[i] / 2, "seat {:?} {c:?}", p.id);
+                            assert!(held <= arr[i] / 2, "{n}P seed {seed} step {step} seat {:?} {c:?}: the mercenaries held against half the count", p.id);
                         }
                     }
                     compared += 1;
