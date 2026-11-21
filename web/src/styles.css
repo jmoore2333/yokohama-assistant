@@ -768,15 +768,21 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 /* A seat's face-up flags: five cells, the country's word and its count. The row
  * wraps and its cells carry no fixed width, so it never widens its `.seat` at a
  * phone's width. A zero's word and count are dimmed, never the cell, so a `+n`
- * inside it keeps `--fg-faint`'s measured AA contrast. `+n` is a flag still on
- * an order in hand and does not count yet, so it is muted and italic beside the
- * count. */
+ * inside it keeps its own colour's full contrast. `+n` is a flag still on an
+ * order in hand and does not count yet, so it is `--fg-dim` and italic beside
+ * the bold `--fg` count. It is `--fg-dim` and not `--fg-faint` because it sits
+ * on the viewer's own row, the row the walk tints (`.seat.changed`, 10% of
+ * `--green` over the panel) and holds tinted until the player answers:
+ * `--fg-dim` reads 6.01:1 on the dark `--bg-raised` and 5.08:1 on it lit, and
+ * 5.77:1 on the light scheme's `--bg-raised` and 4.85:1 on it lit, all four
+ * above AA's 4.5:1, where `--fg-faint` read 4.12:1 and 3.94:1 on the two lit
+ * grounds. */
 .flags { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; margin-top: 0.25rem; font-size: 10px; }
 .flag { display: inline-flex; align-items: baseline; gap: 0.2rem; color: var(--fg-dim); }
 .flag.none .flag-word, .flag.none .flag-n { opacity: 0.45; }
 .flag-n { color: var(--fg); font-weight: 700; }
 .flag.none .flag-n { color: inherit; font-weight: 400; }
-.flag-hand { color: var(--fg-faint); font-style: italic; }
+.flag-hand { color: var(--fg-dim); font-style: italic; }
 
 .track { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.2rem; }
 .space {

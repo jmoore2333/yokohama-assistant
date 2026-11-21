@@ -881,6 +881,19 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
         firstIsFirst: !!band?.querySelector(":scope > .claim:first-of-type.first"),
         vpFirst: rect(band?.querySelector(":scope > .claims-vp.first") ?? null),
         vpLater: rect(band?.querySelector(":scope > .claims-vp.later") ?? null),
+        // What is PAINTED at each cube's and each number's centre: the topmost
+        // element there, which must be inside the band. A box says where a
+        // thing is laid out, not that it is seen — a band painted under the
+        // art, or hidden, keeps every box above and puts the picture here.
+        hits: [...(band?.querySelectorAll(":scope > .claim, :scope > .claims-vp") ?? [])].map((el) => {
+          const r = el.getBoundingClientRect();
+          const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+          return {
+            what: el.getAttribute("class") ?? "",
+            inBand: !!hit && !!band && band.contains(hit),
+            hit: hit ? `${hit.tagName}.${hit.getAttribute("class") ?? ""}` : "nothing",
+          };
+        }),
       };
     });
     const at = `at ${width}px`;
@@ -914,12 +927,24 @@ test("four claims stand on one line inside the picture box of the Goals strip's 
     expect(outside(band, pic), `${at}: the band is not inside the picture box`).toBeNull();
     expect(outside(read.vpFirst!, pic), `${at}: the first-place number is not inside the picture box`).toBeNull();
     expect(outside(read.vpLater!, pic), `${at}: the later number is not inside the picture box`).toBeNull();
+    // Painted, not only laid out: the hit test at each of the six centres.
+    expect(read.hits, `${at}: the hit test did not read four cubes and two numbers`).toHaveLength(6);
+    for (const h of read.hits) {
+      expect(h.inBand, `${at}: at the centre of the ${h.what} the page paints ${h.hit}, not the band`).toBe(true);
+    }
     // **And both numbers are DRAWN, on the cubes' line** (spec §5.1, §6: "four
     // cubes and both numbers on one line"). Inside the picture box is not
     // evidence a number is seen: the band clips with `overflow: hidden`, so a
     // number pushed past its edge is inside the picture box and invisible — hence
     // inside the BAND too. And the shared top above reads only the cubes, so a
-    // wrap that moves only a number goes unseen there — hence the line.
+    // wrap that moves only a number goes unseen there — hence the line. And a
+    // box inside the band is not yet a band that is SEEN — one painted under the
+    // art, or hidden, keeps every box — hence the hit test just above, which
+    // reads the band, not the picture, at each number's and each cube's centre
+    // (6 of 6 at baseline; the review's two such mutants put the `IMG` there).
+    // The glyphs' colour is the one thing about "drawn" no box or hit reads: it
+    // is the stylesheet's `--vp` on the band's own ground, figured in its
+    // comment.
     //
     // **The line is the cubes' vertical span, and a number lies within it** (±1
     // px). Measured before this was set (2026-11-20, every width alike): a cube
@@ -960,10 +985,45 @@ test("each seat's flag row stays inside its seat at a phone's width and widens n
   // frame's hand — and with it the `+n` cells, the widest a row gets — is on
   // one row, the case the design names; the other row is a seat whose hand is
   // hidden and draws its five cells bare. A few moves make it a running game.
+  //
+  // **The hand is rewritten to hold every country** (the whole-branch review,
+  // MB-1). A six-move game's hand carries one or two countries, and a row with
+  // one or two `+n` fits one line at 390 px whether the row wraps or not, so
+  // the containment below could not tell `flex-wrap: wrap` from `nowrap`. With
+  // a `+n` in all five cells the row does not fit one line (measured by the
+  // review: 381.9 px at max-content against a 328.8 px seat), so only a row
+  // that wraps stays inside its seat. As in the claim cell above, the rewrite
+  // is of the game-state replies (`GET /api/games/{id}` and the move's `POST
+  // …/input`, both a `ClientState`) and of nothing in them but the open Hand
+  // panel's `flags_in_hand`: the rest stays the server's own.
+  const FIVE_IN_HAND = { english: 1, american: 1, french: 1, german: 1, dutch: 2 };
+  let rewritten = 0;
+  // Cast, not annotated: the route assigns it, and TypeScript does not follow
+  // an assignment inside a callback, so an annotated `null` stays narrowed.
+  let handSeat = null as number | null;
+  await page.route(
+    (url) => /^\/api\/games\/[^/]+(\/input)?$/.test(url.pathname),
+    async (route) => {
+      const method = route.request().method();
+      if (method !== "GET" && method !== "POST") return route.fallback();
+      const response = await route.fetch();
+      if (!response.ok()) return route.fulfill({ response });
+      const body = (await response.json()) as { frame?: { dashboard?: Record<string, unknown>[] } };
+      const panel = body.frame?.dashboard?.find((p) => "Hand" in p);
+      const hand = panel?.Hand as { seat: number; hidden: boolean; flags_in_hand: unknown } | undefined;
+      if (hand && !hand.hidden) {
+        hand.flags_in_hand = { ...FIVE_IN_HAND };
+        handSeat = hand.seat;
+        rewritten += 1;
+      }
+      return route.fulfill({ response, json: body });
+    },
+  );
   await startGame(page, { players: 2 });
   await playAFew(page, 6, 0x464c_4147); // "FLAG"
   await page.setViewportSize({ width: 390, height: 844 });
   await settle(page);
+  expect(rewritten, "no game-state reply's open hand was rewritten").toBeGreaterThan(0);
 
   const read = () =>
     page.evaluate(() => {
@@ -979,20 +1039,39 @@ test("each seat's flag row stays inside its seat at a phone's width and widens n
           cellBoxes: [...s.querySelectorAll(".flags > .flag")].map(rect),
           cells: s.querySelectorAll(".flags > .flag[data-country]").length,
           hand: s.querySelectorAll(".flags .flag-hand").length,
+          // Each `+n`'s EFFECTIVE opacity: the product of its own computed
+          // `opacity` and every ancestor's up to its `.seat` — what a reader's
+          // eye gets, which no one element's value says.
+          handOpacity: [...s.querySelectorAll(".flags .flag-hand")].map((h) => {
+            let o = 1;
+            for (let e: Element | null = h; e && e !== s; e = e.parentElement) o *= Number(getComputedStyle(e).opacity);
+            return o;
+          }),
         })),
       };
     });
   const before = await read();
   // Anti-vacuity: the page is a phone's width, each seat draws one row of five
-  // cells, and the viewer's row carries the `+n` this cell exists for (the kept
-  // starting order is in hand).
+  // cells, and the viewer's row — the hand's seat, the rows being in seat
+  // order — carries a `+n` in all five, the rewritten hand; the other row
+  // carries none.
   expect(before.inner, "the window is not 390px").toBe(390);
   expect(before.seats, "the players panel draws a row per seat").toHaveLength(2);
   for (const [i, s] of before.seats.entries()) {
     expect(s.rows, `seat ${i} draws no flag row, or more than one`).toHaveLength(1);
     expect(s.cells, `seat ${i}'s flag row is not five cells`).toBe(5);
   }
-  expect(before.seats.reduce((n, s) => n + s.hand, 0), "no row shows a flag still in hand").toBeGreaterThan(0);
+  expect(handSeat, "the rewritten hand names no seat").not.toBeNull();
+  for (const [i, s] of before.seats.entries()) {
+    expect(s.hand, `seat ${i} draws ${s.hand} flags in hand (the hand is seat ${handSeat}'s, five countries)`).toBe(i === handSeat ? 5 : 0);
+  }
+  // **A `+n` is never dimmed** (MB-5): a zero's word and count are, and the
+  // cell is not, so a `+n` inside a zero's cell keeps its colour's contrast
+  // (`styles.css`, the flag row's comment). Dimming the cell would multiply
+  // the `+n` by it, which only the effective opacity sees.
+  before.seats[handSeat!]!.handOpacity.forEach((o, j) => {
+    expect(o, `seat ${handSeat}'s flag in hand ${j} is drawn at an effective opacity of ${o}`).toBe(1);
+  });
   for (const [i, s] of before.seats.entries()) {
     const row = s.rows[0]!;
     expect(row.width > 0 && row.height > 0, `seat ${i}'s flag row has no size`).toBe(true);
