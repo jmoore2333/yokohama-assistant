@@ -1,10 +1,11 @@
-//! The area-action choosers' models (cycle 2, plan 2a): the Church's here, as
-//! a pure module over the legal list. Nothing in this file decides legality:
-//! whether a kind is offered, whether a selection can be confirmed and which
-//! faiths the list holds are each answered by finding listed moves among the
-//! ones handed in (`docs/plans/2026-11-21-web-area-action-choosers-design.md`
-//! §3). `calculate_power` and `calculate_church_faith` are read for what is
-//! DISPLAYED only, as `describe`'s Church arm reads them.
+//! The area-action choosers' models (cycle 2, plan 2a): the Church's and
+//! Chinatown's, as a pure module over the legal list. Nothing in this file
+//! decides legality: whether a kind or an exchange is offered, whether a
+//! selection can be confirmed or added to, and which faiths the list holds are
+//! each answered by finding listed moves among the ones handed in
+//! (`docs/plans/2026-11-21-web-area-action-choosers-design.md` §3).
+//! `calculate_power`, `calculate_church_faith` and `chinatown_rate` are read for
+//! what is DISPLAYED only, as `describe`'s Church and Chinatown arms read them.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -254,7 +255,9 @@ pub fn chinatown_match(legal: &[Move], counts: [u8; 9]) -> Option<Move> {
 
 /// `legal` is walked ONCE into a map from count arrays to the first listed move
 /// holding them; `can_add`, `offered`, `max_exchanges` and the preview are each
-/// answered from that map, never from the stock, the rate or the power.
+/// answered from that map, never from the stock, the rate or the power. The
+/// map and `chinatown_match` agree because the list holds no two moves with the
+/// same counts (cell 2's first loop requires it).
 pub fn chinatown_model(
     state: &GameState,
     rules: &Rules,
@@ -728,6 +731,12 @@ Selected: silk
             assert_eq!(chinatown_counts(&reversed), Some(counts));
         }
         assert!(reversed_differs > 0, "the list holds sets whose order matters to a vector compare");
+        // The engine lists some sets out of row order: this one among them.
+        assert!(
+            chinatown_moves(&legal).iter().any(|m| exchanges_of(m)
+                == [ChinatownExchange::YenToSilk, ChinatownExchange::SilkToYen]),
+            "[YenToSilk, SilkToYen] is listed"
+        );
 
         // A list that holds every set with its exchanges the other way round
         // still matches each by its counts, and returns the move as listed.
@@ -986,5 +995,38 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
         sold[0] = 1;
         let model = chinatown_model(&state, &rules, &singles, sold);
         assert!(model.rows.iter().all(|r| !r.can_add), "{:?}", can_add_of(&model));
+
+        // A list cut to the sets that repeat an exchange: the longest is 3
+        // exchanges, yet none holds more than 2 DIFFERENT ones, so a count of
+        // different exchanges reads less.
+        let repeating: Vec<Move> = legal
+            .iter()
+            .filter(|mv| chinatown_counts(mv).is_some_and(|c| c.iter().any(|&n| n >= 2)))
+            .cloned()
+            .collect();
+        assert!(chinatown_moves(&repeating)
+            .iter()
+            .all(|m| chinatown_counts(m).unwrap().iter().filter(|&&n| n > 0).count() <= 2));
+        let model = chinatown_model(&state, &rules, &repeating, [0; 9]);
+        assert_eq!(model.max_exchanges, 3);
+    }
+
+    #[test]
+    fn the_model_previews_every_listed_set_in_describe_s_words() {
+        let rules = Rules::standard();
+        let state = ordinary_position();
+        let legal = legal_of(&state);
+        let listed = chinatown_moves(&legal);
+        assert_eq!(listed.len(), 102);
+        for mv in listed {
+            let counts = chinatown_counts(mv).expect("a Chinatown move has counts");
+            let model = chinatown_model(&state, &rules, &legal, counts);
+            assert_eq!(
+                model.preview,
+                Preview { legal: true, words: Some(describe_move(mv, &state, &rules)) },
+                "{:?}",
+                exchanges_of(mv)
+            );
+        }
     }
 }
