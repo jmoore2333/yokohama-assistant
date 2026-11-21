@@ -368,7 +368,7 @@ describe("productionSeedRule", () => {
   // line shape, and compared line by line to the list the review read
   // (`replay/fixtures/production-door-kept-rows.txt`, its header and footer
   // kept). Mutant: the skip rule widened to `wire4`'s four keep rows.
-  it("keeps exactly the twenty-six rows the review read, of 2,228", () => {
+  it("keeps exactly the thirty-two rows the review read, of 2,234", () => {
     const skipped = productionSeedRule(SCRIPTS.walk);
     const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
     const kept = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
@@ -384,7 +384,7 @@ describe("productionSeedRule", () => {
     const file = readFileSync(new URL("./replay/fixtures/production-door-kept-rows.txt", import.meta.url), "utf8");
     expect(file.endsWith("\n"), "the list ends in one newline").toBe(true);
     expect(lines).toEqual(file.slice(0, -1).split("\n"));
-    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([26, 2202, 2228]);
+    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([32, 2202, 2234]);
   });
   // The sentence is `tables::SEED_NOT_SOLO`'s, read off the Rust source so
   // the two cannot drift (the edge rule's drift cell is the precedent).

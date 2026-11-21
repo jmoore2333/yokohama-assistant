@@ -8552,6 +8552,22 @@ mod tests {
                             .map_or_else(|| "cancel".to_string(), |n| n.to_string())
                     }
                 }
+                // Chinatown's chooser (plan 2a, Task 4): confirm a selection
+                // the list holds, else add the first exchange the list holds
+                // one more of, else back out.
+                "chinatown" => {
+                    if state["prompt"]["preview"]["legal"] == serde_json::json!(true) {
+                        "confirm".to_string()
+                    } else {
+                        state["prompt"]["rows"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|r| r["can_add"] == serde_json::json!(true))
+                            .and_then(|r| r["number"].as_u64())
+                            .map_or_else(|| "cancel".to_string(), |n| n.to_string())
+                    }
+                }
                 _ => state["prompt"]["rows"][0]["number"]
                     .as_u64()
                     .map(|n| n.to_string())

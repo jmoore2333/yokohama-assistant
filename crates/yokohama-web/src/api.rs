@@ -4706,4 +4706,93 @@ mod tests {
             assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // The Chinatown chooser's replies (cycle 2, plan 2a, Task 4)
+    // -----------------------------------------------------------------------
+
+    /// A four-seat table at the corpus seed, every seat red's (the solo shape
+    /// the walk's `wire4` has), with red at Chinatown's folded exchange sets,
+    /// stepped there on the resident handle, and the entry's number. Every
+    /// line after this goes through `input`.
+    fn at_chinatown(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, req_seeded, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerColor;
+        let mut req = req_seeded(id, CORPUS_SEED);
+        req.players = 4;
+        req.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+        req.seats = (0..4).map(|_| SeatSpec { user: Some("red@t.test".into()), bot: false, open: false }).collect();
+        let handle = playing(games, &req, &["red@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_chinatown(&mut repl)
+    }
+
+    /// **A Chinatown reply carries no line of the terminal's chooser screen**
+    /// (design §5.6), as at the Church: the screen is stripped by identity and
+    /// what stands before it — an addition refused, a take-back refused — is
+    /// kept, exactly that line.
+    #[test]
+    fn a_chinatown_chooser_reply_carries_no_line_of_the_terminal_s_screen() {
+        let games = crate::games::test_support::games();
+        let entry = at_chinatown(&games, "chinatown");
+        let screen_now = || {
+            let handle = games.handle("chinatown").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+
+        let opened = send(&games, "chinatown", &entry);
+        assert_eq!(opened["prompt"]["kind"], "chinatown", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let screen = screen_now();
+
+        // An exchange the list cannot add from here, from the payload's own flags.
+        let refused_row = opened["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["can_add"] == false)
+            .unwrap_or_else(|| panic!("premise: an exchange the list cannot add: {}", opened["prompt"]));
+        let words = refused_row["words"].as_str().expect("words").to_string();
+        let refused = send(&games, "chinatown", &refused_row["number"].to_string());
+        assert_eq!(refused["prompt"]["kind"], "chinatown");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! the list holds no set with one more \"{words}\" from here")],
+            "exactly the refusal line",
+        );
+        assert_eq!(screen_now(), screen, "premise: the refusal kept the selection, so the screen did not move");
+
+        // A take-back of a row not chosen.
+        let first = &opened["prompt"]["rows"][0];
+        let back = send(&games, "chinatown", &format!("back {}", first["number"]));
+        assert_eq!(
+            messages_of(&back),
+            vec![format!("! no \"{}\" is selected to take back", first["words"].as_str().expect("words"))],
+        );
+        assert_eq!(screen_now(), screen, "premise: nothing moved");
+
+        for reply in [&opened, &refused, &back] {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+    }
+
+    /// **Every line the client composes at Chinatown passes the fence as it
+    /// stands**: the nine exchanges' numbers, each `back` with one, `confirm`
+    /// and `cancel`.
+    #[test]
+    fn every_line_the_client_sends_at_chinatown_passes_the_fence() {
+        let mut lines: Vec<String> = (1..=9).map(|n| n.to_string()).collect();
+        lines.extend((1..=9).map(|n| format!("back {n}")));
+        lines.extend(["confirm".to_string(), "cancel".to_string()]);
+        for line in &lines {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
+        }
+    }
 }

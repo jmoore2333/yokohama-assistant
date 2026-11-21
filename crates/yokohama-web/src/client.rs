@@ -96,6 +96,15 @@ pub enum PromptState {
     /// Like every arm here it rides the acting seat's payload alone
     /// ([`prompt_of_seat`]).
     Church(yokohama_cli::chooser::ChurchModel),
+    /// The Chinatown chooser (cycle 2, plan 2a): nine exchanges added by
+    /// number and taken back by `back <number>`, then `confirm`. The fields
+    /// are the REPL's own model (`yokohama_cli::chooser::ChinatownModel`) —
+    /// the most exchanges in one listed set, the count chosen, the acting
+    /// seat's six holdings, per exchange its number, what it spends and gains,
+    /// its words, its count, whether the list holds one more of it and
+    /// whether any listed set uses it; the preview — so the client reads no
+    /// rule. It rides the acting seat's payload alone ([`prompt_of_seat`]).
+    Chinatown(yokohama_cli::chooser::ChinatownModel),
     /// A live-mode card reveal. v1 does not create live games, so this is here
     /// to be reported honestly rather than rendered.
     Reveal,
@@ -308,6 +317,7 @@ impl PromptState {
             PromptState::PlaceA { .. } => "place_a",
             PromptState::PlaceB { .. } => "place_b",
             PromptState::Church(_) => "church",
+            PromptState::Chinatown(_) => "chinatown",
             PromptState::Reveal => "reveal",
             PromptState::GameOver => "game_over",
             PromptState::Locked { .. } => "locked",
@@ -582,6 +592,12 @@ fn prompt_of(repl: &Repl) -> PromptState {
             rules,
             &repl.session.legal(),
             *selected,
+        )),
+        SubPrompt::Chinatown { counts } => PromptState::Chinatown(yokohama_cli::chooser::chinatown_model(
+            state,
+            rules,
+            &repl.session.legal(),
+            *counts,
         )),
     }
 }
@@ -930,12 +946,25 @@ impl HistoricalFrame {
     }
 }
 
-/// What the Church chooser's cells share (cycle 2, plan 2a, Task 3).
+/// What the choosers' cells share (cycle 2, plan 2a, Tasks 3 and 4).
 #[cfg(test)]
 pub(crate) mod test_support {
     use yokohama_cli::repl::Repl;
     use yokohama_cli::screen_model::menu_number;
-    use yokohama_core::{AreaType, Move};
+    use yokohama_core::{AreaId, AreaType, Move};
+
+    /// The id of the board's first area of `kind`, or panic.
+    fn area_of(repl: &Repl, kind: AreaType) -> AreaId {
+        *repl
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == kind)
+            .unwrap_or_else(|| panic!("the board has a {kind:?}"))
+            .0
+    }
 
     /// The display number of the main-list row whose move `pick` names.
     fn number_of(repl: &Repl, pick: impl Fn(&Move) -> bool) -> String {
@@ -950,18 +979,11 @@ pub(crate) mod test_support {
     /// Steps the corpus-seed 2P game's opening seat (red) from its first
     /// prompt to the Church's folded payments: the additional actions ended,
     /// Option B's two assistants at the Church, the President placed there
-    /// (power 3, so every payment of at least one kind but the four-kind
-    /// faith 7 is listed). Returns the display number of the Church's entry.
+    /// (power 3, so every payment of at least one kind is listed — 31 sets;
+    /// imported goods, at 0, is the one kind not offered). Returns the display
+    /// number of the Church's entry.
     pub(crate) fn to_the_church(repl: &mut Repl) -> String {
-        let church = *repl
-            .session
-            .state()
-            .board_layout
-            .areas
-            .iter()
-            .find(|(_, c)| c.area_type == AreaType::Church)
-            .expect("a 2P board has a Church")
-            .0;
+        let church = area_of(repl, AreaType::Church);
         let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
         repl.step(&end);
         repl.step(&format!("b {}", church.0));
@@ -978,6 +1000,32 @@ pub(crate) mod test_support {
         let rows = repl.option_rows();
         rows.iter()
             .position(|r| r.mv.is_none() && r.words.starts_with("Church — choose what to pay"))
+            .map(|i| menu_number(i).to_string())
+    }
+
+    /// Steps a 3P or 4P game's opening seat from its first prompt to
+    /// Chinatown's folded exchange sets, as [`to_the_church`] does at the
+    /// Church: the additional actions ended, Option B's two assistants at
+    /// Chinatown, the President placed there (power 3). Returns the display
+    /// number of Chinatown's entry.
+    pub(crate) fn to_the_chinatown(repl: &mut Repl) -> String {
+        let chinatown = area_of(repl, AreaType::Chinatown);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", chinatown.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == chinatown)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == chinatown)
+        });
+        repl.step(&place);
+        chinatown_entry(repl).unwrap_or_else(|| panic!("Chinatown's exchange sets fold: {}", repl.prompt()))
+    }
+
+    /// The display number of the folded Chinatown entry, if the list holds one.
+    pub(crate) fn chinatown_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Chinatown — choose exchanges"))
             .map(|i| menu_number(i).to_string())
     }
 
@@ -1647,5 +1695,84 @@ mod tests {
         let selected: Vec<bool> =
             json["kinds"].as_array().expect("kinds").iter().map(|k| k["selected"] == true).collect();
         assert_eq!(selected, [true, true, false, false, false, false]);
+    }
+
+    // ---------------------------------------------------------------------
+    // The Chinatown chooser on the wire (cycle 2, plan 2a, Task 4)
+    // ---------------------------------------------------------------------
+
+    /// The corpus-seed 4P game with Chinatown's chooser open on red's turn.
+    fn chinatown_chooser_open() -> Repl {
+        let mut repl = human_repl(4);
+        let entry = super::test_support::to_the_chinatown(&mut repl);
+        repl.step(&entry);
+        assert!(matches!(repl.sub, SubPrompt::Chinatown { .. }), "premise: the chooser is open");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(0), "premise: red is acting");
+        repl
+    }
+
+    /// **A Chinatown chooser is the acting seat's alone** (Review Focus 4, as
+    /// at the Church): with it open, the actor's payload carries the
+    /// `chinatown` arm, and every other seat's and a watcher's carry
+    /// `watching` and nothing of the chooser.
+    #[test]
+    fn a_chinatown_chooser_is_the_acting_seat_s_alone() {
+        let repl = chinatown_chooser_open();
+        let acting = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(acting.prompt.kind(), "chinatown");
+        for viewer in [
+            Viewer::Seat(PlayerId::new(1)),
+            Viewer::Seat(PlayerId::new(2)),
+            Viewer::Seat(PlayerId::new(3)),
+            Viewer::Spectator,
+        ] {
+            let payload = ClientState::of("t", &repl, viewer, Vec::new());
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == PlayerId::new(0)),
+                "{viewer:?}: {:?}",
+                payload.prompt.kind(),
+            );
+            let json = serde_json::to_value(&payload).expect("a payload");
+            for field in ["rows", "stock", "preview", "max_exchanges", "chosen"] {
+                assert!(json["prompt"].get(field).is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
+            }
+        }
+    }
+
+    /// **The `chinatown` arm is the REPL's model, by value** — the nine rows,
+    /// the stock, the counts and the preview, with nothing added but the tag —
+    /// on the empty selection and on ones the additions and a take-back built.
+    #[test]
+    fn the_chinatown_arm_is_the_repl_s_model_by_value() {
+        let mut repl = chinatown_chooser_open();
+        for line in [None, Some("1"), Some("6"), Some("back 1")] {
+            if let Some(line) = line {
+                repl.step(line);
+            }
+            let counts = match repl.sub {
+                SubPrompt::Chinatown { counts } => counts,
+                _ => panic!("the chooser closed"),
+            };
+            let model = yokohama_cli::chooser::chinatown_model(
+                repl.session.state(),
+                repl.session.rules(),
+                &repl.session.legal(),
+                counts,
+            );
+            let mut expected = serde_json::to_value(&model).expect("a model");
+            expected
+                .as_object_mut()
+                .expect("an object")
+                .insert("kind".to_string(), serde_json::json!("chinatown"));
+            let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+            assert_eq!(serde_json::to_value(&payload.prompt).expect("a prompt"), expected, "after {line:?}");
+        }
+        // The lines reached the arm: a silk purchase, the sale taken back.
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        let counts: Vec<u64> =
+            json["rows"].as_array().expect("rows").iter().map(|r| r["count"].as_u64().expect("a count")).collect();
+        assert_eq!(counts, [0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(json["chosen"], 1);
     }
 }

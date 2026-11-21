@@ -706,6 +706,29 @@ fn new_game_body() -> Value {
     })
 }
 
+/// The id of the Chinatown tile on an `areas` payload, read by its
+/// `area_type` (plan 2a, Task 4's route on `wire4`).
+fn find_chinatown_area(areas: &Value) -> u64 {
+    fn walk(v: &Value, out: &mut Vec<u64>) {
+        match v {
+            Value::Object(m) => {
+                if m.get("area_type") == Some(&json!("Chinatown")) {
+                    if let Some(id) = m.get("area").and_then(Value::as_u64) {
+                        out.push(id);
+                    }
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut ids = Vec::new();
+    walk(areas, &mut ids);
+    assert_eq!(ids.len(), 1, "one Chinatown tile on a four-player board: {ids:?}");
+    ids[0]
+}
+
 /// A SECOND open table, unlocked, so two lobby fixtures mean something.
 ///
 /// `games_open` is the lobby's "tables I could sit at", and a page of one table
@@ -1542,6 +1565,19 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 let options =
                     state["frame"]["decision"]["options"].as_array().cloned().unwrap_or_default();
                 let church = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Church"].is_object();
+                // **Chinatown's exchange sets fold too, and this rule does not
+                // follow them** (plan 2a, Task 4, ruling R25): this game is
+                // two-player, and that board has no Chinatown, so a branch for
+                // a folded Chinatown prompt here would be one no seed can run.
+                // The walk refuses one instead; Chinatown's captures are routed
+                // on `wire4` below, line by line.
+                let chinatown = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Chinatown"].is_object();
+                assert!(
+                    !(kind == "options" && rows.len() < options.len() && options.iter().any(|o| chinatown(&o["mv"]))),
+                    "a folded Chinatown prompt on the walk's two-player table, whose board has no Chinatown: \
+                     the folded-prompt rule is the Church's alone, and a table that reaches Chinatown needs \
+                     its own rule, written with a seed that runs it: {state}",
+                );
                 // **The Church's payments fold into one entry** (cycle 2, plan
                 // 2a), and this walk must play the SAME game across the fold:
                 // a draw over the two rows left would play a different game
@@ -1796,6 +1832,83 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // action area" branch — or a Chinatown, whose rung pays `Exchanges`. A
     // corpus of 2P surfaces leaves both rendered by nothing.
     out.push(("areas_4p".to_string(), api.get("/api/games/wire4/areas").await));
+
+    // **Chinatown's chooser, on the four-player table** (plan 2a, Task 4).
+    // The two-player board above has no Chinatown, so its two captures are
+    // routed here, line by line, as red at seat 0: end the additional phase,
+    // Option B's two assistants at the Chinatown tile, the President placed
+    // there (power 3), the folded entry — captured as `chinatown` — then a
+    // copper sale — `chinatown_selected` — then `confirm`. Each row number,
+    // and the tile's id, is read off a payload before it is sent, and the
+    // sale's `1` is checked against the reply; the walk's `send_as` and
+    // `as_actor` are fixed to `wire`, so these are posted to `wire4` directly.
+    let send4 = |line: String| async move {
+        let (status, v) =
+            api.call_as(Some(WALKER), "POST", "/api/games/wire4/input", Some(json!({ "line": line }))).await;
+        assert_eq!(status, StatusCode::OK, "wire4 input {line:?} was refused: {v}");
+        v
+    };
+    let row_number = |state: &Value, pick: &dyn Fn(&Value) -> bool, what: &str| -> String {
+        state["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| pick(r))
+            .unwrap_or_else(|| panic!("wire4: no row {what}: {state}"))["number"]
+            .as_u64()
+            .expect("a number")
+            .to_string()
+    };
+    let opening = &out.iter().find(|(n, _)| n == "options_4p").expect("options_4p was captured").1;
+    let end = opening["frame"]["decision"]["options"]
+        .as_array()
+        .expect("options")
+        .iter()
+        .position(|o| o["mv"] == json!("EndAdditionalPhase"))
+        .unwrap_or_else(|| panic!("wire4 opens on the additional actions: {opening}"));
+    assert_eq!(end, 0, "wire4's first row ends the additional phase: {opening}");
+    let ended = send4("1".to_string()).await;
+    let phase = |s: &Value| {
+        let decision = &s["frame"]["decision"];
+        decision["phase_chain"][decision["current_phase"].as_u64().expect("a phase index") as usize].clone()
+    };
+    assert_eq!(phase(&ended), json!("Placement"), "the additional phase ended: {ended}");
+    let areas_4p = &out.iter().find(|(n, _)| n == "areas_4p").expect("areas_4p was captured").1;
+    let town = find_chinatown_area(areas_4p);
+    let mut state = send4(format!("b {town}")).await;
+    let label = format!("(A{town:02})");
+    let place = row_number(
+        &state,
+        &|r| r["words"].as_str().is_some_and(|w| w.contains(&label) && w.contains("President")),
+        &format!("placing the President in {label}"),
+    );
+    state = send4(place).await;
+    let entry = row_number(&state, &|r| r["opens_picker"] == Value::Bool(true), "opening a chooser");
+    let entry_words = state["prompt"]["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| r["opens_picker"] == Value::Bool(true))
+        .expect("the entry")["words"]
+        .clone();
+    assert_eq!(
+        entry_words,
+        json!("Chinatown — choose exchanges (up to 3; 127 combinations)"),
+        "seat 0 opens with one of each good and 3 yen, at power 3: {state}",
+    );
+    let chooser = send4(entry).await;
+    assert_eq!(chooser["prompt"]["kind"], "chinatown", "the entry opens the chooser: {chooser}");
+    out.push(("chinatown".to_string(), chooser));
+    let sold = send4("1".to_string()).await;
+    assert_eq!(sold["prompt"]["chosen"], 1, "one exchange chosen: {sold}");
+    assert_eq!(
+        (sold["prompt"]["rows"][0]["words"].clone(), sold["prompt"]["rows"][0]["count"].clone()),
+        (json!("1 copper -> 2 yen"), json!(1)),
+        "and it is the copper sale: {sold}",
+    );
+    out.push(("chinatown_selected".to_string(), sold));
+    let confirmed = send4("confirm".to_string()).await;
+    assert_ne!(confirmed["prompt"]["kind"], "chinatown", "the chooser closes on its commit: {confirmed}");
 
     // The log, read AFTER the game is over, so it carries real entries.
     out.push(("log".to_string(), api.get("/api/games/wire/log").await));
@@ -4379,6 +4492,13 @@ fn every_prompt_variant() -> Vec<yokohama_web::client::PromptState> {
             preview: yokohama_cli::chooser::Preview { legal: false, words: None },
             offered_faiths: None,
         }),
+        PromptState::Chinatown(yokohama_cli::chooser::ChinatownModel {
+            max_exchanges: 0,
+            chosen: 0,
+            stock: Vec::new(),
+            rows: Vec::new(),
+            preview: yokohama_cli::chooser::Preview { legal: false, words: None },
+        }),
     ]
 }
 
@@ -4396,6 +4516,7 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
         PromptState::Locked { .. } => 7,
         PromptState::Watching { .. } => 8,
         PromptState::Church(_) => 9,
+        PromptState::Chinatown(_) => 10,
     }
 }
 
@@ -4403,14 +4524,14 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
 ///
 /// The compile-error match is half the guard and this is the other half: a new
 /// arm added to `prompt_ordinal` without a value added to `every_prompt_variant`
-/// would otherwise leave the list ten long and every check below still green.
-/// **`10` is load-bearing and moves with the enum.**
+/// would otherwise leave the list eleven long and every check below still green.
+/// **`11` is load-bearing and moves with the enum.**
 #[test]
 fn the_variant_list_is_every_variant_exactly_once() {
     let all = every_prompt_variant();
     assert_eq!(
         all.len(),
-        10,
+        11,
         "a `PromptState` variant was added or removed: `every_prompt_variant`, this count, and \
          the EXEMPT list in `every_prompt_the_client_can_be_shown_has_a_fixture` move together",
     );

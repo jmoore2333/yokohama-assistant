@@ -23850,6 +23850,72 @@
   },
   {
     "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "b 5"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": "chinatown"
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": "chinatown_selected"
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire4/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
     "method": "GET",
     "path": "/api/games/wire/log",
     "query": "",

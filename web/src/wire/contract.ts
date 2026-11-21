@@ -56,6 +56,7 @@ import type {
   ChatAuthor,
   ChatMessage,
   ChatPage,
+  ChinatownRow,
   ChooserPreview,
   ChurchKind,
   ClientState,
@@ -116,6 +117,8 @@ import choiceWarehouseTake from "./choice_WarehouseTake.json";
 import church from "./church.json";
 import churchSelected from "./church_selected.json";
 import churchLegal from "./church_legal.json";
+import chinatown from "./chinatown.json";
+import chinatownSelected from "./chinatown_selected.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -268,6 +271,8 @@ const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
 const _church: Widen<ClientState> = church;
 const _churchSelected: Widen<ClientState> = churchSelected;
 const _churchLegal: Widen<ClientState> = churchLegal;
+const _chinatown: Widen<ClientState> = chinatown;
+const _chinatownSelected: Widen<ClientState> = chinatownSelected;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -533,6 +538,8 @@ const _pChoiceChurchSpace: PromptOf<"options"> = choiceChurchSpace.prompt;
 const _pChurch: PromptOf<"church"> = church.prompt;
 const _pChurchSelected: PromptOf<"church"> = churchSelected.prompt;
 const _pChurchLegal: PromptOf<"church"> = churchLegal.prompt;
+const _pChinatown: PromptOf<"chinatown"> = chinatown.prompt;
+const _pChinatownSelected: PromptOf<"chinatown"> = chinatownSelected.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -580,6 +587,7 @@ void [
   _pSpectator, _pSpectatorOver,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
   _pChurch, _pChurchSelected, _pChurchLegal,
+  _pChinatown, _pChinatownSelected,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -598,6 +606,7 @@ void [
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected, _churchLegal,
+  _chinatown, _chinatownSelected,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -656,6 +665,7 @@ const DECISION = [
 const OPTION_ROW = ["number", "words", "opens_picker", "fee"] as const;
 const CHURCH_KIND = ["number", "good", "amount", "words", "have", "selected", "offered"] as const;
 const CHOOSER_PREVIEW = ["legal", "words"] as const;
+const CHINATOWN_ROW = ["number", "sells", "spend", "gain", "words", "count", "can_add", "offered"] as const;
 const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
   "shophouses", "trading_houses", "technologies", "mercenaries_unused",
@@ -778,6 +788,7 @@ const _de: KeysOf<DecisionModel, typeof DECISION> = DECISION;
 const _or: KeysOf<OptionRow, typeof OPTION_ROW> = OPTION_ROW;
 const _chk: KeysOf<ChurchKind, typeof CHURCH_KIND> = CHURCH_KIND;
 const _chp: KeysOf<ChooserPreview, typeof CHOOSER_PREVIEW> = CHOOSER_PREVIEW;
+const _ctr: KeysOf<ChinatownRow, typeof CHINATOWN_ROW> = CHINATOWN_ROW;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
 const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
@@ -832,7 +843,7 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _chk, _chp, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -848,6 +859,7 @@ export const KEYS = {
   optionRow: OPTION_ROW,
   churchKind: CHURCH_KIND,
   chooserPreview: CHOOSER_PREVIEW,
+  chinatownRow: CHINATOWN_ROW,
   player: PLAYER,
   hand: HAND,
   tile: TILE,
@@ -953,6 +965,11 @@ export const wire = {
   /** The first chooser on the walk whose preview is legal: copper and silk on,
    *  with `describe`'s words for the listed move they name. */
   churchLegal: as<ClientState>(churchLegal),
+  /** The Chinatown chooser as it opens (plan 2a, on the four-player table):
+   *  nothing chosen. */
+  chinatown: as<ClientState>(chinatown),
+  /** The same chooser after one copper sale, a listed set. */
+  chinatownSelected: as<ClientState>(chinatownSelected),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -1087,5 +1104,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
   wire.church, wire.churchSelected, wire.churchLegal,
+  wire.chinatown, wire.chinatownSelected,
   wire.spectator, wire.spectatorOver,
 ];

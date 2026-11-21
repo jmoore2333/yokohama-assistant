@@ -345,6 +345,22 @@ export interface ChurchKind {
   offered: boolean;
 }
 
+/** One of Chinatown's nine exchanges (`chooser::ChinatownRow`). `number` is
+ *  what to send to add one (1 to 9; `back <number>` takes one back); `sells`
+ *  is true for the four that gain yen; `spend` and `gain` are the engine's
+ *  printed rate; `can_add` is "the list holds the selection with one more of
+ *  it" and `offered` "some listed set uses it", each read off the list. */
+export interface ChinatownRow {
+  number: number;
+  sells: boolean;
+  spend: ChooserAmount;
+  gain: ChooserAmount;
+  words: string;
+  count: number;
+  can_add: boolean;
+  offered: boolean;
+}
+
 /** INTERNALLY tagged — the one exception on the wire. */
 export type PromptState =
   | { kind: "options"; rows: OptionRow[] }
@@ -357,6 +373,19 @@ export type PromptState =
    *  selection names none — the faiths the list does offer. The server still
    *  decides: `confirm` commits only a listed move. */
   | { kind: "church"; kinds: ChurchKind[]; preview: ChooserPreview; offered_faiths: string | null }
+  /** The Chinatown chooser (plan 2a): the REPL's own model. The most exchanges
+   *  in one listed set, the count chosen, the acting seat's six holdings, nine
+   *  exchanges in the engine's order, and the preview of the listed set the
+   *  selection names. The server still decides: `confirm` commits only a
+   *  listed move, in the engine's own order. */
+  | {
+      kind: "chinatown";
+      max_exchanges: number;
+      chosen: number;
+      stock: ChooserAmount[];
+      rows: ChinatownRow[];
+      preview: ChooserPreview;
+    }
   | { kind: "reveal" }
   | { kind: "game_over" }
   /** The session is locked after a driver or engine fault. Nothing this client

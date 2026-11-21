@@ -30,8 +30,11 @@ pub struct Repl {
     /// except `save`/`log`/`quit`, so a desynced session can still be
     /// inspected and saved for postmortem but never played further.
     pub(crate) locked: bool,
-    /// An in-progress Movement sub-prompt (route pick or guided retreat), or
-    /// `None`. A sibling of `pending` rather than a `Pending` variant: `pending`
+    /// An in-progress sub-prompt, or `None`: any of [`SubPrompt`]'s — the
+    /// Movement phase's route pick and guided retreat, Placement's two
+    /// pickers, the area-action choosers (the Church's and Chinatown's), a
+    /// numbered pick, the guided reveal. A sibling of `pending` rather than a
+    /// `Pending` variant: `pending`
     /// models LIVE-mode reveal collection (always `None` in simulation, keyed to
     /// hidden-card entry), whereas sub-prompts are pure ENTRY HELPERS over the
     /// engine's own legal list that apply in BOTH modes and never collect hidden
@@ -155,13 +158,13 @@ impl ViewSurface {
 /// docs/plans/2026-07-18-phase2-cli-driver-design.md: `Route`, `Retreat`),
 /// the Placement main list (`PlacementA`, `PlacementB`), a queued
 /// assistant-move choice (`MoveFrom`), and the AreaAction main list with no
-/// choice queued (`Church`, cycle 2's area-action choosers,
+/// choice queued (`Church`, `Chinatown`, cycle 2's area-action choosers,
 /// docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
 /// else every option is a bare `Direct`, so the list is byte-identical to the
 /// ungrouped `legal()` rendering. The legal list stays the SOLE authority:
 /// every collapsing variant is an entry helper whose selection is
 /// exact-matched against `legal()` before anything commits
-/// (`find_placement_match`, `chooser::church_match`).
+/// (`find_placement_match`, `chooser::church_match`, `chooser::chinatown_match`).
 enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
@@ -189,12 +192,16 @@ enum PromptOption {
     /// The Church's payment family collapsed: more than one `AreaAction::Church`
     /// move is listed. `count` is how many.
     Church { count: usize },
+    /// Chinatown's exchange family collapsed: more than one
+    /// `AreaAction::Chinatown` move is listed. `count` is how many; `longest`
+    /// is the most exchanges in one of them, read off the list.
+    Chinatown { count: usize, longest: usize },
 }
 
 /// An in-progress sub-prompt, from any of three phases: Movement's route pick
 /// and guided retreat, Placement's two pickers, the AreaAction phase's Church
-/// chooser, plus the numbered pick a queued assistant-move choice or a
-/// Telegram bonus opens and the guided `reveal` flow. Every variant but
+/// and Chinatown choosers, plus the numbered pick a queued assistant-move
+/// choice or a Telegram bonus opens and the guided `reveal` flow. Every variant but
 /// `Reveal` is an ENTRY HELPER over the legal list: whatever it assembles or
 /// names is exact-matched against `session.legal()` before `commit`, so none
 /// can construct-and-apply anything the engine didn't offer (`Reveal` records
@@ -247,6 +254,13 @@ pub enum SubPrompt {
     /// refused); `confirm` commits `chooser::church_match`'s listed move, or
     /// refuses and keeps the selection.
     Church { selected: [bool; 6] },
+    /// The Chinatown chooser: how many of each of `ChinatownOffer::all()`'s
+    /// nine exchanges are chosen. A number adds one (refused unless the list
+    /// holds the selection with it added), `back <number>` takes one back;
+    /// `confirm` commits `chooser::chinatown_match`'s listed move — the
+    /// engine's own order, never the order typed — or refuses and keeps the
+    /// selection.
+    Chinatown { counts: [u8; 9] },
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -728,9 +742,10 @@ impl Repl {
     /// collapses to one entry per destination with the whole retreat family
     /// folded into one row, Placement collapses to Option A / Option B /
     /// place-none, a queued `AssistantMove` groups by source, and the
-    /// AreaAction list folds the Church's payments into one entry when more
-    /// than one is listed. A consumer that numbered `DecisionModel::options` instead —
-    /// which IS one per legal move — would send back a number meaning a
+    /// AreaAction list folds the Church's payments, and Chinatown's exchange
+    /// sets, into one entry each when more than one is listed. A consumer
+    /// that numbered `DecisionModel::options` instead — which IS one per
+    /// legal move — would send back a number meaning a
     /// different move, and in the Movement phase it would usually still be a
     /// legal one. That is the failure this accessor exists to prevent.
     ///
@@ -1039,7 +1054,7 @@ impl Repl {
         } else if !matches!(self.sub, SubPrompt::None) {
             // Inside a sub-prompt: append its screen (a pick list, the current
             // recovery question or confirm line, a placement picker's
-            // directory and preview, the Church chooser's kinds and preview,
+            // directory and preview, a chooser's rows and preview,
             // the reveal menu) instead of the main numbered list -- symmetric
             // with the `pending` reveal branch.
             text.push_str(&self.sub_prompt_text());
@@ -1202,6 +1217,11 @@ impl Repl {
                 self.page = 0;
                 self.out(String::new(), false)
             }
+            Some(PromptOption::Chinatown { .. }) => {
+                self.sub = SubPrompt::Chinatown { counts: [0; 9] };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
             None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
@@ -1211,7 +1231,8 @@ impl Repl {
     /// assistant-move choice, every legal move is a bare `Direct`
     /// (byte-identical to the old ungrouped rendering); Placement, the
     /// assistant-move choice and AreaAction group as `group_options` routes
-    /// them (AreaAction folds the Church's payments, `group_area_action`). In
+    /// them (AreaAction folds the Church's payments and Chinatown's exchange
+    /// sets, `group_area_action`). In
     /// the Movement main list it collapses the family
     /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
@@ -1251,22 +1272,33 @@ impl Repl {
     /// The area-action main list: a family with more than one listed move
     /// becomes one entry at its first move's place; every other move stays `Direct`.
     ///
-    /// The Church's payments are the one family folded (plan 2a). A Church
-    /// with one listed payment, or none, reads exactly as the ungrouped list
-    /// did (design §4.4), so "Enter applies the only option" stays true; the
-    /// decline keeps its own place, last, as the engine lists it.
+    /// The Church's payments and Chinatown's exchange sets are the two
+    /// families folded (plan 2a). A family with one listed move, or none,
+    /// reads exactly as the ungrouped list did (design §4.4), so "Enter
+    /// applies the only option" stays true; the decline keeps its own place,
+    /// last, as the engine lists it. Chinatown's entry carries the most
+    /// exchanges in one listed set, counted off the list.
     fn group_area_action(legal: Vec<Move>) -> Vec<PromptOption> {
-        let count = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
-        if count <= 1 {
-            return legal.into_iter().map(PromptOption::Direct).collect();
-        }
+        let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
+        let sets: Vec<usize> = legal
+            .iter()
+            .filter_map(crate::chooser::chinatown_counts)
+            .map(|c| c.iter().map(|&n| usize::from(n)).sum())
+            .collect();
+        let chinatown = sets.len();
+        let longest = sets.into_iter().max().unwrap_or(0);
         let mut out = Vec::new();
-        let mut entered = false;
+        let (mut church_entered, mut chinatown_entered) = (false, false);
         for mv in legal {
-            if crate::chooser::church_flags(&mv).is_some() {
-                if !entered {
-                    out.push(PromptOption::Church { count });
-                    entered = true;
+            if church > 1 && crate::chooser::church_flags(&mv).is_some() {
+                if !church_entered {
+                    out.push(PromptOption::Church { count: church });
+                    church_entered = true;
+                }
+            } else if chinatown > 1 && crate::chooser::chinatown_counts(&mv).is_some() {
+                if !chinatown_entered {
+                    out.push(PromptOption::Chinatown { count: chinatown, longest });
+                    chinatown_entered = true;
                 }
             } else {
                 out.push(PromptOption::Direct(mv));
@@ -1427,6 +1459,9 @@ impl Repl {
                 format!("Move an assistant from {from_label} — {} destinations", moves.len())
             }
             PromptOption::Church { count } => format!("Church — choose what to pay ({count} payment sets)"),
+            PromptOption::Chinatown { count, longest } => {
+                format!("Chinatown — choose exchanges (up to {longest}; {count} combinations)")
+            }
         }
     }
 
@@ -1590,6 +1625,7 @@ impl Repl {
             SubPrompt::PlaceB { .. } => self.step_place_b(words),
             SubPrompt::Reveal { .. } => self.step_reveal(words),
             SubPrompt::Church { .. } => self.step_church(words),
+            SubPrompt::Chinatown { .. } => self.step_chinatown(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
@@ -1768,7 +1804,8 @@ impl Repl {
             | SubPrompt::PlaceA { .. }
             | SubPrompt::PlaceB { .. }
             // A chooser asks about goods, not about a card registry.
-            | SubPrompt::Church { .. } => None,
+            | SubPrompt::Church { .. }
+            | SubPrompt::Chinatown { .. } => None,
         }
     }
 
@@ -2461,6 +2498,87 @@ impl Repl {
         }
     }
 
+    /// Chinatown chooser input (plan 2a, "The words"): a number 1 to 9 adds
+    /// one of that exchange, taken only when the list holds the selection with
+    /// it added (so selling first is what makes a purchase addable); `back N`
+    /// takes one of exchange N back when one is chosen, and may leave a
+    /// selection the list does not hold, which `confirm` then refuses.
+    /// `confirm` closes the chooser and THEN commits `chinatown_match`'s
+    /// listed move, in `step_church`'s order and for its reason — the move as
+    /// the engine listed it, never one built from the counts or the order
+    /// typed. Bare `back` is refused, as the pickers refuse it. Every
+    /// "can add" and every match is a lookup in `session.legal()`.
+    fn step_chinatown(&mut self, words: &[&str]) -> StepOutput {
+        let counts = match &self.sub {
+            SubPrompt::Chinatown { counts } => *counts,
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Chinatown
+        };
+        const RANGE: &str = "! pick an exchange 1-9, 'back <number>', 'confirm', or 'cancel'";
+        let digits = |tok: &str| !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit());
+        let row = |tok: &str| tok.parse::<usize>().ok().filter(|n| (1..=9).contains(n)).map(|n| n - 1);
+        match words {
+            ["cancel"] => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out("Chinatown exchanges cancelled — back to the main options.".to_string(), false)
+            }
+            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["confirm"] if counts.iter().all(|&n| n == 0) => {
+                self.out("! add an exchange first, or 'cancel'".to_string(), false)
+            }
+            ["confirm"] => match crate::chooser::chinatown_match(&self.session.legal(), counts) {
+                Some(mv) => {
+                    self.sub = SubPrompt::None;
+                    self.page = 0;
+                    self.commit(mv)
+                }
+                None => self.out(
+                    "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                    false,
+                ),
+            },
+            [tok] if digits(tok) => {
+                let Some(i) = row(tok) else {
+                    return self.out(RANGE.to_string(), false);
+                };
+                let model = crate::chooser::chinatown_model(
+                    self.session.state(),
+                    self.session.rules(),
+                    &self.session.legal(),
+                    counts,
+                );
+                if !model.rows[i].can_add {
+                    return self.out(
+                        format!("! the list holds no set with one more \"{}\" from here", model.rows[i].words),
+                        false,
+                    );
+                }
+                if let SubPrompt::Chinatown { counts } = &mut self.sub {
+                    counts[i] += 1;
+                }
+                self.out(String::new(), false)
+            }
+            ["back", tok] if digits(tok) => {
+                let Some(i) = row(tok) else {
+                    return self.out(RANGE.to_string(), false);
+                };
+                if counts[i] == 0 {
+                    let words = describe::chinatown_exchange_text(crate::screen_model::ChinatownOffer::all()[i]);
+                    return self.out(format!("! no \"{words}\" is selected to take back"), false);
+                }
+                if let SubPrompt::Chinatown { counts } = &mut self.sub {
+                    counts[i] -= 1;
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! add by number, 'back <number>', 'confirm', or 'cancel' (cancel first to use views/help)"
+                    .to_string(),
+                false,
+            ),
+        }
+    }
+
     /// The screen an open chooser appended to the last reply, exactly as `out`
     /// appended it; `None` when no chooser is open.
     ///
@@ -2474,7 +2592,7 @@ impl Repl {
             return None;
         }
         match self.sub {
-            SubPrompt::Church { .. } => Some(self.sub_prompt_text()),
+            SubPrompt::Church { .. } | SubPrompt::Chinatown { .. } => Some(self.sub_prompt_text()),
             SubPrompt::None
             | SubPrompt::Pick { .. }
             | SubPrompt::Retreat { .. }
@@ -2610,6 +2728,13 @@ impl Repl {
                 rules,
                 &self.session.legal(),
                 *selected,
+            )),
+            // Task 2's model and screen, over the same legal list.
+            SubPrompt::Chinatown { counts } => crate::chooser::chinatown_text(&crate::chooser::chinatown_model(
+                state,
+                rules,
+                &self.session.legal(),
+                *counts,
             )),
             SubPrompt::Pick { title, moves } => {
                 // Same 20/page + footer machinery the main list uses (brief item
@@ -9498,6 +9623,12 @@ mod tests {
                 "{out_of_range}",
             );
         }
+
+        // The top of the range is taken: the seat holds an imported good, so
+        // a range of 1 to 5 would refuse this line.
+        let taken = r.step("6");
+        assert_eq!(church_selection(&r), [false, true, false, false, false, true], "6 is taken");
+        assert_eq!(taken.text, church_screen(&r));
     }
 
     #[test]
@@ -9801,4 +9932,452 @@ mod tests {
         );
         assert_eq!(church_selection(&r), [false; 6]);
     }
+
+    // -----------------------------------------------------------------
+    // Chinatown's chooser (cycle 2, plan 2a, Task 4)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{ordinary_position, ordinary_position_power_1, rich_position};
+    use crate::chooser::{chinatown_match, chinatown_model, chinatown_text};
+
+    /// The number that adds one of `e`, spelled by hand — never through
+    /// `ChinatownOffer::index` — so a cell that types it does not share the
+    /// code it checks.
+    fn exchange_number(e: ChinatownExchange) -> usize {
+        use ChinatownExchange as X;
+        match e {
+            X::CopperToYen => 1,
+            X::SilkToYen => 2,
+            X::TeaToYen => 3,
+            X::SeafoodToYen => 4,
+            X::YenToCopper => 5,
+            X::YenToSilk => 6,
+            X::YenToTea => 7,
+            X::YenToSeafood => 8,
+            X::YenToImported => 9,
+        }
+    }
+
+    /// A Chinatown move's exchanges, read by pattern; `None` for any other move.
+    fn exchanges_by_hand(mv: &Move) -> Option<&[ChinatownExchange]> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => Some(exchanges),
+            _ => None,
+        }
+    }
+
+    /// A Chinatown move's count per row, by `exchange_number`.
+    fn counts_by_hand(mv: &Move) -> Option<[u8; 9]> {
+        exchanges_by_hand(mv).map(|xs| {
+            let mut counts = [0u8; 9];
+            for x in xs {
+                counts[exchange_number(*x) - 1] += 1;
+            }
+            counts
+        })
+    }
+
+    /// The Chinatown move making exactly `exchanges`, in that order.
+    fn chinatown_move(exchanges: &[ChinatownExchange]) -> Move {
+        Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges: exchanges.to_vec() } }
+    }
+
+    /// The counts an open Chinatown chooser holds, or panic.
+    fn chinatown_selection(r: &Repl) -> [u8; 9] {
+        match &r.sub {
+            SubPrompt::Chinatown { counts } => *counts,
+            _ => panic!("the Chinatown chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 2's model over
+    /// the repl's own legal list.
+    fn chinatown_screen(r: &Repl) -> String {
+        chinatown_text(&chinatown_model(
+            r.session.state(),
+            r.session.rules(),
+            &r.session.legal(),
+            chinatown_selection(r),
+        ))
+    }
+
+    /// The display number of the folded Chinatown entry.
+    fn chinatown_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Chinatown — choose exchanges").expect("the Chinatown entry is listed")
+    }
+
+    /// Every row's `can_add` on the open chooser against "the list holds the
+    /// selection with one more of it", read by hand off the list.
+    fn assert_can_add_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let counts = chinatown_selection(r);
+        let model = chinatown_model(r.session.state(), r.session.rules(), &legal, counts);
+        for (i, row) in model.rows.iter().enumerate() {
+            let mut one_more = counts;
+            one_more[i] += 1;
+            let listed = legal.iter().filter_map(counts_by_hand).any(|c| c == one_more);
+            assert_eq!(row.can_add, listed, "{at}: row {} can_add after {counts:?}", i + 1);
+        }
+    }
+
+    #[test]
+    fn chinatown_folds_to_one_entry_and_the_decline() {
+        let r = repl_at(ordinary_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Chinatown — choose exchanges (up to 3; 102 combinations)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+        assert_eq!(rows[1].words, describe::describe_move(&SKIP, r.session.state(), r.session.rules()));
+
+        // One listed exchange set stays a direct row: power 1, and a copper
+        // to sell is all the seat can do.
+        let mut state = ordinary_position_power_1();
+        let me = state.current_player.0 as usize;
+        let p = &mut state.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (1, 0, 0, 0, 0, 0);
+        let r = repl_at(state);
+        let sale = chinatown_move(&[ChinatownExchange::CopperToYen]);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| exchanges_by_hand(m).is_some()).collect::<Vec<_>>(),
+            vec![&sale],
+            "premise: exactly one Chinatown move is listed",
+        );
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            r.option_rows().iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(sale.clone()), describe::describe_move(&sale, state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_number_adds_one_and_back_takes_one_back() {
+        let mut r = repl_at(ordinary_position());
+        let opened = r.step(&chinatown_entry(&r).to_string());
+        assert_eq!(chinatown_selection(&r), [0; 9]);
+        assert_eq!(opened.text, chinatown_screen(&r), "opening prints the screen and nothing before it");
+
+        let mut expected = [0u8; 9];
+        for (line, row) in [("1", 0), ("6", 5), ("6", 5)] {
+            let out = r.step(line);
+            expected[row] += 1;
+            assert_eq!(chinatown_selection(&r), expected, "after {line}");
+            assert_eq!(out.text, chinatown_screen(&r), "after {line}");
+        }
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 2, 0, 0, 0]);
+
+        let back = r.step("back 6");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 1, 0, 0, 0], "one silk purchase taken back");
+        assert_eq!(back.text, chinatown_screen(&r));
+        assert!(
+            back.text.contains("\nSelected (2 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk\n"),
+            "{}",
+            back.text,
+        );
+    }
+
+    #[test]
+    fn what_the_list_does_not_hold_is_refused_and_keeps_the_selection() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        let range = "! pick an exchange 1-9, 'back <number>', 'confirm', or 'cancel'";
+        let cases: [(&str, String); 6] = [
+            // 3 yen does not buy an imported good, and the seat has no silk.
+            ("9", "! the list holds no set with one more \"4 yen -> 1 imported good\" from here".to_string()),
+            ("2", "! the list holds no set with one more \"1 silk -> 2 yen\" from here".to_string()),
+            ("10", range.to_string()),
+            ("0", range.to_string()),
+            ("back 10", range.to_string()),
+            ("back 3", "! no \"1 tea -> 1 yen\" is selected to take back".to_string()),
+        ];
+        for (line, refusal) in &cases {
+            let out = r.step(line);
+            assert_eq!(chinatown_selection(&r), [0; 9], "{line}: the selection is kept");
+            assert_eq!(out.text, format!("{refusal}\n{}", chinatown_screen(&r)), "{line}");
+        }
+
+        // And from a selection that is not empty: a take-back of a row not
+        // chosen, and a number out of range, keep the copper sale.
+        r.step("1");
+        let sold = [1, 0, 0, 0, 0, 0, 0, 0, 0];
+        for (line, refusal) in [
+            ("back 3", "! no \"1 tea -> 1 yen\" is selected to take back"),
+            ("back 0", range),
+            ("10", range),
+        ] {
+            let out = r.step(line);
+            assert_eq!(chinatown_selection(&r), sold, "{line}: the selection is kept");
+            assert_eq!(out.text, format!("{refusal}\n{}", chinatown_screen(&r)), "{line}");
+        }
+    }
+
+    #[test]
+    fn taking_back_the_sale_that_paid_for_a_purchase_cannot_be_confirmed() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 1], "the sale made the purchase addable");
+        let back = r.step("back 1");
+        let alone = [0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(chinatown_selection(&r), alone);
+        assert!(back.text.contains("\n  -> NOT currently offered (adjust the selection)\n"), "{}", back.text);
+
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(chinatown_selection(&r), alone, "still open, with the purchase alone");
+        assert_eq!(
+            out.text,
+            format!(
+                "! that selection is not currently available — adjust it or 'cancel'.\n{}",
+                chinatown_screen(&r)
+            ),
+        );
+    }
+
+    #[test]
+    fn confirm_commits_the_engine_s_listed_order() {
+        use ChinatownExchange as X;
+        let state = ordinary_position();
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        let listed = chinatown_move(&[X::CopperToYen, X::YenToSilk, X::YenToSilk]);
+        let typed = chinatown_move(&[X::YenToSilk, X::CopperToYen, X::YenToSilk]);
+        let mut r = repl_at(state);
+        let legal = r.session.legal();
+        assert!(legal.contains(&listed), "premise: the engine lists the sale first");
+        assert!(!legal.contains(&typed), "premise: the order typed below is not a listed move");
+        assert_eq!(chinatown_match(&legal, [1, 0, 0, 0, 0, 2, 0, 0, 0]), Some(listed.clone()));
+
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        // A purchase sent before the sale that pays for its second.
+        for n in ["6", "1", "6"] {
+            r.step(n);
+        }
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1);
+        assert_eq!(last_move(&r), listed, "the listed move, in the engine's own order");
+        assert!(matches!(r.sub, SubPrompt::None), "the chooser closes on a commit");
+        assert!(
+            out.text.ends_with(&r.prompt()),
+            "the reply reads as a main-list row's did, the main prompt last:\n{}",
+            out.text,
+        );
+    }
+
+    #[test]
+    fn confirm_with_nothing_chosen_is_refused() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(chinatown_selection(&r), [0; 9], "still open");
+        assert_eq!(out.text, format!("! add an exchange first, or 'cancel'\n{}", chinatown_screen(&r)));
+    }
+
+    #[test]
+    fn bare_back_and_other_words_are_refused_inside_the_chooser() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        let events = r.session.record().events.len();
+        for word in ["back", "more", "list", "help", "undo"] {
+            let out = r.step(word);
+            assert_eq!(
+                out.text,
+                format!(
+                    "! add by number, 'back <number>', 'confirm', or 'cancel' (cancel first to use views/help)\n{}",
+                    chinatown_screen(&r)
+                ),
+                "{word}",
+            );
+            assert_eq!(r.session.record().events.len(), events, "{word}: nothing applied");
+            assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0], "{word}");
+        }
+    }
+
+    #[test]
+    fn cancel_returns_to_the_folded_list() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(
+            out.text,
+            format!("Chinatown exchanges cancelled — back to the main options.\n{}", r.prompt()),
+        );
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Chinatown — choose exchanges (up to 3; 102 combinations)");
+        assert_eq!(rows[1].mv, Some(SKIP));
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_chinatown_chooser_and_returns_to_it() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("?");
+        assert!(r.overlay.is_some(), "the index is open");
+        assert_eq!(r.index_target(), None, "no card registry is being asked about");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(back.text.ends_with(&chinatown_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn back_and_a_number_at_the_main_prompt_applies_nothing() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        let out = r.step("back 3");
+        assert!(out.text.contains("Unrecognized input"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert!(matches!(r.sub, SubPrompt::None), "no chooser opened");
+    }
+
+    /// Commit `mv` through the chooser on a fresh `Repl` over `state`: the
+    /// entry, the number of each of its exchanges in its own listed order,
+    /// `confirm` — with every row's `can_add` checked against the list at
+    /// each step of the walk.
+    fn commit_exchanges_through_the_chooser(state: &GameState, mv: &Move, at: &str) -> Repl {
+        let mut r = repl_at(state.clone());
+        r.step(&chinatown_entry(&r).to_string());
+        assert_can_add_is_the_list_s(&r, at);
+        for x in exchanges_by_hand(mv).expect("a Chinatown move") {
+            r.step(&exchange_number(*x).to_string());
+            assert_can_add_is_the_list_s(&r, at);
+        }
+        r.step("confirm");
+        r
+    }
+
+    /// Every listed move of a family of at most 64; else 64 spread evenly,
+    /// the first and the last among them.
+    fn spread(n: usize) -> Vec<usize> {
+        if n <= SWEEP_SAMPLE {
+            (0..n).collect()
+        } else {
+            (0..SWEEP_SAMPLE).map(|i| i * (n - 1) / (SWEEP_SAMPLE - 1)).collect()
+        }
+    }
+    const SWEEP_SAMPLE: usize = 64;
+
+    /// Commit the spread of `state`'s listed Chinatown moves through the
+    /// chooser, each compared by value to the move as listed, and count into
+    /// `tally`: [folded positions, moves committed, five-exchange moves at
+    /// power 5].
+    fn sweep_spread(state: &GameState, rules: &Rules, at: &str, tally: &mut [usize; 3]) {
+        let legal = get_legal_moves(state, rules);
+        let family: Vec<&Move> = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).collect();
+        tally[0] += 1;
+        for i in spread(family.len()) {
+            let mv = family[i];
+            let r = commit_exchanges_through_the_chooser(state, mv, at);
+            assert_eq!(&last_move(&r), mv, "{at}: listed move {i} of {}", family.len());
+            tally[1] += 1;
+            if exchanges_by_hand(mv).unwrap().len() == 5 && state.current_action_power == Some(5) {
+                tally[2] += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn every_listed_chinatown_move_commits_through_the_chooser() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, moves committed, five-exchange moves at power 5]
+        let mut tally = [0usize; 3];
+        // At two players the board has no Chinatown: nothing to fold.
+        for seed in 0..2u64 {
+            let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
+            let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2]).unwrap();
+            let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            for _ in 0..4000 {
+                if is_game_over(&state) {
+                    break;
+                }
+                let legal = get_legal_moves(&state, &rules);
+                assert!(
+                    !legal.iter().any(|m| exchanges_by_hand(m).is_some()),
+                    "2P seed {seed}: a Chinatown move on a board with no Chinatown",
+                );
+                k ^= k << 13;
+                k ^= k >> 7;
+                k ^= k << 17;
+                state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+            }
+        }
+        let two_player = started.elapsed();
+        for n in [3u8, 4] {
+            for seed in 0..SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let family = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).count();
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && family > 1 {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        sweep_spread(&state, &rules, &at, &mut tally);
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [self_play_positions, self_play_moves, self_play_fives] = tally;
+        let self_play = started.elapsed();
+        // The ordinary position in full, all 102 (64 would sample it).
+        let state = ordinary_position();
+        let legal = get_legal_moves(&state, &rules);
+        let listed: Vec<&Move> = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).collect();
+        assert_eq!(listed.len(), 102);
+        for mv in listed {
+            let r = commit_exchanges_through_the_chooser(&state, mv, "the ordinary position");
+            assert_eq!(&last_move(&r), mv, "the ordinary position");
+        }
+        // And a power-5 position whose family runs to five exchanges: the
+        // spread must reach its long sets, not stop at the first 64.
+        let ordinary = started.elapsed();
+        let rich = rich_position();
+        assert_eq!(rich.current_action_power, Some(5), "premise: power 5");
+        sweep_spread(&rich, &rules, "the rich position", &mut tally);
+        let [_, all_moves, five_at_power_5] = tally;
+        let rich_moves = all_moves - self_play_moves;
+        println!(
+            "every_listed_chinatown_move_commits_through_the_chooser: self-play {self_play_positions} positions, \
+             {self_play_moves} moves, {self_play_fives} of five exchanges at power 5; the ordinary position's 102; \
+             the rich position {rich_moves} moves; {five_at_power_5} five-exchange moves at power 5 in all; \
+             in {:?} (2P precondition to {two_player:?}, self-play to {self_play:?}, the ordinary position to \
+             {ordinary:?})",
+            started.elapsed()
+        );
+        assert!(self_play_positions >= CHINATOWN_SWEEP_POSITIONS_FLOOR, "only {self_play_positions} folded Chinatown positions");
+        assert!(self_play_moves >= CHINATOWN_SWEEP_MOVES_FLOOR, "only {self_play_moves} Chinatown moves committed");
+        assert!(five_at_power_5 > 0, "the sweep met no five-exchange move on a power-5 position");
+    }
+
+    /// The sweep's seeds per player count, and its anti-vacuity floors over
+    /// the self-play half, about half of what it read when set: 51 folded
+    /// positions and 1,566 Chinatown moves over seeds 0..4 at 3 and 4
+    /// players, none of them a five-exchange set at power 5 — which is why
+    /// the rich position (41 of its 64 spread moves are) is swept on top. In
+    /// about 10 s of a debug build, about 5 s of it the rich position's
+    /// 2,001-move list.
+    const SWEEP_SEEDS: u64 = 4;
+    const CHINATOWN_SWEEP_POSITIONS_FLOOR: usize = 25;
+    const CHINATOWN_SWEEP_MOVES_FLOOR: usize = 780;
 }

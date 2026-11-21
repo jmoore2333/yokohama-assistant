@@ -1,4 +1,4 @@
-skipped tables: wire, wire2; rows 2228 (walk 2216, host 4, archive 8)
+skipped tables: wire, wire2; rows 2234 (walk 2222, host 4, archive 8)
 walk-host.json row 0: GET /api/art as no one -> 200 art_manifest
 walk.json row 0: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
 walk.json row 1: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
@@ -16,7 +16,13 @@ walk.json row 2197: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
 walk.json row 2198: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
 walk.json row 2199: GET /api/games/wire4 as red@wire.test -> 200 options_4p
 walk.json row 2200: GET /api/games/wire4/areas as red@wire.test -> 200 areas_4p
-walk.json row 2215: GET /api/games/no-such-game as red@wire.test -> 404 error
+walk.json row 2201: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2202: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2203: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2204: POST /api/games/wire4/input as red@wire.test -> 200 chinatown
+walk.json row 2205: POST /api/games/wire4/input as red@wire.test -> 200 chinatown_selected
+walk.json row 2206: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2221: GET /api/games/no-such-game as red@wire.test -> 404 error
 archive-walk.json row 0: POST /api/archive as red@wire.test -> 201 archive_post
 archive-walk.json row 1: POST /api/archive as red@wire.test -> 200 archive_post_identical
 archive-walk.json row 2: POST /api/archive as red@wire.test -> 409 archive_409
@@ -25,4 +31,4 @@ archive-walk.json row 4: POST /api/archive as red@wire.test -> 400 archive_400_r
 archive-walk.json row 5: POST /api/archive as red@wire.test -> 400 archive_400_digest
 archive-walk.json row 6: POST /api/archive as red@wire.test -> 400 archive_400_replay
 archive-walk.json row 7: POST /api/archive as red@wire.test -> 400 archive_400_table
-kept 26, skipped 2202, total 2228
+kept 32, skipped 2202, total 2234

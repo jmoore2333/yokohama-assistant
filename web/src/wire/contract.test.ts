@@ -124,6 +124,45 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     }
   });
 
+  // The Chinatown chooser's arm (plan 2a, Task 4): its nine rows and its
+  // preview carry the fields `types.ts` declares, on every `chinatown` state.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "chinatown").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("ChinatownRow and ChooserPreview (chinatown state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "chinatown") throw new Error("filtered to chinatown states");
+    expect(prompt.rows.length).toBe(9);
+    for (const row of prompt.rows) expect(keys(row)).toEqual(listed(KEYS.chinatownRow));
+    expect(prompt.rows.map((r) => r.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // The four sales are rows 1 to 4, and only they.
+    expect(prompt.rows.map((r) => r.sells)).toEqual([true, true, true, true, false, false, false, false, false]);
+    expect(prompt.stock.map((a) => a.good)).toEqual(["Copper", "Silk", "Tea", "Seafood", "Yen", "Imports"]);
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+  });
+
+  it("the corpus's two chinatown states: as it opens, and after one copper sale", () => {
+    const towns = EVERY_STATE.filter((state) => state.prompt.kind === "chinatown");
+    expect(towns).toEqual([wire.chinatown, wire.chinatownSelected]);
+    const prompt = (state: typeof wire.chinatown) => {
+      if (state.prompt.kind !== "chinatown") throw new Error(`not a chinatown prompt: ${state.prompt.kind}`);
+      return state.prompt;
+    };
+    // As it opens: nothing chosen, and so nothing named.
+    const opened = prompt(wire.chinatown);
+    expect(opened.chosen).toBe(0);
+    expect(opened.rows.map((r) => r.count)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(opened.preview.legal).toBe(false);
+    expect(opened.preview.words).toBeNull();
+    // After one copper sale: a listed set, in `describe`'s words.
+    const sold = prompt(wire.chinatownSelected);
+    expect(sold.chosen).toBe(1);
+    expect(sold.rows.map((r) => r.count)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(sold.preview.legal).toBe(true);
+    expect(sold.preview.words).toBe("Chinatown: 1 copper -> 2 yen");
+  });
+
   it("TileModel", () => {
     const tiles = wire.options.frame.board.tiles;
     expect(tiles.length).toBeGreaterThan(0);
