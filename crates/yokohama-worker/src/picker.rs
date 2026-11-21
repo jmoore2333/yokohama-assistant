@@ -784,6 +784,19 @@ mod tests {
             .collect()
     }
 
+    /// Premise: the Church chooser's kind `number` is `good` — read off the
+    /// payload, so a cell never sends a number it only assumes.
+    fn assert_kind(state: &Value, number: u64, good: &str) {
+        let kind = state["prompt"]["kinds"].as_array().expect("six kinds").iter().find(|k| k["number"] == json!(number));
+        assert_eq!(kind.map(|k| &k["good"]), Some(&json!(good)), "premise: kind {number} is {good}: {state}");
+    }
+
+    /// Premise: Chinatown's row `number` reads `words`.
+    fn assert_row(state: &Value, number: u64, words: &str) {
+        let row = state["prompt"]["rows"].as_array().expect("nine rows").iter().find(|r| r["number"] == json!(number));
+        assert_eq!(row.map(|r| &r["words"]), Some(&json!(words)), "premise: row {number} reads {words}: {state}");
+    }
+
     /// Chinatown's chooser, as `(number, count)` for every row with a count.
     fn chinatown_counts(state: &Value) -> Vec<(u64, u64)> {
         assert_eq!(state["prompt"]["kind"], json!("chinatown"), "premise: the acting seat's payload reads chinatown: {state}");
@@ -801,14 +814,19 @@ mod tests {
     /// `3`, `2`, `3`, `4` (tea on, silk on, tea off again, seafood on) and the
     /// repeated line is not the entry's twin: they leave silk and seafood
     /// selected, where a restore that feeds each distinct line once reads tea
-    /// too, and one that drops a repeated line or the first reads three kinds.
-    /// `confirm` after the restore commits the payment those kinds name.
+    /// too, and one that drops a repeated line or the first toggle reads three
+    /// kinds. `confirm` after the restore commits the payment those kinds name,
+    /// asserted by the reply's line.
     #[test]
     fn restore_picker_rebuilds_a_church_chooser_with_its_selection() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
         two_player_table("church");
         let entry = to_chooser("church", "Church", "church");
+        let entry_line = lines(&entry).remove(0);
+        for (number, good) in [(2, "Silk"), (3, "Tea"), (4, "Seafood"), (6, "Imports")] {
+            assert_kind(&body(&entry), number, good);
+        }
         let mut row = entry.picker.expect("the entry's list");
         for line in ["3", "2", "3", "4"] {
             let r = input(RED, "church", line, Some("church"));
@@ -817,8 +835,8 @@ mod tests {
         }
         let before = body(&call(RED, "GET", "/api/games/church", None));
         assert_eq!(church_selected(&before), [2, 4], "premise: silk and seafood, tea off again");
-        assert_eq!(lines_of(&row).len(), 5, "the entry and the four toggles, a repeated line kept");
-        assert_eq!(lines_of(&row).iter().filter(|l| *l == "3").count(), 2, "premise: the repeated line is not the entry's `1`");
+        assert_eq!(lines_of(&row), [entry_line.as_str(), "3", "2", "3", "4"], "the entry's line and the four toggles, a repeated line kept");
+        assert_ne!(entry_line, "3", "premise: the repeated line is not the entry's twin");
         let (stored_table, stored) = (table("church"), record("church"));
 
         fresh("church", &stored_table, &stored);
@@ -834,8 +852,7 @@ mod tests {
         assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
         assert_ne!(record("church"), stored, "premise: `confirm` APPLIED the payment");
         assert_ne!(s["prompt"]["kind"], json!("church"), "the chooser closes on its commit: {}", r.body);
-        let said = s["messages"].to_string().to_lowercase();
-        assert!(said.contains("silk") && said.contains("seafood") && !said.contains("copper"), "the move those kinds name: {said}");
+        assert_eq!(s["messages"][0], json!("Red: -1 silk, -1 seafood"), "the move those kinds name, and no other listed payment: {}", r.body);
         assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
     }
 
@@ -856,6 +873,9 @@ mod tests {
         init_inner(&config("off")).unwrap();
         four_player_table("town");
         let entry = to_chooser("town", "Chinatown", "chinatown");
+        let entry_line = lines(&entry).remove(0);
+        assert_row(&body(&entry), 1, "1 copper -> 2 yen");
+        assert_row(&body(&entry), 6, "2 yen -> 1 silk");
         let mut row = entry.picker.expect("the entry's list");
         for line in ["1", "6", "back 6"] {
             let r = input(RED, "town", line, Some("chinatown"));
@@ -864,6 +884,7 @@ mod tests {
         }
         let before = body(&call(RED, "GET", "/api/games/town", None));
         assert_eq!(chinatown_counts(&before), [(1, 1)], "premise: one copper sale and nothing else");
+        assert_eq!(lines_of(&row), [entry_line.as_str(), "1", "6", "back 6"], "the entry's line and the three toggles");
         let (stored_table, stored) = (table("town"), record("town"));
 
         // THE CONTROL: the same three toggles, last to first. `back 6` is refused
@@ -892,22 +913,27 @@ mod tests {
         assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
         assert_ne!(record("town"), stored, "premise: `confirm` APPLIED the exchange");
         assert_ne!(s["prompt"]["kind"], json!("chinatown"), "the chooser closes on its commit: {}", r.body);
-        assert!(s["messages"].to_string().to_lowercase().contains("copper"), "the sale it names: {}", s["messages"]);
+        assert_eq!(s["messages"][0], json!("Red: +2 yen, -1 copper"), "the sale alone, by value: {}", r.body);
         assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
     }
 
     /// **A REFUSED toggle is a line the list keeps, and re-feeding it changes
     /// nothing** (plan 2a, Task 8). At the Church on turn 1 the seat holds no
     /// imported good, so `6` is refused — a 200 that leaves the chooser open —
-    /// and sits in the list. `2` goes first, so the selection the restore must
-    /// reproduce is silk alone, and not the empty one a restore that fed nothing
-    /// would also show.
+    /// and sits in the list. `2` goes before it and `4` after it, so the
+    /// selection the restore must reproduce is silk and seafood: a restore that
+    /// fed nothing would show none, and one that stops at the first refused line
+    /// would show silk alone.
     #[test]
     fn a_refused_toggle_is_refed_and_changes_nothing() {
         let _s = serial();
         init_inner(&config("off")).unwrap();
         two_player_table("refused");
-        to_chooser("refused", "Church", "church");
+        let entry = to_chooser("refused", "Church", "church");
+        let entry_line = lines(&entry).remove(0);
+        for (number, good) in [(2, "Silk"), (4, "Seafood"), (6, "Imports")] {
+            assert_kind(&body(&entry), number, good);
+        }
         let r = input(RED, "refused", "2", Some("church"));
         assert_eq!(church_selected(&body(&r)), [2], "premise: silk selected");
         let r = input(RED, "refused", "6", Some("church"));
@@ -919,8 +945,10 @@ mod tests {
             s["messages"],
         );
         assert_eq!(church_selected(&s), [2], "the refusal changed nothing");
+        let r = input(RED, "refused", "4", Some("church"));
+        assert_eq!(church_selected(&body(&r)), [2, 4], "premise: seafood selected after the refusal");
         let row = r.picker.expect("the grown list");
-        assert_eq!(lines_of(&row).len(), 3, "the refused line sits in the list beside the entry and `2`");
+        assert_eq!(lines_of(&row), [entry_line.as_str(), "2", "6", "4"], "the refused line sits in the list between `2` and `4`");
         let before = body(&call(RED, "GET", "/api/games/refused", None));
         let (stored_table, stored) = (table("refused"), record("refused"));
 
@@ -929,10 +957,10 @@ mod tests {
         assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, refused line and all");
         assert_eq!(record("refused"), stored, "the restore applied nothing");
         let after = body(&call(RED, "GET", "/api/games/refused", None));
-        assert_eq!(church_selected(&after), [2], "silk alone: {after}");
+        assert_eq!(church_selected(&after), [2, 4], "silk and seafood: {after}");
         assert_eq!(after["prompt"], before["prompt"], "the selection equals the one before the restore");
         let r = input(RED, "refused", "5", Some("church"));
-        assert_eq!(lines(&r).len(), 4, "the restored list grows from the refused line");
+        assert_eq!(lines_of(r.picker.as_deref().expect("the grown list")), [entry_line.as_str(), "2", "6", "4", "5"], "the restored list grows from its last line");
     }
 
     /// **A list is only ever re-fed at the exact record it was built at** (the
