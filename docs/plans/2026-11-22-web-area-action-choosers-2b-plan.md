@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** At the Port the main list reads as one entry and the decline, and the entry opens a chooser in the REPL (one card or two switched on by their printed numbers), which the browser draws with its own card faces. At the Laboratory the list reads as one row per technology, and a technology with more than one listed row opens the numbered pick the REPL already has. The terminal's `players` view shows the per-country flag counts.
+**Goal:** At the Port the main list reads as one entry and the decline, and the entry opens a chooser in the REPL (one card or two switched on by their printed numbers), which the browser draws with its own card faces. At the Laboratory the list reads as one row per technology, and a technology with more than one listed row opens the numbered pick the REPL already has. The terminal shows the per-country flag counts: in full in its `players` view, and compactly on the dashboard's Mercenaries row.
 
 **Architecture:** The Port's chooser is a third model in the CLI's pure module `chooser.rs`, built by looking moves up in the legal list; the REPL holds the selection as a `SubPrompt`, and `confirm` commits the one listed move the selection names, or opens the existing numbered pick when two listed moves take the same cards (the second card paid either way). The web layer serializes the model as one new `PromptState` arm, `port`, and the browser draws it. The Laboratory's fold adds no sub-prompt and no prompt kind. Nothing computes a rule: reach, hand room, the two-card limit and what a second card costs are all answered by finding a listed move.
 
@@ -145,7 +145,16 @@ The five in `Country::ALL`'s order. For a seat whose hand is shown and holds at 
   flags in hand (not yet counting): GB 1  NL 1
 ```
 
-listing the non-zero countries only. A hidden hand prints no such line. The always-visible dashboard is NOT changed: it has no row to spare (measured above). **This is the plan's reading of design §5.8, put to the owner**: see "The owner's ruling this plan waits on".
+listing the non-zero countries only. A hidden hand prints no such line.
+
+In the always-visible dashboard the face-up counts ride the **Mercenaries row** of each seat, at no cost in rows, since every second flag of one country is what earns a mercenary. Each country's code is followed by its count with no space, the five separated by single spaces, a zero count dimmed:
+
+```
+  Mercenaries  0 unused · 0 used · GB1 US0 FR0 DE1 NL1
+  Mercenaries  0 unused · GB1 US0 FR0 DE1 NL1
+```
+
+The first form wherever the row fits its width (the two-player dashboard's 74 columns; a three-player seat's 56). The second where it does not: the `used` count yields FIRST and whole, never clipped, as `next take` yields on the seat's last row; it stays in the `players` view. That is always so in a four-player seat's 48 columns. The flags in hand are not on the dashboard: its hand panel already names each card's country. **This is the plan's proposal for design §5.8, put to the owner**: see "The owner's ruling this plan waits on".
 
 **The browser's words.** The Port panel's asking line is `The Port — take one card, or two`, or `The Port — take one card` when the arm's `max_cards` is 1. The help's and the guide's three sentences (Task 9):
 
@@ -157,7 +166,7 @@ listing the non-zero countries only. A hidden hand prints no such line. The alwa
 
 - `crates/yokohama-cli/src/chooser.rs` — the Port's model, text and matcher beside the Church's and Chinatown's; three fixtures in its `test_support` (Task 1).
 - `crates/yokohama-cli/src/repl.rs` — `PromptOption::Port`, `PromptOption::Laboratory`, `SubPrompt::Port`, `step_port`, the fold in `group_area_action`, one shared close-then-commit helper, `chooser_screen()` (Tasks 2, 3).
-- `crates/yokohama-cli/src/render.rs` (`players_panel`), `screen_model.rs` — the flag lines and the country codes with their pin (Task 8).
+- `crates/yokohama-cli/src/render.rs` (`players_panel`), `panel_render.rs` (the Mercenaries row in both arrangements), `screen_model.rs`, the two committed frame captures — the flag counts and the country codes with their pin (Task 8).
 - `crates/yokohama-cli/tests/piped_dogfood.rs` — the driver learns the Port and the Laboratory's pick; a floor on what it counts (Tasks 2, 3).
 - `crates/yokohama-web/src/client.rs`, `api.rs`, `lib.rs`, `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs` — the `port` arm, the strip by identity, every driver, the corpus (Tasks 2, 3, 7).
 - `web/src/wire/` — four new fixtures (`port.json`, `port_selected.json`, `port_pair.json`, `lab_pick.json`); `web/src/wire-script/` regenerated; `web/src/wire/contract.ts`, `contract.test.ts`, `web/src/types.ts` (Tasks 2, 3).
@@ -395,23 +404,27 @@ pub fn port_text(model: &PortModel) -> String;
 
 **Mutants:** the `chinatown` arm pressing a row whose `can_add` is false (the game stalls under the input cap); the `port` arm confirming while not legal (the same); a floor set above what the seed reaches (red, as it should be: the floors are readings).
 
-### Task 8: The terminal's flag counts, in the `players` view
+### Task 8: The terminal's flag counts: the `players` view and the Mercenaries row
 
-**impl: sonnet · review: opus.** Written for the plan's reading of design §5.8; it waits on the owner's ruling (the section after "How a player gets this release"). If he rules for a row in the dashboard, this task is re-planned with the frame's heights re-measured before it is dispatched.
+**impl: opus · review: opus.** Written for the plan's proposal for design §5.8 (choice D of the ruling's section); it waits on the owner's word. If he rules for the `players` view alone, the dashboard's half (cells 4 to 6 and `panel_render.rs`) is dropped and nothing else changes.
 
-**Files:** modify `crates/yokohama-cli/src/render.rs` (`players_panel` and its tests), `crates/yokohama-cli/src/screen_model.rs` (the codes and their pin), `docs/cli-guide.md`, `docs/cli-guide.html`. The dashboard's renderers in `panel_render.rs` and every frame golden are not touched.
+**Files:** modify `crates/yokohama-cli/src/render.rs` (`players_panel` and its tests), `crates/yokohama-cli/src/panel_render.rs` (`mercenaries_line`, the two-player arrangement's; `mercenaries_row`, the seat column's), `crates/yokohama-cli/src/screen_model.rs` (the codes and their pin), the committed frame captures that quote the row (`t3-frame-2p.txt`, `t10-frame-3p.txt`), `docs/cli-guide.md`, `docs/cli-guide.html`.
 
-**Interfaces.** Consumes `screen_model::face_up_flags(p, rules)` and `screen_model::order_flags(ids, rules)` (both public, cycle 1's; no new count) and the view's own mask, `SeatDisplay::hides_hand`. Produces `screen_model::country_code(Country) -> &'static str` (`GB`, `US`, `FR`, `DE`, `NL`): the engine's own table is private, so this is a mirror with a drift pin, the `placement_fee` precedent, pinned against `order_compact_line`'s country token for one registry card of each country.
+**Interfaces.** Consumes `PlayerModel::flags` (the dashboard), `screen_model::face_up_flags(p, rules)` and `screen_model::order_flags(ids, rules)` (the `players` view, which reads the state), all cycle 1's (no new count), and the view's own mask, `SeatDisplay::hides_hand`. Produces `screen_model::country_code(Country) -> &'static str` (`GB`, `US`, `FR`, `DE`, `NL`): the engine's own table is private, so this is a mirror with a drift pin, the `placement_fee` precedent, pinned against `order_compact_line`'s country token for one registry card of each country.
+
+**What a mock already read** (an export with the row patched, run in a real terminal at 200 columns, 2026-11-22): the opening frames at three and four players and a two-player game 700 events in, where the two seats read `GB1 US0 FR0 DE1 NL1` and `GB1 US1 FR1 DE1 NL0`. The frame's heights did not move (51, 50, 49). `cargo test -p yokohama-cli --lib` on the mock read 885 passed and 2 failed, the two committed frame captures, which quote the row.
 
 - [ ] **Step 1: the cells, red.**
   1. The pin: for a card of each of the five countries, `order_compact_line`'s second token equals `country_code`.
   2. `the_players_view_lists_each_seat_s_flags`: on a state whose seat has completed orders and technologies giving five DISTINCT non-zero counts, that seat's line is "The words"' with those counts in `Country::ALL`'s order (rival: two countries swapped); a seat with nothing face up reads five zeros; a seat whose hand is hidden still carries the line.
   3. `the_flags_in_hand_are_apart_and_masked`: a shown hand with orders prints the second line with the non-zero countries of the HAND; a seat with non-zero face-up flags and an empty shown hand prints no second line (rival: reading the face-up counts); a hidden hand that holds orders prints no second line (rival: printing it for every seat).
-  4. The frame is untouched: `screen`'s opening-frame and game-walk height cells and the committed frame captures read green, unedited. No new cell; the report states it.
-- [ ] **Step 2:** red; the code; the view's goldens that move quoted before and after.
-- [ ] **Step 3:** the guide pair's `players` view passage gains the two lines. `cargo test -p yokohama-cli`; `cargo test -p yokohama-web` (the view is the wire's `players` view text if the layer serves it: `wire_fixtures` regenerated and its diff read, or read unmoved and said so); the lint gate; both fence checks; commit.
+  4. `the_mercenaries_row_carries_the_face_up_flags`: in both arrangements the row ends with the five counts of `PlayerModel::flags`, on a model with five distinct non-zero counts (rival: swapped countries) and on a seat whose hand is hidden (the counts are face up and never masked); a zero count is dimmed and a non-zero one is not.
+  5. `the_used_count_yields_first_and_whole`: at a three-player seat's width the row keeps `· N used`; at a four-player seat's it reads without it and is never clipped; the two-player line always keeps it. Then the widest LEGAL row, measured as `the_widest_legal_seat_tail_row_still_fits_its_column` measures its row: the largest mercenary and flag counts a seat can hold, at each width. If the widest row still outruns a four-player column after `used` has yielded, the policy's next step is that the countries at zero yield, and "The words" says so in the same commit; the report states the measured widths either way.
+  6. The frame's heights are unmoved: `screen`'s opening-frame and game-walk cells read green UNEDITED. The two committed captures are regenerated (`UPDATE_CAPTURES=1`) and their diffs READ: one row per seat changes and nothing else; both diffs are quoted in the report.
+- [ ] **Step 2:** red; the code; every golden that moves quoted before and after.
+- [ ] **Step 3:** the guide pair: the `players` view passage gains the two lines, and the dashboard's passage gains the row with its yield. `cargo test -p yokohama-cli`; `cargo test -p yokohama-web` (the frame's models are the wire's and this task changes no model: `wire_fixtures` reads unmoved, or its diff is read and explained); the lint gate; both fence checks; commit.
 
-**Mutants:** the in-hand line reading the face-up counts (cell 3); two countries swapped in the line (cell 2); the code table drifted from the engine's (cell 1); the in-hand line printed for a hidden hand (cell 3).
+**Mutants:** the in-hand line reading the face-up counts (cell 3); two countries swapped (cells 2 and 4); the code table drifted from the engine's (cell 1); the in-hand line printed for a hidden hand (cell 3); the flags masked with a hidden hand (cell 4); the row clipped at four players in place of yielding (cell 5); `used` dropped at three players too (cell 5).
 
 ### Task 9: The browser's words and the lane document
 
@@ -453,17 +466,19 @@ Measured by the plan's review, the opening frame's rows against the 50-row floor
 
 What follows from each choice:
 
-- **A. The `players` view only (this plan as written).** No frame row moves; the counts are one command away (`players`), for every seat, with the flags in hand apart for a shown hand. The dashboard below the board already names each hand card's country.
+- **A. The `players` view only.** No frame row moves; the counts are one command away (`players`), for every seat, with the flags in hand apart for a shown hand. The dashboard below the board already names each hand card's country.
 - **B. A row per seat in the dashboard.** The three-player opening leaves a 200x50 window for the first time (51 rows) and the two-player one goes to 53. `FRAME_HEIGHTS`, the game-walk bounds, two committed frame captures and the guide's §2 figures are re-measured, and the hosted terminal's 200x50 floor no longer shows the whole three-player screen. The in-hand line has no place below the board (that hand panel is one row).
 - **C. Both: the `players` view, and the dashboard's row at two players only**, where the frame is already outside the floor and its height was never a ceiling (53 rows).
 
-The plan's author recommends A. Task 8 is written for it and is the only task that changes with the ruling.
+- **D. The `players` view in full, and the counts on the dashboard's Mercenaries row (the plan's proposal).** No frame row moves. Found by looking for a row the counts belong on: every second flag of one country is what earns a mercenary, so the row reads the cause beside the effect. A mock was built on an export and read in a real terminal: `Mercenaries  0 unused · 0 used · GB1 US0 FR0 DE1 NL1` at two and three players, and at four players, where a seat's column is 48 wide, `Mercenaries  0 unused · GB0 US0 FR0 DE0 NL0`, the `used` count yielding as `next take` already yields on the seat's last row. The frame's heights read 51, 50 and 49, unmoved; the only cells that changed were the two committed frame captures, which quote the row. Its cost: at four players the `used` count is read in the `players` view, and the compact form (`GB1`) is denser than the rest of the panel.
+
+The owner, asked on 2026-11-22, leaned to the `players` view and found the dashboard useful; D gives both without a row. The plan's author recommends D. Task 8 is written for it and is the only task that changes with the ruling.
 
 ## The plan's review (2026-11-22)
 
 An independent reviewer measured this plan against the tree on an export before any task ran: one Critical finding, five Important, seventeen Minor. Every figure of "What was measured" reproduced; every fixture can be built as a state the engine's invariants accept. All are settled in the text above, except the Critical, which is the ruling in the section before this one.
 
-- **The terminal's flag line does not fit the frame** (Critical, measured by adding it): neither a row per seat nor the orders line. Task 8 now reads the `players` view, and the choice is put to the owner.
+- **The terminal's flag line does not fit the frame** (Critical, measured by adding it): neither a row per seat nor the orders line. Task 8 now reads the `players` view and, after a mock was read in a real terminal at every player count, the dashboard's Mercenaries row, which costs no row; the choice is put to the owner.
 - **`?` cannot be refused inside the Port's chooser**: the REPL answers it ahead of every sub-prompt and plan 2a pinned that. It opens the order index over the chooser, which design §9 asks for.
 - **A driver that confirms as soon as the preview is legal never takes a pair**: one card is always legal. The drivers' arm now adds a card on a draw first, and the payment pick's floor can be reached.
 - **The longest Chinatown fixture is out of the web crate's reach**: design §9's cost is timed in the CLI crate at 2,002 listed moves, and the layer's cost at the lists lines reach, each named for what it is.
