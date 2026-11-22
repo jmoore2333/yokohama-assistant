@@ -405,6 +405,59 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
     expect(cancelled.messages).toEqual(["Chinatown exchanges cancelled — back to the main options."]);
   });
 
+  // **The Port's twin of the cell above** (the whole-branch review of plan 2b,
+  // m-3). The walk opens the Port's chooser on `wire` at event 1024, switches
+  // 36 and 14 on and confirms; a refused third card and `cancel` it never
+  // sends. So the walk is replayed through the module up to the row that
+  // switches 14 on (`port_pair`, both cards on and every other card's
+  // `can_add` false), and those two lines are dispatched there as the client
+  // sends them, each reply read: the refusal's line alone in `messages` and
+  // the selection unchanged, then the chooser closed on the main list.
+  it("answers the Port chooser's refused third card and cancel through the module", () => {
+    const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
+    wasm.init_diagnostic();
+    wasm.set_clock(FROZEN_CREATED_AT);
+    const rows = JSON.parse(fs.readFileSync(scriptFile, "utf8")) as Row[];
+    const pair = rows.findIndex((r) => r.fixture === "port_pair");
+    expect(pair, "the walk switches a pair on in the Port's chooser").toBeGreaterThan(-1);
+    const encoder = new TextEncoder();
+    const dispatch = (who: string | null, method: string, at: string, query: string, body: unknown) => {
+      const hasBody = body !== null;
+      const reply = wasm.dispatch(
+        who ?? undefined,
+        method,
+        at,
+        query,
+        hasBody ? "application/json" : undefined,
+        hasBody ? encoder.encode(JSON.stringify(body)) : new Uint8Array(),
+      );
+      const out = { status: reply.status, text: reply.body };
+      reply.free();
+      return out;
+    };
+    for (const row of rows.slice(0, pair + 1)) {
+      expect(dispatch(row.who, row.method, row.path, row.query, row.body).status, `${row.method} ${row.path}`).toBe(row.status);
+    }
+    const { who, path: input } = rows[pair]!;
+    type Reply = { messages: string[]; prompt: { kind: string; cards?: { number: number; selected: boolean }[] } };
+    const send = (line: string, expect: string): Reply => {
+      const { status, text } = dispatch(who, "POST", input, "", { line, expect });
+      if (status !== 200) throw new Error(`${line}: ${status} ${text}`);
+      return replyOf(text, `POST ${input} ${line}`) as unknown as Reply;
+    };
+    const on = (r: Reply) => (r.prompt.cards ?? []).filter((c) => c.selected).map((c) => c.number);
+
+    // 36 and 14 are on: card 8 would be a third card, so it is refused, the line rides.
+    const refused = send("8", "port");
+    expect(refused.prompt.kind).toBe("port");
+    expect(refused.messages).toEqual(["! the list holds no take with O08 added from here"]);
+    expect(on(refused), "the refused card changed nothing").toEqual([36, 14]);
+
+    const cancelled = send("cancel", "port");
+    expect(cancelled.prompt.kind, "cancel closes the chooser on the main list").toBe("options");
+    expect(cancelled.messages).toEqual(["Port take cancelled — back to the main options."]);
+  });
+
   it("keeps no archive, so the browser sends a finished game to the server's", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
     wasm.init_diagnostic();

@@ -1207,9 +1207,9 @@ describe("the Port's chooser (plan 2b, Task 4)", () => {
     cleanup();
 
     // Nothing selected and nothing legal: the region stays mounted and says
-    // nothing, as the Church's and Chinatown's do at an empty selection, and it
-    // is not the warning either (a selection has to exist before it can be
-    // "not offered").
+    // nothing, as Chinatown's does at an empty selection, and it is not the
+    // warning either (a selection has to exist before it can be "not
+    // offered").
     const idle = show(wire.port);
     const v0 = idle.container.querySelector(".verdict")!;
     expect(v0).toHaveAttribute("role", "status");

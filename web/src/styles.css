@@ -1028,10 +1028,11 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * could bring it into view. Flat, a card read 86 to 142 px tall at 390x844
  * and 1440x900 (the caption is about 90 px wide there) and 67.6 px at 844x390
  * (wider, so the picture sets the height). At 390x844 the zones held the
- * route's two zones whole (219 to 259 px; nothing scrolls). At 1440x900 the
- * rail's 45vh deck is 405 px, the chooser gets 222 and the zones 179, so on
- * every table the runs dealt the second zone was cut at open (two of four
- * cards whole), and each cut card scrolls into view inside the zones — by a
+ * route's two zones whole (220 to 260 px with the pixel of padding under
+ * their last card that this comment comes to, 219 to 259 before it; nothing
+ * scrolls). At 1440x900 the rail's 45vh deck is 405 px, the chooser gets
+ * 222 and the zones 179, so on every table the runs dealt the second zone
+ * was cut at open (two of four cards whole), and each cut card scrolls into view inside the zones — by a
  * wheel over them, the page not moving. Four cards at the runs' shortest
  * (86 + 6 + 86 = 178 px) would all fit in 179 (REASONED). **The zones keep a
  * pixel of padding under their last card**: their box is fractional (179.22
@@ -1065,14 +1066,18 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * stepping the window down on three tables: every card came whole into view
  * down to 352 px of window height (640x352, the chooser showing 57 px); at
  * 350 a card was cut on two of the three, at 348 on all three, and at 340 every
- * card; at 320 the chooser shows 37 px. Below 352 a card is cut, a press at
- * its centre still lands on it, and Confirm and Cancel stay in reach (measured
- * down to 568x320).
+ * card; at 320 the chooser shows 37 px. Those are the figures of those three
+ * tables, not of every table: the floor follows the tallest card a table
+ * deals (a 56.8 px card needs 352; a table of 51.6 px cards stays whole to
+ * 348), and Task 5's review, stepping five tables of its own down, read every
+ * card whole at 352 on all five and at 348 on three of them. Below a table's
+ * floor a card is cut, a press at its centre still lands on it, and Confirm
+ * and Cancel stay in reach (measured down to 568x320).
  *
  * **NOT measured: a table with SIX cards in reach** (power 4 or more), three
  * zones: no cell's table reaches one by lines. Reasoned from the figures
  * above, three zones of 86 to 142 px (270 to 438 px with their gaps) would
- * not fit whole in the 219 to 259 px the zones had at 390x844, so the zones
+ * not fit whole in the 220 to 260 px the zones had at 390x844, so the zones
  * would scroll there as they do at 1440x900. */
 .decision > .chooser.port {
   --port-art: 3.5rem;
