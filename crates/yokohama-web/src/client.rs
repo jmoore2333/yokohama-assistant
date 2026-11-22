@@ -1097,6 +1097,32 @@ pub(crate) mod test_support {
             .map(|i| menu_number(i).to_string())
     }
 
+    /// Steps a game's opening seat from its first prompt to Laboratory A's
+    /// area action, as [`to_the_port`] does at the Port: the additional
+    /// actions ended, Option B's two assistants there, the President placed
+    /// there (power 3). Whether a title folds there is the table's: with the
+    /// opening's 3 yen and no imported good, only a board holding both copies
+    /// of a title lists one title twice.
+    pub(crate) fn to_the_lab(repl: &mut Repl) {
+        let lab = area_of(repl, AreaType::LaboratoryA);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", lab.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == lab)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == lab)
+        });
+        repl.step(&place);
+    }
+
+    /// The display number of the first folded Laboratory entry, if the list
+    /// holds one.
+    pub(crate) fn lab_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Laboratory: acquire"))
+            .map(|i| menu_number(i).to_string())
+    }
 }
 
 #[cfg(test)]
@@ -1909,6 +1935,95 @@ mod tests {
                 assert!(json["prompt"].get(field).is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // The Laboratory's fold on the wire (cycle 2, plan 2b, Task 3)
+    // ---------------------------------------------------------------------
+
+    /// A 2P game of people on `seed`, built as [`two_human_repl`] is.
+    fn two_human_repl_on(seed: u64) -> Repl {
+        let rules = Rules::standard();
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        Repl::new(Session::new_sim(config, seed, choices, rules).expect("a fixture game"))
+    }
+
+    /// **A folded Laboratory title is an ordinary row on the wire, and its
+    /// pick an ordinary `pick`** (design §5.5: no new prompt kind): the
+    /// entry's row has `opens_picker: true` and the entry's words, the other
+    /// rows name their moves; pressing it gives the acting seat a `pick`
+    /// titled as "The words" say, its rows the title's listed moves in list
+    /// order, in `describe`'s words; the other seat watches.
+    ///
+    /// Seed 18 is the first table seed whose opening Laboratory visit folds a
+    /// title (measured over seeds 1 to 399: 33 of them do, 18 the first); with
+    /// the opening's 3 yen and no imported good, that is a board holding both
+    /// copies of a title.
+    #[test]
+    fn a_folded_laboratory_title_is_a_row_that_opens_the_pick() {
+        let mut repl = two_human_repl_on(18);
+        super::test_support::to_the_lab(&mut repl);
+        let rules = Rules::standard();
+        let card = |mv: &Move| match mv {
+            Move::ExecuteAreaAction { action: yokohama_core::AreaAction::Laboratory { card_id, .. } } => Some(*card_id),
+            _ => None,
+        };
+        let name = |id| rules.techs.get(id).expect("a registry card").name.clone();
+        let legal = repl.session.legal();
+        let labs: Vec<&Move> = legal.iter().filter(|m| card(m).is_some()).collect();
+        // The folded title, by hand: the one whose name two listed rows carry.
+        let title = labs
+            .iter()
+            .map(|m| name(card(m).unwrap()))
+            .find(|t| labs.iter().filter(|m| name(card(m).unwrap()) == *t).count() > 1)
+            .expect("premise: a title with more than one listed row");
+        let moves: Vec<Move> = labs.iter().filter(|m| name(card(m).unwrap()) == title).map(|m| (*m).clone()).collect();
+        let mut ids: Vec<u8> = moves.iter().map(|m| card(m).unwrap().0).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 2, "premise: both copies of {title}, measured: {moves:?}");
+        let words = format!("Laboratory: acquire {title} — {} ways to pay", moves.len());
+
+        let me = repl.session.state().current_player;
+        let payload = ClientState::of("t", &repl, Viewer::Seat(me), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        assert_eq!(json["kind"], "options");
+        let rows = json["rows"].as_array().expect("rows");
+        let entry = rows.iter().find(|r| r["words"] == words.as_str()).unwrap_or_else(|| panic!("{words:?}: {json}"));
+        assert_eq!(entry["opens_picker"], true, "the entry opens a pick");
+        assert_eq!(entry["fee"], serde_json::Value::Null);
+        assert_eq!(
+            super::test_support::lab_entry(&repl),
+            entry["number"].as_u64().map(|n| n.to_string()),
+            "the wire's number is the REPL's",
+        );
+        for row in rows.iter().filter(|r| r["words"] != words.as_str()) {
+            assert_eq!(row["opens_picker"], false, "every other row names its move: {row}");
+        }
+
+        repl.step(&entry["number"].as_u64().expect("a number").to_string());
+        let payload = ClientState::of("t", &repl, Viewer::Seat(me), Vec::new());
+        assert_eq!(payload.prompt.kind(), "pick");
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        assert_eq!(json["title"], format!("Laboratory: acquire {title} — choose the payment"));
+        let (state, rules) = (repl.session.state(), repl.session.rules());
+        let expected: Vec<serde_json::Value> = moves
+            .iter()
+            .enumerate()
+            .map(|(i, mv)| {
+                serde_json::json!({
+                    "number": i + 1,
+                    "words": yokohama_cli::describe::describe_move(mv, state, rules),
+                    "opens_picker": false,
+                    "fee": null,
+                })
+            })
+            .collect();
+        assert_eq!(json["rows"], serde_json::Value::Array(expected), "the title's listed rows, in list order");
+        let other = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(1 - me.0)), Vec::new());
+        assert!(matches!(other.prompt, PromptState::Watching { to_move } if to_move == me));
     }
 
     // ---------------------------------------------------------------------

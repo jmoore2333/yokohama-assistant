@@ -125,6 +125,7 @@ import chinatownSelected from "./chinatown_selected.json";
 import port from "./port.json";
 import portSelected from "./port_selected.json";
 import portPair from "./port_pair.json";
+import labPick from "./lab_pick.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -282,6 +283,7 @@ const _chinatownSelected: Widen<ClientState> = chinatownSelected;
 const _port: Widen<ClientState> = port;
 const _portSelected: Widen<ClientState> = portSelected;
 const _portPair: Widen<ClientState> = portPair;
+const _labPick: Widen<ClientState> = labPick;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -552,6 +554,7 @@ const _pChinatownSelected: PromptOf<"chinatown"> = chinatownSelected.prompt;
 const _pPort: PromptOf<"port"> = port.prompt;
 const _pPortSelected: PromptOf<"port"> = portSelected.prompt;
 const _pPortPair: PromptOf<"port"> = portPair.prompt;
+const _pLabPick: PromptOf<"pick"> = labPick.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -601,6 +604,7 @@ void [
   _pChurch, _pChurchSelected, _pChurchLegal,
   _pChinatown, _pChinatownSelected,
   _pPort, _pPortSelected, _pPortPair,
+  _pLabPick,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -620,7 +624,7 @@ void [
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected, _churchLegal,
   _chinatown, _chinatownSelected,
-  _port, _portSelected, _portPair,
+  _port, _portSelected, _portPair, _labPick,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -1017,6 +1021,10 @@ export const wire = {
   /** The same chooser with both cards on: legal, one way, and no other card
    *  can be switched on. */
   portPair: as<ClientState>(portPair),
+  /** The Laboratory's folded title opened (plan 2b, Task 3), at the walk's
+   *  one folded Laboratory prompt (event 50): both copies of Ball, one row
+   *  each, in the REPL's ordinary numbered pick. */
+  labPick: as<ClientState>(labPick),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -1153,5 +1161,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.church, wire.churchSelected, wire.churchLegal,
   wire.chinatown, wire.chinatownSelected,
   wire.port, wire.portSelected, wire.portPair,
+  wire.labPick,
   wire.spectator, wire.spectatorOver,
 ];

@@ -762,6 +762,132 @@ pub(crate) mod test_support {
     pub(crate) fn port_a_at_three_position() -> GameState {
         port_fixture(3, 7, false, 4, 1, 5, 0)
     }
+
+    /// The two physical cards of the technology named `name`, by id.
+    pub(crate) fn copies_of(name: &str) -> [TechCardId; 2] {
+        let mut ids: Vec<TechCardId> =
+            Rules::standard().techs.iter().filter(|t| t.name == name).map(|t| t.id).collect();
+        ids.sort_unstable_by_key(|id| id.0);
+        ids.try_into().unwrap_or_else(|ids| panic!("{name} is not two cards: {ids:?}"))
+    }
+
+    /// Lays `slots` out on Laboratory A (or B) **by moving cards that exist**:
+    /// a card arriving on the board comes out of the tech deck, or off the
+    /// other Laboratory's slot it sat in; a card leaving it takes the arriving
+    /// card's place there, or goes to the bottom of the tech deck when no card
+    /// arrives for it. A card a player owns is never moved (panics).
+    pub(crate) fn lay_out_lab(state: &mut GameState, board_b: bool, slots: [Option<TechCardId>; 6]) {
+        let board = |s: &GameState| -> [Option<TechCardId>; 6] {
+            if board_b {
+                s.lab_state.lab_b.as_ref().expect("the table has Laboratory B").slots
+            } else {
+                s.lab_state.lab_a.slots
+            }
+        };
+        let old = board(state);
+        let new: Vec<TechCardId> = slots.iter().flatten().copied().collect();
+        let mut leaving: Vec<TechCardId> = old.iter().flatten().copied().filter(|c| !new.contains(c)).collect();
+        for card in new.iter().copied().filter(|c| !old.contains(&Some(*c))) {
+            assert!(state.players.iter().all(|p| !p.technologies.contains(&card)), "{card:?} is owned");
+            let swap_in = if leaving.is_empty() { None } else { Some(leaving.remove(0)) };
+            if let Some(k) = state.tech_deck.iter().position(|c| *c == card) {
+                match swap_in {
+                    Some(c) => state.tech_deck[k] = c,
+                    None => {
+                        state.tech_deck.remove(k);
+                    }
+                }
+            } else {
+                let other = if board_b { Some(&mut state.lab_state.lab_a) } else { state.lab_state.lab_b.as_mut() };
+                let slot = other
+                    .and_then(|b| b.slots.iter_mut().find(|s| **s == Some(card)))
+                    .unwrap_or_else(|| panic!("{card:?} is in neither the tech deck nor the other Laboratory"));
+                *slot = swap_in;
+            }
+        }
+        for card in leaving {
+            state.tech_deck.insert(0, card);
+        }
+        if board_b {
+            state.lab_state.lab_b.as_mut().expect("the table has Laboratory B").slots = slots;
+        } else {
+            state.lab_state.lab_a.slots = slots;
+        }
+    }
+
+    /// The acting seat's President on Laboratory A (or B) with `assistants` of
+    /// its assistants there (power `1 + assistants`), `yen` yen and `imports`
+    /// imported goods, `AreaAction` and the action power set. The assistants
+    /// come out of the seat's hand supply.
+    fn at_the_lab(state: &mut GameState, board_b: bool, assistants: u8, yen: u32, imports: u32) {
+        let wanted = if board_b { AreaType::LaboratoryB } else { AreaType::LaboratoryA };
+        let lab = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == wanted)
+            .expect("the board holds the Laboratory")
+            .0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(lab);
+        p.assistants.on_board.insert(lab, assistants);
+        p.assistants.in_hand -= assistants;
+        p.money = yen;
+        p.imported_goods = imports;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(state, me, lab));
+    }
+
+    /// `lab_twin_position` owning `owned` other technologies: the lowest-id
+    /// cards still in the tech deck whose title is neither Ball nor a title on
+    /// Laboratory A, taken out of the deck into the seat's hand of
+    /// technologies.
+    fn lab_twin_fixture(owned: usize) -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).unwrap();
+        let ball = copies_of("Ball");
+        let keep: Vec<TechCardId> =
+            state.lab_state.lab_a.slots.iter().flatten().copied().filter(|c| !ball.contains(c)).collect();
+        let name = |id: TechCardId| rules.techs.get(id).expect("a registry card").name.clone();
+        assert_eq!(
+            (name(keep[0]), name(keep[1])),
+            ("Mining Technology".to_string(), "Tram".to_string()),
+            "premise: seed 7's Laboratory A opens with these two first",
+        );
+        lay_out_lab(&mut state, false, [Some(keep[0]), Some(ball[0]), Some(keep[1]), None, Some(ball[1]), None]);
+        let on_board: Vec<String> = state.lab_state.lab_a.slots.iter().flatten().map(|c| name(*c)).collect();
+        let mut deck: Vec<TechCardId> = state.tech_deck.clone();
+        deck.sort_unstable_by_key(|c| c.0);
+        let me = state.current_player.0 as usize;
+        for card in deck.into_iter().filter(|c| !on_board.contains(&name(*c))).take(owned) {
+            let k = state.tech_deck.iter().position(|c| *c == card).expect("in the deck");
+            state.tech_deck.remove(k);
+            state.players[me].technologies.push(card);
+        }
+        at_the_lab(&mut state, false, 3, 9, 2);
+        state
+    }
+
+    /// A 2P position (setup seed 7) with BOTH copies of Ball on Laboratory A,
+    /// in slot 1 (no surcharge) and slot 4 (+2), Mining Technology in slot 0
+    /// and Tram in slot 2 between them, slots 3 and 5 empty (their cards back
+    /// in the tech deck); the acting seat's President there with 3 assistants
+    /// (power 4), 9 yen and 2 imported goods, owning no technology. Measured:
+    /// the list reads Mining Technology (1 row), Ball's slot-1 copy (1 row),
+    /// Tram (3 rows), Ball's slot-4 copy (2 rows), then the decline — Ball's
+    /// three rows are not next to each other.
+    pub(crate) fn lab_twin_position() -> GameState {
+        lab_twin_fixture(0)
+    }
+
+    /// `lab_twin_position` with three other technologies owned, so the 4th
+    /// card's fee is paid either way. Measured: Mining Technology 2 rows, Ball
+    /// 6, Tram 5.
+    pub(crate) fn lab_twin_position_owning_three() -> GameState {
+        lab_twin_fixture(3)
+    }
 }
 
 #[cfg(test)]

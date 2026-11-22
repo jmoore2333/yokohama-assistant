@@ -159,8 +159,13 @@ const CHURCH_CHOOSER_HINT: &str = "type a number to toggle, 'confirm' to pay";
 const PORT_CHOOSER_HINT: &str = "> a card number toggles it, 'confirm' to take, or 'cancel'";
 
 /// The Port's payment pick's title ends so (plan 2b, "The words"), and the
-/// pick prints a colon after its title.
+/// pick prints a colon after its title. A folded Laboratory title's pick ends
+/// the same way (plan 2b, Task 3), so a Port pick is the line that also starts
+/// with [`PORT_TAKE`], and a Laboratory pick the one that starts with
+/// [`LAB_ACQUIRE`].
 const PORT_PAYMENT_PICK: &str = " — choose the payment:";
+const PORT_TAKE: &str = "Port: take ";
+const LAB_ACQUIRE: &str = "Laboratory: acquire ";
 
 /// The Port chooser's cards, read from its own block (between its heading and
 /// the `Selected:` line): each card's bare number and whether it is switched
@@ -304,7 +309,8 @@ fn a_piped_load_with_a_bot_on_the_start_seat_still_reads_the_first_command() {
 /// (`""` for none); `label` keeps the two runs' save files apart, since both
 /// tests share one process id. Answers the transcript and three counts: Church
 /// payments and Port takes confirmed through their choosers, and Port payment
-/// picks opened.
+/// picks opened; the Laboratory picks the main list's folded titles opened are
+/// printed beside them (plan 2b, Task 3), with no floor.
 fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
         .stdin(Stdio::piped())
@@ -346,6 +352,7 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
     // floor of one, asserted below.
     let (mut church_toggles, mut church_confirms) = (0usize, 0usize);
     let (mut port_toggles, mut port_confirms, mut payment_picks) = (0usize, 0usize, 0usize);
+    let mut lab_picks = 0usize;
     for _input in 0..20_000 {
         let screen = read_to_prompt(&rx, &mut transcript);
 
@@ -361,8 +368,11 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
         if !at_the_port {
             port_toggles = 0;
         }
-        if screen.lines().any(|l| l.ends_with(PORT_PAYMENT_PICK)) {
+        if screen.lines().any(|l| l.starts_with(PORT_TAKE) && l.ends_with(PORT_PAYMENT_PICK)) {
             payment_picks += 1;
+        }
+        if screen.lines().any(|l| l.starts_with(LAB_ACQUIRE) && l.ends_with(PORT_PAYMENT_PICK)) {
+            lab_picks += 1;
         }
         let answer: String = if at_the_port {
             // The Port's chooser (plan 2b), from its screen alone: with a
@@ -455,7 +465,7 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
 
     println!(
         "{label}: {church_confirms} Church payment(s) and {port_confirms} Port take(s) confirmed through their \
-         choosers, {payment_picks} Port payment pick(s) opened"
+         choosers, {payment_picks} Port payment pick(s) and {lab_picks} Laboratory pick(s) opened"
     );
     send("quit", &mut stdin);
     drop(stdin);

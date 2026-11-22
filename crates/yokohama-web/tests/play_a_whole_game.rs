@@ -261,15 +261,19 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
 
 /// What the Port's arm reached, counted from the prompt it answered and the
 /// line it sent (plan 2b, Task 2's review, M-1): `[pairs taken, payment picks
-/// answered]` — a `confirm` with two cards on, and a `pick` titled `… — choose
-/// the payment`. Printed with each game's figures; no floor here (the floors on
-/// pairs and picks are the three-player arm's, plan 2b's Task 7).
+/// answered]` — a `confirm` with two cards on, and a `pick` titled `Port: take
+/// … — choose the payment` (the Port's prefix, since a folded Laboratory
+/// title's pick ends the same way, plan 2b's Task 3). Printed with each game's
+/// figures; no floor here (the floors on pairs and picks are the three-player
+/// arm's, plan 2b's Task 7).
 fn port_tally(prompt: &Value, line: &str, tally: &mut [usize; 2]) {
     let on = |p: &Value| p["cards"].as_array().map_or(0, |c| c.iter().filter(|c| c["selected"] == Value::Bool(true)).count());
     if prompt["kind"] == "port" && line == "confirm" && on(prompt) == 2 {
         tally[0] += 1;
     }
-    if prompt["kind"] == "pick" && prompt["title"].as_str().is_some_and(|t| t.ends_with("— choose the payment")) {
+    if prompt["kind"] == "pick"
+        && prompt["title"].as_str().is_some_and(|t| t.starts_with("Port: take") && t.ends_with("— choose the payment"))
+    {
         tally[1] += 1;
     }
 }

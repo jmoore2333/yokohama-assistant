@@ -1347,6 +1347,8 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     }
 
     let mut rng = Rng(WALK_SEED);
+    // The registry's names, for the Laboratory's rule below.
+    let rules = Rules::standard();
     let mut steps = 0usize;
     // The area the server last accepted an assistant in, tried first next time.
     // Placement legality is the engine's, so this is a CACHE over the answers
@@ -1575,10 +1577,16 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 assert!(
                     !(kind == "options" && rows.len() < options.len() && options.iter().any(|o| chinatown(&o["mv"]))),
                     "a folded Chinatown prompt on the walk's two-player table, whose board has no Chinatown: \
-                     the folded-prompt rules are the Church's and the Port's, and a table that reaches Chinatown \
+                     the folded-prompt rules are the Church's, the Port's and the Laboratory's, and a table that reaches Chinatown \
                      needs its own rule, written with a seed that runs it: {state}",
                 );
                 let port = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Port"].is_object();
+                // A Laboratory move's title, read off the registry by its card.
+                let title_of = |mv: &Value| -> Option<String> {
+                    let card = mv["ExecuteAreaAction"]["action"]["Laboratory"]["card_id"].as_u64()?;
+                    let id = yokohama_core::TechCardId(u8::try_from(card).expect("a card id"));
+                    Some(rules.techs.get(id).expect("a registry card").name.clone())
+                };
                 // A Port take's cards as their sorted numbers, so two orders
                 // of one set compare equal.
                 let port_set = |mv: &Value| -> Vec<u64> {
@@ -1733,6 +1741,63 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                         assert_eq!(direct.len(), 1, "the decline is the one direct row: {state}");
                         direct[0]["number"].as_u64().expect("a number").to_string()
                     }
+                } else if kind == "options"
+                    && rows.len() < options.len()
+                    && options.iter().any(|o| title_of(&o["mv"]).is_some())
+                {
+                    // **The Laboratory folds by title** (plan 2b, Task 3), and
+                    // the walk plays the same game across it by the Port's
+                    // rule: the draw is taken over `frame.decision.options`,
+                    // and the move it names is played by lines. Which row a
+                    // listed move stands under is counted HERE, by hand, off
+                    // the options and the registry's names: a title with one
+                    // listed row is its own row, a title with more is one
+                    // entry at its first row's place; the entry's words are
+                    // checked against "The words", and the pick's row is the
+                    // move's place among its title's rows in list order.
+                    // Measured at these seeds: one folded Laboratory prompt,
+                    // event 50 (both copies of Ball, one row each, the draw the
+                    // first), so the pick opens once and `lab_pick` is
+                    // captured there.
+                    let i = rng.below(options.len());
+                    let titles: Vec<Option<String>> = options.iter().map(|o| title_of(&o["mv"])).collect();
+                    let count = |t: &str| titles.iter().filter(|x| x.as_deref() == Some(t)).count();
+                    let mut row_of = Vec::new();
+                    let mut entries: Vec<(&str, usize)> = Vec::new();
+                    let mut next = 0usize;
+                    for t in &titles {
+                        let folded = t.as_deref().filter(|t| count(t) > 1);
+                        match folded.and_then(|t| entries.iter().find(|(x, _)| *x == t).map(|(_, row)| *row)) {
+                            Some(row) => row_of.push(row),
+                            None => {
+                                if let Some(t) = folded {
+                                    entries.push((t, next));
+                                }
+                                row_of.push(next);
+                                next += 1;
+                            }
+                        }
+                    }
+                    assert_eq!(next, rows.len(), "one row per title, the folded ones at their first row: {state}");
+                    let row = &rows[row_of[i]];
+                    let number = row["number"].as_u64().expect("a number").to_string();
+                    match titles[i].as_deref() {
+                        Some(t) if count(t) > 1 => {
+                            assert_eq!(row["opens_picker"], Value::Bool(true), "{state}");
+                            assert_eq!(row["words"], format!("Laboratory: acquire {t} — {} ways to pay", count(t)));
+                            let pick = api.send_as(mover, &number).await;
+                            assert_eq!(pick["prompt"]["kind"], "pick", "the entry opens the pick: {pick}");
+                            assert_eq!(pick["prompt"]["title"], format!("Laboratory: acquire {t} — choose the payment"));
+                            assert_eq!(pick["prompt"]["rows"].as_array().map(Vec::len), Some(count(t)), "{pick}");
+                            capture(&mut out, &mut seen, "lab_pick", &pick);
+                            let k = (0..i).filter(|&j| titles[j].as_deref() == Some(t)).count();
+                            pick["prompt"]["rows"][k]["number"].as_u64().expect("a number").to_string()
+                        }
+                        _ => {
+                            assert_eq!(row["opens_picker"], Value::Bool(false), "a direct row: {state}");
+                            number
+                        }
+                    }
                 } else {
                     rows[rng.below(rows.len())]["number"].as_u64().expect("a number").to_string()
                 }
@@ -1872,6 +1937,7 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         "port",
         "port_selected",
         "port_pair",
+        "lab_pick",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),

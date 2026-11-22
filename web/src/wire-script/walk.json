@@ -1904,6 +1904,17 @@
       "line": "1"
     },
     "status": 200,
+    "fixture": "lab_pick"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "1"
+    },
+    "status": 200,
     "fixture": null
   },
   {

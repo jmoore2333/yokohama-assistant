@@ -5225,7 +5225,11 @@ mod tests {
     /// the order deck — a direct take row, or the Port's folded entry (plan
     /// 2b), whose chooser is answered with its first card that can be switched
     /// on and then `confirm`, a single take — and
-    /// `("LaboratoryA", &["Laboratory: acquire"])` from the tech deck. Option B
+    /// `("LaboratoryA", &["Laboratory: acquire"])` from the tech deck, by a
+    /// direct row or a folded title's entry (plan 2b, Task 3), whose `pick`
+    /// is answered with its first row (measured: on the 20260831 table the
+    /// lab cell plays, Laboratory A folds Ball and the acquire goes through
+    /// the pick). Option B
     /// puts two assistants on that area (its id read off the `/areas` panel's
     /// `tile.area_type`), the President follows them, and the area action is
     /// the `take` row — a port take refills the port from the order deck and
@@ -5287,6 +5291,14 @@ mod tests {
                         .and_then(|c| c["number"].as_u64())
                         .map_or_else(|| "cancel".to_string(), |n| n.to_string())
                 }
+            } else if prompt["kind"] == "pick" {
+                // The pick a pressed row opened — a folded Laboratory title's,
+                // its rows that title's acquisitions: the first take.
+                rows.iter()
+                    .find(|r| takes.iter().any(|t| words(r).starts_with(t)))
+                    .or(rows.first())
+                    .and_then(number)
+                    .expect("a pick lists its rows")
             } else if rows.iter().any(|r| words(r).starts_with("Option B")) {
                 format!("b {area}")
             } else if let Some(r) = rows.iter().find(|r| {

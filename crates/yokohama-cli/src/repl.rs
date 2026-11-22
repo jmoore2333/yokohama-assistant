@@ -161,14 +161,15 @@ impl ViewSurface {
 /// docs/plans/2026-07-18-phase2-cli-driver-design.md: `Route`, `Retreat`),
 /// the Placement main list (`PlacementA`, `PlacementB`), a queued
 /// assistant-move choice (`MoveFrom`), and the AreaAction main list with no
-/// choice queued (`Church`, `Chinatown`, `Port`, cycle 2's area-action
-/// choosers, docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
+/// choice queued (`Church`, `Chinatown`, `Port` and `Laboratory`, cycle 2's
+/// area-action folds, docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
 /// else every option is a bare `Direct`, so the list is byte-identical to the
 /// ungrouped `legal()` rendering. The legal list stays the SOLE authority:
 /// every collapsing variant is an entry helper whose selection is
 /// exact-matched against `legal()` before anything commits
 /// (`find_placement_match`, `chooser::church_match`, `chooser::chinatown_match`,
-/// `chooser::port_matches`).
+/// `chooser::port_matches`), or a numbered pick over a captured slice of it
+/// (`Route`, `MoveFrom`, `Laboratory`).
 enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
@@ -206,6 +207,13 @@ enum PromptOption {
     /// listed take names two (`chooser::port_most_cards`), each read off the
     /// list.
     Port { reach: usize, pairs: bool },
+    /// One technology's Laboratory rows folded (plan 2b): more than one
+    /// listed `AreaAction::Laboratory` move acquires a card of the title
+    /// `title` (`describe::tech_name`'s). `moves` is every one of them in list
+    /// order — both copies' rows when the board holds both, wherever they
+    /// stand in the list — and selecting the entry opens the numbered pick
+    /// over them.
+    Laboratory { title: String, moves: Vec<Move> },
 }
 
 /// An in-progress sub-prompt, from any of three phases: Movement's route pick
@@ -770,7 +778,8 @@ impl Repl {
     /// place-none, a queued `AssistantMove` groups by source, and the
     /// AreaAction list folds the Church's payments, Chinatown's exchange
     /// sets and the Port's takes into one entry each when more than one is
-    /// listed. A consumer
+    /// listed, and the Laboratory's rows into one entry per technology that
+    /// has more than one. A consumer
     /// that numbered `DecisionModel::options` instead — which IS one per
     /// legal move — would send back a number meaning a
     /// different move, and in the Movement phase it would usually still be a
@@ -791,7 +800,7 @@ impl Repl {
     fn display_rows(&self, legal: &[Move]) -> Vec<render::DisplayRow> {
         let state = self.session.state();
         let rules = self.session.rules();
-        Self::group_options(state, legal.to_vec())
+        Self::group_options(state, rules, legal.to_vec())
             .iter()
             .map(|opt| render::DisplayRow {
                 mv: match opt {
@@ -1258,6 +1267,11 @@ impl Repl {
                 self.page = 0;
                 self.out(String::new(), false)
             }
+            // The REPL's existing numbered pick, titled as plan 2b's "The
+            // words" say (without a colon: the pick prints one).
+            Some(PromptOption::Laboratory { title, moves }) => {
+                self.enter_pick_subprompt(format!("Laboratory: acquire {title} — choose the payment"), moves)
+            }
             None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
@@ -1268,7 +1282,8 @@ impl Repl {
     /// (byte-identical to the old ungrouped rendering); Placement, the
     /// assistant-move choice and AreaAction group as `group_options` routes
     /// them (AreaAction folds the Church's payments, Chinatown's exchange
-    /// sets and the Port's takes, `group_area_action`). In
+    /// sets and the Port's takes, and the Laboratory's rows per technology,
+    /// `group_area_action`). In
     /// the Movement main list it collapses the family
     /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
@@ -1278,7 +1293,7 @@ impl Repl {
     /// variant, which stays `Direct`). Single pass over `legal()` into a
     /// `BTreeMap` -- no per-keystroke rescans beyond the one `legal()` call.
     fn display_options(&self) -> Vec<PromptOption> {
-        Self::group_options(self.session.state(), self.session.legal())
+        Self::group_options(self.session.state(), self.session.rules(), self.session.legal())
     }
 
     /// [`Self::display_options`]'s body, over a legal list the caller already
@@ -1286,7 +1301,7 @@ impl Repl {
     /// the decision zone for the `◈` marks and the near-miss rows — one
     /// enumeration per prompt, and no chance of the entries and the marks
     /// reading two different lists.
-    fn group_options(state: &GameState, legal: Vec<Move>) -> Vec<PromptOption> {
+    fn group_options(state: &GameState, rules: &Rules, legal: Vec<Move>) -> Vec<PromptOption> {
         // A pending AssistantMove choice groups its options by SOURCE (Task
         // 6 picker) -- checked ahead of phase, same priority order the
         // deciding line/hint use.
@@ -1298,7 +1313,7 @@ impl Repl {
                 TurnPhase::Movement => return Self::group_movement(legal),
                 TurnPhase::Placement => return Self::group_placement(legal),
                 // A mercenary's sub-turn included: it runs in this phase.
-                TurnPhase::AreaAction => return Self::group_area_action(legal),
+                TurnPhase::AreaAction => return Self::group_area_action(legal, &rules.techs),
                 _ => {}
             }
         }
@@ -1315,10 +1330,38 @@ impl Repl {
     /// last, as the engine lists it. Chinatown's entry carries the most
     /// exchanges in one listed set, the Port's how many cards the listed takes
     /// name and whether one of them takes two, each counted off the list.
-    fn group_area_action(legal: Vec<Move>) -> Vec<PromptOption> {
+    ///
+    /// **The Laboratory folds per technology, by title** (plan 2b, design
+    /// §5.5), which is why `techs` is here: its rows are grouped by
+    /// `describe::tech_name`, a title with one listed row stays that direct
+    /// row, and a title with more becomes one entry at the place of its FIRST
+    /// row, holding every row of the title in list order. By title and not by
+    /// card, because both copies of a title can be on one board, and the
+    /// engine lists a board in slot order, so another title's rows can stand
+    /// between the two copies' (measured, plan 2b): one entry over both,
+    /// whose pick tells the copies apart by their slot fee, as the rows did.
+    fn group_area_action(legal: Vec<Move>, techs: &TechRegistry) -> Vec<PromptOption> {
         let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
         let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
         let port = legal.iter().filter(|mv| crate::chooser::port_cards(mv).is_some()).count();
+        let lab_title = |mv: &Move| match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } => {
+                Some(describe::tech_name(*card_id, techs))
+            }
+            _ => None,
+        };
+        // Each title's listed rows, in list order, titles in the order they
+        // first appear.
+        let mut labs: Vec<(String, Vec<Move>)> = Vec::new();
+        for mv in &legal {
+            if let Some(title) = lab_title(mv) {
+                match labs.iter_mut().find(|(t, _)| *t == title) {
+                    Some((_, moves)) => moves.push(mv.clone()),
+                    None => labs.push((title, vec![mv.clone()])),
+                }
+            }
+        }
+        let mut lab_entered: Vec<String> = Vec::new();
         // The chooser's own heading reads the same function (plan 2a's fix
         // wave, L6): the entry's "up to K" and the heading's cannot disagree.
         let longest = crate::chooser::longest_exchange_set(&legal);
@@ -1343,6 +1386,13 @@ impl Repl {
                 if !port_entered {
                     out.push(PromptOption::Port { reach, pairs });
                     port_entered = true;
+                }
+            } else if let Some((title, moves)) =
+                lab_title(&mv).and_then(|t| labs.iter().find(|(x, moves)| *x == t && moves.len() > 1))
+            {
+                if !lab_entered.contains(title) {
+                    out.push(PromptOption::Laboratory { title: title.clone(), moves: moves.clone() });
+                    lab_entered.push(title.clone());
                 }
             } else {
                 out.push(PromptOption::Direct(mv));
@@ -1508,6 +1558,9 @@ impl Repl {
             }
             PromptOption::Port { reach, pairs: true } => format!("Port — take 1 or 2 order cards ({reach} in reach)"),
             PromptOption::Port { reach, pairs: false } => format!("Port — take 1 order card ({reach} in reach)"),
+            PromptOption::Laboratory { title, moves } => {
+                format!("Laboratory: acquire {title} — {} ways to pay", moves.len())
+            }
         }
     }
 
@@ -11258,4 +11311,375 @@ mod tests {
 
     /// The sweep's seeds per player count.
     const PORT_SWEEP_SEEDS: u64 = 8;
+
+    // -----------------------------------------------------------------
+    // The Laboratory folds by title (cycle 2, plan 2b, Task 3)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{
+        copies_of, lab_twin_position, lab_twin_position_owning_three, lay_out_lab,
+    };
+
+    /// The card a Laboratory move acquires, read by pattern.
+    fn lab_card(mv: &Move) -> Option<TechCardId> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } => Some(*card_id),
+            _ => None,
+        }
+    }
+
+    /// A card's title, read off the registry by hand — never through
+    /// `describe::tech_name`, which the fold reads.
+    fn title_by_hand(r: &Repl, id: TechCardId) -> String {
+        r.session.rules().techs.get(id).expect("a registry card").name.clone()
+    }
+
+    /// Every listed Laboratory move of the title `name`, in list order.
+    fn lab_rows_of(r: &Repl, name: &str) -> Vec<Move> {
+        r.session.legal().into_iter().filter(|m| lab_card(m).is_some_and(|c| title_by_hand(r, c) == name)).collect()
+    }
+
+    /// The lines that commit the listed Laboratory move `mv` from the main
+    /// list, counted by hand off the list: a title with one listed row is its
+    /// direct row's number; a title with more is the entry worded as "The
+    /// words" say (its count counted here), then the pick's row for `mv`, its
+    /// place among the title's rows in list order. Never asks the fold which
+    /// entry a move is under.
+    fn lab_lines(r: &Repl, mv: &Move) -> Vec<String> {
+        let name = title_by_hand(r, lab_card(mv).expect("a Laboratory move"));
+        let same = lab_rows_of(r, &name);
+        let rows = r.option_rows();
+        if same.len() == 1 {
+            let k = rows.iter().position(|x| x.mv.as_ref() == Some(mv)).unwrap_or_else(|| {
+                panic!("{name}'s one row is a direct row: {:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>())
+            });
+            return vec![menu_number(k).to_string()];
+        }
+        let words = format!("Laboratory: acquire {name} — {} ways to pay", same.len());
+        let entry = rows.iter().position(|x| x.mv.is_none() && x.words == words).unwrap_or_else(|| {
+            panic!("no entry {words:?}: {:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>())
+        });
+        let k = same.iter().position(|m| m == mv).expect("mv is listed");
+        vec![menu_number(entry).to_string(), menu_number(k).to_string()]
+    }
+
+    /// The main list as `(names a move, words)` pairs.
+    fn rows_of(r: &Repl) -> Vec<(bool, String)> {
+        r.option_rows().into_iter().map(|x| (x.mv.is_some(), x.words)).collect()
+    }
+
+    /// The Laboratory A tile.
+    fn lab_a(state: &GameState) -> AreaId {
+        *state.board_layout.areas.iter().find(|(_, c)| c.area_type == AreaType::LaboratoryA).expect("Laboratory A").0
+    }
+
+    /// A mercenary's sub-turn at Laboratory A on `lab_twin_position`'s board,
+    /// built as the Port's is: the President stands elsewhere, the three
+    /// assistants act alone (power 3).
+    fn mercenary_lab_position() -> GameState {
+        let mut state = lab_twin_position();
+        let lab = lab_a(&state);
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != lab && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(lab);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.additional_action_state.mercenary_used = true;
+        state.current_action_power = Some(calculate_power(&state, me, lab));
+        state
+    }
+
+    /// A four-player position at Laboratory B with Ball's two copies on the
+    /// two boards: card 11 alone on Laboratory A (slot 0), card 12 alone on
+    /// Laboratory B (slot 2, +1), every other card back in the tech deck; the
+    /// acting seat's President on Laboratory B with 2 assistants (power 3), 5
+    /// yen and 1 imported good, so its copy is payable two ways.
+    fn lab_b_position() -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(4), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).unwrap();
+        let ball = copies_of("Ball");
+        lay_out_lab(&mut state, false, [Some(ball[0]), None, None, None, None, None]);
+        lay_out_lab(&mut state, true, [None, None, Some(ball[1]), None, None, None]);
+        let lab = *state.board_layout.areas.iter().find(|(_, c)| c.area_type == AreaType::LaboratoryB).expect("B").0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(lab);
+        p.assistants.on_board.insert(lab, 2);
+        p.assistants.in_hand -= 2;
+        (p.money, p.imported_goods) = (5, 1);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, lab));
+        state
+    }
+
+    #[test]
+    fn the_lab_fixtures_are_valid_and_read_as_measured() {
+        let rules = Rules::standard();
+        for (label, state) in [
+            ("twin", lab_twin_position()),
+            ("owning three", lab_twin_position_owning_three()),
+            ("mercenary", mercenary_lab_position()),
+            ("Laboratory B", lab_b_position()),
+        ] {
+            assert_eq!(check_invariants(&state, &rules), Ok(()), "{label}");
+            let mut ids: Vec<u8> = state
+                .tech_deck
+                .iter()
+                .chain(state.lab_state.lab_a.slots.iter().flatten())
+                .chain(state.lab_state.lab_b.iter().flat_map(|b| b.slots.iter().flatten()))
+                .chain(state.players.iter().flat_map(|p| p.technologies.iter()))
+                .map(|c| c.0)
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(ids, (1..=30).collect::<Vec<u8>>(), "{label}: every card once");
+        }
+        // Each title's listed rows in list order, as (title, card) runs.
+        let runs = |state: GameState| -> Vec<(String, u8, usize)> {
+            let r = repl_at(state);
+            let mut out: Vec<(String, u8, usize)> = Vec::new();
+            for mv in r.session.legal() {
+                if let Some(c) = lab_card(&mv) {
+                    match out.last_mut() {
+                        Some((_, card, n)) if *card == c.0 => *n += 1,
+                        _ => out.push((title_by_hand(&r, c), c.0, 1)),
+                    }
+                }
+            }
+            out
+        };
+        let s = |t: &str, c: u8, n: usize| (t.to_string(), c, n);
+        assert_eq!(
+            runs(lab_twin_position()),
+            [s("Mining Technology", 24, 1), s("Ball", 11, 1), s("Tram", 28, 3), s("Ball", 12, 2)],
+        );
+        assert_eq!(
+            runs(lab_twin_position_owning_three()),
+            [s("Mining Technology", 24, 2), s("Ball", 11, 2), s("Tram", 28, 5), s("Ball", 12, 4)],
+        );
+        assert_eq!(
+            runs(mercenary_lab_position()),
+            [s("Mining Technology", 24, 1), s("Ball", 11, 1), s("Tram", 28, 3), s("Ball", 12, 3)],
+        );
+        assert_eq!(runs(lab_b_position()), [s("Ball", 12, 2)]);
+    }
+
+    #[test]
+    fn the_main_list_reads_one_row_per_title() {
+        let r = repl_at(lab_twin_position());
+        // Ball's three rows sit at the list's second, sixth and seventh
+        // places: the entry stands at the first, Tram's after it.
+        assert_eq!(
+            rows_of(&r),
+            [
+                (true, "Laboratory: acquire Mining Technology".to_string()),
+                (false, "Laboratory: acquire Ball — 3 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 3 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+        assert_eq!(r.option_rows()[3].mv, Some(SKIP));
+        // Owning three: every title is an entry, each at its first row.
+        let r = repl_at(lab_twin_position_owning_three());
+        assert_eq!(
+            rows_of(&r),
+            [
+                (false, "Laboratory: acquire Mining Technology — 2 ways to pay".to_string()),
+                (false, "Laboratory: acquire Ball — 6 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 5 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn the_twin_s_pick_holds_every_row_of_both_copies() {
+        let mut r = repl_at(lab_twin_position());
+        let lab = |card: u8, extra_yen: u8, extra_imported: u8| Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(card),
+                extra_yen,
+                extra_imported,
+                extra_tech_payment: None,
+            },
+        };
+        let expected = vec![lab(11, 0, 0), lab(12, 2, 0), lab(12, 0, 1)];
+        assert_eq!(lab_rows_of(&r, "Ball"), expected, "premise: Ball's rows in list order");
+        let out = r.step("2");
+        assert!(
+            matches!(&r.sub, SubPrompt::Pick { title, moves }
+                if title == "Laboratory: acquire Ball — choose the payment" && *moves == expected),
+            "the entry opens the pick over both copies' rows in list order",
+        );
+        assert_eq!(
+            out.text,
+            "Laboratory: acquire Ball — choose the payment:\n\
+             [1] Laboratory: acquire Ball\n\
+             [2] Laboratory: acquire Ball, slot fee: 2 yen\n\
+             [3] Laboratory: acquire Ball, slot fee: 1 imported good\n\
+             > pick a number, or 'cancel'\n",
+            "the pick's screen, in describe_move's words, under its title and the pick's own colon",
+        );
+        r.step("3");
+        assert_eq!(last_move(&r), lab(12, 0, 1), "the pick's third row is the slot-4 copy's import payment");
+        assert!(matches!(r.sub, SubPrompt::None));
+    }
+
+    #[test]
+    fn every_listed_row_commits_through_its_title() {
+        for (label, state) in [
+            ("twin", lab_twin_position()),
+            ("owning three", lab_twin_position_owning_three()),
+            ("mercenary", mercenary_lab_position()),
+            ("Laboratory B", lab_b_position()),
+        ] {
+            let listed: Vec<Move> = get_legal_moves(&state, &Rules::standard());
+            let mut committed = 0usize;
+            for mv in listed.iter().filter(|m| lab_card(m).is_some()) {
+                let mut r = repl_at(state.clone());
+                for line in lab_lines(&r, mv) {
+                    r.step(&line);
+                }
+                assert_eq!(&last_move(&r), mv, "{label}");
+                assert!(matches!(r.sub, SubPrompt::None), "{label}: nothing left open");
+                assert!(!r.session.is_locked(), "{label}: the move passed the engine's invariants");
+                committed += 1;
+            }
+            // The decline, by its direct row, after every entry.
+            let mut r = repl_at(state.clone());
+            let k = r.option_rows().iter().position(|x| x.mv == Some(SKIP)).expect("the decline is a direct row");
+            assert_eq!(k + 1, r.option_rows().len(), "{label}: the decline is last");
+            r.step(&menu_number(k).to_string());
+            assert_eq!(last_move(&r), SKIP, "{label}");
+            assert_eq!(committed + 1, listed.len(), "{label}: every listed move");
+        }
+    }
+
+    #[test]
+    fn a_title_with_one_row_stays_direct() {
+        let state = lab_twin_position();
+        let rules = Rules::standard();
+        let mining = get_legal_moves(&state, &rules)
+            .into_iter()
+            .find(|m| lab_card(m) == Some(TechCardId(24)))
+            .expect("Mining Technology is listed");
+        let mut twin = repl_at(state.clone());
+        let expected = twin.commit(mining.clone());
+        let mut r = repl_at(state);
+        let row = &r.option_rows()[0];
+        assert_eq!(row.mv.as_ref(), Some(&mining), "the title's one row names its move");
+        assert_eq!(row.words, describe::describe_move(&mining, r.session.state(), r.session.rules()));
+        let out = r.step("1");
+        assert_eq!(last_move(&r), mining, "its number commits it, no pick opened");
+        assert_eq!(out.text, expected.text, "the reply is today's");
+        assert_eq!(r.session.state(), twin.session.state());
+    }
+
+    #[test]
+    fn a_mercenary_s_laboratory_folds_and_commits() {
+        let state = mercenary_lab_position();
+        assert_eq!(state.current_action_power, Some(3), "premise: the assistants alone");
+        let mut r = repl_at(state);
+        assert_eq!(
+            rows_of(&r),
+            [
+                (true, "Laboratory: acquire Mining Technology".to_string()),
+                (false, "Laboratory: acquire Ball — 4 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 3 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+        let ball = lab_rows_of(&r, "Ball");
+        r.step("2");
+        r.step("4");
+        assert_eq!(last_move(&r), ball[3]);
+        assert!(!r.session.is_locked(), "the acquire passed the engine's invariants");
+        assert!(r.session.state().is_mercenary_action, "still in the sub-turn");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::FivePowerBonus, "the sub-turn's next phase");
+    }
+
+    /// The decline's row, in `describe_move`'s words.
+    const SKIP_WORDS: &str = "Take the area action, declining all optional parts";
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 21 folded positions (8 at two players, 3 at three, 10 at four) and 150
+    /// rows over seeds 0..8, 13 of the positions with both copies of a title
+    /// in the list, in about 5 s of a debug build.
+    const LAB_SWEEP_POSITIONS_FLOOR: usize = 10;
+    const LAB_SWEEP_ROWS_FLOOR: usize = 75;
+    const LAB_SWEEP_BOTH_COPIES_FLOOR: usize = 6;
+    const LAB_SWEEP_SEEDS: u64 = 8;
+
+    #[test]
+    fn a_self_play_sweep_commits_every_row() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, rows committed, positions with both copies of a
+        // title in the list]
+        let mut tally = [0usize; 3];
+        let mut by_count = [0usize; 3];
+        for n in [2u8, 3, 4] {
+            for seed in 0..LAB_SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let labs: Vec<&Move> = legal.iter().filter(|m| lab_card(m).is_some()).collect();
+                    let name = |id: TechCardId| rules.techs.get(id).expect("a card").name.clone();
+                    let folded = labs.iter().any(|m| {
+                        let t = name(lab_card(m).unwrap());
+                        labs.iter().filter(|o| name(lab_card(o).unwrap()) == t).count() > 1
+                    });
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && folded {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        tally[0] += 1;
+                        by_count[n as usize - 2] += 1;
+                        let mut cards: Vec<(String, u8)> =
+                            labs.iter().map(|m| lab_card(m).unwrap()).map(|c| (name(c), c.0)).collect();
+                        cards.dedup();
+                        let mut titles: Vec<&String> = cards.iter().map(|(t, _)| t).collect();
+                        titles.sort();
+                        let distinct = titles.len();
+                        titles.dedup();
+                        if titles.len() < distinct {
+                            tally[2] += 1;
+                        }
+                        for mv in &labs {
+                            let mut r = repl_at(state.clone());
+                            for line in lab_lines(&r, mv) {
+                                r.step(&line);
+                            }
+                            assert_eq!(&last_move(&r), *mv, "{at}");
+                            tally[1] += 1;
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [positions, rows, both] = tally;
+        println!(
+            "a_self_play_sweep_commits_every_row: {positions} positions ({by_count:?} at 2/3/4 players), {rows} rows, \
+             {both} with both copies of a title in the list, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= LAB_SWEEP_POSITIONS_FLOOR, "only {positions} folded Laboratory positions");
+        assert!(rows >= LAB_SWEEP_ROWS_FLOOR, "only {rows} Laboratory rows committed");
+        assert!(both >= LAB_SWEEP_BOTH_COPIES_FLOOR, "only {both} positions with both copies of a title listed");
+    }
 }
