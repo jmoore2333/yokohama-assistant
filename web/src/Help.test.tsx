@@ -319,9 +319,10 @@ describe("the help panel's prose", () => {
 // the entry opens a chooser; the page says so after its words on the placement
 // picker. Each needle below is carried by exactly one of the two sentences, so
 // a cut sentence reads red, and each must occur ONCE in the turn section, since
-// a needle a neighbouring sentence also carried would pin nothing. S1's two
-// needles are its condition (the entry exists only with several choices) and
-// its decline; S2's are what lights a plus, the minus's own rule (live whenever
+// a needle a neighbouring sentence also carried would pin nothing. S1's four
+// needles are its condition (the entry exists only with several choices), its
+// decline as it follows that condition, the Church's own clause and the
+// minus's way back; S2's are what lights a plus, the minus's own rule (live whenever
 // there is one to take back, which the engine's list does NOT govern) and when
 // Confirm is live.
 describe("the help panel and the goods choosers (issue #77)", () => {
@@ -392,12 +393,12 @@ describe("the help panel and the goods choosers (issue #77)", () => {
 });
 
 // **The four sentences that say the Port's chooser and the Laboratory's rows
-// (issue #76, plan 2b Task 9).** They sit after plan 2a's two, in the same
+// (issue #77, plan 2b Task 9).** They sit after plan 2a's two, in the same
 // section, and are held as those are: each needle is carried by exactly one of
 // the four and occurs ONCE in the turn section (P1 shares "beside the decline"
 // and "opens a chooser" with S1, so its needles are the phrases only it
 // carries), on both renders, whole, and in order.
-describe("the help panel and the Port and the Laboratory (issue #76)", () => {
+describe("the help panel and the Port and the Laboratory (issue #77)", () => {
   const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
   const p1 = ["when more than one take is on offer", "you switch on one card or two"] as const;
