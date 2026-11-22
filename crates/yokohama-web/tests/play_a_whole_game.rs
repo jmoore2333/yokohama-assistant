@@ -564,24 +564,41 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
     assert_eq!(ids, ["gate"]);
 }
 
-/// What the three-player arm counts, from the prompt each line answered and
-/// the line itself.
+/// What the three-player arm counts: a line the server TOOK, read off the
+/// state it answered, the line, and the reply.
+///
+/// **Taken, not sent.** A `confirm` at a chooser counts only when the reply is
+/// no longer that chooser (it applied the move, or opened the payment pick),
+/// and an answered pick only when the reply's event count moved. Counting the
+/// line sent was vacuous: a `port` arm that confirmed every empty selection
+/// read 117 Port confirms and applied none, every one refused and the stuck
+/// rule backing out (the task's mutant probe, 2026-11-22).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Reached {
-    /// `confirm` sent at a `chinatown` prompt.
+    /// `confirm` taken at a `chinatown` prompt.
     chinatown_confirms: usize,
     /// The selection's total (`chosen`) at each of those confirms, in order.
     chinatown_sets: Vec<usize>,
-    /// `confirm` sent at a `port` prompt.
+    /// `confirm` taken at a `port` prompt.
     port_confirms: usize,
-    /// [`port_tally`]'s two: pairs confirmed, Port payment picks answered.
+    /// [`port_tally`]'s two, over taken lines: pairs confirmed, Port payment
+    /// picks answered.
     port: [usize; 2],
     /// A `pick` titled `Laboratory: acquire … — choose the payment`, answered.
     lab_picks: usize,
 }
 
 impl Reached {
-    fn count(&mut self, prompt: &Value, line: &str) {
+    fn count(&mut self, state: &Value, line: &str, reply: &Value) {
+        let prompt = &state["prompt"];
+        let took = match (prompt["kind"].as_str(), line) {
+            (Some(kind @ ("chinatown" | "port")), "confirm") => reply["prompt"]["kind"].as_str() != Some(kind),
+            (Some("pick"), _) => reply["events"].as_u64() > state["events"].as_u64(),
+            _ => false,
+        };
+        if !took {
+            return;
+        }
         port_tally(prompt, line, &mut self.port);
         match (prompt["kind"].as_str(), line) {
             (Some("chinatown"), "confirm") => {
@@ -729,10 +746,10 @@ async fn play_three(seed: u64, rng_seed: u64) -> Reached {
             }
         }
         let Some(line) = choose(&state, &mut rng) else { break };
-        reached.count(&state["prompt"], &line);
         let (status, next) =
             api.call("POST", "/api/games/three/input", Some(serde_json::json!({ "line": line }))).await;
         assert_eq!(status, StatusCode::OK, "input {line:?} was refused (seed {seed}): {next}");
+        reached.count(&state, &line, &next);
         state = next;
     }
     let winner = state["scores"].clone();
