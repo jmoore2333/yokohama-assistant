@@ -156,7 +156,7 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         <Shot
           src="/help/port.webp"
           alt="The Port&rsquo;s chooser open in the answer bar, cut from the side column: the turn and the phase chain over the question &ldquo;The Port &mdash; take one card, or two&rdquo;, then the order cards in reach under their zones, LOW and MID, each a button naming the card, its country, what it needs and what it pays &mdash; two of them switched on and the other two drawn unavailable &mdash; and under them the line saying the take is legal and how it is paid for, over Confirm and Cancel."
-          caption="The Port&rsquo;s chooser: with two cards switched on the rest go dark, since a take is one card or two, and the line under them names the take and how it is paid for before you confirm."
+          caption="The Port&rsquo;s chooser: with two cards switched on the rest go dark, since a take is one card or two, and the line under them names the take and how it is paid for &mdash; or both ways, when there are two, to be chosen at Confirm."
         />
       )}
 

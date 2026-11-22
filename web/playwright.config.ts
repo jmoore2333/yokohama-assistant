@@ -131,10 +131,13 @@ export default defineConfig({
   testDir: "./e2e",
   // **The screenshot generator is opt-in, and it is not a test.**
   //
-  // `shots.spec.ts` WRITES into `web/public/help/`, so leaving it in the default
-  // run would make every `npm run e2e` dirty the working tree — against this
-  // repo's standing rule that a clean `git status` is the steady state — and
-  // would silently re-cut documentation as a side effect of running the suite.
+  // `shots.spec.ts` writes the help's PNGs and their `.aria.txt` snapshots into
+  // the gitignored `web/help-shots/` (since M6.5b2; only `mkhelpart.py` writes
+  // the committed `web/public/help/`). Left in the default run, every
+  // `npm run e2e` would re-photograph new games over those intermediates — the
+  // sources the committed WebPs were cut from and the text their alts and
+  // captions were checked against — so the next `mkhelpart.py` would silently
+  // re-cut documentation whose words nobody had re-read.
   //
   // It stays a `.spec.ts` on purpose rather than being renamed out of the glob:
   // `every_spec_can_skip.spec.ts` reads this directory at run time and checks

@@ -339,15 +339,26 @@ test("the explanation, and the replay track", async ({ page }) => {
 // asking line, the chooser, the verdict and Confirm and Cancel — cut from the
 // page as an ELEMENT screenshot of the decision panel.
 //
-// **At `deviceScaleFactor` 2, unlike the five above, and for the opposite
-// reason.** Those are whole screens whose bytes are paid by every release; a
-// crop of the side column is a few hundred CSS pixels across, so at 1 its
-// 11px text would ship as a smudge in a figure the help draws at the panel's
-// full width. A crop that small costs little at twice the pixels, and it is
-// the one place in this file that buys density. The viewport is the five's
-// ([`VIEWPORT`]), so the column the crop is cut from is the one the owner's
-// screen draws, and a table whose cards that column cannot hold whole is dealt
-// again rather than photographed ([`CHOOSER_TABLES`]).
+// **At `deviceScaleFactor` 2, unlike the five above.** Those are whole screens
+// whose bytes are paid by every release. A crop of the side column is a few
+// hundred CSS pixels across, and the help's `.shot img` is `max-width: 100%;
+// height: auto`, which never upscales: at 1 the crop would be drawn at its own
+// 479 or so pixels, its 11px text soft on any high-density screen. At 2 the help
+// draws it at the panel's width with pixels to spare, and a crop that small
+// costs little at twice the pixels; it is the one place in this file that buys
+// density. The viewport is the five's ([`VIEWPORT`]), so the column the crop
+// is cut from is the one the owner's screen draws, and a table whose cards that
+// column cannot hold whole is dealt again rather than photographed
+// ([`CHOOSER_TABLES`]).
+//
+// **The frame is held to the WORDS beside it, not only to "a chooser".** The
+// alts and captions in `Help.tsx` and `docs/web-guide.md` name the question,
+// how many kinds or cards are switched on and how many are unavailable, and
+// (at the Port) the zones and a single way to pay. [`assertChooserFrame`]
+// asserts each of those before a picture is written, so a re-cut that reaches
+// a different frame — a different opening, a second way to pay, one card where
+// two are claimed — is a miss and is dealt again, never a picture the words
+// deny. A change to what the words claim moves these claims with them.
 
 /** The decision panel the client renders for the prompt (`Decision.tsx`), and
  *  not the two `.decision notices` strips the deck draws above and below it. */
@@ -361,33 +372,75 @@ const PANEL = ".deck > .decision:not(.notices):not(.walking)";
  *  scroller (measured: one table cut two of four cards, the next cut none). */
 const CHOOSER_TABLES = 6;
 
+/** What the words beside a chooser's picture claim is in frame, which the
+ *  frame must show before it is photographed ([`assertChooserFrame`]). */
+interface ChooserClaims {
+  /** The asking line, exactly as the alts quote it. */
+  asking: string;
+  /** The items the chooser draws: the Church's kinds, the Port's cards. */
+  items: string;
+  /** How many items it draws in all. */
+  total: number;
+  /** How many are switched on. */
+  pressed: number;
+  /** How many are unavailable (`disabled` by the payload). */
+  unavailable: number;
+  /** The Port's zone headings, in order; none for the Church. */
+  zones?: readonly string[];
+  /** The verdict names exactly one way to pay (no "asked at Confirm"). */
+  oneWay?: boolean;
+}
+
+/** The Church's picture's claims (`Help.tsx`'s alt and caption, the guide's
+ *  alt): the question; six kinds, two switched on and one unavailable. */
+const CHURCH_CLAIMS: ChooserClaims = {
+  asking: "The Church — what do you pay?",
+  items: "button.kind",
+  total: 6,
+  pressed: 2,
+  unavailable: 1,
+};
+
+/** The Port's picture's claims: the question with "or two"; four cards in
+ *  reach under LOW and MID, two switched on and the other two unavailable;
+ *  one way to pay, so the line names the take and its payment. */
+const PORT_CLAIMS: ChooserClaims = {
+  asking: "The Port — take one card, or two",
+  items: "button.card-pick",
+  total: 4,
+  pressed: 2,
+  unavailable: 2,
+  zones: ["LOW", "MID"],
+  oneWay: true,
+};
+
 /** Reach `area`'s chooser, make a selection whose verdict is legal and check
- *  the frame ([`assertChooserFrame`]), on a fresh table each attempt, up to
- *  [`CHOOSER_TABLES`] of them. `select` makes the selection and returns the
- *  verdict it read, or throws saying why it could not. Every miss is kept and
- *  the last one fails the run with all of them, so a picture of the wrong
- *  thing is never written and a run that photographed nothing says why. On
- *  success the frame is the one checked, and the caller photographs it next. */
+ *  the frame against `claims` ([`assertChooserFrame`]), on a fresh table each
+ *  attempt, up to [`CHOOSER_TABLES`] of them. `select` makes the selection and
+ *  returns the verdict it read, or throws saying why it could not. Every miss
+ *  is kept and the last one fails the run with all of them, so a picture the
+ *  words deny is never written and a run that photographed nothing says why.
+ *  On success the frame is the one checked, and the caller photographs it
+ *  next. */
 async function chooserFrame(
   page: Page,
   area: ChooserArea,
-  items: string,
+  claims: ChooserClaims,
   select: () => Promise<string>,
-): Promise<{ made: string; pressed: number; misses: string[] }> {
+): Promise<{ made: string; misses: string[] }> {
   const misses: string[] = [];
   for (let table = 1; table <= CHOOSER_TABLES; table++) {
     try {
       await startGame(page, { players: 2 });
       await openChooser(page, area);
       const made = await select();
-      const pressed = await page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]} ${items}[aria-pressed="true"]`).count();
-      await assertChooserFrame(page, area, items, pressed);
-      return { made, pressed, misses };
+      await assertChooserFrame(page, area, claims);
+      return { made, misses };
     } catch (e) {
       misses.push(`table ${table}: ${e instanceof Error ? e.message.split("\n").slice(0, 6).join(" / ") : String(e)}`);
     }
   }
-  throw new Error(`no ${area} chooser with a legal selection in a clean frame on ${CHOOSER_TABLES} fresh tables, so no picture was written:\n${misses.join("\n")}`);
+  throw new Error(`no ${area} chooser in the frame its words claim on ${CHOOSER_TABLES} fresh tables, so no picture was written:\n${misses.join("\n")}`);
 }
 
 /** The verdict line's text, or "" when it is silent. */
@@ -395,19 +448,34 @@ const verdictOf = async (page: Page, area: ChooserArea) =>
   ((await page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]} .verdict`).textContent()) ?? "").trim();
 
 /** What must be true of the frame before a chooser is photographed, asserted:
- *  the chooser open with `pressed` of its items on, the verdict legal, Confirm
- *  live and Cancel there, and the crop clean — inside the window and the deck
- *  (a panel the deck clipped would photograph what lies under the clip), every
- *  item the chooser draws whole inside each box that clips it and inside the
- *  crop, Confirm and Cancel inside the crop, and no popover over it. */
-async function assertChooserFrame(page: Page, area: ChooserArea, items: string, pressed: number): Promise<void> {
+ *  everything `claims` says (the asking line, the items drawn, switched on and
+ *  unavailable, the Port's zones and its single way to pay), the verdict
+ *  legal, Confirm live and Cancel there, and the crop clean — inside the window
+ *  and the deck (a panel the deck clipped would photograph what lies under the
+ *  clip), every item whole inside each box that clips it and inside the crop,
+ *  Confirm and Cancel inside the crop, no popover, and nothing painted over
+ *  it: a hit test at the panel's centre and four inset corners lands inside
+ *  the panel each time, since an element screenshot photographs whatever is
+ *  painted in the element's box. */
+async function assertChooserFrame(page: Page, area: ChooserArea, claims: ChooserClaims): Promise<void> {
+  const panel = page.locator(PANEL);
   const chooser = page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]}`);
   await expect(chooser, `the ${area} chooser is not open`).toHaveCount(1);
-  await expect(chooser.locator(`${items}[aria-pressed="true"]`), `the ${area} chooser does not hold the selection`).toHaveCount(pressed);
+  await expect(panel.locator(".asking"), `the ${area} asking line`).toHaveText(claims.asking);
+  await expect(chooser.locator(claims.items), `the ${area} chooser's items`).toHaveCount(claims.total);
+  await expect(chooser.locator(`${claims.items}[aria-pressed="true"]`), `the ${area} items switched on`).toHaveCount(claims.pressed);
+  await expect(chooser.locator(`${claims.items}[disabled]`), `the ${area} items unavailable`).toHaveCount(claims.unavailable);
+  if (claims.zones) {
+    await expect(chooser.locator(".zone > .zl"), `the ${area} zones`).toHaveText([...claims.zones]);
+  }
   expect(await verdictOf(page, area), `the ${area} verdict is not legal`).toMatch(new RegExp(`^${LEGAL}`));
-  const confirm = page.locator(PANEL).getByRole("button", { name: "Confirm", exact: true });
+  if (claims.oneWay) {
+    await expect(chooser.locator(".verdict .asked"), `the ${area} verdict asks at Confirm`).toHaveCount(0);
+    await expect(chooser.locator(".verdict .way"), `the ${area} verdict's ways`).toHaveCount(1);
+  }
+  const confirm = panel.getByRole("button", { name: "Confirm", exact: true });
   await expect(confirm, "Confirm is not live").toBeEnabled();
-  await expect(page.locator(PANEL).getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
   await park(page);
   const cut = await page.evaluate(
     ({ panel, items }) => {
@@ -420,6 +488,21 @@ async function assertChooserFrame(page: Page, area: ChooserArea, items: string, 
       const faults: string[] = [];
       if (!inside(box, view)) faults.push(`the panel ${box.width}x${box.height} at ${box.left},${box.top} is not inside the window`);
       if (!inside(box, r(crop.closest(".deck")!))) faults.push("the panel is not inside the deck");
+      // Nothing painted over the panel: what the screen shows at its centre and
+      // 4px in from each corner is the panel or something inside it.
+      const inset = 4;
+      for (const [name, x, y] of [
+        ["centre", (box.left + box.right) / 2, (box.top + box.bottom) / 2],
+        ["top left", box.left + inset, box.top + inset],
+        ["top right", box.right - inset, box.top + inset],
+        ["bottom left", box.left + inset, box.bottom - inset],
+        ["bottom right", box.right - inset, box.bottom - inset],
+      ] as const) {
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || !crop.contains(hit)) {
+          faults.push(`at the panel's ${name} the screen shows ${hit ? `${hit.tagName}.${hit.className}` : "nothing"}, not the panel`);
+        }
+      }
       const named = (name: string) => [...crop.querySelectorAll("button")].find((b) => b.textContent?.trim() === name);
       for (const name of ["Confirm", "Cancel"]) {
         const b = named(name);
@@ -441,7 +524,7 @@ async function assertChooserFrame(page: Page, area: ChooserArea, items: string, 
       }
       return faults;
     },
-    { panel: PANEL, items },
+    { panel: PANEL, items: claims.items },
   );
   expect(cut, `the ${area} crop is not clean`).toEqual([]);
 }
@@ -449,61 +532,49 @@ async function assertChooserFrame(page: Page, area: ChooserArea, items: string, 
 test.describe("the area-action choosers", () => {
   test.use({ deviceScaleFactor: 2 });
 
-  test("the Church's chooser, with a legal payment switched on", async ({ page }) => {
+  test("the Church's chooser, with a legal payment of two kinds switched on", async ({ page }) => {
     await page.setViewportSize(VIEWPORT);
-    const kinds = "button.kind";
-    const { made, pressed, misses } = await chooserFrame(page, "Church", kinds, async () => {
+    const { items } = CHURCH_CLAIMS;
+    const { made, misses } = await chooserFrame(page, "Church", CHURCH_CLAIMS, async () => {
       // Kinds on, one at a time, the shape `the_table.spec.ts`'s Church payment
-      // takes, until the verdict reads legal with TWO kinds on — the owner's
-      // reference shows a payment of two kinds, which says "switch on what you
-      // pay" better than one. A table with no second kind to offer stops at its
-      // first legal selection.
-      const on = page.locator(`${PANEL} .chooser.church ${kinds}[aria-pressed="true"]`);
-      for (let press = 0; press < 6; press++) {
-        const verdict = await verdictOf(page, "Church");
-        if (verdict.startsWith(LEGAL) && (await on.count()) >= 2) return verdict;
-        const kind = page.locator(`${PANEL} .chooser.church ${kinds}:not([disabled])[aria-pressed="false"]`).first();
-        if ((await kind.count()) === 0) {
-          if (verdict.startsWith(LEGAL)) return verdict;
-          throw new Error(`no kind left to switch on, and the verdict never read legal: "${verdict}"`);
-        }
+      // takes, until two are on and the verdict reads legal: the words beside
+      // the picture claim a payment of two kinds. Anything else is a miss.
+      const on = page.locator(`${PANEL} .chooser.church ${items}[aria-pressed="true"]`);
+      for (let press = 0; press < 2; press++) {
+        const kind = page.locator(`${PANEL} .chooser.church ${items}:not([disabled])[aria-pressed="false"]`).first();
+        if ((await kind.count()) === 0) throw new Error(`no kind left to switch on with ${await on.count()} on`);
         await kind.click();
         await readScreen(page);
       }
       const verdict = await verdictOf(page, "Church");
-      if (!verdict.startsWith(LEGAL)) throw new Error(`six kinds on and the verdict is not legal: "${verdict}"`);
+      if (!verdict.startsWith(LEGAL)) throw new Error(`two kinds on and the verdict is not legal: "${verdict}"`);
       return verdict;
     });
     // eslint-disable-next-line no-console
-    console.log(`church: ${pressed} kind(s) on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
+    console.log(`church: two kinds on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
     await shot(page, "church", page.locator(PANEL));
   });
 
   test("the Port's chooser, with a legal pair switched on", async ({ page }) => {
     await page.setViewportSize(VIEWPORT);
-    const cards = "button.card-pick";
-    const live = `${PANEL} .chooser.port ${cards}:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"]`;
-    const { made, pressed, misses } = await chooserFrame(page, "Port", cards, async () => {
-      // The first card on, then a second the arm can add: a pair is what the
-      // owner's reference shows. A table whose arm can add no second card is
-      // photographed with its one card, and the run says so.
-      const first = page.locator(live).first();
-      if ((await first.count()) === 0) throw new Error("no card in reach can be switched on");
-      await first.click();
-      await readScreen(page);
-      const second = page.locator(live).first();
-      if ((await second.count()) > 0) {
-        await second.click();
+    const { items } = PORT_CLAIMS;
+    const live = `${PANEL} .chooser.port ${items}:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"]`;
+    const { made, misses } = await chooserFrame(page, "Port", PORT_CLAIMS, async () => {
+      // The first card on, then a second the arm can add: the words beside the
+      // picture claim a pair. A table whose arm can add no second card is a
+      // miss.
+      for (const which of ["first", "second"]) {
+        const card = page.locator(live).first();
+        if ((await card.count()) === 0) throw new Error(`no ${which} card in reach can be switched on`);
+        await card.click();
         await readScreen(page);
       }
-      const on = await page.locator(`${PANEL} .chooser.port ${cards}[aria-pressed="true"]`).count();
-      if (on !== 1 && on !== 2) throw new Error(`the Port chooser holds ${on} cards`);
       const verdict = await verdictOf(page, "Port");
-      if (!verdict.startsWith(LEGAL)) throw new Error(`the selection's verdict is not legal: "${verdict}"`);
+      if (!verdict.startsWith(LEGAL)) throw new Error(`the pair's verdict is not legal: "${verdict}"`);
       return verdict;
     });
     // eslint-disable-next-line no-console
-    console.log(`port: ${pressed === 2 ? "a pair" : "ONE card (no second could be added)"} on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
+    console.log(`port: a pair on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
     await shot(page, "port", page.locator(PANEL));
   });
 });
