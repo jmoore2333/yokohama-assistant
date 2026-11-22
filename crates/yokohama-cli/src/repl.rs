@@ -1339,7 +1339,11 @@ impl Repl {
     /// card, because both copies of a title can be on one board, and the
     /// engine lists a board in slot order, so another title's rows can stand
     /// between the two copies' (measured, plan 2b): one entry over both,
-    /// whose pick tells the copies apart by their slot fee, as the rows did.
+    /// whose pick shows each row in the words it carried. The copies read
+    /// apart there when their slots add different amounts, and alike, for the
+    /// same payment, when their slots add the same — as the two direct rows
+    /// did before the fold (measured, plan 2b's Task 3: 8 of the sweep's 21
+    /// folded positions list two rows with identical words).
     fn group_area_action(legal: Vec<Move>, techs: &TechRegistry) -> Vec<PromptOption> {
         let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
         let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
@@ -11611,10 +11615,14 @@ mod tests {
     /// The sweep's anti-vacuity floors, about half of what it read when set:
     /// 21 folded positions (8 at two players, 3 at three, 10 at four) and 150
     /// rows over seeds 0..8, 13 of the positions with both copies of a title
-    /// in the list, in about 5 s of a debug build.
+    /// in the list, and 14 with a one-row title after a folded title's first
+    /// row (the positions where the layout assertion tells "an entry at its
+    /// first row" from "the entries gathered after the direct rows"), in about
+    /// 5 s of a debug build.
     const LAB_SWEEP_POSITIONS_FLOOR: usize = 10;
     const LAB_SWEEP_ROWS_FLOOR: usize = 75;
     const LAB_SWEEP_BOTH_COPIES_FLOOR: usize = 6;
+    const LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR: usize = 7;
     const LAB_SWEEP_SEEDS: u64 = 8;
 
     #[test]
@@ -11622,8 +11630,9 @@ mod tests {
         let rules = Rules::standard();
         let started = std::time::Instant::now();
         // [folded positions, rows committed, positions with both copies of a
-        // title in the list]
-        let mut tally = [0usize; 3];
+        // title in the list, positions with a one-row title after a folded
+        // title's first row]
+        let mut tally = [0usize; 4];
         let mut by_count = [0usize; 3];
         for n in [2u8, 3, 4] {
             for seed in 0..LAB_SWEEP_SEEDS {
@@ -11656,6 +11665,33 @@ mod tests {
                         if titles.len() < distinct {
                             tally[2] += 1;
                         }
+                        // The main list laid out BY HAND from the legal list:
+                        // a folded title where its FIRST row stands, a
+                        // one-row title as its own direct row, every other
+                        // row where it stands (the decline last, as listed).
+                        let count = |t: &str| labs.iter().filter(|m| name(lab_card(m).unwrap()) == t).count();
+                        let mut expected: Vec<(bool, String)> = Vec::new();
+                        let mut entered: Vec<String> = Vec::new();
+                        let mut direct_after_entry = false;
+                        for mv in &legal {
+                            match lab_card(mv).map(name) {
+                                Some(t) if count(&t) > 1 => {
+                                    if !entered.contains(&t) {
+                                        expected.push((false, format!("Laboratory: acquire {t} — {} ways to pay", count(&t))));
+                                        entered.push(t);
+                                    }
+                                }
+                                Some(_) => {
+                                    direct_after_entry |= !entered.is_empty();
+                                    expected.push((true, describe::describe_move(mv, &state, &rules)));
+                                }
+                                None => expected.push((true, describe::describe_move(mv, &state, &rules))),
+                            }
+                        }
+                        assert_eq!(rows_of(&repl_at(state.clone())), expected, "{at}: the main list's layout");
+                        if direct_after_entry {
+                            tally[3] += 1;
+                        }
                         for mv in &labs {
                             let mut r = repl_at(state.clone());
                             for line in lab_lines(&r, mv) {
@@ -11672,14 +11708,19 @@ mod tests {
                 }
             }
         }
-        let [positions, rows, both] = tally;
+        let [positions, rows, both, direct_after] = tally;
         println!(
             "a_self_play_sweep_commits_every_row: {positions} positions ({by_count:?} at 2/3/4 players), {rows} rows, \
-             {both} with both copies of a title in the list, in {:?}",
+             {both} with both copies of a title in the list, {direct_after} with a one-row title after a folded \
+             title's first row, in {:?}",
             started.elapsed()
         );
         assert!(positions >= LAB_SWEEP_POSITIONS_FLOOR, "only {positions} folded Laboratory positions");
         assert!(rows >= LAB_SWEEP_ROWS_FLOOR, "only {rows} Laboratory rows committed");
         assert!(both >= LAB_SWEEP_BOTH_COPIES_FLOOR, "only {both} positions with both copies of a title listed");
+        assert!(
+            direct_after >= LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR,
+            "only {direct_after} positions with a one-row title after a folded title's first row"
+        );
     }
 }

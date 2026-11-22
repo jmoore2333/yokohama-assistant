@@ -1791,6 +1791,7 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                             assert_eq!(pick["prompt"]["rows"].as_array().map(Vec::len), Some(count(t)), "{pick}");
                             capture(&mut out, &mut seen, "lab_pick", &pick);
                             let k = (0..i).filter(|&j| titles[j].as_deref() == Some(t)).count();
+                            assert!(k < count(t), "the drawn row is one of its title's {} rows: {pick}", count(t));
                             pick["prompt"]["rows"][k]["number"].as_u64().expect("a number").to_string()
                         }
                         _ => {

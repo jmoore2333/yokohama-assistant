@@ -208,12 +208,18 @@ fn recover_max(screen: &str) -> Option<u32> {
 const CHURCH_FLOOR: usize = 1;
 const PORT_FLOOR: usize = 1;
 
+/// The floor on the Laboratory picks the all-human game opens (plan 2b, Task
+/// 3's review), set after a release run of it read 1 (and the human-vs-bot
+/// game 0, which for the same reason carries no floor).
+const LAB_FLOOR: usize = 1;
+
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn full_piped_2p_game_runs_plain_to_winner() {
-    let (_, [church, port, _]) = play_a_full_2p_game("all-human", "");
+    let (_, [church, port, _, lab]) = play_a_full_2p_game("all-human", "");
     assert!(church >= CHURCH_FLOOR, "no Church payment confirmed through the chooser");
     assert!(port >= PORT_FLOOR, "no Port take confirmed through the chooser");
+    assert!(lab >= LAB_FLOOR, "no Laboratory pick opened by a folded title");
 }
 
 /// The bot line the variant below looks for: `describe_move`'s output for a
@@ -307,11 +313,11 @@ fn a_piped_load_with_a_bot_on_the_start_seat_still_reads_the_first_command() {
 
 /// One full piped 2P game to a winner. `bots` is the wizard's bot-seats answer
 /// (`""` for none); `label` keeps the two runs' save files apart, since both
-/// tests share one process id. Answers the transcript and three counts: Church
-/// payments and Port takes confirmed through their choosers, and Port payment
-/// picks opened; the Laboratory picks the main list's folded titles opened are
-/// printed beside them (plan 2b, Task 3), with no floor.
-fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
+/// tests share one process id. Answers the transcript and four counts: Church
+/// payments and Port takes confirmed through their choosers, Port payment
+/// picks opened, and the Laboratory picks the main list's folded titles
+/// opened (plan 2b, Task 3).
+fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 4]) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -483,5 +489,5 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 3]) {
     let full = String::from_utf8_lossy(&transcript).into_owned();
     assert!(full.contains("WINNER:"), "final score table expected in the transcript");
     std::fs::remove_file(&save).ok();
-    (full, [church_confirms, port_confirms, payment_picks])
+    (full, [church_confirms, port_confirms, payment_picks, lab_picks])
 }

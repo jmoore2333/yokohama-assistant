@@ -5293,7 +5293,10 @@ mod tests {
                 }
             } else if prompt["kind"] == "pick" {
                 // The pick a pressed row opened — a folded Laboratory title's,
-                // its rows that title's acquisitions: the first take.
+                // its rows that title's acquisitions: the first take. The
+                // generic `takes` rule below would answer it with the same
+                // row (measured, plan 2b's Task 3 review: this arm disabled,
+                // the lab cell reads green); the arm exists to say so.
                 rows.iter()
                     .find(|r| takes.iter().any(|t| words(r).starts_with(t)))
                     .or(rows.first())
