@@ -523,6 +523,33 @@ pub(crate) fn acting_area(state: &GameState) -> Option<AreaId> {
     }
 }
 
+/// The slot `card` sits in on the ACTING Laboratory board, when that board
+/// also holds another card of the same name — the case where two rows of one
+/// title can only be told apart by which card they take (plan 2b, Task 3b).
+///
+/// **Display only, never legality**: it reads where the card lies, as the
+/// Port's chooser reads its acting board. `None` — and so no marker — when no
+/// Laboratory is acting, when `card` is not on the acting board (a move no
+/// listed row carries; nothing to name, and no panic), or when no other card
+/// of its name is there. The other board's copy, at four players, does not
+/// count: a move takes a card from the board the action is on.
+fn twin_slot(card: TechCardId, state: &GameState, techs: &TechRegistry) -> Option<usize> {
+    let area = acting_area(state)?;
+    let board = match state.board_layout.areas.get(&area)?.area_type {
+        AreaType::LaboratoryA => &state.lab_state.lab_a,
+        AreaType::LaboratoryB => state.lab_state.lab_b.as_ref()?,
+        _ => return None,
+    };
+    let slot = board.slots.iter().position(|s| *s == Some(card))?;
+    let name = tech_name(card, techs);
+    let twin = board
+        .slots
+        .iter()
+        .enumerate()
+        .any(|(i, other)| i != slot && other.is_some_and(|c| tech_name(c, techs) == name));
+    twin.then_some(slot)
+}
+
 /// A Church payment kind's words -- the ONE table, read by `describe_move`'s
 /// Church arm and the Church chooser, so the yen kind's price is written in one
 /// place (`screen_model::CHURCH_YEN_COST`).
@@ -646,6 +673,13 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, extra_tech_payment } => {
             let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
+            // Plan 2b, Task 3b (the owner, 2026-11-22): when the acting board
+            // holds both copies of this title, the row names which card it
+            // takes, by the slot the `labs` view and the browser's lab strip
+            // label. Every other row is worded as before.
+            if let Some(slot) = twin_slot(*card_id, state, &rules.techs) {
+                s.push_str(&format!(" (slot {})", crate::screen_model::menu_number(slot)));
+            }
             // Branch-4 item 4: the slot's board-position surcharge is a COST
             // (slots 3-6 add +1/+1/+2/+2 industry, each point bought with 2
             // yen or 1 imported good), so it speaks the same fee grammar as
@@ -1590,6 +1624,29 @@ mod tests {
     /// accurately. NOTE: this is a different surcharge from the
     /// board-position surcharge (`extra_yen`/`extra_imported`, slots 3-6 =
     /// +1,+1,+2,+2); this test pins only the 4th+ tech-CARD surcharge label.
+    /// **A Laboratory move whose card is not on the acting board reads as
+    /// before and never panics** (plan 2b, Task 3b). The slot marker is read
+    /// off the board for display; a move no listed row carries — card 20,
+    /// Postal System, in the tech deck here — finds no slot, so it gets no
+    /// marker. So does any move worded while no Laboratory is acting (the
+    /// President in hand: `state_2p`, the cells below).
+    #[test]
+    fn a_laboratory_card_off_the_acting_board_gets_no_slot_marker() {
+        let state = crate::chooser::test_support::lab_twin_position();
+        let rules = Rules::standard();
+        assert!(state.tech_deck.contains(&TechCardId(20)), "premise: Postal System is in the deck");
+        let mv = |card: u8| Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(card), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
+            },
+        };
+        assert_eq!(describe_move(&mv(20), &state, &rules), "Laboratory: acquire Postal System");
+        // A card id the registry does not know: the fallback name, no marker.
+        assert_eq!(describe_move(&mv(99), &state, &rules), "Laboratory: acquire T99");
+        // The twin on the board still gets its marker in the same state.
+        assert_eq!(describe_move(&mv(12), &state, &rules), "Laboratory: acquire Ball (slot 5)");
+    }
+
     #[test]
     fn laboratory_fourth_plus_tech_fee_is_not_hard_coded_to_the_fourth() {
         let state = state_2p();

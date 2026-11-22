@@ -205,16 +205,17 @@ describe("the payload roots carry exactly the fields the client declares", () =>
   // The Laboratory's fold (plan 2b, Task 3) rides the numbered pick the REPL
   // already has, so the client meets no new kind. The corpus's one folded
   // Laboratory prompt (event 50) is the two-copies case: both copies of Ball on
-  // the board, one listed row each, read here as the pick's two rows and, by
-  // their cards, off the frame's own list of the moves.
+  // the board, one listed row each, read here as the pick's two rows — each
+  // naming its copy's slot, since both copies are on the board (Task 3b) —
+  // and, by their cards, off the frame's own list of the moves.
   it("the corpus's Laboratory pick: one title over both copies of Ball", () => {
     const state = wire.labPick;
     if (state.prompt.kind !== "pick") throw new Error(`not a pick: ${state.prompt.kind}`);
     expect(state.events).toBe(50);
     expect(state.prompt.title).toBe("Laboratory: acquire Ball — choose the payment");
     expect(state.prompt.rows.map((r) => [r.number, r.words, r.opens_picker])).toEqual([
-      [1, "Laboratory: acquire Ball", false],
-      [2, "Laboratory: acquire Ball, slot fee: 2 yen", false],
+      [1, "Laboratory: acquire Ball (slot 2)", false],
+      [2, "Laboratory: acquire Ball (slot 3), slot fee: 2 yen", false],
     ]);
     const card = (mv: unknown) =>
       (mv as { ExecuteAreaAction?: { action?: { Laboratory?: { card_id: number } } } }).ExecuteAreaAction?.action

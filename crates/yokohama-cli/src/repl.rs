@@ -1339,11 +1339,10 @@ impl Repl {
     /// card, because both copies of a title can be on one board, and the
     /// engine lists a board in slot order, so another title's rows can stand
     /// between the two copies' (measured, plan 2b): one entry over both,
-    /// whose pick shows each row in the words it carried. The copies read
-    /// apart there when their slots add different amounts, and alike, for the
-    /// same payment, when their slots add the same — as the two direct rows
-    /// did before the fold (measured, plan 2b's Task 3: 8 of the sweep's 21
-    /// folded positions list two rows with identical words).
+    /// whose pick shows each row in the words it carried. Those words name
+    /// each copy's slot when the acting board holds both (`describe_move`,
+    /// plan 2b's Task 3b), so the two copies' rows never read alike, even
+    /// where what is paid for each is the same.
     fn group_area_action(legal: Vec<Move>, techs: &TechRegistry) -> Vec<PromptOption> {
         let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
         let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
@@ -11321,7 +11320,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     use crate::chooser::test_support::{
-        copies_of, lab_twin_position, lab_twin_position_owning_three, lay_out_lab,
+        copies_of, lab_position_laid_out, lab_twin_position, lab_twin_position_owning_three, lay_out_lab,
     };
 
     /// The card a Laboratory move acquires, read by pattern.
@@ -11525,11 +11524,12 @@ mod tests {
         assert_eq!(
             out.text,
             "Laboratory: acquire Ball — choose the payment:\n\
-             [1] Laboratory: acquire Ball\n\
-             [2] Laboratory: acquire Ball, slot fee: 2 yen\n\
-             [3] Laboratory: acquire Ball, slot fee: 1 imported good\n\
+             [1] Laboratory: acquire Ball (slot 2)\n\
+             [2] Laboratory: acquire Ball (slot 5), slot fee: 2 yen\n\
+             [3] Laboratory: acquire Ball (slot 5), slot fee: 1 imported good\n\
              > pick a number, or 'cancel'\n",
-            "the pick's screen, in describe_move's words, under its title and the pick's own colon",
+            "the pick's screen, in describe_move's words (each copy's slot named, Task 3b), under its title and \
+             the pick's own colon",
         );
         r.step("3");
         assert_eq!(last_move(&r), lab(12, 0, 1), "the pick's third row is the slot-4 copy's import payment");
@@ -11623,6 +11623,14 @@ mod tests {
     const LAB_SWEEP_ROWS_FLOOR: usize = 75;
     const LAB_SWEEP_BOTH_COPIES_FLOOR: usize = 6;
     const LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR: usize = 7;
+    /// Task 3b's floors, about half of what the same seeds read when set: 162
+    /// Laboratory prompts, 51 with both copies of a title on the acting board,
+    /// 16 of them in slots that add the same, and 8 whose listed rows collide
+    /// once the slot marker is taken out (the positions where the marker is
+    /// what parts them; Task 3's probe read the same 8).
+    const LAB_SWEEP_BOTH_ON_BOARD_FLOOR: usize = 25;
+    const LAB_SWEEP_SAME_ADD_FLOOR: usize = 8;
+    const LAB_SWEEP_ALIKE_WITHOUT_FLOOR: usize = 4;
     const LAB_SWEEP_SEEDS: u64 = 8;
 
     #[test]
@@ -11634,6 +11642,10 @@ mod tests {
         // title's first row]
         let mut tally = [0usize; 4];
         let mut by_count = [0usize; 3];
+        // Task 3b: [Laboratory prompts, with both copies of a title on the
+        // acting board, with them in slots that add the same, whose rows
+        // collide once the slot marker is taken out]
+        let mut copies = [0usize; 4];
         for n in [2u8, 3, 4] {
             for seed in 0..LAB_SWEEP_SEEDS {
                 let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
@@ -11651,6 +11663,44 @@ mod tests {
                         let t = name(lab_card(m).unwrap());
                         labs.iter().filter(|o| name(lab_card(o).unwrap()) == t).count() > 1
                     });
+                    // Task 3b, at every Laboratory prompt: no two listed rows
+                    // read alike.
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && !labs.is_empty() {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        copies[0] += 1;
+                        let words: Vec<String> =
+                            labs.iter().map(|m| describe::describe_move(m, &state, &rules)).collect();
+                        let mut sorted = words.clone();
+                        sorted.sort();
+                        assert!(sorted.windows(2).all(|w| w[0] != w[1]), "{at}: two Laboratory rows read alike: {words:?}");
+                        let mut stripped: Vec<String> = words.iter().map(|w| without_slot(w)).collect();
+                        stripped.sort();
+                        if stripped.windows(2).any(|w| w[0] == w[1]) {
+                            copies[3] += 1;
+                        }
+                        // The acting board's cards, read off the board.
+                        let area = describe::acting_area(&state).expect("an acting area");
+                        let board = match state.board_layout.areas[&area].area_type {
+                            AreaType::LaboratoryB => state.lab_state.lab_b.as_ref().expect("Laboratory B"),
+                            _ => &state.lab_state.lab_a,
+                        };
+                        let cards: Vec<(usize, String)> = board
+                            .slots
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, c)| c.map(|c| (i, name(c))))
+                            .collect();
+                        let pairs: Vec<(usize, usize)> = cards
+                            .iter()
+                            .flat_map(|(i, a)| cards.iter().filter(move |(j, b)| j > i && a == b).map(move |(j, _)| (*i, *j)))
+                            .collect();
+                        if !pairs.is_empty() {
+                            copies[1] += 1;
+                        }
+                        if pairs.iter().any(|&(i, j)| LabBoard::position_modifier(i) == LabBoard::position_modifier(j)) {
+                            copies[2] += 1;
+                        }
+                    }
                     if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && folded {
                         let at = format!("{n}P seed {seed} turn {}", state.turn_number);
                         tally[0] += 1;
@@ -11709,6 +11759,15 @@ mod tests {
             }
         }
         let [positions, rows, both, direct_after] = tally;
+        let [lab_prompts, on_board, same_add, alike_without] = copies;
+        println!(
+            "a_self_play_sweep_commits_every_row (Task 3b): {lab_prompts} Laboratory prompts, {on_board} with both \
+             copies of a title on the acting board, {same_add} of them in slots that add the same, {alike_without} \
+             whose rows read alike without the slot marker"
+        );
+        assert!(on_board >= LAB_SWEEP_BOTH_ON_BOARD_FLOOR, "only {on_board} prompts with both copies on the board");
+        assert!(same_add >= LAB_SWEEP_SAME_ADD_FLOOR, "only {same_add} prompts with both copies in slots adding the same");
+        assert!(alike_without >= LAB_SWEEP_ALIKE_WITHOUT_FLOOR, "only {alike_without} prompts whose rows collide unmarked");
         println!(
             "a_self_play_sweep_commits_every_row: {positions} positions ({by_count:?} at 2/3/4 players), {rows} rows, \
              {both} with both copies of a title in the list, {direct_after} with a one-row title after a folded \
@@ -11721,6 +11780,179 @@ mod tests {
         assert!(
             direct_after >= LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR,
             "only {direct_after} positions with a one-row title after a folded title's first row"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Two copies are told apart by their slot (cycle 2, plan 2b, Task 3b)
+    // -----------------------------------------------------------------
+
+    /// `words` with the slot marker (` (slot N)`) taken out, so a cell can
+    /// show what a row read before Task 3b.
+    fn without_slot(words: &str) -> String {
+        match words.find(" (slot ") {
+            Some(i) => match words[i..].find(')') {
+                Some(j) => format!("{}{}", &words[..i], &words[i + j + 1..]),
+                None => words.to_string(),
+            },
+            None => words.to_string(),
+        }
+    }
+
+    /// The words of every listed Laboratory row of the title `name`, in list
+    /// order, as `describe_move` gives them at the repl's state.
+    fn lab_words_of(r: &Repl, name: &str) -> Vec<String> {
+        lab_rows_of(r, name)
+            .iter()
+            .map(|m| describe::describe_move(m, r.session.state(), r.session.rules()))
+            .collect()
+    }
+
+    /// The slot labels the terminal's `labs` view prints over the cards named
+    /// `name` (upper-cased, as the view draws a name), in the order drawn:
+    /// each card's name is the first line under its top border, and the top
+    /// border's `slot N` stands over the same columns.
+    fn labs_view_slots_of(state: &GameState, name: &str) -> Vec<usize> {
+        let rules = Rules::standard();
+        let text = crate::view_render::labs_view(
+            &crate::screen_model::build_labs(state, &rules),
+            crate::view_render::ViewContext::Decision,
+        );
+        let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+        let needle: Vec<char> = name.to_uppercase().chars().collect();
+        let mut out = Vec::new();
+        for (row, line) in lines.iter().enumerate().skip(1) {
+            for col in 0..line.len().saturating_sub(needle.len()) {
+                if line[col..col + needle.len()] == needle[..] && (col == 0 || !line[col - 1].is_alphanumeric()) {
+                    // The card's own label starts in the name's column, so
+                    // the search runs up to just past it.
+                    let border: String = lines[row - 1].iter().collect();
+                    let prefix: String = lines[row - 1].iter().take(col + 5).collect();
+                    let at = prefix.rfind("slot ").expect("a slot label over the card");
+                    let digits: String =
+                        border[at + 5..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                    out.push(digits.parse().expect("a slot number"));
+                }
+            }
+        }
+        out
+    }
+
+    const BALL_11: Option<TechCardId> = Some(TechCardId(11));
+    const BALL_12: Option<TechCardId> = Some(TechCardId(12));
+    const MINING: Option<TechCardId> = Some(TechCardId(24));
+    const TRAM: Option<TechCardId> = Some(TechCardId(28));
+
+    #[test]
+    fn a_twin_s_row_names_its_slot() {
+        let mut r = repl_at(lab_twin_position());
+        // Ball's copies sit at the board's second and fifth slots (index 1
+        // and 4), whose labels the `labs` view prints as `slot 2` and
+        // `slot 5` (the rival: the slot's index from zero).
+        assert_eq!(labs_view_slots_of(r.session.state(), "Ball"), [2, 5], "the labs view's labels");
+        let words = lab_words_of(&r, "Ball");
+        assert_eq!(
+            words,
+            [
+                "Laboratory: acquire Ball (slot 2)",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 yen",
+                "Laboratory: acquire Ball (slot 5), slot fee: 1 imported good",
+            ],
+        );
+        let out = r.step("2");
+        assert!(matches!(r.sub, SubPrompt::Pick { .. }), "premise: the entry opens the pick");
+        assert_eq!(
+            out.text,
+            format!(
+                "Laboratory: acquire Ball — choose the payment:\n[1] {}\n[2] {}\n[3] {}\n> pick a number, or 'cancel'\n",
+                words[0], words[1], words[2],
+            ),
+            "the pick's rows read the same words",
+        );
+        // The entry's words do not change.
+        let r = repl_at(lab_twin_position());
+        assert_eq!(r.option_rows()[1].words, "Laboratory: acquire Ball — 3 ways to pay");
+    }
+
+    #[test]
+    fn a_single_copy_keeps_today_s_words() {
+        let r = repl_at(lab_twin_position());
+        for name in ["Mining Technology", "Tram"] {
+            for w in lab_words_of(&r, name) {
+                assert!(!w.contains("(slot"), "{name}'s one copy on the board: {w}");
+            }
+        }
+        // The twin's second copy swapped back into the tech deck: one Ball on
+        // the board, a title that exists twice (the rivals: "always name the
+        // slot", "name it for any title in the box twice").
+        let state = lab_position_laid_out([MINING, BALL_11, TRAM, None, None, None]);
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        assert!(state.tech_deck.contains(&TechCardId(12)), "premise: the other copy is in the deck");
+        let r = repl_at(state);
+        assert_eq!(lab_words_of(&r, "Ball"), ["Laboratory: acquire Ball"], "today's words, byte for byte");
+    }
+
+    #[test]
+    fn two_copies_whose_rows_read_alike_today_read_apart() {
+        for (label, slots, expected) in [
+            (
+                "slots that add the same (5 and 6, +2 each)",
+                [MINING, None, TRAM, None, BALL_11, BALL_12],
+                vec![
+                    "Laboratory: acquire Ball (slot 5), slot fee: 2 yen",
+                    "Laboratory: acquire Ball (slot 5), slot fee: 1 imported good",
+                    "Laboratory: acquire Ball (slot 6), slot fee: 2 yen",
+                    "Laboratory: acquire Ball (slot 6), slot fee: 1 imported good",
+                ],
+            ),
+            (
+                "slots that add 0 and 1, the power covering both",
+                [MINING, BALL_11, BALL_12, None, TRAM, None],
+                vec!["Laboratory: acquire Ball (slot 2)", "Laboratory: acquire Ball (slot 3)"],
+            ),
+        ] {
+            let state = lab_position_laid_out(slots);
+            assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()), "{label}");
+            let r = repl_at(state);
+            let words = lab_words_of(&r, "Ball");
+            assert_eq!(words, expected, "{label}");
+            // Before this task each copy's row matched the other copy's row
+            // for the same payment, word for word: with the marker taken out,
+            // they still do.
+            let half = words.len() / 2;
+            for i in 0..half {
+                let j = if label.starts_with("slots that add the same") { i + half } else { i + 1 };
+                assert_eq!(without_slot(&words[i]), without_slot(&words[j]), "{label}: alike without the marker");
+                assert_ne!(words[i], words[j], "{label}: apart with it");
+            }
+        }
+    }
+
+    #[test]
+    fn the_other_board_s_copy_does_not_count() {
+        let state = lab_b_position();
+        assert!(state.lab_state.lab_a.slots.contains(&BALL_11), "premise: one copy on Laboratory A");
+        let r = repl_at(state);
+        let words = lab_words_of(&r, "Ball");
+        assert!(!words.is_empty(), "premise: Laboratory B's copy is listed");
+        for w in words {
+            assert!(!w.contains("(slot"), "the other board's copy does not count: {w}");
+        }
+    }
+
+    #[test]
+    fn the_log_names_the_slot_too() {
+        let mut r = repl_at(lab_twin_position());
+        let mv = lab_rows_of(&r, "Ball")[2].clone();
+        for line in lab_lines(&r, &mv) {
+            r.step(&line);
+        }
+        assert_eq!(last_move(&r), mv);
+        let i = r.session.record().events.len() - 1;
+        // The log's line is the seat's name and `describe_move`'s words.
+        assert_eq!(
+            r.session.event_description_at(i),
+            Some("Red: Laboratory: acquire Ball (slot 5), slot fee: 1 imported good"),
         );
     }
 }

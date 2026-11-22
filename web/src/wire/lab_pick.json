@@ -1305,8 +1305,8 @@
   "id": "wire",
   "messages": [
     "Laboratory: acquire Ball — choose the payment:",
-    "[1] Laboratory: acquire Ball",
-    "[2] Laboratory: acquire Ball, slot fee: 2 yen",
+    "[1] Laboratory: acquire Ball (slot 2)",
+    "[2] Laboratory: acquire Ball (slot 3), slot fee: 2 yen",
     "> pick a number, or 'cancel'"
   ],
   "mode": "sim",
@@ -1319,13 +1319,13 @@
         "fee": null,
         "number": 1,
         "opens_picker": false,
-        "words": "Laboratory: acquire Ball"
+        "words": "Laboratory: acquire Ball (slot 2)"
       },
       {
         "fee": null,
         "number": 2,
         "opens_picker": false,
-        "words": "Laboratory: acquire Ball, slot fee: 2 yen"
+        "words": "Laboratory: acquire Ball (slot 3), slot fee: 2 yen"
       }
     ],
     "title": "Laboratory: acquire Ball — choose the payment"

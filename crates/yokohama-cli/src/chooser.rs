@@ -882,6 +882,19 @@ pub(crate) mod test_support {
         lab_twin_fixture(0)
     }
 
+    /// `lab_twin_position`'s table (2P, setup seed 7) with Laboratory A laid
+    /// out as `slots` by [`lay_out_lab`] — real cards moved, none invented —
+    /// and the same seat at it: 3 assistants (power 4), 9 yen, 2 imported
+    /// goods, no technology.
+    pub(crate) fn lab_position_laid_out(slots: [Option<TechCardId>; 6]) -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(2), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)]).unwrap();
+        lay_out_lab(&mut state, false, slots);
+        at_the_lab(&mut state, false, 3, 9, 2);
+        state
+    }
+
     /// `lab_twin_position` with three other technologies owned, so the 4th
     /// card's fee is paid either way. Measured: Mining Technology 2 rows, Ball
     /// 6, Tram 5.
