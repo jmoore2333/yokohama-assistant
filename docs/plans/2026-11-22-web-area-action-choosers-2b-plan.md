@@ -75,7 +75,7 @@ Port — take 1 order card ({r} in reach)
 Laboratory: acquire {title} — {n} ways to pay
 ```
 
-The first Port line when some listed move takes two cards, the second when none does. A Laboratory title with one listed row keeps that row, in `describe_move`'s words, as today.
+The first Port line when some listed move takes two cards, the second when none does. A Laboratory title with one listed row keeps that row, in `describe_move`'s words, as today. When the acting Laboratory board holds both copies of a title, each of that title's rows names its copy's slot after the name, as the `labs` view and the browser's lab strip number it: `Laboratory: acquire Ball (slot 2)` (Task 3b, on the owner's word of 2026-11-22: a player has to know which of the two cards a row takes).
 
 Opening the chooser prints no line of its own.
 
@@ -167,6 +167,7 @@ The first form wherever the row fits its width (the two-player dashboard's 74 co
 - `crates/yokohama-cli/src/chooser.rs` — the Port's model, text and matcher beside the Church's and Chinatown's; three fixtures in its `test_support` (Task 1).
 - `crates/yokohama-cli/src/repl.rs` — `PromptOption::Port`, `PromptOption::Laboratory`, `SubPrompt::Port`, `step_port`, the fold in `group_area_action`, one shared close-then-commit helper, `chooser_screen()` (Tasks 2, 3).
 - `crates/yokohama-cli/src/render.rs` (`players_panel`), `panel_render.rs` (the Mercenaries row in both arrangements), `screen_model.rs`, the two committed frame captures — the flag counts and the country codes with their pin (Task 8).
+- `crates/yokohama-cli/src/describe.rs` — the Laboratory row names its slot when the acting board holds both copies of its title (Task 3b).
 - `crates/yokohama-cli/tests/piped_dogfood.rs` — the driver learns the Port and the Laboratory's pick; a floor on what it counts (Tasks 2, 3).
 - `crates/yokohama-web/src/client.rs`, `api.rs`, `lib.rs`, `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs` — the `port` arm, the strip by identity, every driver, the corpus (Tasks 2, 3, 7).
 - `web/src/wire/` — four new fixtures (`port.json`, `port_selected.json`, `port_pair.json`, `lab_pick.json`); `web/src/wire-script/` regenerated; `web/src/wire/contract.ts`, `contract.test.ts`, `web/src/types.ts` (Tasks 2, 3).
@@ -331,6 +332,40 @@ pub fn port_text(model: &PortModel) -> String;
 
 **Mutants:** grouping adjacent runs (cell 1); grouping by card id (cell 2); the entry placed at the title's last row (cell 1); the entries gathered after the direct rows (cell 6's layout); the pick's rows sorted (cell 2 and cell 3); a fold at one row (cell 4); the entry's count taken from the cards on the board (cell 1: the twin reads 3 ways over 2 cards, the other technology 3 over 1).
 
+### Task 3b: Two copies of a technology are told apart by their slot
+
+**impl: opus · review: opus.** Added during the run on the owner's word (2026-11-22): a player needs to know which of the two cards a row takes.
+
+**Why.** Ten of the twenty technology titles exist as two cards, and both copies can be on one Laboratory board. A row's words name the technology and what is paid on top of the action's power; when the two copies sit in slots that add the same (slot pairs 1/2, 3/4 and 5/6), their rows read exactly alike, in the Laboratory's pick and, before Task 3, on the flat list. Task 3's sweep read that at 8 of its 21 folded positions.
+
+**Files:** modify `crates/yokohama-cli/src/describe.rs` (the Laboratory arm of `describe_area_action`), its tests; `crates/yokohama-cli/src/chooser.rs` (`test_support`, fixtures only) and `crates/yokohama-cli/src/repl.rs` (cells; the sweep); `crates/yokohama-web/tests/wire_fixtures.rs` only if a cell there quotes the words; the regenerated corpus; `web/src/wire/contract.test.ts` (the `lab_pick` cell's two rows); `docs/cli-guide.md`, `docs/cli-guide.html`; any golden or capture that words a Laboratory row on a board holding both copies (search, below).
+
+**The words.** When the ACTING Laboratory board holds another card of the same name as the card a move acquires, the row names the card's slot after the technology's name, numbered as the terminal's `labs` view and the browser's lab strip label it (the first slot is `slot 1`):
+
+```
+Laboratory: acquire Ball (slot 2)
+Laboratory: acquire Ball (slot 5), slot fee: 2 yen
+```
+
+In every other case the row's words are today's, byte for byte. The entry (`Laboratory: acquire {title} — {n} ways to pay`) and the pick's title (`Laboratory: acquire {title} — choose the payment`) do not change. The words are `describe_move`'s, so the marker is the same wherever a move is worded: the main list's direct rows, the pick's rows, the log, `suggest` and `why`, and the browser, which draws those words.
+
+**Interfaces.** The Laboratory arm of `describe_area_action` reads the acting board (`describe::acting_area`, as the Port's chooser finds its board) for DISPLAY only: where the card sits, and whether another card of its name sits on the same board. It decides nothing about legality. No new public item is needed; if one is, the report names it.
+
+- [ ] **Step 1: the cells, red.** Each names the rival rule its data is chosen against.
+  1. `a_twin_s_row_names_its_slot`: on `lab_twin_position()`, each of the twin's three rows names its own copy's slot, and the number equals the label the `labs` view prints for that slot (rival: "the slot's index from zero"). The rows of the pick read the same words.
+  2. `a_single_copy_keeps_today_s_words`: on the same position the other technologies' rows hold no `(slot`; and on a one-fact clone with the twin's second copy swapped back into the tech deck (a valid state: `check_invariants`), the remaining copy's row is today's (rivals: "always name the slot"; "name the slot for any title that exists twice").
+  3. `two_copies_in_slots_that_add_the_same_read_apart`: on a valid position with both copies in a slot pair that adds the same, every pair of the title's rows differs, and rows that differ only by the copy differ only in the slot's number (the owner's case; before this task they were identical).
+  4. `the_other_board_s_copy_does_not_count`: at four players, with one copy on Laboratory A and the other on Laboratory B, the acting board's row holds no marker (rival: "two copies anywhere on the table").
+  5. `no_two_rows_of_a_laboratory_prompt_read_alike`: Task 3's sweep also asserts, at every Laboratory prompt it reaches, that no two listed Laboratory rows have the same words, with a floor on the positions where both copies stood on the acting board and on those where they stood in slots that add the same, each measured before it is set.
+  6. `the_log_names_the_slot_too`: an applied twin acquire's log line carries the marker (it is `describe`'s words for the move at the state it was made from).
+- [ ] **Step 2:** red (saved), then the code.
+- [ ] **Step 3: what words a Laboratory row today.** Search, do not trust a list: `grep -rn "Laboratory: acquire" crates web/src worker docs --include='*.rs' --include='*.ts' --include='*.tsx' --include='*.json' --include='*.md' --include='*.html' --include='*.txt' -l`. A golden, capture or fixture whose board holds both copies moves; every one that moves is quoted in the report, before and after. One that words a single copy must NOT move.
+- [ ] **Step 4: the corpus.** Regenerate (`UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`, then the plain run) and READ the diff. Expected, and anything else is a finding: `lab_pick.json`'s two rows gain their slots (event 50, both copies of Ball); every other changed byte is that same marker on the line of the acquire the walk made there (the log's line, and any frame that quotes it); `walk.json`'s input rows do not change (2,242), so the kept list and the cited walk rows do not move. The `lab_pick` contract cell reads the two new rows.
+- [ ] **Step 5: the guide pair.** The Laboratory paragraph's sentence about two copies now says that each row names its slot when both copies are on the board, with the example, word-identical in both formats; `guide_sync` green. A doc comment that says the copies can read alike is corrected.
+- [ ] **Step 6:** the Rust suites, one at a time; the lint gate; both fence checks; commit.
+
+**Mutants:** the marker on every Laboratory row (cell 2); the marker for any title that exists twice, whatever the board holds (cell 2's clone); the slot's index from zero (cell 1); copies counted across both boards (cell 4); the marker only when the two slots add the same (cell 1, whose copies sit in slots that add different amounts); the marker read from the FIRST card of that name on the board instead of the move's own card (cells 1 and 3: both rows would name one slot).
+
 ### Task 4: The Port's panel in the browser
 
 **impl: sonnet · review: opus.**
@@ -389,7 +424,7 @@ pub fn port_text(model: &PortModel) -> String;
   4. No cell for the payment pick here: on this table no pair is payable both ways by lines (the seat holds no imported good at the opening, measured). A `confirm` on a pair commits; the pick is carried by the REPL's cells and by Task 7's game, and a pick's restore is the mechanism the route and Telegram picks already prove.
 - [ ] **Step 2:** red, then green with NO change outside the test module (the mechanism covers a new sub-prompt unchanged; a change it needs is a STOP). `cargo test -p yokohama-worker`; `cd worker && npm run build:module:debug && npm test`; commit.
 
-**Mutants** (planted in the export's `picker.rs` and `repl.rs`): the restore de-duplicating lines (cell 1); a refused line recorded (cell 2); `cancel` leaving the list (cell 3).
+**Mutants** (planted in the export's `picker.rs` and `repl.rs`): the restore de-duplicating lines (cell 1); a refused card entering the selection (cell 2, read straight after the refusal); a refused line NOT recorded (cell 2's reading of the stored lines: recording a refused line is the mechanism's design, pinned by plan 2a's refused cell, so "a refused line recorded" is no mutant); the restore feeding the lines out of order (cell 2, after the restore); `cancel` leaving the list (cell 3).
 
 ### Task 7: A whole game at three players through the web layer, and what a press costs
 
