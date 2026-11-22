@@ -78,9 +78,9 @@ The [browser guide](docs/web-guide.md) covers playing at the hosted site, asking
 On an Apple-silicon Mac, fetch the release archive, unpack it and run the binary:
 
 ```bash
-curl -fLO https://github.com/jmoore2333/yokohama-assistant/releases/latest/download/yokohama-cli-v0.7.3-macos-apple-silicon.tar.gz \
-  && tar xzf yokohama-cli-v0.7.3-macos-apple-silicon.tar.gz \
-  && cd yokohama-cli-v0.7.3-macos-apple-silicon && ./yokohama-cli
+curl -fLO https://github.com/jmoore2333/yokohama-assistant/releases/latest/download/yokohama-cli-v0.7.4-macos-apple-silicon.tar.gz \
+  && tar xzf yokohama-cli-v0.7.4-macos-apple-silicon.tar.gz \
+  && cd yokohama-cli-v0.7.4-macos-apple-silicon && ./yokohama-cli
 ```
 
 If the fetch answers 404, the release this page names is not the latest one: take the archive from the
