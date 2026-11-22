@@ -1644,6 +1644,10 @@ const LANDSCAPE = { width: 844, height: 390 };
 /** A smaller phone on its side (R39's second height): there the Church's kinds
  *  shrink to their floor, one row of kinds, which at 844x390 they do not. */
 const SMALL_LANDSCAPE = { width: 667, height: 375 };
+/** A common Android phone on its side (ruling T5-d): below 667x375 the
+ *  Port's chooser can show less than one card, which is the short-window rule
+ *  `styles.css` holds a card to. */
+const SHORT_LANDSCAPE = { width: 640, height: 360 };
 
 /** What each chooser draws to choose from: the Church's six kinds, Chinatown's
  *  nine exchanges, the four cards the Port's route puts in reach. */
@@ -1655,6 +1659,7 @@ for (const [area, players, vp] of [
   ["Church", 2, SMALL_LANDSCAPE],
   ["Port", 2, LANDSCAPE],
   ["Port", 2, SMALL_LANDSCAPE],
+  ["Port", 2, SHORT_LANDSCAPE],
 ] as const) {
   test(`on a phone held sideways the ${area} chooser keeps Confirm and Cancel in the deck and the window, and what it cuts scrolls into view inside the deck, at ${vp.width}x${vp.height}`, async ({ page }) => {
     // **The rule (ruling R38): the controls are always inside the deck and the
@@ -1699,7 +1704,7 @@ for (const [area, players, vp] of [
     }
     // What the chooser cuts is reachable by scrolling INSIDE the deck: every
     // box inside the chooser that scrolls is scrolled to its end, the chooser
-    // (the last resort) as far as its last kind or exchange needs —
+    // (the last resort) as far as its last kind, exchange or card needs —
     // `scrollIntoView` at `nearest`, since scrolling a chooser to ITS end can
     // cut the box it holds — and that item is then inside the deck, inside
     // every scrolling box around it, and what a press at its centre lands on.
@@ -1743,6 +1748,26 @@ for (const [area, players, vp] of [
       return (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(items[items.length - 1]!);
     });
     expect(cutBy(seen), `${at}: the last item (${last.what}), scrolled into view, is cut by`).toBeNull();
+    // And every box that had to scroll for it is one a PLAYER can scroll
+    // (ruling T5-c): a script scrolls an `overflow: hidden` box too.
+    expect(notPlayerScrollable(seen), `${at}: the last item (${last.what}) was brought into view by scrolling a box a player cannot scroll`).toBeNull();
+    if (area === "Port") {
+      // Every card, not only the last: a card taller than what the chooser can
+      // show is cut wherever it sits (measured: a 74 px card at 640x360 under
+      // a 62 px chooser, while the last card, 56.8 px, came whole).
+      const cards = await page.locator(PORT_CARD).evaluateAll((els) =>
+        els.map((el) => {
+          el.scrollIntoView({ block: "nearest", inline: "nearest" });
+          return { number: el.getAttribute("data-number") ?? "", read: (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(el) };
+        }),
+      );
+      expect(cards.length, `${at}: the cards in reach`).toBe(CHOOSER_ITEMS.Port);
+      for (const c of cards) {
+        expect(cutBy(c.read), `${at}: card ${c.number}, scrolled into view, is cut by`).toBeNull();
+        expect(notPlayerScrollable(c.read), `${at}: card ${c.number} was brought into view by scrolling a box a player cannot scroll`).toBeNull();
+        expect(c.read.hit, `${at}: a press at card ${c.number}'s centre, scrolled into view, lands on something else`).toBe(true);
+      }
+    }
     // And the controls stayed where they were while the chooser scrolled.
     const after = await page.evaluate(controlsRead);
     expect(after.confirmHit && after.cancelHit, `${at}: scrolling the chooser moved its controls out of reach`).toBe(true);
@@ -1817,16 +1842,37 @@ const clipsRead = (el: Element) => {
     const top = r.top + c.clientTop;
     return rect({ left, top, right: left + c.clientWidth, bottom: top + c.clientHeight });
   };
-  const clips: { what: string; box: ReturnType<typeof rect> }[] = [];
+  const clips: {
+    what: string;
+    box: ReturnType<typeof rect>;
+    overflowX: string;
+    overflowY: string;
+    scrollLeft: number;
+    scrollTop: number;
+  }[] = [];
   for (let c = el.parentElement; c; c = c.parentElement) {
     const css = getComputedStyle(c);
     const deck = c.classList.contains("deck");
     if (deck || css.overflowY !== "visible" || css.overflowX !== "visible") {
-      clips.push({ what: `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`, box: client(c) });
+      clips.push({
+        what: `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`,
+        box: client(c),
+        overflowX: css.overflowX,
+        overflowY: css.overflowY,
+        scrollLeft: c.scrollLeft,
+        scrollTop: c.scrollTop,
+      });
     }
     if (deck) break;
   }
-  clips.push({ what: "the window", box: rect({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }) });
+  clips.push({
+    what: "the window",
+    box: rect({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }),
+    overflowX: "auto",
+    overflowY: "auto",
+    scrollLeft: window.scrollX,
+    scrollTop: window.scrollY,
+  });
   const r = el.getBoundingClientRect();
   const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
   return { box: rect(r), clips, hit: !!hit && (hit === el || el.contains(hit)), pageScroll: window.scrollY };
@@ -1836,6 +1882,21 @@ const clipsRead = (el: Element) => {
  *  through the browser protocol (which the page's policy does not govern). */
 async function installClipsRead(page: Page): Promise<void> {
   await page.evaluate(`window.clipsRead = ${clipsRead.toString()}`);
+}
+
+/** **A box a script scrolled is not therefore one a player can** (ruling
+ *  T5-c): `scrollIntoView` and `scrollTop` move an `overflow: hidden` box,
+ *  which has no scrollbar and takes no wheel or touch. So every clip that sits
+ *  scrolled — the offset a box had to take to bring this one into view —
+ *  must compute `auto` or `scroll` on that axis. Names the first that does
+ *  not, or `null`. */
+function notPlayerScrollable(read: ReturnType<typeof clipsRead>): string | null {
+  const scrolls = (overflow: string) => overflow === "auto" || overflow === "scroll";
+  for (const c of read.clips) {
+    if (c.scrollTop > 0 && !scrolls(c.overflowY)) return `${c.what} sits scrolled ${c.scrollTop} px down with overflow-y: ${c.overflowY}`;
+    if (c.scrollLeft > 0 && !scrolls(c.overflowX)) return `${c.what} sits scrolled ${c.scrollLeft} px across with overflow-x: ${c.overflowX}`;
+  }
+  return null;
 }
 
 /** The first clip a box runs out of, named, or `null` when the whole box can
@@ -1898,13 +1959,15 @@ test("the Port's chooser shows every card whole at 390, and at 1440 brings each 
     expect(r.hit, `${phone.at}: a press at card ${number}'s centre lands on something else`).toBe(true);
   }
 
-  // **At 1440x900 the deck is the rail's 45vh**, and the zones do not hold
-  // the route's two zones whole (measured 179 px of 219 to 259). What holds
-  // there: the cards apart and the controls in reach with nothing scrolled
-  // (above); the count of cards whole at open, printed; and every card cut at
-  // open, scrolled into view INSIDE the deck — the page itself does not
-  // scroll — is then whole and under its own centre. One that was cut is then
-  // pressed, and the arm's reply says it is on.
+  // **At 1440x900 the deck is the rail's 45vh**, and on every table the runs
+  // dealt the zones did not hold the route's two zones whole (179 px of 219 to
+  // 259). What holds there: the cards apart and the controls in reach with
+  // nothing scrolled (above); the count of cards whole at open, printed; every
+  // card cut at open, scrolled into view INSIDE the deck — the page itself
+  // does not scroll, and every box that scrolls for it is one a player can
+  // scroll — is then whole and under its own centre; and one cut card is
+  // brought into view by a PLAYER's gesture, a wheel over the zones, and
+  // pressed, and the arm's reply says it is on (ruling T5-c).
   const desk = await read(DESKTOP);
   const cut = desk.seen.filter((c) => cutBy(c.read) !== null).map((c) => c.number);
   // eslint-disable-next-line no-console
@@ -1919,18 +1982,44 @@ test("the Port's chooser shows every card whole at 390, and at 1440 brings each 
     const r = into.read;
     expect(r.pageScroll, `${desk.at}: bringing card ${number} into view scrolled the page`).toBe(into.before);
     expect(cutBy(r), `${desk.at}: card ${number}, scrolled into view, is cut by`).toBeNull();
+    expect(notPlayerScrollable(r), `${desk.at}: card ${number} was brought into view by scrolling a box a player cannot scroll`).toBeNull();
     expect(r.hit, `${desk.at}: a press at card ${number}'s centre, scrolled into view, lands on something else`).toBe(true);
   }
-  // A card that was cut at open is pressable once in view: the last cut one,
-  // else (a table whose four fit) the last card, recorded as such.
+  // The gesture: every box back at its top, so the cut card is cut again; a
+  // wheel over the zones' centre; then the zones have moved, the page has not,
+  // and the card is whole. A table whose four fit has nothing to wheel to, and
+  // its last card is pressed instead, recorded as such.
   const target = cut.at(-1) ?? desk.seen.at(-1)!.number;
   const targetCard = page.locator(`${PORT_CARD}[data-number="${target}"]`);
-  await targetCard.evaluate((el) => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  const zones = page.locator(`${PORT} > .zones`);
+  const readTarget = () => targetCard.evaluate((el) => (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(el));
+  if (cut.length > 0) {
+    await page.locator(PORT).evaluate((chooser) => {
+      for (const el of [chooser, ...chooser.querySelectorAll("*")]) el.scrollTop = 0;
+    });
+    await settle(page);
+    expect(cutBy(await readTarget()), `${desk.at}: card ${target}, back at the top, is no longer cut, so the wheel would prove nothing`).not.toBeNull();
+    const page0 = await page.evaluate(() => window.scrollY);
+    const box = (await zones.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, 600);
+    await expect
+      .poll(async () => cutBy(await readTarget()), { message: `${desk.at}: a wheel over the zones did not bring card ${target} whole into view`, timeout: 5_000 })
+      .toBeNull();
+    const wheeled = await zones.evaluate((z) => z.scrollTop);
+    expect(wheeled, `${desk.at}: the zones did not move under the wheel`).toBeGreaterThan(0);
+    // eslint-disable-next-line no-console
+    console.log(`${desk.at}: the wheel scrolled the zones ${wheeled} px (recorded)`);
+    expect(await page.evaluate(() => window.scrollY), `${desk.at}: the wheel scrolled the page`).toBe(page0);
+    expect((await readTarget()).hit, `${desk.at}: a press at card ${target}'s centre, wheeled into view, lands on something else`).toBe(true);
+  } else {
+    await targetCard.evaluate((el) => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  }
   const arm = await pressForArm(page, targetCard);
   expect(arm.cards.find((c) => String(c.number) === target)?.selected, `${desk.at}: the arm does not say card ${target} is on after its press`).toBe(true);
   await expect(targetCard).toHaveAttribute("aria-pressed", "true");
   // eslint-disable-next-line no-console
-  console.log(`${desk.at}: pressed card ${target} (${cut.includes(target) ? "cut at open" : "no card was cut"}) (recorded)`);
+  console.log(`${desk.at}: pressed card ${target} (${cut.includes(target) ? "cut at open, wheeled into view" : "no card was cut"}) (recorded)`);
   expect(watch.failures).toEqual([]);
 });
 
@@ -2010,7 +2099,12 @@ test("two Port cards through the screen: a second card the arm's flags can add, 
   }
   const second: PortCard | undefined = arm.cards.find((c) => !c.selected && c.can_add);
   const flags = arm.cards.map((c) => `${c.number}${c.selected ? " on" : c.can_add ? " can add" : " cannot add"}`).join(", ");
-  test.skip(second === undefined, `no second card can be added on this table (the arm's flags: ${flags})`);
+  // **Asserted, never skipped** (ruling T5-e): on the opening route a second
+  // card can always be added — power 3 opens two zones of two cards, and the
+  // seat holds 3 yen and one order, so six pairs are listed (the plan's
+  // measured fact). A skip could only hide a regression; a red here is a
+  // finding about the route.
+  expect(second, `no second card can be added on the opening route (the arm's flags: ${flags})`).toBeDefined();
   const secondButton = page.locator(`${PORT_CARD}[data-number="${second!.number}"]`);
   await secondButton.click();
   await readScreen(page);
@@ -2078,12 +2172,13 @@ test("a Port card pressed from the keyboard keeps the focus, pressed and pressed
   expect(watch.failures).toEqual([]);
 });
 
-test("the walks' policy at the Port adds only a card that is not pressed, and over a walked game never presses a pressed one", async ({ page }) => {
+test("the walks' policy at the Port adds only a card that is not pressed: scripted draws that would land on a pressed one, rounds the policy answers with its own draws, and a walked game, each read apart", async ({ page }) => {
   const watch = watchForBreakage(page);
   // **Every press on a Port card, with the card's state WHEN it was pressed.**
   // A capture listener on the document runs before React's handler, so
   // `aria-pressed` is read before the press is sent: "true" is a pressed card
-  // pressed again, which would switch it OFF.
+  // pressed again, which would switch it OFF. A navigation (a fresh table)
+  // starts a fresh list, so each part drains its own.
   await page.addInitScript(() => {
     const w = window as unknown as { portPresses: string[] };
     w.portPresses = [];
@@ -2096,21 +2191,33 @@ test("the walks' policy at the Port adds only a card that is not pressed, and ov
       true,
     );
   });
-  const game = await startGame(page, { players: 2 });
-  await openChooser(page, "Port");
+  const drain = () =>
+    page.evaluate(() => {
+      const w = window as unknown as { portPresses: string[] };
+      const out = w.portPresses;
+      w.portPresses = [];
+      return out;
+    });
   const pressed = page.locator(`${PORT_CARD}[aria-pressed="true"]`);
   const canAdd = page.locator(`${PORT_CARD}:not([disabled])[aria-pressed="false"]`);
   const live = page.locator(`${PORT_CARD}:not([disabled])`);
+  const portOpen = page.locator(PORT);
 
-  // Opened: nothing on, so Confirm is disabled by the payload, `readScreen`
-  // still returns, and the adds are exactly the cards that can be switched on.
+  // ---- Scripted: draws chosen so that a policy whose CLICK reaches a
+  // pressed card lands on it (ruling T5-b). `act` picks an add by
+  // `nth(floor(draw * adds))`, so a draw of 0 is the first add in the page's
+  // order: the first card at the opened chooser, and with that card on, the
+  // first card that is NOT on — or, for a click that counts the pressed card
+  // among its adds, the pressed card itself.
+  const game = await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
   const opened = await readScreen(page);
   expect(opened.chooser, "readScreen does not see the Port's chooser").toBe(true);
   expect(opened.confirm, "Confirm is pressable with nothing selected").toBe(false);
   expect(opened.adds, "the chooser offers no card to add").toBeGreaterThan(0);
   expect(opened.adds, "adds is not the count of cards that can be switched on").toBe(await canAdd.count());
   expect(hasMove(opened), "hasMove reads the opened Port chooser as no move").toBe(true);
-  expect(await act(page, opened, () => 0.9), "the policy's answer at the opened chooser").toBe("chooser");
+  expect(await act(page, opened, () => 0), "the policy's answer at the opened chooser").toBe("chooser");
   const one = await readScreen(page);
   await expect(pressed, "the policy's first press switched on no card").toHaveCount(1);
   // One card on: Confirm is live (a single take is listed whenever a pair is),
@@ -2118,36 +2225,70 @@ test("the walks' policy at the Port adds only a card that is not pressed, and ov
   expect(one.confirm, "one card on is not a legal take").toBe(true);
   expect(await live.count(), "the pressed card is not live").toBe((await canAdd.count()) + 1);
   expect(one.adds, "adds counts the pressed card").toBe(await canAdd.count());
-  // A coin that does not confirm (0.9 is not below 0.5) adds a second card;
-  // a policy that pressed the pressed one would read one card on, or none.
-  expect(await act(page, one, () => 0.9), "the policy's second answer").toBe("chooser");
+  // The first draw (0.9) does not confirm; the second (0) is the first add.
+  const draws = [0.9, 0];
+  expect(await act(page, one, () => draws.shift() ?? 0), "the policy's second answer").toBe("chooser");
   const two = await readScreen(page);
   await expect(pressed, "the policy's second press did not add a card").toHaveCount(2);
   expect(two.adds, "a third card is offered as an add").toBe(0);
-  let opportunities = 1;
+  const scripted = await drain();
+  expect(scripted, "the scripted presses: one card switched on, then another, neither already on").toEqual(["false", "false"]);
 
-  // Then the rest of the game under the walks' own policy: every Port chooser
-  // it meets with a card on is another chance to press that card.
+  // ---- The walk: the rest of this game under the walks' own policy, from
+  // the chooser with two cards on (so its first answer has a card on to
+  // press). Its counts are its own; a random walk's visits are not floored.
   const pick = rng(0x504f_5254); // "PORT"
-  let moves = 2;
-  let visits = 0;
+  const walk = { moves: 0, visits: 0, withACardOn: 0 };
   let screen = two;
-  while (!screen.over && moves < CAP) {
-    if (screen.chooser && (await pressed.count()) > 0) opportunities += 1;
-    if (screen.chooser && (await page.locator(PORT).count()) > 0) visits += 1;
+  while (!screen.over && walk.moves < CAP) {
+    if (screen.chooser && (await portOpen.count()) > 0) {
+      walk.visits += 1;
+      if ((await pressed.count()) > 0) walk.withACardOn += 1;
+    }
     const via = await act(page, screen, pick);
-    if (via === null) throw await deadEnd(page, game, moves);
-    moves += 1;
+    if (via === null) throw await deadEnd(page, game, walk.moves);
+    walk.moves += 1;
     screen = await readScreen(page);
   }
-  if (!screen.over) throw await capReached(page, game, moves);
-  const presses = await page.evaluate(() => (window as unknown as { portPresses: string[] }).portPresses);
+  if (!screen.over) throw await capReached(page, game, walk.moves);
+  const walked = await drain();
+
+  // ---- Rounds: on fresh tables, brought to the Port by lines, the policy
+  // answers the chooser ITSELF, with its own draws, until it closes; every
+  // press is read as it is made. Each round's first answer switches a card on
+  // (Confirm is not live with nothing on) and its second is made with that
+  // card on, so every run meets the case at least once a round.
+  const ROUNDS = 3;
+  const roundPick = rng(0x524f_554e); // "ROUN"
+  const rounds = { answers: 0, presses: 0, withACardOn: 0 };
+  for (let round = 1; round <= ROUNDS; round++) {
+    await startGame(page, { players: 2 });
+    await openChooser(page, "Port");
+    await drain();
+    let s = await readScreen(page);
+    for (let answer = 1; (await portOpen.count()) > 0; answer++) {
+      expect(answer, `round ${round}: the policy did not close the Port's chooser in 4 answers`).toBeLessThanOrEqual(4);
+      const on = await pressed.count();
+      if (on > 0) rounds.withACardOn += 1;
+      expect(await act(page, s, roundPick), `round ${round}, answer ${answer}: the policy's answer at the Port`).not.toBeNull();
+      rounds.answers += 1;
+      const made = await drain();
+      rounds.presses += made.length;
+      expect(made.filter((p) => p !== "false"), `round ${round}, answer ${answer} (${on} card(s) on): the policy pressed a card that was already on`).toEqual([]);
+      s = await readScreen(page);
+    }
+  }
+
   // eslint-disable-next-line no-console
   console.log(
-    `game ${game.id} finished in ${moves} moves; ${visits} answers at a Port chooser, ${opportunities} with a card on; ` +
-      `${presses.length} card presses (recorded)`,
+    `scripted: ${scripted.length} card presses at one chooser; ` +
+      `rounds: ${rounds.answers} answers over ${ROUNDS} tables, ${rounds.withACardOn} with a card on, ${rounds.presses} card presses; ` +
+      `walk: game ${game.id} finished in ${walk.moves} more moves, ${walk.visits} answers at a Port chooser, ${walk.withACardOn} with a card on, ${walked.length} card presses (recorded)`,
   );
-  expect(presses.length, "the walk pressed no Port card").toBeGreaterThanOrEqual(2);
-  expect(presses.filter((p) => p !== "false"), "the policy pressed a card that was already on").toEqual([]);
+  // Floors on what every run reaches: each round presses a card at its first
+  // answer and answers again with that card on.
+  expect(rounds.presses, "the rounds' policy pressed fewer cards than one a round").toBeGreaterThanOrEqual(ROUNDS);
+  expect(rounds.withACardOn, "the rounds' policy answered with a card on fewer times than once a round").toBeGreaterThanOrEqual(ROUNDS);
+  expect(walked.filter((p) => p !== "false"), "the walk's policy pressed a card that was already on").toEqual([]);
   expect(watch.failures).toEqual([]);
 });
