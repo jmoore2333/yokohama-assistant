@@ -375,8 +375,13 @@ describe("the help panel and the goods choosers (issue #77)", () => {
       it("says the entry first and the controls after it", () => {
         render(ui);
         const text = section("Taking a turn");
-        expect(text.indexOf(s1[0])).toBeGreaterThan(-1);
-        expect(text.indexOf(s1[3])).toBeLessThan(text.indexOf(s2[0]));
+        // Both ends of the comparison are asserted present: an absent needle
+        // reads -1, which is less than anything (the fix wave's C5).
+        const s1End = text.indexOf(s1[3]);
+        const s2Start = text.indexOf(s2[0]);
+        expect(s1End, s1[3]).toBeGreaterThan(-1);
+        expect(s2Start, s2[0]).toBeGreaterThan(-1);
+        expect(s1End).toBeLessThan(s2Start);
       });
     });
   }

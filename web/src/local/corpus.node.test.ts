@@ -212,7 +212,7 @@ function replyOf(text: string, row: string): Record<string, unknown> | null {
 }
 
 // **A reply that is not JSON names the ROW that got it** (M6.5c2 cycle D,
-// dossier row 56). The walk is 2,209 requests long, and a bare `SyntaxError`
+// dossier row 56). The walk is over two thousand requests long, and a bare `SyntaxError`
 // from the parse — "Unexpected token '<'" — says nothing about which of them
 // answered with something other than this API's shape. Its own suite, with no
 // module: it is about the replay's reading of a reply, not about the module.

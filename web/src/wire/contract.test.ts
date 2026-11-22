@@ -86,6 +86,8 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     for (const kind of prompt.kinds) expect(keys(kind)).toEqual(listed(KEYS.churchKind));
     expect(prompt.kinds.map((k) => k.number)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+    // The arm's own top (the fix wave's C1).
+    expect(keys(prompt)).toEqual(listed(KEYS.churchPrompt));
   });
 
   it("the corpus's three church states: as it opens, with its first kind on, and its first legal one", () => {
@@ -140,6 +142,51 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     expect(prompt.rows.map((r) => r.sells)).toEqual([true, true, true, true, false, false, false, false, false]);
     expect(prompt.stock.map((a) => a.good)).toEqual(["Copper", "Silk", "Tea", "Seafood", "Yen", "Imports"]);
     expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+    // The arm's own top, a stock entry, and every row's spend and gain (the
+    // fix wave's C1).
+    expect(keys(prompt)).toEqual(listed(KEYS.chinatownPrompt));
+    for (const amount of prompt.stock) expect(keys(amount)).toEqual(listed(KEYS.chooserAmount));
+    for (const row of prompt.rows) {
+      expect(keys(row.spend), `row ${row.number}'s spend`).toEqual(listed(KEYS.chooserAmount));
+      expect(keys(row.gain), `row ${row.number}'s gain`).toEqual(listed(KEYS.chooserAmount));
+    }
+  });
+
+  // **A chooser's terminal screen never rides `messages`** (design §5.6; the
+  // fix wave's C2). The server strips it by identity and `api.rs`'s cells
+  // catch a Rust-side leak, but a REGENERATED corpus would freeze the leak as
+  // faithfully as a fix (measured: vitest read 226 passed over a corpus
+  // regenerated with the screen in `messages`). So the corpus's own chooser
+  // states are read for the lines only a screen carries: each screen's
+  // heading and its `> ` hint, in "The words" of plan 2a.
+  const SCREEN_LINES: { what: string; test: (line: string) => boolean }[] = [
+    { what: "the Church's heading", test: (l) => l === "Church — pay any of these, at most one of each (toggle by number):" },
+    { what: "the Church's hint", test: (l) => l === "> type a number to toggle, 'confirm' to pay, or 'cancel'" },
+    { what: "Chinatown's heading", test: (l) => /^Chinatown — up to \d+ exchanges? \(add by number\):$/.test(l) },
+    { what: "Chinatown's hint", test: (l) => l === "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'" },
+  ];
+  it("no chooser state's messages carry a line of either chooser's terminal screen", () => {
+    // The patterns read the screens' own lines (anti-vacuity).
+    for (const line of [
+      "Church — pay any of these, at most one of each (toggle by number):",
+      "> type a number to toggle, 'confirm' to pay, or 'cancel'",
+      "Chinatown — up to 3 exchanges (add by number):",
+      "Chinatown — up to 1 exchange (add by number):",
+      "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'",
+    ]) {
+      expect(SCREEN_LINES.some((s) => s.test(line)), line).toBe(true);
+    }
+    const choosers = EVERY_STATE.filter((s) => s.prompt.kind === "church" || s.prompt.kind === "chinatown");
+    expect(choosers.length, "the corpus's chooser states").toBe(5);
+    for (const state of choosers) {
+      for (const message of state.messages) {
+        for (const line of message.split("\n")) {
+          for (const s of SCREEN_LINES) {
+            expect(s.test(line), `a ${state.prompt.kind} state's messages carry ${s.what}: ${JSON.stringify(line)}`).toBe(false);
+          }
+        }
+      }
+    }
   });
 
   it("the corpus's two chinatown states: as it opens, and after one copper sale", () => {

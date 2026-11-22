@@ -57,6 +57,7 @@ import type {
   ChatMessage,
   ChatPage,
   ChinatownRow,
+  ChooserAmount,
   ChooserPreview,
   ChurchKind,
   ClientState,
@@ -666,6 +667,13 @@ const OPTION_ROW = ["number", "words", "opens_picker", "fee"] as const;
 const CHURCH_KIND = ["number", "good", "amount", "words", "have", "selected", "offered"] as const;
 const CHOOSER_PREVIEW = ["legal", "words"] as const;
 const CHINATOWN_ROW = ["number", "sells", "spend", "gain", "words", "count", "can_add", "offered"] as const;
+// The two chooser arms' own tops and the `{good, amount}` a stock entry, a
+// spend and a gain carry (plan 2a's fix wave, W-6): a field added to
+// `ChurchModel` or `ChinatownModel` reaches the acting seat, so it is pinned
+// here as the rows are, not left to a human reading the regenerated diff.
+const CHURCH_PROMPT = ["kind", "kinds", "preview", "offered_faiths"] as const;
+const CHINATOWN_PROMPT = ["kind", "max_exchanges", "chosen", "stock", "rows", "preview"] as const;
+const CHOOSER_AMOUNT = ["good", "amount"] as const;
 const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
   "shophouses", "trading_houses", "technologies", "mercenaries_unused",
@@ -789,6 +797,9 @@ const _or: KeysOf<OptionRow, typeof OPTION_ROW> = OPTION_ROW;
 const _chk: KeysOf<ChurchKind, typeof CHURCH_KIND> = CHURCH_KIND;
 const _chp: KeysOf<ChooserPreview, typeof CHOOSER_PREVIEW> = CHOOSER_PREVIEW;
 const _ctr: KeysOf<ChinatownRow, typeof CHINATOWN_ROW> = CHINATOWN_ROW;
+const _chq: KeysOf<Extract<PromptState, { kind: "church" }>, typeof CHURCH_PROMPT> = CHURCH_PROMPT;
+const _ctq: KeysOf<Extract<PromptState, { kind: "chinatown" }>, typeof CHINATOWN_PROMPT> = CHINATOWN_PROMPT;
+const _cha: KeysOf<ChooserAmount, typeof CHOOSER_AMOUNT> = CHOOSER_AMOUNT;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
 const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
@@ -843,7 +854,7 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _chq, _ctq, _cha, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -860,6 +871,9 @@ export const KEYS = {
   churchKind: CHURCH_KIND,
   chooserPreview: CHOOSER_PREVIEW,
   chinatownRow: CHINATOWN_ROW,
+  churchPrompt: CHURCH_PROMPT,
+  chinatownPrompt: CHINATOWN_PROMPT,
+  chooserAmount: CHOOSER_AMOUNT,
   player: PLAYER,
   hand: HAND,
   tile: TILE,
