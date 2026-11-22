@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use yokohama_core::game::actions::{calculate_church_faith, chinatown_rate, ChinatownGood};
 use yokohama_core::*;
 
-use crate::describe::{acting_area, chinatown_exchange_text, church_kind_words, describe_move};
+use crate::describe::{
+    acting_area, chinatown_exchange_text, church_kind_words, describe_move, port_board_name,
+};
 use crate::screen_model::{ChinatownOffer, CHURCH_YEN_COST};
 
 /// A thing a chooser spends or gains: a trade good, yen, or an imported good.
@@ -366,6 +368,205 @@ pub fn chinatown_text(model: &ChinatownModel) -> String {
     out
 }
 
+/// One order card in the Port's chooser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortCard {
+    /// What to send: the card's bare id.
+    pub number: u8,
+    pub id: OrderCardId,
+    /// The zone of the card's slot on the acting board. Displayed, never a rule.
+    pub zone: PortZone,
+    /// The card's face, as the ports panel carries it.
+    pub printed: OrderCard,
+    /// `order_prompt_line`'s words.
+    pub words: String,
+    pub selected: bool,
+    /// The list holds a take of the selection with this card added.
+    pub can_add: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortPreview {
+    /// Some listed move takes exactly the selection.
+    pub legal: bool,
+    /// `describe_move`'s words of every listed move taking exactly the
+    /// selection, in list order: none, one or two.
+    pub ways: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PortModel {
+    /// Which port is acting, as the ports panel names its boards.
+    pub board_b: bool,
+    /// The most cards one listed move takes: 1 or 2.
+    pub max_cards: usize,
+    /// The cards some listed move takes, in the acting board's slot order.
+    pub cards: Vec<PortCard>,
+    pub preview: PortPreview,
+}
+
+/// The cards a Port move takes; `None` for any other move.
+pub fn port_cards(mv: &Move) -> Option<&[OrderCardId]> {
+    match mv {
+        Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } => {
+            Some(cards_taken)
+        }
+        _ => None,
+    }
+}
+
+/// A card set's key: its numbers, sorted, so the order of either side of a
+/// comparison is no part of it.
+fn port_key(cards: &[OrderCardId]) -> Vec<u8> {
+    let mut key: Vec<u8> = cards.iter().map(|c| c.0).collect();
+    key.sort_unstable();
+    key
+}
+
+/// Every listed move taking exactly `selected`, whatever the order of either,
+/// in list order.
+pub fn port_matches(legal: &[Move], selected: &[OrderCardId]) -> Vec<Move> {
+    let want = port_key(selected);
+    legal
+        .iter()
+        .filter(|mv| port_cards(mv).is_some_and(|cards| port_key(cards) == want))
+        .cloned()
+        .collect()
+}
+
+/// The distinct cards over the listed Port moves, in the order the list first
+/// names them.
+pub fn port_reach(legal: &[Move]) -> Vec<OrderCardId> {
+    let mut reach: Vec<OrderCardId> = Vec::new();
+    for card in legal.iter().filter_map(port_cards).flatten() {
+        if !reach.contains(card) {
+            reach.push(*card);
+        }
+    }
+    reach
+}
+
+/// The most cards one listed Port move takes; 0 when none is listed. The ONE
+/// answer to "1 card, or 2": the main list's entry and the chooser's heading
+/// both read it.
+pub fn port_most_cards(legal: &[Move]) -> usize {
+    legal.iter().filter_map(port_cards).map(<[OrderCardId]>::len).max().unwrap_or(0)
+}
+
+/// `legal` is walked once into a map from a sorted card set to its listed
+/// moves; each card's `can_add`, the preview and `max_cards` are answered from
+/// that map and from `port_most_cards` over the same list, never from the
+/// power, the hand, the yen or the imported goods. The acting board's slots
+/// are read for what is DISPLAYED only: which listed cards it holds, in which
+/// slot order and zone. A card of `selected` that the model does not hold
+/// (another board's, or none in reach) is ignored.
+pub fn port_model(
+    state: &GameState,
+    rules: &Rules,
+    legal: &[Move],
+    selected: &[OrderCardId],
+) -> PortModel {
+    let mut takes: HashMap<Vec<u8>, Vec<&Move>> = HashMap::new();
+    for mv in legal {
+        if let Some(cards) = port_cards(mv) {
+            takes.entry(port_key(cards)).or_default().push(mv);
+        }
+    }
+    let reach = port_reach(legal);
+    let acting = acting_area(state)
+        .and_then(|area| state.board_layout.areas.get(&area))
+        .map(|config| config.area_type);
+    let board = match acting {
+        Some(AreaType::PortA) => Some(&state.port_state.port_a),
+        Some(AreaType::PortB) => state.port_state.port_b.as_ref(),
+        _ => None,
+    };
+    let slots: Vec<(usize, OrderCardId)> = board
+        .map(|b| {
+            b.slots
+                .iter()
+                .enumerate()
+                .filter_map(|(i, slot)| slot.map(|id| (i, id)))
+                .filter(|(_, id)| reach.contains(id))
+                .collect()
+        })
+        .unwrap_or_default();
+    let chosen: Vec<OrderCardId> =
+        slots.iter().map(|&(_, id)| id).filter(|id| selected.contains(id)).collect();
+    let cards = slots
+        .iter()
+        .map(|&(slot, id)| {
+            let is_selected = chosen.contains(&id);
+            let mut with = chosen.clone();
+            with.push(id);
+            let printed = rules.orders.get(id).expect("the registry holds every order card");
+            PortCard {
+                number: id.0,
+                id,
+                zone: PortBoard::zone_of(slot),
+                printed: printed.clone(),
+                words: order_prompt_line(printed),
+                selected: is_selected,
+                can_add: !is_selected && takes.contains_key(&port_key(&with)),
+            }
+        })
+        .collect();
+    let ways: Vec<String> = takes
+        .get(&port_key(&chosen))
+        .map(|moves| moves.iter().map(|mv| describe_move(mv, state, rules)).collect())
+        .unwrap_or_default();
+    PortModel {
+        board_b: acting == Some(AreaType::PortB),
+        max_cards: port_most_cards(legal),
+        cards,
+        preview: PortPreview { legal: !ways.is_empty(), ways },
+    }
+}
+
+/// The terminal's screen for the model (plan 2b, "The words"). Ends with a
+/// newline, as every sub-prompt screen in `repl.rs` does.
+pub fn port_text(model: &PortModel) -> String {
+    let take = if model.max_cards >= 2 { "take 1 card, or 2" } else { "take 1 card" };
+    let mut out = format!("{} — {take} (toggle by number):\n", port_board_name(model.board_b));
+    let mut zone = None;
+    for card in &model.cards {
+        let lead = if zone == Some(card.zone) {
+            "        "
+        } else {
+            match card.zone {
+                PortZone::Low => "  LOW   ",
+                PortZone::Mid => "  MID   ",
+                PortZone::High => "  HIGH  ",
+            }
+        };
+        zone = Some(card.zone);
+        let mark = if card.selected { "    ●" } else { "" };
+        out.push_str(&format!("{lead}[{:>2}] {}{mark}\n", card.number, card.words));
+    }
+    let chosen: Vec<String> =
+        model.cards.iter().filter(|c| c.selected).map(|c| format!("O{:02}", c.number)).collect();
+    if chosen.is_empty() {
+        out.push_str("Selected: (none)\n  -> pick a card to preview it\n");
+    } else {
+        out.push_str(&format!("Selected: {}\n", chosen.join(", ")));
+        match model.preview.ways.as_slice() {
+            [] => out.push_str("  -> NOT currently offered (adjust the selection)\n"),
+            [way] => out.push_str(&format!("  -> legal — {way}\n")),
+            ways => {
+                out.push_str(&format!(
+                    "  -> legal — {} ways to pay, asked at confirm:\n",
+                    ways.len()
+                ));
+                for way in ways {
+                    out.push_str(&format!("       {way}\n"));
+                }
+            }
+        }
+    }
+    out.push_str("> a card number toggles it, 'confirm' to take, or 'cancel'\n");
+    out
+}
+
 /// Test fixtures shared with other modules' cells (`pub(crate)` so `describe.rs`
 /// and, later, `repl.rs` reach the same position).
 #[cfg(test)]
@@ -479,12 +680,86 @@ pub(crate) mod test_support {
     pub(crate) fn rich_position() -> GameState {
         chinatown_position(4, 4, [5, 5, 5, 5, 20, 2])
     }
+
+    /// A position at a Port for `players` seats: the acting seat's president on
+    /// Port A (or Port B) with `assistants` of its assistants there (power
+    /// `1 + assistants`), `hand` order cards in hand, `yen` yen and `imports`
+    /// imported goods, `AreaAction` and the action power set. **Valid by
+    /// construction** (a `Session` runs the invariants after every apply): the
+    /// assistants come out of the seat's hand supply, and an order card added to
+    /// the hand beyond the dealt one is popped off the order deck.
+    fn port_fixture(
+        players: u8,
+        seed: u64,
+        board_b: bool,
+        assistants: u8,
+        hand: usize,
+        yen: u32,
+        imports: u32,
+    ) -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(players), &rules, seed).unwrap();
+        let choices = vec![StartingOrderChoice::Keep(0); players as usize];
+        let mut state = finalize_setup(pending, &choices).unwrap();
+        let wanted = if board_b { AreaType::PortB } else { AreaType::PortA };
+        let port = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == wanted)
+            .expect("the board holds the port")
+            .0;
+        let me = state.current_player;
+        assert!(state.players[me.0 as usize].order_cards_in_hand.len() <= hand);
+        while state.players[me.0 as usize].order_cards_in_hand.len() < hand {
+            let card = state.order_deck.pop().expect("the order deck has a card");
+            state.players[me.0 as usize].order_cards_in_hand.push(card);
+        }
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(port);
+        if assistants > 0 {
+            p.assistants.on_board.insert(port, assistants);
+            p.assistants.in_hand -= assistants;
+        }
+        p.money = yen;
+        p.imported_goods = imports;
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, port));
+        state
+    }
+
+    /// `port_position`'s board with `assistants` at the Port, `hand` order
+    /// cards in hand, `yen` yen and `imports` imported goods.
+    pub(crate) fn port_position_with(
+        assistants: u8,
+        hand: usize,
+        yen: u32,
+        imports: u32,
+    ) -> GameState {
+        port_fixture(2, 7, false, assistants, hand, yen, imports)
+    }
+
+    /// A 2P position (setup seed 7) with the acting seat's president on Port A
+    /// with 4 assistants there (power 5), its hand as dealt (one order), 5 yen
+    /// and 1 imported good. Measured: Port A `[O10, O34 | O28, O18 | O02, O13]`,
+    /// 36 listed Port moves, 6 singles and 15 pairs each listed twice.
+    pub(crate) fn port_position() -> GameState {
+        port_position_with(4, 1, 5, 1)
+    }
+
+    /// A 3P position (setup seed 7) with the acting seat's president on Port B
+    /// at power 5 with room in hand for two cards, 5 yen and no imported good,
+    /// so each pair is listed once.
+    pub(crate) fn port_b_position() -> GameState {
+        port_fixture(3, 7, true, 4, 1, 5, 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        issue_position, ordinary_position, ordinary_position_power_1, rich_position,
+        issue_position, ordinary_position, ordinary_position_power_1, port_b_position,
+        port_position, port_position_with, rich_position,
     };
     use super::*;
     use crate::describe::describe_move;
@@ -1100,5 +1375,347 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
                 exchanges_of(mv)
             );
         }
+    }
+
+    // ---- The Port's chooser (plan 2b, Task 1) ----
+
+    fn port_moves(legal: &[Move]) -> Vec<&Move> {
+        legal.iter().filter(|m| port_cards(m).is_some()).collect()
+    }
+
+    fn ids(numbers: &[u8]) -> Vec<OrderCardId> {
+        numbers.iter().map(|&n| OrderCardId(n)).collect()
+    }
+
+    /// The listed Port moves' cards as sorted numbers, each distinct set once, in
+    /// first-listed order.
+    fn listed_sets(legal: &[Move]) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        for mv in port_moves(legal) {
+            let mut set: Vec<u8> = port_cards(mv).unwrap().iter().map(|c| c.0).collect();
+            set.sort_unstable();
+            if !out.contains(&set) {
+                out.push(set);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_fixtures_are_what_the_plan_measured() {
+        let rules = Rules::standard();
+        let state = port_position();
+        let legal = legal_of(&state);
+        let moves = port_moves(&legal);
+        assert_eq!(moves.len(), 36);
+        let lens: Vec<usize> = moves.iter().map(|m| port_cards(m).unwrap().len()).collect();
+        assert_eq!(lens.iter().filter(|&&n| n == 1).count(), 6);
+        assert_eq!(lens.iter().filter(|&&n| n == 2).count(), 30);
+        for set in listed_sets(&legal).iter().filter(|s| s.len() == 2) {
+            let times = moves
+                .iter()
+                .filter(|m| {
+                    let mut c: Vec<u8> = port_cards(m).unwrap().iter().map(|c| c.0).collect();
+                    c.sort_unstable();
+                    &c == set
+                })
+                .count();
+            assert_eq!(times, 2, "{set:?} is listed once per way to pay");
+        }
+        assert_eq!(port_reach(&legal).len(), 6);
+        assert_eq!(port_most_cards(&legal), 2);
+        assert_eq!(
+            state.port_state.port_a.slots.map(|s| s.map(|c| c.0)),
+            [Some(10), Some(34), Some(28), Some(18), Some(2), Some(13)]
+        );
+        assert_eq!(state.current_player().order_cards_in_hand, ids(&[24]));
+
+        // Port B's seat: each pair once (no imported good).
+        let b = port_b_position();
+        let b_legal = legal_of(&b);
+        assert_eq!(
+            b.port_state.port_b.as_ref().unwrap().slots.map(|s| s.map(|c| c.0)),
+            [Some(18), Some(2), Some(13), Some(6), Some(3), Some(35)]
+        );
+        assert_eq!(port_moves(&b_legal).len(), 6 + 15);
+        assert_eq!(port_most_cards(&b_legal), 2);
+
+        check_invariants(&state, &rules).expect("port_position is a valid state");
+        check_invariants(&b, &rules).expect("port_b_position is a valid state");
+        check_invariants(&port_position_with(4, 2, 5, 1), &rules)
+            .expect("port_position_with is a valid state");
+        check_invariants(&port_position_with(1, 1, 1, 0), &rules)
+            .expect("port_position_with is a valid state");
+    }
+
+    #[test]
+    fn every_listed_take_matches_itself_whatever_its_order() {
+        let state = port_position();
+        let legal = legal_of(&state);
+        for mv in port_moves(&legal) {
+            let cards = port_cards(mv).unwrap().to_vec();
+            let found = port_matches(&legal, &cards);
+            assert!(found.contains(mv), "{mv:?} matches itself");
+            let mut reversed = cards.clone();
+            reversed.reverse();
+            assert_eq!(port_matches(&legal, &reversed), found, "reversed {cards:?}");
+        }
+        // A pair is held by exactly the two listed moves, in list order.
+        let pair = ids(&[10, 34]);
+        let expected: Vec<Move> = legal
+            .iter()
+            .filter(|m| {
+                port_cards(m).is_some_and(|c| c.len() == 2 && c.contains(&pair[0]) && c.contains(&pair[1]))
+            })
+            .cloned()
+            .collect();
+        assert_eq!(expected.len(), 2);
+        assert_eq!(port_matches(&legal, &pair), expected);
+        let mut flipped = pair.clone();
+        flipped.reverse();
+        assert_eq!(port_matches(&legal, &flipped), expected);
+        // Nothing listed takes a card no list holds, or a third card.
+        assert!(port_matches(&legal, &ids(&[99])).is_empty());
+        assert!(port_matches(&legal, &ids(&[10, 34, 28])).is_empty());
+        assert!(port_matches(&legal, &[]).is_empty());
+    }
+
+    #[test]
+    fn can_add_is_read_off_the_list() {
+        let rules = Rules::standard();
+        // (assistants, hand, yen, imports, cards in the model, most cards)
+        let positions: [(u8, usize, u32, u32, usize, usize); 4] = [
+            (4, 1, 5, 1, 6, 2),
+            (4, 2, 5, 1, 6, 1), // two orders in hand: rival "two cards while the hand has room for one"
+            (4, 1, 1, 0, 6, 1), // 1 yen: rival "a second card is free"
+            (1, 1, 5, 1, 2, 2), // power 2: rival "every card on the board"
+        ];
+        for (assistants, hand, yen, imports, in_model, most) in positions {
+            let state = port_position_with(assistants, hand, yen, imports);
+            let legal = legal_of(&state);
+            let reach = port_reach(&legal);
+            assert_eq!(reach.len(), in_model, "reach at {assistants}/{hand}/{yen}/{imports}");
+            assert_eq!(port_most_cards(&legal), most);
+            let mut selections: Vec<Vec<OrderCardId>> = vec![vec![]];
+            for &a in &reach {
+                selections.push(vec![a]);
+                for &b in &reach {
+                    if a.0 < b.0 {
+                        selections.push(vec![a, b]);
+                    }
+                }
+            }
+            for selection in selections {
+                let model = port_model(&state, &rules, &legal, &selection);
+                assert_eq!(model.cards.len(), in_model);
+                for card in &model.cards {
+                    if selection.contains(&card.id) {
+                        assert!(card.selected && !card.can_add, "{:?}", card.id);
+                        continue;
+                    }
+                    let mut with = selection.clone();
+                    with.push(card.id);
+                    assert_eq!(
+                        card.can_add,
+                        !port_matches(&legal, &with).is_empty(),
+                        "{assistants}/{hand}/{yen}/{imports}: {:?} on {selection:?}",
+                        card.id
+                    );
+                }
+            }
+            // The positions separate the list from each restated rule.
+            let none = port_model(&state, &rules, &legal, &[]);
+            assert!(none.cards.iter().all(|c| c.can_add), "any one card can be added to nothing");
+            if most == 1 {
+                let one = port_model(&state, &rules, &legal, &reach[..1]);
+                assert!(one.cards.iter().all(|c| !c.can_add), "no second card is listed");
+            }
+        }
+        // Power 2: the board holds six cards, the model two.
+        let low = port_position_with(1, 1, 5, 1);
+        assert_eq!(low.port_state.port_a.slots.iter().flatten().count(), 6);
+    }
+
+    #[test]
+    fn a_third_card_cannot_be_added() {
+        let rules = Rules::standard();
+        let state = port_position();
+        let legal = legal_of(&state);
+        let model = port_model(&state, &rules, &legal, &ids(&[10, 34]));
+        assert_eq!(model.cards.len(), 6);
+        for card in &model.cards {
+            if card.number == 10 || card.number == 34 {
+                assert!(card.selected && !card.can_add, "{}", card.number);
+            } else {
+                assert!(!card.selected && !card.can_add, "{}", card.number);
+            }
+        }
+    }
+
+    #[test]
+    fn the_preview_is_describe_s() {
+        let rules = Rules::standard();
+        let state = port_position();
+        let legal = legal_of(&state);
+
+        let single = port_matches(&legal, &ids(&[10]));
+        assert_eq!(single.len(), 1);
+        let model = port_model(&state, &rules, &legal, &ids(&[10]));
+        assert_eq!(
+            model.preview,
+            PortPreview { legal: true, ways: vec![describe_move(&single[0], &state, &rules)] }
+        );
+
+        let model = port_model(&state, &rules, &legal, &ids(&[10, 34]));
+        let pair = port_matches(&legal, &ids(&[10, 34]));
+        assert_eq!(
+            model.preview.ways,
+            pair.iter().map(|m| describe_move(m, &state, &rules)).collect::<Vec<_>>()
+        );
+        assert!(model.preview.legal);
+        assert_eq!(model.preview.ways.len(), 2);
+        assert!(model.preview.ways[0].ends_with(", paying 2 yen"), "{:?}", model.preview.ways);
+        assert!(model.preview.ways[1].ends_with(", paying 1 imported good"), "{:?}", model.preview.ways);
+
+        let model = port_model(&state, &rules, &legal, &[]);
+        assert_eq!(model.preview, PortPreview { legal: false, ways: vec![] });
+
+        // With no imported good a pair is listed once: one way, not two.
+        let one_way = port_position_with(4, 1, 5, 0);
+        let one_legal = legal_of(&one_way);
+        let model = port_model(&one_way, &rules, &one_legal, &ids(&[10, 34]));
+        assert!(model.preview.legal);
+        assert_eq!(model.preview.ways.len(), 1);
+        assert!(model.preview.ways[0].ends_with(", paying 2 yen"), "{:?}", model.preview.ways);
+
+        // The engine never lists a pair without its singles; the model must not
+        // rest on that: remove O10's single and it alone reads not offered.
+        let mut cut = legal.clone();
+        cut.retain(|m| port_cards(m).map(|c| c.to_vec()) != Some(ids(&[10])));
+        let model = port_model(&state, &rules, &cut, &ids(&[10]));
+        assert_eq!(model.preview, PortPreview { legal: false, ways: vec![] });
+        assert!(
+            port_text(&model).contains("\n  -> NOT currently offered (adjust the selection)\n"),
+            "{}",
+            port_text(&model)
+        );
+    }
+
+    #[test]
+    fn the_cards_are_in_slot_order_with_their_zones() {
+        let rules = Rules::standard();
+        let state = port_position();
+        let legal = legal_of(&state);
+        let model = port_model(&state, &rules, &legal, &[]);
+        assert_eq!(model.cards.iter().map(|c| c.number).collect::<Vec<_>>(), [10, 34, 28, 18, 2, 13]);
+        assert_eq!(
+            model.cards.iter().map(|c| c.zone).collect::<Vec<_>>(),
+            [PortZone::Low, PortZone::Low, PortZone::Mid, PortZone::Mid, PortZone::High, PortZone::High]
+        );
+        for c in &model.cards {
+            let printed = rules.orders.get(c.id).expect("the registry holds it");
+            assert_eq!(c.id.0, c.number);
+            assert_eq!(&c.printed, printed);
+            assert_eq!(c.words, order_prompt_line(printed));
+        }
+
+        // The same cards with two slots swapped read the swapped order.
+        let mut swapped = state.clone();
+        swapped.port_state.port_a.slots.swap(0, 5);
+        let model = port_model(&swapped, &rules, &legal_of(&swapped), &[]);
+        assert_eq!(model.cards.iter().map(|c| c.number).collect::<Vec<_>>(), [13, 34, 28, 18, 2, 10]);
+        assert_eq!(model.cards[0].zone, PortZone::Low);
+        assert_eq!(model.cards[5].zone, PortZone::High);
+    }
+
+    #[test]
+    fn port_b_is_the_acting_board() {
+        let rules = Rules::standard();
+        let state = port_b_position();
+        let legal = legal_of(&state);
+        let model = port_model(&state, &rules, &legal, &[]);
+        assert!(model.board_b);
+        let b = state.port_state.port_b.as_ref().expect("three players have Port B");
+        assert_eq!(model.cards.len(), 6);
+        for c in &model.cards {
+            assert!(b.find_card(c.id).is_some(), "{} sits on Port B", c.number);
+            assert!(state.port_state.port_a.find_card(c.id).is_none(), "{} is not Port A's", c.number);
+        }
+        assert!(port_text(&model).starts_with("Port B — take 1 card, or 2"), "{}", port_text(&model));
+
+        // Port A is the other answer.
+        let a = port_position();
+        assert!(!port_model(&a, &rules, &legal_of(&a), &[]).board_b);
+
+        // A card of `selected` the acting board does not hold is ignored.
+        let foreign = state.port_state.port_a.slots[0].expect("Port A holds a card");
+        let model_with = port_model(&state, &rules, &legal, &[foreign]);
+        assert_eq!(model_with, model);
+        let own = ids(&[18]);
+        let mixed = port_model(&state, &rules, &legal, &[foreign, own[0]]);
+        assert_eq!(mixed, port_model(&state, &rules, &legal, &own));
+    }
+
+    #[test]
+    fn the_screen_is_the_plan_s() {
+        let rules = Rules::standard();
+        let state = port_position();
+        let legal = legal_of(&state);
+        let plan = "\
+Port A — take 1 card, or 2 (toggle by number):
+  LOW   [10] O10 [Britain]  needs 2 copper + 1 tea + 1 fish  ->  4 VP + 2 move    ●
+        [34] O34 [France]  needs 2 copper + 3 tea  ->  9 VP + 1 import    ●
+  MID   [28] O28 [America]  needs 1 silk + 4 fish  ->  3 VP + 1 import + 1 warehouse
+        [18] O18 [America]  needs 2 copper + 3 fish  ->  6 VP + 1 import
+  HIGH  [ 2] O02 [France]  needs 2 tea + 1 fish  ->  3 VP
+        [13] O13 [Britain]  needs 2 copper + 1 silk + 2 fish  ->  8 VP + 1 import
+Selected: O10, O34
+  -> legal — 2 ways to pay, asked at confirm:
+       Port: take O10, O34, paying 2 yen
+       Port: take O10, O34, paying 1 imported good
+> a card number toggles it, 'confirm' to take, or 'cancel'
+";
+        let model = port_model(&state, &rules, &legal, &ids(&[10, 34]));
+        assert_eq!(port_text(&model), plan);
+
+        // The order of `selected` is not the order of the screen.
+        let reversed = port_model(&state, &rules, &legal, &ids(&[34, 10]));
+        assert_eq!(port_text(&reversed), plan);
+
+        let none = port_text(&port_model(&state, &rules, &legal, &[]));
+        let lines: Vec<&str> = none.lines().collect();
+        assert_eq!(
+            lines[lines.len() - 3..],
+            [
+                "Selected: (none)",
+                "  -> pick a card to preview it",
+                "> a card number toggles it, 'confirm' to take, or 'cancel'"
+            ]
+        );
+        assert!(none.ends_with('\n'));
+
+        // One card on: one way, in describe's words.
+        let one = port_text(&port_model(&state, &rules, &legal, &ids(&[28])));
+        assert!(one.contains("\nSelected: O28\n  -> legal — Port: take O28\n"), "{one}");
+
+        // No listed move takes two: the heading drops "or 2".
+        let single_only = port_position_with(4, 2, 5, 1);
+        let screen =
+            port_text(&port_model(&single_only, &rules, &legal_of(&single_only), &[]));
+        assert!(screen.starts_with("Port A — take 1 card (toggle by number):\n"), "{screen}");
+    }
+
+    #[test]
+    fn max_cards_is_read_off_the_list() {
+        let rules = Rules::standard();
+        for (assistants, hand, yen, imports, most) in
+            [(4, 1, 5, 1, 2), (4, 2, 5, 1, 1), (4, 1, 1, 0, 1)]
+        {
+            let state = port_position_with(assistants, hand, yen, imports);
+            let legal = legal_of(&state);
+            assert_eq!(port_most_cards(&legal), most);
+            assert_eq!(port_model(&state, &rules, &legal, &[]).max_cards, most);
+        }
+        assert_eq!(port_most_cards(&[]), 0);
     }
 }
