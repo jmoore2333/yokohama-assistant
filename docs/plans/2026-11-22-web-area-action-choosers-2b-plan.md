@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** At the Port the main list reads as one entry and the decline, and the entry opens a chooser in the REPL (one card or two switched on by their printed numbers), which the browser draws with its own card faces. At the Laboratory the list reads as one row per technology, and a technology with more than one listed row opens the numbered pick the REPL already has. The terminal's players panel shows the per-country flag counts.
+**Goal:** At the Port the main list reads as one entry and the decline, and the entry opens a chooser in the REPL (one card or two switched on by their printed numbers), which the browser draws with its own card faces. At the Laboratory the list reads as one row per technology, and a technology with more than one listed row opens the numbered pick the REPL already has. The terminal's `players` view shows the per-country flag counts.
 
 **Architecture:** The Port's chooser is a third model in the CLI's pure module `chooser.rs`, built by looking moves up in the legal list; the REPL holds the selection as a `SubPrompt`, and `confirm` commits the one listed move the selection names, or opens the existing numbered pick when two listed moves take the same cards (the second card paid either way). The web layer serializes the model as one new `PromptState` arm, `port`, and the browser draws it. The Laboratory's fold adds no sub-prompt and no prompt kind. Nothing computes a rule: reach, hand room, the two-card limit and what a second card costs are all answered by finding a listed move.
 
@@ -55,7 +55,15 @@ Readings by a throwaway harness outside the tree, at `f46e8f76`; the plan's inde
 - **The engine's Laboratory list** (`generate_lab_actions`) is in slot order, a slot's payment mixes together. Ten of the twenty titles exist as two cards. With both copies of Ball on one board (slots 1 and 4) between Mining Technology and Tram, the list read: Mining Technology, Ball (the slot-1 copy, 1 row), Tram (3 rows), Ball (the slot-4 copy, 2 rows). Ball's three rows are NOT contiguous. Owning three technologies doubles most rows (the 4th-card fee paid either way): Ball read 6 rows.
 - **The corpus walk's game** (the two-player `wire` record, 1,036 events): 95 area-action prompts with no choice queued; 3 Church folds (plan 2a's); **11 Port lists with more than one take** (events 90, 117, 145, 274, 356, 447, 707, 736, 821, 917, 1024) and none with exactly one; the walk's draws there are three pairs (events 90, 356, 1024, each payable one way), five singles and three declines. **No drawn pair is payable both ways, so the walk never opens the payment pick.** The Laboratory is met twice, once with a title of two rows (event 50, Ball; the draw is one of them).
 - **At three players Port B exists and Laboratory B does not; at four both exist.**
-- **The longest `order_prompt_line` in the registry is 79 characters** (O06).
+- **The longest `order_prompt_line` in the registry is 79 characters** (O06); the widest row of the Port's screen is 97 columns, and a sub-prompt's screen is printed unwrapped under a frame 175 to 200 columns wide.
+- **Whenever a pair is listed, both of its singles are** (the engine lists singles while the hand holds fewer than three and pairs while it holds at most one). So at the Port a selection is either empty or listed: with one card on, the preview is always legal.
+- **By lines from a fresh table** (the additional actions ended, Option B's two assistants at a Port, the President placed there: power 3) every table reaches a folded Port prompt with four cards in reach and six pairs. The seat holds 3 yen and no imported good at every player count, so **no pair payable both ways is reachable by lines at the opening**. On the table the Worker's restore cells use (seed 20260831) the entry is `1` and the cards are 34, 19, 12 and 4.
+- **The walk gains 19 rows at Task 2 and 1 at Task 3**, counted from its draws (three pairs at three more lines each, five singles at two more, three declines at none; one Laboratory pick): `walk.json` 2,222, then 2,241, then 2,242. The kept list's rows 2194 to 2206 and 2221 sit after the first folded Port prompt and shift; its earlier rows and `walk-host.json`'s `after` indices do not.
+- **Event 50's two Laboratory rows are the two COPIES of Ball** (cards 12 and 11, slots 1 and 2): `Laboratory: acquire Ball` and `Laboratory: acquire Ball, slot fee: 2 yen`. The walk's draw is the first.
+- **Inside a chooser `?` opens the card index** and returns to the chooser with its selection kept; `ports` and `hand` open their views too; `view`, `help` and `board` are refused (`Repl::step` answers `?` ahead of every sub-prompt, and plan 2a pinned it).
+- **The numbered pick prints its title followed by a colon** (`{title}:`), and the browser shows the title as its asking line.
+- **The terminal's frame has no row to spare for a flags line** (measured by adding one): the opening frame is 51 rows at two players, 50 at three and 49 at four, against a 50-row floor that the three-player frame sits on. A `Flags` line per seat reads 53, 51 and 50; with a line for the flags in hand, 54, 53 and 52; five frame cells read red. Joining the orders line does not fit either: the two-player orders line already reaches the dashboard's 74 columns, and a seat's column below the board is 48 columns at four players. The hand panel below the board is one row and already names each card's country.
+- **These readings were first taken on states the engine's invariants refuse** (assistants and cards invented, not moved) and were reproduced by the plan's review on valid ones. A valid build: the assistants come out of the seat's hand; an extra order in hand is popped off the order deck; a Laboratory card is swapped with the tech deck, and an emptied slot's card goes back into its deck.
 
 ## The words
 
@@ -99,11 +107,11 @@ This is Task 1's fixture with O10 and O34 on. When no listed move takes two card
 | two | the three lines above: `  -> legal — 2 ways to pay, asked at confirm:` and each move's words indented seven spaces, in list order |
 | none, with something selected | `  -> NOT currently offered (adjust the selection)` |
 
-**The two picks.** Both are the REPL's existing numbered pick (`SubPrompt::Pick`), its rows `describe_move`'s words, its hint and its `cancel` unchanged. Their titles:
+**The two picks.** Both are the REPL's existing numbered pick (`SubPrompt::Pick`), its rows `describe_move`'s words, its hint and its `cancel` (`Selection cancelled — back to the main options.`) unchanged. Their titles, passed WITHOUT a colon, since the pick prints one after its title and the browser shows the title as it is:
 
 ```
-Port: take O10, O34 — choose the payment:
-Laboratory: acquire {title} — choose the payment:
+Port: take O10, O34 — choose the payment
+Laboratory: acquire {title} — choose the payment
 ```
 
 The Port's title lists the cards as `describe_move` does for those moves.
@@ -116,41 +124,46 @@ The Port's title lists the cards as `describe_move` does for those moves.
 | a number, or `O{nn}`, that is no card in reach | `! that is not a card in reach here — pick one of the listed numbers, 'confirm', or 'cancel'` |
 | `confirm` with nothing selected | `! pick a card first, or 'cancel'` |
 | `confirm` on a selection the list does not hold | `! that selection is not currently available — adjust it or 'cancel'.` (Option A's own line) |
-| anything else, bare `back` and `?` included | `! toggle a card by its number, 'confirm', or 'cancel' (cancel first to use views/help)` |
+| anything else, bare `back` included | `! toggle a card by its number, 'confirm', or 'cancel' ('?' shows the cards; cancel first for help or the view menu)` |
 | `cancel` | `Port take cancelled — back to the main options.` |
 
 A card is named by its bare number (`11`), which is what the browser sends, and in the terminal also as it is displayed (`O11`, `o11`).
 
-**The terminal's flag counts** (Task 8). In the players panel, one line per seat after the orders line, in the panel's own line grammar (a label, two spaces, values joined by the panel's separator; a zero count dimmed as a zero import is):
+`?` opens the order-card index over the chooser and returns to it with the selection kept, as it does over the Church's and Chinatown's (design §9: "following what the sub-prompts do today"). The other two choosers' refusal lines say "(cancel first to use views/help)", which is half true (`?`, `ports` and `hand` open from inside); they are plan 2a's, built, and are recorded for the cycle's close.
+
+Two lines of the table above cannot be reached at the Port by lines, since a selection there is always empty or listed (measured): `  -> NOT currently offered (adjust the selection)` and the `confirm` refusal for a selection the list does not hold. They are written, so that the chooser does not rest on how the engine builds its list; no driver hunts for them, and the model's cell reads them on a list with a pair's single removed.
+
+**The terminal's flag counts** (Task 8), in the `players` view (`render::players_panel`), one line per seat after its `completed:` line:
 
 ```
-Flags  GB 2 · US 1 · FR 0 · DE 0 · NL 1
+  flags: GB 2  US 1  FR 0  DE 0  NL 1
 ```
 
-The five in `Country::ALL`'s order. In the hand panel, for an open hand with at least one flag among the orders in hand, one line after the cards:
+The five in `Country::ALL`'s order. For a seat whose hand is shown and holds at least one flag, a second line:
 
 ```
-In hand, not yet counting  GB 1 · NL 1
+  flags in hand (not yet counting): GB 1  NL 1
 ```
 
-listing the non-zero countries only. A hidden hand prints no such line.
+listing the non-zero countries only. A hidden hand prints no such line. The always-visible dashboard is NOT changed: it has no row to spare (measured above). **This is the plan's reading of design §5.8, put to the owner**: see "The owner's ruling this plan waits on".
 
 **The browser's words.** The Port panel's asking line is `The Port — take one card, or two`, or `The Port — take one card` when the arm's `max_cards` is 1. The help's and the guide's three sentences (Task 9):
 
 - P1. `At the Port, when more than one take is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: you switch on one card or two.`
-- P2. `A card you have not switched on is live only where the engine's list holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it; when the second card can be paid with 2 yen or with an imported good, Confirm asks which.`
+- P2. `A card you have not switched on is live only where the engine's list holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it; when you could pay for the second card either with 2 yen or with an imported good, Confirm asks which.`
 - P3. `At the Laboratory a technology that can be paid for in more than one way is a single row, and pressing it opens the list of those ways.`
 
 ## The files
 
 - `crates/yokohama-cli/src/chooser.rs` — the Port's model, text and matcher beside the Church's and Chinatown's; three fixtures in its `test_support` (Task 1).
 - `crates/yokohama-cli/src/repl.rs` — `PromptOption::Port`, `PromptOption::Laboratory`, `SubPrompt::Port`, `step_port`, the fold in `group_area_action`, one shared close-then-commit helper, `chooser_screen()` (Tasks 2, 3).
-- `crates/yokohama-cli/src/panel_render.rs` (and `render.rs`'s `players_panel`), `screen_model.rs` — the flag lines and the country codes with their pin (Task 8).
+- `crates/yokohama-cli/src/render.rs` (`players_panel`), `screen_model.rs` — the flag lines and the country codes with their pin (Task 8).
 - `crates/yokohama-cli/tests/piped_dogfood.rs` — the driver learns the Port and the Laboratory's pick; a floor on what it counts (Tasks 2, 3).
 - `crates/yokohama-web/src/client.rs`, `api.rs`, `lib.rs`, `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs` — the `port` arm, the strip by identity, every driver, the corpus (Tasks 2, 3, 7).
 - `web/src/wire/` — four new fixtures (`port.json`, `port_selected.json`, `port_pair.json`, `lab_pick.json`); `web/src/wire-script/` regenerated; `web/src/wire/contract.ts`, `contract.test.ts`, `web/src/types.ts` (Tasks 2, 3).
 - `worker/scripts/replay/fixtures/production-door-kept-rows.txt`, `worker/scripts/live-replay.test.mjs` — the kept list's indices and the pinned literal move with the walk (ruling R18 of plan 2a) in every task that regenerates it (Tasks 2, 3).
-- `web/src/Decision.tsx`, `styles.css`, `Decision.test.tsx` — the Port's panel, `isChooser` (Task 4).
+- `web/src/Decision.tsx`, `styles.css`, `Decision.test.tsx` — an interim branch for `port` and the unknown-kind cells' kind (Task 2); the Port's panel, `isChooser` (Task 4).
+- `worker/RUNBOOK.md`, `docs/web-lane.md` — the walk rows they cite by number ("walk row 2204", "rows 2204 and 2205") move with the walk (Tasks 2, 3).
 - `web/e2e/harness.ts`, `shared_table.ts`, `the_table.spec.ts` — the policy, the layout and the keyboard cells (Task 5).
 - `crates/yokohama-worker/src/picker.rs` (its test module only) — the restore cells (Task 6).
 - `docs/cli-guide.md`, `docs/cli-guide.html`, `docs/web-guide.md`, `web/src/Help.tsx`, `web/src/Help.test.tsx`, `docs/web-lane.md` — the documents (Tasks 2, 3, 8, 9).
@@ -212,18 +225,18 @@ pub fn port_model(state: &GameState, rules: &Rules, legal: &[Move], selected: &[
 pub fn port_text(model: &PortModel) -> String;
 ```
 
-`can_add` is false for a selected card. A card of `selected` that the acting board does not hold is ignored by the model. In `test_support`, each passing `check_invariants`:
+`can_add` is false for a selected card. A card of `selected` that the acting board does not hold is ignored by the model. In `test_support`, each passing `check_invariants` and built as "What was measured" says a valid build is (the assistants out of the seat's hand, an extra order popped off the order deck):
 
 - `port_position() -> GameState`: two players, setup seed 7, the seat to move with its President and four assistants on Port A (power 5), its hand as dealt (one order), 5 yen and 1 imported good. Measured: 36 Port moves, 6 singles and 15 pairs each listed twice.
 - `port_position_with(assistants: u8, hand: usize, yen: u32, imports: u32) -> GameState`: the same board with those four facts set.
-- `port_b_position() -> GameState`: three players, the seat to move on Port B at power 5 with room for two cards and 5 yen.
+- `port_b_position() -> GameState`: three players, the seat to move on Port B at power 5 with room for two cards, 5 yen and no imported good, so each pair is listed once.
 
 - [ ] **Step 1: the cells, red.** Each names the rival rule its data is chosen against.
   1. `the_fixtures_are_what_the_plan_measured`: on `port_position()`, 36 Port moves, 6 of one card, 30 of two, every pair's cards listed twice, `port_reach` of 6, `port_most_cards` 2; and `check_invariants` passes on all three fixtures.
   2. `every_listed_take_matches_itself_whatever_its_order`: for every listed Port move, `port_matches(legal, cards)` holds that move; with the cards reversed it holds the same moves; for a pair on `port_position()` it holds exactly the two listed moves, in list order.
   3. `can_add_is_read_off_the_list`: for every selection of zero, one or two cards of the reach on each position below, each unselected card's `can_add` equals `!port_matches(legal, selection + card).is_empty()`. The positions separate the list from each restated rule: `port_position_with(4, 2, 5, 1)` (two orders in hand: rival "two cards while the hand has room for one"; every `can_add` with one card on is false); `port_position_with(4, 1, 1, 0)` (rival "a second card is free"; the same); `port_position_with(1, 1, 5, 1)` (power 2: rival "every card on the board"; two cards in the model, four not).
   4. `a_third_card_cannot_be_added`: on `port_position()` with two cards on, every other card's `can_add` is false, and both selected cards read `selected: true`, `can_add: false`.
-  5. `the_preview_is_describe_s`: on `port_position()`, one card on gives `ways` equal to `[describe_move(the listed single)]`; two cards give the two listed moves' words in list order, the first ending `, paying 2 yen` and the second `, paying 1 imported good`; nothing on gives `legal: false` and no way. On `port_position_with(4, 1, 5, 0)` a pair gives one way (rival: "two ways whenever two cards are on").
+  5. `the_preview_is_describe_s`: on `port_position()`, one card on gives `ways` equal to `[describe_move(the listed single)]`; two cards give the two listed moves' words in list order, the first ending `, paying 2 yen` and the second `, paying 1 imported good`; nothing on gives `legal: false` and no way. On `port_position_with(4, 1, 5, 0)` a pair gives one way (rival: "two ways whenever two cards are on"). On `port_position()`'s list with one single REMOVED, that card alone reads `legal: false`, no way, and `port_text` prints `  -> NOT currently offered (adjust the selection)` (the engine never lists it so; the model must not rest on that).
   6. `the_cards_are_in_slot_order_with_their_zones`: on `port_position()` the numbers read `[10, 34, 28, 18, 2, 13]` with zones Low, Low, Mid, Mid, High, High, `printed` and `words` the registry's for each id; a clone of the state with two slots swapped reads the swapped order (rival: "sorted by id").
   7. `port_b_is_the_acting_board`: on `port_b_position()`, `board_b` is true, every card of the model sits on Port B, and no card of Port A is in it (rival: "always Port A").
   8. `the_screen_is_the_plan_s`: `port_text` on `port_position()` with O10 and O34 on equals "The words"' block byte for byte; with nothing on its last three lines are `Selected: (none)`, `  -> pick a card to preview it` and the prompt line; `port_text` on `port_position_with(4, 2, 5, 1)` opens `Port A — take 1 card (toggle by number):`.
@@ -233,13 +246,13 @@ pub fn port_text(model: &PortModel) -> String;
 - [ ] **Step 4:** green; `cargo test -p yokohama-cli`; the lint gate; both fence checks.
 - [ ] **Step 5:** commit.
 
-**Mutants:** `can_add` from the hand's length (cell 3, the two-orders position); `can_add` from the seat's yen and imported goods (cell 3, the 1-yen position); the cards from the board's slots without the list (cell 3, the power-2 position; cell 7 on Port A's cards); `port_matches` comparing in order (cell 2); `ways` built from the selection instead of `describe_move` (cell 5); the acting board fixed to Port A (cell 7); the cards sorted by id (cell 6).
+**Mutants:** `can_add` from the hand's length alone (cell 3, the 1-yen position, where the hand has room and the list says no); `can_add` from the seat's yen and imported goods alone (cell 3, the two-orders position, where the seat can pay and the list says no); the cards from the board's slots without the list (cell 3, the power-2 position; cell 7 on Port A's cards); `port_matches` comparing in order (cell 2); `ways` built from the selection instead of `describe_move` (cell 5); the acting board fixed to Port A (cell 7); the cards sorted by id (cell 6).
 
 ### Task 2: The Port folds, in the REPL and on the wire
 
 **impl: opus · review: opus.**
 
-**Files:** modify `crates/yokohama-cli/src/repl.rs`, `crates/yokohama-cli/tests/piped_dogfood.rs`, `crates/yokohama-web/src/client.rs`, `api.rs`, `lib.rs`, `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs`, `web/src/types.ts`, `web/src/wire/contract.ts`, `contract.test.ts`, `web/src/Decision.tsx` (one arm, below), the walk's regenerated files, the Worker's two kept-list files, `docs/cli-guide.md`, `docs/cli-guide.html`; every CLI and web-crate test that answers a Port prompt by row (search, below).
+**Files:** modify `crates/yokohama-cli/src/repl.rs`, `crates/yokohama-cli/tests/piped_dogfood.rs`, `crates/yokohama-web/src/client.rs`, `api.rs`, `lib.rs`, `tests/play_a_whole_game.rs`, `tests/wire_fixtures.rs`, `web/src/types.ts`, `web/src/wire/contract.ts`, `contract.test.ts`, `web/src/Decision.tsx` (one interim branch, below), `web/src/Decision.test.tsx` (the unknown-kind cells), the walk's regenerated files, the Worker's two kept-list files, `worker/RUNBOOK.md` and `docs/web-lane.md` where they cite a walk row by number, `docs/cli-guide.md`, `docs/cli-guide.html`; every CLI and web-crate test that answers a Port prompt by row (search, below).
 
 **Interfaces.** Consumes Task 1's. Produces:
 
@@ -249,36 +262,40 @@ pub fn port_text(model: &PortModel) -> String;
 - **One helper for `cancel`, `quit` and the close-then-commit `confirm`**, called by `step_church`, `step_chinatown` and `step_port`. The two existing choosers' behaviour and every one of their cells are unmoved.
 - `chooser_screen()` answers for the Port's chooser too.
 - `PromptState::Port(yokohama_cli::chooser::PortModel)`, kind `port`; `prompt_kind` answers it from `repl.sub` with no model built; `api.rs` strips the Port's screen from a reply's messages by identity, as it strips the other two.
-- In `web/src/types.ts` the `port` arm (`PortCard`, `PortPreview`), with `OrderCard` and the zone typed as the ports panel types them. In `Decision.tsx`, `port` joins `DRAWN_KINDS` and is drawn, until Task 4, by the node the unknown-kind fallback draws (its two lines and Cancel), so the client has no dead end between the two tasks.
+- In `web/src/types.ts` the `port` arm (`PortCard`, `PortPreview`), with `OrderCard` and the zone typed as the ports panel types them. In `Decision.tsx`, `port` joins `DRAWN_KINDS` and is drawn, until Task 4, by an INTERIM branch of its own: the panel's asking line ("The words") and Cancel, under `.chooser.port`, never the unknown-kind node (`.unknown-prompt`), so the client has no dead end between the two tasks and no known kind is drawn as an unknown one. In `Decision.test.tsx` the unknown-kind cells stop using `"port"` as their unknown kind (it is a known kind from this task on) and take a name no server sends; the comment in `Decision.tsx` that calls `port` "the next" is corrected. `npm test` stays green at this task's end.
+- `index_target`'s exhaustive match gains the `SubPrompt::Port` arm, answering as the other choosers' arms do, so `?` opens the order index over the chooser.
+- **The drivers' `port` arm** (`play_a_whole_game.rs`'s `choose`, and the piped-dogfood driver from its screen): while fewer than `max_cards` cards are on and some unselected card's `can_add` is true, switch one on when the driver's own draw says so; else Confirm when the preview is legal; else Cancel. An arm that confirms as soon as the preview is legal takes a single every time, because one card is always legal (measured), and no pair and no payment pick is ever reached.
 - `client::test_support::to_the_port(repl: &mut Repl) -> String` (a real game by lines to a folded Port prompt; returns the entry's number) and `port_entry(repl: &Repl) -> Option<String>`.
 
-**What answers a Port prompt by row today.** Search, do not trust this list: `grep -rn "Port: take\|AreaAction::Port" crates/yokohama-cli/src crates/yokohama-cli/tests crates/yokohama-web/src crates/yokohama-web/tests crates/yokohama-worker/src web/e2e web/src/local`. Found when this plan was written: `repl.rs`'s tests (the shared `drive_to_double_assistant_move_cascade` among them), `reveal.rs`, `view_render.rs`; `crates/yokohama-web/src/lib.rs`'s `play_until_a_draw` and its four Port callers, which look for a row starting `Port: take`; `play_a_whole_game.rs`'s `choose`; the piped-dogfood driver; the corpus walk. Each learns the chooser, or names its move another way, in this task; the report lists every site found and what was done at each.
+**What answers a Port prompt by row today.** Search, do not trust this list: `grep -rn "Port: take\|AreaAction::Port" crates/yokohama-cli/src crates/yokohama-cli/tests crates/yokohama-web/src crates/yokohama-web/tests crates/yokohama-worker/src web/e2e web/src/local`. Found by the plan's review, which planted a crude fold and read what went red: fourteen cells of `yokohama-cli` that answer a Port take by its index in the legal list (`repl.rs`'s `sim_mode_port_take_applies_immediately_with_no_reveal_prompt` and the two-card helper three index cells share; `reveal.rs`'s two helpers and seven of its cells, `live_port_take_collects_reveals_then_applies_them` and `the_guide_reveal_captures_are_what_the_fixtures_render` among them); `crates/yokohama-web/src/lib.rs`'s `play_until_a_draw` and its Port callers, which look for a row starting `Port: take`; `play_a_whole_game.rs`'s `choose`, which panics on a kind it does not know; the piped-dogfood driver; the corpus walk; `Decision.test.tsx`'s unknown-kind cells. `drive_to_double_assistant_move_cascade` and `view_render.rs` name a Port move and read green under the fold. No capture golden and no `guide_sync` cell quotes a Port row. Each site learns the chooser, or names its move another way, in this task; the report lists every site found and what was done at each. **The live-mode cells park at a reveal after the take**: a take committed through the chooser must leave them parking exactly as before (cell 10b).
 
-**The corpus.** The walk plays the SAME game: at a folded Port prompt it draws its index over `frame.decision.options`, as it does at a folded Church prompt, and names the drawn move: a move the fold left as a direct row (the decline) by that row's number; a take by the entry's number, each card's bare number in the listed move's order, then `confirm`. A drawn pair that two listed moves take would need the pick's number; the walk's game never draws one (measured above), so the walk REFUSES that case with a panic that says so, and grows no branch for it. Three captures at the walk's LAST folded Port prompt (event 1024 by the measurement: four cards in reach, six pairs each payable one way, the draw a pair; the implementer confirms the event): `port` (the chooser just opened), `port_selected` (one card on, legal, one way), `port_pair` (two cards on, legal, one way). The first fold (event 90) has two cards in reach, so a pair there leaves no unselected card and its flags would say nothing.
+**The corpus.** The walk plays the SAME game: at a folded Port prompt it draws its index over `frame.decision.options`, as it does at a folded Church prompt, and names the drawn move: a move the fold left as a direct row (the decline) by that row's number; a take by the entry's number, each card's bare number in the listed move's order, then `confirm`. A drawn pair that two listed moves take would need the pick's number; the walk's game never draws one (measured above), so the walk REFUSES that case with a panic that says so, and grows no branch for it. Three captures at the one folded Port prompt whose draw is a pair with more than two cards in reach (event 1024 by the measurement: four cards in reach, six pairs each payable one way; the implementer confirms the event). The walk's capture keeps the FIRST occurrence of a name, and event 447 opens a four-card chooser first (its draw is a single), so the condition is stated in the walk and not left to order: `port` (the chooser just opened), `port_selected` (one card on, legal, one way), `port_pair` (two cards on, legal, one way). The first fold (event 90) has two cards in reach, so a pair there leaves no unselected card and its flags would say nothing.
 
 - [ ] **Step 1: the REPL's cells, red** (in `repl.rs`'s tests, on Task 1's fixtures).
   1. `the_main_list_folds_the_port`: on `port_position()` the list is two rows, `Port — take 1 or 2 order cards (6 in reach)` and the decline; on `port_position_with(4, 2, 5, 1)` the entry reads `Port — take 1 order card (6 in reach)`; on a position whose list holds exactly one Port move (two orders in hand at power 2 with one LOW slot emptied into the removed pile) that move is a direct row in `describe_move`'s words (rival: "fold whenever the President is at a Port").
   2. `every_listed_take_commits_through_the_chooser`: for each of `port_position()`'s 36 listed takes, the lines that name it (the entry, its cards, `confirm`, and for a pair the pick's row) commit exactly that move, compared as a `Move`; the cards are sent once in the listed order and once reversed. Half the takes name their cards as `O{nn}`. The same over `port_position_with(4, 1, 5, 0)`'s 21 takes, where each pair is listed once: `confirm` commits it with no pick (rival: "the pick opens whenever two cards are on").
-  3. `a_third_card_is_refused_and_the_selection_kept`: two cards on, a third answers `! the list holds no take with O28 added from here`, and `confirm` then opens the pick over the first two.
+  3. `a_third_card_is_refused_and_the_selection_kept`: two cards on, a third answers `! the list holds no take with O28 added from here`, and `confirm` then opens the pick over the first two. And design §6's own case, a second card with room in hand for one: on `port_position_with(4, 2, 5, 1)` one card on, a second answers the same line for its card, nothing is applied, and `confirm` takes the first alone.
   4. `a_number_that_is_no_card_in_reach_is_refused`: on `port_position_with(1, 1, 5, 1)` (power 2), `28` (on the board, out of reach), `99` and `0` each answer the not-in-reach line and change nothing.
   5. `confirm_with_one_way_closes_then_commits`: one card, `confirm`: the reply holds no line of the chooser's screen and ends in the next prompt, and the state is the listed move's (equal to applying that move to a twin). That a take's reply reads as the old direct row's did is Step 3's to witness: every fixture committed before this task stays byte-identical.
   6. `cancel_in_the_payment_pick_keeps_nothing`: two cards, `confirm`, `cancel`: the main list; opening the entry again shows `Selected: (none)`.
-  7. `the_refusals_are_the_plan_s`: `confirm` with nothing on; `back`; `back 1`; `?`; `more`; a tile's id; `cancel`. Each line is "The words"', and none but `cancel` changes the selection.
+  7. `the_refusals_are_the_plan_s`: `confirm` with nothing on; `back`; `back 1`; `more`; `help`; a tile's id; `cancel`. Each line is "The words"', and none but `cancel` changes the selection.
+  7b. `the_card_index_opens_over_the_port_s_chooser_and_returns_to_it`: with a card on, `?` shows the order-card index and closing it shows the chooser with that card still on (beside plan 2a's cell of the same shape).
   8. `port_b_folds_and_commits`: on `port_b_position()` the screen opens `Port B —` and a take commits.
   9. `a_mercenary_s_port_folds_and_commits`: a position in a mercenary's sub-turn at a Port (built as plan 2a's mercenary Church cell builds its own): the fold, one take committed, the sub-turn's next phase reached.
   10. `the_shared_helper_moved_nothing`: no new assertion; the Church's and Chinatown's existing cells and both sweeps read green unedited. The report states their counts before and after.
+  10b. `a_live_port_take_through_the_chooser_parks_at_its_reveal`: in live mode a take committed through the chooser parks at the reveal as the old direct row's did; the existing live cells, moved to the chooser's lines, assert what they asserted.
   11. `a_self_play_sweep_commits_every_take`: over self-play positions at two, three and four players (seeds and game counts sized to stay per-edit, as plan 2a's sweeps are), at every folded Port prompt every listed take commits through the chooser, and every model's `can_add` equals the list's answer. The report states how many positions and takes it reached, and how many pairs were payable both ways (the floor is one; if the sweep reaches none, enlarge it and say so).
 - [ ] **Step 2: the web layer's cells, red** (`client.rs`, `api.rs`).
   12. `the_port_arm_is_the_repl_s_model`: at `to_the_port`, the acting seat's prompt is `port`, equal to `chooser::port_model` of the same `Repl`; another seat's is `watching`; a caller with no seat gets no arm.
   13. `a_port_reply_carries_no_screen_line_and_keeps_a_refusal`: a toggle's reply has no line of `chooser_screen()`; a refused third card's reply carries the refusal line.
   14. `prompt_kind_is_the_built_prompt_s_kind_at_every_kind`: the existing cell, extended to `port`.
   15. `the_expect_check_tells_the_port_from_the_main_list`: a line sent with `expect: "options"` while the chooser is open answers 409, as it does for the other two.
-  16. `every_line_the_client_sends_for_the_port_passes_the_fence`: each bare number 1 to 36, `confirm` and `cancel` pass `is_gameplay_line` as it stands; `O11` does not (the terminal's form, which the client never sends); a bare number at the main prompt with no chooser open applies nothing it did not apply before this task.
+  16. `every_line_the_client_sends_for_the_port_passes_the_fence`: each bare number 1 to 36, `confirm` and `cancel` pass `is_gameplay_line` as it stands; `O11` and `o11` do not (the terminal's form, which the client never sends).
 - [ ] **Step 3:** the code, the drivers, the walk and the captures; regenerate (`UPDATE_WIRE_FIXTURES=1 cargo test -p yokohama-web --test wire_fixtures`, then the plain run) and READ the diff: every fixture committed before this task is byte-identical, `log.json` among them; the walk gains rows only at the folded Port prompts; the three captures are new. The kept list's header counts, indices and footer and `live-replay.test.mjs`'s literal move with the walk (no kept row's text changes, none is added or dropped); both diffs quoted in the report.
 - [ ] **Step 4: the contract.** `wire.port`, `wire.portSelected`, `wire.portPair` join `EVERY_STATE`; `KEYS.portCard`, `KEYS.portPreview` and the arm's own top-level key list; one cell per fixture states what it is (`port`: nothing selected, not legal, no way; `portSelected`: one card selected, legal, one way; `portPair`: two selected, legal, one way, every other card's `can_add` false); `wire_fixtures`' variant count goes to 12.
 - [ ] **Step 5: the piped-dogfood driver** answers the Port's chooser from its screen (a card the screen lists; `confirm` when the screen says legal; the pick by number), counts takes confirmed through the chooser and payment picks opened, and asserts **a floor of one on its Church count and on its Port count**, each measured before it is set and stated in the report.
 - [ ] **Step 6: the guide pair.** §4 gains the Port's paragraph and screen (the block in "The words"), the two forms of a card's number, and the payment pick; a `guide_sync` cell ties the guide's quoted screen to `port_text` on the fixture, as plan 2a's fix wave tied the other two.
-- [ ] **Step 7:** the Rust suites, one at a time; commit (two commits are fine: the REPL with its guide, then the wire with its corpus).
+- [ ] **Step 7:** the Rust suites, one at a time; commit. This task is the plan's largest, and its two halves cannot each be green: with the REPL's fold alone the web crate's corpus cell reads red (measured). If it lands as two commits, the first (the REPL, its drivers in the CLI crate and the guide) says in its message that the web suites are red until the next; the task's END is green, and the walk rows `worker/RUNBOOK.md` and `docs/web-lane.md` cite by number are corrected to the regenerated walk's.
 
 **Mutants:** the fold at one listed Port move (cell 1); `confirm` committing a move BUILT from the selection (cell 2, the reversed order, where a built pair is not the listed one); `confirm` with two matches committing the first (cells 2 and 3); the payment pick opened whenever two cards are on (cell 2's second position); commit before close (cell 5); the selection kept across the pick's `cancel` (cell 6); `O{nn}` not parsed (cell 2); a reach rule in `step_port` (cell 4); the arm sent to another seat (cell 12); the screen left in `messages` (cell 13); `prompt_kind` building the model (cell 14 has no red against that: its proof is the mutant, as in plan 2a); the walk drawing over the prompt's rows instead of the frame's options (Step 3: `log.json` moves).
 
@@ -288,22 +305,22 @@ pub fn port_text(model: &PortModel) -> String;
 
 **Files:** modify `crates/yokohama-cli/src/repl.rs`, `crates/yokohama-cli/tests/piped_dogfood.rs` if its driver names a Laboratory row, `crates/yokohama-web/src/lib.rs` (the `Laboratory: acquire` caller of `play_until_a_draw`), `tests/wire_fixtures.rs`, the walk's regenerated files and the Worker's two kept-list files, `web/src/wire/contract.ts`, `contract.test.ts`, `docs/cli-guide.md`, `docs/cli-guide.html`; every test that answers a Laboratory prompt by row (search: `grep -rn "Laboratory: acquire\|AreaAction::Laboratory"` over the same trees as Task 2).
 
-**Interfaces.** Produces `PromptOption::Laboratory { title: String, moves: Vec<Move> }`: in `group_area_action`, the Laboratory rows are grouped by the technology's name (`describe::tech_name`'s), a title with one listed row stays a direct row, and a title with more becomes one entry at the place of its FIRST row, holding every row of that title in list order. Choosing it calls `enter_pick_subprompt` with the title in "The words". No new `SubPrompt`, no new prompt kind, no client change: on the wire the entry is an ordinary row with `opens_picker: true` and the pick is `pick`.
+**Interfaces.** Produces `PromptOption::Laboratory { title: String, moves: Vec<Move> }`. `group_area_action` takes only the legal list today; it gains what it needs to name a technology (the rules' tech registry, threaded from `group_options`), and the report quotes the new signature. In it, the Laboratory rows are grouped by the technology's name (`describe::tech_name`'s), a title with one listed row stays a direct row, and a title with more becomes one entry at the place of its FIRST row, holding every row of that title in list order. Choosing it calls `enter_pick_subprompt` with the title in "The words". No new `SubPrompt`, no new prompt kind, no client change: on the wire the entry is an ordinary row with `opens_picker: true` and the pick is `pick`.
 
 - [ ] **Step 1: the cells, red.** Fixtures in `chooser::test_support` (each passing `check_invariants`): `lab_twin_position()`, both copies of one title on Laboratory A in slots 1 and 4, another technology between them with more than one way to pay, the seat able to pay every row; `lab_twin_position_owning_three()`, the same with three other technologies owned.
   1. `the_main_list_reads_one_row_per_title`: on `lab_twin_position()`, the rows are, in order, the single-row technology as today's direct row, `Laboratory: acquire {twin} — 3 ways to pay` at the place of the twin's first row, the other technology's entry with its count, and the decline. No title appears twice (rival: "group runs of adjacent rows", under which the twin's title appears twice).
-  2. `the_twin_s_pick_holds_every_row_of_both_copies`: the entry opens a pick titled `Laboratory: acquire {twin} — choose the payment:` whose rows are the three listed moves in list order, in `describe_move`'s words, the slot-1 copy's row without a slot fee and the slot-4 copy's with one (rival: "group by card id", under which the entry holds one copy's rows).
+  2. `the_twin_s_pick_holds_every_row_of_both_copies`: the entry opens a pick whose title is `Laboratory: acquire {twin} — choose the payment` (drawn with the pick's own colon) and whose rows are the three listed moves in list order, in `describe_move`'s words, the slot-1 copy's row without a slot fee and the slot-4 copy's with one (rival: "group by card id", under which the entry holds one copy's rows).
   3. `every_listed_row_commits_through_its_title`: on both fixtures, for every listed Laboratory move, the entry's number (or the direct row's) and then the pick's row commit exactly that move, compared as a `Move`.
-  4. `a_title_with_one_row_stays_direct`: its row's words and its number's effect are today's; Enter still applies a forced single option.
+  4. `a_title_with_one_row_stays_direct`: its row's words and its number's effect are today's. (A Laboratory prompt with an acquisition always lists the decline too, so there is no forced single option to keep here.)
   5. `a_mercenary_s_laboratory_folds_and_commits`.
   6. `a_self_play_sweep_commits_every_row`: at two, three and four players, at every Laboratory prompt with a title of more than one row, every listed row commits through its title; the report states the positions and rows reached and whether any had both copies of a title on one board.
   7. On the wire (`client.rs`): at a folded Laboratory prompt the entry's row has `opens_picker: true` and its `words` are the entry's; the pick's prompt is `pick` with the title and the rows.
 - [ ] **Step 2:** red, then the code and the drivers. `play_until_a_draw`'s Laboratory caller answers the pick when the row it pressed opened one.
-- [ ] **Step 3: the corpus.** The walk names a drawn Laboratory row by its title's entry and then the pick's number, the same game played (`log.json` and every earlier fixture byte-identical). One capture, `lab_pick`, at the walk's folded Laboratory prompt (event 50 by the measurement), with its contract cell (kind `pick`, the title, two rows). The kept list moves with the walk as in Task 2.
+- [ ] **Step 3: the corpus.** The walk names a drawn Laboratory row by its title's entry and then the pick's number, the same game played (`log.json` and every earlier fixture byte-identical). One capture, `lab_pick`, at the walk's folded Laboratory prompt (event 50 by the measurement), which is the corpus's two-copies case: both copies of Ball, one row each. Its contract cell reads kind `pick`, the title, and the two rows' words, `Laboratory: acquire Ball` and `Laboratory: acquire Ball, slot fee: 2 yen`. The walk's draw is the first row. The kept list and the cited walk rows move with the walk as in Task 2 (one row).
 - [ ] **Step 4: the guide pair** gains the Laboratory's paragraph with the entry and the pick's screen.
 - [ ] **Step 5:** the Rust suites; commit.
 
-**Mutants:** grouping adjacent runs (cell 1); grouping by card id (cell 2); the entry placed at the title's last row (cell 1); the pick's rows sorted (cell 2 and cell 3); a fold at one row (cell 4); the entry's count taken from the cards on the board (cell 1 on the owning-three fixture, whose counts differ).
+**Mutants:** grouping adjacent runs (cell 1); grouping by card id (cell 2); the entry placed at the title's last row (cell 1); the pick's rows sorted (cell 2 and cell 3); a fold at one row (cell 4); the entry's count taken from the cards on the board (cell 1: the twin reads 3 ways over 2 cards, the other technology 3 over 1).
 
 ### Task 4: The Port's panel in the browser
 
@@ -315,7 +332,7 @@ pub fn port_text(model: &PortModel) -> String;
 
 - A card sends its `number` as the line. Confirm sends `confirm`; Cancel sends `cancel`.
 - `disabled` with `data-unavailable` says what the payload says: an unselected card whose `can_add` is false; Confirm while the preview is not legal. While a request is in flight a card is `aria-disabled`, sends nothing on a press and KEEPS the keyboard focus (plan 2a's ruling R45); Confirm and Cancel are `disabled` while busy, which the walks' settle wait rests on.
-- The fallback arm Task 2 left for `port` is removed; `DRAWN_KINDS` keeps `port`.
+- The interim branch Task 2 left for `port` is replaced by the panel; `DRAWN_KINDS` keeps `port`.
 
 - [ ] **Step 1: the cells, red** (vitest; each payload from `web/src/wire/`).
   1. From `wire.port`: the asking line, every zone's heading, one button per card in the arm's order with its `data-number` and its accessible name, none pressed, Confirm disabled with `data-unavailable`, Cancel live.
@@ -357,10 +374,10 @@ pub fn port_text(model: &PortModel) -> String;
 **Files:** modify `crates/yokohama-worker/src/picker.rs` (its test module only).
 
 - [ ] **Step 1: the cells, red**, beside plan 2a's three and built as they are (lines sent to a table, a new instance restored, the prompt read).
-  1. `restore_picker_rebuilds_a_port_chooser_with_its_cards`: the lines switch a card on, a second on, the first off and a third on, so that a restore feeding each distinct line once reads another selection (plan 2a's lesson from its own restore cell: the entry's line must not equal a card's line; the implementer probes this and says which lines it chose and why).
+  1. `restore_picker_rebuilds_a_port_chooser_with_its_cards`: the lines switch a card on, a second on, the first off and a third on, so that a restore feeding each distinct line once reads another selection. On the cells' table the entry is `1` and the cards are 34, 19, 12 and 4 (measured), so the entry's line equals no card's; the implementer confirms that and says which lines it chose.
   2. `a_refused_card_is_not_replayed_into_a_selection`: a third card refused, then the restore: the two cards, nothing else.
   3. `cancel_clears_the_port_s_lines`.
-  4. `the_payment_pick_is_rebuilt_after_a_confirm`, if a both-ways pair is reachable by lines on the cell's table; if it is not, the cell is not written and the report says what was tried (the REPL's cells and Task 7's game carry the pick).
+  4. No cell for the payment pick here: on this table no pair is payable both ways by lines (the seat holds no imported good at the opening, measured). A `confirm` on a pair commits; the pick is carried by the REPL's cells and by Task 7's game, and a pick's restore is the mechanism the route and Telegram picks already prove.
 - [ ] **Step 2:** red, then green with NO change outside the test module (the mechanism covers a new sub-prompt unchanged; a change it needs is a STOP). `cargo test -p yokohama-worker`; `cd worker && npm run build:module:debug && npm test`; commit.
 
 **Mutants** (planted in the export's `picker.rs` and `repl.rs`): the restore de-duplicating lines (cell 1); a refused line recorded (cell 2); `cancel` leaving the list (cell 3).
@@ -369,33 +386,32 @@ pub fn port_text(model: &PortModel) -> String;
 
 **impl: opus · review: opus.** Test code and one document paragraph; no product code.
 
-**Files:** modify `crates/yokohama-web/tests/play_a_whole_game.rs`, `crates/yokohama-web/src/api.rs` (one test), `docs/web-lane.md`.
+**Files:** modify `crates/yokohama-web/tests/play_a_whole_game.rs`, `crates/yokohama-web/src/api.rs` (one test), `crates/yokohama-cli/src/repl.rs` (one test), `docs/web-lane.md`.
 
-- [ ] **Step 1: the third arm of `play_a_whole_game.rs`**: a bot-free three-player game, one caller holding every seat, played to a winner through the API. `choose` gains the `chinatown` arm in place of its refusal, since a seed now runs that branch (Confirm when `preview.legal`, else a row with `can_add`, else Cancel: every flag the arm's own) and the `port` arm (Confirm when legal, else a card with `can_add`, else Cancel), and answers the picks as it answers any pick. The arm counts and prints: Chinatown confirms, Port confirms, payment picks opened, Laboratory picks opened. **Floors of one on each of the four**, measured on the arm's fixed seed before they are set; if the seed reaches no payment pick, choose a seed that does and say which were tried. An input cap sized from the measured length, stated in the test.
+- [ ] **Step 1: the third arm of `play_a_whole_game.rs`**: a bot-free three-player game, one caller holding every seat, played to a winner through the API. `choose` gains the `chinatown` arm in place of its refusal, since a seed now runs that branch (Confirm when `preview.legal`, else a row with `can_add`, else Cancel: every flag the arm's own) and uses the `port` arm Task 2 gave it (a card on a draw while one can be added, else Confirm, else Cancel), and answers the picks as it answers any pick. The arm counts and prints: Chinatown confirms, Port confirms, payment picks opened, Laboratory picks opened. **Floors of one on each of the four**, measured on the arm's fixed seed before they are set; if the seed reaches no payment pick, choose a seed that does and say which were tried. An input cap sized from the measured length, stated in the test.
 - [ ] **Step 2: the two-player arms** learned `port` in Task 2 and cannot meet `chinatown` (that board has none); this step re-reads them green. `lib.rs`'s two-player `play` walk keeps its refusal of `chinatown`.
-- [ ] **Step 3: design §9's cost, measured and recorded.** One cell in `api.rs`'s tests times a single add through `api::input` at the longest Chinatown list a fixture holds (`chooser::test_support::rich_position()`'s 2,001 moves, if a `Repl` over it is reachable from the web crate's tests; otherwise at the longest list `to_the_chinatown` reaches, saying which) and a single card at the Port, printing the milliseconds and asserting nothing. Run it in debug and with `--release`; write both readings, the machine and the list lengths into `docs/web-lane.md` beside the corpus's figures, as a reading and not a bound. The private Worker's reading is the orchestrator's, at the deploy.
+- [ ] **Step 3: design §9's cost, measured and recorded.** Two cells that print milliseconds and assert nothing. In `yokohama-cli`'s tests (`repl.rs`): opening the chooser and one add at `chooser::test_support::rich_position()` (2,002 listed moves; the plan's review read about 12 ms each in debug). That is design §9's figure, the longest Chinatown list, and it is the REPL's cost, since the fixture is `pub(crate)` to the CLI's own test build and the web crate cannot reach it. In `yokohama-web`'s tests (`api.rs`): one add through `api::input` at `to_the_chinatown` (127 combinations) and one card at `to_the_port`, which is the layer's cost at the lists lines reach. Run both in debug and with `--release`; write the four readings, the machine and each list's length into `docs/web-lane.md` beside the corpus's figures, as readings and not bounds, each named for what it is. The private Worker's reading is the orchestrator's, at the deploy.
 - [ ] **Step 4:** `cargo test -p yokohama-web` (state the arm's wall); the lint gate; commit.
 
 **Mutants:** the `chinatown` arm pressing a row whose `can_add` is false (the game stalls under the input cap); the `port` arm confirming while not legal (the same); a floor set above what the seed reaches (red, as it should be: the floors are readings).
 
-### Task 8: The terminal's flag counts
+### Task 8: The terminal's flag counts, in the `players` view
 
-**impl: sonnet · review: opus.**
+**impl: sonnet · review: opus.** Written for the plan's reading of design §5.8; it waits on the owner's ruling (the section after "How a player gets this release"). If he rules for a row in the dashboard, this task is re-planned with the frame's heights re-measured before it is dispatched.
 
-**Files:** modify `crates/yokohama-cli/src/panel_render.rs`, `render.rs` (`players_panel`), `screen_model.rs` (the codes and their pin), `docs/cli-guide.md`, `docs/cli-guide.html`; the frame goldens that move.
+**Files:** modify `crates/yokohama-cli/src/render.rs` (`players_panel` and its tests), `crates/yokohama-cli/src/screen_model.rs` (the codes and their pin), `docs/cli-guide.md`, `docs/cli-guide.html`. The dashboard's renderers in `panel_render.rs` and every frame golden are not touched.
 
-**Interfaces.** Consumes `PlayerModel::flags` and `HandPanel::flags_in_hand` (cycle 1's; no new count), `screen_model::face_up_flags` and `order_flags` for the state-read `players` view. Produces `screen_model::country_code(Country) -> &'static str` (`GB`, `US`, `FR`, `DE`, `NL`): the engine's own table is private, so this is a mirror with a drift pin, the `placement_fee` precedent, pinned against `order_compact_line`'s country token for one registry card of each country.
+**Interfaces.** Consumes `screen_model::face_up_flags(p, rules)` and `screen_model::order_flags(ids, rules)` (both public, cycle 1's; no new count) and the view's own mask, `SeatDisplay::hides_hand`. Produces `screen_model::country_code(Country) -> &'static str` (`GB`, `US`, `FR`, `DE`, `NL`): the engine's own table is private, so this is a mirror with a drift pin, the `placement_fee` precedent, pinned against `order_compact_line`'s country token for one registry card of each country.
 
 - [ ] **Step 1: the cells, red.**
   1. The pin: for a card of each of the five countries, `order_compact_line`'s second token equals `country_code`.
-  2. The players panel's `Flags` line for every seat, in "The words"' form, on a model with distinct non-zero counts in all five (rival: a swapped pair of countries); a seat with a hidden hand still carries it.
-  3. The hand panel's line: an open hand with flags lists the non-zero countries; an open hand with none and a hidden hand print no line (rival: reading the face-up counts).
-  4. **The frame still fits**: the panel's width and height cells at two, three and four players read green. If a seat's extra line breaks a height budget, the counts join the orders line instead (`… · flags GB 2 US 1 FR 0 DE 0 NL 1`), the words section is corrected in the same commit, and the report says what was measured.
-  5. The `players` view (`render::players_panel`) carries the same line per seat and, for an open hand, the in-hand line.
-- [ ] **Step 2:** red; the code; the goldens that move quoted before and after.
-- [ ] **Step 3:** the guide pair's players-panel passage gains the line. `cargo test -p yokohama-cli`; the web lane's Rust suites (the frame's models are the wire's, so `wire_fixtures` must read unmoved: this task changes no model); the lint gate; commit.
+  2. `the_players_view_lists_each_seat_s_flags`: on a state whose seat has completed orders and technologies giving five DISTINCT non-zero counts, that seat's line is "The words"' with those counts in `Country::ALL`'s order (rival: two countries swapped); a seat with nothing face up reads five zeros; a seat whose hand is hidden still carries the line.
+  3. `the_flags_in_hand_are_apart_and_masked`: a shown hand with orders prints the second line with the non-zero countries of the HAND; a seat with non-zero face-up flags and an empty shown hand prints no second line (rival: reading the face-up counts); a hidden hand that holds orders prints no second line (rival: printing it for every seat).
+  4. The frame is untouched: `screen`'s opening-frame and game-walk height cells and the committed frame captures read green, unedited. No new cell; the report states it.
+- [ ] **Step 2:** red; the code; the view's goldens that move quoted before and after.
+- [ ] **Step 3:** the guide pair's `players` view passage gains the two lines. `cargo test -p yokohama-cli`; `cargo test -p yokohama-web` (the view is the wire's `players` view text if the layer serves it: `wire_fixtures` regenerated and its diff read, or read unmoved and said so); the lint gate; both fence checks; commit.
 
-**Mutants:** the in-hand line reading the face-up counts (cell 3); two countries swapped in the line (cell 2); the code table drifted from the engine's (cell 1); the line printed for a hidden hand (cell 3).
+**Mutants:** the in-hand line reading the face-up counts (cell 3); two countries swapped in the line (cell 2); the code table drifted from the engine's (cell 1); the in-hand line printed for a hidden hand (cell 3).
 
 ### Task 9: The browser's words and the lane document
 
@@ -404,7 +420,7 @@ pub fn port_text(model: &PortModel) -> String;
 **Files:** modify `web/src/Help.tsx`, `web/src/Help.test.tsx`, `docs/web-guide.md`, `docs/web-lane.md`.
 
 - [ ] **Step 1:** P1, P2 and P3 of "The words" enter the help and the guide after plan 2a's two sentences, word for word in both; the help's cell holds them on both renders (with and without pictures) and in order, as it holds S1 and S2.
-- [ ] **Step 2: try each clause against the product before committing** (plan 2a, lesson 7), and say in the report what was tried for each: "beside the decline"; "one card or two"; "goes dark when your hand has no room"; "or you cannot pay for it"; "Confirm asks which"; "a single row … opens the list of those ways". A clause that is false is corrected in "The words" first, then transcribed.
+- [ ] **Step 2: try each clause against the product before committing** (plan 2a, lesson 7), and say in the report what was tried for each: "beside the decline"; "one card or two"; "goes dark when your hand has no room"; "or you cannot pay for it"; "when you could pay … either … Confirm asks which" (only when BOTH can be afforded); "a single row … opens the list of those ways". A clause that is false is corrected in "The words" first, then transcribed.
 - [ ] **Step 3: `docs/web-lane.md`**: §1's exception sentence names the Port's chooser and the Laboratory's fold; the prompt kinds where it lists them (`port` is the corpus's eleventh kind and `PromptState`'s twelfth variant; re-count both); §2's suite counts and the corpus's figures re-counted at this head (the pool's stale 298 among them); the production-door list's figures.
 - [ ] **Step 4:** `npm run typecheck && npm test` in `web/`; `cargo test -p yokohama-web --test lane_document`; `cd worker && npm run test:scripts`; commit.
 
@@ -415,11 +431,45 @@ pub fn port_text(model: &PortModel) -> String;
 Confirmed by reading the client's update path (`web/src/swRegister.ts`, `sw.ts`, `UpdateLine.tsx`, `docs/web-guide.md` §2) and pinned by the browser cells of `web/e2e/offline.spec.ts` ("the update: a second release waits, nothing switches until the click", "the door takes a release by itself", "the update offered to a tab NO worker controls", "the tab that did not click"), which read green in plan 2a's gates. This plan changes none of it.
 
 - **A browser that has never held the site** gets the new client from the network.
-- **A browser that holds an earlier release** opens on that release, because its service worker answers a page load from what it holds. The page then finds the new release and installs it in the background. **On the front page the release is taken without a click**: the door reloads itself once the install has finished. Both "You against the bot" and "Play with friends" start from that page.
+- **A browser that holds an earlier release** opens on that release, because its service worker answers a page load from what it holds. The page then finds the new release and installs it in the background. **On the front page the release is taken without a click**: the door reloads itself once the install has finished. Both "You against the bot" and "Play with friends" start from that page. A lobby or a game opened by its own link does not pass the front page and shows the line below instead.
 - **In the lobby or a game**, the line `A new version is ready. Reload to use it` appears and waits for the click; nothing reloads by itself while someone plays. An open tab asks for a new release every fifteen minutes and whenever it comes back into view.
-- **The browser's own refresh does not take a waiting release in a lobby or game tab**: the worker hands over only when a tab asks (the line's click, or the door), or, by the browser's own rule, once every tab of the site is closed.
+- **An ordinary refresh of a lobby or game tab does not take a waiting release.** This one is reasoned and not pinned: the worker hands over only when a tab asks (the line's click, or the door), or, by the browser's own rule, once every tab of the site is closed, and none of the cells above reloads such a tab while a release waits. A hard reload goes round the worker and loads the release from the network.
 - **A game against the bot** runs in the tab, engine included, so a tab on the earlier release plays the earlier lists with no dead end; the game is stored in the browser and is there after the reload.
-- **A table with friends** is answered by the new server from the moment of the deploy. A tab that was already at a table across it is the window the owner accepted on 2026-11-22 (`docs/web-lane.md` §7): the line's click brings it up to date, and from plan 2a's client on a kind it cannot draw reads `This screen needs a newer version.` with a Cancel. A mechanic that makes open tabs refresh is issue #78.
+- **A table with friends** is answered by the new server from the moment of the deploy. A tab that was already at a table across it is the window the owner accepted on 2026-11-22 (`docs/web-lane.md` §7; his word was that a refresh is required, and in the client that refresh is the line's click): the click brings it up to date, and from plan 2a's client on a kind it cannot draw reads `This screen needs a newer version.` with a Cancel. A mechanic that makes open tabs refresh is issue #78.
+
+## The owner's ruling this plan waits on: where the terminal shows the flags
+
+Design §5.8 (`docs/plans/2026-11-21-web-area-action-choosers-design.md`, lines 145 to 147): "The terminal's players panel draws the five per-country counts of face-up flags for every seat (`screen_model::face_up_flags`) and, for an open hand, the flags of the orders in hand apart from them (`HandPanel::flags_in_hand`), marked as not yet counting."
+
+The terminal has two things a reader could call its players panel: the always-visible dashboard's PLAYERS panel (`panel_render.rs`) and the `players` view (`render::players_panel`). The dashboard has no row to spare. `crates/yokohama-cli/src/screen.rs`, the record above `FRAME_HEIGHTS` (lines 338 to 360): the two-player opening frame "CROSSED THE FLOOR: 49 → 51" when the Orders line was added, "The 3- and 4-player openings, which are ceilings, are still inside the floor", and "The owner adjudicates whether the row is worth its cost; nothing here may be raised further to keep a run quiet."
+
+Measured by the plan's review, the opening frame's rows against the 50-row floor:
+
+| | today | a `Flags` line per seat | and a line for the flags in hand |
+|---|---|---|---|
+| two players | 51 | 53 | 54 |
+| three players | 50 | 51 | 53 |
+| four players | 49 | 50 | 52 |
+
+What follows from each choice:
+
+- **A. The `players` view only (this plan as written).** No frame row moves; the counts are one command away (`players`), for every seat, with the flags in hand apart for a shown hand. The dashboard below the board already names each hand card's country.
+- **B. A row per seat in the dashboard.** The three-player opening leaves a 200x50 window for the first time (51 rows) and the two-player one goes to 53. `FRAME_HEIGHTS`, the game-walk bounds, two committed frame captures and the guide's §2 figures are re-measured, and the hosted terminal's 200x50 floor no longer shows the whole three-player screen. The in-hand line has no place below the board (that hand panel is one row).
+- **C. Both: the `players` view, and the dashboard's row at two players only**, where the frame is already outside the floor and its height was never a ceiling (53 rows).
+
+The plan's author recommends A. Task 8 is written for it and is the only task that changes with the ruling.
+
+## The plan's review (2026-11-22)
+
+An independent reviewer measured this plan against the tree on an export before any task ran: one Critical finding, five Important, seventeen Minor. Every figure of "What was measured" reproduced; every fixture can be built as a state the engine's invariants accept. All are settled in the text above, except the Critical, which is the ruling in the section before this one.
+
+- **The terminal's flag line does not fit the frame** (Critical, measured by adding it): neither a row per seat nor the orders line. Task 8 now reads the `players` view, and the choice is put to the owner.
+- **`?` cannot be refused inside the Port's chooser**: the REPL answers it ahead of every sub-prompt and plan 2a pinned that. It opens the order index over the chooser, which design §9 asks for.
+- **A driver that confirms as soon as the preview is legal never takes a pair**: one card is always legal. The drivers' arm now adds a card on a draw first, and the payment pick's floor can be reached.
+- **The longest Chinatown fixture is out of the web crate's reach**: design §9's cost is timed in the CLI crate at 2,002 listed moves, and the layer's cost at the lists lines reach, each named for what it is.
+- **vitest would have gone red at Task 2**: the unknown-kind cells used `port` as their unknown kind. Task 2 now moves those cells and draws `port` by an interim branch of its own.
+- **The pick prints a colon after its title**: the two titles are passed without one.
+- From the Minors: the plan's own readings were first taken on invalid states and are now said to be so, with the valid build; the walk's capture keeps the first occurrence, so the Port captures' prompt is named by a condition; event 50 is the two-copies case; two of the Port's lines cannot be reached by lines and are read on a list with a single removed; the hand-room case has its REPL cell; `group_area_action` needs the tech registry; the runbook's cited walk rows move with the walk; Task 2's halves cannot each be green; the update path's refresh sentence is reasoned, not pinned, and a hard reload is the exception; three mutant attributions and one vacuous clause corrected.
 
 ## After the tasks — the orchestrator's, in order
 
