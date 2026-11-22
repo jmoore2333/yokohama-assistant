@@ -4906,4 +4906,81 @@ mod tests {
             assert!(!crate::grammar::is_gameplay_line(line), "{line:?}: the terminal's form, refused at the fence");
         }
     }
+
+    /// **A READING, not a bound: what one chooser press costs the layer**
+    /// (design §9; plan 2b, Task 7) — one Chinatown add through [`input`] at
+    /// `to_the_chinatown`'s list (a four-seat table at the corpus seed, power
+    /// 3: 127 exchange sets) and one Port card at `to_the_port`'s (a two-seat
+    /// table, power 3: four cards in reach), each the lists a line reaches at
+    /// the opening. The longest Chinatown list (2,001 sets) is a CLI fixture
+    /// this crate cannot reach, and the REPL's reading there is
+    /// `repl.rs`'s `reading_the_chooser_s_cost_at_the_longest_chinatown_list`.
+    /// The figures are printed and written into `docs/web-lane.md` §2. It
+    /// asserts NO time, since a wall-clock assertion flakes by construction;
+    /// it panics only when its premise fails — the chooser did not open, or
+    /// the press was not taken — so it never prints a figure for a press that
+    /// did not happen. Read with `--nocapture`, in debug and with `--release`.
+    #[test]
+    fn reading_one_chooser_press_through_input() {
+        let games = crate::games::test_support::games();
+        let user = User::parse("red@t.test").expect("an address");
+        let press = |id: &str, line: &str| {
+            let req = Input { line: line.to_string(), expect: None };
+            let started = std::time::Instant::now();
+            let reply = input(&games, &user, id, &req).unwrap_or_else(|e| panic!("{line:?} at {id}: {}", error_value(&e)));
+            (started.elapsed(), serde_json::to_value(&reply).expect("a reply serializes"))
+        };
+        let listed = |id: &str| {
+            let handle = games.handle(id).expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.session.legal()
+        };
+
+        let entry = at_chinatown(&games, "town");
+        let legal = listed("town");
+        let sets = legal.iter().filter(|m| yokohama_cli::chooser::chinatown_counts(m).is_some()).count();
+        let (_, opened) = press("town", &entry);
+        assert_eq!(opened["prompt"]["kind"], "chinatown", "premise: the chooser opened: {opened}");
+        let row = opened["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["can_add"] == true)
+            .unwrap_or_else(|| panic!("premise: an exchange the list can add: {}", opened["prompt"]))
+            .clone();
+        let (add, added) = press("town", &row["number"].to_string());
+        assert_eq!(
+            (added["prompt"]["kind"].as_str(), added["prompt"]["chosen"].as_u64()),
+            (Some("chinatown"), Some(1)),
+            "premise: the add was taken: {}",
+            added["prompt"],
+        );
+        println!(
+            "reading (layer, input, to_the_chinatown, {} listed moves, {sets} Chinatown sets): one add {add:?}",
+            legal.len()
+        );
+
+        let entry = at_the_port(&games, "dock");
+        let legal = listed("dock");
+        let takes = legal.iter().filter(|m| yokohama_cli::chooser::port_cards(m).is_some()).count();
+        let (_, opened) = press("dock", &entry);
+        assert_eq!(opened["prompt"]["kind"], "port", "premise: the chooser opened: {opened}");
+        let card = opened["prompt"]["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .find(|c| c["can_add"] == true)
+            .unwrap_or_else(|| panic!("premise: a card the list can take: {}", opened["prompt"]))["number"]
+            .clone();
+        let (take, taken) = press("dock", &card.to_string());
+        let on: Vec<&serde_json::Value> = taken["prompt"]["cards"]
+            .as_array()
+            .map(|c| c.iter().filter(|c| c["selected"] == true).map(|c| &c["number"]).collect())
+            .unwrap_or_default();
+        assert_eq!(on, vec![&card], "premise: the card was switched on: {}", taken["prompt"]);
+        println!(
+            "reading (layer, input, to_the_port, {} listed moves, {takes} Port takes): one card {take:?}",
+            legal.len()
+        );
+    }
 }

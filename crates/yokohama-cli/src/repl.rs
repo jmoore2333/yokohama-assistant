@@ -10713,6 +10713,44 @@ mod tests {
     const CHINATOWN_SWEEP_POSITIONS_FLOOR: usize = 25;
     const CHINATOWN_SWEEP_MOVES_FLOOR: usize = 780;
 
+    /// **A READING, not a bound: what opening Chinatown's chooser and one add
+    /// cost the REPL at the longest Chinatown list the tree holds** (design
+    /// §9: "measured and recorded, not bounded"; plan 2b, Task 7).
+    /// `rich_position()` lists 2,002 moves, 2,001 of them Chinatown's; the
+    /// figures are printed and written into `docs/web-lane.md` §2. It asserts
+    /// NO time, since a wall-clock assertion flakes by construction; it
+    /// panics only when its premise fails — the chooser did not open, or the
+    /// add was not taken — so it never prints a figure for a press that did
+    /// not happen. Read with `--nocapture`, in debug and with `--release`.
+    #[test]
+    fn reading_the_chooser_s_cost_at_the_longest_chinatown_list() {
+        let mut r = repl_at(rich_position());
+        let legal = r.session.legal();
+        let sets = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).count();
+        let entry = chinatown_entry(&r).to_string();
+
+        let started = std::time::Instant::now();
+        r.step(&entry);
+        let open = started.elapsed();
+        assert_eq!(chinatown_selection(&r), [0; 9], "premise: the chooser opened, empty");
+
+        let started = std::time::Instant::now();
+        r.step("1");
+        let add = started.elapsed();
+        let mut one = [0u8; 9];
+        one[0] = 1;
+        assert_eq!(chinatown_selection(&r), one, "premise: the add (1 copper -> 2 yen) was taken");
+
+        println!(
+            "reading (REPL, rich_position, {} listed moves, {sets} Chinatown sets): open the chooser {open:?}",
+            legal.len()
+        );
+        println!(
+            "reading (REPL, rich_position, {} listed moves, {sets} Chinatown sets): one add {add:?}",
+            legal.len()
+        );
+    }
+
     // -----------------------------------------------------------------
     // The Port's chooser (cycle 2, plan 2b, Task 2)
     // -----------------------------------------------------------------
