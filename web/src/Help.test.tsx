@@ -327,10 +327,14 @@ describe("the help panel's prose", () => {
 describe("the help panel and the goods choosers (issue #77)", () => {
   const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
 
+  // **Plan 2b's sentences share two phrases with S1** ("beside the decline",
+  // "opens a chooser"), so S1's needles are the phrases only S1 carries: its
+  // condition, its decline as it follows that condition, the Church's own
+  // clause and the minus.
   const s1 = [
     "when more than one payment or set of exchanges is on offer",
-    "beside the decline",
-    "opens a chooser",
+    "set of exchanges is on offer, the list shows a single entry beside the decline",
+    "at the Church you switch on what you pay",
     "take them back with minus",
   ] as const;
   const s2 = [
@@ -382,6 +386,65 @@ describe("the help panel and the goods choosers (issue #77)", () => {
         expect(s1End, s1[3]).toBeGreaterThan(-1);
         expect(s2Start, s2[0]).toBeGreaterThan(-1);
         expect(s1End).toBeLessThan(s2Start);
+      });
+    });
+  }
+});
+
+// **The four sentences that say the Port's chooser and the Laboratory's rows
+// (issue #76, plan 2b Task 9).** They sit after plan 2a's two, in the same
+// section, and are held as those are: each needle is carried by exactly one of
+// the four and occurs ONCE in the turn section (P1 shares "beside the decline"
+// and "opens a chooser" with S1, so its needles are the phrases only it
+// carries), on both renders, whole, and in order.
+describe("the help panel and the Port and the Laboratory (issue #76)", () => {
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  const p1 = ["when more than one take is on offer", "you switch on one card or two"] as const;
+  const p2 = [
+    "live only where the engine\u2019s list holds a take with it added",
+    "a second card goes dark when your hand has no room for it or you cannot pay for it",
+    "Confirm asks which",
+  ] as const;
+  const p3 = ["can be paid for in more than one way is a single row", "opens the list of those ways"] as const;
+  const p4 = [
+    "both copies of a technology are on the same Laboratory board",
+    "names its slot, as the board numbers it",
+    "so you can tell which card you are taking",
+  ] as const;
+  const wholes = [
+    "At the Port, when more than one take is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: you switch on one card or two.",
+    "A card you have not switched on is live only where the engine\u2019s list holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it; when you could pay for the second card either with 2 yen or with an imported good, Confirm asks which.",
+    "At the Laboratory a technology that can be paid for in more than one way is a single row, and pressing it opens the list of those ways.",
+    "When both copies of a technology are on the same Laboratory board, each of its rows names its slot, as the board numbers it, so you can tell which card you are taking.",
+  ] as const;
+
+  for (const [how, ui] of [
+    ["with its pictures", <Help key="a" />],
+    ["without its pictures", <Help key="b" shots={false} />],
+  ] as const) {
+    describe(how, () => {
+      it("says each of the four, once, and whole", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of [...p1, ...p2, ...p3, ...p4]) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        for (const whole of wholes) expect(text).toContain(whole);
+      });
+
+      it("says them after the goods choosers' sentences, and in their own order", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        // Both ends of every comparison are asserted present: an absent needle
+        // reads -1, which is less than anything.
+        const at = [
+          text.indexOf("holds exactly what you have chosen"), // the end of S2
+          ...wholes.map((w) => text.indexOf(w)),
+        ];
+        for (const i of at) expect(i).toBeGreaterThan(-1);
+        at.slice(1).forEach((here, i) => expect(at[i], `sentence ${i + 1}`).toBeLessThan(here));
       });
     });
   }

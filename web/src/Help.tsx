@@ -134,6 +134,17 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         a minus is live whenever you have one to take back, and Confirm is live once the list
         holds exactly what you have chosen.
       </p>
+      <p>
+        At the Port, when more than one take is on offer, the list shows a single entry beside
+        the decline, and that entry opens a chooser: you switch on one card or two. A card you
+        have not switched on is live only where the engine&rsquo;s list holds a take with it
+        added, so a second card goes dark when your hand has no room for it or you cannot pay
+        for it; when you could pay for the second card either with 2 yen or with an imported
+        good, Confirm asks which. At the Laboratory a technology that can be paid for in more
+        than one way is a single row, and pressing it opens the list of those ways. When both
+        copies of a technology are on the same Laboratory board, each of its rows names its
+        slot, as the board numbers it, so you can tell which card you are taking.
+      </p>
 
       <h3>Looking things up</h3>
       <p>
