@@ -715,9 +715,9 @@ fn the_three_player_counters_tell_the_picks_apart() {
 /// and 20261122 were each played to their winner in release, and five
 /// reached all six floors below — 4, 11, 12, 26 and 29. On each the thinnest
 /// floor reads 1; 11 and 12 have only one floor at 1, and 12 is the shortest
-/// game of the five. The others miss a Port payment pick, a Laboratory pick,
-/// or both (22 and 30 also a set of two exchanges; 28 and 30 a pair). The
-/// table is the task report's.
+/// game of the five. The others miss a Port payment pick, a Laboratory pick
+/// or both, but for 22, which misses only a set of two exchanges; 30 misses a
+/// set of two as well, and 28 and 30 a pair. The table is the task report's.
 const THREE_PLAYER_SEED: u64 = 12;
 const THREE_PLAYER_RNG: u64 = 0x5448_5245_4550_4C41; // "THREEPLA"
 
