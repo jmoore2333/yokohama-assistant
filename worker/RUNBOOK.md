@@ -1037,9 +1037,9 @@ seconds (4 s at 26 rows, §21; decision D-8, withdrawn).
   answering the once-rule's 200.
 
   **From plan 2a (issue #77) on, the replay holds only against a Worker built from the same tree or
-  a later one.** The six rows it sends to `wire4` (walk rows 2220 to 2225 since plan 2b's Task 2,
-  whose Port fold added 19 rows to the walk's `wire` game ahead of them; 2201 to 2206 at plan 2a: the additional phase
-  ended, `b` at the Chinatown tile, the President placed, the entry, one copper sale, `confirm`) are
+  a later one.** The six rows it sends to `wire4` (walk rows 2220 to 2225 — the additional phase
+  ended, `b` at the Chinatown tile, the President placed, the entry, one copper sale, `confirm` —
+  2201 to 2206 at plan 2a, before plan 2b's Port fold added 19 rows ahead of them) are
   the first kept rows whose committed answer depends on the choosers. Against a Worker built before
   them the run reads two mismatches, the first at walk row 2223, the row that opens the chooser —
   there an older Worker applies the first listed exchange set — and the second at 2224; that is by
@@ -2398,7 +2398,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 4. **The edge rule created at position 1,** `--verify` rc 0.
 5. **Access off,** the `aud` read back; then the smoke's live mode must PASS — **run over WARP, or from any client Bot Fight Mode trusts:** off WARP the sitemap control reads Bot Fight Mode's 403, which the smoke cannot tell from the rule's (W-1, D-2).
 6. **The readings, each in its own named minute** for the query API: the curl shapes off WARP; the probe's two modes; the control; the browsers; the pinned reading; then the probe's two modes again OVER WARP, which isolates the rule's refusals from Bot Fight Mode's. **A pinned browser whose `cf_clearance` the instrument clears will meet W-3: its install of the new release fails on Bot Fight Mode's challenge of the precache's `/art/manifest.json` while Bot Fight Mode is on and the browser is off WARP** (the window read it four times). Read the pin over WARP, or with Bot Fight Mode off, or accept the failure line as the reading.
-7. **The revert:** Access back FIRST, the rule DISABLED by its id, the keyless build, `npm run deploy`, the secret put back through stdin, the after-checks over WARP, ONE live replay, a stranger's check off WARP, the quota after, the scratch key file removed. *(Forward note, 2026-11-21, plan 2a's fix wave: the revert's ONE live replay runs from the tree the restored Worker was built from; from plan 2a on, a replay from a later tree against an older Worker reads two mismatches, the first at walk row 2204, by design, §7; from plan 2b's Task 2 that row is 2223.)*
+7. **The revert:** Access back FIRST, the rule DISABLED by its id, the keyless build, `npm run deploy`, the secret put back through stdin, the after-checks over WARP, ONE live replay, a stranger's check off WARP, the quota after, the scratch key file removed. *(Forward note, 2026-11-21, plan 2a's fix wave: the revert's ONE live replay runs from the tree the restored Worker was built from; from plan 2a on, a replay from a later tree against an older Worker reads two mismatches, the first at walk row 2204, by design, §7.)* *(2026-11-22, plan 2b's Task 2: that row is now 2223.)*
 
 ### What this deployment does NOT claim
 - A PINNED browser's observation of the no-click update on this host: the pin failed, and W-2 explains why. The update was observed once, at the revert, in one cleared and inspectable browser, in 7 seconds.

@@ -212,9 +212,14 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
         // whether to switch one on (a card drawn among those) or, once the
         // selection is legal, to confirm it; else Confirm a legal selection;
         // else back out. Confirming as soon as the preview is legal would take
-        // a single every time — one card is always legal, measured — and no
-        // pair and no payment pick would ever be reached. A pair payable two
-        // ways comes back as a `pick`, answered by the arm above.
+        // a single every time — one card is always legal, measured — so this
+        // arm CAN reach a pair, and a pair payable two ways comes back as a
+        // `pick`, answered by the arm above. **These two games reach neither,
+        // measured** (2026-11-22, `port_tally`'s printed counts: 0 pairs and 0
+        // payment picks in the two-people game, and in a vs-bot run at bot
+        // seed 3734450748880462653): the arm meets few folded Ports and its
+        // draws took singles. The counts are printed, not floored; the floors
+        // on pairs and picks are the three-player arm's (plan 2b, Task 7).
         "port" => {
             let cards = prompt["cards"].as_array().expect("cards");
             let on = cards.iter().filter(|c| c["selected"] == Value::Bool(true)).count();
@@ -252,6 +257,21 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
         "game_over" => return None,
         other => panic!("unknown prompt kind {other:?}: {state}"),
     })
+}
+
+/// What the Port's arm reached, counted from the prompt it answered and the
+/// line it sent (plan 2b, Task 2's review, M-1): `[pairs taken, payment picks
+/// answered]` — a `confirm` with two cards on, and a `pick` titled `… — choose
+/// the payment`. Printed with each game's figures; no floor here (the floors on
+/// pairs and picks are the three-player arm's, plan 2b's Task 7).
+fn port_tally(prompt: &Value, line: &str, tally: &mut [usize; 2]) {
+    let on = |p: &Value| p["cards"].as_array().map_or(0, |c| c.iter().filter(|c| c["selected"] == Value::Bool(true)).count());
+    if prompt["kind"] == "port" && line == "confirm" && on(prompt) == 2 {
+        tally[0] += 1;
+    }
+    if prompt["kind"] == "pick" && prompt["title"].as_str().is_some_and(|t| t.ends_with("— choose the payment")) {
+        tally[1] += 1;
+    }
 }
 
 /// **The stuck-picker rule, ONE copy for both arms** (M6.5c2; the rule and its
@@ -439,6 +459,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
     let mut turns_seen = 0u64;
     let mut selections = 0usize;
     let mut backed_out = 0usize;
+    let mut port = [0usize; 2];
     let mut stuck = Stuck::default();
     let mut placed_before: Option<u64> = None;
 
@@ -470,6 +491,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         }
 
         let Some(line) = choose(&state, &mut rng) else { break };
+        port_tally(&state["prompt"], &line, &mut port);
 
         let (status, next) =
             api.call("POST", "/api/games/gate/input", Some(serde_json::json!({ "line": line }))).await;
@@ -477,8 +499,8 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         state = next;
     }
     eprintln!(
-        "gate: done bot_seed={bot_seed} inputs={inputs} events={} turns={turns_seen} selections={selections} backed_out={backed_out}",
-        state["events"],
+        "gate: done bot_seed={bot_seed} inputs={inputs} events={} turns={turns_seen} selections={selections} backed_out={backed_out} port_pairs={} payment_picks={}",
+        state["events"], port[0], port[1],
     );
 
     assert!(
@@ -820,6 +842,8 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // weaker and true one. What says assistants really were placed is that the
     // game ENDED: a bot-free game in which nobody places never does.
     let mut selections = 0usize;
+    // What the Port's arm reached — [`port_tally`].
+    let mut port = [0usize; 2];
     // The area the server last accepted an assistant in, tried first next time.
     // A CACHE over answers it already gave, never a rule: a miss falls back to
     // asking about every area in turn.
@@ -912,6 +936,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
             probes_refused += fence.probes.get();
             break;
         };
+        port_tally(&mine["prompt"], &line, &mut port);
 
         // **The acting-seat fence, witnessed at EVERY line the mover posts**
         // (Review Focus 4, review I1): the choice here, and above it the
@@ -951,6 +976,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // time — without this the paragraph above about a game that never places
     // would be describing something this arm does not do.
     assert!(selections > 0, "the arm never selected an area, so it never exercised a placement picker");
+    eprintln!("two people: port_pairs={} payment_picks={}", port[0], port[1]);
 
     // **The last position, where the game is over.** The loop reads a position
     // on its way round and so cannot read the one it leaves on; this is that

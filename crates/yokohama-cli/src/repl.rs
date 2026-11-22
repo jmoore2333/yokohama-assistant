@@ -10807,6 +10807,14 @@ mod tests {
         assert!(port_takes(&r.session.legal()).iter().all(|m| cards_by_hand(m).unwrap().len() == 1), "premise");
         assert_eq!(r.option_rows()[0].words, "Port — take 1 order card (6 in reach)");
 
+        // Power 2: six cards on the board, two of them in the listed takes —
+        // the count is the list's, not the board's (the rival: the acting
+        // board's filled slots).
+        let state = port_position_with(1, 1, 5, 1);
+        assert_eq!(state.port_state.port_a.slots.iter().flatten().count(), 6, "premise: six on the board");
+        let r = repl_at(state);
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (2 in reach)");
+
         // One listed Port move stays a direct row, in `describe_move`'s words
         // (the rival: fold whenever the President is at a Port).
         let state = one_take_position();
@@ -10913,6 +10921,45 @@ mod tests {
         assert_eq!(r.session.record().events.len(), events, "nothing applied");
         r.step("confirm");
         assert_eq!(last_move(&r), port_move(&[10], None), "confirm takes the first alone");
+
+        // A second card refused for PAYMENT: room in hand for two, but 1 yen
+        // and no imported good, so the list holds singles only (the rival: a
+        // second card while the hand has room).
+        let mut r = repl_at(port_position_with(4, 1, 1, 0));
+        assert!(port_takes(&r.session.legal()).iter().all(|m| cards_by_hand(m).unwrap().len() == 1), "premise");
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        let events = r.session.record().events.len();
+        let out = r.step("34");
+        assert_eq!(port_selection(&r), [10]);
+        assert_eq!(out.text, format!("! the list holds no take with O34 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[10], None), "confirm takes the first alone");
+
+        // Switching a card OFF is always taken: with one card on, its number
+        // (bare, or as displayed) empties the selection; with two on — where
+        // the first's `can_add` is false — the first's number is taken and
+        // leaves the second alone (the rival: a guard that reuses `can_add`).
+        for spelling in ["10", "O10"] {
+            let mut r = repl_at(port_position());
+            r.step(&port_entry(&r).to_string());
+            r.step("10");
+            let out = r.step(spelling);
+            assert_eq!(port_selection(&r), Vec::<u8>::new(), "{spelling} switches O10 off");
+            assert!(out.text.contains("\nSelected: (none)\n"), "{spelling}: {}", out.text);
+            let out = r.step("confirm");
+            assert_eq!(out.text, format!("! pick a card first, or 'cancel'\n{}", port_screen(&r)), "{spelling}");
+        }
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        let selected = [OrderCardId(10), OrderCardId(34)];
+        let model = port_model(r.session.state(), r.session.rules(), &r.session.legal(), &selected);
+        assert!(!model.cards.iter().find(|c| c.number == 10).unwrap().can_add, "premise: O10's can_add is false");
+        r.step("10");
+        assert_eq!(port_selection(&r), [34], "the first is switched off, the second left on");
     }
 
     #[test]
