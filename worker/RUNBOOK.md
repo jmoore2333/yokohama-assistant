@@ -928,7 +928,7 @@ expires in 2031 (spec §0.5).
 - **A rollback across plan 2a (issue #77) takes the live replay back with it.** The replay's kept
   rows include six on `wire4` whose committed answer depends on the choosers, so a replay from this
   tree or a later one against a Worker built before plan 2a reads two mismatches, the first at walk
-  row 2204, by design (§7). After such a rollback, run the revert's replay from the tree the
+  row 2204, by design (§7; by reading, not by a run). After such a rollback, run the revert's replay from the tree the
   restored Worker was built from. *(Added 2026-11-21, plan 2a's fix wave.)*
 
 ## 7. The live tiers and the quota guard
@@ -1041,7 +1041,9 @@ seconds (4 s at 26 rows, §21; decision D-8, withdrawn).
   the first kept rows whose committed answer depends on the choosers. Against a Worker built before
   them the run reads two mismatches, the first at walk row 2204, the row that opens the chooser —
   there an older Worker applies the first listed exchange set — and the second at 2205; that is by
-  design, not a fault in the Worker. So the replay after a deploy runs from the tree that deploy
+  design, not a fault in the Worker. (By reading the layer as it was before plan 2a, not by a run:
+  rows 2204 and 2205 are the two named rows, and their committed bodies are chooser prompts no
+  earlier layer can emit; the four beside them are unnamed, so only their status is compared.) So the replay after a deploy runs from the tree that deploy
   was built from, and **after a revert, the revert's replay runs from the tree the restored Worker
   was built from** (§6). **Never beside the Playwright tier**: the two share the house
   chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP
