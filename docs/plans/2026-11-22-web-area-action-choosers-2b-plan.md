@@ -345,17 +345,17 @@ pub fn port_text(model: &PortModel) -> String;
 
 - [ ] **Step 1: the cells, red** (vitest; each payload from `web/src/wire/`).
   1. From `wire.port`: the asking line, every zone's heading, one button per card in the arm's order with its `data-number` and its accessible name, none pressed, Confirm disabled with `data-unavailable`, Cancel live.
-  2. From `wire.portSelected` and `wire.portPair`: the pressed cards; the verdict's words equal `preview.ways`.
+  2. From `wire.portSelected` and `wire.portPair`: the pressed cards; the verdict's words equal `preview.ways`. In every fixture the selected cards stand first, so a clone of `wire.port` with its LAST card's `selected` true reads that card alone pressed (rival: "the first cards are the pressed ones"). With nothing selected and the preview not legal the verdict is empty, as the Church's and Chinatown's panels are.
   3. **`can_add` is the payload's**: on `wire.portPair` every unselected card is disabled with `data-unavailable`; a one-fact clone with one unselected card's `can_add` true draws that card live though two are selected (rival: "disable every other card once two are on"); a clone of `wire.portSelected` with one card's `can_add` false disables that card alone (rival: "live while fewer than two are on").
   4. **`legal` is the payload's**: a clone of `wire.portSelected` with `preview.legal` false disables Confirm though a card is selected; a clone of `wire.port` with `legal` true and one way enables it with nothing selected.
   5. **Two ways**: a clone of `wire.portPair` with a second string in `ways` draws both lines and `asked at Confirm`.
-  6. **The order and the zones are the payload's**: a clone with `cards` reversed draws them reversed; a clone with one card's `zone` changed draws it under that zone's heading.
+  6. **The order and the zones are the payload's**: the zones are drawn in the order the payload first names them, and the cards in the payload's order within each. A clone with `cards` reversed draws them reversed, the zones' headings too; a clone with one card's `zone` changed draws it under that zone's heading; a clone with one zone's two cards swapped draws them swapped (the one that tells the payload's order from a sort by number, since the fixture reversed IS ascending).
   7. A press on a card sends its number once; a press while busy sends nothing; Confirm and Cancel send their words; a spectator's and a non-acting seat's page has no chooser.
   8. `max_cards` 1 in a clone reads `The Port — take one card`.
   9. `isChooser` is true for the three chooser kinds and false for every other kind in `EVERY_STATE`.
 - [ ] **Step 2:** red; the panel; green. `npm run typecheck && npm test` in `web/`; the fence checks; commit.
 
-**Mutants:** a card disabled when two are selected, by count (cell 3's first clone); Confirm enabled by "something is selected" (cell 4); the line sent is the card's index (cell 7, since no fixture's numbers are 1 to 6 in order); the verdict built from the selected cards' ids (cell 2 and cell 5); cards sorted by number (cell 6); a busy card `disabled` (cell 7's focus half is Task 5's browser cell; here the attribute).
+**Mutants:** a card disabled when two are selected, by count (cell 3's first clone); Confirm enabled by "something is selected" (cell 4); the line sent is the card's index (cell 7, since no fixture's numbers are 1 to 6 in order); the verdict built from the selected cards' ids (cell 2 and cell 5); cards sorted by number (cells 1 to 3, where the fixture's LOW holds 36 before 14, and cell 6's swapped pair; the reversed clone cannot part it); the pressed state taken from a card's position (cell 2's clone); the zones in a fixed order (cell 6's reversed clone); a busy card `disabled` (cell 7's focus half is Task 5's browser cell; here the attribute).
 
 ### Task 5: The browser's walks and the layout
 
