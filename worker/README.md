@@ -1710,7 +1710,7 @@ cd ../worker && npm run build    # build:module → build:assets → smoke:relea
   both provide. It refuses a DEBUG browser module, which `web/`'s `npm run e2e` leaves in
   `web/dist`. Then it reads the release's precache list out of the built `sw.js` and verifies every
   entry's SHA-256 against the assembled file, so the tree IS the release the service worker
-  installs: 153 entries, in 156 files.
+  installs. Its last lines say how many entries it verified and how many files it assembled.
 - **`smoke:release`** (`scripts/smoke-release.mjs`) instantiates the RELEASE module once in Node,
   runs `init` with the archive off, asks `GET /api/health`, and refuses anything but a 200, or a
   module that exports `debug_trap`. Nothing else runs the release module before a deploy, since the
