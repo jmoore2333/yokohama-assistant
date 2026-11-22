@@ -8,7 +8,9 @@ use yokohama_core::game::actions::{
 };
 
 use crate::card_render::plural;
+use crate::chooser::{Good, CHURCH_KINDS};
 use crate::render;
+use crate::screen_model::CHURCH_YEN_COST;
 use crate::style::glyph;
 
 pub fn area_type_name(t: AreaType) -> &'static str {
@@ -487,7 +489,7 @@ fn warehouse_item_cost(p: &PlayerState, item: WarehouseItem) -> u32 {
 }
 
 /// Plain-words trade text for a single Chinatown exchange.
-fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
+pub(crate) fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
     match exchange {
         ChinatownExchange::CopperToYen => "1 copper -> 2 yen",
         ChinatownExchange::SilkToYen => "1 silk -> 2 yen",
@@ -510,7 +512,7 @@ fn chinatown_exchange_text(exchange: ChinatownExchange) -> &'static str {
 /// legal `ExecuteAreaAction`/`BuildShophouse`/`BuildTradingHouse` move
 /// (both phases require the President on board first) but kept as a
 /// defensive fallback for direct state construction (fixtures/tests).
-fn acting_area(state: &GameState) -> Option<AreaId> {
+pub(crate) fn acting_area(state: &GameState) -> Option<AreaId> {
     if state.is_mercenary_action {
         state.mercenary_target_area
     } else {
@@ -518,6 +520,47 @@ fn acting_area(state: &GameState) -> Option<AreaId> {
             PresidentLocation::OnBoard(a) => Some(a),
             PresidentLocation::InHand => None,
         }
+    }
+}
+
+/// The slot `card` sits in on the ACTING Laboratory board, when that board
+/// also holds another card of the same name — the case where two rows of one
+/// title can only be told apart by which card they take (plan 2b, Task 3b).
+///
+/// **Display only, never legality**: it reads where the card lies, as the
+/// Port's chooser reads its acting board. `None` — and so no marker — when no
+/// Laboratory is acting, when `card` is not on the acting board (a move no
+/// listed row carries; nothing to name, and no panic), or when no other card
+/// of its name is there. The other board's copy, at four players, does not
+/// count: a move takes a card from the board the action is on.
+fn twin_slot(card: TechCardId, state: &GameState, techs: &TechRegistry) -> Option<usize> {
+    let area = acting_area(state)?;
+    let board = match state.board_layout.areas.get(&area)?.area_type {
+        AreaType::LaboratoryA => &state.lab_state.lab_a,
+        AreaType::LaboratoryB => state.lab_state.lab_b.as_ref()?,
+        _ => return None,
+    };
+    let slot = board.slots.iter().position(|s| *s == Some(card))?;
+    let name = tech_name(card, techs);
+    let twin = board
+        .slots
+        .iter()
+        .enumerate()
+        .any(|(i, other)| i != slot && other.is_some_and(|c| tech_name(c, techs) == name));
+    twin.then_some(slot)
+}
+
+/// A Church payment kind's words -- the ONE table, read by `describe_move`'s
+/// Church arm and the Church chooser, so the yen kind's price is written in one
+/// place (`screen_model::CHURCH_YEN_COST`).
+pub(crate) fn church_kind_words(good: Good) -> String {
+    match good {
+        Good::Copper => "copper".to_string(),
+        Good::Silk => "silk".to_string(),
+        Good::Tea => "tea".to_string(),
+        Good::Seafood => "seafood".to_string(),
+        Good::Yen => format!("{CHURCH_YEN_COST} yen"),
+        Good::Imports => "imported good".to_string(),
     }
 }
 
@@ -630,6 +673,25 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
         AreaAction::Laboratory { card_id, extra_yen, extra_imported, extra_tech_payment } => {
             let name = tech_name(*card_id, &rules.techs);
             let mut s = format!("Laboratory: acquire {name}");
+            // Plan 2b, Task 3b (the owner, 2026-11-22): when the acting board
+            // holds both copies of this title, the row names which card it
+            // takes, by the slot the `labs` view and the browser's lab strip
+            // label. Every other row is worded as before. The marker reads the
+            // state a move is worded AT, so it is carried wherever a move is
+            // worded at the state it is made from (the terminal's lists, its
+            // pick, the log, its `suggest` and `why`); the browser's advisor
+            // panel words a continuation's later steps at the root
+            // (`yokohama-web`'s `explain.rs`), where such a step reads
+            // without its slot, or — when the root is a mercenary's action
+            // at a Laboratory that the line's President later acts at — with
+            // the marker the root's board gives it: a slot the mercenary's
+            // acquire may since have moved, or a marker on a card whose twin
+            // that acquire took (Task 3b's review, ruling T3b-a, and the
+            // whole-branch review: recorded, not changed; the reach is
+            // reasoned from the move generator, not played).
+            if let Some(slot) = twin_slot(*card_id, state, &rules.techs) {
+                s.push_str(&format!(" (slot {})", crate::screen_model::menu_number(slot)));
+            }
             // Branch-4 item 4: the slot's board-position surcharge is a COST
             // (slots 3-6 add +1/+1/+2/+2 industry, each point bought with 2
             // yen or 1 imported good), so it speaks the same fee grammar as
@@ -692,28 +754,17 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             format!("Chinatown: {parts}")
         }
         AreaAction::Church { copper, silk, tea, seafood, yen, imported_good } => {
-            let mut parts = Vec::new();
-            if *copper {
-                parts.push("copper");
-            }
-            if *silk {
-                parts.push("silk");
-            }
-            if *tea {
-                parts.push("tea");
-            }
-            if *seafood {
-                parts.push("seafood");
-            }
-            if *yen {
-                // D1 (2026-08-08): the yen payment type costs 2 Yen (rulebook
-                // p.12 printed church board), so the label carries the price —
-                // "yen" alone would under-state what the option spends.
-                parts.push("2 yen");
-            }
-            if *imported_good {
-                parts.push("imported good");
-            }
+            // D1 (2026-08-08): the yen payment kind costs 2 Yen (rulebook
+            // p.12 printed church board), so its words carry the price --
+            // "yen" alone would under-state what the option spends. All six
+            // kinds' words come from `church_kind_words`, the one table.
+            let flags = [*copper, *silk, *tea, *seafood, *yen, *imported_good];
+            let parts: Vec<String> = CHURCH_KINDS
+                .iter()
+                .zip(flags)
+                .filter(|(_, on)| *on)
+                .map(|(&good, _)| church_kind_words(good))
+                .collect();
             // Faith preview (Task 6): the engine's own power + faith
             // arithmetic (`calculate_power` + `calculate_church_faith`), so
             // the number shown is exactly the `ChurchSpace { total_faith }`
@@ -1573,6 +1624,70 @@ mod tests {
             &rules,
         );
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
+    }
+
+    /// **A Laboratory move whose card is not on the acting board reads as
+    /// before and never panics** (plan 2b, Task 3b). The slot marker is read
+    /// off the board for display; a move no listed row carries — card 20,
+    /// Postal System, in the tech deck here — finds no slot, so it gets no
+    /// marker. So does any move worded while no Laboratory is acting: with
+    /// the President in hand `acting_area` answers `None` before any board is
+    /// read, and with the President on another area the board's match answers
+    /// `None` — both pinned below by wording the twin, which carries its
+    /// marker at the Laboratory, from each of those two positions.
+    #[test]
+    fn a_laboratory_card_off_the_acting_board_gets_no_slot_marker() {
+        let state = crate::chooser::test_support::lab_twin_position();
+        let rules = Rules::standard();
+        assert!(state.tech_deck.contains(&TechCardId(20)), "premise: Postal System is in the deck");
+        let mv = |card: u8| Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(card), extra_yen: 0, extra_imported: 0, extra_tech_payment: None,
+            },
+        };
+        assert_eq!(describe_move(&mv(20), &state, &rules), "Laboratory: acquire Postal System");
+        // A card id the registry does not know: the fallback name, no marker.
+        assert_eq!(describe_move(&mv(99), &state, &rules), "Laboratory: acquire T99");
+        // The twin on the board still gets its marker in the same state.
+        assert_eq!(describe_move(&mv(12), &state, &rules), "Laboratory: acquire Ball (slot 5)");
+
+        // No Laboratory acting (the whole-branch review's BAT-1): the same
+        // twin, the board untouched, worded with the President on an area
+        // that is not a Laboratory, and then with the President in hand.
+        let me = state.current_player.0 as usize;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| !matches!(c.area_type, AreaType::LaboratoryA | AreaType::LaboratoryB))
+            .expect("an area that is not a Laboratory")
+            .0;
+        let mut away = state.clone();
+        away.players[me].president_location = PresidentLocation::OnBoard(elsewhere);
+        assert_eq!(describe_move(&mv(12), &away, &rules), "Laboratory: acquire Ball");
+        away.players[me].president_location = PresidentLocation::InHand;
+        assert_eq!(describe_move(&mv(12), &away, &rules), "Laboratory: acquire Ball");
+
+        // A card on the OTHER Laboratory (Task 3b's review, m-1): at four
+        // players, both copies of Ball on Laboratory A while Laboratory B
+        // acts. A's card, worded there, gets no marker — the board read is
+        // the acting one, not the one that holds the card.
+        use crate::chooser::test_support::lay_out_lab;
+        let pending = new_game(GameConfig::for_player_count(4), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).unwrap();
+        lay_out_lab(&mut state, false, [Some(TechCardId(11)), Some(TechCardId(12)), None, None, None, None]);
+        let lab_b = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::LaboratoryB)
+            .expect("4P has Laboratory B")
+            .0;
+        let me = state.current_player.0 as usize;
+        state.players[me].president_location = PresidentLocation::OnBoard(lab_b);
+        state.turn_phase = TurnPhase::AreaAction;
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        assert_eq!(describe_move(&mv(11), &state, &rules), "Laboratory: acquire Ball");
     }
 
     /// The Laboratory acquisition's `extra_tech_payment` surcharge is the
@@ -2547,6 +2662,34 @@ mod tests {
         assert_eq!(
             text4,
             format!("Move President to {} — pay 2 yen (1 to Blue, 1 canal toll)", area_label(&state, fee_dest))
+        );
+    }
+
+    /// A Church payment's words come from the ONE table (`church_kind_words`),
+    /// so the price of the yen kind is written in one place
+    /// (`screen_model::CHURCH_YEN_COST`), and `describe_move`'s output is
+    /// unchanged by the move.
+    #[test]
+    fn describe_words_a_church_payment_from_the_one_table() {
+        assert_eq!(
+            church_kind_words(Good::Yen),
+            format!("{} yen", crate::screen_model::CHURCH_YEN_COST)
+        );
+        let state = crate::chooser::test_support::issue_position();
+        let rules = Rules::standard();
+        let all = Move::ExecuteAreaAction {
+            action: AreaAction::Church {
+                copper: true,
+                silk: true,
+                tea: true,
+                seafood: true,
+                yen: true,
+                imported_good: true,
+            },
+        };
+        assert_eq!(
+            describe_move(&all, &state, &rules),
+            "Church: pay copper, silk, tea, seafood, 2 yen, imported good -> faith 11 (power 5 + 6 kinds)"
         );
     }
 }

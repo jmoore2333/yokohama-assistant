@@ -714,6 +714,16 @@ describe("the turn playback", () => {
    *  fixture already deals, for the same reason. */
   const TAKEN_ORDER = 31;
 
+  /** The achievement card the bot's step claims at 43: `wire.atK`'s second,
+   *  which the frames before 43 hold unclaimed. */
+  const CLAIMED_TYPE = "Technologies4";
+  const goalsOf = (f: typeof wire.atK) => {
+    const panel = f.frame.dashboard.find((p) => "Achievements" in p);
+    if (!panel || !("Achievements" in panel)) throw new Error("the fixture carries no Achievements panel");
+    return panel.Achievements.cards;
+  };
+  const claimOf = (f: typeof wire.atK) => goalsOf(f).find((c) => c.achievement_type === CLAIMED_TYPE)!;
+
   function botReply() {
     const before = { ...wire.optionsMany, events: 40 };
     const replied = { ...wire.optionsMany, events: 43 };
@@ -757,6 +767,10 @@ describe("the turn playback", () => {
           hand.Hand.card_count += 1;
         }
       }
+      // **And a CLAIM lands on an achievement card (#75)**, on the same step:
+      // the Goals strip is a fourth component, and `App` is the only thing that
+      // hands it the walk's `goals`. Seat 1 is the bot that moved.
+      if (k >= 43) claimOf(f).claimed_by.push(1);
       return f;
     };
     const log = {
@@ -947,6 +961,16 @@ describe("the turn playback", () => {
       expect(
         document.querySelector(".card-face.order.changed")?.querySelector(".card-id")?.textContent,
       ).toBe(`O${String(TAKEN_ORDER).padStart(2, "0")}`);
+      // **And the claimed achievement card, on a fourth.** The Goals strip is
+      // drawn from the frame being walked; the card the claim landed on is the
+      // one lit, and its siblings are not. The premise is the fixture's own:
+      // the frame before the claim holds the card with fewer claims.
+      expect(claimOf(at(42)).claimed_by.length).toBeLessThan(claimOf(at(43)).claimed_by.length);
+      const goalFaces = [...document.querySelectorAll(".table-sec.achievements .card-face.achievement")];
+      expect(goalFaces).toHaveLength(3);
+      expect(goalFaces.map((c) => c.classList.contains("changed"))).toEqual(
+        goalsOf(at(43)).map((c) => c.achievement_type === CLAIMED_TYPE),
+      );
       // The step that MOVES something dwells the cadence — 2000 ms, the
       // default this browser has no stored choice against — so the pulse is
       // five times the bookkeeping step's and the marks stay up between.

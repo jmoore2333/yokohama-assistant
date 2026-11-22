@@ -9,7 +9,15 @@
 import { describe, expect, it } from "vitest";
 import { diffFrames } from "./diffFrames";
 import { wire } from "./wire/contract";
-import type { HandPanel, HistoricalFrame, PlayerModel, SiteModel, TileModel } from "./types";
+import type {
+  AchievementModel,
+  HandPanel,
+  HistoricalFrame,
+  Panel,
+  PlayerModel,
+  SiteModel,
+  TileModel,
+} from "./types";
 
 const clone = (f: HistoricalFrame): HistoricalFrame => JSON.parse(JSON.stringify(f));
 
@@ -18,6 +26,12 @@ const clone = (f: HistoricalFrame): HistoricalFrame => JSON.parse(JSON.stringify
 const siteOf = (t: TileModel): SiteModel => {
   if (!t.site) throw new Error(`tile ${t.area} carries no site to build on`);
   return t.site;
+};
+
+const goalsOf = (f: HistoricalFrame): AchievementModel[] => {
+  const panel = f.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+  if (!panel) throw new Error("the fixture carries no Achievements panel");
+  return panel.Achievements.cards;
 };
 
 const playersOf = (f: HistoricalFrame): PlayerModel[] => {
@@ -30,7 +44,7 @@ describe("diffFrames", () => {
   it("sees nothing between a position and itself", () => {
     const d = diffFrames(wire.atK, clone(wire.atK));
     expect(d.any).toBe(false);
-    expect(d.tiles.size + d.seats.size + d.slots.size + d.techs.size + d.hand.size).toBe(0);
+    expect(d.tiles.size + d.seats.size + d.slots.size + d.techs.size + d.hand.size + d.goals.size).toBe(0);
   });
 
   it("names exactly the tile whose assistants moved", () => {
@@ -253,5 +267,90 @@ describe("diffFrames", () => {
     const d = diffFrames(wire.atK, b);
     expect(d.any).toBe(false);
     expect(d.techs.size + d.hand.size).toBe(0);
+  });
+
+  // ---- #75: the card whose claims GREW ------------------------------------
+  //
+  // The read is "longer in `b`", never "differs": a claim, once made, is never
+  // withdrawn in play, so a shorter list or a changed seat at the same length
+  // is not a claim landing and names nothing. Each cell edits ONE card of a
+  // fresh clone; the fixture's premise is asserted first.
+  describe("the goals", () => {
+    const premise = () => {
+      expect(goalsOf(wire.atK).map((c) => [c.achievement_type, c.claimed_by])).toEqual([
+        ["Seafood7", [1]],
+        ["Technologies4", []],
+        ["Commercial4", []],
+      ]);
+    };
+
+    it("names the card a claim was pushed onto, and no other", () => {
+      premise();
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Technologies4")!.claimed_by.push(0);
+      expect(diffFrames(wire.atK, b).goals).toEqual(new Set(["Technologies4"]));
+    });
+
+    it("names a card whose existing claim list grew too, not only the first claim", () => {
+      premise();
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Seafood7")!.claimed_by.push(0);
+      expect(diffFrames(wire.atK, b).goals).toEqual(new Set(["Seafood7"]));
+    });
+
+    it("names nothing when a claim was popped", () => {
+      premise();
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Seafood7")!.claimed_by.pop();
+      expect(goalsOf(b)[0]!.claimed_by).toEqual([]);
+      expect(diffFrames(wire.atK, b).goals.size).toBe(0);
+    });
+
+    it("names nothing when a claimant's seat changed at the same length", () => {
+      premise();
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Seafood7")!.claimed_by = [0];
+      expect(diffFrames(wire.atK, b).goals.size).toBe(0);
+    });
+
+    it("carries `any` by the goals alone, on a clone that moves `claimed_by` and nothing else", () => {
+      premise();
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Commercial4")!.claimed_by.push(1);
+      const d = diffFrames(wire.atK, b);
+      expect(d.goals.size).toBe(1);
+      expect(d.tiles.size + d.seats.size + d.slots.size + d.techs.size + d.hand.size).toBe(0);
+      expect(d.any).toBe(true);
+    });
+
+    it("names nothing when `a` has no Achievements panel", () => {
+      premise();
+      const b = clone(wire.atK);
+      const a = clone(wire.atK);
+      a.frame.dashboard = a.frame.dashboard.filter((p) => !("Achievements" in p));
+      expect(a.frame.dashboard.some((p) => "Achievements" in p)).toBe(false);
+      expect(diffFrames(a, b).goals.size).toBe(0);
+    });
+
+    it("names nothing for a card absent from a PRESENT panel of `a`, though `b` holds a claim on it", () => {
+      premise();
+      const a = clone(wire.atK);
+      const panel = a.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p)!;
+      panel.Achievements.cards = panel.Achievements.cards.filter((c) => c.achievement_type !== "Technologies4");
+      expect(goalsOf(a).map((c) => c.achievement_type)).toEqual(["Seafood7", "Commercial4"]);
+      const b = clone(wire.atK);
+      goalsOf(b).find((c) => c.achievement_type === "Technologies4")!.claimed_by.push(0);
+      expect(diffFrames(a, b).goals.size).toBe(0);
+    });
+
+    it("keys a card by its type and not by its place in the panel", () => {
+      premise();
+      const b = clone(wire.atK);
+      const panel = b.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p)!;
+      panel.Achievements.cards.reverse();
+      expect(goalsOf(b).map((c) => c.achievement_type)).toEqual(["Commercial4", "Technologies4", "Seafood7"]);
+      goalsOf(b).find((c) => c.achievement_type === "Technologies4")!.claimed_by.push(0);
+      expect(diffFrames(wire.atK, b).goals).toEqual(new Set(["Technologies4"]));
+    });
   });
 });

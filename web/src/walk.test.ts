@@ -8,11 +8,12 @@ import {
   dwellFor,
   hasBotStep,
   hasOpponentStep,
+  heldChanges,
   walkReducer,
   type WalkState,
 } from "./walk";
 import { wire } from "./wire/contract";
-import type { HistoricalFrame, LogPanel, PlayerId } from "./types";
+import type { AchievementType, HistoricalFrame, LogPanel, Panel, PlayerId } from "./types";
 
 const clone = (f: HistoricalFrame): HistoricalFrame => JSON.parse(JSON.stringify(f));
 
@@ -176,5 +177,54 @@ describe("walkReducer", () => {
     expect(walkReducer(s(0), { type: "jump", to: 7 }, last)).toEqual(s(2, false));
     expect(walkReducer(s(2), { type: "jump", to: -3 }, last)).toEqual(s(0, false));
     expect(walkReducer(s(1), { type: "skip" }, last)).toBeNull();
+  });
+});
+
+// ---- #75: the claim the finished turn leaves lit --------------------------
+//
+// `heldChanges` is the union over the steps the run's LAST mover played, in one
+// seat's colour. The file had no `heldChanges` cell before this one, so the run
+// is `buildRun`'s over clones of a corpus frame, one claim pushed per step.
+describe("heldChanges", () => {
+  const claim = (f: HistoricalFrame, type: AchievementType, seat: PlayerId): void => {
+    const panel = f.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+    if (!panel) throw new Error("the fixture carries no Achievements panel");
+    panel.Achievements.cards.find((c) => c.achievement_type === type)!.claimed_by.push(seat);
+  };
+
+  it("carries the goals of the LAST mover's steps, unioned, and not another mover's", () => {
+    const f10 = clone(wire.atK);
+    f10.index = 10;
+    f10.to_move = 1;
+    const f11 = clone(f10);
+    f11.index = 11;
+    f11.to_move = 0;
+    claim(f11, "Technologies4", 1);
+    const f12 = clone(f11);
+    f12.index = 12;
+    claim(f12, "Seafood7", 0);
+    const f13 = clone(f12);
+    f13.index = 13;
+    claim(f13, "Commercial4", 0);
+    const log: LogPanel = {
+      total: 13,
+      entries: [
+        { index: 10, text: "Blue: Claim an achievement" },
+        { index: 11, text: "Red: Claim an achievement" },
+        { index: 12, text: "Red: Claim an achievement" },
+      ],
+    };
+    const run = buildRun(10, [f10, f11, f12, f13], log);
+    // The premises: three steps, moved by 1, 0, 0, each naming its own claim.
+    expect(run.steps.map((s) => s.mover)).toEqual([1, 0, 0]);
+    expect(run.steps.map((s) => [...s.changes.goals])).toEqual([
+      ["Technologies4"],
+      ["Seafood7"],
+      ["Commercial4"],
+    ]);
+    const held = heldChanges(run)!;
+    expect(held.goals).toEqual(new Set(["Seafood7", "Commercial4"]));
+    expect(held.goals.has("Technologies4")).toBe(false);
+    expect(held.any).toBe(true);
   });
 });

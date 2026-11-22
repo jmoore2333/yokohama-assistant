@@ -544,14 +544,17 @@ mod tests {
         let take = r
             .session
             .legal()
-            .iter()
-            .position(|m| matches!(
+            .into_iter()
+            .find(|m| matches!(
                 m,
                 Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
                     if cards_taken.len() == 1
             ))
             .expect("1-card port take available");
-        r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b): its entry, the card, `confirm`.
+        for line in r.port_take_lines(&take) {
+            r.step(&line);
+        }
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
         (r, others[0])
     }
@@ -582,14 +585,17 @@ mod tests {
         let take = r
             .session
             .legal()
-            .iter()
-            .position(|m| matches!(
+            .into_iter()
+            .find(|m| matches!(
                 m,
                 Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } }
                     if cards_taken.len() == 2
             ))
             .expect("a 2-card port take is available");
-        r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b).
+        for line in r.port_take_lines(&take) {
+            r.step(&line);
+        }
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a 2-slot reveal");
         r
     }
@@ -1138,10 +1144,16 @@ mod tests {
         )).expect("PlacePresident at Port A is legal from hand at game start");
         r.step(&menu_number(k).to_string());
         // Pick a 1-card port take.
-        let take = r.session.legal().iter().position(|m| matches!(
+        let take = r.session.legal().into_iter().find(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b): its entry, the card, `confirm`,
+        // the last reply being the one the old row's gave.
+        let mut out = None;
+        for line in r.port_take_lines(&take) {
+            out = Some(r.step(&line));
+        }
+        let out = out.expect("a line was sent");
         // Live mode must now be ASKING for the refill card, not applied yet.
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         let events_before = r.session.record().events.len();
@@ -1174,10 +1186,16 @@ mod tests {
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
         r.step(&menu_number(k).to_string());
-        let take = r.session.legal().iter().position(|m| matches!(
+        let take = r.session.legal().into_iter().find(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
-        let out = r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b): its entry, the card, `confirm`,
+        // the last reply being the one the old row's gave.
+        let mut out = None;
+        for line in r.port_take_lines(&take) {
+            out = Some(r.step(&line));
+        }
+        let out = out.expect("a line was sent");
         assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
         // A physically-real order card the seeded setup boxed: in orders_removed,
         // never in the deck (conservation makes the two piles disjoint).
@@ -1291,10 +1309,13 @@ mod tests {
         r.step(&menu_number(k).to_string());
         let before = r.session.state().clone();
         let events_before = r.session.record().events.len();
-        let take = r.session.legal().iter().position(|m| matches!(
+        let take = r.session.legal().into_iter().find(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).unwrap();
-        r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b).
+        for line in r.port_take_lines(&take) {
+            r.step(&line);
+        }
         r.step(&format!("O{}", others[0].0));
         r.step("undo");
         assert_eq!(*r.session.state(), before);

@@ -618,7 +618,6 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .chip.station { color: var(--yellow); border-color: color-mix(in oklab, var(--yellow) 45%, transparent); }
 .chip.gear { color: var(--fg); border-color: var(--fg-faint); font-weight: 700; }
 .chip.tech, .chip.order { color: var(--fg-dim); }
-.chip.claimed { font-weight: 700; }
 .chip.muted { color: var(--fg-faint); border-color: var(--line); }
 .chip.warn { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, transparent); }
 .chip.zone-low { color: var(--seafood); }
@@ -643,7 +642,7 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * sites are W0b's; the ACHIEVEMENTS are W0's own gap — landscape since that
  * commit and cropped ever since in the Goals index (`Index.tsx`) and the rail's
  * Achievements panel (`Dashboard.tsx`), which no test can see because jsdom has
- * no layout. `.panel .card-face.achievement img` keeps its 3.4rem WIDTH; that
+ * no layout. `.panel .card-face.achievement .card-pic` keeps the art's 3.4rem WIDTH; that
  * is now ~2.25rem tall instead of ~5.1rem, which is the intent of the row
  * layout rather than a cost. */
 .card-face.site img, .card-face.site .card-blank,
@@ -670,8 +669,8 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * `width: 100%`, so a wrapping strip still puts one per line) and was not
  * shipped, and at 3P/4P the strip is caption-bound at 3.4rem (caption 92/109px
  * against 82px of art), so shrinking recovers nothing. */
-.panel .card-face.achievement img { width: 3.4rem; flex: 0 0 3.4rem; }
-.panel .card-face.achievement .card-blank { width: 5.2rem; flex: 0 0 5.2rem; }
+.panel .card-face.achievement .card-pic { flex: 0 0 3.4rem; width: 3.4rem; }
+.panel .card-face.achievement .card-pic.blank { flex: 0 0 5.2rem; width: 5.2rem; }
 .panel .card-face.achievement figcaption { flex: 1 1 auto; min-width: 0; }
 .panel .card-strip { flex-direction: column; }
 .card-blank {
@@ -694,6 +693,62 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .progress-row .fill { display: block; height: 100%; background: currentColor; }
 .progress-row .num { color: var(--fg-faint); min-width: 2.4rem; text-align: right; }
 
+/* ---- the claim band (#75) ------------------------------------------------
+ *
+ * An achievement's picture and its blank sit in one PICTURE BOX, `.card-pic`,
+ * and the band is positioned against that box and never against the picture,
+ * so twelve pictures need no coordinates and an art-less card draws the same
+ * band over its blank.
+ *
+ * **Every length inside except the 1-px lines and the numbers' clamped font is
+ * in `cqw` of the picture box**, which is what makes the fit hold by
+ * construction rather than by measurement: those terms are the same fraction of
+ * the box at every card width, so four cubes and both numbers that fit one card
+ * fit all of them. Four is the most a card can carry (a seat claims a card
+ * once). The fixed terms are the band's 1-px border, the 1-px divider, the
+ * ring's `max(1px, …)` floor and the numbers' `clamp()`; the pill's `999px`
+ * radius rounds the corners and takes no width. The fixed terms take a smaller
+ * share as the box grows; where they take a larger one (a narrow box), the
+ * CUBES give way first — they shrink (`flex: 0 1`, `min-width: 0`) while the
+ * numbers and the divider keep their size (`flex: none`) — and `max-width`
+ * caps the band inside the box, so it can narrow but never overflow it or wrap
+ * (`flex-wrap: nowrap`).
+ *
+ * The containment is `inline-size`, so the box's WIDTH may not come from its
+ * content: every place that draws the card gives it one — the column of a
+ * strip or an index stretches it, and the panel's row sets it above
+ * (`.panel .card-face.achievement .card-pic`).
+ *
+ * **The band carries its own ground.** The picture behind it is whatever the
+ * card prints, so the numbers are read against `--bg-sunken`, opaque, never
+ * against the art: `--vp` on it is 8.00:1, well above AA's 4.5:1, and
+ * `--bg-sunken` is not redefined by the light scheme, so the figure holds in
+ * both. The ring (`--fg` on the same ground, 16.62:1) is the first claim's
+ * place; every `.claim` has the same box and border width, the later ones'
+ * border transparent, so the ring moves no cube off the row's line. */
+.card-pic { position: relative; container-type: inline-size; }
+.claims {
+  position: absolute; z-index: 1; left: 3cqw; bottom: 3cqw; max-width: 94cqw;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 1.6cqw;
+  padding: 1.2cqw 2.4cqw; overflow: hidden;
+  background: var(--bg-sunken); border: 1px solid var(--line-bright); border-radius: 999px;
+  /* A claimant the colours do not name has no seat class, so its cube takes this. */
+  color: var(--fg-dim);
+}
+.claim {
+  display: block; flex: 0 1 12cqw; min-width: 0;
+  padding: 0.9cqw; border: max(1px, 0.7cqw) solid transparent; border-radius: 50%;
+}
+.claim.first { border-color: var(--fg); }
+/* `.piece` sizes a TILE's pieces from the band's `--piece-h`, which is not set
+ * here: the cube fills its place instead, square by its own viewBox. */
+.claim .piece.cube { display: block; width: 100%; height: auto; }
+.claims-vp {
+  flex: none; font-family: var(--mono); font-weight: 700; line-height: 1;
+  font-size: clamp(9px, 8cqw, 15px); color: var(--vp);
+}
+.claims-sep { flex: none; align-self: stretch; width: 1px; background: var(--line-bright); }
+
 /* ---- panels ------------------------------------------------------------ */
 .panel {
   background: var(--bg-raised); border: 1px solid var(--line);
@@ -711,6 +766,24 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .seat-head .tag { font-size: 10px; color: var(--fg-faint); }
 .seat.current .seat-name::before { content: "\25B6"; margin-right: 0.3rem; font-size: 0.7em; }
 .stat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem; margin-top: 0.25rem; }
+/* A seat's face-up flags: five cells, the country's word and its count. The row
+ * wraps and its cells carry no fixed width, so it never widens its `.seat` at a
+ * phone's width. A zero's word and count are dimmed, never the cell, so a `+n`
+ * inside it keeps its own colour's full contrast. `+n` is a flag still on an
+ * order in hand and does not count yet, so it is `--fg-dim` and italic beside
+ * the count (bold `--fg` where the count is not zero). It is `--fg-dim` and not `--fg-faint` because it sits
+ * on the viewer's own row, the row the walk tints (`.seat.changed`, 10% of
+ * `--green` over the panel) and holds tinted until the player answers:
+ * `--fg-dim` reads 6.01:1 on the dark `--bg-raised` and 5.08:1 on it lit, and
+ * 5.77:1 on the light scheme's `--bg-raised` and 4.85:1 on it lit, all four
+ * above AA's 4.5:1, where `--fg-faint` read 4.12:1 and 3.94:1 on the two lit
+ * grounds. */
+.flags { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.15rem 0.5rem; margin-top: 0.25rem; font-size: 10px; }
+.flag { display: inline-flex; align-items: baseline; gap: 0.2rem; color: var(--fg-dim); }
+.flag.none .flag-word, .flag.none .flag-n { opacity: 0.45; }
+.flag-n { color: var(--fg); font-weight: 700; }
+.flag.none .flag-n { color: inherit; font-weight: 400; }
+.flag-hand { color: var(--fg-dim); font-style: italic; }
 
 .track { display: flex; flex-wrap: wrap; gap: 0.2rem; margin-top: 0.2rem; }
 .space {
@@ -824,6 +897,261 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
 .option:disabled { opacity: 0.5; cursor: default; }
 .option .num { color: var(--vp); font-weight: 700; min-width: 1.6rem; }
 .option .more { color: var(--fg-faint); margin-left: auto; }
+
+/* ---- the choosers (plan 2a) ---------------------------------------------
+ * The accepted mockup's look, in this file's conventions. A token is a ring
+ * in the good's colour holding its letters, or the manifest's picture
+ * (`.has-img`) with the ring dropped; a group overlaps its copies. The kinds
+ * are a three-column grid of buttons at least 48px tall, so a finger lands on
+ * one. A kind the payload says no listed move pays is `disabled` and carries
+ * `data-unavailable` for the browser walks; a kind in flight is `aria-disabled`
+ * instead, so it keeps the focus (ruling R45), and is dimmed exactly as a
+ * `disabled` one is. A stepper follows the same rule. */
+.tokens { display: inline-flex; flex: none; vertical-align: middle; }
+.tok {
+  --c: var(--fg-dim);
+  display: inline-grid; place-items: center; flex: none; overflow: hidden;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: color-mix(in srgb, var(--c) 22%, var(--bg)); border: 2px solid var(--c);
+  color: var(--c); font-size: 10px; font-weight: 700; vertical-align: middle;
+}
+.tok img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tok.has-img { background: none; border-color: transparent; border-radius: 0; }
+.tok.sm { width: 22px; height: 22px; font-size: 8px; border-width: 1.5px; }
+.tok.copper { --c: var(--copper); }
+.tok.silk { --c: var(--silk); }
+.tok.tea { --c: var(--tea); }
+.tok.seafood { --c: var(--seafood); }
+.tok.imports { --c: var(--imports); }
+.tok.yen { --c: var(--yen); }
+.tokens .tok + .tok { margin-left: -10px; }
+.tokens .tok.sm + .tok.sm { margin-left: -7px; }
+
+.chooser .kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.kind {
+  display: flex; align-items: center; gap: 0.5rem; min-height: 48px;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.45rem 0.5rem; font: inherit; text-align: left; cursor: pointer;
+}
+.kind:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--line-bright); }
+/* The ring is drawn INSIDE the button (rulings R38, R39): the kinds' box is a
+ * scroll container at every viewport, and a scroll container clips whatever is
+ * drawn outside it, which a ring at the grid's edge would be. It is in the
+ * foreground colour, 3 to 5 px in from the edge, so it keeps 1 px of the
+ * button's own ground clear of the pressed band (the border and the inset
+ * shadow, 0 to 2 px, in `--vp`): focus and selection read apart, and both at
+ * once read as both. */
+.kind:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
+.kind[aria-pressed="true"] {
+  border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
+}
+.kind:disabled, .kind[aria-disabled="true"] { opacity: 0.38; cursor: default; }
+.kind .lbl { display: flex; flex-direction: column; line-height: 1.25; }
+.kind .have { font-size: 10px; color: var(--fg-faint); }
+
+.chooser .verdict { margin-top: 0.7rem; font-size: 12px; min-height: 2.6em; }
+.chooser .verdict.ok { color: var(--fg); }
+.chooser .verdict.bad { color: var(--warn); }
+.chooser .verdict .tag { color: var(--reachable); }
+.chooser .verdict.bad .tag { color: var(--warn); }
+.chooser .verdict .faiths { color: var(--fg-dim); }
+
+/* **When the deck is short, the chooser gives way and the controls do not**
+ * (ruling R38). Confirm and Cancel are siblings after the chooser, and a
+ * chooser that would not shrink pushed them out of the deck: measured at
+ * 844x390, a phone held sideways, the deck is capped at 241.8 px (62vh) and the
+ * Church's controls sat at 380–414 px in a 390 px window, Chinatown's wholly
+ * below it. So the Church's chooser may shrink (it never grows), and it and its
+ * kinds are scroll containers at every viewport. Where the chooser fits, no box
+ * moves and nothing scrolls: at 390x844 and 1440x900 every box is as it was.
+ * When the deck is short, the kinds scroll first, down to one row of kinds
+ * (at 844x390 they are 56 px tall, holding 102), and then the chooser itself
+ * scrolls: at 667x375 and below the kinds are at that one-row floor and the
+ * verdict is under the chooser's fold until it is scrolled (measured there: the
+ * kinds 48 px holding 102, the chooser showing 71 of its 95 px, the verdict's
+ * top 12 px above the fold — the review read the same 71 of 95). */
+.decision > .chooser.church {
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+}
+.chooser.church .kinds {
+  flex: 0 1 auto; min-height: 48px; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.church .verdict { flex: none; }
+
+/* Chinatown: the stock, then the rows in the deck's one scrolling box, then
+ * the verdict. `.options.scrolls`' contract: the chooser takes what the deck
+ * has left (`flex: 1 1 auto`), its `.rows` are what scrolls, and the stock
+ * above and the verdict below keep their size. **The chooser has no floor of
+ * its own** (ruling R38): its old 10.5rem bound at 844x390, where the deck is
+ * capped at 241.8 px and the chooser is left about 103 px of it, so the
+ * controls were pushed wholly below the window. The stock (25 px) and the
+ * verdict's reserved lines (42 px) leave the rows about 35 px there, less than
+ * one exchange (40 px, and its 4 px gap), so the rows keep a floor of exactly
+ * one exchange, 2.75rem, and the chooser itself scrolls the few pixels left
+ * over, as the last resort. Confirm and Cancel are siblings after the
+ * chooser, never inside the clip. */
+.decision > .chooser.chinatown {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; max-width: 62rem;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.chinatown .stock { flex: none; }
+.chooser.chinatown .rows {
+  flex: 1 1 auto; min-height: 2.75rem; overflow-y: auto;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.chinatown .verdict { flex: none; }
+/* The Port: the cards in reach by zone (plan 2b, Task 4). A zone is a heading
+ * and its cards, two to a row (a port zone holds two); each card is a button
+ * over the client's own card face. A card the payload says cannot be added is
+ * `disabled` and carries `data-unavailable`; in flight an offered card is
+ * `aria-disabled` instead, so it keeps the focus (ruling R45), and both are
+ * dimmed as a kind is. A pressed card wears the kind's pressed band, and the
+ * focus ring is drawn INSIDE it in the foreground colour for the kind's reason
+ * (the box below is a scroll container).
+ *
+ * **The card face is laid out flat** (Task 5; ruling T5-a): the picture a
+ * 3.5rem-tall thumbnail (`--port-art`, 37 px wide) beside the caption, whose
+ * title and two chip rows wrap as one row-wise flow, and a chip's own words
+ * may wrap so a long one (`1 from warehouse`) cannot run out of its card. The
+ * accepted mockup's shape: one row per zone, its heading at the left and its
+ * two cards side by side as compact buttons. How the face LOOKS is the
+ * owner's reading.
+ *
+ * **Measured in Chromium, on the route's four cards** (a fresh two-player
+ * table, power 3; Task 5's cells 1 and 2). Each run deals a fresh table, so
+ * every range below is what the runs read, NOT a bound. Drawn as the hand
+ * draws it, a card was 143x296 px at 390x844: the zones showed 297 of 598 px
+ * and a card's box reached 1036 px in an 844 px window; at 844x390 and
+ * 667x375 a card (370x618, 282x485) was taller than the deck, so no scroll
+ * could bring it into view. Flat, a card read 86 to 142 px tall at 390x844
+ * and 1440x900 (the caption is about 90 px wide there) and 67.6 px at 844x390
+ * (wider, so the picture sets the height). At 390x844 the zones held the
+ * route's two zones whole (220 to 260 px with the pixel of padding under
+ * their last card that this comment comes to, 219 to 259 before it; nothing
+ * scrolls). At 1440x900 the rail's 45vh deck is 405 px, the chooser gets
+ * 222 and the zones 179, so on every table the runs dealt the second zone
+ * was cut at open (two of four cards whole), and each cut card scrolls into view inside the zones — by a
+ * wheel over them, the page not moving. Four cards at the runs' shortest
+ * (86 + 6 + 86 = 178 px) would all fit in 179 (REASONED). **The zones keep a
+ * pixel of padding under their last card**: their box is fractional (179.22
+ * px) and a wheel stops at a whole pixel, so without it the wheel's end left
+ * the last card 0.6 px under the fold (measured).
+ *
+ * **Where the deck is short the chooser gives way as the Church's does, and
+ * Confirm and Cancel, its siblings, stay in reach** (measured): at 844x390 the
+ * zones are at their floor, showing 70 of 142 px, and the chooser itself
+ * scrolls the last 9 px (103 of 112, the verdict under its fold). **The zones'
+ * floor is one card**: the picture, the button's 0.3rem padding twice and its
+ * 1 px border twice (67.6 px), with a pixel to spare and in WHOLE pixels, and
+ * the pixel of padding above: 70 px — a floor of 68.6 px read as a 69 px box
+ * when scrolled and cut the last card by 0.6 px (measured). A card is that short only while its caption
+ * is no taller than its picture, three rows (measured at 844 px wide; a fourth
+ * row is REASONED not to occur at these widths, the caption being about 227 px
+ * wide or more and the widest chip row measured 224).
+ *
+ * **A short window (380 px tall or less) takes a smaller card** (ruling T5-d):
+ * with the card above, the chooser showed 71 px at 667x375 and 68 at 667x370
+ * (a 67.6 px card still whole), then 65 at 667x365 and 62 at 640x360, where
+ * every card stayed cut by 1 to 2 px (Task 5's review measured it). So below
+ * 380 px the picture is 2.5rem, the caption's lines 1.2 tall, the zone's
+ * heading column 2.4rem and the face's gap 0.25rem, and a card read 51.6 to
+ * 56.8 px (at most three caption rows, which the caption, not the picture,
+ * sets), under a floor of 58 px with the padding. The narrower heading and gap
+ * are what keep a row from wrapping: with the 3.2rem column a card at 640x360
+ * read 74 px (its 224 px requirement row wrapping in a caption 223.8 px wide,
+ * reckoned from the boxes), taller
+ * than the 62 px the chooser shows, so it could not come whole. Measured by
+ * stepping the window down on three tables: every card came whole into view
+ * down to 352 px of window height (640x352, the chooser showing 57 px); at
+ * 350 a card was cut on two of the three, at 348 on all three, and at 340 every
+ * card; at 320 the chooser shows 37 px. Those are the figures of those three
+ * tables, not of every table: the floor follows the tallest card a table
+ * deals (a 56.8 px card needs 352; a table of 51.6 px cards stays whole to
+ * 348), and Task 5's review, stepping five tables of its own down, read every
+ * card whole at 352 on all five and at 348 on three of them. Below a table's
+ * floor a card is cut, a press at its centre still lands on it, and Confirm
+ * and Cancel stay in reach (measured down to 568x320).
+ *
+ * **NOT measured: a table with SIX cards in reach** (power 4 or more), three
+ * zones: no cell's table reaches one by lines. Reasoned from the figures
+ * above, three zones of 86 to 142 px (270 to 438 px with their gaps) would
+ * not fit whole in the 220 to 260 px the zones had at 390x844, so the zones
+ * would scroll there as they do at 1440x900. */
+.decision > .chooser.port {
+  --port-art: 3.5rem;
+  --port-floor: calc(var(--port-art) + 14px);
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.port .zones {
+  flex: 0 1 auto; min-height: var(--port-floor); overflow-y: auto; display: grid; gap: 6px;
+  padding-bottom: 1px;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.port .zone {
+  display: grid; grid-template-columns: 3.2rem repeat(2, minmax(0, 1fr)); gap: 6px; align-items: stretch;
+}
+.chooser.port .zl { font-size: 10px; letter-spacing: 0.08em; color: var(--fg-faint); align-self: center; }
+.card-pick {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.3rem; font: inherit; text-align: left; cursor: pointer;
+}
+.card-pick .card-face {
+  width: 100%; border: 0; padding: 0; background: none;
+  flex-direction: row; align-items: flex-start; gap: 0.4rem;
+}
+.card-pick .card-face img, .card-pick .card-face .card-blank { width: auto; height: var(--port-art); flex: none; }
+.card-pick .card-face figcaption { min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.3rem; }
+.card-pick .card-face .chips { margin-top: 0; min-width: 0; }
+.card-pick .card-face .chip { white-space: normal; }
+/* A short window's smaller card: the comment above the Port's rules. */
+@media (max-height: 380px) {
+  .decision > .chooser.port { --port-art: 2.5rem; --port-floor: 58px; }
+  .chooser.port .zone { grid-template-columns: 2.4rem repeat(2, minmax(0, 1fr)); }
+  .card-pick .card-face { gap: 0.25rem; }
+  .card-pick .card-face .card-title, .card-pick .card-face .chip { line-height: 1.2; }
+}
+.card-pick:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--line-bright); }
+.card-pick:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
+.card-pick[aria-pressed="true"] {
+  border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
+}
+.card-pick:disabled, .card-pick[aria-disabled="true"] { opacity: 0.38; cursor: default; }
+.chooser.port .verdict { flex: none; }
+.chooser.port .verdict .way { display: block; }
+.chooser.port .verdict .tag + .way { display: inline; }
+.chooser.port .verdict .asked { color: var(--fg-dim); }
+.chooser.port .verdict .asked + .way { margin-left: 1rem; }
+.chooser.port .verdict .way + .way { margin-left: 1rem; }
+.side-h { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-faint); margin: 0.7rem 0 0.3rem; }
+.side-h:first-child { margin-top: 0.2rem; }
+.ex {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.5rem;
+  background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.3rem 0.5rem; margin-bottom: 4px;
+}
+.ex.on { border-color: var(--vp); }
+.ex .what { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+.ex .pics { display: inline-flex; align-items: center; gap: 0.35rem; flex: none; }
+.ex .arrow { color: var(--fg-faint); }
+.ex .words {
+  color: var(--fg-dim); font-size: 11px; margin-left: 0.3rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
+.step { display: flex; align-items: center; gap: 0.3rem; }
+.step button {
+  width: 28px; height: 28px; border-radius: var(--radius); border: 1px solid var(--line-bright);
+  background: var(--bg); color: var(--fg); cursor: pointer; font: inherit; font-weight: 700; padding: 0;
+}
+.step button:focus-visible { outline: 2px solid var(--vp); outline-offset: 1px; }
+.step button:disabled, .step button[aria-disabled="true"] { opacity: 0.3; cursor: default; }
+.step .n { min-width: 1.4rem; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stock { display: flex; flex-wrap: wrap; gap: 0.7rem; font-size: 11.5px; color: var(--fg-dim); margin-bottom: 0.2rem; }
+.stock .item { display: inline-flex; align-items: center; gap: 0.25rem; }
 
 .near-miss { margin-top: 0.7rem; font-size: 11px; color: var(--fg-dim); max-width: 62rem; }
 .near-miss b { color: var(--fg); }

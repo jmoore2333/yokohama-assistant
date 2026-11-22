@@ -5220,9 +5220,16 @@ mod tests {
     }
 
     /// Drive `user`'s turn at `id` through a move that DRAWS from a hidden
-    /// deck, at the area `area_type` names, by the first row that starts
-    /// `take`: `("PortA", "Port: take")` draws from the order deck and
-    /// `("LaboratoryA", "Laboratory: acquire")` from the tech deck. Option B
+    /// deck, at the area `area_type` names, by the first row that starts with
+    /// one of `takes`: `("PortA", &["Port: take", "Port — take"])` draws from
+    /// the order deck — a direct take row, or the Port's folded entry (plan
+    /// 2b), whose chooser is answered with its first card that can be switched
+    /// on and then `confirm`, a single take — and
+    /// `("LaboratoryA", &["Laboratory: acquire"])` from the tech deck, by a
+    /// direct row or a folded title's entry (plan 2b, Task 3), whose `pick`
+    /// is answered with its first row (measured: on the 20260831 table the
+    /// lab cell plays, Laboratory A folds Ball and the acquire goes through
+    /// the pick). Option B
     /// puts two assistants on that area (its id read off the `/areas` panel's
     /// `tile.area_type`), the President follows them, and the area action is
     /// the `take` row — a port take refills the port from the order deck and
@@ -5238,7 +5245,7 @@ mod tests {
         state: &Arc<AppState>,
         id: &str,
         user: &str,
-        (area_type, take): (&str, &str),
+        (area_type, takes): (&str, &[&str]),
     ) -> Option<((usize, usize), serde_json::Value)> {
         let heights = |game: &serde_json::Value, labs: &serde_json::Value| {
             (
@@ -5269,11 +5276,37 @@ mod tests {
             let rows = now["prompt"]["rows"].as_array().cloned().unwrap_or_default();
             let words = |r: &serde_json::Value| r["words"].as_str().unwrap_or_default().to_string();
             let number = |r: &serde_json::Value| r["number"].as_u64().map(|n| n.to_string());
-            let line = if rows.iter().any(|r| words(r).starts_with("Option B")) {
+            let prompt = &now["prompt"];
+            let line = if prompt["kind"] == "port" {
+                // The Port's chooser: one card on, then `confirm`. Every flag
+                // is the arm's own.
+                if prompt["preview"]["legal"] == serde_json::json!(true) {
+                    "confirm".to_string()
+                } else {
+                    prompt["cards"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|c| c["can_add"] == serde_json::json!(true))
+                        .and_then(|c| c["number"].as_u64())
+                        .map_or_else(|| "cancel".to_string(), |n| n.to_string())
+                }
+            } else if prompt["kind"] == "pick" {
+                // The pick a pressed row opened — a folded Laboratory title's,
+                // its rows that title's acquisitions: the first take. The
+                // generic `takes` rule below would answer it with the same
+                // row (measured, plan 2b's Task 3 review: this arm disabled,
+                // the lab cell reads green); the arm exists to say so.
+                rows.iter()
+                    .find(|r| takes.iter().any(|t| words(r).starts_with(t)))
+                    .or(rows.first())
+                    .and_then(number)
+                    .expect("a pick lists its rows")
+            } else if rows.iter().any(|r| words(r).starts_with("Option B")) {
                 format!("b {area}")
             } else if let Some(r) = rows.iter().find(|r| {
                 let w = words(r);
-                w.starts_with(take) || (w.starts_with("Place President") && w.contains(&area))
+                takes.iter().any(|t| w.starts_with(t)) || (w.starts_with("Place President") && w.contains(&area))
             }) {
                 number(r).expect("a numbered row")
             } else if !rows.is_empty() && rows.iter().all(|r| words(r).starts_with("Retreat President")) {
@@ -5337,7 +5370,7 @@ mod tests {
         for _ in 0..12 {
             let (_, now) = get_as(&state, "red@wire.test", "/api/games/undraw").await;
             let mover = if now["to_move"].as_u64() == Some(0) { "red@wire.test" } else { "blue@wire.test" };
-            if let Some(found) = play_until_a_draw(&state, "undraw", mover, ("PortA", "Port: take")).await {
+            if let Some(found) = play_until_a_draw(&state, "undraw", mover, ("PortA", &["Port: take", "Port — take"])).await {
                 drawn = Some((mover, found));
                 break;
             }
@@ -5365,7 +5398,7 @@ mod tests {
         start(&router, "solo", 2, &[]).await;
         let mut drawn = None;
         for _ in 0..12 {
-            if let Some(found) = play_until_a_draw(&solo, "solo", WHO, ("PortA", "Port: take")).await {
+            if let Some(found) = play_until_a_draw(&solo, "solo", WHO, ("PortA", &["Port: take", "Port — take"])).await {
                 drawn = Some(found);
                 break;
             }
@@ -5392,7 +5425,7 @@ mod tests {
         for _ in 0..12 {
             let (_, now) = get_as(&state, "red@wire.test", "/api/games/labdraw").await;
             let mover = if now["to_move"].as_u64() == Some(0) { "red@wire.test" } else { "blue@wire.test" };
-            if let Some(found) = play_until_a_draw(&state, "labdraw", mover, ("LaboratoryA", "Laboratory: acquire")).await {
+            if let Some(found) = play_until_a_draw(&state, "labdraw", mover, ("LaboratoryA", &["Laboratory: acquire"])).await {
                 drawn = Some((mover, found));
                 break;
             }
@@ -5426,7 +5459,7 @@ mod tests {
     async fn an_undo_of_a_port_take_is_allowed_at_a_table_of_one_person_and_a_bot() {
         let state = Arc::new(AppState::in_memory());
         start_vs_bot(&state, "undraw-bot", 20260831, "red@wire.test").await;
-        let (before, reply) = play_until_a_draw(&state, "undraw-bot", "red@wire.test", ("PortA", "Port: take"))
+        let (before, reply) = play_until_a_draw(&state, "undraw-bot", "red@wire.test", ("PortA", &["Port: take", "Port — take"]))
             .await
             .expect("red's first turn holds a port take");
         let events = reply["events"].as_u64().expect("an event count");
@@ -8535,6 +8568,46 @@ mod tests {
                         }
                     }
                 }
+                // The Church's chooser (plan 2a): confirm a selection the
+                // list holds, else switch on the first kind some listed move
+                // pays that is not yet on, else back out. Every flag is the
+                // arm's own, so nothing here restates a rule.
+                "church" => {
+                    if state["prompt"]["preview"]["legal"] == serde_json::json!(true) {
+                        "confirm".to_string()
+                    } else {
+                        state["prompt"]["kinds"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|k| k["offered"] == serde_json::json!(true) && k["selected"] == serde_json::json!(false))
+                            .and_then(|k| k["number"].as_u64())
+                            .map_or_else(|| "cancel".to_string(), |n| n.to_string())
+                    }
+                }
+                // The Port's chooser (plan 2b), as the Church's: confirm a
+                // selection the list holds, else switch on the first card the
+                // list can take, else back out.
+                "port" => {
+                    if state["prompt"]["preview"]["legal"] == serde_json::json!(true) {
+                        "confirm".to_string()
+                    } else {
+                        state["prompt"]["cards"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .find(|c| c["can_add"] == serde_json::json!(true))
+                            .and_then(|c| c["number"].as_u64())
+                            .map_or_else(|| "cancel".to_string(), |n| n.to_string())
+                    }
+                }
+                // Chinatown's chooser (plan 2a, Task 4, ruling R28): refused,
+                // not answered. These walks play two-player games, whose board
+                // has no Chinatown, so an arm that answered it could never run.
+                "chinatown" => panic!(
+                    "a `chinatown` prompt in a two-player game, whose board has no Chinatown: the board or \
+                     the fold changed, and this walk needs a Chinatown rule written with a game that runs it: {state}"
+                ),
                 _ => state["prompt"]["rows"][0]["number"]
                     .as_u64()
                     .map(|n| n.to_string())

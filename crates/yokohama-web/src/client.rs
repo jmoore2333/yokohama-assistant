@@ -88,6 +88,33 @@ pub enum PromptState {
         selected: Option<AreaId>,
         fee: Option<screen_model::FeeModel>,
     },
+    /// The Church chooser (cycle 2, plan 2a): six kinds switched on and off by
+    /// number, then `confirm`. The fields are the REPL's own model
+    /// (`yokohama_cli::chooser::ChurchModel`) — per kind its number, good,
+    /// amount, words, holding, selection and whether any listed move pays it;
+    /// the preview; the offered-faiths line — so the client reads no rule.
+    /// Like every arm here it rides the acting seat's payload alone
+    /// ([`prompt_of_seat`]).
+    Church(yokohama_cli::chooser::ChurchModel),
+    /// The Chinatown chooser (cycle 2, plan 2a): nine exchanges added by
+    /// number and taken back by `back <number>`, then `confirm`. The fields
+    /// are the REPL's own model (`yokohama_cli::chooser::ChinatownModel`) —
+    /// the most exchanges in one listed set, the count chosen, the acting
+    /// seat's six holdings, per exchange its number, what it spends and gains,
+    /// its words, its count, whether the list holds one more of it and
+    /// whether any listed set uses it; the preview — so the client reads no
+    /// rule. It rides the acting seat's payload alone ([`prompt_of_seat`]).
+    Chinatown(yokohama_cli::chooser::ChinatownModel),
+    /// The Port chooser (cycle 2, plan 2b): one card or two switched on and
+    /// off by number, then `confirm`, which opens the numbered pick (a `pick`
+    /// prompt) when the second card can be paid for two ways. The fields are
+    /// the REPL's own model (`yokohama_cli::chooser::PortModel`) — which board
+    /// is acting, the most cards one listed take holds, per card in reach its
+    /// number, id, zone, face, words, selection and whether the list holds a
+    /// take with it added; the preview, every listed move's words taking
+    /// exactly the selection — so the client reads no rule. It rides the
+    /// acting seat's payload alone ([`prompt_of_seat`]).
+    Port(yokohama_cli::chooser::PortModel),
     /// A live-mode card reveal. v1 does not create live games, so this is here
     /// to be reported honestly rather than rendered.
     Reveal,
@@ -299,6 +326,9 @@ impl PromptState {
             PromptState::Retreat { .. } => "retreat",
             PromptState::PlaceA { .. } => "place_a",
             PromptState::PlaceB { .. } => "place_b",
+            PromptState::Church(_) => "church",
+            PromptState::Chinatown(_) => "chinatown",
+            PromptState::Port(_) => "port",
             PromptState::Reveal => "reveal",
             PromptState::GameOver => "game_over",
             PromptState::Locked { .. } => "locked",
@@ -446,10 +476,10 @@ fn built_for(state: &GameState, viewer: Viewer) -> PlayerId {
 /// **A spectator's dashboard carries no `Hand` panel at all.**
 ///
 /// The facts hide every hand, but hiding is not removing: `build_hand` returns
-/// `Some(HandPanel { hidden: true, cards: [], card_count })` for the seat the
-/// frame was built for, so a spectator's screen would draw one seat's masked
-/// hand under the caption every other payload puts the READER's hand under —
-/// singling out a seat as "yours" that is nobody's. The other panels are
+/// `Some(HandPanel { hidden: true, cards: [], card_count, flags_in_hand: None })`
+/// for the seat the frame was built for, so a spectator's screen would draw one
+/// seat's masked hand under the caption every other payload puts the READER's
+/// hand under — singling out a seat as "yours" that is nobody's. The other panels are
 /// untouched, because the Players panel already carries every seat's masked
 /// count and that is the honest picture.
 fn drop_hand_for(viewer: Viewer, frame: &mut FrameModel) {
@@ -478,8 +508,32 @@ fn rows_from(
 }
 
 /// The current prompt's tag, without building the whole prompt.
+///
+/// Read off what [`prompt_of`]'s kind depends on and nothing else — the
+/// record's lockdown, whether the game is over, and `repl.sub` — so the
+/// `expect` check a request makes builds no list rows, no fee and no
+/// chooser's model. The match has no `_` arm: a new `SubPrompt` variant does
+/// not compile here until it is given its tag. Held equal to
+/// `prompt_of(repl).kind()` at every prompt kind by
+/// `prompt_kind_is_the_built_prompt_s_kind_at_every_kind`.
 pub fn prompt_kind(repl: &Repl) -> &'static str {
-    prompt_of(repl).kind()
+    if repl.session.record().lockdown.is_some() {
+        return "locked";
+    }
+    if repl.session.is_over() {
+        return "game_over";
+    }
+    match &repl.sub {
+        SubPrompt::None => "options",
+        SubPrompt::Pick { .. } => "pick",
+        SubPrompt::Retreat { .. } => "retreat",
+        SubPrompt::PlaceA { .. } => "place_a",
+        SubPrompt::PlaceB { .. } => "place_b",
+        SubPrompt::Reveal { .. } => "reveal",
+        SubPrompt::Church { .. } => "church",
+        SubPrompt::Chinatown { .. } => "chinatown",
+        SubPrompt::Port { .. } => "port",
+    }
 }
 
 fn prompt_of_seat(repl: &Repl, seat: PlayerId) -> PromptState {
@@ -566,6 +620,26 @@ fn prompt_of(repl: &Repl) -> PromptState {
             selected: *selected,
         },
         SubPrompt::Reveal { .. } => PromptState::Reveal,
+        // The REPL's model over the same legal list its screen and `confirm`
+        // read, so the arm and the terminal cannot say two things.
+        SubPrompt::Church { selected } => PromptState::Church(yokohama_cli::chooser::church_model(
+            state,
+            rules,
+            &repl.session.legal(),
+            *selected,
+        )),
+        SubPrompt::Chinatown { counts } => PromptState::Chinatown(yokohama_cli::chooser::chinatown_model(
+            state,
+            rules,
+            &repl.session.legal(),
+            *counts,
+        )),
+        SubPrompt::Port { selected } => PromptState::Port(yokohama_cli::chooser::port_model(
+            state,
+            rules,
+            &repl.session.legal(),
+            selected,
+        )),
     }
 }
 
@@ -910,6 +984,144 @@ impl HistoricalFrame {
             labs: screen_model::build_labs(state, rules),
             options_omitted,
         }
+    }
+}
+
+/// What the choosers' cells share (cycle 2, plan 2a, Tasks 3 and 4).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use yokohama_cli::repl::Repl;
+    use yokohama_cli::screen_model::menu_number;
+    use yokohama_core::{AreaId, AreaType, Move};
+
+    /// The id of the board's first area of `kind`, or panic.
+    fn area_of(repl: &Repl, kind: AreaType) -> AreaId {
+        *repl
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == kind)
+            .unwrap_or_else(|| panic!("the board has a {kind:?}"))
+            .0
+    }
+
+    /// The display number of the main-list row whose move `pick` names.
+    fn number_of(repl: &Repl, pick: impl Fn(&Move) -> bool) -> String {
+        let rows = repl.option_rows();
+        let i = rows
+            .iter()
+            .position(|r| r.mv.as_ref().is_some_and(&pick))
+            .unwrap_or_else(|| panic!("no row names the move: {:?}", rows.iter().map(|r| &r.words).collect::<Vec<_>>()));
+        menu_number(i).to_string()
+    }
+
+    /// Steps the corpus-seed 2P game's opening seat (red) from its first
+    /// prompt to the Church's folded payments: the additional actions ended,
+    /// Option B's two assistants at the Church, the President placed there
+    /// (power 3, so every payment of at least one kind is listed — 31 sets;
+    /// imported goods, at 0, is the one kind not offered). Returns the display
+    /// number of the Church's entry.
+    pub(crate) fn to_the_church(repl: &mut Repl) -> String {
+        let church = area_of(repl, AreaType::Church);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", church.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == church)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == church)
+        });
+        repl.step(&place);
+        church_entry(repl).unwrap_or_else(|| panic!("the Church's payments fold: {}", repl.prompt()))
+    }
+
+    /// The display number of the folded Church entry, if the list holds one.
+    pub(crate) fn church_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Church — choose what to pay"))
+            .map(|i| menu_number(i).to_string())
+    }
+
+    /// Steps a 3P or 4P game's opening seat from its first prompt to
+    /// Chinatown's folded exchange sets, as [`to_the_church`] does at the
+    /// Church: the additional actions ended, Option B's two assistants at
+    /// Chinatown, the President placed there (power 3). Returns the display
+    /// number of Chinatown's entry.
+    pub(crate) fn to_the_chinatown(repl: &mut Repl) -> String {
+        let chinatown = area_of(repl, AreaType::Chinatown);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", chinatown.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == chinatown)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == chinatown)
+        });
+        repl.step(&place);
+        chinatown_entry(repl).unwrap_or_else(|| panic!("Chinatown's exchange sets fold: {}", repl.prompt()))
+    }
+
+    /// The display number of the folded Chinatown entry, if the list holds one.
+    pub(crate) fn chinatown_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Chinatown — choose exchanges"))
+            .map(|i| menu_number(i).to_string())
+    }
+
+    /// Steps a game's opening seat from its first prompt to the Port's folded
+    /// takes, as [`to_the_church`] does at the Church: the additional actions
+    /// ended, Option B's two assistants at Port A, the President placed there
+    /// (power 3: four cards in reach and six pairs, every table measured; the
+    /// seat's 3 yen and no imported good pay each pair one way). Returns the
+    /// display number of the Port's entry.
+    pub(crate) fn to_the_port(repl: &mut Repl) -> String {
+        let port = area_of(repl, AreaType::PortA);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", port.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == port)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == port)
+        });
+        repl.step(&place);
+        port_entry(repl).unwrap_or_else(|| panic!("the Port's takes fold: {}", repl.prompt()))
+    }
+
+    /// The display number of the folded Port entry, if the list holds one.
+    pub(crate) fn port_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Port — take"))
+            .map(|i| menu_number(i).to_string())
+    }
+
+    /// Steps a game's opening seat from its first prompt to Laboratory A's
+    /// area action, as [`to_the_port`] does at the Port: the additional
+    /// actions ended, Option B's two assistants there, the President placed
+    /// there (power 3). Whether a title folds there is the table's: with the
+    /// opening's 3 yen and no imported good, only a board holding both copies
+    /// of a title lists one title twice.
+    pub(crate) fn to_the_lab(repl: &mut Repl) {
+        let lab = area_of(repl, AreaType::LaboratoryA);
+        let end = number_of(repl, |m| matches!(m, Move::EndAdditionalPhase));
+        repl.step(&end);
+        repl.step(&format!("b {}", lab.0));
+        let place = number_of(repl, |m| {
+            matches!(m, Move::PlacePresident { destination } if *destination == lab)
+                || matches!(m, Move::MovePresident { destination, .. } if *destination == lab)
+        });
+        repl.step(&place);
+    }
+
+    /// The display number of the first folded Laboratory entry, if the list
+    /// holds one.
+    pub(crate) fn lab_entry(repl: &Repl) -> Option<String> {
+        let rows = repl.option_rows();
+        rows.iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Laboratory: acquire"))
+            .map(|i| menu_number(i).to_string())
     }
 }
 
@@ -1507,5 +1719,418 @@ mod tests {
         let folded = Folded { listed: Vec::new(), folded: 5, capped: 2 };
         assert_eq!(folded.for_viewer(false), 5, "a viewer who is not deciding reads the fold's count alone");
         assert_eq!(folded.for_viewer(true), 7, "the deciding viewer reads the fold's and the cap's together");
+    }
+
+    // ---------------------------------------------------------------------
+    // The Church chooser on the wire (cycle 2, plan 2a, Task 3)
+    // ---------------------------------------------------------------------
+
+    /// The corpus-seed 2P game with the Church's chooser open on red's turn.
+    fn church_chooser_open() -> Repl {
+        let mut repl = two_human_repl();
+        let entry = super::test_support::to_the_church(&mut repl);
+        repl.step(&entry);
+        assert!(matches!(repl.sub, SubPrompt::Church { .. }), "premise: the chooser is open");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(0), "premise: red is acting");
+        repl
+    }
+
+    /// **A chooser is the acting seat's alone** (Review Focus 4): with it open,
+    /// the actor's payload carries the `church` arm, and the other seat's and
+    /// a watcher's carry `watching` and nothing of the chooser.
+    #[test]
+    fn a_chooser_is_the_acting_seat_s_alone() {
+        let repl = church_chooser_open();
+        let acting = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(acting.prompt.kind(), "church");
+        for viewer in [Viewer::Seat(PlayerId::new(1)), Viewer::Spectator] {
+            let payload = ClientState::of("t", &repl, viewer, Vec::new());
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == PlayerId::new(0)),
+                "{viewer:?}: {:?}",
+                payload.prompt.kind(),
+            );
+            let json = serde_json::to_value(&payload).expect("a payload");
+            assert!(json["prompt"].get("kinds").is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
+        }
+    }
+
+    /// **The `church` arm is the REPL's model, by value** — the six kinds, the
+    /// preview and the offered-faiths line, with nothing added but the tag —
+    /// on the empty selection and on one the toggles built.
+    #[test]
+    fn the_church_arm_is_the_repl_s_model_by_value() {
+        let mut repl = church_chooser_open();
+        for line in [None, Some("2"), Some("1")] {
+            if let Some(line) = line {
+                repl.step(line);
+            }
+            let selected = match repl.sub {
+                SubPrompt::Church { selected } => selected,
+                _ => panic!("the chooser closed"),
+            };
+            let model = yokohama_cli::chooser::church_model(
+                repl.session.state(),
+                repl.session.rules(),
+                &repl.session.legal(),
+                selected,
+            );
+            let mut expected = serde_json::to_value(&model).expect("a model");
+            expected
+                .as_object_mut()
+                .expect("an object")
+                .insert("kind".to_string(), serde_json::json!("church"));
+            let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+            assert_eq!(serde_json::to_value(&payload.prompt).expect("a prompt"), expected, "after {line:?}");
+        }
+        // The toggles reached the arm: silk and copper.
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        let selected: Vec<bool> =
+            json["kinds"].as_array().expect("kinds").iter().map(|k| k["selected"] == true).collect();
+        assert_eq!(selected, [true, true, false, false, false, false]);
+    }
+
+    // ---------------------------------------------------------------------
+    // The Chinatown chooser on the wire (cycle 2, plan 2a, Task 4)
+    // ---------------------------------------------------------------------
+
+    /// The corpus-seed 4P game with Chinatown's chooser open on red's turn.
+    fn chinatown_chooser_open() -> Repl {
+        let mut repl = human_repl(4);
+        let entry = super::test_support::to_the_chinatown(&mut repl);
+        repl.step(&entry);
+        assert!(matches!(repl.sub, SubPrompt::Chinatown { .. }), "premise: the chooser is open");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(0), "premise: red is acting");
+        repl
+    }
+
+    /// **A Chinatown chooser is the acting seat's alone** (Review Focus 4, as
+    /// at the Church): with it open, the actor's payload carries the
+    /// `chinatown` arm, and every other seat's and a watcher's carry
+    /// `watching` and nothing of the chooser.
+    #[test]
+    fn a_chinatown_chooser_is_the_acting_seat_s_alone() {
+        let repl = chinatown_chooser_open();
+        let acting = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        assert_eq!(acting.prompt.kind(), "chinatown");
+        for viewer in [
+            Viewer::Seat(PlayerId::new(1)),
+            Viewer::Seat(PlayerId::new(2)),
+            Viewer::Seat(PlayerId::new(3)),
+            Viewer::Spectator,
+        ] {
+            let payload = ClientState::of("t", &repl, viewer, Vec::new());
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == PlayerId::new(0)),
+                "{viewer:?}: {:?}",
+                payload.prompt.kind(),
+            );
+            let json = serde_json::to_value(&payload).expect("a payload");
+            for field in ["rows", "stock", "preview", "max_exchanges", "chosen"] {
+                assert!(json["prompt"].get(field).is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
+            }
+        }
+    }
+
+    /// **The `chinatown` arm is the REPL's model, by value** — the nine rows,
+    /// the stock, the counts and the preview, with nothing added but the tag —
+    /// on the empty selection and on ones the additions and a take-back built.
+    #[test]
+    fn the_chinatown_arm_is_the_repl_s_model_by_value() {
+        let mut repl = chinatown_chooser_open();
+        for line in [None, Some("1"), Some("6"), Some("back 1")] {
+            if let Some(line) = line {
+                repl.step(line);
+            }
+            let counts = match repl.sub {
+                SubPrompt::Chinatown { counts } => counts,
+                _ => panic!("the chooser closed"),
+            };
+            let model = yokohama_cli::chooser::chinatown_model(
+                repl.session.state(),
+                repl.session.rules(),
+                &repl.session.legal(),
+                counts,
+            );
+            let mut expected = serde_json::to_value(&model).expect("a model");
+            expected
+                .as_object_mut()
+                .expect("an object")
+                .insert("kind".to_string(), serde_json::json!("chinatown"));
+            let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+            assert_eq!(serde_json::to_value(&payload.prompt).expect("a prompt"), expected, "after {line:?}");
+        }
+        // The lines reached the arm: a silk purchase, the sale taken back.
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        let counts: Vec<u64> =
+            json["rows"].as_array().expect("rows").iter().map(|r| r["count"].as_u64().expect("a count")).collect();
+        assert_eq!(counts, [0, 0, 0, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(json["chosen"], 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // The Port chooser on the wire (cycle 2, plan 2b, Task 2)
+    // ---------------------------------------------------------------------
+
+    /// The corpus-seed 2P game with the Port's chooser open on red's turn.
+    fn port_chooser_open() -> Repl {
+        let mut repl = two_human_repl();
+        let entry = super::test_support::to_the_port(&mut repl);
+        repl.step(&entry);
+        assert!(matches!(repl.sub, SubPrompt::Port { .. }), "premise: the chooser is open");
+        assert_eq!(repl.session.state().current_player, PlayerId::new(0), "premise: red is acting");
+        repl
+    }
+
+    /// **The `port` arm is the REPL's model, by value** — the cards, the
+    /// preview and `max_cards`, with nothing added but the tag — on the empty
+    /// selection and on the ones two toggles build; and it is the acting
+    /// seat's alone: the other seat's payload and a watcher's carry
+    /// `watching` and no field of the chooser.
+    #[test]
+    fn the_port_arm_is_the_repl_s_model() {
+        let mut repl = port_chooser_open();
+        let first = |repl: &Repl| -> Vec<u8> {
+            yokohama_cli::chooser::port_reach(&repl.session.legal()).iter().map(|c| c.0).collect()
+        };
+        let reach = first(&repl);
+        assert_eq!(reach.len(), 4, "premise: four cards in reach, measured: {reach:?}");
+        for line in [None, Some(reach[0].to_string()), Some(reach[1].to_string())] {
+            if let Some(line) = &line {
+                repl.step(line);
+            }
+            let selected = match &repl.sub {
+                SubPrompt::Port { selected } => selected.clone(),
+                _ => panic!("the chooser closed"),
+            };
+            let model = yokohama_cli::chooser::port_model(
+                repl.session.state(),
+                repl.session.rules(),
+                &repl.session.legal(),
+                &selected,
+            );
+            let mut expected = serde_json::to_value(&model).expect("a model");
+            expected.as_object_mut().expect("an object").insert("kind".to_string(), serde_json::json!("port"));
+            let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+            assert_eq!(payload.prompt.kind(), "port");
+            assert_eq!(serde_json::to_value(&payload.prompt).expect("a prompt"), expected, "after {line:?}");
+        }
+        // The toggles reached the arm: two cards on, one way to pay.
+        let payload = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(0)), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        let on: Vec<bool> = json["cards"].as_array().expect("cards").iter().map(|c| c["selected"] == true).collect();
+        assert_eq!(on.iter().filter(|&&b| b).count(), 2, "{json}");
+        assert_eq!(json["preview"]["legal"], true);
+        for viewer in [Viewer::Seat(PlayerId::new(1)), Viewer::Spectator] {
+            let payload = ClientState::of("t", &repl, viewer, Vec::new());
+            assert!(
+                matches!(payload.prompt, PromptState::Watching { to_move } if to_move == PlayerId::new(0)),
+                "{viewer:?}: {:?}",
+                payload.prompt.kind(),
+            );
+            let json = serde_json::to_value(&payload).expect("a payload");
+            for field in ["cards", "preview", "max_cards", "board_b"] {
+                assert!(json["prompt"].get(field).is_none(), "{viewer:?}: no chooser field rides: {}", json["prompt"]);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // The Laboratory's fold on the wire (cycle 2, plan 2b, Task 3)
+    // ---------------------------------------------------------------------
+
+    /// A 2P game of people on `seed`, built as [`two_human_repl`] is.
+    fn two_human_repl_on(seed: u64) -> Repl {
+        let rules = Rules::standard();
+        let mut config = GameConfig::for_player_count(2);
+        config.player_colors = vec![PlayerColor::Red, PlayerColor::Blue];
+        config.start_player = PlayerId::new(0);
+        let choices = vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Keep(0)];
+        Repl::new(Session::new_sim(config, seed, choices, rules).expect("a fixture game"))
+    }
+
+    /// **A folded Laboratory title is an ordinary row on the wire, and its
+    /// pick an ordinary `pick`** (design §5.5: no new prompt kind): the
+    /// entry's row has `opens_picker: true` and the entry's words, the other
+    /// rows name their moves; pressing it gives the acting seat a `pick`
+    /// titled as "The words" say, its rows the title's listed moves in list
+    /// order, in `describe`'s words; the other seat watches.
+    ///
+    /// Seed 18 is the first table seed whose opening Laboratory visit folds a
+    /// title (measured over seeds 1 to 399: 33 of them do, 18 the first); with
+    /// the opening's 3 yen and no imported good, that is a board holding both
+    /// copies of a title.
+    #[test]
+    fn a_folded_laboratory_title_is_a_row_that_opens_the_pick() {
+        let mut repl = two_human_repl_on(18);
+        super::test_support::to_the_lab(&mut repl);
+        let rules = Rules::standard();
+        let card = |mv: &Move| match mv {
+            Move::ExecuteAreaAction { action: yokohama_core::AreaAction::Laboratory { card_id, .. } } => Some(*card_id),
+            _ => None,
+        };
+        let name = |id| rules.techs.get(id).expect("a registry card").name.clone();
+        let legal = repl.session.legal();
+        let labs: Vec<&Move> = legal.iter().filter(|m| card(m).is_some()).collect();
+        // The folded title, by hand: the one whose name two listed rows carry.
+        let title = labs
+            .iter()
+            .map(|m| name(card(m).unwrap()))
+            .find(|t| labs.iter().filter(|m| name(card(m).unwrap()) == *t).count() > 1)
+            .expect("premise: a title with more than one listed row");
+        let moves: Vec<Move> = labs.iter().filter(|m| name(card(m).unwrap()) == title).map(|m| (*m).clone()).collect();
+        let mut ids: Vec<u8> = moves.iter().map(|m| card(m).unwrap().0).collect();
+        ids.dedup();
+        assert_eq!(ids.len(), 2, "premise: both copies of {title}, measured: {moves:?}");
+        let words = format!("Laboratory: acquire {title} — {} ways to pay", moves.len());
+
+        let me = repl.session.state().current_player;
+        let payload = ClientState::of("t", &repl, Viewer::Seat(me), Vec::new());
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        assert_eq!(json["kind"], "options");
+        let rows = json["rows"].as_array().expect("rows");
+        let entry = rows.iter().find(|r| r["words"] == words.as_str()).unwrap_or_else(|| panic!("{words:?}: {json}"));
+        assert_eq!(entry["opens_picker"], true, "the entry opens a pick");
+        assert_eq!(entry["fee"], serde_json::Value::Null);
+        assert_eq!(
+            super::test_support::lab_entry(&repl),
+            entry["number"].as_u64().map(|n| n.to_string()),
+            "the wire's number is the REPL's",
+        );
+        for row in rows.iter().filter(|r| r["words"] != words.as_str()) {
+            assert_eq!(row["opens_picker"], false, "every other row names its move: {row}");
+        }
+
+        repl.step(&entry["number"].as_u64().expect("a number").to_string());
+        let payload = ClientState::of("t", &repl, Viewer::Seat(me), Vec::new());
+        assert_eq!(payload.prompt.kind(), "pick");
+        let json = serde_json::to_value(&payload.prompt).expect("a prompt");
+        assert_eq!(json["title"], format!("Laboratory: acquire {title} — choose the payment"));
+        let (state, rules) = (repl.session.state(), repl.session.rules());
+        let expected: Vec<serde_json::Value> = moves
+            .iter()
+            .enumerate()
+            .map(|(i, mv)| {
+                serde_json::json!({
+                    "number": i + 1,
+                    "words": yokohama_cli::describe::describe_move(mv, state, rules),
+                    "opens_picker": false,
+                    "fee": null,
+                })
+            })
+            .collect();
+        assert_eq!(json["rows"], serde_json::Value::Array(expected), "the title's listed rows, in list order");
+        let other = ClientState::of("t", &repl, Viewer::Seat(PlayerId::new(1 - me.0)), Vec::new());
+        assert!(matches!(other.prompt, PromptState::Watching { to_move } if to_move == me));
+    }
+
+    // ---------------------------------------------------------------------
+    // `prompt_kind` without the model (plan 2a's fix wave, B7)
+    // ---------------------------------------------------------------------
+
+    /// **`prompt_kind` is the built prompt's kind, at every kind** — read off
+    /// `repl.sub` it builds nothing, and it must still say what `prompt_of`
+    /// would. A 2P game of people walked from its first prompt, every prompt
+    /// answered by the arm's own flags as `lib.rs`'s `play` answers them and a
+    /// numbered list by a seeded draw, with the equality read at every step;
+    /// then Chinatown's chooser on a four-player table, a locked session, and
+    /// the walk's own end. `watching` is not one of its answers, by design:
+    /// like `prompt_of`, `prompt_kind` is the ACTOR's prompt, which is what the
+    /// `expect` check compares against (`prompt_of_seat` scopes it apart), so
+    /// at every step the other seat's payload is read as `watching` beside it.
+    #[test]
+    fn prompt_kind_is_the_built_prompt_s_kind_at_every_kind() {
+        use std::collections::BTreeMap;
+        let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut check = |repl: &Repl, at: &str| {
+            let built = prompt_of(repl).kind();
+            assert_eq!(prompt_kind(repl), built, "{at}");
+            *seen.entry(built).or_default() += 1;
+        };
+
+        let mut repl = two_human_repl();
+        let areas: Vec<AreaId> = repl.session.state().board_layout.areas.keys().copied().collect();
+        let mut k: u64 = 0x4b49_4e44; // "KIND"
+        let mut cursor = 0usize;
+        let mut watched = 0usize;
+        for step in 0..6000 {
+            check(&repl, &format!("step {step}"));
+            if repl.session.is_over() {
+                break;
+            }
+            let acting = repl.session.state().current_player;
+            let other = PlayerId::new(1 - acting.0);
+            if matches!(prompt_of_seat(&repl, other), PromptState::Watching { .. }) {
+                watched += 1;
+            }
+            k ^= k << 13;
+            k ^= k >> 7;
+            k ^= k << 17;
+            let prompt = serde_json::to_value(prompt_of(&repl)).expect("a prompt");
+            let line = match prompt["kind"].as_str().expect("a kind") {
+                "retreat" if prompt["remaining"] == 0 => "confirm".to_string(),
+                "retreat" => "0".to_string(),
+                "place_b" if prompt["selected"].is_null() => {
+                    prompt["areas"][0].as_u64().map_or_else(|| "cancel".to_string(), |a| a.to_string())
+                }
+                "place_b" => "confirm".to_string(),
+                "place_a" if prompt["selected"].as_array().is_some_and(|a| !a.is_empty()) => "confirm".to_string(),
+                "place_a" => {
+                    cursor += 1;
+                    areas[cursor % areas.len()].0.to_string()
+                }
+                "church" if prompt["preview"]["legal"] == true => "confirm".to_string(),
+                "church" => prompt["kinds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|kind| kind["offered"] == true && kind["selected"] == false)
+                    .and_then(|kind| kind["number"].as_u64())
+                    .map_or_else(|| "cancel".to_string(), |n| n.to_string()),
+                // The Port's chooser (plan 2b): one card on, then confirm;
+                // every flag is the arm's own.
+                "port" if prompt["preview"]["legal"] == true => "confirm".to_string(),
+                "port" => prompt["cards"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|card| card["can_add"] == true)
+                    .and_then(|card| card["number"].as_u64())
+                    .map_or_else(|| "cancel".to_string(), |n| n.to_string()),
+                "options" | "pick" => {
+                    let rows = prompt["rows"].as_array().expect("rows");
+                    if rows.is_empty() {
+                        break;
+                    }
+                    rows[(k % rows.len() as u64) as usize]["number"].as_u64().expect("a number").to_string()
+                }
+                other => panic!("step {step}: a 2P walk of people met a `{other}` prompt"),
+            };
+            repl.step(&line);
+        }
+        assert!(repl.session.is_over(), "the walk did not finish its game: {:?}", seen);
+        assert!(watched > 0, "no step read the other seat as watching");
+
+        let mut port = port_chooser_open();
+        check(&port, "the Port's chooser, opened");
+        let reach = yokohama_cli::chooser::port_reach(&port.session.legal());
+        port.step(&reach[0].0.to_string());
+        check(&port, "the Port's chooser, one card on");
+
+        let mut town = chinatown_chooser_open();
+        check(&town, "Chinatown's chooser, opened");
+        town.step("1");
+        check(&town, "Chinatown's chooser, one exchange chosen");
+
+        let mut locked = two_human_repl();
+        locked.session.lock_down("a test's lockdown".to_string());
+        check(&locked, "a locked session");
+
+        println!("prompt_kind_is_the_built_prompt_s_kind_at_every_kind: {seen:?}; the other seat watching at {watched} steps");
+        for kind in ["options", "pick", "retreat", "place_a", "place_b", "church", "chinatown", "port", "locked", "game_over"] {
+            assert!(seen.contains_key(kind), "the walk never met a `{kind}` prompt: {seen:?}");
+        }
     }
 }

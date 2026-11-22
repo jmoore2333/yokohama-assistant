@@ -31,7 +31,7 @@ Canal: the President may cross shore to shore for ¥1 to the bank ('sites' lists
   Shophouses  2 hand · 6 warehouse · 0 built                Shophouses  2 hand · 6 warehouse · 0 built                Shophouses  2 hand · 6 warehouse · 0 built
   Trade houses  0 hand · 4 warehouse · 0 built              Trade houses  0 hand · 4 warehouse · 0 built              Trade houses  0 hand · 4 warehouse · 0 built
   Tech  none yet                                            Tech  none yet                                            Tech  none yet
-  Mercenaries  0 unused · 0 used                            Mercenaries  0 unused · 0 used                            Mercenaries  0 unused · 0 used
+  Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0      Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0      Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0
   President in hand                                         President in hand                                         President in hand
   1 order · 0 filled · next take ¥4                         1 order · 0 filled · next take ¥4                         1 order · 0 filled · next take ¥4
 

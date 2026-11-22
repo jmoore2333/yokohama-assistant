@@ -1,8 +1,9 @@
 // What changed between two positions (M5.5 spec §3.2.4).
 //
 // A pure comparison of two wire frames and nothing else: the walk lights the
-// tiles, seats, slots, technologies and hand cards this names, and it must
-// never need a rule to do so — a rule restated here would be a second dialect of the engine.
+// tiles, seats, slots, technologies, hand cards and achievement cards this
+// names, and it must never need a rule to do so — a rule restated here would
+// be a second dialect of the engine.
 //
 // The ONE place that comes close is the offer strips, and it is a reading of
 // the wire rather than a rule: a take shifts every card right of it, so "this
@@ -11,6 +12,8 @@
 // of compaction at all.
 
 import type {
+  AchievementModel,
+  AchievementType,
   AreaId,
   HandPanel,
   HistoricalFrame,
@@ -41,6 +44,12 @@ export interface Changes {
    *  there is no card on screen to point at. `PlayerModel.orders_in_hand` is a
    *  count too, so no seat's hand but the viewer's is ever nameable here. */
   hand: Set<OrderCardId>;
+  /** The achievement cards whose `claimed_by` is LONGER in `b` than in `a` — a
+   *  claim landed on them. Read from the two frames' Achievements panels and
+   *  nothing else, by LENGTH and never by contents: a claim, once made, is
+   *  never withdrawn in play, so a shorter list or a changed claimant at the
+   *  same length is not a claim landing and names nothing. */
+  goals: Set<AchievementType>;
   any: boolean;
 }
 
@@ -74,6 +83,10 @@ const seatKey = (p: PlayerModel): string =>
  *  same seat's panel — and `undefined` where the payload holds none at all. */
 const hand = (f: HistoricalFrame): HandPanel | undefined =>
   f.frame.dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p)?.Hand;
+
+const goalCards = (f: HistoricalFrame): AchievementModel[] =>
+  f.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p)
+    ?.Achievements.cards ?? [];
 
 const players = (f: HistoricalFrame): PlayerModel[] =>
   f.frame.dashboard.find((p): p is Extract<Panel, { Players: unknown }> => "Players" in p)
@@ -109,13 +122,16 @@ const cardsOnOffer = (f: HistoricalFrame): Record<"port" | "lab", Set<number>> =
   return seen;
 };
 
-/** The walk is over `b`: a tile, seat, slot, technology or hand card present in
- *  `a` and ABSENT from `b` is silent. Acceptable because the first three sets are fixed
- *  at setup — the board's areas, the seats, and the six slots per port and
- *  laboratory board do not come and go during a game — so the two frames of one
- *  game always carry the same keys, and a disappearance would be a server bug
- *  rather than a move. The fourth is not a fixed set but only ever GROWS: a
- *  technology, once owned, is never returned. */
+/** The walk is over `b`: a tile, seat, slot, technology, hand card or
+ *  achievement card present in `a` and ABSENT from `b` is silent. Acceptable
+ *  because the first three sets, and the achievement cards, are fixed at
+ *  setup — the board's areas, the seats, the six slots per port and laboratory
+ *  board and the three achievement cards do not come and go during a game — so
+ *  the two frames of one game always carry the same keys, and a disappearance
+ *  would be a server bug rather than a move. The fourth is not a fixed set but
+ *  only ever GROWS: a technology, once owned, is never returned. What grows on
+ *  an achievement card is its list of claims: a claim, once made, is never
+ *  withdrawn in play, and the read is still "longer in `b`". */
 export function diffFrames(a: HistoricalFrame, b: HistoricalFrame): Changes {
   const tiles = new Set<AreaId>();
   const wasTile = new Map(a.frame.board.tiles.map((t) => [t.area, tileKey(t)]));
@@ -161,6 +177,16 @@ export function diffFrames(a: HistoricalFrame, b: HistoricalFrame): Changes {
     for (const t of p.technologies) if (!had?.has(t.id)) techs.add(`${p.seat}:${t.id}`);
   }
 
+  // The claim that landed: a card whose `claimed_by` grew. A card `a` does not
+  // carry (or an `a` with no Achievements panel) names nothing, because there
+  // is no earlier length to be longer than.
+  const goals = new Set<AchievementType>();
+  const wasClaims = new Map(goalCards(a).map((c) => [c.achievement_type, c.claimed_by.length]));
+  for (const c of goalCards(b)) {
+    const had = wasClaims.get(c.achievement_type);
+    if (had !== undefined && c.claimed_by.length > had) goals.add(c.achievement_type);
+  }
+
   // **The two halves of `any` that behave differently, and the difference is
   // worth knowing.** `hand` CAN be the only non-empty set — the Hand panel is
   // its own panel and `seatKey` never reads it — so dropping it from `any`
@@ -169,14 +195,19 @@ export function diffFrames(a: HistoricalFrame, b: HistoricalFrame): Changes {
   // `technologies.map(t => t.id)`, so a technology arriving always moves its
   // owner's row, `techs` non-empty implies `seats` non-empty, and dropping that
   // term leaves every cell in this module green (measured). It is written
-  // anyway, because `any` is a statement about the five sets and not about
-  // which of them happen to be correlated today.
+  // anyway, because `any` is a statement about the six sets and not about
+  // which of them happen to be correlated today. `goals` joins `techs` on that
+  // side: a claim also moves its claimant's `assistants` (`on_achievements`)
+  // and `victory_points`, which `seatKey` reads, so on every served step a
+  // non-empty `goals` implies a non-empty `seats`. The cell that proves the
+  // term moves `claimed_by` alone on a clone, which no served pair does.
   return {
     tiles,
     seats,
     slots,
     techs,
     hand: handNow,
-    any: tiles.size + seats.size + slots.size + techs.size + handNow.size > 0,
+    goals,
+    any: tiles.size + seats.size + slots.size + techs.size + handNow.size + goals.size > 0,
   };
 }

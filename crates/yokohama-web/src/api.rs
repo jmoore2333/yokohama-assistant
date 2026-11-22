@@ -1553,9 +1553,17 @@ pub fn input(games: &Games, user: &User, id: &str, req: &Input) -> Result<Client
     // it carries the live legality verdict and the placement fee, which have no
     // structured equivalent on the wire yet, so dropping it would lose the only
     // statement of a cost the player is about to pay.
+    //
+    // **An area-action chooser's screen is stripped the same way** (cycle 2,
+    // design §5.6): its arm carries the preview structured, so the terminal's
+    // screen would be a second, dead copy of it. `chooser_screen()` returns
+    // exactly what `out` appended, and what stands before it — a refusal — is
+    // kept. The placement pickers' and the pick's blocks are left as they are.
     let body = if matches!(repl.sub, yokohama_cli::repl::SubPrompt::None) {
         let tail = repl.prompt();
         out.text.strip_suffix(&tail).unwrap_or(&out.text).to_string()
+    } else if let Some(screen) = repl.chooser_screen() {
+        out.text.strip_suffix(&screen).unwrap_or(&out.text).to_string()
     } else {
         out.text.clone()
     };
@@ -4577,5 +4585,402 @@ mod tests {
             Ok(Err(e)) => panic!("the hot seat's holder was refused between two lock takes: {} {}", e.status, e.message),
             Ok(Ok(_)) => {}
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The Church chooser's replies (cycle 2, plan 2a, Task 3)
+    // -----------------------------------------------------------------------
+
+    /// A two-person table at the corpus seed with red at the Church's folded
+    /// payments, stepped there on the resident handle, and the entry's
+    /// number. Every line after this goes through `input`.
+    fn at_the_church(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, two_people, CORPUS_SEED};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_church(&mut repl)
+    }
+
+    /// One line through `input`, as red.
+    fn send(games: &Games, id: &str, line: &str) -> serde_json::Value {
+        let body = serde_json::json!({ "line": line }).to_string();
+        let (status, reply) = ask(games, "red@t.test", "POST", &format!("/api/games/{id}/input"), "", &body);
+        assert_eq!(status, 200, "{line:?}: {reply}");
+        reply
+    }
+
+    /// The reply's `messages`, as strings.
+    fn messages_of(reply: &serde_json::Value) -> Vec<String> {
+        reply["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .map(|m| m.as_str().expect("a line").to_string())
+            .collect()
+    }
+
+    /// **A chooser's reply carries no line of the terminal's chooser screen**
+    /// (design §5.6): the screen is stripped by identity, as the main prompt
+    /// is, and what stands before it — a refusal — is kept. The placement
+    /// pickers' replies are untouched: `place_a`'s still carries its verdict
+    /// block, which has no structured form on the wire.
+    #[test]
+    fn a_chooser_reply_carries_no_line_of_the_terminal_s_screen() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_church(&games, "church");
+
+        let opened = send(&games, "church", &entry);
+        assert_eq!(opened["prompt"]["kind"], "church", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let screen = {
+            let handle = games.handle("church").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+
+        // A kind the list does not offer, from the payload's own flags.
+        let refused_kind = opened["prompt"]["kinds"]
+            .as_array()
+            .expect("kinds")
+            .iter()
+            .find(|k| k["offered"] == false)
+            .unwrap_or_else(|| panic!("premise: a kind no listed move pays: {}", opened["prompt"]));
+        let words = refused_kind["words"].as_str().expect("words").to_string();
+        let refused = send(&games, "church", &refused_kind["number"].to_string());
+        assert_eq!(refused["prompt"]["kind"], "church");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! {words} is not in any payment the list offers here")],
+            "exactly the refusal line",
+        );
+        let after = {
+            let handle = games.handle("church").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("still open")
+        };
+        assert_eq!(after, screen, "premise: the refusal kept the selection, so the screen did not move");
+        for reply in [&opened, &refused] {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+
+        // Option A's picker keeps its block: its verdict line rides.
+        let handle = crate::games::test_support::playing(
+            &games,
+            &crate::games::test_support::two_people("placing", crate::games::test_support::CORPUS_SEED),
+            &["red@t.test", "blue@t.test"],
+        );
+        let option_a = {
+            let mut repl = handle.lock().expect("a game");
+            let end = repl
+                .option_rows()
+                .iter()
+                .position(|r| r.mv == Some(yokohama_core::Move::EndAdditionalPhase))
+                .expect("the additional actions can end");
+            repl.step(&yokohama_cli::screen_model::menu_number(end).to_string());
+            let i = repl
+                .option_rows()
+                .iter()
+                .position(|r| r.words.starts_with("Option A"))
+                .expect("Option A's entry");
+            yokohama_cli::screen_model::menu_number(i).to_string()
+        };
+        let picker = send(&games, "placing", &option_a);
+        assert_eq!(picker["prompt"]["kind"], "place_a", "{picker}");
+        assert!(
+            messages_of(&picker).iter().any(|m| m.starts_with("> type an area id to toggle")),
+            "{:?}",
+            messages_of(&picker),
+        );
+    }
+
+    /// **Every line the client composes at the Church passes the fence as it
+    /// stands**: the six kinds' numbers, `confirm` and `cancel`.
+    #[test]
+    fn every_line_the_client_sends_at_the_church_passes_the_fence() {
+        for line in ["1", "2", "3", "4", "5", "6", "confirm", "cancel"] {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The Chinatown chooser's replies (cycle 2, plan 2a, Task 4)
+    // -----------------------------------------------------------------------
+
+    /// A four-seat table at the corpus seed, every seat red's (the solo shape
+    /// the walk's `wire4` has), with red at Chinatown's folded exchange sets,
+    /// stepped there on the resident handle, and the entry's number. Every
+    /// line after this goes through `input`.
+    fn at_chinatown(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, req_seeded, CORPUS_SEED};
+        use crate::tables::SeatSpec;
+        use yokohama_core::PlayerColor;
+        let mut req = req_seeded(id, CORPUS_SEED);
+        req.players = 4;
+        req.colors = vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+        req.seats = (0..4).map(|_| SeatSpec { user: Some("red@t.test".into()), bot: false, open: false }).collect();
+        let handle = playing(games, &req, &["red@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_chinatown(&mut repl)
+    }
+
+    /// **A Chinatown reply carries no line of the terminal's chooser screen**
+    /// (design §5.6), as at the Church: the screen is stripped by identity and
+    /// what stands before it — an addition refused, a take-back refused — is
+    /// kept, exactly that line.
+    #[test]
+    fn a_chinatown_chooser_reply_carries_no_line_of_the_terminal_s_screen() {
+        let games = crate::games::test_support::games();
+        let entry = at_chinatown(&games, "chinatown");
+        let screen_now = || {
+            let handle = games.handle("chinatown").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+
+        let opened = send(&games, "chinatown", &entry);
+        assert_eq!(opened["prompt"]["kind"], "chinatown", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let screen = screen_now();
+
+        // An exchange the list cannot add from here, from the payload's own flags.
+        let refused_row = opened["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["can_add"] == false)
+            .unwrap_or_else(|| panic!("premise: an exchange the list cannot add: {}", opened["prompt"]));
+        let words = refused_row["words"].as_str().expect("words").to_string();
+        let refused = send(&games, "chinatown", &refused_row["number"].to_string());
+        assert_eq!(refused["prompt"]["kind"], "chinatown");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! the list holds no set with one more \"{words}\" from here")],
+            "exactly the refusal line",
+        );
+        assert_eq!(screen_now(), screen, "premise: the refusal kept the selection, so the screen did not move");
+
+        // A take-back of a row not chosen.
+        let first = &opened["prompt"]["rows"][0];
+        let back = send(&games, "chinatown", &format!("back {}", first["number"]));
+        assert_eq!(
+            messages_of(&back),
+            vec![format!("! no \"{}\" is selected to take back", first["words"].as_str().expect("words"))],
+        );
+        assert_eq!(screen_now(), screen, "premise: nothing moved");
+
+        for reply in [&opened, &refused, &back] {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+    }
+
+    /// **Every line the client composes at Chinatown passes the fence as it
+    /// stands**: the nine exchanges' numbers, each `back` with one, `confirm`
+    /// and `cancel`.
+    #[test]
+    fn every_line_the_client_sends_at_chinatown_passes_the_fence() {
+        let mut lines: Vec<String> = (1..=9).map(|n| n.to_string()).collect();
+        lines.extend((1..=9).map(|n| format!("back {n}")));
+        lines.extend(["confirm".to_string(), "cancel".to_string()]);
+        for line in &lines {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The Port chooser's replies (cycle 2, plan 2b, Task 2)
+    // -----------------------------------------------------------------------
+
+    /// A two-person table at the corpus seed with red at the Port's folded
+    /// takes, stepped there on the resident handle, and the entry's number.
+    /// Every line after this goes through `input`.
+    fn at_the_port(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, two_people, CORPUS_SEED};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_port(&mut repl)
+    }
+
+    /// **A Port reply carries no line of the terminal's chooser screen**
+    /// (design §5.6), as at the Church: a toggle's reply carries no line at
+    /// all, and a refused third card's carries exactly the refusal, the
+    /// screen stripped by identity after it.
+    #[test]
+    fn a_port_reply_carries_no_screen_line_and_keeps_a_refusal() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_port(&games, "port");
+        let screen_now = || {
+            let handle = games.handle("port").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+        let opened = send(&games, "port", &entry);
+        assert_eq!(opened["prompt"]["kind"], "port", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let cards: Vec<u64> = opened["prompt"]["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .map(|c| c["number"].as_u64().expect("a number"))
+            .collect();
+        assert!(cards.len() >= 3, "premise: a third card to refuse: {cards:?}");
+        let mut replies = vec![(opened, screen_now())];
+        for card in &cards[..2] {
+            let toggled = send(&games, "port", &card.to_string());
+            assert_eq!(toggled["prompt"]["kind"], "port");
+            assert_eq!(messages_of(&toggled), Vec::<String>::new(), "a toggle's reply carries no line");
+            replies.push((toggled, screen_now()));
+        }
+        let before = screen_now();
+        let refused = send(&games, "port", &cards[2].to_string());
+        assert_eq!(refused["prompt"]["kind"], "port");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! the list holds no take with O{:02} added from here", cards[2])],
+            "exactly the refusal line",
+        );
+        assert_eq!(screen_now(), before, "premise: the refusal kept the selection, so the screen did not move");
+        replies.push((refused, before));
+        for (reply, screen) in &replies {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+    }
+
+    /// **The `expect` check tells the Port's chooser from the main list**: a
+    /// line sent with `expect: "options"` while the chooser is open answers
+    /// 409, names both prompts, and applies nothing — the chooser is still
+    /// open with its selection, and the same line with `expect: "port"` is
+    /// then taken.
+    #[test]
+    fn the_expect_check_tells_the_port_from_the_main_list() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_port(&games, "port-expect");
+        let opened = send(&games, "port-expect", &entry);
+        let card = opened["prompt"]["cards"][0]["number"].as_u64().expect("a card").to_string();
+        let body = serde_json::json!({ "line": card, "expect": "options" }).to_string();
+        let (status, reply) = ask(&games, "red@t.test", "POST", "/api/games/port-expect/input", "", &body);
+        assert_eq!(status, 409, "{reply}");
+        let msg = reply["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("options") && msg.contains("port"), "names both prompts: {msg}");
+        let still = {
+            let handle = games.handle("port-expect").expect("playing");
+            let repl = handle.lock().expect("a game");
+            match &repl.sub {
+                yokohama_cli::repl::SubPrompt::Port { selected } => selected.len(),
+                _ => panic!("the chooser closed"),
+            }
+        };
+        assert_eq!(still, 0, "the refused line switched nothing on");
+        let body = serde_json::json!({ "line": card, "expect": "port" }).to_string();
+        let (status, reply) = ask(&games, "red@t.test", "POST", "/api/games/port-expect/input", "", &body);
+        assert_eq!(status, 200, "{reply}");
+        assert!(reply["prompt"]["cards"][0]["selected"] == true, "{reply}");
+    }
+
+    /// **Every line the client sends for the Port passes the fence as it
+    /// stands**: each card's bare number, 1 to 36, `confirm` and `cancel`;
+    /// the terminal's displayed form (`O11`, `o11`), which the client never
+    /// sends, does not.
+    #[test]
+    fn every_line_the_client_sends_for_the_port_passes_the_fence() {
+        let mut lines: Vec<String> = (1..=36).map(|n| n.to_string()).collect();
+        lines.extend(["confirm".to_string(), "cancel".to_string()]);
+        for line in &lines {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
+        }
+        for line in ["O11", "o11"] {
+            assert!(!crate::grammar::is_gameplay_line(line), "{line:?}: the terminal's form, refused at the fence");
+        }
+    }
+
+    /// **A READING, not a bound: what one chooser press costs the layer**
+    /// (design §9; plan 2b, Task 7) — one Chinatown add through [`input`] at
+    /// `to_the_chinatown`'s list (a four-seat table at the corpus seed, power
+    /// 3: 127 exchange sets) and one Port card at `to_the_port`'s (a two-seat
+    /// table, power 3: four cards in reach), each the lists a line reaches at
+    /// the opening. The longest Chinatown list (2,001 sets) is a CLI fixture
+    /// this crate cannot reach, and the REPL's reading there is
+    /// `repl.rs`'s `reading_the_chooser_s_cost_at_the_longest_chinatown_list`.
+    /// The figures are printed and written into `docs/web-lane.md` §2. It
+    /// asserts NO time, since a wall-clock assertion flakes by construction;
+    /// it panics only when its premise fails — the chooser did not open, or
+    /// the press was not taken — so it never prints a figure for a press that
+    /// did not happen. Read with `--nocapture`, in debug and with `--release`.
+    #[test]
+    fn reading_one_chooser_press_through_input() {
+        let games = crate::games::test_support::games();
+        let user = User::parse("red@t.test").expect("an address");
+        let press = |id: &str, line: &str| {
+            let req = Input { line: line.to_string(), expect: None };
+            let started = std::time::Instant::now();
+            let reply = input(&games, &user, id, &req).unwrap_or_else(|e| panic!("{line:?} at {id}: {}", error_value(&e)));
+            (started.elapsed(), serde_json::to_value(&reply).expect("a reply serializes"))
+        };
+        let listed = |id: &str| {
+            let handle = games.handle(id).expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.session.legal()
+        };
+
+        let entry = at_chinatown(&games, "town");
+        let legal = listed("town");
+        let sets = legal.iter().filter(|m| yokohama_cli::chooser::chinatown_counts(m).is_some()).count();
+        let (_, opened) = press("town", &entry);
+        assert_eq!(opened["prompt"]["kind"], "chinatown", "premise: the chooser opened: {opened}");
+        let row = opened["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| r["can_add"] == true)
+            .unwrap_or_else(|| panic!("premise: an exchange the list can add: {}", opened["prompt"]))
+            .clone();
+        let (add, added) = press("town", &row["number"].to_string());
+        assert_eq!(
+            (added["prompt"]["kind"].as_str(), added["prompt"]["chosen"].as_u64()),
+            (Some("chinatown"), Some(1)),
+            "premise: the add was taken: {}",
+            added["prompt"],
+        );
+        println!(
+            "reading (layer, input, to_the_chinatown, {} listed moves, {sets} Chinatown sets): one add {add:?}",
+            legal.len()
+        );
+
+        let entry = at_the_port(&games, "dock");
+        let legal = listed("dock");
+        let takes = legal.iter().filter(|m| yokohama_cli::chooser::port_cards(m).is_some()).count();
+        let (_, opened) = press("dock", &entry);
+        assert_eq!(opened["prompt"]["kind"], "port", "premise: the chooser opened: {opened}");
+        let card = opened["prompt"]["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .find(|c| c["can_add"] == true)
+            .unwrap_or_else(|| panic!("premise: a card the list can take: {}", opened["prompt"]))["number"]
+            .clone();
+        let (take, taken) = press("dock", &card.to_string());
+        let on: Vec<&serde_json::Value> = taken["prompt"]["cards"]
+            .as_array()
+            .map(|c| c.iter().filter(|c| c["selected"] == true).map(|c| &c["number"]).collect())
+            .unwrap_or_default();
+        assert_eq!(on, vec![&card], "premise: the card was switched on: {}", taken["prompt"]);
+        println!(
+            "reading (layer, input, to_the_port, {} listed moves, {takes} Port takes): one card {take:?}",
+            legal.len()
+        );
     }
 }

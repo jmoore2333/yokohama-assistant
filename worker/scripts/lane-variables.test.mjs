@@ -112,6 +112,9 @@ function lanesDocument() {
   return readFileSync(`${repo}/docs/web-lane.md`, "utf8");
 }
 
+// A `codeFiles()` scan read 5,684 ms under load against vitest's 5,000 ms default (2026-11-21).
+const SCAN_TIMEOUT_MS = 30_000;
+
 describe("the lane document's variables table", () => {
   // **The catcher for a variable the code gains** (a new `YOKOHAMA_*` read
   // anywhere in the lane) and for one the table drops.
@@ -129,7 +132,7 @@ describe("the lane document's variables table", () => {
     const table = new Set(tableNames(lanesDocument()));
     const missing = [...found].filter((name) => !table.has(name)).sort();
     expect(missing, "in the code, not in docs/web-lane.md §12").toEqual([]);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   // **The catcher for a row nothing reads**: a variable renamed or retired in
   // the code while its row stays, and a row whose name is misspelt.
@@ -145,7 +148,7 @@ describe("the lane document's variables table", () => {
     expect(unread, "in docs/web-lane.md §12, spelled nowhere in the lane's code").toEqual([]);
     const twice = names.filter((name, i) => names.indexOf(name) !== i);
     expect(twice, "a name with two rows").toEqual([]);
-  });
+  }, SCAN_TIMEOUT_MS);
 
   it("exempts only names the code spells and the table does not define", () => {
     const found = new Set();
@@ -155,7 +158,7 @@ describe("the lane document's variables table", () => {
       expect(found.has(name), `${name} is exempted (${reason}) and spelled nowhere: drop the exemption`).toBe(true);
       expect(table.has(name), `${name} is exempted and also defined in §12`).toBe(false);
     }
-  });
+  }, SCAN_TIMEOUT_MS);
 
   // The parser's and the pattern's own guard, over text, so the cells above
   // cannot pass by reading nothing.

@@ -76,17 +76,44 @@ when the last person has kept.
 ![The client at two players on a desktop screen: the staggered pyramid of ten area tiles fills the table on the
 left, each tile the printed area art with its building-site card, its pieces and an id badge, and the side column on
 the right carries the answer bar at its top, with the phase ladder, the seat to move and the numbered moves it
-offers, above the last move and both seats' goods, money and pieces.](../web/public/help/screen.webp)
+offers, above the last move and both seats' goods, money and pieces, each seat's row carrying its flag count by
+country, yours with the flags still in hand too.](../web/public/help/screen.webp)
 
-The **table** fills the left: the area tiles laid out as the staggered pyramid the real board makes, each the
-printed tile with any building-site card and pieces on it, and under the pyramid whichever boards you have switched
-on. The **side column** on the right holds the **answer bar** pinned at its top, so whatever the game is asking you
-is always on screen. Under it come the account of the last turn, every seat's goods, money and pieces, and your own
-hand. When an opponent moves, the turn plays out across your table one step at a time. On a narrow window the same
-parts stack, with the answer bar pinned along the bottom edge.
+The **table** fills the left: the area tiles laid out as the staggered pyramid the real board makes, each the printed
+tile with any building-site card and pieces on it, and under the pyramid whichever boards you have switched on. A
+claimed goal shows the claimant's assistant on the card. The first to claim stands in the ringed place beside the
+first-place points; later claimants follow beside theirs. The **side column** on the right holds the **answer bar**
+pinned at its top, so whatever the game is asking you is always on screen. Under it come the account of the last turn,
+every seat's goods, money and pieces, and your own hand. Each player's row counts their flags by country: the flags on
+fulfilled orders and on technologies, which earn mercenaries and score the country sets. On your own row, `+n` is the
+flags on orders still in your hand; they count once the order is fulfilled. When an opponent moves, the turn plays out
+across your table one step at a time. On a narrow window the same parts stack, with the answer bar pinned along the
+bottom edge.
 
 The answer bar lists the moves the engine offers, numbered: press one. While a placement picker is open the table
-itself is the input, and the cost of your selection is printed before you commit to it.
+itself is the input, and the cost of your selection is printed before you commit to it. At the Church and at
+Chinatown, when more than one payment or set of exchanges is on offer, the list shows a single entry beside the
+decline, and that entry opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges
+with plus and take them back with minus. A kind or a plus is live only where the engine's list holds that choice, so
+selling first is what lights a purchase you could not yet afford; a minus is live whenever you have one to take back,
+and Confirm is live once the list holds exactly what you have chosen.
+
+![The Church's chooser in the answer bar: the turn and the phase chain over "The Church — what do you pay?", a button
+for each of the six kinds with how many you have, two switched on and the one you hold none of unavailable, and under
+them the line saying the payment is legal and what it buys, over Confirm and Cancel.](../web/public/help/church.webp)
+
+At the Port, when more than one take is on offer, the list shows a single entry beside the decline, and that entry
+opens a chooser: you switch on one card or two. A card you have not switched on is live only where the engine's list
+holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it;
+when you could pay for the second card either with 2 yen or with an imported good, Confirm asks which. At the
+Laboratory a technology that can be paid for in more than one way is a single row, and pressing it opens the list of
+those ways. When both copies of a technology are on the same Laboratory board, each of its rows names its slot, as
+the board numbers it, so you can tell which card you are taking.
+
+![The Port's chooser in the answer bar: the turn and the phase chain over "The Port — take one card, or two", the
+order cards in reach under their zones, each naming what it needs and pays, two switched on and the others
+unavailable, and under them the line saying the take is legal and how it is paid for, over Confirm and
+Cancel.](../web/public/help/port.webp)
 
 - **Boards**, along the top, is one menu with a switch for each board that can sit under the pyramid: the port, the
   laboratory, the tracks, the goals and the building sites.

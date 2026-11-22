@@ -21,6 +21,9 @@ import type {
   TechCard,
 } from "./types";
 import { achievementArt, orderArt, siteArt, techArt } from "./art";
+// `Pieces` imports `seatClass` from here; the cycle is safe because neither
+// module reads the other's binding at load, only inside a render.
+import { CubeIcon } from "./Pieces";
 
 export const seatClass = (c: PlayerColor | undefined): string =>
   c ? `seat-${c.toLowerCase()}` : "";
@@ -176,20 +179,28 @@ export function AchievementCardView({
   model,
   labels,
   colors,
+  changed,
 }: {
   art: ArtManifest | null;
   model: AchievementModel;
   labels: Labels | null;
   colors: PlayerColor[];
+  /** The walk is lighting this card: a claim just landed on it (#75). */
+  changed?: boolean;
 }) {
   const src = achievementArt(art, model.achievement_type);
   return (
-    <figure className="card-face achievement">
-      {src ? (
-        <img src={src} alt="" loading="lazy" />
-      ) : (
-        <div className="card-blank">{model.category}</div>
-      )}
+    <figure className={`card-face achievement${changed ? " changed" : ""}`}>
+      {/* The PICTURE BOX: the art or the blank, and the claim band positioned
+          against it, so a card without art draws the same band over its blank. */}
+      <div className={src ? "card-pic" : "card-pic blank"}>
+        {src ? (
+          <img src={src} alt="" loading="lazy" />
+        ) : (
+          <div className="card-blank">{model.category}</div>
+        )}
+        <ClaimBand model={model} colors={colors} />
+      </div>
       <figcaption>
         <div className="card-title">
           <span className="tag">{model.category}</span>
@@ -199,19 +210,70 @@ export function AchievementCardView({
           <span className="chip vp">
             {model.first_place_vp} / {model.subsequent_vp} VP
           </span>
-          {model.claimed_by.length === 0 ? (
-            <span className="chip">unclaimed</span>
-          ) : (
-            model.claimed_by.map((seat, i) => (
-              <span className={`chip claimed ${seatClass(colors[seat])}`} key={seat}>
-                {i === 0 ? "first" : "also"} {colors[seat] ?? `seat ${seat}`}
-              </span>
-            ))
-          )}
+          {model.claimed_by.length === 0 && <span className="chip">unclaimed</span>}
         </div>
         <Progress model={model} colors={colors} />
       </figcaption>
     </figure>
+  );
+}
+
+/** Each claim in words, in claim order: `Red claimed first — 6 VP` for the
+ *  first, `Blue claimed — 3 VP` for every later one. A seat the colours do not
+ *  name reads `seat N`. */
+function claimWords(model: AchievementModel, colors: PlayerColor[]): string[] {
+  return model.claimed_by.map((seat, i) => {
+    const who = colors[seat] ?? `seat ${seat}`;
+    return i === 0
+      ? `${who} claimed first — ${model.first_place_vp} VP`
+      : `${who} claimed — ${model.subsequent_vp} VP`;
+  });
+}
+
+/** The claim on the card (#75): one cube per claimant, in claim order, along
+ *  the bottom of the picture box. The first claim stands in a ringed place
+ *  beside `first_place_vp`; the later ones follow a divider, beside
+ *  `subsequent_vp`, which is drawn only when a later claim exists. No claim, no
+ *  band.
+ *
+ *  The cube is the board's own `CubeIcon`, coloured by the seat's class exactly
+ *  as a tile's pieces are (`currentColor`). The words are the band's one
+ *  reading, and it takes the tile's role for it (`Pieces.tsx`): `role="img"`
+ *  with the words as its name keeps the band ONE object. A `group` would not —
+ *  every node inside is hidden from a screen reader, so a group would have
+ *  nothing in it to enter, and a reader in browse mode can skip such a group
+ *  and never say its name. Each cube still carries its own claim as a `title`
+ *  for a mouse. */
+function ClaimBand({ model, colors }: { model: AchievementModel; colors: PlayerColor[] }) {
+  const [first, ...later] = model.claimed_by;
+  if (first === undefined) return null;
+  const words = claimWords(model, colors);
+  const cube = (seat: PlayerId, i: number) => (
+    <span
+      key={i}
+      className={["claim", i === 0 ? "first" : "", seatClass(colors[seat])].filter(Boolean).join(" ")}
+      title={words[i]}
+      aria-hidden="true"
+    >
+      <CubeIcon />
+    </span>
+  );
+  return (
+    <div className="claims" role="img" aria-label={words.join(" · ")}>
+      {cube(first, 0)}
+      <span className="claims-vp first" aria-hidden="true">
+        {model.first_place_vp}
+      </span>
+      {later.length > 0 && (
+        <>
+          <span className="claims-sep" aria-hidden="true" />
+          {later.map((seat, j) => cube(seat, j + 1))}
+          <span className="claims-vp later" aria-hidden="true">
+            {model.subsequent_vp}
+          </span>
+        </>
+      )}
+    </div>
   );
 }
 

@@ -6,6 +6,7 @@ pub mod board_render;
 pub mod bot;
 pub mod card_prompt;
 pub mod card_render;
+pub mod chooser;
 pub mod decision_render;
 pub mod describe;
 pub mod index_render;

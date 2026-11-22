@@ -600,21 +600,61 @@ export interface Screen {
    *  Neither is answerable, and neither is "nothing left to click" — a walk that
    *  reported them that way would name the wrong defect. */
   inert: "watching" | "locked" | null;
+  /** A chooser is open in the answer bar (plans 2a and 2b): the Church's
+   *  payment, Chinatown's exchanges or the Port's cards, a `.chooser` inside
+   *  `.decision`. */
+  chooser: boolean;
+  /** What the open chooser can still ADD to its selection: the enabled kinds
+   *  not yet pressed (the Church), the enabled pluses (Chinatown) and the
+   *  enabled cards not yet pressed (the Port) — [`CHOOSER_ADDS`]. Never a
+   *  pressed kind or card and never a minus, since each would take something
+   *  away; zero when no chooser is open. */
+  adds: number;
 }
 
+/** The controls that grow a chooser's selection, and only those: a kind the
+ *  payload offers that is not pressed, a plus the payload says can add, and a
+ *  Port card the payload says can be switched on (`can_add`) that is not
+ *  pressed — a pressed card stays live so it can be switched OFF, which is why
+ *  `[aria-pressed="false"]` is on the card's leg as on the kind's.
+ *  `:not([disabled])` drops what the payload refuses (`data-unavailable`), and
+ *  `:not([aria-disabled="true"])` anything in flight — a kind, a stepper or a
+ *  card is `aria-disabled` while busy, not `disabled`, so it keeps the focus
+ *  (ruling R45). One selector, read by `readScreen` and clicked by `act`, so
+ *  the count and the click cannot disagree. */
+export const CHOOSER_ADDS =
+  '.decision .chooser button.kind:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"], .decision .chooser button.plus:not([disabled]):not([aria-disabled="true"]), .decision .chooser button.card-pick:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"]';
+
 export async function readScreen(page: Page): Promise<Screen> {
-  // **Wait for the request in flight FIRST.** Every control in the decision zone
-  // — and every board tile — is `disabled` exactly while `busy`, which is the
-  // client's own in-flight state. A read taken between the click and the
-  // response therefore sees a screen with nothing enabled on it and reports
-  // "nothing left to click", which is a true statement about that instant and a
-  // false one about the game. Measured: the first walk failed at its first move,
-  // with the decision zone plainly showing "End additional-action phase" in the
-  // failure message.
+  // **Wait for the request in flight FIRST.** While `busy`, the client's own
+  // in-flight state, every control in the decision zone but a chooser's kinds
+  // and steppers is `disabled` (those are `aria-disabled`, so they keep the
+  // focus: ruling R45), and every board tile is `aria-disabled` (below). A read
+  // taken between the click and the response therefore sees a screen with
+  // nothing answerable on it and reports "nothing left to click", which is a
+  // true statement about that instant and a false one about the game.
+  // Measured: the first walk failed at its first move, with the decision zone
+  // plainly showing "End additional-action phase" in the failure message.
   //
   // `disabled` is the signal rather than a sleep because it is the SAME
   // condition the client renders from, so this cannot drift from what a player
   // can actually press.
+  //
+  // **Except where the PAYLOAD disabled it (plan 2a).** A chooser always has
+  // some control disabled by what the payload says rather than by `busy` — a
+  // kind no listed move pays, a plus that cannot add, a minus at zero, a Port
+  // card that cannot be switched on (plan 2b: with two cards on, every other
+  // card), Confirm on a selection the list does not hold — so a wait on every
+  // `disabled` timed out after 15 s at the first chooser every walk met. Each
+  // of those carries `data-unavailable` (`Decision.tsx`), set from the payload
+  // alone and never from `busy`, and the wait passes over it. A chooser in
+  // flight still reads busy: `data-busy`, below, is what holds that — the
+  // client's own in-flight state, the same window — and Cancel, `disabled`
+  // while `busy` and never carrying the attribute, is a second guard (Confirm
+  // too, whenever the preview is legal). A kind, a stepper or a card in flight
+  // is `aria-disabled` and not `disabled`, so this leg never reads it either
+  // way. Nothing but a chooser's kinds, steppers, cards and Confirm carries the
+  // attribute at all, so every other control in the zone is read as before.
   //
   // **And `data-busy` beside it, because `disabled` is only a signal on a
   // screen that HAS a control (M5.5).** The finished game's deck is a standing
@@ -628,7 +668,7 @@ export async function readScreen(page: Page): Promise<Screen> {
   await page.waitForFunction(
     () =>
       !document.querySelector("[data-busy]") &&
-      !document.querySelector(".decision button[disabled]"),
+      !document.querySelector(".decision button[disabled]:not([data-unavailable])"),
     null,
     { timeout: 15_000 },
   );
@@ -650,7 +690,7 @@ export async function readScreen(page: Page): Promise<Screen> {
       .catch(() => {});
     await page.locator(".decision.walking").waitFor({ state: "detached", timeout: 15_000 });
   }
-  return page.evaluate(() => {
+  return page.evaluate((addsSelector) => {
     const many = (sel: string) => document.querySelectorAll(sel).length;
     const named = (name: string) =>
       [...document.querySelectorAll<HTMLButtonElement>(".decision button:not([disabled])")].some(
@@ -681,13 +721,15 @@ export async function readScreen(page: Page): Promise<Screen> {
         : text.includes("This game is LOCKED")
           ? ("locked" as const)
           : null,
+      chooser: !!document.querySelector(".decision .chooser"),
+      adds: many(addsSelector),
     };
-  });
+  }, CHOOSER_ADDS);
 }
 
 /** Which affordance a move went through — so a walk can say what it exercised
  *  rather than only that it finished. */
-export type Affordance = "option" | "only" | "placement" | "count" | "confirm" | "cancel";
+export type Affordance = "option" | "only" | "placement" | "count" | "confirm" | "cancel" | "chooser";
 
 /**
  * One move, chosen from WHAT IS ON THE SCREEN.
@@ -767,6 +809,32 @@ export async function act(
       .nth(nth(screen.counts))
       .click();
     return "count";
+  }
+
+  // **A chooser** (plans 2a and 2b): the Church's payment, Chinatown's
+  // exchanges, the Port's cards. Confirm when it is live and either nothing is
+  // left to add or the coin says so — so a walk pays both a full selection and
+  // a partial one, and takes one card and two; else one of the adds
+  // ([`CHOOSER_ADDS`]); else back out through Cancel, the way a stuck placement
+  // picker is backed out of. **The visit ends**: an add only ever GROWS the
+  // selection — the policy never presses a pressed kind or card and never a
+  // minus — and a selection is bounded (six kinds; the exchanges up to the most
+  // one listed move holds, past which no plus can add; two cards, past which no
+  // card can be switched on), so it reaches Confirm or Cancel within a few
+  // presses. A Confirm on two cards the list holds two ways to pay for opens
+  // the numbered pick, which the option arm above answers. A visit that loops
+  // anyway is the whole-game walk's move cap failing, by design.
+  if (screen.chooser) {
+    if (screen.confirm && (screen.adds === 0 || pick() < 0.5)) {
+      await page.getByRole("button", { name: "Confirm" }).click();
+      return "chooser";
+    }
+    if (screen.adds > 0) {
+      await page.locator(CHOOSER_ADDS).nth(nth(screen.adds)).click();
+      return "chooser";
+    }
+    await page.locator(".decision .controls button.ghost", { hasText: "Cancel" }).first().click();
+    return "cancel";
   }
 
   if (screen.confirm) {
@@ -1048,3 +1116,92 @@ export function tally(page: Page, label: TallyPage, path: string | undefined = p
   page.on("requestfailed", (r) => write(r, 0));
   page.on("websocket", (ws) => line(Date.now(), "GET", ws.url().replace(/^ws/, "http"), 101));
 }
+
+// ---- the route to an area-action chooser (moved from `the_table.spec.ts`) ----
+//
+// Moved VERBATIM, with `export` added, so `shots.spec.ts` can photograph
+// the choosers the table's cells reach: a `.spec.ts` cannot be imported from
+// another spec without registering that file's tests into the run.
+
+/** Click the first enabled option row whose words match, or say there is none. */
+export async function answer(page: Page, words: RegExp): Promise<boolean> {
+  const rows = page.locator("button.option:not([disabled])").filter({ hasText: words });
+  if ((await rows.count()) === 0) return false;
+  await rows.first().click();
+  return true;
+}
+
+export type ChooserArea = "Church" | "Chinatown" | "Port";
+
+/** The chooser's own class, beside `.chooser`. */
+export const CHOOSER_CLASS: Record<ChooserArea, string> = { Church: "church", Chinatown: "chinatown", Port: "port" };
+
+/** The entry that opens it, as the plans' words sections spell it (plan 2b's
+ *  two Port lines: with a pair on the list, and without one). */
+export const CHOOSER_ENTRY: Record<ChooserArea, RegExp> = {
+  Church: /Church — choose what to pay \(/,
+  Chinatown: /Chinatown — choose exchanges \(up to /,
+  Port: /Port — take 1 (or 2 order cards|order card) \(\d+ in reach\)/,
+};
+
+/** The tile's printed name (`describe::area_type_name`): every table has a
+ *  Port A, and the route takes it. */
+export const CHOOSER_TILE: Record<ChooserArea, string> = { Church: "Church", Chinatown: "Chinatown", Port: "Port A" };
+
+/**
+ * Reach `area`'s chooser on a fresh table, through the screen: end the
+ * additional phase, Option B's two assistants on the area's tile, the Movement
+ * row naming the tile with the President, then the entry — the route the wire
+ * corpus's own Chinatown capture takes (`wire_fixtures.rs`). The tile is found
+ * by its label's printed name (`A05 Church · …`, `Board.tsx`'s load-bearing
+ * prefix) and its id read off it, so the President's row is the one naming
+ * THAT tile. Returns the tile's id. Any screen the route does not expect is an
+ * error quoting the answer bar, never a guess. `seen`, when given, collects the
+ * screen `readScreen` returned at each list the route answered, by what it
+ * answered there (`movement` the President's row, `entry` the chooser's).
+ */
+export async function openChooser(
+  page: Page,
+  area: ChooserArea,
+  seen?: { at: "movement" | "entry"; screen: Screen }[],
+): Promise<string> {
+  const chooser = page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`);
+  let tile: string | null = null;
+  for (let step = 0; step < 12; step++) {
+    const screen = await readScreen(page);
+    if (await chooser.count()) {
+      if (tile === null) throw new Error(`the ${area} chooser opened before this route placed anything`);
+      return tile;
+    }
+    if (await answer(page, CHOOSER_ENTRY[area])) {
+      seen?.push({ at: "entry", screen });
+      continue;
+    }
+    if (tile !== null && (await answer(page, new RegExp(`President.*\\(${tile}\\)`)))) {
+      seen?.push({ at: "movement", screen });
+      continue;
+    }
+    if (tile === null && (await answer(page, /Option B/))) {
+      await expect(page.locator('.tile[role="button"]').first()).not.toHaveAttribute("aria-disabled", "true");
+      const labels = await page
+        .locator('.tile[role="button"]')
+        .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""));
+      const at = labels.findIndex((l) => new RegExp(`^A\\d\\d ${CHOOSER_TILE[area]}( |$)`).test(l));
+      if (at < 0) throw new Error(`no ${area} tile to place on: ${labels.map((l) => l.slice(0, 14)).join(" | ")}`);
+      tile = labels[at]!.slice(0, 3);
+      await page.locator('.tile[role="button"]').nth(at).click();
+      expect((await readScreen(page)).pressed, `Option B did not take ${tile} ${area}`).toBe(1);
+      await page.getByRole("button", { name: "Confirm" }).click();
+      continue;
+    }
+    if (await answer(page, /End additional-action phase/)) continue;
+    break;
+  }
+  throw new Error(
+    `no scripted answer on the way to the ${area} chooser (tile ${tile ?? "not placed"}):\n` +
+      (await page.locator(".decision:not(.notices)").first().innerText()),
+  );
+}
+
+/** The verdict's `legal — ` tag, as the panel draws it (the plan's words). */
+export const LEGAL = "legal — ";

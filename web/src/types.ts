@@ -155,6 +155,15 @@ export interface PlayerModel {
   is_current: boolean;
   is_bot: boolean;
   hand_hidden: boolean;
+  /** Face-up flags (fulfilled orders and technologies) per country, on every
+   *  seat and never masked — the count the engine awards mercenaries and scores
+   *  the country bonus from. Counted by the model, never here. */
+  flags: FlagCounts;
+}
+
+/** One count per country, in the engine's `Country::ALL` order. */
+export interface FlagCounts {
+  english: number; american: number; french: number; german: number; dutch: number;
 }
 
 /** `occupant` may be `DUMMY_SEAT`. */
@@ -225,6 +234,9 @@ export interface HandPanel {
   cards: HandCardModel[];
   /** Truthful whether masked or not. */
   card_count: number;
+  /** The countries of this panel's own `cards`, the starting order included;
+   *  they do not count until the order is fulfilled. `null` whenever `hidden`. */
+  flags_in_hand: FlagCounts | null;
 }
 
 /** Externally tagged: exactly one key. `Hand` is ABSENT, not empty, for a seat
@@ -308,6 +320,68 @@ export interface OptionRow {
   fee: FeeModel | null;
 }
 
+/** A thing a chooser spends or gains: the CLI's `chooser::Good`, by name. The
+ *  client maps it to the token art it already holds. */
+export type ChooserGood = "Copper" | "Silk" | "Tea" | "Seafood" | "Yen" | "Imports";
+
+/** A good and how many of it (`chooser::Amount`). */
+export interface ChooserAmount { good: ChooserGood; amount: number }
+
+/** What stands under a chooser's selection (`chooser::Preview`): whether the
+ *  legal list holds a move the selection names, and that move in `describe`'s
+ *  words — `null` exactly when it does not. */
+export interface ChooserPreview { legal: boolean; words: string | null }
+
+/** One of the Church's six payment kinds (`chooser::ChurchKind`). `number` is
+ *  what to send to switch it (1 to 6); `amount` is 1, or 2 for the yen kind;
+ *  `offered` is "some listed Church move pays this kind", read off the list. */
+export interface ChurchKind {
+  number: number;
+  good: ChooserGood;
+  amount: number;
+  words: string;
+  have: number;
+  selected: boolean;
+  offered: boolean;
+}
+
+/** One of Chinatown's nine exchanges (`chooser::ChinatownRow`). `number` is
+ *  what to send to add one (1 to 9; `back <number>` takes one back); `sells`
+ *  is true for the four that gain yen; `spend` and `gain` are the engine's
+ *  printed rate; `can_add` is "the list holds the selection with one more of
+ *  it" and `offered` "some listed set uses it", each read off the list. */
+export interface ChinatownRow {
+  number: number;
+  sells: boolean;
+  spend: ChooserAmount;
+  gain: ChooserAmount;
+  words: string;
+  count: number;
+  can_add: boolean;
+  offered: boolean;
+}
+
+/** One order card in the Port's chooser (`chooser::PortCard`). `number` is
+ *  what to send to switch it (its bare id); `zone` and `printed` are typed as
+ *  the ports panel types a slot's; `words` is `order_prompt_line`'s; `can_add`
+ *  is "the list holds a take of the selection with this card added", read off
+ *  the list — false for a card already selected. */
+export interface PortCard {
+  number: number;
+  id: OrderCardId;
+  zone: PortZone;
+  printed: OrderCard;
+  words: string;
+  selected: boolean;
+  can_add: boolean;
+}
+
+/** What stands under the Port's selection (`chooser::PortPreview`): whether
+ *  some listed move takes exactly the selection, and `describe`'s words for
+ *  every one that does, in list order — none, one, or two when the second
+ *  card can be paid for with 2 yen or with an imported good. */
+export interface PortPreview { legal: boolean; ways: string[] }
+
 /** INTERNALLY tagged — the one exception on the wire. */
 export type PromptState =
   | { kind: "options"; rows: OptionRow[] }
@@ -315,6 +389,30 @@ export type PromptState =
   | { kind: "retreat"; area: AreaId; area_label: string; max: number; answered: number[]; remaining: number }
   | { kind: "place_a"; selected: AreaId[]; max_areas: number; fee: FeeModel | null }
   | { kind: "place_b"; areas: AreaId[]; selected: AreaId | null; fee: FeeModel | null }
+  /** The Church chooser (plan 2a): the REPL's own model. Six kinds in a fixed
+   *  order, the preview of the listed move the selection names, and — when the
+   *  selection names none — the faiths the list does offer. The server still
+   *  decides: `confirm` commits only a listed move. */
+  | { kind: "church"; kinds: ChurchKind[]; preview: ChooserPreview; offered_faiths: string | null }
+  /** The Chinatown chooser (plan 2a): the REPL's own model. The most exchanges
+   *  in one listed set, the count chosen, the acting seat's six holdings, nine
+   *  exchanges in the engine's order, and the preview of the listed set the
+   *  selection names. The server still decides: `confirm` commits only a
+   *  listed move, in the engine's own order. */
+  | {
+      kind: "chinatown";
+      max_exchanges: number;
+      chosen: number;
+      stock: ChooserAmount[];
+      rows: ChinatownRow[];
+      preview: ChooserPreview;
+    }
+  /** The Port chooser (plan 2b): the REPL's own model. Which port is acting,
+   *  the most cards one listed take holds, the cards in reach in the acting
+   *  board's slot order, and the preview. The server still decides: `confirm`
+   *  commits only a listed move, and opens a `pick` when there are two ways to
+   *  pay for it. */
+  | { kind: "port"; board_b: boolean; max_cards: number; cards: PortCard[]; preview: PortPreview }
   | { kind: "reveal" }
   | { kind: "game_over" }
   /** The session is locked after a driver or engine fault. Nothing this client
@@ -432,6 +530,9 @@ export interface HouseFrame {
   chat: number;
   rev: number;
 }
+
+/** A 4P position's Achievements and Players panels, built in process. */
+export interface GoalsClaimedFixture { achievements: { cards: AchievementModel[] }; players: { players: PlayerModel[] } }
 
 /** One historical position, from `GET /api/games/{id}/at/{k}` — the M4 replay
  *  payload.

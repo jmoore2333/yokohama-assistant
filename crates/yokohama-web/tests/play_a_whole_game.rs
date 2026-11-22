@@ -1,4 +1,4 @@
-//! **The gate: a whole 2-player game played to a winner, over the API. Twice.**
+//! **The gate: whole games played to a winner, over the API. Three times.**
 //!
 //! This is the web analogue of `yokohama-cli`'s `piped_dogfood`, and it exists
 //! for the same reason: a hundred unit tests that each prove one handler
@@ -26,6 +26,11 @@
 //! and [`Stuck`]. The vs-bot arm had neither, placed nothing, and livelocked
 //! (M6.3 close §6.3). It prints the bot's stream seed, and
 //! `YOKOHAMA_WEB_GATE_BOT_SEED=<u64>` pins that seed to reproduce a run.
+//!
+//! **A third arm plays THREE players** (plan 2b, Task 7), since the
+//! two-player board has no Chinatown: one caller in every seat, no bot, by
+//! the same policy and guards, with floors on what the choosers reached
+//! ([`a_whole_three_player_game_answers_every_chooser_through_the_api`]).
 
 use std::sync::Arc;
 
@@ -157,8 +162,8 @@ impl Api {
     }
 }
 
-/// One move, chosen from whatever the prompt offers — the policy BOTH arms play
-/// by.
+/// One move, chosen from whatever the prompt offers — the policy every arm
+/// plays by.
 ///
 /// `None` means the prompt says the game is over, which is the caller's signal
 /// to leave its loop. Every other shape is answered; an unknown one panics,
@@ -185,6 +190,97 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
         "place_a" => "confirm".to_string(),
         // Back out; the next pass picks a different entry.
         "place_b" => "cancel".to_string(),
+        // The Church's chooser (cycle 2, plan 2a): confirm a selection the
+        // list holds; else switch on a kind drawn at random among those some
+        // listed move pays and not yet on; back out when there is none. Every
+        // flag is the arm's own, so nothing here restates a rule.
+        "church" => {
+            if prompt["preview"]["legal"] == Value::Bool(true) {
+                "confirm".to_string()
+            } else {
+                let open: Vec<u64> = prompt["kinds"]
+                    .as_array()
+                    .expect("kinds")
+                    .iter()
+                    .filter(|k| k["offered"] == Value::Bool(true) && k["selected"] == Value::Bool(false))
+                    .map(|k| k["number"].as_u64().expect("a number"))
+                    .collect();
+                if open.is_empty() {
+                    "cancel".to_string()
+                } else {
+                    open[rng.below(open.len())].to_string()
+                }
+            }
+        }
+        // The Port's chooser (plan 2b): while fewer than `max_cards` cards are
+        // on and some card still off can be switched on, the draw decides
+        // whether to switch one on (a card drawn among those) or, once the
+        // selection is legal, to confirm it; else Confirm a legal selection;
+        // else back out. Confirming as soon as the preview is legal would take
+        // a single every time — one card is always legal, measured — so this
+        // arm CAN reach a pair, and a pair payable two ways comes back as a
+        // `pick`, answered by the arm above. **These two games reach neither,
+        // measured** (2026-11-22, `port_tally`'s printed counts: 0 pairs and 0
+        // payment picks in the two-people game, and in a vs-bot run at bot
+        // seed 3734450748880462653): the arm meets few folded Ports and its
+        // draws took singles. The counts are printed, not floored here; the
+        // floors on pairs and picks are the three-player arm's (plan 2b,
+        // Task 7), whose game at seed 12 reads 3 pairs and 1 Port payment
+        // pick.
+        "port" => {
+            let cards = prompt["cards"].as_array().expect("cards");
+            let on = cards.iter().filter(|c| c["selected"] == Value::Bool(true)).count();
+            let max = prompt["max_cards"].as_u64().expect("max_cards") as usize;
+            let legal = prompt["preview"]["legal"] == Value::Bool(true);
+            let open: Vec<u64> = cards
+                .iter()
+                .filter(|c| c["selected"] == Value::Bool(false) && c["can_add"] == Value::Bool(true))
+                .map(|c| c["number"].as_u64().expect("a number"))
+                .collect();
+            if on < max && !open.is_empty() && (!legal || rng.below(2) == 0) {
+                open[rng.below(open.len())].to_string()
+            } else if legal {
+                "confirm".to_string()
+            } else {
+                "cancel".to_string()
+            }
+        }
+        // Chinatown's chooser (plan 2a; answered since plan 2b's Task 7, whose
+        // three-player arm is the game that runs it), in the Port arm's shape:
+        // while some exchange can be added, the draw decides whether to add
+        // one (drawn among those the list holds one more of) or, once the
+        // selection is legal, to confirm it; else Confirm a legal selection;
+        // else back out. Every flag is the arm's own, so nothing here restates
+        // a rule. Confirming as soon as the preview is legal could never build
+        // a set of two, BY CONSTRUCTION: `can_add` is "the selection plus one
+        // is a listed set", so one exchange added to nothing is always legal
+        // (found at Task 7's review).
+        "chinatown" => {
+            // **The two-player arms' tripwire**: their board has no Chinatown,
+            // so a two-player game that met this chooser is a board or a fold
+            // that changed, and is refused rather than answered.
+            let players = state["frame"]["board"]["player_count"].as_u64().expect("the board's player count");
+            assert!(
+                players >= 3,
+                "a `chinatown` prompt at {players} players, whose board has no Chinatown: the board or the fold \
+                 changed: {state}"
+            );
+            let legal = prompt["preview"]["legal"] == Value::Bool(true);
+            let open: Vec<u64> = prompt["rows"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .filter(|r| r["can_add"] == Value::Bool(true))
+                .map(|r| r["number"].as_u64().expect("a number"))
+                .collect();
+            if !open.is_empty() && (!legal || rng.below(2) == 0) {
+                open[rng.below(open.len())].to_string()
+            } else if legal {
+                "confirm".to_string()
+            } else {
+                "cancel".to_string()
+            }
+        }
         // Recover none from each area in turn, then commit the retreat.
         "retreat" => {
             if prompt["remaining"].as_u64().unwrap_or(0) > 0 {
@@ -199,7 +295,27 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
     })
 }
 
-/// **The stuck-picker rule, ONE copy for both arms** (M6.5c2; the rule and its
+/// What the Port's arm reached (plan 2b, Task 2's review, M-1): `[pairs taken,
+/// payment picks answered]` — a `confirm` with two cards on, and a `pick`
+/// titled `Port: take … — choose the payment` (the Port's prefix, since a
+/// folded Laboratory title's pick ends the same way, plan 2b's Task 3).
+/// Called ONLY from [`Reached::count`], on a line the server took, so every
+/// arm counts what was taken and never what was sent (Task 7's review, I-2).
+/// The two-player arms print it and floor neither (the floors are the
+/// three-player arm's).
+fn port_tally(prompt: &Value, line: &str, tally: &mut [usize; 2]) {
+    let on = |p: &Value| p["cards"].as_array().map_or(0, |c| c.iter().filter(|c| c["selected"] == Value::Bool(true)).count());
+    if prompt["kind"] == "port" && line == "confirm" && on(prompt) == 2 {
+        tally[0] += 1;
+    }
+    if prompt["kind"] == "pick"
+        && prompt["title"].as_str().is_some_and(|t| t.starts_with("Port: take") && t.ends_with("— choose the payment"))
+    {
+        tally[1] += 1;
+    }
+}
+
+/// **The stuck-picker rule, ONE copy for every arm** (M6.5c2; the rule and its
 /// measurement are M6.1's). A prompt that does not move is a walk that does not
 /// terminate: a pair the server accepted one area at a time can still be
 /// unaffordable together, and then Confirm is refused and the same picker comes
@@ -229,7 +345,7 @@ impl Stuck {
     }
 }
 
-/// **The placement probe, ONE copy for both arms** (M6.5c2). `place_a` does not
+/// **The placement probe, ONE copy for every arm** (M6.5c2). `place_a` does not
 /// carry its legal set (Option B does), so this ASKS: tiles holding a
 /// President first, so a placement sometimes costs a fee, then the area it
 /// last placed in, then a rotated order so the walk does not place in area 0
@@ -384,6 +500,7 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
     let mut turns_seen = 0u64;
     let mut selections = 0usize;
     let mut backed_out = 0usize;
+    let mut reached = Reached::default();
     let mut stuck = Stuck::default();
     let mut placed_before: Option<u64> = None;
 
@@ -419,11 +536,12 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
         let (status, next) =
             api.call("POST", "/api/games/gate/input", Some(serde_json::json!({ "line": line }))).await;
         assert_eq!(status, StatusCode::OK, "input {line:?} was refused (bot seed {bot_seed}): {next}");
+        reached.count(&state, &line, &next);
         state = next;
     }
     eprintln!(
-        "gate: done bot_seed={bot_seed} inputs={inputs} events={} turns={turns_seen} selections={selections} backed_out={backed_out}",
-        state["events"],
+        "gate: done bot_seed={bot_seed} inputs={inputs} events={} turns={turns_seen} selections={selections} backed_out={backed_out} port_pairs={} port_payment_picks={}",
+        state["events"], reached.port[0], reached.port[1],
     );
 
     assert!(
@@ -459,6 +577,314 @@ async fn a_whole_two_player_game_against_the_bot_plays_through_the_api() {
     assert_eq!(ids, ["gate"]);
 }
 
+/// What every arm counts — the three-player arm floors it, the two-player
+/// arms print its Port half: a line the server TOOK, read off the state it
+/// answered, the line, and the reply.
+///
+/// **Taken, not sent.** A `confirm` at a chooser counts only when the reply is
+/// no longer that chooser (it applied the move, or opened the payment pick),
+/// and an answered pick only when the reply's event count moved. Counting the
+/// line sent was vacuous: a `port` arm that confirmed every empty selection
+/// read 117 Port confirms and applied none, every one refused and the stuck
+/// rule backing out (the task's mutant probe, 2026-11-22).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct Reached {
+    /// `confirm` taken at a `chinatown` prompt.
+    chinatown_confirms: usize,
+    /// The selection's total (`chosen`) at each of those confirms, in order.
+    chinatown_sets: Vec<usize>,
+    /// `confirm` taken at a `port` prompt.
+    port_confirms: usize,
+    /// [`port_tally`]'s two, over taken lines: pairs confirmed, Port payment
+    /// picks answered.
+    port: [usize; 2],
+    /// A `pick` titled `Laboratory: acquire … — choose the payment`, answered.
+    lab_picks: usize,
+}
+
+impl Reached {
+    /// The confirmed Chinatown sets of two or more exchanges.
+    fn multi_exchange_sets(&self) -> usize {
+        self.chinatown_sets.iter().filter(|&&n| n >= 2).count()
+    }
+
+    fn count(&mut self, state: &Value, line: &str, reply: &Value) {
+        let prompt = &state["prompt"];
+        let took = match (prompt["kind"].as_str(), line) {
+            (Some(kind @ ("chinatown" | "port")), "confirm") => reply["prompt"]["kind"].as_str() != Some(kind),
+            (Some("pick"), _) => reply["events"].as_u64() > state["events"].as_u64(),
+            _ => false,
+        };
+        if !took {
+            return;
+        }
+        port_tally(prompt, line, &mut self.port);
+        match (prompt["kind"].as_str(), line) {
+            (Some("chinatown"), "confirm") => {
+                self.chinatown_confirms += 1;
+                self.chinatown_sets.push(prompt["chosen"].as_u64().expect("chosen") as usize);
+            }
+            (Some("port"), "confirm") => self.port_confirms += 1,
+            (Some("pick"), _)
+                if prompt["title"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Laboratory: acquire") && t.ends_with("— choose the payment")) =>
+            {
+                self.lab_picks += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// **The counters tell the picks apart** (the task's mutant probe: a
+/// Laboratory counter that counted ANY answered pick read 20 at the arm's
+/// seed and passed every floor, since a floor cannot see over-counting). Two
+/// committed payloads — `lab_pick.json`, a Laboratory payment pick, and
+/// `pick.json`, the assistant destinations — and a clone of the first with
+/// ONE field changed, its title a Port payment pick's, each answered with a
+/// reply whose event count moved; and the Laboratory pick once more with a
+/// reply whose count did not, which is no pick taken.
+///
+/// **And the confirm half of "taken"** (Task 7's review, I-1: with confirms
+/// counted when SENT, every other cell stayed green). `port_selected.json`
+/// (one card on) and `chinatown_selected.json` (one exchange chosen) answered
+/// `confirm`: a reply that is still the chooser — a refused confirm — counts
+/// nothing, and one that has left it counts one. A one-field-per-card clone of
+/// the Port's with a second card switched on is a pair, counted only when
+/// taken.
+#[test]
+fn the_three_player_counters_tell_the_picks_apart() {
+    let wire = |name: &str| -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/wire").join(name);
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+            .expect("a committed payload parses")
+    };
+    let moved = |state: &Value| {
+        let mut reply = state.clone();
+        reply["events"] = serde_json::json!(state["events"].as_u64().expect("an event count") + 1);
+        reply["prompt"] = serde_json::json!({ "kind": "options", "rows": [] });
+        reply
+    };
+    let lab = wire("lab_pick.json");
+    let other = wire("pick.json");
+    assert_eq!(lab["prompt"]["kind"], "pick", "premise: {}", lab["prompt"]);
+    assert_eq!(other["prompt"]["kind"], "pick", "premise: {}", other["prompt"]);
+    let mut port = lab.clone();
+    port["prompt"]["title"] = serde_json::json!("Port: take O10, O34 — choose the payment");
+
+    let read = |state: &Value, reply: &Value| {
+        let mut r = Reached::default();
+        r.count(state, "1", reply);
+        (r.lab_picks, r.port)
+    };
+    assert_eq!(read(&lab, &moved(&lab)), (1, [0, 0]), "a Laboratory payment pick is one, and no Port pick");
+    assert_eq!(read(&other, &moved(&other)), (0, [0, 0]), "another pick is neither");
+    assert_eq!(read(&port, &moved(&port)), (0, [0, 1]), "a Port payment pick is the Port's, not the Laboratory's");
+    assert_eq!(read(&lab, &lab), (0, [0, 0]), "a pick whose reply moved no event was not taken");
+
+    let confirmed = |state: &Value, reply: &Value| {
+        let mut r = Reached::default();
+        r.count(state, "confirm", reply);
+        (r.port_confirms, r.port, r.chinatown_confirms, r.chinatown_sets)
+    };
+    let dock = wire("port_selected.json");
+    let town = wire("chinatown_selected.json");
+    assert_eq!(dock["prompt"]["kind"], "port", "premise: {}", dock["prompt"]);
+    assert_eq!(town["prompt"]["kind"], "chinatown", "premise: {}", town["prompt"]);
+    assert_eq!(town["prompt"]["chosen"], 1, "premise: {}", town["prompt"]);
+    let mut pair = dock.clone();
+    let second = pair["prompt"]["cards"]
+        .as_array_mut()
+        .expect("cards")
+        .iter_mut()
+        .find(|c| c["selected"] == false)
+        .expect("premise: a second card to switch on");
+    second["selected"] = serde_json::json!(true);
+
+    assert_eq!(confirmed(&dock, &dock), (0, [0, 0], 0, vec![]), "a Port confirm the reply refused is not taken");
+    assert_eq!(confirmed(&dock, &moved(&dock)), (1, [0, 0], 0, vec![]), "a Port confirm the reply took is one");
+    assert_eq!(confirmed(&pair, &pair), (0, [0, 0], 0, vec![]), "a refused pair is no pair");
+    assert_eq!(confirmed(&pair, &moved(&pair)), (1, [1, 0], 0, vec![]), "a pair taken is a Port confirm and a pair");
+    assert_eq!(confirmed(&town, &town), (0, [0, 0], 0, vec![]), "a Chinatown confirm the reply refused is not taken");
+    assert_eq!(confirmed(&town, &moved(&town)), (0, [0, 0], 1, vec![1]), "a Chinatown confirm the reply took is one");
+}
+
+/// **The three-player arm's table seed and its policy's stream seed, chosen
+/// by measurement** (2026-11-22, plan 2b's Task 7, after its review gave the
+/// `chinatown` arm its draw): under this policy stream, table seeds 1 to 30
+/// and 20261122 were each played to their winner in release, and five
+/// reached all six floors below — 4, 11, 12, 26 and 29. On each the thinnest
+/// floor reads 1; 11 and 12 have only one floor at 1, and 12 is the shortest
+/// game of the five. The others miss a Port payment pick, a Laboratory pick
+/// or both, but for 22, which misses only a set of two exchanges; 30 misses a
+/// set of two as well, and 28 and 30 a pair. The table is the task report's.
+const THREE_PLAYER_SEED: u64 = 12;
+const THREE_PLAYER_RNG: u64 = 0x5448_5245_4550_4C41; // "THREEPLA"
+
+/// **The three-player arm's input cap, sized from the LONGEST healthy game
+/// measured, not from the chosen one** (Task 7's re-review, N-1). The seed
+/// sweep behind [`THREE_PLAYER_SEED`] (this policy, table seeds 1 to 30 and
+/// 20261122, release, 2026-11-22) played all 31 games to a winner, and their
+/// loop passes (every line posted, every placement probe, every stuck
+/// `cancel` and every hot-seat re-read) ran from 2,141 — seed 12, the chosen
+/// seed and the SHORTEST of the 31 — to 8,194 (seed 25; then 8,170 at seed
+/// 27 and 7,201 at seed 20). The cap is three times that maximum, 24,582,
+/// rounded up to 25,000, as [`VS_BOT_CAP`] is about three times the longest
+/// game of its sample: a change that lengthens this game toward the sweep's
+/// range is not read as a failure. Nothing in the game is drawn from
+/// entropy, so seed 12 reads 2,141 on every run.
+const THREE_PLAYER_CAP: usize = 25_000;
+
+/// **The gate's third arm: a bot-free THREE-player game, one caller in every
+/// seat, played to a winner** (plan 2b, Task 7; plan 2a's "Owed by plan 2b").
+///
+/// The two arms above play two-player games, and that board has no
+/// Chinatown, so until this arm no whole game through the web layer had
+/// answered Chinatown's chooser. One identity holds all three seats — the
+/// walk's `wire4` shape — so every payload is the acting seat's and no bot
+/// draws OS entropy: the game is a function of [`THREE_PLAYER_SEED`] and
+/// [`THREE_PLAYER_RNG`], and its floors cannot flake (checked: two debug runs
+/// and a release run read the same counts and the same scores). It plays by
+/// [`choose`] with the placement probe and the stuck rule the other arms
+/// have, counts what the server took ([`Reached`]), and reads the result.
+///
+/// **The floors are READINGS, each set at one** (2026-11-22, measured before
+/// they were set): the game reads 8 Chinatown confirms, 6 of them sets of
+/// two exchanges and 2 of one, 11 Port confirms, 3 of them pairs, 1 Port
+/// payment pick and 2 Laboratory payment picks, over 2,141 inputs; seat 1
+/// wins, 87 to 54 and 50. About 7.5 s of a debug build and 0.6 s of a release
+/// one on the MacBook Air.
+#[tokio::test]
+async fn a_whole_three_player_game_answers_every_chooser_through_the_api() {
+    let reached = play_three(THREE_PLAYER_SEED, THREE_PLAYER_RNG).await;
+    let exchanged = reached.chinatown_sets.iter().filter(|&&n| n > 0).count();
+    assert!(exchanged >= 1, "no Chinatown set holding an exchange was confirmed: {reached:?}");
+    assert!(reached.multi_exchange_sets() >= 1, "no Chinatown set of two or more exchanges was confirmed: {reached:?}");
+    assert!(reached.port_confirms >= 1, "no Port take was confirmed: {reached:?}");
+    assert!(reached.port[0] >= 1, "no Port pair was confirmed: {reached:?}");
+    assert!(reached.port[1] >= 1, "no Port payment pick was opened: {reached:?}");
+    assert!(reached.lab_picks >= 1, "no Laboratory payment pick was opened: {reached:?}");
+}
+
+/// One three-player game at `seed` under the policy's stream `rng_seed`, played to
+/// its winner; what the choosers reached.
+async fn play_three(seed: u64, rng_seed: u64) -> Reached {
+    let api = Api::new();
+    let me = "red@wire.test";
+    let (status, table) = api
+        .call(
+            "POST",
+            "/api/games",
+            Some(serde_json::json!({
+                "players": 3, "colors": ["Red", "Blue", "Yellow"], "start_seat": 0,
+                "seed": seed,
+                "seats": [{ "user": me }, { "user": me }, { "user": me }],
+                "name": "three",
+                "id": "three",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{table}");
+    for seat in 0..3 {
+        let (status, kept) =
+            api.call("POST", "/api/games/three/keep", Some(serde_json::json!({ "seat": seat, "card": 1 }))).await;
+        assert_eq!(status, StatusCode::OK, "seat {seat}: {kept}");
+        if seat == 2 {
+            assert_eq!(kept["status"], "playing", "the last keep starts the game: {kept}");
+        }
+    }
+    let (status, mut state) = api.call("GET", "/api/games/three", None).await;
+    assert_eq!(status, StatusCode::OK, "{state}");
+    let tiles = state["frame"]["board"]["tiles"].as_array().expect("tiles").len();
+
+    let mut rng = Rng(rng_seed);
+    let mut inputs = 0usize;
+    let mut selections = 0usize;
+    let mut backed_out = 0usize;
+    let mut rereads = 0usize;
+    let mut reached = Reached::default();
+    let mut stuck = Stuck::default();
+    let mut placed_before: Option<u64> = None;
+    let started = std::time::Instant::now();
+
+    while state["over"] != Value::Bool(true) {
+        inputs += 1;
+        assert!(
+            inputs < THREE_PLAYER_CAP,
+            "the three-player game did not finish inside {THREE_PLAYER_CAP} inputs (seed {seed}): at {} events, deck {}, \
+             answering a `{}` prompt; reached {reached:?}; last state: {state}",
+            state["events"],
+            state["deck_remaining"],
+            state["prompt"]["kind"].as_str().unwrap_or("?"),
+        );
+        // **A move's reply is built for the seat that MOVED** (§5.1), so the
+        // reply to the line that ends a turn is that seat's `watching`. One
+        // caller holds every seat, and its next read is built for the seat to
+        // move (`client::viewer_seat`'s hot-seat arm), as a browser in the hot
+        // seat reads it.
+        if state["prompt"]["kind"] == "watching" {
+            let (status, next) = api.call("GET", "/api/games/three", None).await;
+            assert_eq!(status, StatusCode::OK, "{next}");
+            rereads += 1;
+            state = next;
+            continue;
+        }
+        if stuck.again(&state["prompt"]) {
+            let (status, next) =
+                api.call("POST", "/api/games/three/input", Some(serde_json::json!({ "line": "cancel" }))).await;
+            assert_eq!(status, StatusCode::OK, "backing out of a stuck picker (seed {seed}): {next}");
+            backed_out += 1;
+            state = next;
+            continue;
+        }
+        if state["prompt"]["kind"] == "place_a" {
+            let probed = probe_a_placement(&api, me, "three", &state, &mut rng, &mut placed_before, None).await;
+            if let Some(next) = probed {
+                selections += 1;
+                state = next;
+                continue;
+            }
+        }
+        let Some(line) = choose(&state, &mut rng) else { break };
+        let (status, next) =
+            api.call("POST", "/api/games/three/input", Some(serde_json::json!({ "line": line }))).await;
+        assert_eq!(status, StatusCode::OK, "input {line:?} was refused (seed {seed}): {next}");
+        reached.count(&state, &line, &next);
+        state = next;
+    }
+    let winner = state["scores"].clone();
+    eprintln!(
+        "three: seed={seed} rng={rng_seed:#x} tiles={tiles} inputs={inputs} events={} selections={selections} backed_out={backed_out} rereads={rereads} \
+         chinatown_confirms={} chinatown_sets={:?} multi_exchange_sets={} port_confirms={} port_pairs={} port_payment_picks={} lab_picks={} \
+         wall={:?} scores={winner}",
+        state["events"],
+        reached.chinatown_confirms,
+        reached.chinatown_sets,
+        reached.multi_exchange_sets(),
+        reached.port_confirms,
+        reached.port[0],
+        reached.port[1],
+        reached.lab_picks,
+        started.elapsed(),
+    );
+    assert_eq!(state["over"], true, "the game ends");
+    assert_eq!(state["prompt"]["kind"], "game_over", "and the prompt says so: {state}");
+    assert_eq!(state["scores"].as_array().map(Vec::len), Some(3), "all three seats are scored: {state}");
+    assert!(selections > 0, "the arm never selected an area, so the placement probe never ran");
+    // **Played to a WINNER**, read where a player reads it: the result names
+    // three standings and a winner whose standing says it won.
+    let (status, result) = api.call("GET", "/api/games/three/result", None).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let standings = result["standings"].as_array().expect("standings");
+    assert_eq!(standings.len(), 3, "three standings: {result}");
+    let winner = result["winner"].as_u64().unwrap_or_else(|| panic!("a winner: {result}"));
+    assert!(
+        standings.iter().any(|s| s["seat"] == winner && s["won"] == true),
+        "the winner's standing says it won: {result}",
+    );
+    reached
+}
 
 /// **What a watcher's payload must be, wherever it came from** (M6.3 §9.4).
 ///
@@ -765,6 +1191,8 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // weaker and true one. What says assistants really were placed is that the
     // game ENDED: a bot-free game in which nobody places never does.
     let mut selections = 0usize;
+    // What the choosers reached, counted on lines the server took — [`Reached`].
+    let mut reached = Reached::default();
     // The area the server last accepted an assistant in, tried first next time.
     // A CACHE over answers it already gave, never a rule: a miss falls back to
     // asking about every area in turn.
@@ -875,6 +1303,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
         // built for its CALLER, so it is the mover's seat even when the move
         // ended the turn and `to_move` has already moved on.
         assert_built_for(&next, mover, seat);
+        reached.count(&mine, &line, &next);
         state = next;
     }
 
@@ -896,6 +1325,7 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     // time — without this the paragraph above about a game that never places
     // would be describing something this arm does not do.
     assert!(selections > 0, "the arm never selected an area, so it never exercised a placement picker");
+    eprintln!("two people: port_pairs={} port_payment_picks={}", reached.port[0], reached.port[1]);
 
     // **The last position, where the game is over.** The loop reads a position
     // on its way round and so cannot read the one it leaves on; this is that
@@ -924,3 +1354,4 @@ async fn two_people_play_to_a_winner_and_each_sees_only_their_own_hand() {
     assert_eq!(status, StatusCode::OK, "{result}");
     assert_eq!(result["standings"].as_array().map(Vec::len), Some(2), "{result}");
 }
+

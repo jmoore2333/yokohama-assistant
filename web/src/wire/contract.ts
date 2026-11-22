@@ -56,14 +56,22 @@ import type {
   ChatAuthor,
   ChatMessage,
   ChatPage,
+  ChinatownRow,
+  ChooserAmount,
+  ChooserPreview,
+  ChurchKind,
   ClientState,
+  PortCard,
+  PortPreview,
   Counter,
   DealCard,
   DealingErrorBody,
   DealView,
   Events,
+  GoalsClaimedFixture,
   HouseFrame,
   GamesList,
+  HandPanel,
   IndexCard,
   IndexGroup,
   DecisionModel,
@@ -109,6 +117,15 @@ import areas from "./areas.json";
 import choiceAssistantMove from "./choice_AssistantMove.json";
 import choiceChurchSpace from "./choice_ChurchSpace.json";
 import choiceWarehouseTake from "./choice_WarehouseTake.json";
+import church from "./church.json";
+import churchSelected from "./church_selected.json";
+import churchLegal from "./church_legal.json";
+import chinatown from "./chinatown.json";
+import chinatownSelected from "./chinatown_selected.json";
+import port from "./port.json";
+import portSelected from "./port_selected.json";
+import portPair from "./port_pair.json";
+import labPick from "./lab_pick.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -123,6 +140,7 @@ import whyForeign from "./why_foreign.json";
 import error from "./error.json";
 import events from "./events.json";
 import houseFrame from "./house_frame.json";
+import goalsClaimed4p from "./goals_claimed_4p.json";
 import eventsDealing from "./events_dealing.json";
 import feeNonzero from "./fee_nonzero.json";
 import gameOver from "./game_over.json";
@@ -257,6 +275,15 @@ const _feeNonzero: Widen<ClientState> = feeNonzero;
 const _choiceAssistantMove: Widen<ClientState> = choiceAssistantMove;
 const _choiceChurchSpace: Widen<ClientState> = choiceChurchSpace;
 const _choiceWarehouseTake: Widen<ClientState> = choiceWarehouseTake;
+const _church: Widen<ClientState> = church;
+const _churchSelected: Widen<ClientState> = churchSelected;
+const _churchLegal: Widen<ClientState> = churchLegal;
+const _chinatown: Widen<ClientState> = chinatown;
+const _chinatownSelected: Widen<ClientState> = chinatownSelected;
+const _port: Widen<ClientState> = port;
+const _portSelected: Widen<ClientState> = portSelected;
+const _portPair: Widen<ClientState> = portPair;
+const _labPick: Widen<ClientState> = labPick;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -312,6 +339,10 @@ const _eventsDealing: Widen<Events> = eventsDealing;
 const _eventsOpen: Widen<Events> = eventsOpen;
 // The house frame, constructed by `wire_fixtures.rs` from `signal::house_frame`.
 const _houseFrame: Widen<HouseFrame> = houseFrame;
+// The claim band's fixture (issue #75), constructed by `wire_fixtures.rs`: a
+// fresh 4P position whose first card is claimed by seats 2, 0, 3, 1 in that
+// order, its second by seat 3 alone, its third by nobody.
+const _goalsClaimed4p: Widen<GoalsClaimedFixture> = goalsClaimed4p;
 // **The three payloads whose `seat` is null**, which is the M6.3 shape and the
 // reason that field became a union: a watcher holds no seat, so a type that
 // declared a number here would have been wrong about every one of these while
@@ -515,6 +546,15 @@ const _pFeeNonzero: PromptOf<"place_a"> = feeNonzero.prompt;
 const _pChoiceAssistantMove: PromptOf<"options"> = choiceAssistantMove.prompt;
 const _pChoiceWarehouseTake: PromptOf<"options"> = choiceWarehouseTake.prompt;
 const _pChoiceChurchSpace: PromptOf<"options"> = choiceChurchSpace.prompt;
+const _pChurch: PromptOf<"church"> = church.prompt;
+const _pChurchSelected: PromptOf<"church"> = churchSelected.prompt;
+const _pChurchLegal: PromptOf<"church"> = churchLegal.prompt;
+const _pChinatown: PromptOf<"chinatown"> = chinatown.prompt;
+const _pChinatownSelected: PromptOf<"chinatown"> = chinatownSelected.prompt;
+const _pPort: PromptOf<"port"> = port.prompt;
+const _pPortSelected: PromptOf<"port"> = portSelected.prompt;
+const _pPortPair: PromptOf<"port"> = portPair.prompt;
+const _pLabPick: PromptOf<"pick"> = labPick.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -561,6 +601,10 @@ void [
   _pPlaceBSelected, _pGameOver, _pWatching, _pLocked, _pFeeNonzero,
   _pSpectator, _pSpectatorOver,
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
+  _pChurch, _pChurchSelected, _pChurchLegal,
+  _pChinatown, _pChinatownSelected,
+  _pPort, _pPortSelected, _pPortPair,
+  _pLabPick,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -572,13 +616,15 @@ void [
   _tableOpen, _tableTwoOpen, _gamesOpen, _gamesNext, _open409, _join409NotOpen,
   _join403Locked, _join403Password, _join409Taken,
   _wrongSeat403, _undoRefused403,
-  _events, _eventsDealing, _eventsOpen, _houseFrame,
+  _events, _eventsDealing, _eventsOpen, _houseFrame, _goalsClaimed4p,
   _spectator, _spectatorOver, _spectatorAtK, _gamesPlaying, _tableWatchable,
   _watch403Locked, _unlock403, _unlock409Open, _record409,
   _ports, _labs, _areas, _areas4p, _log, _atK, _run, _artManifest, _identityCases, _idCases, _seedCases, _feeNonzero,
   _archivePost, _archivePostIdentical, _archivePostAbandoned,
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
-  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake,
+  _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected, _churchLegal,
+  _chinatown, _chinatownSelected,
+  _port, _portSelected, _portPair, _labPick,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -635,12 +681,31 @@ const DECISION = [
   "not_offered", "not_offered_suppressed", "viewer_is_deciding",
 ] as const;
 const OPTION_ROW = ["number", "words", "opens_picker", "fee"] as const;
+const CHURCH_KIND = ["number", "good", "amount", "words", "have", "selected", "offered"] as const;
+const CHOOSER_PREVIEW = ["legal", "words"] as const;
+const CHINATOWN_ROW = ["number", "sells", "spend", "gain", "words", "count", "can_add", "offered"] as const;
+// The two chooser arms' own tops and the `{good, amount}` a stock entry, a
+// spend and a gain carry (plan 2a's fix wave, W-6): a field added to
+// `ChurchModel` or `ChinatownModel` reaches the acting seat, so it is pinned
+// here as the rows are, not left to a human reading the regenerated diff.
+const CHURCH_PROMPT = ["kind", "kinds", "preview", "offered_faiths"] as const;
+const CHINATOWN_PROMPT = ["kind", "max_exchanges", "chosen", "stock", "rows", "preview"] as const;
+// The Port's arm (plan 2b): its top, a card and its preview, pinned as the
+// other two arms' are.
+const PORT_PROMPT = ["kind", "board_b", "max_cards", "cards", "preview"] as const;
+const PORT_CARD = ["number", "id", "zone", "printed", "words", "selected", "can_add"] as const;
+const PORT_PREVIEW = ["legal", "ways"] as const;
+const CHOOSER_AMOUNT = ["good", "amount"] as const;
 const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
   "shophouses", "trading_houses", "technologies", "mercenaries_unused",
   "mercenaries_used", "five_power_tokens", "president", "orders_in_hand",
-  "orders_filled", "is_current", "is_bot", "hand_hidden",
+  "orders_filled", "is_current", "is_bot", "hand_hidden", "flags",
 ] as const;
+// The viewer's own hand (issue #76). A root of its own because it gained a
+// field, `flags_in_hand`, that must ride HERE and never on a seat's row: the
+// row reaches every reader, and the hand panel is masked.
+const HAND = ["seat", "hidden", "cards", "card_count", "flags_in_hand"] as const;
 const TILE = [
   "area", "area_type", "grid_position", "token", "site", "presidents",
   "has_station", "assistants", "reachable", "canal_crossings",
@@ -698,6 +763,8 @@ const GAMES_LIST = ["games", "next"] as const;
 // do, and the only ones typed for a client to branch on rather than display.
 const DEALING_ERROR = ["error", "status"] as const;
 const HOUSE_FRAME = ["seq", "chat", "rev"] as const;
+// The four-claim fixture's two panels (issue #75), a constructed root.
+const GOALS_CLAIMED = ["achievements", "players"] as const;
 const EVENTS = ["events", "to_move", "status", "your_turn", "chat", "chat_rev"] as const;
 const DEAL_CARD = ["card", "keep_score"] as const;
 const API_ERROR = ["error"] as const;
@@ -749,7 +816,17 @@ const _cs: KeysOf<ClientState, typeof CLIENT_STATE> = CLIENT_STATE;
 const _fr: KeysOf<FrameModel, typeof FRAME> = FRAME;
 const _de: KeysOf<DecisionModel, typeof DECISION> = DECISION;
 const _or: KeysOf<OptionRow, typeof OPTION_ROW> = OPTION_ROW;
+const _chk: KeysOf<ChurchKind, typeof CHURCH_KIND> = CHURCH_KIND;
+const _chp: KeysOf<ChooserPreview, typeof CHOOSER_PREVIEW> = CHOOSER_PREVIEW;
+const _ctr: KeysOf<ChinatownRow, typeof CHINATOWN_ROW> = CHINATOWN_ROW;
+const _chq: KeysOf<Extract<PromptState, { kind: "church" }>, typeof CHURCH_PROMPT> = CHURCH_PROMPT;
+const _ctq: KeysOf<Extract<PromptState, { kind: "chinatown" }>, typeof CHINATOWN_PROMPT> = CHINATOWN_PROMPT;
+const _cha: KeysOf<ChooserAmount, typeof CHOOSER_AMOUNT> = CHOOSER_AMOUNT;
+const _ptq: KeysOf<Extract<PromptState, { kind: "port" }>, typeof PORT_PROMPT> = PORT_PROMPT;
+const _ptc: KeysOf<PortCard, typeof PORT_CARD> = PORT_CARD;
+const _ptp: KeysOf<PortPreview, typeof PORT_PREVIEW> = PORT_PREVIEW;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
+const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
 const _tr: KeysOf<TracksPanel, typeof TRACKS> = TRACKS;
 const _po: KeysOf<PortsPanel, typeof PORTS> = PORTS;
@@ -769,6 +846,7 @@ const _gl: KeysOf<GamesList, typeof GAMES_LIST> = GAMES_LIST;
 const _d4: KeysOf<DealingErrorBody, typeof DEALING_ERROR> = DEALING_ERROR;
 const _ev: KeysOf<Events, typeof EVENTS> = EVENTS;
 const _hfk: KeysOf<HouseFrame, typeof HOUSE_FRAME> = HOUSE_FRAME;
+const _gck: KeysOf<GoalsClaimedFixture, typeof GOALS_CLAIMED> = GOALS_CLAIMED;
 const _dc: KeysOf<DealCard, typeof DEAL_CARD> = DEAL_CARD;
 const _er: KeysOf<ApiErrorBody, typeof API_ERROR> = API_ERROR;
 const _sr: KeysOf<SuggestResponse, typeof SUGGEST_RESPONSE> = SUGGEST_RESPONSE;
@@ -801,8 +879,8 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _pl, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
-      _ev, _hfk,
+void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _chq, _ctq, _cha, _ptq, _ptc, _ptp, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+      _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
       _tl, _ct, _ig, _ic, _hf, _rn, _av,
@@ -815,7 +893,17 @@ export const KEYS = {
   historicalFrame: HISTORICAL_FRAME,
   decision: DECISION,
   optionRow: OPTION_ROW,
+  churchKind: CHURCH_KIND,
+  chooserPreview: CHOOSER_PREVIEW,
+  chinatownRow: CHINATOWN_ROW,
+  churchPrompt: CHURCH_PROMPT,
+  chinatownPrompt: CHINATOWN_PROMPT,
+  portPrompt: PORT_PROMPT,
+  portCard: PORT_CARD,
+  portPreview: PORT_PREVIEW,
+  chooserAmount: CHOOSER_AMOUNT,
   player: PLAYER,
+  hand: HAND,
   tile: TILE,
   tracks: TRACKS,
   ports: PORTS,
@@ -833,6 +921,7 @@ export const KEYS = {
   gamesList: GAMES_LIST,
   events: EVENTS,
   houseFrame: HOUSE_FRAME,
+  goalsClaimed: GOALS_CLAIMED,
   dealingError: DEALING_ERROR,
   dealCard: DEAL_CARD,
   apiError: API_ERROR,
@@ -911,6 +1000,31 @@ export const wire = {
   choiceAssistantMove: as<ClientState>(choiceAssistantMove),
   choiceChurchSpace: as<ClientState>(choiceChurchSpace),
   choiceWarehouseTake: as<ClientState>(choiceWarehouseTake),
+  /** The Church chooser as it opens (plan 2a): nothing selected. */
+  church: as<ClientState>(church),
+  /** The same chooser after its first kind is switched on. */
+  churchSelected: as<ClientState>(churchSelected),
+  /** The first chooser on the walk whose preview is legal: copper and silk on,
+   *  with `describe`'s words for the listed move they name. */
+  churchLegal: as<ClientState>(churchLegal),
+  /** The Chinatown chooser as it opens (plan 2a, on the four-player table):
+   *  nothing chosen. */
+  chinatown: as<ClientState>(chinatown),
+  /** The same chooser after one copper sale, a listed set. */
+  chinatownSelected: as<ClientState>(chinatownSelected),
+  /** The Port chooser as it opens (plan 2b), at the walk's one folded Port
+   *  prompt whose draw is a pair with more than two cards in reach (event
+   *  1024): four cards, nothing selected. */
+  port: as<ClientState>(port),
+  /** The same chooser with the drawn pair's first card on: legal, one way. */
+  portSelected: as<ClientState>(portSelected),
+  /** The same chooser with both cards on: legal, one way, and no other card
+   *  can be switched on. */
+  portPair: as<ClientState>(portPair),
+  /** The Laboratory's folded title opened (plan 2b, Task 3), at the walk's
+   *  one folded Laboratory prompt (event 50): both copies of Ball, one row
+   *  each, in the REPL's ordinary numbered pick. */
+  labPick: as<ClientState>(labPick),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -932,6 +1046,10 @@ export const wire = {
   eventsDealing: as<Events>(eventsDealing),
   eventsOpen: as<Events>(eventsOpen),
   houseFrame: as<HouseFrame>(houseFrame),
+  /** Not a route's payload: a 4P position's Achievements and Players panels,
+   *  built in process, its first card claimed by seats 2, 0, 3, 1 in that
+   *  order (issue #75). See that fixture's doc in `wire_fixtures.rs`. */
+  goalsClaimed4p: as<GoalsClaimedFixture>(goalsClaimed4p),
   spectator: as<ClientState>(spectator),
   spectatorOver: as<ClientState>(spectatorOver),
   spectatorAtK: as<HistoricalFrame>(spectatorAtK),
@@ -1040,5 +1158,9 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.placeB, wire.placeBSelected, wire.gameOver, wire.watching, wire.locked,
   wire.refused, wire.feeNonzero,
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
+  wire.church, wire.churchSelected, wire.churchLegal,
+  wire.chinatown, wire.chinatownSelected,
+  wire.port, wire.portSelected, wire.portPair,
+  wire.labPick,
   wire.spectator, wire.spectatorOver,
 ];

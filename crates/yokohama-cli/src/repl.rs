@@ -30,16 +30,22 @@ pub struct Repl {
     /// except `save`/`log`/`quit`, so a desynced session can still be
     /// inspected and saved for postmortem but never played further.
     pub(crate) locked: bool,
-    /// An in-progress Movement sub-prompt (route pick or guided retreat), or
-    /// `None`. A sibling of `pending` rather than a `Pending` variant: `pending`
+    /// An in-progress sub-prompt, or `None`: any of [`SubPrompt`]'s — the
+    /// Movement phase's route pick and guided retreat, Placement's two
+    /// pickers, the area-action choosers (the Church's, Chinatown's and the
+    /// Port's), a numbered pick, the guided reveal. A sibling of `pending`
+    /// rather than a `Pending` variant: `pending`
     /// models LIVE-mode reveal collection (always `None` in simulation, keyed to
     /// hidden-card entry), whereas sub-prompts are pure ENTRY HELPERS over the
     /// engine's own legal list that apply in BOTH modes and never collect hidden
     /// information. The two are structurally mutually exclusive -- a sub-prompt
     /// only ever starts from a clean main prompt (`pick_option` runs only when
-    /// `pending` is `None`), and committing out of one never draws a card or
-    /// claims a token (President moves / retreats touch neither deck), so
-    /// `commit` never parks a fresh `Pending` behind a sub-prompt.
+    /// `pending` is `None`), and every sub-prompt that names a move is closed
+    /// BEFORE `commit` applies it, so `commit` never parks a fresh `Pending` behind a
+    /// sub-prompt. That order is load-bearing at the Port, whose take draws a
+    /// card in live mode and parks a reveal (the Port's chooser and its
+    /// payment pick both close first; plan 2b's
+    /// `a_live_port_take_through_the_chooser_parks_at_its_reveal`).
     pub sub: SubPrompt,
     /// Set true once the FIRST `board` render of a session has printed the
     /// wide-board width note (S3), so it prints exactly once. Lives on the
@@ -150,14 +156,20 @@ impl ViewSurface {
     }
 }
 
-/// One line in the Movement phase's collapsed numbered list
-/// (docs/plans/2026-07-18-phase2-cli-driver-design.md, destination-first).
-/// Outside Movement -- and inside it whenever a choice is
-/// queued -- every option is a bare `Direct`, so the list is byte-identical to
-/// the ungrouped `legal()` rendering; the two collapsing variants only ever
-/// appear in the Movement main list. The legal list stays the SOLE authority:
-/// `Route`/`Retreat` are entry helpers whose selections are exact-matched
-/// against `legal()` before anything commits (`find_placement_match`).
+/// One line in a main prompt's numbered list. Four lists collapse a family
+/// behind one entry: the Movement main list (destination-first,
+/// docs/plans/2026-07-18-phase2-cli-driver-design.md: `Route`, `Retreat`),
+/// the Placement main list (`PlacementA`, `PlacementB`), a queued
+/// assistant-move choice (`MoveFrom`), and the AreaAction main list with no
+/// choice queued (`Church`, `Chinatown`, `Port` and `Laboratory`, cycle 2's
+/// area-action folds, docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
+/// else every option is a bare `Direct`, so the list is byte-identical to the
+/// ungrouped `legal()` rendering. The legal list stays the SOLE authority:
+/// every collapsing variant is an entry helper whose selection is
+/// exact-matched against `legal()` before anything commits
+/// (`find_placement_match`, `chooser::church_match`, `chooser::chinatown_match`,
+/// `chooser::port_matches`), or a numbered pick over a captured slice of it
+/// (`Route`, `MoveFrom`, `Laboratory`).
 enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
@@ -182,11 +194,36 @@ enum PromptOption {
     /// A pending assistant-move choice's options for ONE source, collapsed
     /// (>1 destination); selecting it opens a numbered destination pick.
     MoveFrom { from: MoveSource, moves: Vec<Move> },
+    /// The Church's payment family collapsed: more than one `AreaAction::Church`
+    /// move is listed. `count` is how many.
+    Church { count: usize },
+    /// Chinatown's exchange family collapsed: more than one
+    /// `AreaAction::Chinatown` move is listed. `count` is how many; `longest`
+    /// is the most exchanges in one of them, read off the list.
+    Chinatown { count: usize, longest: usize },
+    /// The Port's take family collapsed (plan 2b): more than one
+    /// `AreaAction::Port` move is listed. `reach` is how many distinct cards
+    /// the listed takes name (`chooser::port_reach`); `pairs` is whether some
+    /// listed take names two (`chooser::port_most_cards`), each read off the
+    /// list.
+    Port { reach: usize, pairs: bool },
+    /// One technology's Laboratory rows folded (plan 2b): more than one
+    /// listed `AreaAction::Laboratory` move acquires a card of the title
+    /// `title` (`describe::tech_name`'s). `moves` is every one of them in list
+    /// order — both copies' rows when the board holds both, wherever they
+    /// stand in the list — and selecting the entry opens the numbered pick
+    /// over them.
+    Laboratory { title: String, moves: Vec<Move> },
 }
 
-/// An in-progress Movement sub-prompt. Both variants are ENTRY HELPERS: whatever
-/// they assemble is exact-matched against `session.legal()` before `commit`, so
-/// neither can construct-and-apply anything the engine didn't offer.
+/// An in-progress sub-prompt, from any of three phases: Movement's route pick
+/// and guided retreat, Placement's two pickers, the AreaAction phase's Church,
+/// Chinatown and Port choosers, plus the numbered pick a queued assistant-move
+/// choice or a Telegram bonus opens and the guided `reveal` flow. Every variant but
+/// `Reveal` is an ENTRY HELPER over the legal list: whatever it assembles or
+/// names is exact-matched against `session.legal()` before `commit`, so none
+/// can construct-and-apply anything the engine didn't offer (`Reveal` records
+/// a standalone reveal event instead; its own doc says why).
 pub enum SubPrompt {
     None,
     /// A numbered pick over a captured slice of the legal list (route labels,
@@ -230,6 +267,34 @@ pub enum SubPrompt {
     /// with the other guided entry helpers. It is live-only for the ordinary
     /// reason: no seat has a hidden starting order in a simulation.
     Reveal { seats: Vec<PlayerId>, seat: Option<PlayerId> },
+    /// The Church chooser: which of `chooser::CHURCH_KINDS` are switched on.
+    /// A number toggles a kind (switching ON one no listed move pays is
+    /// refused); `confirm` commits `chooser::church_match`'s listed move, or
+    /// refuses and keeps the selection.
+    Church { selected: [bool; 6] },
+    /// The Chinatown chooser: how many of each of `ChinatownOffer::all()`'s
+    /// nine exchanges are chosen. A number adds one (refused unless the list
+    /// holds the selection with it added), `back <number>` takes one back;
+    /// `confirm` commits `chooser::chinatown_match`'s listed move — the
+    /// engine's own order, never the order typed — or refuses and keeps the
+    /// selection.
+    Chinatown { counts: [u8; 9] },
+    /// The Port chooser (plan 2b): the cards switched on, in the order they
+    /// were switched on. A card's number toggles it (switching ON one the list
+    /// holds no take with is refused); `confirm` commits the one listed move
+    /// `chooser::port_matches` finds, or opens the numbered pick over the two
+    /// ways to pay, or refuses and keeps the selection.
+    Port { selected: Vec<OrderCardId> },
+}
+
+/// How an area-action chooser is left ([`Repl::leave_chooser`]).
+enum LeaveChooser {
+    /// `quit`: the chooser stays as it is.
+    Quit,
+    /// `cancel`: closed, with the chooser's own line.
+    Cancel(&'static str),
+    /// `confirm` with exactly one listed move: closed, then committed.
+    Commit(Move),
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -707,12 +772,16 @@ impl Repl {
     /// draws them itself.
     ///
     /// **This is the list a number means.** `pick_option` indexes THESE
-    /// entries, and outside `AdditionalAction`/`AreaAction`/etc. they are not
-    /// one-per-legal-move: Movement collapses to one entry per destination with
-    /// the whole retreat family folded into one row, Placement collapses to
-    /// Option A / Option B / place-none, and a queued `AssistantMove` groups by
-    /// source. A consumer that numbered `DecisionModel::options` instead —
-    /// which IS one per legal move — would send back a number meaning a
+    /// entries, and in four lists they are not one-per-legal-move: Movement
+    /// collapses to one entry per destination with the whole retreat family
+    /// folded into one row, Placement collapses to Option A / Option B /
+    /// place-none, a queued `AssistantMove` groups by source, and the
+    /// AreaAction list folds the Church's payments, Chinatown's exchange
+    /// sets and the Port's takes into one entry each when more than one is
+    /// listed, and the Laboratory's rows into one entry per technology that
+    /// has more than one. A consumer
+    /// that numbered `DecisionModel::options` instead — which IS one per
+    /// legal move — would send back a number meaning a
     /// different move, and in the Movement phase it would usually still be a
     /// legal one. That is the failure this accessor exists to prevent.
     ///
@@ -731,7 +800,7 @@ impl Repl {
     fn display_rows(&self, legal: &[Move]) -> Vec<render::DisplayRow> {
         let state = self.session.state();
         let rules = self.session.rules();
-        Self::group_options(state, legal.to_vec())
+        Self::group_options(state, rules, legal.to_vec())
             .iter()
             .map(|opt| render::DisplayRow {
                 mv: match opt {
@@ -821,8 +890,10 @@ impl Repl {
         if self.overlay.is_some() {
             return self.step_overlay(&words);
         }
-        // `?` opens the card index from ANY prompt -- the main list, a
-        // Movement sub-prompt, or mid-reveal-capture. Intercepted HERE, ahead
+        // `?` opens the card index from ANY prompt -- the main list, any
+        // sub-prompt (a route pick, a guided retreat, a placement picker, an
+        // area-action chooser, a numbered pick), or mid-reveal-capture.
+        // Intercepted HERE, ahead
         // of both capture branches below, because that is the whole point of
         // §0.6: the index is needed most at the moment a capture is asking
         // which card is in a slot, and both of those loops would otherwise
@@ -859,10 +930,12 @@ impl Repl {
                 return self.open_index(kind);
             }
         }
-        // A Movement sub-prompt (route pick / guided retreat) captures input the
-        // same way the reveal collector does -- checked AFTER the lockdown gate
-        // above, so lockdown wins (entering or continuing a sub-prompt while
-        // locked is refused exactly like a move). Structurally exclusive with the
+        // A sub-prompt (any of `SubPrompt`'s: a route pick, a guided retreat, a
+        // placement picker, an area-action chooser, a numbered pick, the guided
+        // reveal) captures input the same way the reveal collector does --
+        // checked AFTER the lockdown gate above, so lockdown wins (entering or
+        // continuing a sub-prompt while locked is refused exactly like a
+        // move). Structurally exclusive with the
         // `pending` reveal branch below: a sub-prompt only ever starts from a
         // clean main prompt (see `SubPrompt`'s doc comment).
         if !matches!(self.sub, SubPrompt::None) {
@@ -1019,9 +1092,11 @@ impl Repl {
             // still there when it closes.
             text.push_str(&self.overlay_text());
         } else if !matches!(self.sub, SubPrompt::None) {
-            // Inside a Movement sub-prompt: append the sub-prompt screen (route
-            // list / current recovery question / confirm line) instead of the
-            // main numbered list -- symmetric with the `pending` reveal branch.
+            // Inside a sub-prompt: append its screen (a pick list, the current
+            // recovery question or confirm line, a placement picker's
+            // directory and preview, a chooser's rows and preview,
+            // the reveal menu) instead of the main numbered list -- symmetric
+            // with the `pending` reveal branch.
             text.push_str(&self.sub_prompt_text());
         } else if matches!(self.pending, Pending::None) {
             text.push_str(&self.prompt());
@@ -1176,14 +1251,40 @@ impl Repl {
                 };
                 self.enter_pick_subprompt(format!("Assistant destinations from {from_label}"), moves)
             }
+            // No line of its own: the screen's first line says what to do.
+            Some(PromptOption::Church { .. }) => {
+                self.sub = SubPrompt::Church { selected: [false; 6] };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
+            Some(PromptOption::Chinatown { .. }) => {
+                self.sub = SubPrompt::Chinatown { counts: [0; 9] };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
+            Some(PromptOption::Port { .. }) => {
+                self.sub = SubPrompt::Port { selected: Vec::new() };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
+            // The REPL's existing numbered pick, titled as plan 2b's "The
+            // words" say (without a colon: the pick prints one).
+            Some(PromptOption::Laboratory { title, moves }) => {
+                self.enter_pick_subprompt(format!("Laboratory: acquire {title} — choose the payment"), moves)
+            }
             None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
 
-    /// Build the numbered entries for the current prompt. Outside the Movement
-    /// phase -- and inside it while a choice is queued -- every legal move is a
-    /// bare `Direct` (byte-identical to the old ungrouped rendering). In the
-    /// Movement main list it collapses the family
+    /// Build the numbered entries for the current prompt. Outside the
+    /// Movement, Placement and AreaAction main lists and a queued
+    /// assistant-move choice, every legal move is a bare `Direct`
+    /// (byte-identical to the old ungrouped rendering); Placement, the
+    /// assistant-move choice and AreaAction group as `group_options` routes
+    /// them (AreaAction folds the Church's payments, Chinatown's exchange
+    /// sets and the Port's takes, and the Laboratory's rows per technology,
+    /// `group_area_action`). In
+    /// the Movement main list it collapses the family
     /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
     /// label, else the single move `Direct`), each `PlacePresident`/other move
@@ -1192,7 +1293,7 @@ impl Repl {
     /// variant, which stays `Direct`). Single pass over `legal()` into a
     /// `BTreeMap` -- no per-keystroke rescans beyond the one `legal()` call.
     fn display_options(&self) -> Vec<PromptOption> {
-        Self::group_options(self.session.state(), self.session.legal())
+        Self::group_options(self.session.state(), self.session.rules(), self.session.legal())
     }
 
     /// [`Self::display_options`]'s body, over a legal list the caller already
@@ -1200,7 +1301,7 @@ impl Repl {
     /// the decision zone for the `◈` marks and the near-miss rows — one
     /// enumeration per prompt, and no chance of the entries and the marks
     /// reading two different lists.
-    fn group_options(state: &GameState, legal: Vec<Move>) -> Vec<PromptOption> {
+    fn group_options(state: &GameState, rules: &Rules, legal: Vec<Move>) -> Vec<PromptOption> {
         // A pending AssistantMove choice groups its options by SOURCE (Task
         // 6 picker) -- checked ahead of phase, same priority order the
         // deciding line/hint use.
@@ -1211,10 +1312,96 @@ impl Repl {
             match state.turn_phase {
                 TurnPhase::Movement => return Self::group_movement(legal),
                 TurnPhase::Placement => return Self::group_placement(legal),
+                // A mercenary's sub-turn included: it runs in this phase.
+                TurnPhase::AreaAction => return Self::group_area_action(legal, &rules.techs),
                 _ => {}
             }
         }
         legal.into_iter().map(PromptOption::Direct).collect()
+    }
+
+    /// The area-action main list: a family with more than one listed move
+    /// becomes one entry at its first move's place; every other move stays `Direct`.
+    ///
+    /// The Church's payments and Chinatown's exchange sets are folded (plan
+    /// 2a), and the Port's takes (plan 2b). A family with one listed move, or
+    /// none, reads exactly as the ungrouped list did (design §4.4), so "Enter
+    /// applies the only option" stays true; the decline keeps its own place,
+    /// last, as the engine lists it. Chinatown's entry carries the most
+    /// exchanges in one listed set, the Port's how many cards the listed takes
+    /// name and whether one of them takes two, each counted off the list.
+    ///
+    /// **The Laboratory folds per technology, by title** (plan 2b, design
+    /// §5.5), which is why `techs` is here: its rows are grouped by
+    /// `describe::tech_name`, a title with one listed row stays that direct
+    /// row, and a title with more becomes one entry at the place of its FIRST
+    /// row, holding every row of the title in list order. By title and not by
+    /// card, because both copies of a title can be on one board, and the
+    /// engine lists a board in slot order, so another title's rows can stand
+    /// between the two copies' (measured, plan 2b): one entry over both,
+    /// whose pick shows each row in the words it carried. Those words name
+    /// each copy's slot when the acting board holds both (`describe_move`,
+    /// plan 2b's Task 3b), so the two copies' rows never read alike, even
+    /// where what is paid for each is the same.
+    fn group_area_action(legal: Vec<Move>, techs: &TechRegistry) -> Vec<PromptOption> {
+        let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
+        let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
+        let port = legal.iter().filter(|mv| crate::chooser::port_cards(mv).is_some()).count();
+        let lab_title = |mv: &Move| match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } => {
+                Some(describe::tech_name(*card_id, techs))
+            }
+            _ => None,
+        };
+        // Each title's listed rows, in list order, titles in the order they
+        // first appear.
+        let mut labs: Vec<(String, Vec<Move>)> = Vec::new();
+        for mv in &legal {
+            if let Some(title) = lab_title(mv) {
+                match labs.iter_mut().find(|(t, _)| *t == title) {
+                    Some((_, moves)) => moves.push(mv.clone()),
+                    None => labs.push((title, vec![mv.clone()])),
+                }
+            }
+        }
+        let mut lab_entered: Vec<String> = Vec::new();
+        // The chooser's own heading reads the same function (plan 2a's fix
+        // wave, L6): the entry's "up to K" and the heading's cannot disagree.
+        let longest = crate::chooser::longest_exchange_set(&legal);
+        // The same for the Port's "1 card, or 2": `port_text` reads the
+        // model's `max_cards`, which is this function over the same list.
+        let (reach, pairs) =
+            (crate::chooser::port_reach(&legal).len(), crate::chooser::port_most_cards(&legal) >= 2);
+        let mut out = Vec::new();
+        let (mut church_entered, mut chinatown_entered, mut port_entered) = (false, false, false);
+        for mv in legal {
+            if church > 1 && crate::chooser::church_flags(&mv).is_some() {
+                if !church_entered {
+                    out.push(PromptOption::Church { count: church });
+                    church_entered = true;
+                }
+            } else if chinatown > 1 && crate::chooser::chinatown_counts(&mv).is_some() {
+                if !chinatown_entered {
+                    out.push(PromptOption::Chinatown { count: chinatown, longest });
+                    chinatown_entered = true;
+                }
+            } else if port > 1 && crate::chooser::port_cards(&mv).is_some() {
+                if !port_entered {
+                    out.push(PromptOption::Port { reach, pairs });
+                    port_entered = true;
+                }
+            } else if let Some((title, moves)) =
+                lab_title(&mv).and_then(|t| labs.iter().find(|(x, moves)| *x == t && moves.len() > 1))
+            {
+                if !lab_entered.contains(title) {
+                    out.push(PromptOption::Laboratory { title: title.clone(), moves: moves.clone() });
+                    lab_entered.push(title.clone());
+                }
+            } else {
+                out.push(PromptOption::Direct(mv));
+            }
+        }
+        out
     }
 
     /// Movement main-list grouping (destination-first,
@@ -1367,6 +1554,15 @@ impl Repl {
                     MoveSource::Area(a) => describe::area_label_upper(state, *a),
                 };
                 format!("Move an assistant from {from_label} — {} destinations", moves.len())
+            }
+            PromptOption::Church { count } => format!("Church — choose what to pay ({count} payment sets)"),
+            PromptOption::Chinatown { count, longest } => {
+                format!("Chinatown — choose exchanges (up to {longest}; {count} combinations)")
+            }
+            PromptOption::Port { reach, pairs: true } => format!("Port — take 1 or 2 order cards ({reach} in reach)"),
+            PromptOption::Port { reach, pairs: false } => format!("Port — take 1 order card ({reach} in reach)"),
+            PromptOption::Laboratory { title, moves } => {
+                format!("Laboratory: acquire {title} — {} ways to pay", moves.len())
             }
         }
     }
@@ -1530,6 +1726,9 @@ impl Repl {
             SubPrompt::PlaceA { .. } => self.step_place_a(words),
             SubPrompt::PlaceB { .. } => self.step_place_b(words),
             SubPrompt::Reveal { .. } => self.step_reveal(words),
+            SubPrompt::Church { .. } => self.step_church(words),
+            SubPrompt::Chinatown { .. } => self.step_chinatown(words),
+            SubPrompt::Port { .. } => self.step_port(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
@@ -1706,7 +1905,13 @@ impl Repl {
             | SubPrompt::Pick { .. }
             | SubPrompt::Retreat { .. }
             | SubPrompt::PlaceA { .. }
-            | SubPrompt::PlaceB { .. } => None,
+            | SubPrompt::PlaceB { .. }
+            // A chooser records nothing: the Church's and Chinatown's ask
+            // about goods, and `?` over the Port's opens the order index as
+            // a read-only view, which is the registry its cards are in.
+            | SubPrompt::Church { .. }
+            | SubPrompt::Chinatown { .. }
+            | SubPrompt::Port { .. } => None,
         }
     }
 
@@ -2337,6 +2542,265 @@ impl Repl {
         }
     }
 
+    /// Church chooser input (plan 2a, "The words"): a number 1 to 6 switches
+    /// that kind; switching ON a kind no listed move pays is refused and the
+    /// selection kept, switching off is always taken. `confirm` closes the
+    /// chooser and resets the page and THEN commits the listed move whose
+    /// flags equal the selection, in `step_place_a`'s order — `out` appends
+    /// the main prompt only once no sub-prompt is open, so only this order
+    /// makes the reply read as the old row's did; with no match it refuses
+    /// and keeps the selection. `cancel` closes it. Every "offered" and every
+    /// match is a lookup in `session.legal()` (`chooser`), never a rule.
+    fn step_church(&mut self, words: &[&str]) -> StepOutput {
+        let selected = match &self.sub {
+            SubPrompt::Church { selected } => *selected,
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Church
+        };
+        match words {
+            ["cancel"] => self.leave_chooser(LeaveChooser::Cancel("Church payment cancelled — back to the main options.")),
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
+            ["confirm"] => match crate::chooser::church_match(&self.session.legal(), selected) {
+                Some(mv) => self.leave_chooser(LeaveChooser::Commit(mv)),
+                None => self.out(
+                    "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                    false,
+                ),
+            },
+            [tok] if !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit()) => {
+                let Some(i) = tok.parse::<usize>().ok().filter(|n| (1..=6).contains(n)).map(|n| n - 1) else {
+                    return self.out("! pick a kind 1-6, 'confirm', or 'cancel'".to_string(), false);
+                };
+                if !selected[i] {
+                    let model = crate::chooser::church_model(
+                        self.session.state(),
+                        self.session.rules(),
+                        &self.session.legal(),
+                        selected,
+                    );
+                    if !model.kinds[i].offered {
+                        return self.out(
+                            format!("! {} is not in any payment the list offers here", model.kinds[i].words),
+                            false,
+                        );
+                    }
+                }
+                if let SubPrompt::Church { selected } = &mut self.sub {
+                    selected[i] = !selected[i];
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! toggle a kind by number, 'confirm', or 'cancel' (cancel first to use views/help)".to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// Chinatown chooser input (plan 2a, "The words"): a number 1 to 9 adds
+    /// one of that exchange, taken only when the list holds the selection with
+    /// it added (so selling first is what makes a purchase addable); `back N`
+    /// takes one of exchange N back when one is chosen, and may leave a
+    /// selection the list does not hold, which `confirm` then refuses.
+    /// `confirm` closes the chooser and THEN commits `chinatown_match`'s
+    /// listed move, in `step_church`'s order and for its reason — the move as
+    /// the engine listed it, never one built from the counts or the order
+    /// typed. Bare `back` is refused, as the pickers refuse it. Every
+    /// "can add" and every match is a lookup in `session.legal()`.
+    fn step_chinatown(&mut self, words: &[&str]) -> StepOutput {
+        let counts = match &self.sub {
+            SubPrompt::Chinatown { counts } => *counts,
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Chinatown
+        };
+        const RANGE: &str = "! pick an exchange 1-9, 'back <number>', 'confirm', or 'cancel'";
+        let digits = |tok: &str| !tok.is_empty() && tok.chars().all(|c| c.is_ascii_digit());
+        let row = |tok: &str| tok.parse::<usize>().ok().filter(|n| (1..=9).contains(n)).map(|n| n - 1);
+        match words {
+            ["cancel"] => {
+                self.leave_chooser(LeaveChooser::Cancel("Chinatown exchanges cancelled — back to the main options."))
+            }
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
+            ["confirm"] if counts.iter().all(|&n| n == 0) => {
+                self.out("! add an exchange first, or 'cancel'".to_string(), false)
+            }
+            ["confirm"] => match crate::chooser::chinatown_match(&self.session.legal(), counts) {
+                Some(mv) => self.leave_chooser(LeaveChooser::Commit(mv)),
+                None => self.out(
+                    "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                    false,
+                ),
+            },
+            [tok] if digits(tok) => {
+                let Some(i) = row(tok) else {
+                    return self.out(RANGE.to_string(), false);
+                };
+                let model = crate::chooser::chinatown_model(
+                    self.session.state(),
+                    self.session.rules(),
+                    &self.session.legal(),
+                    counts,
+                );
+                if !model.rows[i].can_add {
+                    return self.out(
+                        format!("! the list holds no set with one more \"{}\" from here", model.rows[i].words),
+                        false,
+                    );
+                }
+                if let SubPrompt::Chinatown { counts } = &mut self.sub {
+                    counts[i] += 1;
+                }
+                self.out(String::new(), false)
+            }
+            ["back", tok] if digits(tok) => {
+                let Some(i) = row(tok) else {
+                    return self.out(RANGE.to_string(), false);
+                };
+                if counts[i] == 0 {
+                    let words = describe::chinatown_exchange_text(crate::screen_model::ChinatownOffer::all()[i]);
+                    return self.out(format!("! no \"{words}\" is selected to take back"), false);
+                }
+                if let SubPrompt::Chinatown { counts } = &mut self.sub {
+                    counts[i] -= 1;
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! add by number, 'back <number>', 'confirm', or 'cancel' (cancel first to use views/help)"
+                    .to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// How a chooser is left — the ONE helper `step_church`, `step_chinatown`
+    /// and `step_port` close by (plan 2b): `quit` quits as every sub-prompt
+    /// does, leaving the chooser as it is; `cancel` closes it, resets the
+    /// page and says so; a `confirm` with one listed move closes it, resets
+    /// the page and THEN commits that move, in `step_place_a`'s order — `out`
+    /// appends the main prompt only once no sub-prompt is open, so only this
+    /// order makes the reply read as the old row's did.
+    fn leave_chooser(&mut self, how: LeaveChooser) -> StepOutput {
+        match how {
+            LeaveChooser::Quit => StepOutput { text: "bye\n".to_string(), quit: true },
+            LeaveChooser::Cancel(line) => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out(line.to_string(), false)
+            }
+            LeaveChooser::Commit(mv) => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.commit(mv)
+            }
+        }
+    }
+
+    /// Port chooser input (plan 2b, "The words"): a card's number — bare
+    /// (`11`, what the browser sends) or as displayed (`O11`, `o11`) —
+    /// switches that card; switching ON one the list holds no take with is
+    /// refused and the selection kept, switching off is always taken; a
+    /// number that is no card in reach is refused. `confirm` reads
+    /// `chooser::port_matches`: no listed move takes exactly the selection,
+    /// refused and kept; one, the chooser closes and THEN that listed move is
+    /// committed ([`Self::leave_chooser`]); two — the second card payable
+    /// with 2 yen or an imported good — the numbered pick opens over those
+    /// two moves in their list order, in place of the chooser. Every "in
+    /// reach", "can add" and match is a lookup in `session.legal()`, never a
+    /// rule.
+    fn step_port(&mut self, words: &[&str]) -> StepOutput {
+        let selected = match &self.sub {
+            SubPrompt::Port { selected } => selected.clone(),
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Port
+        };
+        // A card as the terminal shows it or as the browser sends it; `None`
+        // for a token that is not a number in either form.
+        let number = |tok: &str| {
+            let digits = tok.strip_prefix(['O', 'o']).unwrap_or(tok);
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.parse::<u8>().ok())
+        };
+        match words {
+            ["cancel"] => self.leave_chooser(LeaveChooser::Cancel("Port take cancelled — back to the main options.")),
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
+            ["confirm"] if selected.is_empty() => self.out("! pick a card first, or 'cancel'".to_string(), false),
+            ["confirm"] => {
+                let mut matches = crate::chooser::port_matches(&self.session.legal(), &selected);
+                match matches.len() {
+                    0 => self.out(
+                        "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                        false,
+                    ),
+                    1 => self.leave_chooser(LeaveChooser::Commit(matches.remove(0))),
+                    _ => {
+                        let cards = crate::chooser::port_cards(&matches[0])
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|id| format!("O{:02}", id.0))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.enter_pick_subprompt(format!("Port: take {cards} — choose the payment"), matches)
+                    }
+                }
+            }
+            [tok] if number(tok).is_some() => {
+                let model = crate::chooser::port_model(
+                    self.session.state(),
+                    self.session.rules(),
+                    &self.session.legal(),
+                    &selected,
+                );
+                let Some(card) = number(tok).flatten().and_then(|n| model.cards.iter().find(|c| c.number == n)) else {
+                    return self.out(
+                        "! that is not a card in reach here — pick one of the listed numbers, 'confirm', or 'cancel'"
+                            .to_string(),
+                        false,
+                    );
+                };
+                let id = card.id;
+                if !card.selected && !card.can_add {
+                    return self.out(format!("! the list holds no take with O{:02} added from here", id.0), false);
+                }
+                if let SubPrompt::Port { selected } = &mut self.sub {
+                    match selected.iter().position(|c| *c == id) {
+                        Some(i) => {
+                            selected.remove(i);
+                        }
+                        None => selected.push(id),
+                    }
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! toggle a card by its number, 'confirm', or 'cancel' ('?' shows the cards; cancel first for help or the view menu)"
+                    .to_string(),
+                false,
+            ),
+        }
+    }
+
+    /// The screen an open chooser appended to the last reply, exactly as `out`
+    /// appended it; `None` when no chooser is open.
+    ///
+    /// `out` appends a sub-prompt's screen only when the session is not
+    /// locked and no overlay is drawn over it, so the same two conditions
+    /// answer `None` here: what is returned is always the reply's own suffix,
+    /// which is what lets a caller strip it by identity (`yokohama-web`'s
+    /// `input`, as it strips `prompt()` from a main-list reply).
+    pub fn chooser_screen(&self) -> Option<String> {
+        if self.locked || self.overlay.is_some() {
+            return None;
+        }
+        match self.sub {
+            SubPrompt::Church { .. } | SubPrompt::Chinatown { .. } | SubPrompt::Port { .. } => {
+                Some(self.sub_prompt_text())
+            }
+            SubPrompt::None
+            | SubPrompt::Pick { .. }
+            | SubPrompt::Retreat { .. }
+            | SubPrompt::PlaceA { .. }
+            | SubPrompt::PlaceB { .. }
+            | SubPrompt::Reveal { .. } => None,
+        }
+    }
+
     /// Every legal `PlaceTwoSameArea` in `area` (one, unless a Telegram owner
     /// also has adjacent-bonus variants). Shared by the Option-B picker's
     /// preview line and its `confirm`, so what the screen promises and what
@@ -2456,6 +2920,28 @@ impl Repl {
         let rules = self.session.rules();
         match &self.sub {
             SubPrompt::None => String::new(),
+            // Task 1's model over the same legal list `confirm` matches in,
+            // and its screen, which ends with a newline like every arm here.
+            SubPrompt::Church { selected } => crate::chooser::church_text(&crate::chooser::church_model(
+                state,
+                rules,
+                &self.session.legal(),
+                *selected,
+            )),
+            // Task 2's model and screen, over the same legal list.
+            SubPrompt::Chinatown { counts } => crate::chooser::chinatown_text(&crate::chooser::chinatown_model(
+                state,
+                rules,
+                &self.session.legal(),
+                *counts,
+            )),
+            // Task 1's model and screen (plan 2b), over the same legal list.
+            SubPrompt::Port { selected } => crate::chooser::port_text(&crate::chooser::port_model(
+                state,
+                rules,
+                &self.session.legal(),
+                selected,
+            )),
             SubPrompt::Pick { title, moves } => {
                 // Same 20/page + footer machinery the main list uses (brief item
                 // 5). Bounded ~16 in real play, so this rarely pages -- but when
@@ -3555,7 +4041,7 @@ Commands:
   save [path]     save to path (or to the last-used path if omitted)
   reveal          live mode: pick the seat whose hidden starting order just became public from a numbered menu, then name the card
   reveal <seat> <O..>  the same thing in one line, for anyone who knows both halves
-  cancel          back out of whatever is open: either reveal (live), the view menu, a card index, a full-screen view, a numbered pick, a Placement picker, guided retreat
+  cancel          back out of whatever is open: either reveal (live), the view menu, a card index, a full-screen view, a numbered pick, a Placement picker, guided retreat, an area-action chooser
   help            show this text
   quit            exit the REPL ('q' also works)
 ";
@@ -3586,6 +4072,53 @@ fn range_text(n: usize) -> String {
         None => "nothing to pick here".to_string(),
         Some((lo, hi)) if lo == hi => format!("{lo}"),
         Some((lo, hi)) => format!("{lo}-{hi}"),
+    }
+}
+
+/// What a cell that commits a Port take types (plan 2b, Task 2): every cell
+/// that once answered a take by its row in the legal list.
+#[cfg(test)]
+impl Repl {
+    /// The lines that commit the listed Port move `mv` from the main list, as
+    /// a player types them: the folded entry's number, each card's bare
+    /// number in the move's own order, `confirm`, and — when two listed moves
+    /// take the same cards — the payment pick's row for `mv`. With a single
+    /// listed Port move there is no fold, and the line is that row's number.
+    /// Counted by hand off the list, never through `chooser`, so a cell that
+    /// drives a take with it does not share the code it checks.
+    pub(crate) fn port_take_lines(&self, mv: &Move) -> Vec<String> {
+        let cards = |m: &Move| match m {
+            Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } => Some(cards_taken.clone()),
+            _ => None,
+        };
+        let set = |c: &[OrderCardId]| {
+            let mut k: Vec<u8> = c.iter().map(|x| x.0).collect();
+            k.sort_unstable();
+            k
+        };
+        let taken = cards(mv).expect("a Port move");
+        let rows = self.option_rows();
+        if let Some(k) = rows.iter().position(|r| r.mv.as_ref() == Some(mv)) {
+            return vec![menu_number(k).to_string()];
+        }
+        let entry = rows
+            .iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Port — take"))
+            .expect("the Port's takes fold into one entry");
+        let mut lines = vec![menu_number(entry).to_string()];
+        lines.extend(taken.iter().map(|c| c.0.to_string()));
+        lines.push("confirm".to_string());
+        let same: Vec<Move> = self
+            .session
+            .legal()
+            .into_iter()
+            .filter(|m| cards(m).is_some_and(|c| set(&c) == set(&taken)))
+            .collect();
+        if same.len() > 1 {
+            let k = same.iter().position(|m| m == mv).expect("mv is listed");
+            lines.push(menu_number(k).to_string());
+        }
+        lines
     }
 }
 
@@ -5036,11 +5569,17 @@ mod tests {
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
         r.step(&menu_number(k).to_string());
-        let take = r.session.legal().iter().position(|m| matches!(
+        let take = r.session.legal().into_iter().find(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
         let events_before = r.session.record().events.len();
-        let out = r.step(&menu_number(take).to_string());
+        // The take through the Port's chooser (plan 2b): its entry, the card,
+        // `confirm`.
+        let mut out = None;
+        for line in r.port_take_lines(&take) {
+            out = Some(r.step(&line));
+        }
+        let out = out.expect("a line was sent");
         assert!(!out.text.to_lowercase().contains("slot"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(r.pending, Pending::None));
@@ -5616,12 +6155,22 @@ mod tests {
             .expect("President can reach Church turn 1");
         r.step(&idx.to_string());
 
-        let church_mv = r.session.legal().iter().position(|m| matches!(m, Move::ExecuteAreaAction {
-            action: AreaAction::Church {
-                copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
-            }
-        })).expect("paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)");
-        r.step(&menu_number(church_mv).to_string());
+        assert!(
+            r.session.legal().iter().any(|m| matches!(m, Move::ExecuteAreaAction {
+                action: AreaAction::Church {
+                    copper: true, silk: true, tea: false, seafood: false, yen: true, imported_good: false,
+                }
+            })),
+            "paying copper+silk+yen is affordable turn 1 (starting resources include 1 of each)"
+        );
+        // Plan 2a: the Church's payments fold into one entry, which opens the
+        // chooser; copper, silk and yen are kinds 1, 2 and 5.
+        let entry = display_number_containing(r, "Church — choose what to pay")
+            .expect("the Church's payments fold into one entry");
+        r.step(&entry.to_string());
+        for line in ["1", "2", "5", "confirm"] {
+            r.step(line);
+        }
 
         if matches!(r.session.state().pending_choices.first(), Some(PendingChoice::ChurchSpace { .. })) {
             let space6 = r.session.legal().iter().position(|m| matches!(m, Move::ChooseChurchSpace { space: 6 }))
@@ -9082,10 +9631,13 @@ mod tests {
         let take = r
             .session
             .legal()
-            .iter()
-            .position(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 2))
+            .into_iter()
+            .find(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 2))
             .expect("a 2-card port take is available");
-        r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b).
+        for line in r.port_take_lines(&take) {
+            r.step(&line);
+        }
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
         (r, deck_card)
     }
@@ -9160,6 +9712,2297 @@ mod tests {
         assert!(
             HELP_TEXT.lines().any(|l| l.trim_start().starts_with("areas ") && l.contains("AREAS")),
             "and its row says what the surface is",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The Church's chooser (cycle 2, plan 2a, Task 3)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::issue_position;
+    use crate::chooser::{church_model, church_text};
+
+    /// A `Repl` over a constructed position, all seats human.
+    fn repl_at(state: GameState) -> Repl {
+        Repl::new(Session::for_test_from_state(state, Rules::standard()))
+    }
+
+    /// `state` with the Church spaces at `slots` held by the OTHER seat's
+    /// assistants, taken from its warehouse so its twenty are conserved.
+    fn occupy(state: &mut GameState, slots: std::ops::Range<usize>) {
+        let other = PlayerId::new(1 - state.current_player.0);
+        for slot in slots {
+            let arrival_order = state.church_track.next_arrival_order;
+            state.church_track.slots[slot] = Some(ChurchSlot { player: other, arrival_order });
+            state.church_track.next_arrival_order += 1;
+            let p = &mut state.players[other.0 as usize];
+            p.assistants.in_warehouse -= 1;
+            p.assistants.on_church += 1;
+        }
+    }
+
+    /// The Church move paying exactly the named kinds, spelled out field by
+    /// field — never through `church_flags`/`church_match`, so a cell that
+    /// compares against it does not share the code it checks.
+    fn church_move(copper: bool, silk: bool, tea: bool, seafood: bool, yen: bool, imported_good: bool) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Church { copper, silk, tea, seafood, yen, imported_good },
+        }
+    }
+
+    /// The flags a Church move pays, read by pattern rather than by
+    /// `church_flags`, for the same reason.
+    fn flags_by_hand(mv: &Move) -> Option<[bool; 6]> {
+        match mv {
+            Move::ExecuteAreaAction {
+                action: AreaAction::Church { copper, silk, tea, seafood, yen, imported_good },
+            } => Some([*copper, *silk, *tea, *seafood, *yen, *imported_good]),
+            _ => None,
+        }
+    }
+
+    /// The selection an open Church chooser holds, or panic.
+    fn church_selection(r: &Repl) -> [bool; 6] {
+        match &r.sub {
+            SubPrompt::Church { selected } => *selected,
+            _ => panic!("the Church chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 1's model over
+    /// the repl's own legal list.
+    fn church_screen(r: &Repl) -> String {
+        church_text(&church_model(
+            r.session.state(),
+            r.session.rules(),
+            &r.session.legal(),
+            church_selection(r),
+        ))
+    }
+
+    /// The last recorded move, or panic.
+    fn last_move(r: &Repl) -> Move {
+        match r.session.record().events.last() {
+            Some(RecordedEvent::Move(mv)) => mv.clone(),
+            other => panic!("the last event is not a move: {other:?}"),
+        }
+    }
+
+    /// The display number of the folded Church entry.
+    fn church_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Church — choose what to pay").expect("the Church entry is listed")
+    }
+
+    const SKIP: Move = Move::ExecuteAreaAction { action: AreaAction::Skip };
+
+    #[test]
+    fn the_church_folds_to_one_entry_and_the_decline() {
+        let r = repl_at(issue_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Church — choose what to pay (42 payment sets)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+        assert_eq!(rows[1].words, describe::describe_move(&SKIP, r.session.state(), r.session.rules()));
+    }
+
+    #[test]
+    fn a_church_with_one_payment_stays_a_direct_row() {
+        // Only space 11 is empty, so only the six-kind payment is listed.
+        let mut state = issue_position();
+        occupy(&mut state, 4..7);
+        let r = repl_at(state);
+        let six = church_move(true, true, true, true, true, true);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| flags_by_hand(m).is_some()).collect::<Vec<_>>(),
+            vec![&six],
+            "premise: exactly one Church move is listed",
+        );
+        let rows = r.option_rows();
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            rows.iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(six.clone()), describe::describe_move(&six, state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+
+        // With nothing but the copper and the silk in hand no payment reaches
+        // an empty space, so the list holds the decline alone.
+        let mut state = issue_position();
+        let me = state.current_player.0 as usize;
+        let p = &mut state.players[me];
+        (p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0);
+        let mut r = repl_at(state);
+        assert_eq!(r.session.legal(), vec![SKIP], "premise: the decline alone");
+        assert_eq!(r.option_rows().len(), 1);
+        r.step("");
+        assert_eq!(last_move(&r), SKIP, "bare Enter applies the only row");
+    }
+
+    #[test]
+    fn a_number_switches_its_kind_on_and_off() {
+        let mut r = repl_at(issue_position());
+        let opened = r.step(&church_entry(&r).to_string());
+        assert_eq!(church_selection(&r), [false; 6]);
+        assert_eq!(opened.text, church_screen(&r), "opening prints the screen and nothing before it");
+
+        let on = r.step("2");
+        assert_eq!(church_selection(&r), [false, true, false, false, false, false]);
+        assert_eq!(on.text, church_screen(&r));
+        assert!(on.text.contains("\nSelected: silk\n"), "{}", on.text);
+
+        let off = r.step("2");
+        assert_eq!(church_selection(&r), [false; 6]);
+        assert_eq!(off.text, church_screen(&r));
+        assert!(off.text.contains("\nSelected: (none)\n"), "{}", off.text);
+    }
+
+    #[test]
+    fn a_kind_not_offered_and_a_number_out_of_range_are_refused_and_keep_the_selection() {
+        let mut state = issue_position();
+        let me = state.current_player.0 as usize;
+        state.players[me].money = 1;
+        let mut r = repl_at(state);
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let silk = [false, true, false, false, false, false];
+
+        let refused = r.step("5");
+        assert_eq!(church_selection(&r), silk, "the selection is kept");
+        assert_eq!(
+            refused.text,
+            format!("! 2 yen is not in any payment the list offers here\n{}", church_screen(&r)),
+        );
+
+        for out_of_range in ["0", "7"] {
+            let refused = r.step(out_of_range);
+            assert_eq!(church_selection(&r), silk, "{out_of_range}: the selection is kept");
+            assert_eq!(
+                refused.text,
+                format!("! pick a kind 1-6, 'confirm', or 'cancel'\n{}", church_screen(&r)),
+                "{out_of_range}",
+            );
+        }
+
+        // The top of the range is taken: the seat holds an imported good, so
+        // a range of 1 to 5 would refuse this line.
+        let taken = r.step("6");
+        assert_eq!(church_selection(&r), [false, true, false, false, false, true], "6 is taken");
+        assert_eq!(taken.text, church_screen(&r));
+    }
+
+    #[test]
+    fn confirm_commits_the_listed_move_and_the_space_choice_follows() {
+        // The shared fixture passes the engine's invariants as built, before
+        // any move: the checked apply below runs the same check after it.
+        assert_eq!(check_invariants(&issue_position(), &Rules::standard()), Ok(()));
+        let mut r = repl_at(issue_position());
+        // Four kinds reach faith 9, so spaces 8 and 9 both qualify and the
+        // engine QUEUES the space choice (three kinds would reach space 8
+        // alone, which it places without asking).
+        let paid = church_move(false, true, true, true, true, false);
+        assert!(r.session.legal().contains(&paid), "premise: the four-kind payment is listed");
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        for n in ["2", "3", "4", "5"] {
+            r.step(n);
+        }
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1);
+        assert_eq!(last_move(&r), paid, "the listed move, field for field");
+        assert!(matches!(r.sub, SubPrompt::None), "the chooser closes on a commit");
+        assert_eq!(
+            r.session.state().pending_choices.first(),
+            Some(&PendingChoice::ChurchSpace { total_faith: 9 }),
+        );
+        let spaces: Vec<Move> = r
+            .option_rows()
+            .into_iter()
+            .filter_map(|row| row.mv)
+            .filter(|m| matches!(m, Move::ChooseChurchSpace { .. }))
+            .collect();
+        assert_eq!(spaces.len(), 2, "the next prompt lists the two spaces: {spaces:?}");
+        assert!(
+            out.text.ends_with(&r.prompt()),
+            "the reply reads as a main-list row's did, the main prompt last:\n{}",
+            out.text,
+        );
+    }
+
+    #[test]
+    fn confirm_on_a_selection_the_list_does_not_hold_applies_nothing() {
+        let mut r = repl_at(issue_position());
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        r.step("3");
+        // Faith 7 is a taken space.
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(church_selection(&r), [false, true, true, false, false, false], "still open, as it was");
+        assert_eq!(
+            out.text,
+            format!(
+                "! that selection is not currently available — adjust it or 'cancel'.\n{}",
+                church_screen(&r)
+            ),
+        );
+    }
+
+    #[test]
+    fn cancel_and_undo_return_to_the_folded_list() {
+        let mut r = repl_at(issue_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(
+            out.text,
+            format!("Church payment cancelled — back to the main options.\n{}", r.prompt()),
+        );
+
+        r.step(&church_entry(&r).to_string());
+        for n in ["2", "3", "5", "confirm"] {
+            r.step(n);
+        }
+        assert_eq!(last_move(&r), church_move(false, true, true, false, true, false));
+        let undone = r.step("undo");
+        assert!(undone.text.contains("Undid"), "{}", undone.text);
+        assert!(matches!(r.sub, SubPrompt::None), "undo returns to the main list, not into the chooser");
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Church — choose what to pay (42 payment sets)");
+        assert_eq!(rows[1].mv, Some(SKIP));
+    }
+
+    #[test]
+    fn words_that_are_not_an_answer_are_refused_inside_the_chooser() {
+        let mut r = repl_at(issue_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        let events = r.session.record().events.len();
+        for word in ["back", "more", "list", "help", "undo"] {
+            let out = r.step(word);
+            assert_eq!(
+                out.text,
+                format!(
+                    "! toggle a kind by number, 'confirm', or 'cancel' (cancel first to use views/help)\n{}",
+                    church_screen(&r)
+                ),
+                "{word}",
+            );
+            assert_eq!(r.session.record().events.len(), events, "{word}: nothing applied");
+            assert_eq!(church_selection(&r), [false, true, false, false, false, false], "{word}");
+        }
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_chooser_and_returns_to_it() {
+        let mut r = repl_at(issue_position());
+        r.step(&church_entry(&r).to_string());
+        r.step("2");
+        r.step("?");
+        assert!(r.overlay.is_some(), "the index is open");
+        assert_eq!(r.index_target(), None, "no card registry is being asked about");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(church_selection(&r), [false, true, false, false, false, false]);
+        assert!(back.text.ends_with(&church_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn a_mercenary_s_sub_turn_at_the_church_folds_too() {
+        let mut state = issue_position();
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != church && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(church);
+        state.current_action_power = Some(calculate_power(&state, me, church));
+        assert_eq!(state.current_action_power, Some(4), "premise: the assistants alone");
+        let r = repl_at(state);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| flags_by_hand(m).is_some()).count(),
+            22,
+            "premise: 22 Church moves listed",
+        );
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Church — choose what to pay (22 payment sets)");
+    }
+
+    /// Commit `mv` through the chooser on a fresh `Repl` over `state`: the
+    /// entry, the number of each kind its flags hold, `confirm`.
+    fn commit_through_the_chooser(state: &GameState, flags: [bool; 6]) -> Repl {
+        let mut r = repl_at(state.clone());
+        r.step(&church_entry(&r).to_string());
+        for (i, on) in flags.iter().enumerate() {
+            if *on {
+                r.step(&(i + 1).to_string());
+            }
+        }
+        r.step("confirm");
+        r
+    }
+
+    /// Every kind's `offered` on the open chooser against "some listed move's
+    /// flags hold it", read by hand off the list.
+    fn assert_offered_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let model = church_model(r.session.state(), r.session.rules(), &legal, church_selection(r));
+        for (i, kind) in model.kinds.iter().enumerate() {
+            let listed = legal.iter().filter_map(flags_by_hand).any(|f| f[i]);
+            assert_eq!(kind.offered, listed, "{at}: kind {} offered", i + 1);
+        }
+    }
+
+    #[test]
+    fn every_listed_church_move_commits_through_the_chooser() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        let (mut positions, mut moves) = (0usize, 0usize);
+        for n in [2u8, 3, 4] {
+            for seed in 0..8u64 {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let church: Vec<&Move> = legal.iter().filter(|m| flags_by_hand(m).is_some()).collect();
+                    if state.turn_phase == TurnPhase::AreaAction
+                        && state.pending_choices.is_empty()
+                        && church.len() > 1
+                    {
+                        positions += 1;
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        for mv in &church {
+                            let r = commit_through_the_chooser(&state, flags_by_hand(mv).unwrap());
+                            assert_eq!(&last_move(&r), *mv, "{at}");
+                            moves += 1;
+                        }
+                        // The flags tell the truth along the walk to one
+                        // sampled move: on the empty selection and after
+                        // each toggle.
+                        let sampled = flags_by_hand(church[(k % church.len() as u64) as usize]).unwrap();
+                        let mut r = repl_at(state.clone());
+                        r.step(&church_entry(&r).to_string());
+                        assert_offered_is_the_list_s(&r, &at);
+                        for (i, on) in sampled.iter().enumerate() {
+                            if *on {
+                                r.step(&(i + 1).to_string());
+                                assert_offered_is_the_list_s(&r, &at);
+                            }
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        // And the issue's own position, all 42.
+        let state = issue_position();
+        let legal = get_legal_moves(&state, &rules);
+        let listed: Vec<&Move> = legal.iter().filter(|m| flags_by_hand(m).is_some()).collect();
+        assert_eq!(listed.len(), 42);
+        for mv in listed {
+            let r = commit_through_the_chooser(&state, flags_by_hand(mv).unwrap());
+            assert_eq!(&last_move(&r), mv, "the issue position");
+        }
+        println!(
+            "every_listed_church_move_commits_through_the_chooser: {positions} positions, {moves} moves, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= SWEEP_POSITIONS_FLOOR, "only {positions} folded Church positions");
+        assert!(moves >= SWEEP_MOVES_FLOOR, "only {moves} Church moves committed");
+    }
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 68 folded positions and 1,007 Church moves over seeds 0..8 at 2, 3 and
+    /// 4 players, in about 5 s of a debug build (the issue position's 42 are
+    /// committed on top and not counted).
+    const SWEEP_POSITIONS_FLOOR: usize = 34;
+    const SWEEP_MOVES_FLOOR: usize = 500;
+
+    #[test]
+    fn the_empty_selection_can_be_a_listed_payment() {
+        // Power 4 (three assistants and the President) with space 4 empty:
+        // the power alone reaches it.
+        let mut state = issue_position();
+        let church = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::Church)
+            .expect("2P board has a Church")
+            .0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.assistants.on_board.insert(church, 3);
+        p.assistants.in_hand += 1;
+        let other = PlayerId::new(1 - me.0);
+        let q = &mut state.players[other.0 as usize];
+        q.assistants.on_church -= 1;
+        q.assistants.in_warehouse += 1;
+        state.church_track.slots[0] = None;
+        state.current_action_power = Some(calculate_power(&state, me, church));
+        assert_eq!(state.current_action_power, Some(4), "premise");
+        let mut r = repl_at(state);
+        let nothing = church_move(false, false, false, false, false, false);
+        assert!(r.session.legal().contains(&nothing), "premise: paying nothing is listed");
+        let opened = r.step(&church_entry(&r).to_string());
+        assert!(
+            opened.text.contains("\n  -> legal — Church: pay nothing -> faith 4 (power 4 + 0 kinds)\n"),
+            "{}",
+            opened.text,
+        );
+        r.step("confirm");
+        assert_eq!(last_move(&r), nothing);
+
+        // On the issue position paying nothing reaches faith 5, and spaces 4
+        // to 7 are taken.
+        let mut r = repl_at(issue_position());
+        assert!(!r.session.legal().contains(&nothing), "premise: not listed here");
+        let events = r.session.record().events.len();
+        r.step(&church_entry(&r).to_string());
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events);
+        assert!(
+            out.text.starts_with("! that selection is not currently available — adjust it or 'cancel'.\n"),
+            "{}",
+            out.text,
+        );
+        assert_eq!(church_selection(&r), [false; 6]);
+    }
+
+    // -----------------------------------------------------------------
+    // Chinatown's chooser (cycle 2, plan 2a, Task 4)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{ordinary_position, ordinary_position_power_1, rich_position};
+    use crate::chooser::{chinatown_match, chinatown_model, chinatown_text};
+
+    /// The number that adds one of `e`, spelled by hand — never through
+    /// `ChinatownOffer::index` — so a cell that types it does not share the
+    /// code it checks.
+    fn exchange_number(e: ChinatownExchange) -> usize {
+        use ChinatownExchange as X;
+        match e {
+            X::CopperToYen => 1,
+            X::SilkToYen => 2,
+            X::TeaToYen => 3,
+            X::SeafoodToYen => 4,
+            X::YenToCopper => 5,
+            X::YenToSilk => 6,
+            X::YenToTea => 7,
+            X::YenToSeafood => 8,
+            X::YenToImported => 9,
+        }
+    }
+
+    /// A Chinatown move's exchanges, read by pattern; `None` for any other move.
+    fn exchanges_by_hand(mv: &Move) -> Option<&[ChinatownExchange]> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges } } => Some(exchanges),
+            _ => None,
+        }
+    }
+
+    /// A Chinatown move's count per row, by `exchange_number`.
+    fn counts_by_hand(mv: &Move) -> Option<[u8; 9]> {
+        exchanges_by_hand(mv).map(|xs| {
+            let mut counts = [0u8; 9];
+            for x in xs {
+                counts[exchange_number(*x) - 1] += 1;
+            }
+            counts
+        })
+    }
+
+    /// The Chinatown move making exactly `exchanges`, in that order.
+    fn chinatown_move(exchanges: &[ChinatownExchange]) -> Move {
+        Move::ExecuteAreaAction { action: AreaAction::Chinatown { exchanges: exchanges.to_vec() } }
+    }
+
+    /// The counts an open Chinatown chooser holds, or panic.
+    fn chinatown_selection(r: &Repl) -> [u8; 9] {
+        match &r.sub {
+            SubPrompt::Chinatown { counts } => *counts,
+            _ => panic!("the Chinatown chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 2's model over
+    /// the repl's own legal list.
+    fn chinatown_screen(r: &Repl) -> String {
+        chinatown_text(&chinatown_model(
+            r.session.state(),
+            r.session.rules(),
+            &r.session.legal(),
+            chinatown_selection(r),
+        ))
+    }
+
+    /// The display number of the folded Chinatown entry.
+    fn chinatown_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Chinatown — choose exchanges").expect("the Chinatown entry is listed")
+    }
+
+    /// Every row's `can_add` on the open chooser against "the list holds the
+    /// selection with one more of it", read by hand off the list.
+    fn assert_can_add_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let counts = chinatown_selection(r);
+        let model = chinatown_model(r.session.state(), r.session.rules(), &legal, counts);
+        for (i, row) in model.rows.iter().enumerate() {
+            let mut one_more = counts;
+            one_more[i] += 1;
+            let listed = legal.iter().filter_map(counts_by_hand).any(|c| c == one_more);
+            assert_eq!(row.can_add, listed, "{at}: row {} can_add after {counts:?}", i + 1);
+        }
+    }
+
+    #[test]
+    fn chinatown_folds_to_one_entry_and_the_decline() {
+        let r = repl_at(ordinary_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Chinatown — choose exchanges (up to 3; 102 combinations)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+        assert_eq!(rows[1].words, describe::describe_move(&SKIP, r.session.state(), r.session.rules()));
+
+        // At power 1 the entry says one exchange, in the plan's words.
+        let r = repl_at(ordinary_position_power_1());
+        assert_eq!(r.option_rows()[0].words, "Chinatown — choose exchanges (up to 1; 7 combinations)");
+
+        // **K counts an exchange made twice twice** (the fix wave's B1): at
+        // power 5 holding only 1 yen, every five-exchange set repeats one — a
+        // 1-yen purchase and its sale back, again — so the most DIFFERENT
+        // exchanges in one set is 4 where the most exchanges is 5.
+        let mut rich = rich_position();
+        let me = rich.current_player.0 as usize;
+        let p = &mut rich.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0, 1, 0);
+        let r = repl_at(rich);
+        let sets: Vec<[u8; 9]> = r.session.legal().iter().filter_map(counts_by_hand).collect();
+        assert_eq!(sets.iter().map(|c| c.iter().map(|&n| usize::from(n)).sum::<usize>()).max(), Some(5), "premise: five exchanges");
+        assert_eq!(sets.iter().map(|c| c.iter().filter(|&&n| n > 0).count()).max(), Some(4), "premise: four different at most");
+        assert_eq!(r.option_rows()[0].words, "Chinatown — choose exchanges (up to 5; 17 combinations)");
+
+        // One listed exchange set stays a direct row: power 1, and a copper
+        // to sell is all the seat can do.
+        let mut state = ordinary_position_power_1();
+        let me = state.current_player.0 as usize;
+        let p = &mut state.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (1, 0, 0, 0, 0, 0);
+        let r = repl_at(state);
+        let sale = chinatown_move(&[ChinatownExchange::CopperToYen]);
+        assert_eq!(
+            r.session.legal().iter().filter(|m| exchanges_by_hand(m).is_some()).collect::<Vec<_>>(),
+            vec![&sale],
+            "premise: exactly one Chinatown move is listed",
+        );
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            r.option_rows().iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(sale.clone()), describe::describe_move(&sale, state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_number_adds_one_and_back_takes_one_back() {
+        let mut r = repl_at(ordinary_position());
+        let opened = r.step(&chinatown_entry(&r).to_string());
+        assert_eq!(chinatown_selection(&r), [0; 9]);
+        assert_eq!(opened.text, chinatown_screen(&r), "opening prints the screen and nothing before it");
+
+        let mut expected = [0u8; 9];
+        for (line, row) in [("1", 0), ("6", 5), ("6", 5)] {
+            let out = r.step(line);
+            expected[row] += 1;
+            assert_eq!(chinatown_selection(&r), expected, "after {line}");
+            assert_eq!(out.text, chinatown_screen(&r), "after {line}");
+        }
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 2, 0, 0, 0]);
+
+        let back = r.step("back 6");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 1, 0, 0, 0], "one silk purchase taken back");
+        assert_eq!(back.text, chinatown_screen(&r));
+        assert!(
+            back.text.contains("\nSelected (2 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk\n"),
+            "{}",
+            back.text,
+        );
+
+        // The last number of the range takes one back too: the imported good
+        // the copper sale paid for, leaving the sale alone.
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 1], "premise: the sale made the purchase addable");
+        let back = r.step("back 9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0], "back 9 takes the purchase back");
+        assert_eq!(back.text, chinatown_screen(&r));
+    }
+
+    #[test]
+    fn what_the_list_does_not_hold_is_refused_and_keeps_the_selection() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        let range = "! pick an exchange 1-9, 'back <number>', 'confirm', or 'cancel'";
+        let cases: [(&str, String); 6] = [
+            // 3 yen does not buy an imported good, and the seat has no silk.
+            ("9", "! the list holds no set with one more \"4 yen -> 1 imported good\" from here".to_string()),
+            ("2", "! the list holds no set with one more \"1 silk -> 2 yen\" from here".to_string()),
+            ("10", range.to_string()),
+            ("0", range.to_string()),
+            ("back 10", range.to_string()),
+            ("back 3", "! no \"1 tea -> 1 yen\" is selected to take back".to_string()),
+        ];
+        for (line, refusal) in &cases {
+            let out = r.step(line);
+            assert_eq!(chinatown_selection(&r), [0; 9], "{line}: the selection is kept");
+            assert_eq!(out.text, format!("{refusal}\n{}", chinatown_screen(&r)), "{line}");
+        }
+
+        // And from a selection that is not empty: a take-back of a row not
+        // chosen, and a number out of range, keep the copper sale.
+        r.step("1");
+        let sold = [1, 0, 0, 0, 0, 0, 0, 0, 0];
+        for (line, refusal) in [
+            ("back 3", "! no \"1 tea -> 1 yen\" is selected to take back"),
+            ("back 0", range),
+            ("10", range),
+        ] {
+            let out = r.step(line);
+            assert_eq!(chinatown_selection(&r), sold, "{line}: the selection is kept");
+            assert_eq!(out.text, format!("{refusal}\n{}", chinatown_screen(&r)), "{line}");
+        }
+    }
+
+    #[test]
+    fn taking_back_the_sale_that_paid_for_a_purchase_cannot_be_confirmed() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 1], "the sale made the purchase addable");
+        let back = r.step("back 1");
+        let alone = [0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(chinatown_selection(&r), alone);
+        assert!(back.text.contains("\n  -> NOT currently offered (adjust the selection)\n"), "{}", back.text);
+
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(chinatown_selection(&r), alone, "still open, with the purchase alone");
+        assert_eq!(
+            out.text,
+            format!(
+                "! that selection is not currently available — adjust it or 'cancel'.\n{}",
+                chinatown_screen(&r)
+            ),
+        );
+    }
+
+    #[test]
+    fn confirm_commits_the_engine_s_listed_order() {
+        use ChinatownExchange as X;
+        let state = ordinary_position();
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        let listed = chinatown_move(&[X::CopperToYen, X::YenToSilk, X::YenToSilk]);
+        let typed = chinatown_move(&[X::YenToSilk, X::CopperToYen, X::YenToSilk]);
+        let mut r = repl_at(state);
+        let legal = r.session.legal();
+        assert!(legal.contains(&listed), "premise: the engine lists the sale first");
+        assert!(!legal.contains(&typed), "premise: the order typed below is not a listed move");
+        assert_eq!(chinatown_match(&legal, [1, 0, 0, 0, 0, 2, 0, 0, 0]), Some(listed.clone()));
+
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        // A purchase sent before the sale that pays for its second.
+        for n in ["6", "1", "6"] {
+            r.step(n);
+        }
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1);
+        assert_eq!(last_move(&r), listed, "the listed move, in the engine's own order");
+        assert!(matches!(r.sub, SubPrompt::None), "the chooser closes on a commit");
+        assert!(
+            out.text.ends_with(&r.prompt()),
+            "the reply reads as a main-list row's did, the main prompt last:\n{}",
+            out.text,
+        );
+    }
+
+    /// The cell above's set is listed in row order already (rows 1, 6, 6), so
+    /// a `confirm` that BUILT the move from the counts in row order would pass
+    /// it. This one is not: the engine lists the silk purchase before the sale
+    /// it makes possible, which row order puts the other way round.
+    #[test]
+    fn confirm_commits_a_set_the_engine_lists_out_of_row_order() {
+        use ChinatownExchange as X;
+        let listed = chinatown_move(&[X::YenToSilk, X::SilkToYen]);
+        let row_order = chinatown_move(&[X::SilkToYen, X::YenToSilk]);
+        let mut r = repl_at(ordinary_position());
+        let legal = r.session.legal();
+        assert!(legal.contains(&listed), "premise: the engine lists the purchase first");
+        assert!(!legal.contains(&row_order), "premise: the set in row order is not a listed move");
+
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("6");
+        r.step("2");
+        assert_eq!(chinatown_selection(&r), [0, 1, 0, 0, 0, 1, 0, 0, 0]);
+        r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1, "the set was committed");
+        assert_eq!(last_move(&r), listed, "the listed move, in the engine's own order");
+    }
+
+    #[test]
+    fn confirm_with_nothing_chosen_is_refused() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        let out = r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert_eq!(chinatown_selection(&r), [0; 9], "still open");
+        assert_eq!(out.text, format!("! add an exchange first, or 'cancel'\n{}", chinatown_screen(&r)));
+    }
+
+    #[test]
+    fn bare_back_and_other_words_are_refused_inside_the_chooser() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        let events = r.session.record().events.len();
+        for word in ["back", "more", "list", "help", "undo"] {
+            let out = r.step(word);
+            assert_eq!(
+                out.text,
+                format!(
+                    "! add by number, 'back <number>', 'confirm', or 'cancel' (cancel first to use views/help)\n{}",
+                    chinatown_screen(&r)
+                ),
+                "{word}",
+            );
+            assert_eq!(r.session.record().events.len(), events, "{word}: nothing applied");
+            assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0], "{word}");
+        }
+    }
+
+    #[test]
+    fn cancel_returns_to_the_folded_list() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(
+            out.text,
+            format!("Chinatown exchanges cancelled — back to the main options.\n{}", r.prompt()),
+        );
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].words, "Chinatown — choose exchanges (up to 3; 102 combinations)");
+        assert_eq!(rows[1].mv, Some(SKIP));
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_chinatown_chooser_and_returns_to_it() {
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("?");
+        assert!(r.overlay.is_some(), "the index is open");
+        assert_eq!(r.index_target(), None, "no card registry is being asked about");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(back.text.ends_with(&chinatown_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn back_and_a_number_at_the_main_prompt_applies_nothing() {
+        let mut r = repl_at(ordinary_position());
+        let events = r.session.record().events.len();
+        let out = r.step("back 3");
+        assert!(out.text.contains("Unrecognized input"), "{}", out.text);
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        assert!(matches!(r.sub, SubPrompt::None), "no chooser opened");
+    }
+
+    /// Commit `mv` through the chooser on a fresh `Repl` over `state`: the
+    /// entry, the number of each of its exchanges in its own listed order,
+    /// `confirm` — with every row's `can_add` checked against the list at
+    /// each step of the walk.
+    fn commit_exchanges_through_the_chooser(state: &GameState, mv: &Move, at: &str) -> Repl {
+        let mut r = repl_at(state.clone());
+        r.step(&chinatown_entry(&r).to_string());
+        assert_can_add_is_the_list_s(&r, at);
+        for x in exchanges_by_hand(mv).expect("a Chinatown move") {
+            r.step(&exchange_number(*x).to_string());
+            assert_can_add_is_the_list_s(&r, at);
+        }
+        r.step("confirm");
+        r
+    }
+
+    /// Every listed move of a family of at most 64; else 64 spread evenly,
+    /// the first and the last among them.
+    fn spread(n: usize) -> Vec<usize> {
+        if n <= SWEEP_SAMPLE {
+            (0..n).collect()
+        } else {
+            (0..SWEEP_SAMPLE).map(|i| i * (n - 1) / (SWEEP_SAMPLE - 1)).collect()
+        }
+    }
+    const SWEEP_SAMPLE: usize = 64;
+
+    /// Commit the spread of `state`'s listed Chinatown moves through the
+    /// chooser, each compared by value to the move as listed, and count into
+    /// `tally`: [folded positions, moves committed, five-exchange moves at
+    /// power 5].
+    fn sweep_spread(state: &GameState, rules: &Rules, at: &str, tally: &mut [usize; 3]) {
+        let legal = get_legal_moves(state, rules);
+        let family: Vec<&Move> = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).collect();
+        // The entry's words carry the chooser's own heading figure, the
+        // model's `max_exchanges` (the fix wave's B1).
+        let model = chinatown_model(state, rules, &legal, [0; 9]);
+        let entry = repl_at(state.clone()).option_rows()[0].words.clone();
+        assert_eq!(
+            entry,
+            format!("Chinatown — choose exchanges (up to {}; {} combinations)", model.max_exchanges, family.len()),
+            "{at}: the entry",
+        );
+        tally[0] += 1;
+        for i in spread(family.len()) {
+            let mv = family[i];
+            let r = commit_exchanges_through_the_chooser(state, mv, at);
+            assert_eq!(&last_move(&r), mv, "{at}: listed move {i} of {}", family.len());
+            tally[1] += 1;
+            if exchanges_by_hand(mv).unwrap().len() == 5 && state.current_action_power == Some(5) {
+                tally[2] += 1;
+            }
+        }
+    }
+
+    #[test]
+    fn every_listed_chinatown_move_commits_through_the_chooser() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, moves committed, five-exchange moves at power 5]
+        let mut tally = [0usize; 3];
+        // At two players the board has no Chinatown: nothing to fold.
+        for seed in 0..2u64 {
+            let pending = new_game(GameConfig::for_player_count(2), &rules, seed).unwrap();
+            let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 2]).unwrap();
+            let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            for _ in 0..4000 {
+                if is_game_over(&state) {
+                    break;
+                }
+                let legal = get_legal_moves(&state, &rules);
+                assert!(
+                    !legal.iter().any(|m| exchanges_by_hand(m).is_some()),
+                    "2P seed {seed}: a Chinatown move on a board with no Chinatown",
+                );
+                k ^= k << 13;
+                k ^= k >> 7;
+                k ^= k << 17;
+                state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+            }
+        }
+        let two_player = started.elapsed();
+        for n in [3u8, 4] {
+            for seed in 0..SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let family = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).count();
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && family > 1 {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        sweep_spread(&state, &rules, &at, &mut tally);
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [self_play_positions, self_play_moves, self_play_fives] = tally;
+        let self_play = started.elapsed();
+        // The ordinary position in full, all 102 (64 would sample it).
+        let state = ordinary_position();
+        let legal = get_legal_moves(&state, &rules);
+        let listed: Vec<&Move> = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).collect();
+        assert_eq!(listed.len(), 102);
+        for mv in listed {
+            let r = commit_exchanges_through_the_chooser(&state, mv, "the ordinary position");
+            assert_eq!(&last_move(&r), mv, "the ordinary position");
+        }
+        // And a power-5 position whose family runs to five exchanges: the
+        // spread must reach its long sets, not stop at the first 64.
+        let ordinary = started.elapsed();
+        let rich = rich_position();
+        assert_eq!(rich.current_action_power, Some(5), "premise: power 5");
+        sweep_spread(&rich, &rules, "the rich position", &mut tally);
+        let [_, all_moves, five_at_power_5] = tally;
+        let rich_moves = all_moves - self_play_moves;
+        // The same with 1 yen and no goods: every five-exchange set repeats an
+        // exchange, so the entry's K and the most different exchanges differ
+        // there (cell 1's reading), and no self-play position measured does.
+        let mut lean = rich_position();
+        let me = lean.current_player.0 as usize;
+        let p = &mut lean.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0, 1, 0);
+        sweep_spread(&lean, &rules, "the rich position with 1 yen", &mut tally);
+        println!(
+            "every_listed_chinatown_move_commits_through_the_chooser: self-play {self_play_positions} positions, \
+             {self_play_moves} moves, {self_play_fives} of five exchanges at power 5; the ordinary position's 102; \
+             the rich position {rich_moves} moves; {five_at_power_5} five-exchange moves at power 5 in all; \
+             in {:?} (2P precondition to {two_player:?}, self-play to {self_play:?}, the ordinary position to \
+             {ordinary:?})",
+            started.elapsed()
+        );
+        assert!(self_play_positions >= CHINATOWN_SWEEP_POSITIONS_FLOOR, "only {self_play_positions} folded Chinatown positions");
+        assert!(self_play_moves >= CHINATOWN_SWEEP_MOVES_FLOOR, "only {self_play_moves} Chinatown moves committed");
+        assert!(five_at_power_5 > 0, "the sweep met no five-exchange move on a power-5 position");
+    }
+
+    /// The sweep's seeds per player count, and its anti-vacuity floors over
+    /// the self-play half, about half of what it read when set: 51 folded
+    /// positions and 1,566 Chinatown moves over seeds 0..4 at 3 and 4
+    /// players, none of them a five-exchange set at power 5 — which is why
+    /// the rich position (41 of its 64 spread moves are) is swept on top. In
+    /// about 10 s of a debug build, about 5 s of it the rich position's
+    /// 2,001-move list.
+    const SWEEP_SEEDS: u64 = 4;
+    const CHINATOWN_SWEEP_POSITIONS_FLOOR: usize = 25;
+    const CHINATOWN_SWEEP_MOVES_FLOOR: usize = 780;
+
+    /// **A READING, not a bound: what opening Chinatown's chooser and one add
+    /// cost the REPL at the longest Chinatown list the tree holds** (design
+    /// §9: "measured and recorded, not bounded"; plan 2b, Task 7).
+    /// `rich_position()` lists 2,002 moves, 2,001 of them Chinatown's; the
+    /// figures are printed and written into `docs/web-lane.md` §2. It asserts
+    /// NO time, since a wall-clock assertion flakes by construction; it
+    /// panics only when its premise fails — the chooser did not open, or the
+    /// add was not taken — so it never prints a figure for a press that did
+    /// not happen. Read with `--nocapture`, in debug and with `--release`.
+    #[test]
+    fn reading_the_chooser_s_cost_at_the_longest_chinatown_list() {
+        let mut r = repl_at(rich_position());
+        let legal = r.session.legal();
+        let sets = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).count();
+        let entry = chinatown_entry(&r).to_string();
+
+        let started = std::time::Instant::now();
+        r.step(&entry);
+        let open = started.elapsed();
+        assert_eq!(chinatown_selection(&r), [0; 9], "premise: the chooser opened, empty");
+
+        let started = std::time::Instant::now();
+        r.step("1");
+        let add = started.elapsed();
+        let mut one = [0u8; 9];
+        one[0] = 1;
+        assert_eq!(chinatown_selection(&r), one, "premise: the add (1 copper -> 2 yen) was taken");
+
+        println!(
+            "reading (REPL, rich_position, {} listed moves, {sets} Chinatown sets): open the chooser {open:?}",
+            legal.len()
+        );
+        println!(
+            "reading (REPL, rich_position, {} listed moves, {sets} Chinatown sets): one add {add:?}",
+            legal.len()
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // The Port's chooser (cycle 2, plan 2b, Task 2)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{port_b_position, port_position, port_position_with};
+    use crate::chooser::{port_model, port_text};
+
+    /// The cards a Port move takes, read by pattern — never through
+    /// `chooser::port_cards` — so a cell that compares against it does not
+    /// share the code it checks.
+    fn cards_by_hand(mv: &Move) -> Option<Vec<OrderCardId>> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } => Some(cards_taken.clone()),
+            _ => None,
+        }
+    }
+
+    /// A card set as its sorted numbers, so two orders of one set compare equal.
+    fn set_of(cards: &[OrderCardId]) -> Vec<u8> {
+        let mut key: Vec<u8> = cards.iter().map(|c| c.0).collect();
+        key.sort_unstable();
+        key
+    }
+
+    /// Every listed Port move, in list order.
+    fn port_takes(legal: &[Move]) -> Vec<Move> {
+        legal.iter().filter(|m| cards_by_hand(m).is_some()).cloned().collect()
+    }
+
+    /// The cards an open Port chooser holds, in the order switched on, or panic.
+    fn port_selection(r: &Repl) -> Vec<u8> {
+        match &r.sub {
+            SubPrompt::Port { selected } => selected.iter().map(|c| c.0).collect(),
+            _ => panic!("the Port chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 1's model over
+    /// the repl's own legal list.
+    fn port_screen(r: &Repl) -> String {
+        let selected: Vec<OrderCardId> = port_selection(r).into_iter().map(OrderCardId).collect();
+        port_text(&port_model(r.session.state(), r.session.rules(), &r.session.legal(), &selected))
+    }
+
+    /// The display number of the folded Port entry.
+    fn port_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Port — take").expect("the Port entry is listed")
+    }
+
+    /// The Port take of exactly `cards`, in that order, with `payment`.
+    fn port_move(cards: &[u8], payment: Option<PortPayment>) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: cards.iter().map(|&n| OrderCardId(n)).collect(),
+                second_card_payment: payment,
+            },
+        }
+    }
+
+    const NOT_IN_REACH: &str =
+        "! that is not a card in reach here — pick one of the listed numbers, 'confirm', or 'cancel'";
+    const PORT_ANYTHING_ELSE: &str =
+        "! toggle a card by its number, 'confirm', or 'cancel' ('?' shows the cards; cancel first for help or the view menu)";
+
+    /// The one-move position (ruling F2's cell 1): two orders in hand at power
+    /// 2, so only the two LOW cards' singles are listed, with the first LOW
+    /// slot's card moved into the removed pile — a real card, moved, not
+    /// invented — leaving one Port move and the decline.
+    fn one_take_position() -> GameState {
+        let mut state = port_position_with(1, 2, 5, 1);
+        let card = state.port_state.port_a.slots[0].take().expect("slot 0 holds a card");
+        state.orders_removed.push(card);
+        state
+    }
+
+    /// A mercenary's sub-turn at Port A, built as the Church's mercenary cell
+    /// builds its own and then MADE whole: the President stands elsewhere, the
+    /// four assistants at the Port act alone (power 4), the mercenary is
+    /// spent for this turn and the phase it returns to is recorded.
+    fn mercenary_port_position() -> GameState {
+        let mut state = port_position_with(4, 1, 5, 1);
+        let port = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .expect("the board has Port A")
+            .0;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != port && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.additional_action_state.mercenary_used = true;
+        state.current_action_power = Some(calculate_power(&state, me, port));
+        state
+    }
+
+    /// The lines that commit `mv` through the chooser: the entry, each card
+    /// in `order` as `form` spells it, `confirm`, and — when two listed moves
+    /// take the same cards — the pick's row for `mv`, its place among them in
+    /// list order, counted by hand.
+    fn lines_for(r: &Repl, mv: &Move, order: &[OrderCardId], form: fn(u8) -> String) -> Vec<String> {
+        let legal = r.session.legal();
+        let mut lines = vec![port_entry(r).to_string()];
+        lines.extend(order.iter().map(|c| form(c.0)));
+        lines.push("confirm".to_string());
+        let key = set_of(&cards_by_hand(mv).expect("a Port move"));
+        let same: Vec<Move> =
+            port_takes(&legal).into_iter().filter(|m| set_of(&cards_by_hand(m).unwrap()) == key).collect();
+        if same.len() > 1 {
+            let k = same.iter().position(|m| m == mv).expect("mv is listed");
+            lines.push(menu_number(k).to_string());
+        }
+        lines
+    }
+
+    fn bare(n: u8) -> String {
+        n.to_string()
+    }
+    fn displayed(n: u8) -> String {
+        format!("O{n:02}")
+    }
+    fn displayed_lower(n: u8) -> String {
+        format!("o{n:02}")
+    }
+
+    #[test]
+    fn the_main_list_folds_the_port() {
+        let rules = Rules::standard();
+        assert_eq!(check_invariants(&port_position(), &rules), Ok(()));
+        let r = repl_at(port_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+
+        // Two orders in hand: room for one card, so no pair is listed.
+        let r = repl_at(port_position_with(4, 2, 5, 1));
+        assert!(port_takes(&r.session.legal()).iter().all(|m| cards_by_hand(m).unwrap().len() == 1), "premise");
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 order card (6 in reach)");
+
+        // Power 2: six cards on the board, two of them in the listed takes —
+        // the count is the list's, not the board's (the rival: the acting
+        // board's filled slots).
+        let state = port_position_with(1, 1, 5, 1);
+        assert_eq!(state.port_state.port_a.slots.iter().flatten().count(), 6, "premise: six on the board");
+        let r = repl_at(state);
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (2 in reach)");
+
+        // One listed Port move stays a direct row, in `describe_move`'s words
+        // (the rival: fold whenever the President is at a Port).
+        let state = one_take_position();
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        let r = repl_at(state);
+        let takes = port_takes(&r.session.legal());
+        assert_eq!(takes.len(), 1, "premise: exactly one Port move is listed: {takes:?}");
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            r.option_rows().iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(takes[0].clone()), describe::describe_move(&takes[0], state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+    }
+
+    #[test]
+    fn every_listed_take_commits_through_the_chooser() {
+        // Power 5, room for two, 5 yen and an imported good: 36 takes, every
+        // pair listed twice.
+        let state = port_position();
+        let takes = port_takes(&get_legal_moves(&state, &Rules::standard()));
+        assert_eq!(takes.len(), 36, "premise");
+        let mut picks = 0usize;
+        for (i, mv) in takes.iter().enumerate() {
+            let cards = cards_by_hand(mv).unwrap();
+            let mut reversed = cards.clone();
+            reversed.reverse();
+            let form: fn(u8) -> String = if i % 2 == 0 { bare } else if i % 4 == 1 { displayed } else { displayed_lower };
+            for order in [&cards, &reversed] {
+                let mut r = repl_at(state.clone());
+                let lines = lines_for(&r, mv, order, form);
+                for line in &lines[..lines.len() - 1] {
+                    r.step(line);
+                }
+                if cards.len() == 2 {
+                    // Every pair here is payable two ways: `confirm` opens the
+                    // pick over both, titled as "The words" say.
+                    assert!(
+                        matches!(&r.sub, SubPrompt::Pick { title, moves }
+                            if *title == format!("Port: take O{:02}, O{:02} — choose the payment", cards[0].0, cards[1].0)
+                                && moves.len() == 2 && moves.contains(mv)),
+                        "take {i} ({order:?}): the pick is open",
+                    );
+                    picks += 1;
+                }
+                r.step(lines.last().unwrap());
+                assert_eq!(&last_move(&r), mv, "take {i}, cards sent as {order:?}");
+                assert!(matches!(r.sub, SubPrompt::None), "take {i}: nothing left open");
+            }
+        }
+        assert_eq!(picks, 60, "15 pairs, each two ways, each sent in two orders");
+
+        // 5 yen and no imported good: 21 takes, each pair listed once, and
+        // `confirm` commits it with no pick (the rival: the pick opens
+        // whenever two cards are on).
+        let state = port_position_with(4, 1, 5, 0);
+        let takes = port_takes(&get_legal_moves(&state, &Rules::standard()));
+        assert_eq!(takes.len(), 21, "premise");
+        for (i, mv) in takes.iter().enumerate() {
+            let cards = cards_by_hand(mv).unwrap();
+            let mut reversed = cards.clone();
+            reversed.reverse();
+            for order in [&cards, &reversed] {
+                let mut r = repl_at(state.clone());
+                let lines = lines_for(&r, mv, order, if i % 2 == 0 { bare } else { displayed });
+                assert_eq!(lines.last().map(String::as_str), Some("confirm"), "no pick row: one way to pay");
+                for line in &lines {
+                    r.step(line);
+                }
+                assert_eq!(&last_move(&r), mv, "take {i}, cards sent as {order:?}");
+                assert!(matches!(r.sub, SubPrompt::None), "take {i}: committed at confirm, no pick opened");
+            }
+        }
+    }
+
+    #[test]
+    fn a_third_card_is_refused_and_the_selection_kept() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        let events = r.session.record().events.len();
+        let out = r.step("28");
+        assert_eq!(port_selection(&r), [10, 34], "the selection is kept");
+        assert_eq!(out.text, format!("! the list holds no take with O28 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert!(
+            matches!(&r.sub, SubPrompt::Pick { moves, .. }
+                if *moves == vec![port_move(&[10, 34], Some(PortPayment::TwoYen)), port_move(&[10, 34], Some(PortPayment::OneImportedGood))]),
+            "confirm opens the pick over the first two cards' two ways",
+        );
+
+        // Design §6's case: a second card with room in hand for one.
+        let mut r = repl_at(port_position_with(4, 2, 5, 1));
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        let events = r.session.record().events.len();
+        let out = r.step("34");
+        assert_eq!(port_selection(&r), [10]);
+        assert_eq!(out.text, format!("! the list holds no take with O34 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[10], None), "confirm takes the first alone");
+
+        // A second card refused for PAYMENT: room in hand for two, but 1 yen
+        // and no imported good, so the list holds singles only (the rival: a
+        // second card while the hand has room).
+        let mut r = repl_at(port_position_with(4, 1, 1, 0));
+        assert!(port_takes(&r.session.legal()).iter().all(|m| cards_by_hand(m).unwrap().len() == 1), "premise");
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        let events = r.session.record().events.len();
+        let out = r.step("34");
+        assert_eq!(port_selection(&r), [10]);
+        assert_eq!(out.text, format!("! the list holds no take with O34 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[10], None), "confirm takes the first alone");
+
+        // Switching a card OFF is always taken: with one card on, its number
+        // (bare, or as displayed) empties the selection; with two on — where
+        // the first's `can_add` is false — the first's number is taken and
+        // leaves the second alone (the rival: a guard that reuses `can_add`).
+        for spelling in ["10", "O10"] {
+            let mut r = repl_at(port_position());
+            r.step(&port_entry(&r).to_string());
+            r.step("10");
+            let out = r.step(spelling);
+            assert_eq!(port_selection(&r), Vec::<u8>::new(), "{spelling} switches O10 off");
+            assert!(out.text.contains("\nSelected: (none)\n"), "{spelling}: {}", out.text);
+            let out = r.step("confirm");
+            assert_eq!(out.text, format!("! pick a card first, or 'cancel'\n{}", port_screen(&r)), "{spelling}");
+        }
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        let selected = [OrderCardId(10), OrderCardId(34)];
+        let model = port_model(r.session.state(), r.session.rules(), &r.session.legal(), &selected);
+        assert!(!model.cards.iter().find(|c| c.number == 10).unwrap().can_add, "premise: O10's can_add is false");
+        r.step("10");
+        assert_eq!(port_selection(&r), [34], "the first is switched off, the second left on");
+    }
+
+    #[test]
+    fn a_number_that_is_no_card_in_reach_is_refused() {
+        // Power 2: the two LOW cards are in reach; O28 sits on the board, MID.
+        let state = port_position_with(1, 1, 5, 1);
+        assert!(state.port_state.port_a.slots.contains(&Some(OrderCardId(28))), "premise: O28 is on the board");
+        let mut r = repl_at(state);
+        r.step(&port_entry(&r).to_string());
+        for tok in ["28", "99", "0", "O28", "o99"] {
+            let out = r.step(tok);
+            assert_eq!(port_selection(&r), Vec::<u8>::new(), "{tok}: nothing switched on");
+            assert_eq!(out.text, format!("{NOT_IN_REACH}\n{}", port_screen(&r)), "{tok}");
+        }
+        r.step("34");
+        for tok in ["28", "99", "0"] {
+            let out = r.step(tok);
+            assert_eq!(port_selection(&r), [34], "{tok}: the selection is kept");
+            assert_eq!(out.text, format!("{NOT_IN_REACH}\n{}", port_screen(&r)), "{tok}");
+        }
+    }
+
+    #[test]
+    fn confirm_with_one_way_closes_then_commits() {
+        // A single, and a pair listed one way: each reply is the one the old
+        // direct row gave, read off a twin that commits the same move.
+        for (state, cards, mv) in [
+            (port_position(), vec!["10"], port_move(&[10], None)),
+            (port_position_with(4, 1, 5, 0), vec!["34", "10"], port_move(&[10, 34], Some(PortPayment::TwoYen))),
+        ] {
+            let mut twin = repl_at(state.clone());
+            let expected = twin.commit(mv.clone());
+            let mut r = repl_at(state);
+            r.step(&port_entry(&r).to_string());
+            for card in &cards {
+                r.step(card);
+            }
+            let screen = port_screen(&r);
+            let out = r.step("confirm");
+            assert!(matches!(r.sub, SubPrompt::None), "the chooser closes");
+            assert_eq!(last_move(&r), mv);
+            assert_eq!(r.session.state(), twin.session.state(), "the state is the listed move's");
+            assert_eq!(out.text, expected.text, "the reply is the old row's");
+            assert!(out.text.ends_with(&r.prompt()), "the next prompt last:\n{}", out.text);
+            for line in screen.lines().filter(|l| !l.trim().is_empty()) {
+                assert!(!out.text.lines().any(|l| l == line), "a line of the chooser's screen rode the reply: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_in_the_payment_pick_keeps_nothing() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        r.step("confirm");
+        assert!(matches!(r.sub, SubPrompt::Pick { .. }), "premise: the payment pick is open");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(out.text, format!("Selection cancelled — back to the main options.\n{}", r.prompt()));
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        let opened = r.step(&port_entry(&r).to_string());
+        assert_eq!(port_selection(&r), Vec::<u8>::new(), "the chooser opens empty");
+        assert!(opened.text.contains("\nSelected: (none)\n"), "{}", opened.text);
+    }
+
+    #[test]
+    fn the_refusals_are_the_plan_s() {
+        let mut r = repl_at(port_position());
+        let events = r.session.record().events.len();
+        let opened = r.step(&port_entry(&r).to_string());
+        assert_eq!(opened.text, port_screen(&r), "opening prints the screen and nothing before it");
+        let out = r.step("confirm");
+        assert_eq!(out.text, format!("! pick a card first, or 'cancel'\n{}", port_screen(&r)));
+        r.step("10");
+        let tile = format!("A{:02}", r.session.state().board_layout.areas.keys().next().expect("a tile").0);
+        for word in ["back", "back 1", "more", "help", tile.as_str(), "list"] {
+            let out = r.step(word);
+            assert_eq!(out.text, format!("{PORT_ANYTHING_ELSE}\n{}", port_screen(&r)), "{word}");
+            assert_eq!(port_selection(&r), [10], "{word}: the selection is kept");
+        }
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(out.text, format!("Port take cancelled — back to the main options.\n{}", r.prompt()));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_port_s_chooser_and_returns_to_it() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("?");
+        assert!(matches!(r.overlay, Some(Overlay::Index { kind: IndexKind::Orders, .. })), "the order index is open");
+        assert_eq!(r.index_target(), None, "nothing is being recorded");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(port_selection(&r), [10]);
+        assert!(back.text.ends_with(&port_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn port_b_folds_and_commits() {
+        let state = port_b_position();
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        let mut r = repl_at(state);
+        assert!(r.option_rows()[0].words.starts_with("Port — take 1 or 2 order cards ("), "{:?}", r.option_rows()[0].words);
+        let opened = r.step(&port_entry(&r).to_string());
+        assert!(opened.text.starts_with("Port B — take 1 card, or 2 (toggle by number):\n"), "{}", opened.text);
+        let single = port_takes(&r.session.legal()).into_iter().next().expect("a take");
+        let card = cards_by_hand(&single).unwrap()[0];
+        r.step(&card.0.to_string());
+        r.step("confirm");
+        assert_eq!(last_move(&r), single);
+        assert!(!r.session.is_locked());
+    }
+
+    #[test]
+    fn a_mercenary_s_port_folds_and_commits() {
+        let state = mercenary_port_position();
+        let rules = Rules::standard();
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        assert_eq!(state.current_action_power, Some(4), "premise: the assistants alone");
+        let mut r = repl_at(state);
+        let takes = port_takes(&r.session.legal());
+        assert_eq!(takes.len(), 36, "premise: 36 takes in the sub-turn");
+        assert_eq!(r.option_rows().len(), 2);
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        r.step(&port_entry(&r).to_string());
+        r.step("28");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[28], None));
+        assert!(!r.session.is_locked(), "the take passed the engine's invariants");
+        assert!(r.session.state().is_mercenary_action, "still in the sub-turn");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::FivePowerBonus, "the sub-turn's next phase");
+    }
+
+    /// A live 2P session as `reveal.rs`'s cells build theirs.
+    fn live_repl_for_the_port() -> Repl {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let table = new_game(config.clone(), &rules, 900).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            lab_a: Some(std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let session = Session::new_live(
+            config,
+            901,
+            obs,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            rules,
+        )
+        .unwrap();
+        Repl::new(session)
+    }
+
+    /// The live session walked to its Port A area action: the additional
+    /// phase ended, one assistant placed at Port A, the President placed there.
+    fn live_at_the_port() -> Repl {
+        let mut r = live_repl_for_the_port();
+        let port = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        r.step("1");
+        r.step(&format!("a {}", port.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == port))
+            .expect("PlacePresident at Port A");
+        r.step(&menu_number(k).to_string());
+        r
+    }
+
+    #[test]
+    fn a_live_port_take_through_the_chooser_parks_at_its_reveal() {
+        for size in [1usize, 2] {
+            let mut r = live_at_the_port();
+            let mv = port_takes(&r.session.legal())
+                .into_iter()
+                .find(|m| cards_by_hand(m).unwrap().len() == size)
+                .expect("a take of that size");
+            let mut twin = live_at_the_port();
+            let expected = twin.commit(mv.clone());
+            let events = r.session.record().events.len();
+            let lines = r.port_take_lines(&mv);
+            assert!(lines.len() > 1, "premise: the take goes through the chooser: {lines:?}");
+            let mut out = None;
+            for line in &lines {
+                out = Some(r.step(line));
+            }
+            let out = out.unwrap();
+            assert!(matches!(r.sub, SubPrompt::None), "{size}: the chooser closed");
+            assert!(matches!(r.pending, Pending::OrderReveals { .. }), "{size}: parked at the reveal");
+            assert_eq!(r.session.record().events.len(), events, "{size}: nothing recorded before the reveal");
+            assert_eq!(out.text, expected.text, "{size}: the reveal prompt, as the old row's");
+            assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
+        }
+    }
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 233 folded positions and 728 takes over seeds 0..8 at 2, 3 and 4
+    /// players, 13 of their pairs payable both ways, in about 5 s of a debug
+    /// build. The both-ways floor is one (the brief's): those are the takes
+    /// that go through the payment pick.
+    const PORT_SWEEP_POSITIONS_FLOOR: usize = 116;
+    const PORT_SWEEP_TAKES_FLOOR: usize = 364;
+
+    /// Every card's `can_add` on the open chooser against "the list holds a
+    /// take of the selection with it added", read by hand off the list.
+    fn assert_port_can_add_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let selected: Vec<OrderCardId> = port_selection(r).into_iter().map(OrderCardId).collect();
+        let model = port_model(r.session.state(), r.session.rules(), &legal, &selected);
+        let listed: Vec<Vec<u8>> = port_takes(&legal).iter().map(|m| set_of(&cards_by_hand(m).unwrap())).collect();
+        for card in &model.cards {
+            let mut with = selected.clone();
+            with.push(card.id);
+            let expected = !selected.contains(&card.id) && listed.contains(&set_of(&with));
+            assert_eq!(card.can_add, expected, "{at}: O{:02} can_add after {selected:?}", card.number);
+        }
+    }
+
+    #[test]
+    fn a_self_play_sweep_commits_every_take() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, takes committed, pairs payable both ways]
+        let mut tally = [0usize; 3];
+        for n in [2u8, 3, 4] {
+            for seed in 0..PORT_SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let takes = port_takes(&legal);
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && takes.len() > 1 {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        tally[0] += 1;
+                        let mut seen: Vec<Vec<u8>> = Vec::new();
+                        for mv in &takes {
+                            let cards = cards_by_hand(mv).unwrap();
+                            let key = set_of(&cards);
+                            if takes.iter().filter(|m| set_of(&cards_by_hand(m).unwrap()) == key).count() > 1
+                                && !seen.contains(&key)
+                            {
+                                seen.push(key);
+                                tally[2] += 1;
+                            }
+                            let mut r = repl_at(state.clone());
+                            let lines = lines_for(&r, mv, &cards, bare);
+                            for (i, line) in lines.iter().enumerate() {
+                                r.step(line);
+                                if i < cards.len() + 1 {
+                                    assert_port_can_add_is_the_list_s(&r, &at);
+                                }
+                            }
+                            assert_eq!(&last_move(&r), mv, "{at}");
+                            tally[1] += 1;
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [positions, takes, both_ways] = tally;
+        println!(
+            "a_self_play_sweep_commits_every_take: {positions} positions, {takes} takes, {both_ways} pairs payable \
+             both ways, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= PORT_SWEEP_POSITIONS_FLOOR, "only {positions} folded Port positions");
+        assert!(takes >= PORT_SWEEP_TAKES_FLOOR, "only {takes} Port takes committed");
+        assert!(both_ways >= 1, "the sweep met no pair payable both ways");
+    }
+
+    /// The sweep's seeds per player count.
+    const PORT_SWEEP_SEEDS: u64 = 8;
+
+    // -----------------------------------------------------------------
+    // The Laboratory folds by title (cycle 2, plan 2b, Task 3)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{
+        copies_of, lab_position_laid_out, lab_twin_position, lab_twin_position_owning_three, lay_out_lab,
+    };
+
+    /// The card a Laboratory move acquires, read by pattern.
+    fn lab_card(mv: &Move) -> Option<TechCardId> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Laboratory { card_id, .. } } => Some(*card_id),
+            _ => None,
+        }
+    }
+
+    /// A card's title, read off the registry by hand — never through
+    /// `describe::tech_name`, which the fold reads.
+    fn title_by_hand(r: &Repl, id: TechCardId) -> String {
+        r.session.rules().techs.get(id).expect("a registry card").name.clone()
+    }
+
+    /// Every listed Laboratory move of the title `name`, in list order.
+    fn lab_rows_of(r: &Repl, name: &str) -> Vec<Move> {
+        r.session.legal().into_iter().filter(|m| lab_card(m).is_some_and(|c| title_by_hand(r, c) == name)).collect()
+    }
+
+    /// The lines that commit the listed Laboratory move `mv` from the main
+    /// list, counted by hand off the list: a title with one listed row is its
+    /// direct row's number; a title with more is the entry worded as "The
+    /// words" say (its count counted here), then the pick's row for `mv`, its
+    /// place among the title's rows in list order. Never asks the fold which
+    /// entry a move is under.
+    fn lab_lines(r: &Repl, mv: &Move) -> Vec<String> {
+        let name = title_by_hand(r, lab_card(mv).expect("a Laboratory move"));
+        let same = lab_rows_of(r, &name);
+        let rows = r.option_rows();
+        if same.len() == 1 {
+            let k = rows.iter().position(|x| x.mv.as_ref() == Some(mv)).unwrap_or_else(|| {
+                panic!("{name}'s one row is a direct row: {:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>())
+            });
+            return vec![menu_number(k).to_string()];
+        }
+        let words = format!("Laboratory: acquire {name} — {} ways to pay", same.len());
+        let entry = rows.iter().position(|x| x.mv.is_none() && x.words == words).unwrap_or_else(|| {
+            panic!("no entry {words:?}: {:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>())
+        });
+        let k = same.iter().position(|m| m == mv).expect("mv is listed");
+        vec![menu_number(entry).to_string(), menu_number(k).to_string()]
+    }
+
+    /// The main list as `(names a move, words)` pairs.
+    fn rows_of(r: &Repl) -> Vec<(bool, String)> {
+        r.option_rows().into_iter().map(|x| (x.mv.is_some(), x.words)).collect()
+    }
+
+    /// The Laboratory A tile.
+    fn lab_a(state: &GameState) -> AreaId {
+        *state.board_layout.areas.iter().find(|(_, c)| c.area_type == AreaType::LaboratoryA).expect("Laboratory A").0
+    }
+
+    /// A mercenary's sub-turn at Laboratory A on `lab_twin_position`'s board,
+    /// built as the Port's is: the President stands elsewhere, the three
+    /// assistants act alone (power 3).
+    fn mercenary_lab_position() -> GameState {
+        let mut state = lab_twin_position();
+        let lab = lab_a(&state);
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != lab && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(lab);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.additional_action_state.mercenary_used = true;
+        state.current_action_power = Some(calculate_power(&state, me, lab));
+        state
+    }
+
+    /// A four-player position at Laboratory B with Ball's two copies on the
+    /// two boards: card 11 alone on Laboratory A (slot 0), card 12 alone on
+    /// Laboratory B (slot 2, +1), every other card back in the tech deck; the
+    /// acting seat's President on Laboratory B with 2 assistants (power 3), 5
+    /// yen and 1 imported good, so its copy is payable two ways.
+    fn lab_b_position() -> GameState {
+        let rules = Rules::standard();
+        let pending = new_game(GameConfig::for_player_count(4), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).unwrap();
+        let ball = copies_of("Ball");
+        lay_out_lab(&mut state, false, [Some(ball[0]), None, None, None, None, None]);
+        lay_out_lab(&mut state, true, [None, None, Some(ball[1]), None, None, None]);
+        let lab = *state.board_layout.areas.iter().find(|(_, c)| c.area_type == AreaType::LaboratoryB).expect("B").0;
+        let me = state.current_player;
+        let p = &mut state.players[me.0 as usize];
+        p.president_location = PresidentLocation::OnBoard(lab);
+        p.assistants.on_board.insert(lab, 2);
+        p.assistants.in_hand -= 2;
+        (p.money, p.imported_goods) = (5, 1);
+        state.turn_phase = TurnPhase::AreaAction;
+        state.current_action_power = Some(calculate_power(&state, me, lab));
+        state
+    }
+
+    #[test]
+    fn the_lab_fixtures_are_valid_and_read_as_measured() {
+        let rules = Rules::standard();
+        for (label, state) in [
+            ("twin", lab_twin_position()),
+            ("owning three", lab_twin_position_owning_three()),
+            ("mercenary", mercenary_lab_position()),
+            ("Laboratory B", lab_b_position()),
+        ] {
+            assert_eq!(check_invariants(&state, &rules), Ok(()), "{label}");
+            let mut ids: Vec<u8> = state
+                .tech_deck
+                .iter()
+                .chain(state.lab_state.lab_a.slots.iter().flatten())
+                .chain(state.lab_state.lab_b.iter().flat_map(|b| b.slots.iter().flatten()))
+                .chain(state.players.iter().flat_map(|p| p.technologies.iter()))
+                .map(|c| c.0)
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(ids, (1..=30).collect::<Vec<u8>>(), "{label}: every card once");
+        }
+        // Each title's listed rows in list order, as (title, card) runs.
+        let runs = |state: GameState| -> Vec<(String, u8, usize)> {
+            let r = repl_at(state);
+            let mut out: Vec<(String, u8, usize)> = Vec::new();
+            for mv in r.session.legal() {
+                if let Some(c) = lab_card(&mv) {
+                    match out.last_mut() {
+                        Some((_, card, n)) if *card == c.0 => *n += 1,
+                        _ => out.push((title_by_hand(&r, c), c.0, 1)),
+                    }
+                }
+            }
+            out
+        };
+        let s = |t: &str, c: u8, n: usize| (t.to_string(), c, n);
+        assert_eq!(
+            runs(lab_twin_position()),
+            [s("Mining Technology", 24, 1), s("Ball", 11, 1), s("Tram", 28, 3), s("Ball", 12, 2)],
+        );
+        assert_eq!(
+            runs(lab_twin_position_owning_three()),
+            [s("Mining Technology", 24, 2), s("Ball", 11, 2), s("Tram", 28, 5), s("Ball", 12, 4)],
+        );
+        assert_eq!(
+            runs(mercenary_lab_position()),
+            [s("Mining Technology", 24, 1), s("Ball", 11, 1), s("Tram", 28, 3), s("Ball", 12, 3)],
+        );
+        assert_eq!(runs(lab_b_position()), [s("Ball", 12, 2)]);
+    }
+
+    #[test]
+    fn the_main_list_reads_one_row_per_title() {
+        let r = repl_at(lab_twin_position());
+        // Ball's three rows sit at the list's second, sixth and seventh
+        // places: the entry stands at the first, Tram's after it.
+        assert_eq!(
+            rows_of(&r),
+            [
+                (true, "Laboratory: acquire Mining Technology".to_string()),
+                (false, "Laboratory: acquire Ball — 3 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 3 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+        assert_eq!(r.option_rows()[3].mv, Some(SKIP));
+        // Owning three: every title is an entry, each at its first row.
+        let r = repl_at(lab_twin_position_owning_three());
+        assert_eq!(
+            rows_of(&r),
+            [
+                (false, "Laboratory: acquire Mining Technology — 2 ways to pay".to_string()),
+                (false, "Laboratory: acquire Ball — 6 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 5 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+    }
+
+    #[test]
+    fn the_twin_s_pick_holds_every_row_of_both_copies() {
+        let mut r = repl_at(lab_twin_position());
+        let lab = |card: u8, extra_yen: u8, extra_imported: u8| Move::ExecuteAreaAction {
+            action: AreaAction::Laboratory {
+                card_id: TechCardId(card),
+                extra_yen,
+                extra_imported,
+                extra_tech_payment: None,
+            },
+        };
+        let expected = vec![lab(11, 0, 0), lab(12, 2, 0), lab(12, 0, 1)];
+        assert_eq!(lab_rows_of(&r, "Ball"), expected, "premise: Ball's rows in list order");
+        let out = r.step("2");
+        assert!(
+            matches!(&r.sub, SubPrompt::Pick { title, moves }
+                if title == "Laboratory: acquire Ball — choose the payment" && *moves == expected),
+            "the entry opens the pick over both copies' rows in list order",
+        );
+        assert_eq!(
+            out.text,
+            "Laboratory: acquire Ball — choose the payment:\n\
+             [1] Laboratory: acquire Ball (slot 2)\n\
+             [2] Laboratory: acquire Ball (slot 5), slot fee: 2 yen\n\
+             [3] Laboratory: acquire Ball (slot 5), slot fee: 1 imported good\n\
+             > pick a number, or 'cancel'\n",
+            "the pick's screen, in describe_move's words (each copy's slot named, Task 3b), under its title and \
+             the pick's own colon",
+        );
+        r.step("3");
+        assert_eq!(last_move(&r), lab(12, 0, 1), "the pick's third row is the slot-4 copy's import payment");
+        assert!(matches!(r.sub, SubPrompt::None));
+    }
+
+    #[test]
+    fn every_listed_row_commits_through_its_title() {
+        for (label, state) in [
+            ("twin", lab_twin_position()),
+            ("owning three", lab_twin_position_owning_three()),
+            ("mercenary", mercenary_lab_position()),
+            ("Laboratory B", lab_b_position()),
+        ] {
+            let listed: Vec<Move> = get_legal_moves(&state, &Rules::standard());
+            let mut committed = 0usize;
+            for mv in listed.iter().filter(|m| lab_card(m).is_some()) {
+                let mut r = repl_at(state.clone());
+                for line in lab_lines(&r, mv) {
+                    r.step(&line);
+                }
+                assert_eq!(&last_move(&r), mv, "{label}");
+                assert!(matches!(r.sub, SubPrompt::None), "{label}: nothing left open");
+                assert!(!r.session.is_locked(), "{label}: the move passed the engine's invariants");
+                committed += 1;
+            }
+            // The decline, by its direct row, after every entry.
+            let mut r = repl_at(state.clone());
+            let k = r.option_rows().iter().position(|x| x.mv == Some(SKIP)).expect("the decline is a direct row");
+            assert_eq!(k + 1, r.option_rows().len(), "{label}: the decline is last");
+            r.step(&menu_number(k).to_string());
+            assert_eq!(last_move(&r), SKIP, "{label}");
+            assert_eq!(committed + 1, listed.len(), "{label}: every listed move");
+        }
+    }
+
+    #[test]
+    fn a_title_with_one_row_stays_direct() {
+        let state = lab_twin_position();
+        let rules = Rules::standard();
+        let mining = get_legal_moves(&state, &rules)
+            .into_iter()
+            .find(|m| lab_card(m) == Some(TechCardId(24)))
+            .expect("Mining Technology is listed");
+        let mut twin = repl_at(state.clone());
+        let expected = twin.commit(mining.clone());
+        let mut r = repl_at(state);
+        let row = &r.option_rows()[0];
+        assert_eq!(row.mv.as_ref(), Some(&mining), "the title's one row names its move");
+        assert_eq!(row.words, describe::describe_move(&mining, r.session.state(), r.session.rules()));
+        let out = r.step("1");
+        assert_eq!(last_move(&r), mining, "its number commits it, no pick opened");
+        assert_eq!(out.text, expected.text, "the reply is today's");
+        assert_eq!(r.session.state(), twin.session.state());
+    }
+
+    #[test]
+    fn a_mercenary_s_laboratory_folds_and_commits() {
+        let state = mercenary_lab_position();
+        assert_eq!(state.current_action_power, Some(3), "premise: the assistants alone");
+        let mut r = repl_at(state);
+        assert_eq!(
+            rows_of(&r),
+            [
+                (true, "Laboratory: acquire Mining Technology".to_string()),
+                (false, "Laboratory: acquire Ball — 4 ways to pay".to_string()),
+                (false, "Laboratory: acquire Tram — 3 ways to pay".to_string()),
+                (true, SKIP_WORDS.to_string()),
+            ],
+        );
+        // The ACTING board is the mercenary's target, not the board the
+        // President stands on (it stands elsewhere here): the twin's rows name
+        // their slots (plan 2b, Task 3b's review, I-2).
+        assert_eq!(
+            lab_words_of(&r, "Ball"),
+            [
+                "Laboratory: acquire Ball (slot 2)",
+                "Laboratory: acquire Ball (slot 5), slot fee: 4 yen",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 yen + 1 imported good",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 imported goods",
+            ],
+        );
+        let ball = lab_rows_of(&r, "Ball");
+        r.step("2");
+        r.step("4");
+        assert_eq!(last_move(&r), ball[3]);
+        assert!(!r.session.is_locked(), "the acquire passed the engine's invariants");
+        assert!(r.session.state().is_mercenary_action, "still in the sub-turn");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::FivePowerBonus, "the sub-turn's next phase");
+    }
+
+    /// The decline's row, in `describe_move`'s words.
+    const SKIP_WORDS: &str = "Take the area action, declining all optional parts";
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 21 folded positions (8 at two players, 3 at three, 10 at four) and 150
+    /// rows over seeds 0..8, 13 of the positions with both copies of a title
+    /// in the list, and 14 with a one-row title after a folded title's first
+    /// row (the positions where the layout assertion tells "an entry at its
+    /// first row" from "the entries gathered after the direct rows"), in about
+    /// 5 s of a debug build.
+    const LAB_SWEEP_POSITIONS_FLOOR: usize = 10;
+    const LAB_SWEEP_ROWS_FLOOR: usize = 75;
+    const LAB_SWEEP_BOTH_COPIES_FLOOR: usize = 6;
+    const LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR: usize = 7;
+    /// Task 3b's floors, about half of what the same seeds read when set: 162
+    /// Laboratory prompts, 51 with both copies of a title on the acting board,
+    /// 16 of them in slots that add the same, and 8 whose listed rows collide
+    /// once the slot marker is taken out (the positions where the marker is
+    /// what parts them; Task 3's probe read the same 8).
+    const LAB_SWEEP_BOTH_ON_BOARD_FLOOR: usize = 25;
+    const LAB_SWEEP_SAME_ADD_FLOOR: usize = 8;
+    const LAB_SWEEP_ALIKE_WITHOUT_FLOOR: usize = 4;
+    const LAB_SWEEP_SEEDS: u64 = 8;
+
+    #[test]
+    fn a_self_play_sweep_commits_every_row() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, rows committed, positions with both copies of a
+        // title in the list, positions with a one-row title after a folded
+        // title's first row]
+        let mut tally = [0usize; 4];
+        let mut by_count = [0usize; 3];
+        // Task 3b: [Laboratory prompts, with both copies of a title on the
+        // acting board, with them in slots that add the same, whose rows
+        // collide once the slot marker is taken out]
+        let mut copies = [0usize; 4];
+        for n in [2u8, 3, 4] {
+            for seed in 0..LAB_SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let labs: Vec<&Move> = legal.iter().filter(|m| lab_card(m).is_some()).collect();
+                    let name = |id: TechCardId| rules.techs.get(id).expect("a card").name.clone();
+                    let folded = labs.iter().any(|m| {
+                        let t = name(lab_card(m).unwrap());
+                        labs.iter().filter(|o| name(lab_card(o).unwrap()) == t).count() > 1
+                    });
+                    // Task 3b, at every Laboratory prompt: no two listed rows
+                    // read alike.
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && !labs.is_empty() {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        copies[0] += 1;
+                        let words: Vec<String> =
+                            labs.iter().map(|m| describe::describe_move(m, &state, &rules)).collect();
+                        let mut sorted = words.clone();
+                        sorted.sort();
+                        assert!(sorted.windows(2).all(|w| w[0] != w[1]), "{at}: two Laboratory rows read alike: {words:?}");
+                        let mut stripped: Vec<String> = words.iter().map(|w| without_slot(w)).collect();
+                        stripped.sort();
+                        if stripped.windows(2).any(|w| w[0] == w[1]) {
+                            copies[3] += 1;
+                        }
+                        // The acting board's cards, read off the board.
+                        let area = describe::acting_area(&state).expect("an acting area");
+                        let board = match state.board_layout.areas[&area].area_type {
+                            AreaType::LaboratoryB => state.lab_state.lab_b.as_ref().expect("Laboratory B"),
+                            _ => &state.lab_state.lab_a,
+                        };
+                        let cards: Vec<(usize, String)> = board
+                            .slots
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, c)| c.map(|c| (i, name(c))))
+                            .collect();
+                        let pairs: Vec<(usize, usize)> = cards
+                            .iter()
+                            .flat_map(|(i, a)| cards.iter().filter(move |(j, b)| j > i && a == b).map(move |(j, _)| (*i, *j)))
+                            .collect();
+                        if !pairs.is_empty() {
+                            copies[1] += 1;
+                        }
+                        if pairs.iter().any(|&(i, j)| LabBoard::position_modifier(i) == LabBoard::position_modifier(j)) {
+                            copies[2] += 1;
+                        }
+                    }
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && folded {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        tally[0] += 1;
+                        by_count[n as usize - 2] += 1;
+                        let mut cards: Vec<(String, u8)> =
+                            labs.iter().map(|m| lab_card(m).unwrap()).map(|c| (name(c), c.0)).collect();
+                        cards.dedup();
+                        let mut titles: Vec<&String> = cards.iter().map(|(t, _)| t).collect();
+                        titles.sort();
+                        let distinct = titles.len();
+                        titles.dedup();
+                        if titles.len() < distinct {
+                            tally[2] += 1;
+                        }
+                        // The main list laid out BY HAND from the legal list:
+                        // a folded title where its FIRST row stands, a
+                        // one-row title as its own direct row, every other
+                        // row where it stands (the decline last, as listed).
+                        let count = |t: &str| labs.iter().filter(|m| name(lab_card(m).unwrap()) == t).count();
+                        let mut expected: Vec<(bool, String)> = Vec::new();
+                        let mut entered: Vec<String> = Vec::new();
+                        let mut direct_after_entry = false;
+                        for mv in &legal {
+                            match lab_card(mv).map(name) {
+                                Some(t) if count(&t) > 1 => {
+                                    if !entered.contains(&t) {
+                                        expected.push((false, format!("Laboratory: acquire {t} — {} ways to pay", count(&t))));
+                                        entered.push(t);
+                                    }
+                                }
+                                Some(_) => {
+                                    direct_after_entry |= !entered.is_empty();
+                                    expected.push((true, describe::describe_move(mv, &state, &rules)));
+                                }
+                                None => expected.push((true, describe::describe_move(mv, &state, &rules))),
+                            }
+                        }
+                        assert_eq!(rows_of(&repl_at(state.clone())), expected, "{at}: the main list's layout");
+                        if direct_after_entry {
+                            tally[3] += 1;
+                        }
+                        for mv in &labs {
+                            let mut r = repl_at(state.clone());
+                            for line in lab_lines(&r, mv) {
+                                r.step(&line);
+                            }
+                            assert_eq!(&last_move(&r), *mv, "{at}");
+                            tally[1] += 1;
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [positions, rows, both, direct_after] = tally;
+        let [lab_prompts, on_board, same_add, alike_without] = copies;
+        println!(
+            "a_self_play_sweep_commits_every_row (Task 3b): {lab_prompts} Laboratory prompts, {on_board} with both \
+             copies of a title on the acting board, {same_add} of them in slots that add the same, {alike_without} \
+             whose rows read alike without the slot marker"
+        );
+        assert!(on_board >= LAB_SWEEP_BOTH_ON_BOARD_FLOOR, "only {on_board} prompts with both copies on the board");
+        assert!(same_add >= LAB_SWEEP_SAME_ADD_FLOOR, "only {same_add} prompts with both copies in slots adding the same");
+        assert!(alike_without >= LAB_SWEEP_ALIKE_WITHOUT_FLOOR, "only {alike_without} prompts whose rows collide unmarked");
+        println!(
+            "a_self_play_sweep_commits_every_row: {positions} positions ({by_count:?} at 2/3/4 players), {rows} rows, \
+             {both} with both copies of a title in the list, {direct_after} with a one-row title after a folded \
+             title's first row, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= LAB_SWEEP_POSITIONS_FLOOR, "only {positions} folded Laboratory positions");
+        assert!(rows >= LAB_SWEEP_ROWS_FLOOR, "only {rows} Laboratory rows committed");
+        assert!(both >= LAB_SWEEP_BOTH_COPIES_FLOOR, "only {both} positions with both copies of a title listed");
+        assert!(
+            direct_after >= LAB_SWEEP_DIRECT_AFTER_ENTRY_FLOOR,
+            "only {direct_after} positions with a one-row title after a folded title's first row"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Two copies are told apart by their slot (cycle 2, plan 2b, Task 3b)
+    // -----------------------------------------------------------------
+
+    /// `words` with the slot marker (` (slot N)`) taken out, so a cell can
+    /// show what a row read before Task 3b.
+    fn without_slot(words: &str) -> String {
+        match words.find(" (slot ") {
+            Some(i) => match words[i..].find(')') {
+                Some(j) => format!("{}{}", &words[..i], &words[i + j + 1..]),
+                None => words.to_string(),
+            },
+            None => words.to_string(),
+        }
+    }
+
+    /// The words of every listed Laboratory row of the title `name`, in list
+    /// order, as `describe_move` gives them at the repl's state.
+    fn lab_words_of(r: &Repl, name: &str) -> Vec<String> {
+        lab_rows_of(r, name)
+            .iter()
+            .map(|m| describe::describe_move(m, r.session.state(), r.session.rules()))
+            .collect()
+    }
+
+    /// The slot labels the terminal's `labs` view prints over the cards named
+    /// `name` (upper-cased, as the view draws a name), in the order drawn:
+    /// each card's name is the first line under its top border, and the top
+    /// border's `slot N` stands over the same columns.
+    fn labs_view_slots_of(state: &GameState, name: &str) -> Vec<usize> {
+        let rules = Rules::standard();
+        let text = crate::view_render::labs_view(
+            &crate::screen_model::build_labs(state, &rules),
+            crate::view_render::ViewContext::Decision,
+        );
+        let lines: Vec<Vec<char>> = text.lines().map(|l| l.chars().collect()).collect();
+        let needle: Vec<char> = name.to_uppercase().chars().collect();
+        let mut out = Vec::new();
+        for (row, line) in lines.iter().enumerate().skip(1) {
+            for col in 0..line.len().saturating_sub(needle.len()) {
+                if line[col..col + needle.len()] == needle[..] && (col == 0 || !line[col - 1].is_alphanumeric()) {
+                    // The card's own label starts in the name's column, so
+                    // the search runs up to just past it.
+                    let border: String = lines[row - 1].iter().collect();
+                    let prefix: String = lines[row - 1].iter().take(col + 5).collect();
+                    let at = prefix.rfind("slot ").expect("a slot label over the card");
+                    let digits: String =
+                        border[at + 5..].chars().take_while(|c| c.is_ascii_digit()).collect();
+                    out.push(digits.parse().expect("a slot number"));
+                }
+            }
+        }
+        out
+    }
+
+    const BALL_11: Option<TechCardId> = Some(TechCardId(11));
+    const BALL_12: Option<TechCardId> = Some(TechCardId(12));
+    const MINING: Option<TechCardId> = Some(TechCardId(24));
+    const TRAM: Option<TechCardId> = Some(TechCardId(28));
+
+    #[test]
+    fn a_twin_s_row_names_its_slot() {
+        let mut r = repl_at(lab_twin_position());
+        // Ball's copies sit at the board's second and fifth slots (index 1
+        // and 4), whose labels the `labs` view prints as `slot 2` and
+        // `slot 5` (the rival: the slot's index from zero).
+        assert_eq!(labs_view_slots_of(r.session.state(), "Ball"), [2, 5], "the labs view's labels");
+        let words = lab_words_of(&r, "Ball");
+        assert_eq!(
+            words,
+            [
+                "Laboratory: acquire Ball (slot 2)",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 yen",
+                "Laboratory: acquire Ball (slot 5), slot fee: 1 imported good",
+            ],
+        );
+        let out = r.step("2");
+        assert!(matches!(r.sub, SubPrompt::Pick { .. }), "premise: the entry opens the pick");
+        assert_eq!(
+            out.text,
+            format!(
+                "Laboratory: acquire Ball — choose the payment:\n[1] {}\n[2] {}\n[3] {}\n> pick a number, or 'cancel'\n",
+                words[0], words[1], words[2],
+            ),
+            "the pick's rows read the same words",
+        );
+        // The entry's words do not change.
+        let r = repl_at(lab_twin_position());
+        assert_eq!(r.option_rows()[1].words, "Laboratory: acquire Ball — 3 ways to pay");
+    }
+
+    #[test]
+    fn a_single_copy_keeps_today_s_words() {
+        let r = repl_at(lab_twin_position());
+        for name in ["Mining Technology", "Tram"] {
+            for w in lab_words_of(&r, name) {
+                assert!(!w.contains("(slot"), "{name}'s one copy on the board: {w}");
+            }
+        }
+        // The twin's second copy swapped back into the tech deck: one Ball on
+        // the board, a title that exists twice (the rivals: "always name the
+        // slot", "name it for any title in the box twice").
+        let state = lab_position_laid_out([MINING, BALL_11, TRAM, None, None, None]);
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        assert!(state.tech_deck.contains(&TechCardId(12)), "premise: the other copy is in the deck");
+        let r = repl_at(state);
+        assert_eq!(lab_words_of(&r, "Ball"), ["Laboratory: acquire Ball"], "today's words, byte for byte");
+    }
+
+    #[test]
+    fn two_copies_whose_rows_read_alike_today_read_apart() {
+        for (label, slots, expected) in [
+            (
+                "slots that add the same (5 and 6, +2 each)",
+                [MINING, None, TRAM, None, BALL_11, BALL_12],
+                vec![
+                    "Laboratory: acquire Ball (slot 5), slot fee: 2 yen",
+                    "Laboratory: acquire Ball (slot 5), slot fee: 1 imported good",
+                    "Laboratory: acquire Ball (slot 6), slot fee: 2 yen",
+                    "Laboratory: acquire Ball (slot 6), slot fee: 1 imported good",
+                ],
+            ),
+            (
+                "slots that add 0 and 1, the power covering both",
+                [MINING, BALL_11, BALL_12, None, TRAM, None],
+                vec!["Laboratory: acquire Ball (slot 2)", "Laboratory: acquire Ball (slot 3)"],
+            ),
+        ] {
+            let state = lab_position_laid_out(slots);
+            assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()), "{label}");
+            let r = repl_at(state);
+            let words = lab_words_of(&r, "Ball");
+            assert_eq!(words, expected, "{label}");
+            // Before this task each copy's row matched the other copy's row
+            // for the same payment, word for word: with the marker taken out,
+            // they still do.
+            let half = words.len() / 2;
+            for i in 0..half {
+                let j = if label.starts_with("slots that add the same") { i + half } else { i + 1 };
+                assert_eq!(without_slot(&words[i]), without_slot(&words[j]), "{label}: alike without the marker");
+                assert_ne!(words[i], words[j], "{label}: apart with it");
+            }
+        }
+    }
+
+    #[test]
+    fn the_other_board_s_copy_does_not_count() {
+        let state = lab_b_position();
+        assert!(state.lab_state.lab_a.slots.contains(&BALL_11), "premise: one copy on Laboratory A");
+        let r = repl_at(state);
+        let words = lab_words_of(&r, "Ball");
+        assert!(!words.is_empty(), "premise: Laboratory B's copy is listed");
+        for w in words {
+            assert!(!w.contains("(slot"), "the other board's copy does not count: {w}");
+        }
+    }
+
+    #[test]
+    fn the_log_names_the_slot_too() {
+        let mut r = repl_at(lab_twin_position());
+        let mv = lab_rows_of(&r, "Ball")[2].clone();
+        for line in lab_lines(&r, &mv) {
+            r.step(&line);
+        }
+        assert_eq!(last_move(&r), mv);
+        let i = r.session.record().events.len() - 1;
+        // The log's line is the seat's name and `describe_move`'s words.
+        assert_eq!(
+            r.session.event_description_at(i),
+            Some("Red: Laboratory: acquire Ball (slot 5), slot fee: 1 imported good"),
         );
     }
 }

@@ -74,7 +74,7 @@
 //! leaving [`president_line`] a location and nothing else.
 
 use yokohama_core::{
-    AchievementType, AreaId, OrderCardId, PlayerColor, PlayerId, PresidentLocation,
+    AchievementType, AreaId, Country, OrderCardId, PlayerColor, PlayerId, PresidentLocation,
     TechEffect,
 };
 
@@ -82,8 +82,8 @@ use crate::board_render::{color_of, exact, Twin};
 use crate::card_render::{self, CardFace};
 use crate::describe;
 use crate::screen_model::{
-    AchievementModel, AchievementsPanel, BoardModel, HandCardModel, HandPanel, Panel, PlayerModel,
-    PlayersPanel, TitleMode, TitleModel, TracksPanel,
+    country_code, AchievementModel, AchievementsPanel, BoardModel, HandCardModel, HandPanel, Panel,
+    PlayerModel, PlayersPanel, TitleMode, TitleModel, TracksPanel,
 };
 use crate::style::{glyph, GoodKind, Tone};
 
@@ -593,15 +593,89 @@ fn tech_summary(effect: TechEffect) -> &'static str {
     }
 }
 
-/// `Mercenaries  1 unused · 0 used`. Both numbers always, because the unused
-/// ones are worth 1 VP each at the end and the used ones are not — a single
-/// total would hide the only distinction that scores.
+/// `Mercenaries  1 unused · 0 used · GB1 US0 FR0 DE1 NL1`, beside the board.
+/// Both mercenary numbers, because the unused ones are worth 1 VP each at the
+/// end and the used ones are not — a single total would hide the only
+/// distinction that scores. Then the seat's face-up flags, since every second
+/// flag of one country is what earns one of its mercenaries.
+///
+/// The row and its yield policy are [`mercenaries_twin`]'s, shared with the
+/// seat column's [`mercenaries_row`]; at [`DASH_W`] nothing ever yields (the
+/// widest legal row measures 59 columns, in
+/// `the_used_count_yields_first_and_whole`).
 fn mercenaries_line(p: &PlayerModel) -> String {
-    let mut t = indented();
-    t.raw("Mercenaries  ");
-    zone_count(&mut t, u32::from(p.mercenaries_unused), "unused");
-    sep(&mut t).raw(&format!("{} used", p.mercenaries_used));
-    line(&t)
+    line(&mercenaries_twin(p, DASH_W))
+}
+
+/// The Mercenaries row at `w` columns, with its YIELD POLICY (plan 2b, Task 8;
+/// the owner's ruling D, 2026-11-22: the face-up counts ride this row at no
+/// cost in frame rows).
+///
+/// The row is the unused count, the used count and the five face-up counts,
+/// each country's code followed by its count with no space, in
+/// `Country::ALL`'s order, single spaces apart, a ZERO count dimmed (the
+/// whole token, so the eye finds the countries a seat holds). Where it does
+/// not fit `w`, facts yield WHOLE, in a stated order, and nothing is ever
+/// clipped mid-token — the policy [`seat_tail_row`]'s `next take` follows:
+///
+/// 1. **`· N used` yields first.** It is the one number on the row that does
+///    not score, and the `players` view gives the mercenaries' total beside
+///    the unused count, so the used count is their difference. At a
+///    four-player seat's 48 columns it always yields (the opening row is
+///    54); at a three-player seat's 56 it yields only at the widest legal
+///    rows.
+/// 2. **Then the countries at zero**, all of them. A row that has yielded its
+///    zeros names every country it holds, so a country it does not name has
+///    none.
+/// 3. **Then the counts together**, and the row reads its unused count alone.
+///    No country is ever dropped while another stays, which would read as a
+///    zero.
+///
+/// Steps 2 and 3 are reached only at a four-player seat, and only at counts
+/// far past an ordinary game (two-digit counts in four countries, or in three
+/// with all ten mercenaries unused): the second form measures up to 50
+/// columns against 48. Every figure is measured by
+/// `the_used_count_yields_first_and_whole`, over a superset of the legal rows
+/// taken one count per class of counts that render alike (the reduction is
+/// reasoned in the cell).
+fn mercenaries_twin(p: &PlayerModel, w: usize) -> Twin {
+    let head = |with_used: bool| {
+        let mut t = indented();
+        t.raw("Mercenaries  ");
+        zone_count(&mut t, u32::from(p.mercenaries_unused), "unused");
+        if with_used {
+            sep(&mut t).raw(&format!("{} used", p.mercenaries_used));
+        }
+        t
+    };
+    let counts = p.flags.as_array();
+    for (with_used, with_zeros) in [(true, true), (false, true), (false, false)] {
+        let shown: Vec<(Country, u8)> = Country::ALL
+            .into_iter()
+            .zip(counts)
+            .filter(|&(_, n)| with_zeros || n > 0)
+            .collect();
+        if shown.is_empty() {
+            continue;
+        }
+        let mut t = head(with_used);
+        sep(&mut t);
+        for (i, (country, n)) in shown.into_iter().enumerate() {
+            if i > 0 {
+                t.raw(" ");
+            }
+            let token = format!("{}{n}", country_code(country));
+            if n == 0 {
+                t.tinted(Tone::Dim, &token);
+            } else {
+                t.raw(&token);
+            }
+        }
+        if t.width() <= w {
+            return t;
+        }
+    }
+    head(false)
 }
 
 /// `Orders  2 in hand · 3 filled (O23, O08, O12)`.
@@ -1335,12 +1409,10 @@ fn tech_row(p: &PlayerModel, w: usize) -> String {
     line_at(&t, w)
 }
 
+/// The seat column's Mercenaries row: [`mercenaries_line`]'s row at the
+/// column's width, through the same [`mercenaries_twin`] and its yield policy.
 fn mercenaries_row(p: &PlayerModel, w: usize) -> String {
-    let mut t = indented();
-    t.raw("Mercenaries  ");
-    zone_count(&mut t, u32::from(p.mercenaries_unused), "unused");
-    sep(&mut t).raw(&format!("{} used", p.mercenaries_used));
-    line_at(&t, w)
+    line_at(&mercenaries_twin(p, w), w)
 }
 
 /// `President ▲ EMPLOYMENT AGENCY`, or `President in hand`. The beside form's
@@ -2720,6 +2792,359 @@ mod tests {
                 worst.0,
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The flag counts on the Mercenaries row (plan 2b, Task 8)
+    // -----------------------------------------------------------------------
+
+    /// The content width of a seat column at `n` players, from the block the
+    /// below arrangement is handed: 56 at three players, 48 at four.
+    fn seat_content_w(n: u8) -> usize {
+        block_np(n) / usize::from(n) - SEAT_COL_GAP
+    }
+
+    /// Every panel of a fresh `n`-player game with every seat's hand HIDDEN,
+    /// and the LAST seat's face-up flags set to `flags` — the last, so its row
+    /// ends the composed line in the below arrangement.
+    fn panels_with_flags(
+        n: u8,
+        flags: crate::screen_model::FlagCounts,
+    ) -> (Vec<Panel>, BoardModel, Vec<PlayerColor>) {
+        let (state, rules) = state_np(n);
+        let seats = vec![
+            crate::screen_model::SeatFacts { hand_hidden: true, ..Default::default() };
+            usize::from(n)
+        ];
+        let board = crate::screen_model::build_board(&state, &rules, &[]);
+        let mut panels =
+            crate::screen_model::build_dashboard(&state, &rules, &seats, PlayerId::new(0));
+        for panel in &mut panels {
+            if let Panel::Players(pp) = panel {
+                let last = pp.players.last_mut().expect("a seat");
+                assert!(last.hand_hidden, "the flagged seat's hand is hidden");
+                last.flags = flags;
+            }
+        }
+        (panels, board, colors_np(&state))
+    }
+
+    /// The composed players block at `n` players, beside (2) or below (3, 4).
+    fn composed(panels: &[Panel], board: &BoardModel, colors: &[PlayerColor], n: u8) -> String {
+        if n == 2 {
+            dashboard(panels, board, colors)
+        } else {
+            dashboard_below(panels, board, colors, block_np(n))
+        }
+    }
+
+    /// "The words": the face-up counts ride each seat's Mercenaries row, the
+    /// code followed by its count with no space, the five in `Country::ALL`'s
+    /// order separated by single spaces.
+    ///
+    /// In both arrangements and at every count, through the composed dashboard
+    /// and not only the row's own function, on a seat whose five counts are
+    /// DISTINCT and non-zero (so two countries swapped read a different row)
+    /// and whose hand is HIDDEN (the counts are face up and are never masked).
+    /// Then the tint: a zero count is dimmed and a non-zero one is not, read
+    /// on the PAINTED text, and the plain text carries no escape at all.
+    #[test]
+    fn the_mercenaries_row_carries_the_face_up_flags() {
+        use crate::screen_model::FlagCounts;
+        let distinct = FlagCounts { english: 1, american: 2, french: 3, german: 4, dutch: 5 };
+        for n in [2u8, 3, 4] {
+            let (panels, board, colors) = panels_with_flags(n, distinct);
+            let text = strip_ansi(&composed(&panels, &board, &colors, n));
+            let rows: Vec<&str> = text.lines().filter(|l| l.contains("Mercenaries")).collect();
+            if n == 2 {
+                assert_eq!(rows.len(), 2, "one row per seat beside the board:\n{text}");
+                assert_eq!(
+                    rows[1], "  Mercenaries  0 unused · 0 used · GB1 US2 FR3 DE4 NL5",
+                    "the 2P flagged seat's row:\n{text}",
+                );
+                assert_eq!(rows[0], "  Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0");
+            } else {
+                assert_eq!(rows.len(), 1, "one composed row below the board:\n{text}");
+                let tail = if n == 3 {
+                    "Mercenaries  0 unused · 0 used · GB1 US2 FR3 DE4 NL5"
+                } else {
+                    "Mercenaries  0 unused · GB1 US2 FR3 DE4 NL5"
+                };
+                assert!(
+                    rows[0].ends_with(&format!("  {tail}")),
+                    "the {n}P composed row ends with the flagged seat's counts: {:?}",
+                    rows[0],
+                );
+                assert_eq!(
+                    rows[0].matches("GB0 US0 FR0 DE0 NL0").count(),
+                    usize::from(n) - 1,
+                    "every other seat reads its own five zeros: {:?}",
+                    rows[0],
+                );
+            }
+        }
+
+        // The tint, on both arrangements' row functions.
+        let mixed = FlagCounts { english: 2, american: 0, french: 1, german: 0, dutch: 3 };
+        let (panels, _, _) = panels_with_flags(4, mixed);
+        let Some(Panel::Players(pp)) = panels.iter().find(|p| matches!(p, Panel::Players(_))) else {
+            panic!("a players panel");
+        };
+        let p = pp.players.last().expect("a seat");
+        crate::style::force(true);
+        let painted = [mercenaries_line(p), mercenaries_row(p, 56), mercenaries_row(p, 48)];
+        let dimmed = ["US0", "DE0"].map(|zero| crate::style::paint(Tone::Dim, zero));
+        crate::style::force(false);
+        let plain = [mercenaries_line(p), mercenaries_row(p, 56), mercenaries_row(p, 48)];
+        for (painted, plain) in painted.iter().zip(&plain) {
+            for zero in &dimmed {
+                assert!(painted.contains(zero.as_str()), "a zero count is dimmed: {painted:?}");
+            }
+            for count in ["GB2", "FR1", "NL3"] {
+                assert!(
+                    painted.contains(&format!(" {count}")) && !painted.contains(&format!("{count}\u{1b}")),
+                    "a non-zero count is not tinted: {painted:?}",
+                );
+            }
+            assert!(!plain.contains('\u{1b}'), "the plain row carries no escape: {plain:?}");
+            assert_eq!(&strip_ansi(painted), plain, "painting adds no visible character");
+            assert!(plain.ends_with("GB2 US0 FR1 DE0 NL3"), "{plain:?}");
+        }
+    }
+
+    /// The row's yield policy, stated as "The words" state it, and measured.
+    ///
+    /// **The opening rows first**: a three-player seat's 56 columns keep
+    /// `· 0 used`; a four-player seat's 48 do not, and the row reads without
+    /// it rather than clipped; the two-player line keeps it.
+    ///
+    /// **Then the widest LEGAL row**, the way
+    /// `the_widest_legal_seat_tail_row_still_fits_its_column` measures its
+    /// row: over a constrained joint domain, every row rendered at all three
+    /// widths and compared with the policy's own expected text.
+    ///
+    /// - A country's face-up count runs from 0 to its order cards plus its
+    ///   technology TITLES (a seat owns one card of a name), read from the
+    ///   registry: GB 8 + 6 = 14, US 8 + 4 = 12, FR 8 + 4 = 12, DE 7 + 3 = 10,
+    ///   NL 5 + 3 = 8. An existence bound, the tail row's own kind (36 order
+    ///   cards exist), not a claim about how long a game runs.
+    /// - Every second flag of a country earns one of its mercenaries while the
+    ///   supply lasts (GB 3, US 2, FR 2, DE 2, NL 1, `MercenarySupply::new`),
+    ///   so a seat holds at most the sum over the countries of
+    ///   `min(supply, count / 2)`, split between unused and used every way.
+    /// - **A reduction, reasoned rather than measured**: a count reaches the
+    ///   row only through its digits and whether it is zero, and the
+    ///   mercenary bound only through `min(supply, count / 2)`, so each
+    ///   country's range is swept by one count per class of those three
+    ///   (6 x 5 x 5 x 5 x 3 = 2,250 tuples), every unused/used split of each
+    ///   tuple's bound rendered.
+    ///
+    /// **MEASURED**, at each width:
+    ///
+    /// - 74 (two players): every row keeps `used`; the widest is 59.
+    /// - 56 (three): the widest row that keeps `used` is 56, the column
+    ///   exactly; the widest that yields it is 50; nothing else ever yields.
+    /// - 48 (four): no row keeps `used` (the opening's is 54); the widest
+    ///   row of the second form that fits is 48, and 49,395 of the 49,575
+    ///   rows swept read that form. **The second form is not
+    ///   enough there**: it measures up to 50 (`10 unused` and two-digit
+    ///   counts in four countries), so the policy's next steps run. The
+    ///   countries at zero yield next (55 rows, widest 45); where no country
+    ///   is at zero the counts yield together and the row reads its unused
+    ///   count alone (125 rows, widest 24). No row is ever clipped.
+    ///
+    /// **That the zeros yield all at once, rather than one at a time, is
+    /// REASONED, not measured**: the second form outruns 48 columns only with
+    /// two-digit counts in four countries — GB, US, FR and DE, the only four
+    /// whose bound reaches 10 — or with all ten mercenaries unused, which
+    /// needs every country at its supply's bound and so none at zero. So a
+    /// row the zeros' step applies to has exactly one country at zero, NL,
+    /// and the two readings render it alike (Task 8's review found its R07
+    /// mutant, the zeros one at a time, equivalent for that reason).
+    #[test]
+    fn the_used_count_yields_first_and_whole() {
+        use crate::screen_model::{country_code, FlagCounts};
+        let (w3, w4) = (seat_content_w(3), seat_content_w(4));
+        assert_eq!((DASH_W, w3, w4), (74, 56, 48), "the three widths the row is drawn at");
+
+        // The opening rows, from real models.
+        for n in [2u8, 3, 4] {
+            let (state, rules) = state_np(n);
+            let panel = crate::screen_model::build_players(
+                &state,
+                &rules,
+                &crate::screen_model::SeatFacts::all_open(usize::from(n)),
+            );
+            let p = &panel.players[0];
+            let row = strip_ansi(&match n {
+                2 => mercenaries_line(p),
+                3 => mercenaries_row(p, w3),
+                _ => mercenaries_row(p, w4),
+            });
+            let want = if n == 4 {
+                "  Mercenaries  0 unused · GB0 US0 FR0 DE0 NL0"
+            } else {
+                "  Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0"
+            };
+            assert_eq!(row, want, "the {n}P opening row");
+        }
+
+        // The domain's bounds, from the registry and the engine's supply.
+        let rules = Rules::standard();
+        let mut maxima = [0u8; 5];
+        for card in rules.orders.iter() {
+            maxima[Country::ALL.iter().position(|&c| c == card.country).unwrap()] += 1;
+        }
+        let mut titles = std::collections::HashSet::new();
+        for card in rules.techs.iter() {
+            if titles.insert(card.name.clone()) {
+                maxima[Country::ALL.iter().position(|&c| c == card.country).unwrap()] += 1;
+            }
+        }
+        assert_eq!(maxima, [14, 12, 12, 10, 8], "orders plus titles, per country");
+        let s = MercenarySupply::new();
+        let supply = [s.english, s.american, s.french, s.german, s.dutch];
+        assert_eq!(supply, [3, 2, 2, 2, 1]);
+
+        // One count per class: (zero?, digits, mercenaries it can earn).
+        let classes: Vec<Vec<u8>> = (0..5)
+            .map(|c| {
+                let mut by_class = std::collections::BTreeMap::new();
+                for f in 0..=maxima[c] {
+                    by_class.insert((f == 0, f >= 10, (f / 2).min(supply[c])), f);
+                }
+                by_class.into_values().collect()
+            })
+            .collect();
+        assert_eq!(
+            classes.iter().map(Vec::len).collect::<Vec<_>>(),
+            [6, 5, 5, 5, 3],
+            "{classes:?}",
+        );
+
+        // The policy as "The words" state it: the first form that fits.
+        let expected = |u: u8, v: u8, f: [u8; 5], w: usize| -> (usize, String) {
+            let token = |c: usize| format!("{}{}", country_code(Country::ALL[c]), f[c]);
+            let all: Vec<String> = (0..5).map(token).collect();
+            let nonzero: Vec<String> = (0..5).filter(|&c| f[c] > 0).map(token).collect();
+            let mut forms = vec![
+                format!("  Mercenaries  {u} unused · {v} used · {}", all.join(" ")),
+                format!("  Mercenaries  {u} unused · {}", all.join(" ")),
+            ];
+            forms.push(if nonzero.is_empty() || nonzero.len() == 5 {
+                String::from("-") // no zero to yield, or nothing left: the step does not apply
+            } else {
+                format!("  Mercenaries  {u} unused · {}", nonzero.join(" "))
+            });
+            forms.push(format!("  Mercenaries  {u} unused"));
+            forms
+                .into_iter()
+                .enumerate()
+                .find(|(_, s)| s != "-" && s.chars().count() <= w)
+                .expect("the last form always fits")
+        };
+
+        let base = {
+            let (state, rules) = state_np(4);
+            let seats = crate::screen_model::SeatFacts::all_open(4);
+            crate::screen_model::build_players(&state, &rules, &seats).players[0].clone()
+        };
+
+        // widest[width][form], rows[width][form], and the widest second form
+        // at each width whether or not it fit.
+        let widths = [DASH_W, w3, w4];
+        let mut widest = [[0usize; 4]; 3];
+        let mut rows = [[0usize; 4]; 3];
+        let mut second_form_max = 0usize;
+        let mut swept = 0usize;
+        for &gb in &classes[0] {
+            for &us in &classes[1] {
+                for &fr in &classes[2] {
+                    for &de in &classes[3] {
+                        for &nl in &classes[4] {
+                            let f = [gb, us, fr, de, nl];
+                            let held: u8 = (0..5).map(|c| (f[c] / 2).min(supply[c])).sum();
+                            for u in 0..=held {
+                                for v in 0..=(held - u) {
+                                    let mut p = base.clone();
+                                    p.flags = FlagCounts {
+                                        english: gb,
+                                        american: us,
+                                        french: fr,
+                                        german: de,
+                                        dutch: nl,
+                                    };
+                                    p.mercenaries_unused = u;
+                                    p.mercenaries_used = v;
+                                    let second = format!(
+                                        "  Mercenaries  {u} unused · {}",
+                                        (0..5)
+                                            .map(|c| format!("{}{}", country_code(Country::ALL[c]), f[c]))
+                                            .collect::<Vec<_>>()
+                                            .join(" "),
+                                    );
+                                    second_form_max = second_form_max.max(second.chars().count());
+                                    for (i, &w) in widths.iter().enumerate() {
+                                        let row = if w == DASH_W {
+                                            mercenaries_line(&p)
+                                        } else {
+                                            mercenaries_row(&p, w)
+                                        };
+                                        let plain = strip_ansi(&row);
+                                        let (form, want) = expected(u, v, f, w);
+                                        assert_eq!(plain, want, "at {w} columns, u={u} v={v} f={f:?}");
+                                        assert!(
+                                            visible_width(&row) <= w && !plain.contains(glyph::ELLIPSIS),
+                                            "never clipped: {plain:?}",
+                                        );
+                                        rows[i][form] += 1;
+                                        widest[i][form] = widest[i][form].max(visible_width(&row));
+                                    }
+                                    swept += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // "The words"' own two rows for the later steps, literally.
+        let mut p = base.clone();
+        p.flags = FlagCounts { english: 14, american: 12, french: 12, german: 10, dutch: 0 };
+        p.mercenaries_unused = 9;
+        assert_eq!(
+            strip_ansi(&mercenaries_row(&p, w4)),
+            "  Mercenaries  9 unused · GB14 US12 FR12 DE10",
+            "the zeros yield",
+        );
+        p.flags.dutch = 8;
+        p.mercenaries_unused = 10;
+        assert_eq!(strip_ansi(&mercenaries_row(&p, w4)), "  Mercenaries  10 unused", "then the counts");
+        assert_eq!(
+            strip_ansi(&mercenaries_row(&p, w3)),
+            "  Mercenaries  10 unused · GB14 US12 FR12 DE10 NL8",
+            "the same seat at three players yields only its used count",
+        );
+
+        assert_eq!(
+            swept, 49_575,
+            "every one of the 2,250 class tuples with every unused/used split of its bound",
+        );
+        // 74: the full form always.
+        assert_eq!(widest[0], [59, 0, 0, 0], "74 columns: {:?} over {:?}", widest[0], rows[0]);
+        // 56: used yields at the widest rows, and nothing else ever does.
+        assert_eq!(widest[1], [56, 50, 0, 0], "56 columns: {:?} over {:?}", widest[1], rows[1]);
+        // 48: used always yields; then the zeros; then the counts together.
+        assert_eq!(widest[2], [0, 48, 45, 24], "48 columns: {:?} over {:?}", widest[2], rows[2]);
+        assert_eq!(
+            second_form_max, 50,
+            "the widest second form, which is why 48 columns need the next two steps",
+        );
+        assert_eq!(
+            rows[2],
+            [0, 49_395, 55, 125],
+            "at 48 columns, the rows of each form: both later steps are reached, and rarely",
+        );
     }
 
     /// [`header_row`]'s clip, pinned on its own (T10 review MUST-1(c)).

@@ -14,10 +14,39 @@
 import { describe, expect, it } from "vitest";
 import { EVERY_STATE, KEYS, wire } from "./contract";
 import { achievementsOf } from "../test/panels";
-import type { ArtEntry, HandPanel, Panel } from "../types";
+import type { ArtEntry, Country, FlagCounts, HandPanel, Panel, PlayerModel } from "../types";
 
 const keys = (v: unknown): string[] => Object.keys(v as object).sort();
 const listed = (l: readonly string[]): string[] => [...l].sort();
+
+/** Every Hand panel and every seat's row ANYWHERE in the committed corpus —
+ *  the play states, the replay stops, the run's frames, the deal views — found
+ *  by walking each payload rather than by naming where a frame sits in it, so
+ *  a payload added later is covered without a list to extend. */
+function corpusPanels(): { hands: [string, HandPanel][]; players: [string, PlayerModel][] } {
+  const hands: [string, HandPanel][] = [];
+  const players: [string, PlayerModel][] = [];
+  const walk = (name: string, v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const x of v) walk(name, x);
+      return;
+    }
+    if (v === null || typeof v !== "object") return;
+    for (const [k, x] of Object.entries(v)) {
+      if (k === "Hand") hands.push([name, x as HandPanel]);
+      if (k === "Players") {
+        for (const p of (x as { players: PlayerModel[] }).players) players.push([name, p]);
+      }
+      walk(name, x);
+    }
+  };
+  for (const [name, payload] of Object.entries(wire)) walk(name, payload);
+  return { hands, players };
+}
+
+const FLAG_KEY: Record<Country, keyof FlagCounts> = {
+  English: "english", American: "american", French: "french", German: "german", Dutch: "dutch",
+};
 
 describe("the payload roots carry exactly the fields the client declares", () => {
   it.each(
@@ -44,6 +73,221 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     for (const row of prompt.rows) expect(keys(row)).toEqual(listed(KEYS.optionRow));
   });
 
+  // The Church chooser's arm (plan 2a): its kinds and its preview carry the
+  // fields `types.ts` declares, on every `church` state in the corpus.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "church").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("ChurchKind and ChooserPreview (church state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "church") throw new Error("filtered to church states");
+    expect(prompt.kinds.length).toBe(6);
+    for (const kind of prompt.kinds) expect(keys(kind)).toEqual(listed(KEYS.churchKind));
+    expect(prompt.kinds.map((k) => k.number)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+    // The arm's own top (the fix wave's C1).
+    expect(keys(prompt)).toEqual(listed(KEYS.churchPrompt));
+  });
+
+  it("the corpus's three church states: as it opens, with its first kind on, and its first legal one", () => {
+    const churches = EVERY_STATE.filter((state) => state.prompt.kind === "church");
+    expect(churches).toEqual([wire.church, wire.churchSelected, wire.churchLegal]);
+    const prompt = (state: typeof wire.church) => {
+      if (state.prompt.kind !== "church") throw new Error(`not a church prompt: ${state.prompt.kind}`);
+      return state.prompt;
+    };
+    const selected = (state: typeof wire.church): number => prompt(state).kinds.filter((k) => k.selected).length;
+    expect(selected(wire.church)).toBe(0);
+    expect(selected(wire.churchSelected)).toBe(1);
+    expect(selected(wire.churchLegal)).toBe(2);
+    // Neither of the first two names a listed move.
+    for (const state of [wire.church, wire.churchSelected]) {
+      expect(prompt(state).preview.legal).toBe(false);
+      expect(prompt(state).preview.words).toBeNull();
+    }
+    // The third does, in `describe`'s words, and so carries no offered-faiths line.
+    const legal = prompt(wire.churchLegal);
+    expect(legal.preview.legal).toBe(true);
+    expect(legal.preview.words).toMatch(/^Church: pay /);
+    expect(legal.offered_faiths).toBeNull();
+  });
+
+  it("a church preview has words exactly when it is legal", () => {
+    for (const state of EVERY_STATE) {
+      const prompt = state.prompt;
+      if (prompt.kind !== "church") continue;
+      if (prompt.preview.legal) {
+        expect(typeof prompt.preview.words).toBe("string");
+        expect(prompt.preview.words).not.toBe("");
+      } else {
+        expect(prompt.preview.words).toBeNull();
+      }
+    }
+  });
+
+  // The Chinatown chooser's arm (plan 2a, Task 4): its nine rows and its
+  // preview carry the fields `types.ts` declares, on every `chinatown` state.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "chinatown").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("ChinatownRow and ChooserPreview (chinatown state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "chinatown") throw new Error("filtered to chinatown states");
+    expect(prompt.rows.length).toBe(9);
+    for (const row of prompt.rows) expect(keys(row)).toEqual(listed(KEYS.chinatownRow));
+    expect(prompt.rows.map((r) => r.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // The four sales are rows 1 to 4, and only they.
+    expect(prompt.rows.map((r) => r.sells)).toEqual([true, true, true, true, false, false, false, false, false]);
+    expect(prompt.stock.map((a) => a.good)).toEqual(["Copper", "Silk", "Tea", "Seafood", "Yen", "Imports"]);
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.chooserPreview));
+    // The arm's own top, a stock entry, and every row's spend and gain (the
+    // fix wave's C1).
+    expect(keys(prompt)).toEqual(listed(KEYS.chinatownPrompt));
+    for (const amount of prompt.stock) expect(keys(amount)).toEqual(listed(KEYS.chooserAmount));
+    for (const row of prompt.rows) {
+      expect(keys(row.spend), `row ${row.number}'s spend`).toEqual(listed(KEYS.chooserAmount));
+      expect(keys(row.gain), `row ${row.number}'s gain`).toEqual(listed(KEYS.chooserAmount));
+    }
+  });
+
+  // The Port chooser's arm (plan 2b, Task 2): its top, every card and its
+  // preview carry the fields `types.ts` declares, on every `port` state.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "port").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("PortCard and PortPreview (port state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "port") throw new Error("filtered to port states");
+    expect(keys(prompt)).toEqual(listed(KEYS.portPrompt));
+    expect(prompt.cards.length).toBeGreaterThan(0);
+    for (const card of prompt.cards) {
+      expect(keys(card)).toEqual(listed(KEYS.portCard));
+      // The number a click sends is the card's bare id, and its face is the card's.
+      expect(card.number).toBe(card.id);
+      expect(card.printed.id).toBe(card.id);
+    }
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.portPreview));
+  });
+
+  it("the corpus's three port states: as it opens, with one card on, and with a pair on", () => {
+    const ports = EVERY_STATE.filter((state) => state.prompt.kind === "port");
+    expect(ports).toEqual([wire.port, wire.portSelected, wire.portPair]);
+    const prompt = (state: typeof wire.port) => {
+      if (state.prompt.kind !== "port") throw new Error(`not a port prompt: ${state.prompt.kind}`);
+      return state.prompt;
+    };
+    const on = (state: typeof wire.port) => prompt(state).cards.filter((c) => c.selected);
+    // As it opens: nothing selected, not legal, no way; four cards in reach.
+    const opened = prompt(wire.port);
+    expect(opened.cards.length).toBe(4);
+    expect(on(wire.port)).toEqual([]);
+    expect(opened.preview).toEqual({ legal: false, ways: [] });
+    expect(opened.cards.every((c) => c.can_add)).toBe(true);
+    // One card on: legal, one way, in `describe`'s words.
+    const one = prompt(wire.portSelected);
+    expect(on(wire.portSelected).length).toBe(1);
+    expect(one.preview.legal).toBe(true);
+    expect(one.preview.ways).toEqual([`Port: take O${String(on(wire.portSelected)[0]!.number).padStart(2, "0")}`]);
+    // A pair on: legal, one way, and every other card's can_add false.
+    const pair = prompt(wire.portPair);
+    expect(on(wire.portPair).length).toBe(2);
+    expect(pair.preview.legal).toBe(true);
+    expect(pair.preview.ways.length).toBe(1);
+    expect(pair.preview.ways[0]).toMatch(/^Port: take O\d\d, O\d\d, paying /);
+    expect(pair.cards.filter((c) => !c.selected).length).toBe(2);
+    expect(pair.cards.every((c) => !c.can_add)).toBe(true);
+    for (const state of ports) expect(prompt(state).max_cards).toBe(2);
+  });
+
+  // The Laboratory's fold (plan 2b, Task 3) rides the numbered pick the REPL
+  // already has, so the client meets no new kind. The corpus's one folded
+  // Laboratory prompt (event 50) is the two-copies case: both copies of Ball on
+  // the board, one listed row each, read here as the pick's two rows — each
+  // naming its copy's slot, since both copies are on the board (Task 3b) —
+  // and, by their cards, off the frame's own list of the moves.
+  it("the corpus's Laboratory pick: one title over both copies of Ball", () => {
+    const state = wire.labPick;
+    if (state.prompt.kind !== "pick") throw new Error(`not a pick: ${state.prompt.kind}`);
+    expect(state.events).toBe(50);
+    expect(state.prompt.title).toBe("Laboratory: acquire Ball — choose the payment");
+    expect(state.prompt.rows.map((r) => [r.number, r.words, r.opens_picker])).toEqual([
+      [1, "Laboratory: acquire Ball (slot 2)", false],
+      [2, "Laboratory: acquire Ball (slot 3), slot fee: 2 yen", false],
+    ]);
+    const card = (mv: unknown) =>
+      (mv as { ExecuteAreaAction?: { action?: { Laboratory?: { card_id: number } } } }).ExecuteAreaAction?.action
+        ?.Laboratory?.card_id;
+    expect(state.frame.decision.options.map((o) => card(o.mv)).filter((c) => c !== undefined)).toEqual([12, 11]);
+  });
+
+  // **A chooser's terminal screen never rides `messages`** (design §5.6; the
+  // fix wave's C2). The server strips it by identity and `api.rs`'s cells
+  // catch a Rust-side leak, but a REGENERATED corpus would freeze the leak as
+  // faithfully as a fix (measured: vitest read 226 passed over a corpus
+  // regenerated with the screen in `messages`). So the corpus's own chooser
+  // states are read for the lines only a screen carries: each screen's
+  // heading and its `> ` hint, in "The words" of plans 2a and 2b.
+  const SCREEN_LINES: { what: string; test: (line: string) => boolean }[] = [
+    { what: "the Church's heading", test: (l) => l === "Church — pay any of these, at most one of each (toggle by number):" },
+    { what: "the Church's hint", test: (l) => l === "> type a number to toggle, 'confirm' to pay, or 'cancel'" },
+    { what: "Chinatown's heading", test: (l) => /^Chinatown — up to \d+ exchanges? \(add by number\):$/.test(l) },
+    { what: "Chinatown's hint", test: (l) => l === "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'" },
+    { what: "the Port's heading", test: (l) => /^Port [AB] — take 1 card(, or 2)? \(toggle by number\):$/.test(l) },
+    { what: "the Port's hint", test: (l) => l === "> a card number toggles it, 'confirm' to take, or 'cancel'" },
+  ];
+  it("no chooser state's messages carry a line of any chooser's terminal screen", () => {
+    // The patterns read the screens' own lines (anti-vacuity).
+    for (const line of [
+      "Church — pay any of these, at most one of each (toggle by number):",
+      "> type a number to toggle, 'confirm' to pay, or 'cancel'",
+      "Chinatown — up to 3 exchanges (add by number):",
+      "Chinatown — up to 1 exchange (add by number):",
+      "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'",
+      "Port A — take 1 card, or 2 (toggle by number):",
+      "Port B — take 1 card (toggle by number):",
+      "> a card number toggles it, 'confirm' to take, or 'cancel'",
+    ]) {
+      expect(SCREEN_LINES.some((s) => s.test(line)), line).toBe(true);
+    }
+    const choosers = EVERY_STATE.filter(
+      (s) => s.prompt.kind === "church" || s.prompt.kind === "chinatown" || s.prompt.kind === "port",
+    );
+    expect(choosers.length, "the corpus's chooser states").toBe(8);
+    for (const state of choosers) {
+      for (const message of state.messages) {
+        for (const line of message.split("\n")) {
+          for (const s of SCREEN_LINES) {
+            expect(s.test(line), `a ${state.prompt.kind} state's messages carry ${s.what}: ${JSON.stringify(line)}`).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("the corpus's two chinatown states: as it opens, and after one copper sale", () => {
+    const towns = EVERY_STATE.filter((state) => state.prompt.kind === "chinatown");
+    expect(towns).toEqual([wire.chinatown, wire.chinatownSelected]);
+    const prompt = (state: typeof wire.chinatown) => {
+      if (state.prompt.kind !== "chinatown") throw new Error(`not a chinatown prompt: ${state.prompt.kind}`);
+      return state.prompt;
+    };
+    // As it opens: nothing chosen, and so nothing named.
+    const opened = prompt(wire.chinatown);
+    expect(opened.chosen).toBe(0);
+    expect(opened.rows.map((r) => r.count)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(opened.preview.legal).toBe(false);
+    expect(opened.preview.words).toBeNull();
+    // After one copper sale: a listed set, in `describe`'s words.
+    const sold = prompt(wire.chinatownSelected);
+    expect(sold.chosen).toBe(1);
+    expect(sold.rows.map((r) => r.count)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(sold.preview.legal).toBe(true);
+    expect(sold.preview.words).toBe("Chinatown: 1 copper -> 2 yen");
+  });
+
   it("TileModel", () => {
     const tiles = wire.options.frame.board.tiles;
     expect(tiles.length).toBeGreaterThan(0);
@@ -57,6 +301,59 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     expect(panel).toBeDefined();
     for (const player of panel!.Players.players) {
       expect(keys(player)).toEqual(listed(KEYS.player));
+    }
+  });
+
+  // The hand root, over every state (the play states the loop below reads) and
+  // then over every Hand panel the corpus holds anywhere.
+  it("HandPanel", () => {
+    let seen = 0;
+    for (const state of EVERY_STATE) {
+      for (const p of state.frame.dashboard) {
+        if (!("Hand" in p)) continue;
+        expect(keys(p.Hand), `${state.prompt.kind} · seat ${state.seat}`).toEqual(listed(KEYS.hand));
+        seen += 1;
+      }
+    }
+    // Anti-vacuity: every seated state carries its viewer's hand.
+    expect(seen).toBe(EVERY_STATE.filter((s) => s.seat !== null).length);
+    expect(seen).toBeGreaterThan(0);
+    const { hands } = corpusPanels();
+    expect(hands.length).toBeGreaterThan(seen);
+    for (const [name, hand] of hands) expect(keys(hand), name).toEqual(listed(KEYS.hand));
+  });
+
+  // Issue #76. The in-hand count is a function of the panel's OWN cards and of
+  // nothing else, which is what keeps it inside the existing mask: recounting
+  // `cards[].printed.country` must give the count exactly, and a hidden panel
+  // (none reaches a browser today) carries none.
+  it("a hand's flag count is the countries of its own cards", () => {
+    const { hands } = corpusPanels();
+    let flagged = 0;
+    for (const [name, hand] of hands) {
+      if (hand.hidden) {
+        expect(hand.flags_in_hand, `${name}: a hidden hand`).toBeNull();
+        continue;
+      }
+      const want: FlagCounts = { english: 0, american: 0, french: 0, german: 0, dutch: 0 };
+      for (const card of hand.cards) {
+        const country = card.printed?.country;
+        if (country !== undefined) want[FLAG_KEY[country]] += 1;
+      }
+      expect(hand.flags_in_hand, `${name}: seat ${hand.seat}`).toEqual(want);
+      if (hand.cards.length > 0) flagged += 1;
+    }
+    expect(flagged, "hands with cards to count").toBeGreaterThan(0);
+  });
+
+  // The seat's row reaches every reader, a watcher included, so the in-hand
+  // count must never ride it: the row carries the face-up count alone.
+  it("no seat's row carries an in-hand count", () => {
+    const { players } = corpusPanels();
+    expect(players.length).toBeGreaterThan(0);
+    for (const [name, p] of players) {
+      expect(Object.keys(p), `${name}: seat ${p.seat}`).not.toContain("flags_in_hand");
+      expect(Object.keys(p), `${name}: seat ${p.seat}`).toContain("flags");
     }
   });
 
@@ -146,6 +443,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     ["events", wire.events, KEYS.events],
     ["events_dealing", wire.eventsDealing, KEYS.events],
     ["house_frame", wire.houseFrame, KEYS.houseFrame],
+    // Issue #75: the four-claim fixture's root and each of its four seat rows.
+    // `corpusPanels()` does not reach these rows — the root names its panels
+    // `players` and `achievements`, not the `Players` tag a frame's dashboard
+    // carries — so the row's key set, `flags` in and `flags_in_hand` out, is
+    // checked here.
+    ["goals_claimed_4p", wire.goalsClaimed4p, KEYS.goalsClaimed],
+    ["goals_claimed_4p.players.0", wire.goalsClaimed4p.players.players[0], KEYS.player],
+    ["goals_claimed_4p.players.1", wire.goalsClaimed4p.players.players[1], KEYS.player],
+    ["goals_claimed_4p.players.2", wire.goalsClaimed4p.players.players[2], KEYS.player],
+    ["goals_claimed_4p.players.3", wire.goalsClaimed4p.players.players[3], KEYS.player],
     // The dealt CARD, reached through the one payload that still carries one:
     // a caller's own `deal`. It used to be reached through `preview.deals`,
     // which served every seat's at once and is retired (M6.1 §8).

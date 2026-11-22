@@ -6,13 +6,18 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { Decision } from "./Decision";
-import { wire } from "./wire/contract";
-import type { ClientState, PlayerColor } from "./types";
+import { Decision, isChooser } from "./Decision";
+import { EVERY_STATE, wire } from "./wire/contract";
+import type { ArtManifest, ClientState, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
 
-function show(state: ClientState, busy = false, spectating = false) {
+function show(
+  state: ClientState,
+  busy = false,
+  spectating = false,
+  art: ArtManifest | null = null,
+) {
   const onSend = vi.fn();
   const { container } = render(
     <Decision
@@ -21,6 +26,7 @@ function show(state: ClientState, busy = false, spectating = false) {
       colors={COLORS}
       busy={busy}
       spectating={spectating}
+      art={art}
       onSend={onSend}
     />,
   );
@@ -405,5 +411,1029 @@ describe("Confirm is offered only where it is answerable", () => {
     cleanup();
     show(wire.retreatAnswered);
     expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+  });
+});
+
+describe("the Church's chooser", () => {
+  // Three real replies, each a whole `ClientState` captured from a played game
+  // (`wire/church*.json`). What each IS is asserted before a cell relies on it.
+  const churchPrompt = (s: ClientState) => {
+    if (s.prompt.kind !== "church") throw new Error("fixture moved");
+    return s.prompt;
+  };
+  const kindButtons = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>(".chooser.church .kinds button.kind")];
+  const clone = (s: ClientState): ClientState => JSON.parse(JSON.stringify(s)) as ClientState;
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  it("draws six kind buttons in the payload's order, each with its words and what the seat has", () => {
+    const p = churchPrompt(wire.church);
+    expect(p.kinds).toHaveLength(6);
+    const { container } = show(wire.church);
+    const buttons = kindButtons(container);
+    expect(buttons).toHaveLength(6);
+    buttons.forEach((b, i) => {
+      const k = p.kinds[i]!;
+      expect(b.getAttribute("data-good")).toBe(k.good);
+      expect(b.querySelector(".lbl")!.firstElementChild!.textContent).toBe(k.words);
+      expect(b.querySelector(".lbl .have")!.textContent).toBe(`you have ${k.have}`);
+      // Said once: the button names itself, so the token inside is not read again.
+      expect(b).toHaveAccessibleName(`${k.words}, you have ${k.have}`);
+    });
+    // The yen kind is the one that costs two, and its token group says so.
+    expect(p.kinds[4]!.amount).toBe(2);
+    expect(buttons[4]!.querySelector("[role=img]")).toHaveAccessibleName("2 yen");
+  });
+
+  it("reads a kind's words from the payload, never rebuilt from its good and amount", () => {
+    const changed = clone(wire.church);
+    if (changed.prompt.kind !== "church") throw new Error("fixture moved");
+    changed.prompt.kinds[4]!.words = "a pair of yen";
+    const { container } = show(changed);
+    const yen = kindButtons(container)[4]!;
+    expect(yen.querySelector(".lbl")!.firstElementChild!.textContent).toBe("a pair of yen");
+    expect(yen).toHaveAccessibleName(`a pair of yen, you have ${changed.prompt.kinds[4]!.have}`);
+  });
+
+  it("sends a kind's number and nothing else, and marks only the selected kind pressed", async () => {
+    const p = churchPrompt(wire.churchSelected);
+    expect(p.kinds.map((k) => k.selected)).toEqual([true, false, false, false, false, false]);
+    const { container, onSend, user } = show(wire.churchSelected);
+    expect(kindButtons(container).map((b) => b.getAttribute("aria-pressed"))).toEqual([
+      "true", "false", "false", "false", "false", "false",
+    ]);
+    // Silk and the yen kind: their numbers (2 and 5) are neither their index
+    // (1 and 4) nor anything their good's name could send.
+    await user.click(kindButtons(container)[1]!);
+    await user.click(kindButtons(container)[4]!);
+    expect(onSend.mock.calls).toEqual([["2"], ["5"]]);
+  });
+
+  it("disables a kind the list does not offer, and says why it is unavailable", async () => {
+    const p = churchPrompt(wire.church);
+    expect(p.kinds.map((k) => k.offered)).toEqual([true, true, true, true, true, false]);
+    const { container, onSend, user } = show(wire.church);
+    const imports = kindButtons(container)[5]!;
+    expect(imports).toBeDisabled();
+    expect(imports).toHaveAttribute("data-unavailable");
+    await user.click(imports);
+    expect(onSend).not.toHaveBeenCalled();
+    for (const b of kindButtons(container).slice(0, 5)) {
+      expect(b).toBeEnabled();
+      expect(b).not.toHaveAttribute("data-unavailable");
+    }
+  });
+
+  it("marks a kind unavailable by the payload's `offered`, not by what the seat holds", async () => {
+    // On the real fixture the one kind not offered is also the one the seat has
+    // none of, so a rule worked from `have` would pass the reading above.
+    const held = clone(wire.church);
+    if (held.prompt.kind !== "church") throw new Error("fixture moved");
+    const silk = held.prompt.kinds[1]!;
+    expect(silk.good).toBe("Silk");
+    expect(silk.have, "the seat holds silk").toBeGreaterThan(0);
+    silk.offered = false;
+    const { container, onSend, user } = show(held);
+    const button = kindButtons(container)[1]!;
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("data-unavailable");
+    await user.click(button);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  // **In flight, an offered kind is `aria-disabled`, never `disabled`** (ruling
+  // R45): a `disabled` button lets the browser drop its focus, so the kind a
+  // keyboard player just pressed would leave them at the top of the page. It
+  // sends nothing while busy, and `disabled` stays what the payload says.
+  it("leaves an offered kind enabled but aria-disabled while a request is in flight, and a press then sends nothing", async () => {
+    const { container, onSend, user } = show(wire.church, true);
+    const buttons = kindButtons(container);
+    for (const b of buttons.slice(0, 5)) {
+      expect(b).toBeEnabled();
+      expect(b).toHaveAttribute("aria-disabled", "true");
+      expect(b).not.toHaveAttribute("data-unavailable");
+      await user.click(b);
+    }
+    expect(onSend).not.toHaveBeenCalled();
+    // The kind the list does not offer is still disabled, by the payload.
+    expect(buttons[5]).toBeDisabled();
+    expect(buttons[5]).toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // Idle, the offered kinds carry no `aria-disabled` at all.
+    const idle = kindButtons(show(wire.church).container);
+    for (const b of idle.slice(0, 5)) expect(b).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("enables Confirm only where the preview is legal, and sends confirm and cancel", async () => {
+    const notLegal = churchPrompt(wire.churchSelected);
+    expect(notLegal.kinds.some((k) => k.selected), "a kind is selected").toBe(true);
+    expect(notLegal.preview.legal, "and the preview is not legal").toBe(false);
+    const first = show(wire.churchSelected);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    await first.user.click(button("Confirm"));
+    expect(first.onSend).not.toHaveBeenCalled();
+    // Cancel is never unavailable, where Confirm is.
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // The two fixtures differ in more than legality (how many kinds are
+    // selected, whether the faith line is there). One field apart: the legal
+    // fixture made not legal, two kinds still selected and no faith line.
+    const unlegal = clone(wire.churchLegal);
+    if (unlegal.prompt.kind !== "church") throw new Error("fixture moved");
+    expect(unlegal.prompt.kinds.filter((k) => k.selected)).toHaveLength(2);
+    expect(unlegal.prompt.offered_faiths).toBeNull();
+    unlegal.prompt.preview = { legal: false, words: null };
+    show(unlegal);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    cleanup();
+
+    expect(churchPrompt(wire.churchLegal).preview.legal).toBe(true);
+    const { onSend, user } = show(wire.churchLegal);
+    expect(button("Confirm")).toBeEnabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    await user.click(button("Confirm"));
+    await user.click(button("Cancel"));
+    expect(onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // In flight: disabled, but nothing the payload said made it unavailable.
+    show(wire.churchLegal, true);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeDisabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+  });
+
+  it("reads the verdict from the preview, and the faiths on their own line", () => {
+    const legal = churchPrompt(wire.churchLegal);
+    expect(legal.preview.words).toBe("Church: pay copper, silk -> faith 4 (power 2 + 2 kinds)");
+    const first = show(wire.churchLegal);
+    const verdict = first.container.querySelector(".verdict")!;
+    expect(verdict).toHaveAttribute("role", "status");
+    expect(verdict).toHaveClass("ok");
+    expect(verdict).not.toHaveClass("bad");
+    expect(verdict.textContent).toBe(`legal — ${legal.preview.words}`);
+    cleanup();
+
+    const notOffered = churchPrompt(wire.churchSelected);
+    expect(notOffered.offered_faiths).toBe("the list offers faith 4 to 7 here");
+    const second = show(wire.churchSelected);
+    const v2 = second.container.querySelector(".verdict")!;
+    expect(v2).toHaveClass("bad");
+    expect(v2).not.toHaveClass("ok");
+    const lines = [...v2.children].filter((c) => c.tagName === "DIV");
+    expect(lines.map((l) => l.textContent)).toEqual([notOffered.offered_faiths]);
+    // The first line is everything but that second one.
+    const head = v2.cloneNode(true) as HTMLElement;
+    head.querySelector("div")!.remove();
+    expect(head.textContent).toBe("not offered — adjust the selection");
+    cleanup();
+
+    const bare = clone(wire.churchSelected);
+    if (bare.prompt.kind !== "church") throw new Error("fixture moved");
+    bare.prompt.offered_faiths = null;
+    const third = show(bare);
+    const v3 = third.container.querySelector(".verdict")!;
+    expect(v3.textContent).toBe("not offered — adjust the selection");
+    expect(v3.querySelector("div")).toBeNull();
+    cleanup();
+
+    // Nothing selected is still a verdict at the Church, never the empty form
+    // Chinatown draws at `chosen` 0.
+    expect(churchPrompt(wire.church).kinds.some((k) => k.selected)).toBe(false);
+    const idle = show(wire.church);
+    const v4 = idle.container.querySelector(".verdict")!;
+    expect(v4).toHaveClass("bad");
+    expect(v4.querySelector(".faiths")!.textContent).toBe(churchPrompt(wire.church).offered_faiths);
+  });
+
+  it("draws neither a kind button nor Confirm for a watcher", () => {
+    const { container } = show(wire.churchLegal, false, true);
+    expect(kindButtons(container)).toHaveLength(0);
+    expect(container.querySelector(".chooser")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+
+  it("asks its own question and draws no row of the numbered list", () => {
+    const { container } = show(wire.church);
+    expect(container.querySelector(".asking")!.textContent).toBe("The Church — what do you pay?");
+    expect(container.querySelectorAll("button.option")).toHaveLength(0);
+    expect(container.querySelector(".decision > .chooser.church")).not.toBeNull();
+  });
+
+  it("hands the art manifest to its tokens", () => {
+    const { container } = show(wire.church, false, false, wire.artManifest);
+    for (const b of kindButtons(container)) expect(b.querySelector(".tokens img")).not.toBeNull();
+    cleanup();
+    const plain = show(wire.church);
+    for (const b of kindButtons(plain.container)) expect(b.querySelector(".tokens img")).toBeNull();
+  });
+});
+
+describe("Chinatown's chooser", () => {
+  // Two real replies from a four-player table (`wire/chinatown*.json`). What
+  // each IS is asserted before a cell relies on it. A clone changes ONE fact,
+  // and each exists to tell a payload read from a rule worked out in the client.
+  const chinaPrompt = (s: ClientState) => {
+    if (s.prompt.kind !== "chinatown") throw new Error("fixture moved");
+    return s.prompt;
+  };
+  const clone = (s: ClientState): ClientState => JSON.parse(JSON.stringify(s)) as ClientState;
+  const cloneChina = (s: ClientState, edit: (p: ReturnType<typeof chinaPrompt>) => void) => {
+    const c = clone(s);
+    edit(chinaPrompt(c));
+    return c;
+  };
+  const rowEls = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLElement>(".chooser.chinatown .ex")];
+  const plus = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("button.plus")!;
+  const minus = (row: HTMLElement) => row.querySelector<HTMLButtonElement>("button.minus")!;
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  /** Which heading each row stands under, read off the DOM in document order. */
+  const grouped = (container: HTMLElement) => {
+    const out: Record<string, number[]> = {};
+    let heading = "";
+    for (const el of container.querySelectorAll<HTMLElement>(".chooser.chinatown .side-h, .chooser.chinatown .ex")) {
+      if (el.classList.contains("side-h")) {
+        heading = el.textContent ?? "";
+        out[heading] = [];
+      } else {
+        out[heading]!.push(Number(el.dataset.number));
+      }
+    }
+    return out;
+  };
+
+  it("draws nine rows, sales under Sell and purchases under Buy, in the payload's words", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.rows).toHaveLength(9);
+    expect(p.rows.map((r) => r.sells)).toEqual([true, true, true, true, false, false, false, false, false]);
+    const { container } = show(wire.chinatown);
+    const els = rowEls(container);
+    expect(els).toHaveLength(9);
+    expect(grouped(container)).toEqual({ Sell: [1, 2, 3, 4], Buy: [5, 6, 7, 8, 9] });
+    els.forEach((el, i) => {
+      expect(el.dataset.number).toBe(String(p.rows[i]!.number));
+      expect(el.querySelector(".what .words")!.textContent).toBe(p.rows[i]!.words);
+    });
+
+    // Said once: the pictures and the arrow sit inside ONE hidden wrapper and
+    // the words after it are the row's reading. What a reader meets as an image
+    // is the six stock entries and nothing in a row.
+    for (const el of els) {
+      const pics = el.querySelector(".what > [aria-hidden='true']")!;
+      expect(pics.querySelectorAll(".tokens")).toHaveLength(2);
+      expect(pics.querySelector(".arrow")).not.toBeNull();
+      expect(pics.contains(el.querySelector(".words"))).toBe(false);
+      expect(el.querySelector(".words")!.closest("[aria-hidden='true']")).toBeNull();
+    }
+    expect(screen.getAllByRole("img").map((n) => n.getAttribute("aria-label"))).toEqual([
+      "1 copper", "1 silk", "1 tea", "1 seafood", "3 yen", "0 imported goods",
+    ]);
+    cleanup();
+
+    // The split reads the flag, not the position: with the rows reversed the
+    // four sales (now last in the payload) are still under Sell.
+    const reversed = cloneChina(wire.chinatown, (c) => c.rows.reverse());
+    const flipped = show(reversed);
+    expect(chinaPrompt(reversed).rows.map((r) => r.number)).toEqual([9, 8, 7, 6, 5, 4, 3, 2, 1]);
+    expect(grouped(flipped.container)).toEqual({ Sell: [4, 3, 2, 1], Buy: [9, 8, 7, 6, 5] });
+    cleanup();
+
+    // The words are the payload's. ONE fact apart: row 1's words changed and
+    // nothing else, so its gain token still reads what the amount says.
+    const reworded = cloneChina(wire.chinatown, (c) => {
+      c.rows[0]!.words = "one copper for two yen";
+    });
+    const edited = show(reworded);
+    const first = rowEls(edited.container)[0]!;
+    expect(first.querySelector(".words")!.textContent).toBe("one copper for two yen");
+    expect(plus(first)).toHaveAccessibleName("one more: one copper for two yen");
+    expect(minus(first)).toHaveAccessibleName("one fewer: one copper for two yen");
+    const [spend, gain] = [...first.querySelectorAll(".what .tokens")];
+    expect(spend!.getAttribute("aria-label")).toBe("1 copper");
+    expect(gain!.getAttribute("aria-label")).toBe("2 yen");
+    cleanup();
+
+    // And the amount is the payload's. ONE fact apart again: row 1's gain
+    // amount set to 3 with its words untouched (still `... -> 2 yen`), so an
+    // amount parsed out of the words would read 2.
+    const regained = cloneChina(wire.chinatown, (c) => {
+      c.rows[0]!.gain.amount = 3;
+    });
+    expect(chinaPrompt(regained).rows[0]!.words).toBe("1 copper -> 2 yen");
+    const counted = show(regained);
+    const row = rowEls(counted.container)[0]!;
+    expect(row.querySelector(".words")!.textContent).toBe("1 copper -> 2 yen");
+    const [, three] = [...row.querySelectorAll(".what .tokens")];
+    expect(three!.getAttribute("aria-label")).toBe("3 yen");
+    expect(three!.querySelectorAll(".tok")).toHaveLength(3);
+    cleanup();
+
+    // One row's flag flipped, nothing else: row 5 (a purchase, gaining copper)
+    // now sells, so it sits under Sell; a split made by what a row gains or by
+    // its place keeps it under Buy.
+    const flippedRow = cloneChina(wire.chinatown, (c) => {
+      c.rows[4]!.sells = true;
+    });
+    const flag = show(flippedRow);
+    expect(grouped(flag.container)).toEqual({ Sell: [1, 2, 3, 4, 5], Buy: [6, 7, 8, 9] });
+  });
+
+  it("sends a plus's number and a minus's `back` and number, and marks the chosen row", async () => {
+    const none = chinaPrompt(wire.chinatown);
+    expect(none.rows.map((r) => r.count)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const first = show(wire.chinatown);
+    for (const el of rowEls(first.container)) {
+      expect(minus(el)).toBeDisabled();
+      expect(el).not.toHaveClass("on");
+      expect(el.querySelector(".n")!.textContent).toBe("0");
+    }
+    // Rows 2 and 6: their numbers are neither their index nor a count.
+    await first.user.click(plus(rowEls(first.container)[1]!));
+    await first.user.click(plus(rowEls(first.container)[5]!));
+    expect(first.onSend.mock.calls).toEqual([["2"], ["6"]]);
+    cleanup();
+
+    // The rows reversed: row 8 is now the second purchase drawn, so its place
+    // is neither 8 nor its index. The number it sends is the row's own.
+    const reversed = cloneChina(wire.chinatown, (c) => c.rows.reverse());
+    const flipped = show(reversed);
+    const eight = rowEls(flipped.container).find((el) => el.dataset.number === "8")!;
+    await flipped.user.click(plus(eight));
+    expect(flipped.onSend.mock.calls).toEqual([["8"]]);
+    cleanup();
+
+    // The same for a minus: the selected fixture reversed draws row 1, the one
+    // with a count, last. Its minus sends `back 1`, not `back 9`.
+    const turned = cloneChina(wire.chinatownSelected, (c) => c.rows.reverse());
+    const back = show(turned);
+    const one = rowEls(back.container).find((el) => el.dataset.number === "1")!;
+    expect(rowEls(back.container).indexOf(one), "row 1 is drawn last of its heading").toBe(3);
+    await back.user.click(minus(one));
+    expect(back.onSend.mock.calls).toEqual([["back 1"]]);
+    cleanup();
+
+    // A count that is not the row's number: row 6 chosen twice. Its minus
+    // sends `back 6`, not `back 2` and not `back 5`.
+    const twice = cloneChina(wire.chinatownSelected, (c) => {
+      c.rows[5]!.count = 2;
+    });
+    const counted = show(twice);
+    const six = rowEls(counted.container).find((el) => el.dataset.number === "6")!;
+    expect(six.querySelector(".n")!.textContent).toBe("2");
+    expect(minus(six)).toBeEnabled();
+    await counted.user.click(minus(six));
+    expect(counted.onSend.mock.calls).toEqual([["back 6"]]);
+    cleanup();
+
+    const some = chinaPrompt(wire.chinatownSelected);
+    expect(some.rows.map((r) => r.count)).toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const { container, onSend, user } = show(wire.chinatownSelected);
+    const els = rowEls(container);
+    expect(els.map((el) => el.classList.contains("on"))).toEqual([true, false, false, false, false, false, false, false, false]);
+    expect(els.map((el) => !minus(el).disabled)).toEqual([true, false, false, false, false, false, false, false, false]);
+    expect(els.map((el) => el.querySelector(".n")!.textContent)).toEqual(["1", "0", "0", "0", "0", "0", "0", "0", "0"]);
+    // A minus at zero is unavailable by the payload; one with something to
+    // take back is neither unavailable nor disabled.
+    expect(minus(els[0]!)).not.toHaveAttribute("data-unavailable");
+    for (const el of els.slice(1)) expect(minus(el)).toHaveAttribute("data-unavailable");
+    await user.click(minus(els[0]!));
+    await user.click(minus(els[3]!));
+    expect(onSend.mock.calls).toEqual([["back 1"]]);
+    cleanup();
+
+    // In flight (ruling R45): the chosen row's minus stays enabled, so it keeps
+    // the focus, but is `aria-disabled` and sends nothing; nothing the payload
+    // said made it unavailable. A minus at zero is still disabled by the payload.
+    const busy = show(wire.chinatownSelected, true);
+    const b = rowEls(busy.container);
+    expect(minus(b[0]!)).toBeEnabled();
+    expect(minus(b[0]!)).toHaveAttribute("aria-disabled", "true");
+    expect(minus(b[0]!)).not.toHaveAttribute("data-unavailable");
+    await busy.user.click(minus(b[0]!));
+    expect(busy.onSend).not.toHaveBeenCalled();
+    expect(minus(b[1]!)).toBeDisabled();
+    expect(minus(b[1]!)).toHaveAttribute("data-unavailable");
+    // Idle, a live minus carries no `aria-disabled`.
+    cleanup();
+    expect(minus(rowEls(show(wire.chinatownSelected).container)[0]!)).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("disables a plus the list cannot take, by the payload's `can_add`", async () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.rows.map((r) => r.can_add)).toEqual([true, true, true, true, true, true, true, true, false]);
+    expect(p.rows[8]!.offered, "the purchase is offered though it cannot be added").toBe(true);
+    const first = show(wire.chinatown);
+    const els = rowEls(first.container);
+    expect(plus(els[8]!)).toBeDisabled();
+    expect(plus(els[8]!)).toHaveAttribute("data-unavailable");
+    expect(plus(els[8]!)).toHaveAccessibleName("one more: 4 yen -> 1 imported good");
+    await first.user.click(plus(els[8]!));
+    expect(first.onSend).not.toHaveBeenCalled();
+    for (const el of els.slice(0, 8)) {
+      expect(plus(el)).toBeEnabled();
+      expect(plus(el)).not.toHaveAttribute("data-unavailable");
+    }
+    cleanup();
+
+    // With the copper sale chosen, the one copper is spent: row 1 cannot take
+    // another. The stock still reads 1 copper and 3 yen, so a rule worked from
+    // the stock and the spend fails BOTH readings below: row 1 (1 copper held,
+    // 1 to spend) would be addable, and row 9 (3 yen held, 4 to spend) not.
+    const chosen = chinaPrompt(wire.chinatownSelected);
+    expect(chosen.rows[0]!.count).toBe(1);
+    expect(chosen.rows[0]!.can_add).toBe(false);
+    expect(chosen.stock[0]).toEqual({ good: "Copper", amount: 1 });
+    expect(chosen.rows[8]!.can_add).toBe(true);
+    expect(chosen.stock[4]).toEqual({ good: "Yen", amount: 3 });
+    expect(chosen.rows[8]!.spend.amount).toBe(4);
+    const second = show(wire.chinatownSelected);
+    const sel = rowEls(second.container);
+    expect(plus(sel[0]!)).toBeDisabled();
+    expect(plus(sel[0]!)).toHaveAttribute("data-unavailable");
+    expect(plus(sel[8]!)).toBeEnabled();
+    expect(plus(sel[8]!)).not.toHaveAttribute("data-unavailable");
+    await second.user.click(plus(sel[0]!));
+    await second.user.click(plus(sel[8]!));
+    expect(second.onSend.mock.calls).toEqual([["9"]]);
+    cleanup();
+
+    // `chosen` at the most the list allows, nothing else moved: row 1's plus is
+    // still live, because plus reads the payload's `can_add` and nothing more.
+    const atMost = cloneChina(wire.chinatown, (c) => {
+      c.chosen = c.max_exchanges;
+    });
+    const full = show(atMost);
+    const top = rowEls(full.container)[0]!;
+    expect(chinaPrompt(atMost).rows[0]!.can_add).toBe(true);
+    expect(plus(top)).toBeEnabled();
+    expect(plus(top)).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // In flight (ruling R45): a plus that can add stays enabled, so it keeps
+    // the focus, but is `aria-disabled`, carries no `data-unavailable` and sends
+    // nothing; the cannot-add one is still disabled by the payload.
+    const busy = show(wire.chinatown, true);
+    const b = rowEls(busy.container);
+    for (const el of b.slice(0, 8)) {
+      expect(plus(el)).toBeEnabled();
+      expect(plus(el)).toHaveAttribute("aria-disabled", "true");
+      expect(plus(el)).not.toHaveAttribute("data-unavailable");
+      await busy.user.click(plus(el));
+    }
+    expect(busy.onSend).not.toHaveBeenCalled();
+    expect(plus(b[8]!)).toBeDisabled();
+    expect(plus(b[8]!)).toHaveAttribute("data-unavailable");
+    // Idle, a live plus carries no `aria-disabled`.
+    cleanup();
+    expect(plus(rowEls(show(wire.chinatown).container)[0]!)).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("reads the stock from the payload, one image node per good", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect(p.stock.map((s) => s.amount)).toEqual([1, 1, 1, 1, 3, 0]);
+    const { container } = show(wire.chinatown);
+    const entries = [...container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(entries).toHaveLength(6);
+    expect(entries.map((e) => e.getAttribute("role"))).toEqual(Array(6).fill("img"));
+    expect(entries.map((e) => e.getAttribute("aria-label"))).toEqual([
+      "1 copper", "1 silk", "1 tea", "1 seafood", "3 yen", "0 imported goods",
+    ]);
+    expect(entries.map((e) => e.getAttribute("data-good"))).toEqual(p.stock.map((s) => s.good));
+    expect(entries.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["1", "1", "1", "1", "3", "0"]);
+    // ONE small token, never `amount` copies (three yen draw one).
+    // That token is decorative: no role and no label of its own, so nothing
+    // hidden in an entry of 3 yen says `1 yen`.
+    for (const e of entries) {
+      expect(e.querySelectorAll(".tok")).toHaveLength(1);
+      expect(e.querySelector(".tok")).toHaveClass("sm");
+      const token = e.querySelector(".tokens")!;
+      expect(token).toHaveAttribute("aria-hidden", "true");
+      expect(token).not.toHaveAttribute("role");
+      expect(token).not.toHaveAttribute("aria-label");
+    }
+    cleanup();
+
+    // Four of the fixture's own amounts are 1; these six differ, so an entry
+    // that took its amount from anywhere else reads wrong.
+    const counted = cloneChina(wire.chinatown, (c) => {
+      c.stock.forEach((s, i) => (s.amount = i + 1));
+    });
+    const edited = show(counted);
+    const read = [...edited.container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(read.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["1", "2", "3", "4", "5", "6"]);
+    expect(read.map((e) => e.getAttribute("aria-label"))).toEqual([
+      "1 copper", "2 silk", "3 tea", "4 seafood", "5 yen", "6 imported goods",
+    ]);
+    cleanup();
+
+    // And the payload's order is the order drawn.
+    const reversed = cloneChina(counted, (c) => c.stock.reverse());
+    const flipped = show(reversed);
+    const back = [...flipped.container.querySelectorAll<HTMLElement>(".chooser.chinatown .stock > *")];
+    expect(back.map((e) => e.getAttribute("data-good"))).toEqual(["Imports", "Yen", "Seafood", "Tea", "Silk", "Copper"]);
+    expect(back.map((e) => e.querySelector(".amt")!.textContent)).toEqual(["6", "5", "4", "3", "2", "1"]);
+  });
+
+  it("enables Confirm only where the preview is legal, and reads the verdict from it", async () => {
+    const empty = chinaPrompt(wire.chinatown);
+    expect(empty.chosen).toBe(0);
+    expect(empty.preview).toEqual({ legal: false, words: null });
+    const first = show(wire.chinatown);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    const quiet = first.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(quiet).toHaveAttribute("role", "status");
+    expect(quiet.textContent).toBe("");
+    cleanup();
+
+    const legal = chinaPrompt(wire.chinatownSelected);
+    expect(legal.preview).toEqual({ legal: true, words: "Chinatown: 1 copper -> 2 yen" });
+    const second = show(wire.chinatownSelected);
+    expect(button("Confirm")).toBeEnabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    const verdict = second.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(verdict).toHaveAttribute("role", "status");
+    expect(verdict).toHaveClass("ok");
+    expect(verdict.textContent).toBe("legal — Chinatown: 1 copper -> 2 yen");
+    // Confirm and Cancel stay outside the box that scrolls.
+    expect(button("Confirm").closest(".rows")).toBeNull();
+    expect(button("Confirm").closest(".chooser")).toBeNull();
+    await second.user.click(button("Confirm"));
+    await second.user.click(button("Cancel"));
+    expect(second.onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    cleanup();
+
+    // In flight: disabled, but nothing the payload said made it unavailable.
+    show(wire.chinatownSelected, true);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeDisabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // `chosen` set apart from the rows' counts: the first fixture with
+    // `chosen` 1 and every count still 0. The verdict reads `chosen`.
+    const claimed = cloneChina(wire.chinatown, (c) => {
+      c.chosen = 1;
+    });
+    expect(chinaPrompt(claimed).rows.every((r) => r.count === 0)).toBe(true);
+    const fourth = show(claimed);
+    const loud = fourth.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(loud).toHaveClass("bad");
+    expect(loud.textContent).toBe("not offered — adjust the selection");
+    cleanup();
+
+    // One fact apart: the selected fixture with its preview not legal. A
+    // Confirm worked out from `chosen` passes both fixtures and fails this.
+    const unlegal = cloneChina(wire.chinatownSelected, (c) => {
+      c.preview = { legal: false, words: null };
+    });
+    expect(chinaPrompt(unlegal).chosen).toBe(1);
+    const third = show(unlegal);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    const v = third.container.querySelector(".chooser.chinatown .verdict")!;
+    expect(v).toHaveClass("bad");
+    expect(v).not.toHaveClass("ok");
+    expect(v.textContent).toBe("not offered — adjust the selection");
+    expect(v.querySelector("div")).toBeNull();
+  });
+
+  it("asks how many exchanges are chosen, in the singular at one", () => {
+    const p = chinaPrompt(wire.chinatown);
+    expect([p.max_exchanges, p.chosen]).toEqual([3, 0]);
+    const first = show(wire.chinatown);
+    expect(first.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 0 of 3 chosen",
+    );
+    expect(first.container.querySelectorAll("button.option")).toHaveLength(0);
+    expect(first.container.querySelector(".decision > .chooser.chinatown")).not.toBeNull();
+    cleanup();
+
+    const q = chinaPrompt(wire.chinatownSelected);
+    expect([q.max_exchanges, q.chosen]).toEqual([3, 1]);
+    const second = show(wire.chinatownSelected);
+    expect(second.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 1 of 3 chosen",
+    );
+    cleanup();
+
+    const one = cloneChina(wire.chinatown, (c) => {
+      c.max_exchanges = 1;
+    });
+    const third = show(one);
+    expect(third.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 1 exchange · 0 of 1 chosen",
+    );
+    cleanup();
+
+    // `chosen` is the payload's, not a sum of the rows' counts (which total 1).
+    const two = cloneChina(wire.chinatownSelected, (c) => {
+      c.chosen = 2;
+    });
+    const fourth = show(two);
+    expect(fourth.container.querySelector(".asking")!.textContent).toBe(
+      "Chinatown — up to 3 exchanges · 2 of 3 chosen",
+    );
+  });
+
+  it("draws no stepper and no Confirm for a watcher", () => {
+    const { container } = show(wire.chinatownSelected, false, true);
+    expect(container.querySelector(".chooser")).toBeNull();
+    expect(container.querySelectorAll("button.plus, button.minus")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+});
+
+describe("a prompt kind this client cannot draw", () => {
+  // A server newer than this client can answer a kind the union does not hold
+  // (`port` was such a kind until plan 2b made it a known one, so the cells
+  // name a kind no server sends). The client must not be left with nothing
+  // to press (ruling R46): it says so and offers Cancel, which every sub-prompt
+  // answers and the web's line fence admits. The payload is a real one with ONE
+  // fact changed, its kind; its other prompt fields are left as they are.
+  const FALLBACK_ASKING = "This screen needs a newer version.";
+  const FALLBACK_TEXT =
+    "The game asked something this version cannot draw. Take the update from the banner, or cancel to go back to the list.";
+  const unknown = (): ClientState => {
+    const c = JSON.parse(JSON.stringify(wire.church)) as { prompt: { kind: string } };
+    expect(c.prompt.kind).toBe("church");
+    c.prompt.kind = "a_kind_no_server_sends";
+    return c as unknown as ClientState;
+  };
+
+  it("says the screen needs a newer version and offers Cancel alone, which sends cancel", async () => {
+    const { container, onSend, user } = show(unknown());
+    expect(container.querySelector(".asking")!.textContent).toBe(FALLBACK_ASKING);
+    expect(container.querySelector(".unknown-prompt")!.textContent).toBe(FALLBACK_TEXT);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel"]);
+    expect(buttons[0]).toBeEnabled();
+    await user.click(buttons[0]!);
+    expect(onSend.mock.calls).toEqual([["cancel"]]);
+    cleanup();
+
+    // In flight, its Cancel is disabled like the others.
+    show(unknown(), true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  });
+
+  it("gives a watcher the two lines and no button", () => {
+    const { container } = show(unknown(), false, true);
+    expect(container.querySelector(".asking")!.textContent).toBe(FALLBACK_ASKING);
+    expect(container.querySelector(".unknown-prompt")!.textContent).toBe(FALLBACK_TEXT);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("is never what a kind the corpus holds draws", () => {
+    for (const state of EVERY_STATE) {
+      const { container } = show(state);
+      expect(container.querySelector(".asking")!.textContent, `the ${state.prompt.kind} fixture`).not.toBe(FALLBACK_ASKING);
+      expect(container.querySelector(".unknown-prompt"), `the ${state.prompt.kind} fixture`).toBeNull();
+      cleanup();
+    }
+  });
+});
+
+describe("the Port's chooser (plan 2b, Task 4)", () => {
+  // Three real replies from one prompt of the corpus walk (`wire/port*.json`):
+  // four cards in reach, two in LOW and two in MID, `max_cards` 2. None has two
+  // ways, a `max_cards` of 1 or a HIGH card, so every cell that reads such a
+  // fact reads a JSON round-trip clone of a fixture with ONE field changed, and
+  // names the rival rule the clone is chosen against. This block replaces Task
+  // 2's interim cell (the asking line, Cancel and the watcher's absence are
+  // read below, with the rest).
+  const portPrompt = (s: ClientState) => {
+    if (s.prompt.kind !== "port") throw new Error("fixture moved");
+    return s.prompt;
+  };
+  const clone = (s: ClientState): ClientState => JSON.parse(JSON.stringify(s)) as ClientState;
+  const clonePort = (s: ClientState, edit: (p: ReturnType<typeof portPrompt>) => void) => {
+    const c = clone(s);
+    edit(portPrompt(c));
+    return c;
+  };
+  const cardEls = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>(".chooser.port .zones button.card-pick")];
+  const numbers = (container: HTMLElement) => cardEls(container).map((b) => b.dataset.number);
+  const headings = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLElement>(".chooser.port .zone")].map((z) => z.querySelector(".zl")!.textContent);
+  const card = (container: HTMLElement, number: number) =>
+    container.querySelector<HTMLButtonElement>(`.chooser.port button.card-pick[data-number="${number}"]`)!;
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  it("draws the asking line, each zone's heading and one pressable card per card in the arm's order", () => {
+    const p = portPrompt(wire.port);
+    expect(p.cards.map((c) => c.number)).toEqual([36, 14, 8, 6]);
+    expect(p.cards.map((c) => c.zone)).toEqual(["Low", "Low", "Mid", "Mid"]);
+    const { container } = show(wire.port);
+    expect(container.querySelector(".asking")!.textContent).toBe("The Port — take one card, or two");
+    expect(container.querySelector(".unknown-prompt")).toBeNull();
+    expect(container.querySelector(".decision > .chooser.port")).not.toBeNull();
+    expect(headings(container)).toEqual(["LOW", "MID"]);
+    expect(numbers(container)).toEqual(p.cards.map((c) => String(c.number)));
+    const els = cardEls(container);
+    els.forEach((el, i) => {
+      const c = p.cards[i]!;
+      expect(el).toHaveAttribute("aria-label", c.words);
+      // The accessible name collapses runs of spaces; the attribute above is exact.
+      expect(el).toHaveAccessibleName(c.words.replace(/\s+/g, " "));
+      expect(el).toHaveAttribute("aria-pressed", "false");
+      expect(el).toBeEnabled();
+      expect(el).not.toHaveAttribute("data-unavailable");
+      expect(el.querySelector(`[data-card="${c.id}"]`)).not.toBeNull();
+    });
+    // Each card stands under its own zone's heading.
+    const zones = [...container.querySelectorAll<HTMLElement>(".chooser.port .zone")];
+    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "Mid"]);
+    expect([...zones[0]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["36", "14"]);
+    expect([...zones[1]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["8", "6"]);
+    // Nothing is selected, so Confirm is refused by the payload; Cancel is live.
+    expect(portPrompt(wire.port).preview.legal).toBe(false);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable", "true");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    // No row of the numbered list.
+    expect(container.querySelectorAll("button.option")).toHaveLength(0);
+  });
+
+  it("presses the selected cards and reads the verdict's words off the preview's ways", () => {
+    const one = portPrompt(wire.portSelected);
+    expect(one.cards.filter((c) => c.selected).map((c) => c.number)).toEqual([36]);
+    expect(one.preview.ways).toEqual(["Port: take O36"]);
+    const first = show(wire.portSelected);
+    expect(cardEls(first.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+    const v1 = first.container.querySelector(".verdict")!;
+    expect(v1).toHaveAttribute("role", "status");
+    expect(v1).toHaveClass("ok");
+    expect(v1).not.toHaveClass("bad");
+    expect(v1.querySelector(".tag")!.textContent).toBe("legal — ");
+    expect([...v1.querySelectorAll(".way")].map((w) => w.textContent)).toEqual(one.preview.ways);
+    expect(v1.textContent).not.toContain("asked at Confirm");
+    cleanup();
+
+    const two = portPrompt(wire.portPair);
+    expect(two.cards.filter((c) => c.selected).map((c) => c.number)).toEqual([36, 14]);
+    expect(two.preview.ways).toEqual(["Port: take O36, O14, paying 2 yen"]);
+    const second = show(wire.portPair);
+    expect(cardEls(second.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "true", "false", "false"]);
+    const v2 = second.container.querySelector(".verdict")!;
+    expect(v2).toHaveClass("ok");
+    expect([...v2.querySelectorAll(".way")].map((w) => w.textContent)).toEqual(two.preview.ways);
+    cleanup();
+
+    // Where a card stands is not what makes it pressed: the SELECTED flag is,
+    // read on the last card (the rival is "the first n cards are pressed", which
+    // every fixture satisfies since its selected cards stand first).
+    const last = clonePort(wire.port, (p) => { p.cards[3]!.selected = true; });
+    const third = show(last);
+    expect(cardEls(third.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "false", "true"]);
+    cleanup();
+
+    // Nothing selected and nothing legal: the region stays mounted and says
+    // nothing, as Chinatown's does at an empty selection, and it is not the
+    // warning either (a selection has to exist before it can be "not
+    // offered").
+    const idle = show(wire.port);
+    const v0 = idle.container.querySelector(".verdict")!;
+    expect(v0).toHaveAttribute("role", "status");
+    expect(v0.className).toBe("verdict");
+    expect(v0.textContent).toBe("");
+    expect(v0.querySelectorAll(".way")).toHaveLength(0);
+  });
+
+  // The rival is "a second card goes dark once two are on" (a count in the
+  // client) and "a card is live while fewer than two are on". Each clone moves
+  // ONE `can_add`, so a count and a flag part company.
+  it("disables a card exactly where the payload's can_add says, and never a selected one", () => {
+    const pair = portPrompt(wire.portPair);
+    expect(pair.cards.map((c) => [c.selected, c.can_add])).toEqual([[true, false], [true, false], [false, false], [false, false]]);
+    const first = show(wire.portPair);
+    const [a, b, c, d] = cardEls(first.container);
+    // A selected card stays pressable, so it can be switched OFF, though its
+    // own can_add is false in every fixture.
+    expect(a).toBeEnabled();
+    expect(a).not.toHaveAttribute("data-unavailable");
+    expect(b).toBeEnabled();
+    for (const el of [c!, d!]) {
+      expect(el).toBeDisabled();
+      expect(el).toHaveAttribute("data-unavailable", "true");
+    }
+    cleanup();
+
+    // Two are on and the payload says the third card can still be added.
+    const third = clonePort(wire.portPair, (p) => { p.cards[2]!.can_add = true; });
+    expect(portPrompt(third).cards.filter((x) => x.selected)).toHaveLength(2);
+    const second = show(third);
+    const els = cardEls(second.container);
+    expect(els[2]).toBeEnabled();
+    expect(els[2]).not.toHaveAttribute("data-unavailable");
+    expect(els[3]).toBeDisabled();
+    cleanup();
+
+    // One is on and the payload says one card cannot be added.
+    const barred = clonePort(wire.portSelected, (p) => { p.cards[2]!.can_add = false; });
+    expect(portPrompt(barred).cards.filter((x) => x.selected)).toHaveLength(1);
+    const third2 = show(barred);
+    const els2 = cardEls(third2.container);
+    expect(els2.map((e) => e.disabled)).toEqual([false, false, true, false]);
+    expect(els2[2]).toHaveAttribute("data-unavailable", "true");
+    for (const i of [0, 1, 3]) expect(els2[i]).not.toHaveAttribute("data-unavailable");
+  });
+
+  // The rival is "Confirm is live when something is selected" (and, as an
+  // extra, "when `ways` is non-empty"): the first clone selects a card and
+  // keeps its way, but the payload says the selection is not legal; the second
+  // selects nothing and the payload says one way is.
+  it("enables Confirm exactly when the preview is legal", () => {
+    const unlisted = clonePort(wire.portSelected, (p) => { p.preview.legal = false; });
+    expect(portPrompt(unlisted).cards.some((c) => c.selected)).toBe(true);
+    expect(portPrompt(unlisted).preview.ways).toHaveLength(1);
+    const first = show(unlisted);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable", "true");
+    expect(first.container.querySelector(".verdict")).toHaveClass("bad");
+    expect(first.container.querySelector(".verdict")).toHaveAttribute("role", "status");
+    expect(first.container.querySelector(".verdict")!.textContent).toBe("not offered — adjust the selection");
+    cleanup();
+
+    const listed = clonePort(wire.port, (p) => {
+      p.preview.legal = true;
+      p.preview.ways = ["Port: take O36"];
+    });
+    expect(portPrompt(listed).cards.some((c) => c.selected)).toBe(false);
+    show(listed);
+    expect(button("Confirm")).toBeEnabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+  });
+
+  it("draws every way and says the choice is asked at Confirm when there are two", () => {
+    const two = clonePort(wire.portPair, (p) => {
+      p.preview.ways = [...p.preview.ways, "Port: take O36, O14, paying 1 imported good"];
+    });
+    const { container } = show(two);
+    const v = container.querySelector(".verdict")!;
+    expect([...v.querySelectorAll(".way")].map((w) => w.textContent)).toEqual([
+      "Port: take O36, O14, paying 2 yen",
+      "Port: take O36, O14, paying 1 imported good",
+    ]);
+    expect(v.textContent).toContain("2 ways to pay, asked at Confirm");
+    expect(v).toHaveClass("ok");
+    // One way, and the line is not there.
+    cleanup();
+    const one = show(wire.portPair);
+    expect(one.container.querySelector(".verdict")!.textContent).not.toContain("asked at Confirm");
+  });
+
+  // The rivals: "the zones are drawn in a fixed LOW, MID, HIGH order", "the
+  // cards are sorted" (by number or by id) and "a card's zone is its place in
+  // the list". The zones stand in the order the payload's cards first name them.
+  it("draws the zones and the cards in the payload's order, each card under the zone the payload names", () => {
+    // Reversed: the MID pair is first and each pair is reversed. (A sort by
+    // number cannot part this clone, since the fixture reversed IS ascending:
+    // the swap below and the fixture's own LOW order, 36 before 14, do.)
+    const reversed = clonePort(wire.port, (p) => { p.cards.reverse(); });
+    const r = show(reversed);
+    expect(headings(r.container)).toEqual(["MID", "LOW"]);
+    expect(numbers(r.container)).toEqual(["6", "8", "14", "36"]);
+    cleanup();
+
+    // Only the MID pair swapped: LOW keeps the order the fixture has, so a sort
+    // by number and the payload's order part company.
+    const swapped = clonePort(wire.port, (p) => { [p.cards[2], p.cards[3]] = [p.cards[3]!, p.cards[2]!]; });
+    const s = show(swapped);
+    expect(headings(s.container)).toEqual(["LOW", "MID"]);
+    expect(numbers(s.container)).toEqual(["36", "14", "6", "8"]);
+    cleanup();
+
+    // A card whose zone is HIGH stands under HIGH, in the place the payload
+    // first names that zone, beside nothing it was beside by position.
+    const raised = clonePort(wire.port, (p) => { p.cards[1]!.zone = "High"; });
+    const h = show(raised);
+    expect(headings(h.container)).toEqual(["LOW", "HIGH", "MID"]);
+    const zones = [...h.container.querySelectorAll<HTMLElement>(".chooser.port .zone")];
+    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "High", "Mid"]);
+    const inZone = (z: HTMLElement) => [...z.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number);
+    expect(inZone(zones[0]!)).toEqual(["36"]);
+    expect(inZone(zones[1]!)).toEqual(["14"]);
+    expect(inZone(zones[2]!)).toEqual(["8", "6"]);
+  });
+
+  // The rival is "the line a card sends is its index in the list": none of the
+  // fixture's numbers is its place (36, 14, 8, 6).
+  it("sends the card's number, then confirm and cancel by their words", async () => {
+    const first = show(wire.port);
+    await first.user.click(card(first.container, 14));
+    await first.user.click(card(first.container, 6));
+    expect(first.onSend.mock.calls).toEqual([["14"], ["6"]]);
+    cleanup();
+
+    // A selected card is pressed to switch it off: the same number.
+    const second = show(wire.portSelected);
+    await second.user.click(card(second.container, 36));
+    expect(second.onSend.mock.calls).toEqual([["36"]]);
+    cleanup();
+
+    const third = show(wire.portSelected);
+    await third.user.click(button("Confirm"));
+    await third.user.click(button("Cancel"));
+    expect(third.onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    cleanup();
+
+    // The line is the arm's `number`, not the card's id (every fixture has the
+    // two equal): one card's number changed alone.
+    const renumbered = clonePort(wire.port, (p) => { p.cards[1]!.number = 99; });
+    expect(portPrompt(renumbered).cards[1]!.id).toBe(14);
+    const fifth = show(renumbered);
+    await fifth.user.click(card(fifth.container, 99));
+    expect(fifth.onSend.mock.calls).toEqual([["99"]]);
+    cleanup();
+
+    // A card the payload disables sends nothing.
+    const fourth = show(wire.portPair);
+    await fourth.user.click(card(fourth.container, 8));
+    expect(fourth.onSend).not.toHaveBeenCalled();
+  });
+
+  // Plan 2a's ruling R45: a card is `aria-disabled`, not `disabled`, so it
+  // keeps the keyboard focus; Confirm and Cancel are `disabled`.
+  it("while a request is in flight: a card sends nothing and keeps the focus, Confirm and Cancel are disabled", async () => {
+    const { container, onSend, user } = show(wire.portSelected, true);
+    const els = cardEls(container);
+    for (const el of els) {
+      expect(el).toBeEnabled();
+      expect(el).toHaveAttribute("aria-disabled", "true");
+      expect(el).not.toHaveAttribute("data-unavailable");
+    }
+    els[1]!.focus();
+    expect(document.activeElement).toBe(els[1]);
+    await user.click(els[1]!);
+    await user.click(els[0]!);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(els[0]);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeDisabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // What the payload disabled is still `disabled` and unavailable, busy or not.
+    const barred = show(wire.portPair, true);
+    const c = cardEls(barred.container)[2]!;
+    expect(c).toBeDisabled();
+    expect(c).toHaveAttribute("data-unavailable", "true");
+    expect(c).not.toHaveAttribute("aria-disabled");
+    cleanup();
+
+    // Idle, no card carries aria-disabled.
+    const idle = show(wire.port);
+    for (const el of cardEls(idle.container)) expect(el).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("draws nothing for a watcher or a seat that does not act", () => {
+    const { container } = show(wire.portPair, false, true);
+    expect(container.querySelector(".chooser")).toBeNull();
+    expect(cardEls(container)).toHaveLength(0);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    cleanup();
+    // A seat that is not to move is told `watching`, which has no chooser.
+    const waiting = show(wire.watching);
+    expect(waiting.container.querySelector(".chooser")).toBeNull();
+  });
+
+  it("asks for one card when the arm's max_cards is 1", () => {
+    expect(portPrompt(wire.port).max_cards).toBe(2);
+    const one = clonePort(wire.port, (p) => { p.max_cards = 1; });
+    const { container } = show(one);
+    expect(container.querySelector(".asking")!.textContent).toBe("The Port — take one card");
+  });
+});
+
+describe("isChooser", () => {
+  it("is true for the three chooser kinds and false for every other kind in the corpus", () => {
+    const seen = new Set<string>();
+    for (const state of EVERY_STATE) {
+      const kind = state.prompt.kind;
+      seen.add(kind);
+      expect(isChooser(state.prompt), `the ${kind} fixture`).toBe(kind === "church" || kind === "chinatown" || kind === "port");
+    }
+    for (const kind of ["church", "chinatown", "port"]) expect(seen.has(kind), kind).toBe(true);
+    expect(seen.size).toBeGreaterThan(3);
   });
 });

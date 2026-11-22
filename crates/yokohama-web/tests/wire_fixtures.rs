@@ -706,6 +706,29 @@ fn new_game_body() -> Value {
     })
 }
 
+/// The id of the Chinatown tile on an `areas` payload, read by its
+/// `area_type` (plan 2a, Task 4's route on `wire4`).
+fn find_chinatown_area(areas: &Value) -> u64 {
+    fn walk(v: &Value, out: &mut Vec<u64>) {
+        match v {
+            Value::Object(m) => {
+                if m.get("area_type") == Some(&json!("Chinatown")) {
+                    if let Some(id) = m.get("area").and_then(Value::as_u64) {
+                        out.push(id);
+                    }
+                }
+                m.values().for_each(|x| walk(x, out));
+            }
+            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+            _ => {}
+        }
+    }
+    let mut ids = Vec::new();
+    walk(areas, &mut ids);
+    assert_eq!(ids.len(), 1, "one Chinatown tile on a four-player board: {ids:?}");
+    ids[0]
+}
+
 /// A SECOND open table, unlocked, so two lobby fixtures mean something.
 ///
 /// `games_open` is the lobby's "tables I could sit at", and a page of one table
@@ -1324,6 +1347,8 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     }
 
     let mut rng = Rng(WALK_SEED);
+    // The registry's names, for the Laboratory's rule below.
+    let rules = Rules::standard();
     let mut steps = 0usize;
     // The area the server last accepted an assistant in, tried first next time.
     // Placement legality is the engine's, so this is a CACHE over the answers
@@ -1539,7 +1564,250 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
             "options" | "pick" => {
                 let rows = state["prompt"]["rows"].as_array().expect("rows");
                 assert!(!rows.is_empty(), "an answerable prompt must offer something: {state}");
-                rows[rng.below(rows.len())]["number"].as_u64().expect("a number").to_string()
+                let options =
+                    state["frame"]["decision"]["options"].as_array().cloned().unwrap_or_default();
+                let church = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Church"].is_object();
+                // **Chinatown's exchange sets fold too, and this rule does not
+                // follow them** (plan 2a, Task 4, ruling R25): this game is
+                // two-player, and that board has no Chinatown, so a branch for
+                // a folded Chinatown prompt here would be one no seed can run.
+                // The walk refuses one instead; Chinatown's captures are routed
+                // on `wire4` below, line by line.
+                let chinatown = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Chinatown"].is_object();
+                assert!(
+                    !(kind == "options" && rows.len() < options.len() && options.iter().any(|o| chinatown(&o["mv"]))),
+                    "a folded Chinatown prompt on the walk's two-player table, whose board has no Chinatown: \
+                     the folded-prompt rules are the Church's, the Port's and the Laboratory's, and a table that reaches Chinatown \
+                     needs its own rule, written with a seed that runs it: {state}",
+                );
+                let port = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Port"].is_object();
+                // A Laboratory move's title, read off the registry by its card.
+                let title_of = |mv: &Value| -> Option<String> {
+                    let card = mv["ExecuteAreaAction"]["action"]["Laboratory"]["card_id"].as_u64()?;
+                    let id = yokohama_core::TechCardId(u8::try_from(card).expect("a card id"));
+                    Some(rules.techs.get(id).expect("a registry card").name.clone())
+                };
+                // A Port take's cards as their sorted numbers, so two orders
+                // of one set compare equal.
+                let port_set = |mv: &Value| -> Vec<u64> {
+                    let mut set: Vec<u64> = mv["ExecuteAreaAction"]["action"]["Port"]["cards_taken"]
+                        .as_array()
+                        .map(|cards| cards.iter().map(|c| c.as_u64().expect("a card")).collect())
+                        .unwrap_or_default();
+                    set.sort_unstable();
+                    set
+                };
+                // **The Church's payments fold into one entry** (cycle 2, plan
+                // 2a), and this walk must play the SAME game across the fold:
+                // a draw over the two rows left would play a different game
+                // from the first Church visit on, and every later fixture
+                // would move. So at a folded prompt the draw is taken over
+                // `frame.decision.options` — the list the rows were one per
+                // move over before — consuming the stream exactly as before,
+                // and the move it names is played through the chooser: the
+                // entry, the number of each kind its flags hold (read BY
+                // FIELD NAME, since the corpus sorts an object's keys),
+                // `confirm`. Measured at these seeds: 95 area-action
+                // prompts, three of them Church prompts folded (events 18,
+                // 251 and 387; the Port's eleven folded prompts and the
+                // Laboratory's one are counted in their rules below), and
+                // every Church draw lands on a Church move, so the decline
+                // branch below never runs here; it stays for a seed that
+                // reaches it.
+                // **The Port's takes fold the same way** (plan 2b, Task 2), and
+                // the walk plays the same game across this fold by the same
+                // rule: at a folded Port prompt the draw is taken over
+                // `frame.decision.options`, and the move it names is played
+                // by lines — the decline by its direct row's number; a take
+                // by the entry's number, each card's bare number in the
+                // listed move's order, `confirm`. A drawn pair that two
+                // listed moves take (payable with 2 yen or an imported good)
+                // would need the payment pick's number as well; measured at
+                // these seeds, no draw is one (the three pairs drawn, at
+                // events 90, 356 and 1024, are each listed once), so the walk
+                // REFUSES that case rather than carry a branch no seed runs.
+                // Measured at these seeds: eleven folded Port prompts, whose
+                // draws are those three pairs, five singles (events 117, 274,
+                // 447, 707 and 736) and three declines (145, 821 and 917).
+                // The three captures are taken at the one folded prompt whose
+                // draw is a pair with MORE than two cards in reach — a pair
+                // where only two are in reach leaves no card off, so its flags
+                // say nothing — and the condition is stated here rather than
+                // left to the first-sighting order, since an earlier folded
+                // prompt opens a four-card chooser to take a single.
+                if kind == "options" && rows.len() < options.len() && options.iter().any(|o| port(&o["mv"])) {
+                    let mv = options[rng.below(options.len())]["mv"].clone();
+                    if port(&mv) {
+                        let set = port_set(&mv);
+                        let ways = options.iter().filter(|o| port(&o["mv"]) && port_set(&o["mv"]) == set).count();
+                        assert_eq!(
+                            ways, 1,
+                            "a drawn Port take that two listed moves take, so the payment pick would need its \
+                             number too: no seed of this walk drew one when the rule was written, and the walk \
+                             refuses it rather than carry a branch nobody ran: {state}",
+                        );
+                        let entry = rows
+                            .iter()
+                            .find(|r| r["opens_picker"] == Value::Bool(true))
+                            .unwrap_or_else(|| panic!("a folded Port prompt has its entry: {state}"));
+                        let mut chooser = api
+                            .send_as(mover, &entry["number"].as_u64().expect("a number").to_string())
+                            .await;
+                        assert_eq!(chooser["prompt"]["kind"], "port", "the entry opens the chooser: {chooser}");
+                        let cards = mv["ExecuteAreaAction"]["action"]["Port"]["cards_taken"].as_array().cloned().expect("cards");
+                        let in_reach = chooser["prompt"]["cards"].as_array().map_or(0, Vec::len);
+                        let here = cards.len() == 2 && in_reach > 2;
+                        if here {
+                            capture(&mut out, &mut seen, "port", &chooser);
+                        }
+                        for (i, card) in cards.iter().enumerate() {
+                            let number = card.as_u64().expect("a card");
+                            chooser = api.send_as(mover, &number.to_string()).await;
+                            assert!(
+                                chooser["prompt"]["cards"]
+                                    .as_array()
+                                    .expect("cards")
+                                    .iter()
+                                    .any(|c| c["number"] == number && c["selected"] == Value::Bool(true)),
+                                "card {number} switched on: {chooser}",
+                            );
+                            if here {
+                                capture(&mut out, &mut seen, if i == 0 { "port_selected" } else { "port_pair" }, &chooser);
+                            }
+                        }
+                        assert_eq!(
+                            chooser["prompt"]["preview"]["legal"],
+                            Value::Bool(true),
+                            "the drawn take is listed, so its selection previews legal: {chooser}",
+                        );
+                        "confirm".to_string()
+                    } else {
+                        assert_eq!(
+                            mv,
+                            json!({ "ExecuteAreaAction": { "action": "Skip" } }),
+                            "a folded Port prompt lists its takes and the decline: {state}",
+                        );
+                        let direct: Vec<&Value> =
+                            rows.iter().filter(|r| r["opens_picker"] == Value::Bool(false)).collect();
+                        assert_eq!(direct.len(), 1, "the decline is the one direct row: {state}");
+                        direct[0]["number"].as_u64().expect("a number").to_string()
+                    }
+                } else if kind == "options"
+                    && rows.len() < options.len()
+                    && options.iter().any(|o| church(&o["mv"]))
+                {
+                    let mv = options[rng.below(options.len())]["mv"].clone();
+                    if church(&mv) {
+                        let entry = rows
+                            .iter()
+                            .find(|r| r["opens_picker"] == Value::Bool(true))
+                            .unwrap_or_else(|| panic!("a folded Church prompt has its entry: {state}"));
+                        let mut chooser = api
+                            .send_as(mover, &entry["number"].as_u64().expect("a number").to_string())
+                            .await;
+                        assert_eq!(chooser["prompt"]["kind"], "church", "the entry opens the chooser: {chooser}");
+                        capture(&mut out, &mut seen, "church", &chooser);
+                        // The first chooser whose preview is LEGAL, so the
+                        // corpus holds a legal preview in `describe`'s words.
+                        let legal = |c: &Value| c["prompt"]["preview"]["legal"] == Value::Bool(true);
+                        if legal(&chooser) {
+                            capture(&mut out, &mut seen, "church_legal", &chooser);
+                        }
+                        let flags = &mv["ExecuteAreaAction"]["action"]["Church"];
+                        for (number, field) in
+                            [(1, "copper"), (2, "silk"), (3, "tea"), (4, "seafood"), (5, "yen"), (6, "imported_good")]
+                        {
+                            if flags[field] == Value::Bool(true) {
+                                chooser = api.send_as(mover, &number.to_string()).await;
+                                assert_eq!(
+                                    chooser["prompt"]["kinds"][number - 1]["selected"],
+                                    Value::Bool(true),
+                                    "kind {number} ({field}) switched on: {chooser}",
+                                );
+                                capture(&mut out, &mut seen, "church_selected", &chooser);
+                                if legal(&chooser) {
+                                    capture(&mut out, &mut seen, "church_legal", &chooser);
+                                }
+                            }
+                        }
+                        assert_eq!(
+                            chooser["prompt"]["preview"]["legal"],
+                            Value::Bool(true),
+                            "the drawn move is listed, so its selection previews legal: {chooser}",
+                        );
+                        "confirm".to_string()
+                    } else {
+                        assert_eq!(
+                            mv,
+                            json!({ "ExecuteAreaAction": { "action": "Skip" } }),
+                            "a folded Church prompt lists its payments and the decline: {state}",
+                        );
+                        let direct: Vec<&Value> =
+                            rows.iter().filter(|r| r["opens_picker"] == Value::Bool(false)).collect();
+                        assert_eq!(direct.len(), 1, "the decline is the one direct row: {state}");
+                        direct[0]["number"].as_u64().expect("a number").to_string()
+                    }
+                } else if kind == "options"
+                    && rows.len() < options.len()
+                    && options.iter().any(|o| title_of(&o["mv"]).is_some())
+                {
+                    // **The Laboratory folds by title** (plan 2b, Task 3), and
+                    // the walk plays the same game across it by the Port's
+                    // rule: the draw is taken over `frame.decision.options`,
+                    // and the move it names is played by lines. Which row a
+                    // listed move stands under is counted HERE, by hand, off
+                    // the options and the registry's names: a title with one
+                    // listed row is its own row, a title with more is one
+                    // entry at its first row's place; the entry's words are
+                    // checked against "The words", and the pick's row is the
+                    // move's place among its title's rows in list order.
+                    // Measured at these seeds: one folded Laboratory prompt,
+                    // event 50 (both copies of Ball, one row each, the draw the
+                    // first), so the pick opens once and `lab_pick` is
+                    // captured there.
+                    let i = rng.below(options.len());
+                    let titles: Vec<Option<String>> = options.iter().map(|o| title_of(&o["mv"])).collect();
+                    let count = |t: &str| titles.iter().filter(|x| x.as_deref() == Some(t)).count();
+                    let mut row_of = Vec::new();
+                    let mut entries: Vec<(&str, usize)> = Vec::new();
+                    let mut next = 0usize;
+                    for t in &titles {
+                        let folded = t.as_deref().filter(|t| count(t) > 1);
+                        match folded.and_then(|t| entries.iter().find(|(x, _)| *x == t).map(|(_, row)| *row)) {
+                            Some(row) => row_of.push(row),
+                            None => {
+                                if let Some(t) = folded {
+                                    entries.push((t, next));
+                                }
+                                row_of.push(next);
+                                next += 1;
+                            }
+                        }
+                    }
+                    assert_eq!(next, rows.len(), "one row per title, the folded ones at their first row: {state}");
+                    let row = &rows[row_of[i]];
+                    let number = row["number"].as_u64().expect("a number").to_string();
+                    match titles[i].as_deref() {
+                        Some(t) if count(t) > 1 => {
+                            assert_eq!(row["opens_picker"], Value::Bool(true), "{state}");
+                            assert_eq!(row["words"], format!("Laboratory: acquire {t} — {} ways to pay", count(t)));
+                            let pick = api.send_as(mover, &number).await;
+                            assert_eq!(pick["prompt"]["kind"], "pick", "the entry opens the pick: {pick}");
+                            assert_eq!(pick["prompt"]["title"], format!("Laboratory: acquire {t} — choose the payment"));
+                            assert_eq!(pick["prompt"]["rows"].as_array().map(Vec::len), Some(count(t)), "{pick}");
+                            capture(&mut out, &mut seen, "lab_pick", &pick);
+                            let k = (0..i).filter(|&j| titles[j].as_deref() == Some(t)).count();
+                            assert!(k < count(t), "the drawn row is one of its title's {} rows: {pick}", count(t));
+                            pick["prompt"]["rows"][k]["number"].as_u64().expect("a number").to_string()
+                        }
+                        _ => {
+                            assert_eq!(row["opens_picker"], Value::Bool(false), "a direct row: {state}");
+                            number
+                        }
+                    }
+                } else {
+                    rows[rng.below(rows.len())]["number"].as_u64().expect("a number").to_string()
+                }
             }
             "place_a" => {
                 let already = state["prompt"]["selected"].as_array().map_or(0, Vec::len);
@@ -1670,6 +1938,13 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         "wrong_seat_403",
         "undo_refused_403",
         "spectator",
+        "church",
+        "church_selected",
+        "church_legal",
+        "port",
+        "port_selected",
+        "port_pair",
+        "lab_pick",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),
@@ -1719,6 +1994,83 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
     // action area" branch — or a Chinatown, whose rung pays `Exchanges`. A
     // corpus of 2P surfaces leaves both rendered by nothing.
     out.push(("areas_4p".to_string(), api.get("/api/games/wire4/areas").await));
+
+    // **Chinatown's chooser, on the four-player table** (plan 2a, Task 4).
+    // The two-player board above has no Chinatown, so its two captures are
+    // routed here, line by line, as red at seat 0: end the additional phase,
+    // Option B's two assistants at the Chinatown tile, the President placed
+    // there (power 3), the folded entry — captured as `chinatown` — then a
+    // copper sale — `chinatown_selected` — then `confirm`. Each row number,
+    // and the tile's id, is read off a payload before it is sent, and the
+    // sale's `1` is checked against the reply; the walk's `send_as` and
+    // `as_actor` are fixed to `wire`, so these are posted to `wire4` directly.
+    let send4 = |line: String| async move {
+        let (status, v) =
+            api.call_as(Some(WALKER), "POST", "/api/games/wire4/input", Some(json!({ "line": line }))).await;
+        assert_eq!(status, StatusCode::OK, "wire4 input {line:?} was refused: {v}");
+        v
+    };
+    let row_number = |state: &Value, pick: &dyn Fn(&Value) -> bool, what: &str| -> String {
+        state["prompt"]["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .find(|r| pick(r))
+            .unwrap_or_else(|| panic!("wire4: no row {what}: {state}"))["number"]
+            .as_u64()
+            .expect("a number")
+            .to_string()
+    };
+    let opening = &out.iter().find(|(n, _)| n == "options_4p").expect("options_4p was captured").1;
+    let end = opening["frame"]["decision"]["options"]
+        .as_array()
+        .expect("options")
+        .iter()
+        .position(|o| o["mv"] == json!("EndAdditionalPhase"))
+        .unwrap_or_else(|| panic!("wire4 opens on the additional actions: {opening}"));
+    assert_eq!(end, 0, "wire4's first row ends the additional phase: {opening}");
+    let ended = send4("1".to_string()).await;
+    let phase = |s: &Value| {
+        let decision = &s["frame"]["decision"];
+        decision["phase_chain"][decision["current_phase"].as_u64().expect("a phase index") as usize].clone()
+    };
+    assert_eq!(phase(&ended), json!("Placement"), "the additional phase ended: {ended}");
+    let areas_4p = &out.iter().find(|(n, _)| n == "areas_4p").expect("areas_4p was captured").1;
+    let town = find_chinatown_area(areas_4p);
+    let mut state = send4(format!("b {town}")).await;
+    let label = format!("(A{town:02})");
+    let place = row_number(
+        &state,
+        &|r| r["words"].as_str().is_some_and(|w| w.contains(&label) && w.contains("President")),
+        &format!("placing the President in {label}"),
+    );
+    state = send4(place).await;
+    let entry = row_number(&state, &|r| r["opens_picker"] == Value::Bool(true), "opening a chooser");
+    let entry_words = state["prompt"]["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|r| r["opens_picker"] == Value::Bool(true))
+        .expect("the entry")["words"]
+        .clone();
+    assert_eq!(
+        entry_words,
+        json!("Chinatown — choose exchanges (up to 3; 127 combinations)"),
+        "seat 0 opens with one of each good and 3 yen, at power 3: {state}",
+    );
+    let chooser = send4(entry).await;
+    assert_eq!(chooser["prompt"]["kind"], "chinatown", "the entry opens the chooser: {chooser}");
+    out.push(("chinatown".to_string(), chooser));
+    let sold = send4("1".to_string()).await;
+    assert_eq!(sold["prompt"]["chosen"], 1, "one exchange chosen: {sold}");
+    assert_eq!(
+        (sold["prompt"]["rows"][0]["words"].clone(), sold["prompt"]["rows"][0]["count"].clone()),
+        (json!("1 copper -> 2 yen"), json!(1)),
+        "and it is the copper sale: {sold}",
+    );
+    out.push(("chinatown_selected".to_string(), sold));
+    let confirmed = send4("confirm".to_string()).await;
+    assert_ne!(confirmed["prompt"]["kind"], "chinatown", "the chooser closes on its commit: {confirmed}");
 
     // The log, read AFTER the game is over, so it carries real entries.
     out.push(("log".to_string(), api.get("/api/games/wire/log").await));
@@ -2164,8 +2516,8 @@ fn partial_of(record_text: &str, events: usize) -> String {
 
 /// The payloads the walk does not route, built in process.
 ///
-/// **Eight of them, not the two this doc used to claim** (M6.5b, then cycle E
-/// and security S1a), each for its own reason:
+/// **Nine of them, not the two this doc used to claim** (M6.5b, then cycle E,
+/// security S1a and issue #75), each for its own reason:
 ///
 /// - `watching`: a BOT must be the acting seat, and a bot's seed is entropy.
 /// - `locked`: a driver or engine fault.
@@ -2175,6 +2527,8 @@ fn partial_of(record_text: &str, events: usize) -> String {
 /// - `why_refusals`: every refusal kind, from the enum.
 /// - `explanation_terminal`: a finished position's explanation.
 /// - `house_frame`: a stream frame, and the walk reads no stream.
+/// - `goals_claimed_4p`: a card with four claims, which no short deterministic
+///   game reaches — see [`goals_claimed_4p`].
 ///
 /// They are therefore third-column files in spec §5's table — constructed, not
 /// routed — which the browser host's replay asserts by name.
@@ -2382,7 +2736,36 @@ fn constructed() -> Vec<(String, Value)> {
         ("explanation_terminal".to_string(), terminal),
         ("why_refusals".to_string(), every_refusal_payload()),
         ("house_frame".to_string(), house_frame_fixture()),
+        ("goals_claimed_4p".to_string(), goals_claimed_4p()),
     ]
+}
+
+/// `goals_claimed_4p`: the claim band's fixture (issue #75). The corpus's walk
+/// is a two-player game whose cards carry at most one claim, and no short
+/// deterministic game reaches four, so the claim order is set on the cards of
+/// a fresh 4P position and the panels are the model's own builders'. The order
+/// is 2, 0, 3, 1 on purpose: neither seat order nor "the lowest seat first"
+/// can pass for claim order. Constructed, not routed: a third-column file.
+/// **Only `claimed_by` is set**: the seats' rows (`on_achievements`, the
+/// points) and the cards' `progress` are the fresh setup's, so the file is a
+/// fixture for the band and not a position a game reaches.
+fn goals_claimed_4p() -> Value {
+    use yokohama_cli::screen_model::{build_achievements, build_players, SeatFacts};
+    use yokohama_core::{finalize_setup, new_game, GameConfig, PlayerColor, PlayerId, Rules, StartingOrderChoice};
+    let rules = Rules::standard();
+    let mut config = GameConfig::for_player_count(4);
+    config.player_colors =
+        vec![PlayerColor::Red, PlayerColor::Blue, PlayerColor::Yellow, PlayerColor::Green];
+    config.start_player = PlayerId::new(0);
+    let pending = new_game(config, &rules, SETUP_SEED).expect("a fixture game");
+    let mut state =
+        finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).expect("a fixture game");
+    state.achievements[0].claimed_by = [2, 0, 3, 1].map(PlayerId::new).to_vec();
+    state.achievements[1].claimed_by = vec![PlayerId::new(3)];
+    serde_json::json!({
+        "achievements": build_achievements(&state),
+        "players": build_players(&state, &rules, &SeatFacts::all_open(4)),
+    })
 }
 
 /// **The house frame, as the lobby's socket or stream delivers it** (M6.5c2
@@ -3872,6 +4255,100 @@ fn drift_line(label: &str, committed: &str, emitted: &str, makes: &str) -> Strin
     )
 }
 
+/// **Every seat row's `flags` is the countries of that row's OWN face-up cards,
+/// by value, in every payload the corpus emits** (issue #76; the whole-branch
+/// review, W-8). The corpus's other cells pin a row's `flags` by key name only,
+/// and the golden below sees a wrong count only as DRIFT — which
+/// `UPDATE_WIRE_FIXTURES=1` erases, freezing the wrong count as faithfully as a
+/// right one (the M6.1 lesson). This recount reads what a regeneration cannot
+/// make agree with a wrong count: each row's own `orders_filled`, through
+/// `Rules::standard()`'s order registry, and its own `technologies[*].printed`
+/// country, never the model's counting functions. It walks every JSON object
+/// carrying a seat row's two marks (`hand_hidden` and `orders_filled`), so it
+/// reaches the rows inside a `Players` panel and the constructed fixture's
+/// untagged `players` root alike, and it counts the rows it checked and how
+/// many were non-zero: an empty sweep, or one whose every row is zero (which
+/// any count would match), fails.
+#[tokio::test]
+async fn every_seat_row_s_flags_are_the_countries_of_its_own_face_up_cards() {
+    use yokohama_core::{Country, OrderCardId};
+    fn word(c: Country) -> &'static str {
+        match c {
+            Country::English => "english",
+            Country::American => "american",
+            Country::French => "french",
+            Country::German => "german",
+            Country::Dutch => "dutch",
+        }
+    }
+    fn rows<'a>(v: &'a Value, path: String, out: &mut Vec<(String, &'a Value)>) {
+        match v {
+            Value::Object(m) => {
+                if m.contains_key("hand_hidden") && m.contains_key("orders_filled") {
+                    out.push((path.clone(), v));
+                }
+                for (k, x) in m {
+                    rows(x, format!("{path}/{k}"), out);
+                }
+            }
+            Value::Array(a) => {
+                for (i, x) in a.iter().enumerate() {
+                    rows(x, format!("{path}/{i}"), out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let rules = Rules::standard();
+    let (mut checked, mut nonzero) = (0usize, 0usize);
+    let mut wrong: Vec<String> = Vec::new();
+    for (name, value) in corpus().await.payloads {
+        let mut found = Vec::new();
+        rows(&value, String::new(), &mut found);
+        for (path, row) in found {
+            let mut counts = [("english", 0u64), ("american", 0), ("french", 0), ("german", 0), ("dutch", 0)];
+            let mut add = |c: Country| {
+                counts.iter_mut().find(|(k, _)| *k == word(c)).expect("a country").1 += 1;
+            };
+            for id in row["orders_filled"].as_array().expect("orders_filled is a list") {
+                let id: OrderCardId = serde_json::from_value(id.clone()).expect("an order id");
+                let card = rules
+                    .orders
+                    .get(id)
+                    .unwrap_or_else(|| panic!("{name}{path}: order {id:?} is not in the registry"));
+                add(card.country);
+            }
+            for tech in row["technologies"].as_array().expect("technologies is a list") {
+                let country: Country = serde_json::from_value(tech["printed"]["country"].clone())
+                    .unwrap_or_else(|e| panic!("{name}{path}: a technology's printed country: {e}"));
+                add(country);
+            }
+            let expected: Value =
+                Value::Object(counts.iter().map(|(k, n)| (k.to_string(), json!(n))).collect());
+            checked += 1;
+            if counts.iter().any(|(_, n)| *n > 0) {
+                nonzero += 1;
+            }
+            if row.get("flags") != Some(&expected) {
+                wrong.push(format!(
+                    "  {name}.json{path}: flags {} where its own orders_filled and technologies make {expected}",
+                    row.get("flags").map_or("absent".to_string(), |f| f.to_string()),
+                ));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {checked} seat row(s) carry a flag count that is not their own face-up cards':\n{}",
+        wrong.len(),
+        wrong.join("\n"),
+    );
+    assert!(checked > 0, "the sweep found no seat row in any payload");
+    assert!(nonzero > 0, "every one of the {checked} seat rows is all zero, which any count would match");
+    eprintln!("seat rows recounted: {checked}, non-zero: {nonzero}");
+}
+
 #[tokio::test]
 async fn the_committed_wire_fixtures_are_what_the_server_emits() {
     let dir = wire_dir();
@@ -4172,6 +4649,24 @@ fn every_prompt_variant() -> Vec<yokohama_web::client::PromptState> {
         PromptState::GameOver,
         PromptState::Locked { reason: String::new() },
         PromptState::Watching { to_move: PlayerId::new(0) },
+        PromptState::Church(yokohama_cli::chooser::ChurchModel {
+            kinds: Vec::new(),
+            preview: yokohama_cli::chooser::Preview { legal: false, words: None },
+            offered_faiths: None,
+        }),
+        PromptState::Chinatown(yokohama_cli::chooser::ChinatownModel {
+            max_exchanges: 0,
+            chosen: 0,
+            stock: Vec::new(),
+            rows: Vec::new(),
+            preview: yokohama_cli::chooser::Preview { legal: false, words: None },
+        }),
+        PromptState::Port(yokohama_cli::chooser::PortModel {
+            board_b: false,
+            max_cards: 0,
+            cards: Vec::new(),
+            preview: yokohama_cli::chooser::PortPreview { legal: false, ways: Vec::new() },
+        }),
     ]
 }
 
@@ -4188,6 +4683,9 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
         PromptState::GameOver => 6,
         PromptState::Locked { .. } => 7,
         PromptState::Watching { .. } => 8,
+        PromptState::Church(_) => 9,
+        PromptState::Chinatown(_) => 10,
+        PromptState::Port(_) => 11,
     }
 }
 
@@ -4195,14 +4693,14 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
 ///
 /// The compile-error match is half the guard and this is the other half: a new
 /// arm added to `prompt_ordinal` without a value added to `every_prompt_variant`
-/// would otherwise leave the list nine long and every check below still green.
-/// **`9` is load-bearing and moves with the enum.**
+/// would otherwise leave the list twelve long and every check below still green.
+/// **`12` is load-bearing and moves with the enum.**
 #[test]
 fn the_variant_list_is_every_variant_exactly_once() {
     let all = every_prompt_variant();
     assert_eq!(
         all.len(),
-        9,
+        12,
         "a `PromptState` variant was added or removed: `every_prompt_variant`, this count, and \
          the EXEMPT list in `every_prompt_the_client_can_be_shown_has_a_fixture` move together",
     );

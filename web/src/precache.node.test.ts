@@ -183,7 +183,7 @@ describe.skipIf(!existsSync(glue))("what a real build actually emits", () => {
     // The fonts and the help pictures, the two cuts Task 5 made: an offline
     // launch that lost either is the thing R-6.5b2.18 exists to prevent.
     expect(paths.filter((p) => p.endsWith(".woff2")).length).toBe(2);
-    expect(paths.filter((p) => p.startsWith("/help/")).length).toBe(5);
+    expect(paths.filter((p) => p.startsWith("/help/")).length).toBe(7);
 
     // And the art: every picture, plus the list that names them.
     expect(paths).toContain("/art/manifest.json");

@@ -1,8 +1,10 @@
 import type {
   AchievementModel,
+  AchievementType,
   ArtManifest,
   ChurchSpaceModel,
   CustomsSpaceModel,
+  FlagCounts,
   HandPanel,
   Labels,
   MercenarySupply,
@@ -45,6 +47,13 @@ export type PanelName = NameOf<Panel>;
  *  `PanelName[]`, so it moves with the wire for the same reason. */
 const KNOWN: PanelName[] = ["Players", "Tracks", "Achievements", "Hand"];
 
+/** The hand's flag count and whose hand it is — what `Players` needs to put
+ *  `+n` on one row. */
+interface HandFlags {
+  seat: PlayerId;
+  flags: FlagCounts;
+}
+
 export function Dashboard({
   panels,
   art,
@@ -54,6 +63,7 @@ export function Dashboard({
   changedSeats,
   changedTechs,
   changedHand,
+  changedGoals,
   bots,
 }: {
   panels: Panel[];
@@ -76,6 +86,10 @@ export function Dashboard({
   /** The order ids the walk is lighting in the VIEWER's hand (R-GC-2) — a
    *  masked hand carries no identities, so a bot's take marks nothing here. */
   changedHand?: Set<number>;
+  /** The achievement cards the walk is lighting (#75) — `diffFrames`' own
+   *  `goals`: the cards whose claims grew. Lights the Achievements panel's
+   *  cards and nothing else; it is never read off `changedSeats`. */
+  changedGoals?: Set<AchievementType>;
   /** The RECORD's bot seats, each with its bot's short label (M6.5c2, spec
    *  §2.2 and §2.4; mock 10) — `ClientState.bots`, shown and never chosen, so
    *  a finished game against V2 says V2 while this build runs V4. A bot seat
@@ -93,6 +107,16 @@ export function Dashboard({
   // that fallback and shows itself.
   const wanted = (p: Panel) =>
     !only || only.some((name) => name in p) || !KNOWN.some((name) => name in p);
+  // **The hand is looked for in the WHOLE list, not the filtered one**: the side
+  // column may ask for Players alone, and the `+n` on the viewer's row must
+  // still be drawn. The test is at run time because a server one release back
+  // omits the count, whatever `types.ts` says; then nothing is drawn and nothing
+  // else changes.
+  const handPanel = panels.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p);
+  const handFlags: HandFlags | undefined =
+    handPanel && handPanel.Hand.flags_in_hand != null
+      ? { seat: handPanel.Hand.seat, flags: handPanel.Hand.flags_in_hand }
+      : undefined;
   return (
     <>
       {panels.filter(wanted).map((panel, i) => {
@@ -105,6 +129,7 @@ export function Dashboard({
               changedSeats={changedSeats}
               changedTechs={changedTechs}
               bots={bots}
+              handFlags={handFlags}
             />
           );
         if ("Tracks" in panel)
@@ -117,6 +142,7 @@ export function Dashboard({
               art={art}
               labels={labels}
               colors={colors}
+              changed={changedGoals}
             />
           );
         if ("Hand" in panel)
@@ -160,6 +186,52 @@ const good = (n: number, cls: string, label: string) => (
   </span>
 );
 
+/** A seat's face-up flags, one cell per country in `MERCENARIES`' order.
+ *
+ *  A flag counts toward the country set bonus once its order is fulfilled or its
+ *  technology owned; a flag still on an order in hand does not, so `inHand`
+ *  rides beside the count as `+n`, muted, and never added into it.
+ *
+ *  The row is ONE object with ONE sentence for a name, and every cell inside is
+ *  `aria-hidden`, so a screen reader hears the tally once rather than as
+ *  fifteen fragments. It takes a tile's role for that (`Pieces.tsx`):
+ *  `role="img"` keeps it one object, where a `group` with every cell hidden
+ *  would have nothing in it to enter, and a reader in browse mode can skip such
+ *  a group and never say its name. */
+function Flags({ flags, inHand }: { flags: FlagCounts; inHand?: FlagCounts }) {
+  const heldWords = inHand
+    ? MERCENARIES.filter(([, field]) => inHand[field] > 0).map(
+        ([, field, word]) => `${word} ${inHand[field]}`,
+      )
+    : [];
+  const name =
+    `Flags: ${MERCENARIES.map(([, field, word]) => `${word} ${flags[field]}`).join(", ")}` +
+    (heldWords.length > 0 ? `; in hand: ${heldWords.join(", ")}` : "");
+  return (
+    <div className="flags" role="img" aria-label={name}>
+      {MERCENARIES.map(([key, field, word]) => {
+        const held = inHand?.[field] ?? 0;
+        return (
+          <span
+            className={`flag${flags[field] === 0 ? " none" : ""}`}
+            data-country={field}
+            aria-hidden="true"
+            key={key}
+          >
+            <span className="flag-word">{word}</span>
+            <span className="flag-n">{flags[field]}</span>
+            {held > 0 && (
+              <span className="flag-hand" title={`${held} in hand \u2014 counts when the order is fulfilled`}>
+                +{held}
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Where a seat's president is: in hand, or on a named area.
  *
  *  Not an `Option` on the wire — a president is always somewhere — so this
@@ -175,12 +247,15 @@ function Players({
   changedSeats,
   changedTechs,
   bots,
+  handFlags,
 }: {
   players: PlayerModel[];
   labels: Labels | null;
   changedSeats?: Set<number>;
   changedTechs?: Set<string>;
   bots?: readonly SeatBot[];
+  /** The viewer's flags in hand, with the seat whose hand it is. */
+  handFlags?: HandFlags;
 }) {
   return (
     <section className="panel">
@@ -218,6 +293,13 @@ function Players({
               <span className="chip yen">&#165;{p.money}</span>
               <span className="chip vp">{p.victory_points} VP</span>
             </div>
+
+            {p.flags != null && (
+              <Flags
+                flags={p.flags}
+                inHand={handFlags?.seat === p.seat ? handFlags.flags : undefined}
+              />
+            )}
 
             <div className="stat-row">
               {good(p.goods.copper, "copper", "copper")}
@@ -543,11 +625,13 @@ export function Achievements({
   art,
   labels,
   colors,
+  changed,
 }: {
   cards: AchievementModel[];
   art: ArtManifest | null;
   labels: Labels | null;
   colors: PlayerColor[];
+  changed?: Set<AchievementType>;
 }) {
   return (
     <section className="panel">
@@ -560,6 +644,7 @@ export function Achievements({
             art={art}
             labels={labels}
             colors={colors}
+            changed={changed?.has(c.achievement_type)}
           />
         ))}
       </div>

@@ -57,13 +57,16 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         laboratory, six card slots to a board, the church and customs tracks, the goals in play,
         and the building sites at full size. They sit side by side only on a very wide screen
         &mdash; at 1710px across they stack, at 2560px they do not &mdash; so on a laptop the
-        table scrolls down to them. The <strong>side column</strong> on the right holds the{" "}
+        table scrolls down to them. A claimed goal shows the claimant&rsquo;s assistant on the
+        card. The first to claim stands in the ringed place beside the first-place points; later
+        claimants follow beside theirs. The <strong>side column</strong> on the right holds the{" "}
         <strong>answer bar</strong> pinned at its top &mdash; whatever the game is asking you is
         always there &mdash; then the account of the last turn, which, when the opponent has just
         moved, first plays out on the table one step at a time, at the pace the account&rsquo;s
         cadence control sets. Each step marks what it changed, with an outline that pulses once
         and then stays until the next step replaces it: the pieces that moved, the seat rows
-        whose values changed, and the cards a take moved. A take marks its two ENDS. In the port
+        whose values changed, the cards a take moved, and a goal a player has just claimed. A
+        take marks its two ENDS. In the port
         or laboratory it lights the card the deck turned over to refill the strip &mdash; the
         arrival &mdash; and not the card that left, which is no longer there to point at. The
         taken card is marked where it went instead: a technology in its new owner&rsquo;s list,
@@ -75,7 +78,10 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         them, not just its last step&rsquo;s &mdash; stay on the live table until you answer
         again, so you play on a board that still shows what your opponent did. Skip lands you on
         your prompt, replay runs it again. Under it are every seat&rsquo;s goods, money and
-        pieces, and your own hand. Hover or focus any tile to see it, and any site card on it,
+        pieces, and your own hand. Each player&rsquo;s row counts their flags by country: the
+        flags on fulfilled orders and on technologies, which earn mercenaries and score the
+        country sets. On your own row, +n is the flags on orders still in your hand; they count
+        once the order is fulfilled. Hover or focus any tile to see it, and any site card on it,
         at full size.
       </p>
       <p>
@@ -86,7 +92,7 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
       {shots && (
         <Shot
           src="/help/screen.webp"
-          alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces."
+          alt="The client at two players on a 1710 by 869 screen: the staggered pyramid of ten area tiles filling the table on the left, each tile the printed area art with its building-site card upright on its top-right, its pieces on it and an id badge along its bottom edge; on the right the answer bar at the top of the side column, carrying the phase ladder, the seat to move and the numbered moves it is offering, and under it the last move and both seats&rsquo; goods, money and pieces, each seat&rsquo;s row carrying its flag count by country, yours with the flags still in hand too."
           caption="The first view at two players: the table on the left, the side column on the right, the answer bar pinned at its top. The pyramid is fitted to the table&rsquo;s height here, so the five switched-on boards sit under it and the table scrolls to them."
         />
       )}
@@ -117,6 +123,40 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
           src="/help/placement.webp"
           alt="A placement picker open at Option B: the answer bar reads &ldquo;Placement &mdash; Option B&rdquo; over the line &ldquo;Option B &mdash; click one area on the board for two assistants, then confirm&rdquo;, with Confirm and Cancel under it; below that the last-move block lists the eligible areas by name and id, naming the fee beside any that would cost one; and on the table every tile that can be chosen is drawn as a button."
           caption="A placement picker: the table is the input surface. Every eligible area is listed, with the fee named where there is one, and once you pick one the answer bar prices the selection too."
+        />
+      )}
+      <p>
+        At the Church and at Chinatown, when more than one payment or set of exchanges is on
+        offer, the list shows a single entry beside the decline, and that entry opens a chooser:
+        at the Church you switch on what you pay, at Chinatown you add exchanges with plus and
+        take them back with minus. A kind or a plus is live only where the engine&rsquo;s list
+        holds that choice, so selling first is what lights a purchase you could not yet afford;
+        a minus is live whenever you have one to take back, and Confirm is live once the list
+        holds exactly what you have chosen.
+      </p>
+      {shots && (
+        <Shot
+          src="/help/church.webp"
+          alt="The Church&rsquo;s chooser open in the answer bar, cut from the side column: the turn and the phase chain over the question &ldquo;The Church &mdash; what do you pay?&rdquo;, then a button for each of the six kinds you could pay, each with its good and how many you have &mdash; two of them switched on, and the one you hold none of drawn unavailable &mdash; and under them the line saying the payment is legal and what it buys, over Confirm and Cancel."
+          caption="The Church&rsquo;s chooser: switch on what you pay. Once the list holds that payment, the line under the kinds says so and names the faith it buys, and Confirm commits it."
+        />
+      )}
+      <p>
+        At the Port, when more than one take is on offer, the list shows a single entry beside
+        the decline, and that entry opens a chooser: you switch on one card or two. A card you
+        have not switched on is live only where the engine&rsquo;s list holds a take with it
+        added, so a second card goes dark when your hand has no room for it or you cannot pay
+        for it; when you could pay for the second card either with 2 yen or with an imported
+        good, Confirm asks which. At the Laboratory a technology that can be paid for in more
+        than one way is a single row, and pressing it opens the list of those ways. When both
+        copies of a technology are on the same Laboratory board, each of its rows names its
+        slot, as the board numbers it, so you can tell which card you are taking.
+      </p>
+      {shots && (
+        <Shot
+          src="/help/port.webp"
+          alt="The Port&rsquo;s chooser open in the answer bar, cut from the side column: the turn and the phase chain over the question &ldquo;The Port &mdash; take one card, or two&rdquo;, then the order cards in reach under their zones, LOW and MID, each a button naming the card, its country, what it needs and what it pays &mdash; two of them switched on and the other two drawn unavailable &mdash; and under them the line saying the take is legal and how it is paid for, over Confirm and Cancel."
+          caption="The Port&rsquo;s chooser: with two cards switched on the rest go dark, since a take is one card or two, and the line under them names the take and how it is paid for &mdash; or both ways, when there are two, to be chosen at Confirm."
         />
       )}
 

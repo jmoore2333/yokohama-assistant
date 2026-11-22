@@ -367,8 +367,11 @@ describe("productionSeedRule", () => {
   // over the committed scripts with the three functions, in the pre-flight's
   // line shape, and compared line by line to the list the review read
   // (`replay/fixtures/production-door-kept-rows.txt`, its header and footer
-  // kept). Mutant: the skip rule widened to `wire4`'s four keep rows.
-  it("keeps exactly the twenty-six rows the review read, of 2,213", () => {
+  // kept). Six of the thirty-two are the walk's Chinatown chooser lines at
+  // `wire4`, a kept table (plan 2a, 2026-11-21): the walk's own rows, read by
+  // that plan's reviews and not by S1b's. Mutant: the skip rule widened to
+  // `wire4`'s four keep rows.
+  it("keeps exactly thirty-two rows, of 2,254: the twenty-six the S1b review read and the six lines the walk plays at wire4", () => {
     const skipped = productionSeedRule(SCRIPTS.walk);
     const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
     const kept = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
@@ -384,7 +387,7 @@ describe("productionSeedRule", () => {
     const file = readFileSync(new URL("./replay/fixtures/production-door-kept-rows.txt", import.meta.url), "utf8");
     expect(file.endsWith("\n"), "the list ends in one newline").toBe(true);
     expect(lines).toEqual(file.slice(0, -1).split("\n"));
-    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([26, 2187, 2213]);
+    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([32, 2222, 2254]);
   });
   // The sentence is `tables::SEED_NOT_SOLO`'s, read off the Rust source so
   // the two cannot drift (the edge rule's drift cell is the precedent).

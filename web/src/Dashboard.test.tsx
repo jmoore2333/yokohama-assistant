@@ -1,12 +1,15 @@
 // The rail: who has what, and the three things it must not round off.
 
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { Dashboard, riderWords } from "./Dashboard";
+import { Achievements, Dashboard, riderWords } from "./Dashboard";
 import { wire } from "./wire/contract";
 import { handOf, playersOf, tracksOf } from "./test/panels";
 import {
   DUMMY_SEAT,
+  type AchievementModel,
+  type AchievementType,
+  type ArtManifest,
   type ClientState,
   type HandPanel,
   type Panel,
@@ -550,5 +553,432 @@ describe("the bot's version on the Players panel", () => {
     const seat = document.querySelectorAll(".panel .seat")[0]!;
     expect(seat.querySelector(".version-tag")).toBeNull();
     expect(seat.querySelector(".tag")).toHaveTextContent("bot");
+  });
+});
+
+describe("a seat's flags", () => {
+  /** The five countries in the engine's order: the wire key and the word the
+   *  tally and its accessible name use (`Dashboard.tsx`'s `MERCENARIES`). */
+  const COUNTRIES = [
+    ["english", "Britain"],
+    ["american", "America"],
+    ["french", "France"],
+    ["german", "Germany"],
+    ["dutch", "Netherlands"],
+  ] as const;
+
+  const rowsOf = (c: HTMLElement) => [...c.querySelectorAll<HTMLElement>(".seat")];
+
+  const showPlayers = (state: ClientState) =>
+    render(
+      <Dashboard
+        panels={state.frame.dashboard}
+        art={wire.artManifest}
+        labels={wire.labels}
+        colors={COLORS}
+        only={["Players"]}
+      />,
+    );
+
+  /** The payload's Hand panel, which every cell below asserts it has. */
+  const handFor = (state: ClientState): HandPanel => {
+    const hand = handOf(state);
+    if (!hand) throw new Error("this payload carries no Hand panel");
+    return hand;
+  };
+
+  /** A JSON round-trip clone of a corpus payload with the two fields removed —
+   *  what a server one release back sends. */
+  const withoutFlags = (state: ClientState): ClientState => {
+    const clone: ClientState = JSON.parse(JSON.stringify(state));
+    for (const p of playersOf(clone)) delete (p as Partial<PlayerModel>).flags;
+    const hand = handOf(clone);
+    if (hand) delete (hand as Partial<HandPanel>).flags_in_hand;
+    return clone;
+  };
+
+  it("draws five cells per seat in the engine's order, each the seat's own count", () => {
+    const state = wire.gameOver;
+    const players = playersOf(state);
+    expect(
+      players.some((p) => Object.values(p.flags).some((n) => n > 0)),
+      "the payload must hold a seat with a non-zero count",
+    ).toBe(true);
+
+    const { container } = showPlayers(state);
+    const rows = rowsOf(container);
+    expect(rows).toHaveLength(players.length);
+    rows.forEach((row, i) => {
+      const cells = [...row.querySelectorAll<HTMLElement>(".flags .flag")];
+      expect(cells.map((c) => c.dataset.country)).toEqual(COUNTRIES.map(([key]) => key));
+      expect(cells.map((c) => c.querySelector(".flag-n")?.textContent)).toEqual(
+        COUNTRIES.map(([key]) => String(players[i]!.flags[key])),
+      );
+    });
+  });
+
+  it("draws a zero, dimmed with the class none, and no other cell dimmed", () => {
+    const state = wire.gameOver;
+    const seat = playersOf(state)[0]!;
+    expect(seat.flags.french, "seat 0 holds no French flag here").toBe(0);
+    expect(seat.flags.english, "and holds an English one").toBeGreaterThan(0);
+
+    const { container } = showPlayers(state);
+    const row = rowsOf(container)[0]!;
+    const french = row.querySelector<HTMLElement>('.flag[data-country="french"]')!;
+    expect(french.querySelector(".flag-n")).toHaveTextContent("0");
+    expect(french).toHaveClass("none");
+    expect(row.querySelector('.flag[data-country="english"]')).not.toHaveClass("none");
+    expect([...row.querySelectorAll(".flag.none")].map((c) => (c as HTMLElement).dataset.country)).toEqual(
+      COUNTRIES.filter(([key]) => seat.flags[key] === 0).map(([key]) => key),
+    );
+  });
+
+  describe("the flags still in hand", () => {
+    /** Every `.flag-hand` of every row, keyed by row index, as
+     *  `[country, text, title]`. */
+    const handMarks = (c: HTMLElement) =>
+      rowsOf(c).map((row) =>
+        [...row.querySelectorAll<HTMLElement>(".flag-hand")].map((m) => [
+          m.closest<HTMLElement>(".flag")!.dataset.country,
+          m.textContent,
+          m.getAttribute("title"),
+        ]),
+      );
+
+    const expectedMarks = (hand: HandPanel) =>
+      COUNTRIES.filter(([key]) => hand.flags_in_hand![key] > 0).map(([key]) => [
+        key,
+        `+${hand.flags_in_hand![key]}`,
+        `${hand.flags_in_hand![key]} in hand — counts when the order is fulfilled`,
+      ]);
+
+    it("draws +n on the viewer's own row when the viewer acts, and on no other", () => {
+      const state = wire.options;
+      const hand = handFor(state);
+      const players = playersOf(state);
+      expect(hand.flags_in_hand, "the hand carries its count").not.toBeNull();
+      expect(hand.seat).toBe(players.find((p) => p.is_current)!.seat);
+      expect(hand.flags_in_hand!.english).toBe(1);
+
+      const { container } = showPlayers(state);
+      const marks = handMarks(container);
+      players.forEach((p, i) => {
+        expect(marks[i], `seat ${p.seat}`).toEqual(p.seat === hand.seat ? expectedMarks(hand) : []);
+      });
+      expect(marks.flat()).toHaveLength(1);
+    });
+
+    it("draws +n on the hand's seat, not on the acting seat, when another seat acts", () => {
+      const state = wire.watching;
+      const hand = handFor(state);
+      const players = playersOf(state);
+      const current = players.find((p) => p.is_current)!;
+      expect(hand.seat, "the hand is NOT the acting seat's").not.toBe(current.seat);
+      expect(hand.flags_in_hand!.french).toBe(1);
+
+      const { container } = showPlayers(state);
+      const marks = handMarks(container);
+      players.forEach((p, i) => {
+        expect(marks[i], `seat ${p.seat}`).toEqual(p.seat === hand.seat ? expectedMarks(hand) : []);
+      });
+      expect(marks[players.findIndex((p) => p.seat === hand.seat)]).toHaveLength(1);
+    });
+
+    it("draws +n though the side column asks for the Players panel alone", () => {
+      // `only` filters what is DRAWN; the hand's count is read from the whole list.
+      const state = wire.options;
+      const { container } = showPlayers(state);
+      // Only the Players panel is drawn: the Hand panel is filtered out, and
+      // the `+n` still reads its count from the whole list.
+      expect(container.querySelectorAll(".panel")).toHaveLength(1);
+      expect(container.querySelector(".panel h2")).toHaveTextContent("Players");
+      expect(handFor(state).flags_in_hand).not.toBeNull();
+      expect(container.querySelectorAll(".flag-hand")).toHaveLength(1);
+    });
+
+    it("reads the hand's own count, not one added up from its cards", () => {
+      // The wire carries the count so the client works nothing out (spec §2):
+      // a clone whose count disagrees with its cards must show the count.
+      const clone: ClientState = JSON.parse(JSON.stringify(wire.options));
+      const hand = handFor(clone);
+      expect(hand.flags_in_hand!.english, "the payload's own count").toBe(1);
+      hand.flags_in_hand!.english = 3;
+      const { container } = showPlayers(clone);
+      const row = rowsOf(container).find((_, i) => playersOf(clone)[i]!.seat === hand.seat)!;
+      expect(row.querySelector(".flag-hand")).toHaveTextContent("+3");
+      expect(row.querySelector(".flags")!.getAttribute("aria-label")).toBe(
+        "Flags: Britain 0, America 0, France 0, Germany 0, Netherlands 0; in hand: Britain 3",
+      );
+    });
+
+    it("draws no +n on a spectator's payload", () => {
+      const state = wire.spectator;
+      expect(handOf(state), "a spectator holds no hand").toBeUndefined();
+      const { container } = showPlayers(state);
+      expect(container.querySelectorAll(".flags")).toHaveLength(playersOf(state).length);
+      expect(container.querySelector(".flag-hand")).toBeNull();
+    });
+  });
+
+  it("draws no tally, and does not throw, when the server omits the fields", () => {
+    const clone = withoutFlags(wire.options);
+    expect(playersOf(clone).every((p) => !("flags" in p))).toBe(true);
+    expect(handOf(clone)).toBeDefined();
+    expect("flags_in_hand" in handOf(clone)!).toBe(false);
+
+    let result: ReturnType<typeof render> | undefined;
+    expect(() => {
+      result = render(
+        <Dashboard
+          panels={clone.frame.dashboard}
+          art={wire.artManifest}
+          labels={wire.labels}
+          colors={COLORS}
+        />,
+      );
+    }).not.toThrow();
+    expect(result!.container.querySelectorAll(".seat").length).toBeGreaterThan(0);
+    expect(result!.container.querySelector(".flags")).toBeNull();
+    expect(result!.container.querySelector(".flag-hand")).toBeNull();
+  });
+
+  describe("the row's accessible name", () => {
+    const nameOf = (row: HTMLElement) => row.querySelector(".flags")!;
+
+    it("is one sentence of the five countries, zeros included", () => {
+      const { container } = showPlayers(wire.gameOver);
+      const seat0 = rowsOf(container)[0]!;
+      const tally = nameOf(seat0);
+      expect(tally.getAttribute("role")).toBe("img");
+      expect(tally.getAttribute("aria-label")).toBe(
+        "Flags: Britain 2, America 1, France 0, Germany 1, Netherlands 1",
+      );
+      // Seat 0 holds no hand panel here, so nothing is appended.
+      expect(handFor(wire.gameOver).seat).toBe(1);
+      expect(tally.getAttribute("aria-label")).not.toContain("in hand");
+      // Each cell is hidden from the reader, so the sentence is heard once.
+      for (const cell of tally.querySelectorAll(".flag")) {
+        expect(cell.getAttribute("aria-hidden")).toBe("true");
+      }
+    });
+
+    it("appends the flags in hand, non-zero countries only, on the hand's row", () => {
+      const { container } = showPlayers(wire.options);
+      const hand = handFor(wire.options);
+      expect(hand.flags_in_hand!.english).toBe(1);
+      const row = rowsOf(container).find((_, i) => playersOf(wire.options)[i]!.seat === hand.seat)!;
+      expect(nameOf(row).getAttribute("aria-label")).toBe(
+        "Flags: Britain 0, America 0, France 0, Germany 0, Netherlands 0; in hand: Britain 1",
+      );
+      const mark = row.querySelector(".flag-hand")!;
+      expect(mark.getAttribute("title")).toBe("1 in hand — counts when the order is fulfilled");
+    });
+
+    it("gives a hand's one country its own number, in an exact sentence", () => {
+      const { container } = showPlayers(wire.gameOver);
+      const hand = handFor(wire.gameOver);
+      expect(hand.flags_in_hand).toEqual({ english: 0, american: 0, french: 0, german: 2, dutch: 0 });
+      const row = rowsOf(container).find((_, i) => playersOf(wire.gameOver)[i]!.seat === hand.seat)!;
+      expect(nameOf(row).getAttribute("aria-label")).toBe(
+        "Flags: Britain 1, America 2, France 2, Germany 1, Netherlands 1; in hand: Germany 2",
+      );
+      expect(row.querySelector('.flag[data-country="german"] .flag-hand')!.getAttribute("title")).toBe(
+        "2 in hand — counts when the order is fulfilled",
+      );
+    });
+
+    it("names the two countries a hand holds, each with its own mark", () => {
+      // `atK`'s hand holds France and Germany, and its seat is not the acting one.
+      const dashboard = wire.atK.frame.dashboard;
+      const players = dashboard.find((p): p is Extract<Panel, { Players: unknown }> => "Players" in p)!
+        .Players.players;
+      const hand = dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p)!.Hand;
+      expect(hand.seat).toBe(0);
+      expect(players.find((p) => p.is_current)!.seat, "the hand is not the acting seat's").not.toBe(0);
+      expect(hand.flags_in_hand).toEqual({ english: 0, american: 0, french: 1, german: 1, dutch: 0 });
+      expect(players[0]!.flags).toEqual({ english: 1, american: 0, french: 0, german: 0, dutch: 1 });
+
+      const { container } = render(
+        <Dashboard
+          panels={dashboard}
+          art={wire.artManifest}
+          labels={wire.labels}
+          colors={COLORS}
+          only={["Players"]}
+        />,
+      );
+      const row = rowsOf(container)[0]!;
+      expect(nameOf(row).getAttribute("aria-label")).toBe(
+        "Flags: Britain 1, America 0, France 0, Germany 0, Netherlands 1; in hand: France 1, Germany 1",
+      );
+      expect(
+        [...row.querySelectorAll<HTMLElement>(".flag-hand")].map((m) => [
+          m.closest<HTMLElement>(".flag")!.dataset.country,
+          m.textContent,
+        ]),
+      ).toEqual([
+        ["french", "+1"],
+        ["german", "+1"],
+      ]);
+    });
+
+    it("lists the countries in hand in the table's order: Britain, America, France, Germany", () => {
+      // The table's order puts Britain before America; the wire's keys
+      // (`Object.keys`) and the country words sorted both put America first, so
+      // only the table's order reads Britain first. And America holds TWO, the
+      // most of any country, so an order by count (descending) puts America
+      // first too: three wrong orders and none of them the table's (the
+      // whole-branch review, MB-2 — with every count 1, a count order read the
+      // same as the table's). `atK`'s hand holds France and Germany; the clone
+      // adds one English and two American flags in hand, the cards untouched,
+      // as the cell above reads the payload's own.
+      const clone: ClientState["frame"] = JSON.parse(JSON.stringify(wire.atK.frame));
+      const own = clone.dashboard.find((p): p is Extract<Panel, { Hand: HandPanel }> => "Hand" in p)!.Hand;
+      expect(own.seat).toBe(0);
+      expect(own.flags_in_hand).toEqual({ english: 0, american: 0, french: 1, german: 1, dutch: 0 });
+      own.flags_in_hand!.english = 1;
+      own.flags_in_hand!.american = 2;
+
+      const { container } = render(
+        <Dashboard
+          panels={clone.dashboard}
+          art={wire.artManifest}
+          labels={wire.labels}
+          colors={COLORS}
+          only={["Players"]}
+        />,
+      );
+      const row = rowsOf(container)[0]!;
+      expect(nameOf(row).getAttribute("aria-label")).toBe(
+        "Flags: Britain 1, America 0, France 0, Germany 0, Netherlands 1; in hand: Britain 1, America 2, France 1, Germany 1",
+      );
+      expect(
+        [...row.querySelectorAll<HTMLElement>(".flag-hand")].map(
+          (m) => m.closest<HTMLElement>(".flag")!.dataset.country,
+        ),
+      ).toEqual(["english", "american", "french", "german"]);
+    });
+  });
+});
+
+// ---- #75: the claim drawn on the card, in the Achievements panel ---------
+//
+// The same component the Goals strip and the goals index draw, so the same
+// fixture and the same readings: `goals_claimed_4p.json`'s first card was
+// claimed by seats 2, 0, 3, 1, its second by seat 3 alone, its third by
+// nobody. The premise is asserted, since the cells are only as strong as it.
+describe("the claim band in the Achievements panel", () => {
+  const G = wire.goalsClaimed4p;
+  const G_COLORS = G.players.players.map((p) => p.color);
+  const [FOUR, ONE, NONE] = G.achievements.cards as [AchievementModel, AchievementModel, AchievementModel];
+  const FOUR_WORDS = ["Yellow claimed first — 8 VP", "Red claimed — 6 VP", "Green claimed — 6 VP", "Blue claimed — 6 VP"];
+  const premise = () => {
+    expect(G_COLORS).toEqual(["Red", "Blue", "Yellow", "Green"]);
+    expect(FOUR.claimed_by).toEqual([2, 0, 3, 1]);
+    expect([FOUR.first_place_vp, FOUR.subsequent_vp]).toEqual([8, 6]);
+    expect(ONE.claimed_by).toEqual([3]);
+    expect(ONE.first_place_vp).toBe(9);
+    expect(NONE.claimed_by).toEqual([]);
+  };
+  const panel = (art: ArtManifest | null, colors: PlayerColor[] = G_COLORS) =>
+    render(<Achievements cards={G.achievements.cards} art={art} labels={wire.labels} colors={colors} />).container;
+  const faces = (root: Element) => [...root.querySelectorAll(".panel figure.card-face.achievement")];
+  const seatOf = (el: Element) => [...el.classList].filter((k) => k.startsWith("seat-"));
+  const kind = (el: Element) =>
+    el.classList.contains("claim")
+      ? el.classList.contains("first") ? "cube first" : "cube"
+      : el.classList.contains("claims-vp")
+        ? el.classList.contains("first") ? "vp first" : el.classList.contains("later") ? "vp later" : "vp ?"
+        : el.classList.contains("claims-sep") ? "divider" : `? ${el.className}`;
+  const pictureOf = (card: Element, art: ArtManifest | null) => {
+    const pic = card.querySelector(":scope > .card-pic");
+    expect(pic, "the card draws its picture box").not.toBeNull();
+    expect(pic!.querySelector(art ? ":scope > img" : ":scope > .card-blank"), "the picture the art calls for").not.toBeNull();
+    expect(pic!.querySelector(art ? ".card-blank" : "img")).toBeNull();
+    return { pic: pic!, band: pic!.querySelector(":scope > .claims") };
+  };
+
+  describe.each([
+    ["with art", wire.artManifest],
+    ["without art", null],
+  ] as const)("%s", (_, art) => {
+    it("four claims: a cube per claimant in claim order, the first ringed, the words in that order", () => {
+      premise();
+      const card = faces(panel(art))[0]!;
+      const { band } = pictureOf(card, art);
+      expect(band).not.toBeNull();
+      expect(within(card as HTMLElement).getByRole("img", { name: FOUR_WORDS.join(" · ") })).toBe(band);
+      const cubes = [...band!.querySelectorAll(":scope > .claim")];
+      expect(cubes.map(seatOf)).toEqual([["seat-yellow"], ["seat-red"], ["seat-green"], ["seat-blue"]]);
+      expect(cubes.map((c) => c.classList.contains("first"))).toEqual([true, false, false, false]);
+      expect(cubes.map((c) => c.getAttribute("title"))).toEqual(FOUR_WORDS);
+      for (const c of cubes) expect(c.querySelector("svg.piece.cube")).not.toBeNull();
+      for (const c of band!.children) expect(c.getAttribute("aria-hidden"), `${kind(c)} is hidden`).toBe("true");
+      expect([...band!.children].map(kind)).toEqual(["cube first", "vp first", "divider", "cube", "cube", "cube", "vp later"]);
+      expect(band!.querySelector(".claims-vp.first")!.textContent).toBe("8");
+      expect(band!.querySelector(".claims-vp.later")!.textContent).toBe("6");
+    });
+
+    it("one claim: seat 3 in the ringed place, no divider and no later VP", () => {
+      premise();
+      const { band } = pictureOf(faces(panel(art))[1]!, art);
+      expect(band!.getAttribute("aria-label")).toBe("Green claimed first — 9 VP");
+      expect([...band!.querySelectorAll(":scope > .claim")].map(seatOf)).toEqual([["seat-green"]]);
+      expect([...band!.children].map(kind)).toEqual(["cube first", "vp first"]);
+    });
+
+    it("no claim: no band, and the unclaimed chip", () => {
+      premise();
+      const card = faces(panel(art))[2]!;
+      expect(pictureOf(card, art).band).toBeNull();
+      expect([...card.querySelectorAll("figcaption .chip")].map((c) => c.textContent)).toContain("unclaimed");
+    });
+  });
+
+  it("names a claimant the colours do not as seat N, and still draws its cube", () => {
+    premise();
+    const { band } = pictureOf(faces(panel(wire.artManifest, ["Red", "Blue"]))[0]!, wire.artManifest);
+    const words = ["seat 2 claimed first — 8 VP", "Red claimed — 6 VP", "seat 3 claimed — 6 VP", "Blue claimed — 6 VP"];
+    expect(band!.getAttribute("aria-label")).toBe(words.join(" · "));
+    const cubes = [...band!.querySelectorAll(":scope > .claim")];
+    expect(cubes.map((c) => c.getAttribute("title"))).toEqual(words);
+    for (const c of cubes) expect(c.querySelector("svg.piece.cube")).not.toBeNull();
+  });
+
+  it("draws no first or also chip in any caption", () => {
+    premise();
+    const root = panel(wire.artManifest);
+    const chips = [...root.querySelectorAll(".chip")];
+    expect(chips.length).toBeGreaterThan(0);
+    expect(root.querySelectorAll(".chip.claimed")).toHaveLength(0);
+    for (const c of chips) expect(c.textContent).not.toMatch(/^(first|also) /);
+    expect(root.querySelectorAll(".claims")).toHaveLength(2);
+  });
+});
+
+// ---- #75: the walk lights the card whose claims grew, in the panel --------
+describe("the walk's marks on the Achievements panel", () => {
+  const panel = wire.atK.frame.dashboard.find((p): p is Extract<Panel, { Achievements: unknown }> => "Achievements" in p);
+  if (!panel) throw new Error("the fixture carries no Achievements panel");
+  const cards = panel.Achievements.cards;
+  const lit = (props: { changedGoals?: Set<AchievementType>; changedSeats?: Set<number> }) => {
+    const { container } = render(
+      <Dashboard panels={wire.atK.frame.dashboard} art={wire.artManifest} labels={wire.labels} colors={COLORS} {...props} />,
+    );
+    return [...container.querySelectorAll("figure.card-face.achievement")].map((f) => f.classList.contains("changed"));
+  };
+
+  it("lights the card the set names, and no other", () => {
+    expect(cards.map((c) => c.achievement_type)).toEqual(["Seafood7", "Technologies4", "Commercial4"]);
+    expect(lit({ changedGoals: new Set<AchievementType>(["Commercial4"]) })).toEqual([false, false, true]);
+  });
+
+  it("lights nothing with no set", () => {
+    expect(lit({})).toEqual([false, false, false]);
+  });
+
+  it("does not light a card from the seats the walk is lighting", () => {
+    expect(lit({ changedSeats: new Set([0, 1]) })).toEqual([false, false, false]);
   });
 });

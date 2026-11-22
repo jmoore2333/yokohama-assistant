@@ -12,8 +12,14 @@
 //! The driver is adaptive: it reads each prompt and answers it (random
 //! numbered pick from what is SHOWN, one toggled area + confirm in the
 //! Option-A picker, one typed area id + confirm in the Option-B picker,
-//! max recovery in the guided retreat, Enter on forced options), with a
-//! hard input cap so a regression can never hang the suite.
+//! max recovery in the guided retreat, random kinds + confirm in the
+//! Church chooser, random cards + confirm in the Port's chooser and a random
+//! row of its payment pick, Enter on forced options), with a hard input cap
+//! so a regression can never hang the suite. The all-human game asserts a
+//! floor of one Church payment and one Port take confirmed through their
+//! choosers; the human-vs-bot game prints its counts and asserts none, since
+//! its bot seed is drawn from OS entropy and a run measured at 2026-11-22
+//! met neither chooser at all.
 //!
 //! TWO games run here, sharing that one driver: all-human, and (Phase 3.2
 //! Task 12) human-vs-bot with seat 1 played by whatever the WIZARD configures
@@ -144,6 +150,48 @@ fn option_b_area_ids(screen: &str) -> Vec<u8> {
 /// fallback below cannot answer this prompt).
 const OPTION_B_HEADER: &str = "Option B — place 2 assistants in one area (by id):";
 
+/// The Church chooser's last line (plan 2a, "The words"), which no other
+/// screen carries.
+const CHURCH_CHOOSER_HINT: &str = "type a number to toggle, 'confirm' to pay";
+
+/// The Port chooser's last line (plan 2b, "The words"), which no other screen
+/// carries.
+const PORT_CHOOSER_HINT: &str = "> a card number toggles it, 'confirm' to take, or 'cancel'";
+
+/// The Port's payment pick's title ends so (plan 2b, "The words"), and the
+/// pick prints a colon after its title. A folded Laboratory title's pick ends
+/// the same way (plan 2b, Task 3), so a Port pick is the line that also starts
+/// with [`PORT_TAKE`], and a Laboratory pick the one that starts with
+/// [`LAB_ACQUIRE`].
+const PORT_PAYMENT_PICK: &str = " — choose the payment:";
+const PORT_TAKE: &str = "Port: take ";
+const LAB_ACQUIRE: &str = "Laboratory: acquire ";
+
+/// The Port chooser's cards, read from its own block (between its heading and
+/// the `Selected:` line): each card's bare number and whether it is switched
+/// on (`●`). The number is right-aligned in two columns (`[ 2]`), so it is
+/// trimmed before it is read.
+fn port_cards(screen: &str) -> Vec<(u8, bool)> {
+    let start = screen
+        .rfind("Port A — take")
+        .into_iter()
+        .chain(screen.rfind("Port B — take"))
+        .max()
+        .unwrap_or(0);
+    let rest = &screen[start..];
+    let end = rest.find("\nSelected:").unwrap_or(rest.len());
+    rest[..end]
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let open = l.find('[')?;
+            let close = l[open..].find(']')? + open;
+            let n = l[open + 1..close].trim().parse().ok()?;
+            Some((n, l.trim_end().ends_with('\u{25cf}')))
+        })
+        .collect()
+}
+
 /// The `[0-N]` max of a guided-retreat question.
 fn recover_max(screen: &str) -> Option<u32> {
     let start = screen.rfind("[0-")? + 3;
@@ -152,10 +200,26 @@ fn recover_max(screen: &str) -> Option<u32> {
     rest[..end].parse().ok()
 }
 
+/// The floors on what the all-human game confirms through a chooser (plan
+/// 2b, Task 2), set after a run that read 1 Church payment and 9 Port takes
+/// confirmed and 1 payment pick opened. That game is fixed by its setup seed
+/// and the driver's own; the human-vs-bot game's bot seed is drawn from OS
+/// entropy, and a run of it measured 0 and 0, so it carries no floor.
+const CHURCH_FLOOR: usize = 1;
+const PORT_FLOOR: usize = 1;
+
+/// The floor on the Laboratory picks the all-human game opens (plan 2b, Task
+/// 3's review), set after a release run of it read 1 (and the human-vs-bot
+/// game 0, which for the same reason carries no floor).
+const LAB_FLOOR: usize = 1;
+
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn full_piped_2p_game_runs_plain_to_winner() {
-    play_a_full_2p_game("all-human", "");
+    let (_, [church, port, _, lab]) = play_a_full_2p_game("all-human", "");
+    assert!(church >= CHURCH_FLOOR, "no Church payment confirmed through the chooser");
+    assert!(port >= PORT_FLOOR, "no Port take confirmed through the chooser");
+    assert!(lab >= LAB_FLOOR, "no Laboratory pick opened by a folded title");
 }
 
 /// The bot line the variant below looks for: `describe_move`'s output for a
@@ -178,7 +242,7 @@ const BOT_MOVE_PREFIX: &str = "Seat 1 (Blue) \u{2014}";
 #[test]
 #[ignore = "release gate (CLAUDE.md two-tier policy): full-game process test over pipes; run with cargo test --release -p yokohama-cli --test piped_dogfood -- --ignored before merges/phase closes (gate PASSES; see module docs)"]
 fn full_piped_2p_human_vs_bot_game_runs_plain_to_winner() {
-    let transcript = play_a_full_2p_game("human-vs-bot", "1");
+    let (transcript, _) = play_a_full_2p_game("human-vs-bot", "1");
     assert!(
         transcript.contains(BOT_MOVE_PREFIX),
         "the bot's own moves must be reported on screen, not applied invisibly; transcript tail:\n{}",
@@ -249,8 +313,11 @@ fn a_piped_load_with_a_bot_on_the_start_seat_still_reads_the_first_command() {
 
 /// One full piped 2P game to a winner. `bots` is the wizard's bot-seats answer
 /// (`""` for none); `label` keeps the two runs' save files apart, since both
-/// tests share one process id.
-fn play_a_full_2p_game(label: &str, bots: &str) -> String {
+/// tests share one process id. Answers the transcript and four counts: Church
+/// payments and Port takes confirmed through their choosers, Port payment
+/// picks opened, and the Laboratory picks the main list's folded titles
+/// opened (plan 2b, Task 3).
+fn play_a_full_2p_game(label: &str, bots: &str) -> (String, [usize; 4]) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yokohama-cli"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -285,6 +352,13 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
     }
 
     let mut won = false;
+    // The Church chooser's toggles in the current visit, and the payments
+    // confirmed through it over the whole game; the same for the Port's, and
+    // the payment picks its pairs opened. The two confirm counts each carry a
+    // floor of one, asserted below.
+    let (mut church_toggles, mut church_confirms) = (0usize, 0usize);
+    let (mut port_toggles, mut port_confirms, mut payment_picks) = (0usize, 0usize, 0usize);
+    let mut lab_picks = 0usize;
     for _input in 0..20_000 {
         let screen = read_to_prompt(&rx, &mut transcript);
 
@@ -292,7 +366,57 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
             won = true;
             break;
         }
-        let answer: String = if screen.contains("type an area id to toggle") {
+        let at_the_church = screen.contains(CHURCH_CHOOSER_HINT);
+        if !at_the_church {
+            church_toggles = 0;
+        }
+        let at_the_port = screen.lines().last().is_some_and(|l| l == PORT_CHOOSER_HINT);
+        if !at_the_port {
+            port_toggles = 0;
+        }
+        if screen.lines().any(|l| l.starts_with(PORT_TAKE) && l.ends_with(PORT_PAYMENT_PICK)) {
+            payment_picks += 1;
+        }
+        if screen.lines().any(|l| l.starts_with(LAB_ACQUIRE) && l.ends_with(PORT_PAYMENT_PICK)) {
+            lab_picks += 1;
+        }
+        let answer: String = if at_the_port {
+            // The Port's chooser (plan 2b), from its screen alone: with a
+            // legal selection, confirm it or (by a draw, while a card is still
+            // off) switch one more on; a refused card or a seventh toggle in one
+            // visit confirms what is legal or backs out. Which cards the list
+            // can take is the server's to say: the driver only reads what the
+            // screen lists and how the server answered.
+            let legal = screen.contains("\n  -> legal");
+            let cards = port_cards(&screen);
+            assert!(!cards.is_empty(), "the chooser lists its cards:\n{screen}");
+            let off: Vec<u8> = cards.iter().filter(|(_, on)| !on).map(|(n, _)| *n).collect();
+            let refused = screen.contains("! the list holds no take with");
+            if legal && (refused || off.is_empty() || port_toggles >= 6 || rng.gen_bool(0.5)) {
+                port_confirms += 1;
+                "confirm".to_string()
+            } else if refused || off.is_empty() || port_toggles >= 6 {
+                "cancel".to_string()
+            } else {
+                port_toggles += 1;
+                off[rng.gen_range(0..off.len())].to_string()
+            }
+        } else if at_the_church {
+            // The Church chooser (plan 2a): pay a selection the list holds;
+            // else toggle a random kind shown, at most six times in one visit;
+            // then back out, and the main list draws again.
+            if screen.contains("-> legal") {
+                church_confirms += 1;
+                "confirm".to_string()
+            } else if church_toggles < 6 {
+                church_toggles += 1;
+                let shown = shown_indices(&screen);
+                assert!(!shown.is_empty(), "the chooser numbers its kinds:\n{screen}");
+                shown[rng.gen_range(0..shown.len())].to_string()
+            } else {
+                "cancel".to_string()
+            }
+        } else if screen.contains("type an area id to toggle") {
             // Option-A picker: with nothing selected, toggle one random area;
             // once a VALID area is selected, place it. §3.1 made the picker keep
             // the selection open when a toggled area is not a legal placement
@@ -345,6 +469,10 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
         &full[full.len().saturating_sub(2000)..]
     );
 
+    println!(
+        "{label}: {church_confirms} Church payment(s) and {port_confirms} Port take(s) confirmed through their \
+         choosers, {payment_picks} Port payment pick(s) and {lab_picks} Laboratory pick(s) opened"
+    );
     send("quit", &mut stdin);
     drop(stdin);
     let status = child.wait().expect("child exits");
@@ -361,5 +489,5 @@ fn play_a_full_2p_game(label: &str, bots: &str) -> String {
     let full = String::from_utf8_lossy(&transcript).into_owned();
     assert!(full.contains("WINNER:"), "final score table expected in the transcript");
     std::fs::remove_file(&save).ok();
-    full
+    (full, [church_confirms, port_confirms, payment_picks, lab_picks])
 }

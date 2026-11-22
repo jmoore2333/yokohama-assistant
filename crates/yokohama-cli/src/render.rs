@@ -504,7 +504,9 @@ pub fn end_trigger_banner(state: &GameState, trigger: &EndGameTrigger, width: us
 // (`every_lab_card_is_the_same_height_across_the_whole_registry`).
 
 /// Per player: color, money, VP, goods, imports, hand order codes, completed
-/// order count, technology names, tokens/mercenaries, assistant/shophouse/
+/// order count, the face-up flags by country (and, for a shown hand that holds
+/// any, the flags in hand apart from them, marked as not yet counting: plan
+/// 2b, Task 8), technology names, tokens/mercenaries, assistant/shophouse/
 /// trading-house counts by zone (hand/board/warehouse, built) plus the
 /// trading house's next Employment-Agency take cost, and President location.
 /// Hand CONTENTS mask to a count for any seat `seats` hides (the privacy flag,
@@ -534,6 +536,19 @@ pub fn players_panel(state: &GameState, rules: &Rules, seats: &SeatDisplay) -> S
         out.push_str(&format!("  hand: {hand}\n"));
 
         out.push_str(&format!("  completed: {}\n", p.completed_orders.len()));
+
+        // The flags (plan 2b, Task 8). The face-up counts are public, so every
+        // seat prints them whatever the mask; the flags of the orders IN HAND
+        // are what the hand holds, so only a SHOWN hand prints them, and only
+        // when it holds one. A hidden hand prints no such line at all: whether
+        // the line appeared would itself say something about its cards.
+        out.push_str(&format!("  flags: {}\n", flag_words(screen_model::face_up_flags(p, rules), true)));
+        if !seats.hides_hand(p.id) {
+            let in_hand = screen_model::order_flags(&p.order_cards_in_hand, rules);
+            if in_hand.as_array().iter().any(|&n| n > 0) {
+                out.push_str(&format!("  flags in hand (not yet counting): {}\n", flag_words(in_hand, false)));
+            }
+        }
 
         let techs = p.technologies.iter().map(|id| tech_name(*id, &rules.techs)).collect::<Vec<_>>().join(", ");
         out.push_str(&format!("  tech: {}\n", if techs.is_empty() { "-" } else { &techs }));
@@ -593,6 +608,20 @@ pub fn players_panel(state: &GameState, rules: &Rules, seats: &SeatDisplay) -> S
         out.push_str(&format!("  president: {}\n", pres));
     }
     out
+}
+
+/// `GB 2  US 1  FR 0  DE 0  NL 1`: each country's code, a space and its count,
+/// in `Country::ALL`'s order, two spaces apart — the `players` view's own
+/// spacing. `with_zeros` false lists the non-zero countries only (the in-hand
+/// line's form).
+fn flag_words(flags: screen_model::FlagCounts, with_zeros: bool) -> String {
+    Country::ALL
+        .into_iter()
+        .zip(flags.as_array())
+        .filter(|&(_, n)| with_zeros || n > 0)
+        .map(|(c, n)| format!("{} {n}", screen_model::country_code(c)))
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 /// A Church faith space's printed reward in the COMPACT option vocabulary
@@ -2243,6 +2272,175 @@ mod tests {
         // 3 held, 1 unused (= 1 VP at scoring), 2 already spent.
         assert!(line.contains('3'), "total still shown: {line}");
         assert!(line.contains("1 unused"), "unused split must be visible: {line}");
+    }
+
+    // -----------------------------------------------------------------------
+    // The flag counts in the `players` view (plan 2b, Task 8)
+    // -----------------------------------------------------------------------
+
+    /// The registry's order ids of `country`, lowest first (the registry
+    /// iterates in no promised order).
+    fn orders_of(rules: &Rules, country: Country) -> Vec<OrderCardId> {
+        let mut ids: Vec<OrderCardId> =
+            rules.orders.iter().filter(|c| c.country == country).map(|c| c.id).collect();
+        ids.sort_by_key(|id| id.0);
+        ids
+    }
+
+    /// One technology id per TITLE of `country`, lowest id first: a seat may
+    /// own one card of a name, so a fixture that owns two copies of a title is
+    /// one the rules refuse.
+    fn techs_of(rules: &Rules, country: Country) -> Vec<TechCardId> {
+        let mut cards: Vec<&TechCard> =
+            rules.techs.iter().filter(|c| c.country == country).collect();
+        cards.sort_by_key(|c| c.id.0);
+        let mut names = HashSet::new();
+        cards.into_iter().filter(|c| names.insert(c.name.clone())).map(|c| c.id).collect()
+    }
+
+    /// Seat 0 holds five DISTINCT non-zero face-up counts — GB 5, US 4, FR 3,
+    /// DE 2, NL 1, from orders and technologies both — and a hand of one GB
+    /// and two NL orders, whose counts are not the face-up ones. Seat 1 has
+    /// nothing face up. Every card is a registry card and none is in two
+    /// places. The view only renders, so no invariant check is asked of it.
+    fn flags_state() -> (GameState, Rules) {
+        let rules = Rules::standard();
+        let mut state = test_state_2p();
+        let gb = orders_of(&rules, Country::English);
+        let us = orders_of(&rules, Country::American);
+        let fr = orders_of(&rules, Country::French);
+        let de = orders_of(&rules, Country::German);
+        let nl = orders_of(&rules, Country::Dutch);
+        for p in &mut state.players {
+            p.completed_orders.clear();
+            p.technologies.clear();
+            p.order_cards_in_hand.clear();
+        }
+        let p = &mut state.players[0];
+        p.completed_orders =
+            vec![gb[0], gb[1], gb[2], us[0], us[1], us[2], us[3], fr[0], fr[1], de[0]];
+        p.technologies = vec![
+            techs_of(&rules, Country::English)[0],
+            techs_of(&rules, Country::English)[1],
+            techs_of(&rules, Country::French)[0],
+            techs_of(&rules, Country::German)[0],
+            techs_of(&rules, Country::Dutch)[0],
+        ];
+        p.order_cards_in_hand = vec![gb[3], nl[0], nl[1]];
+        assert_eq!(
+            screen_model::face_up_flags(&state.players[0], &rules).as_array(),
+            [5, 4, 3, 2, 1],
+            "the fixture's face-up counts",
+        );
+        assert_eq!(
+            screen_model::order_flags(&state.players[0].order_cards_in_hand, &rules).as_array(),
+            [1, 0, 0, 0, 2],
+            "the fixture's hand counts",
+        );
+        (state, rules)
+    }
+
+    /// The lines of seat `seat`'s section of the `players` view.
+    fn seat_section(view: &str, seat: u8) -> Vec<String> {
+        let mut lines = view.lines().skip_while(|l| !l.contains(&format!("(seat {seat})")));
+        let head = lines.next().expect("the seat's header line");
+        std::iter::once(head)
+            .chain(lines.take_while(|l| l.starts_with("  ")))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The line after a seat's `completed:` line.
+    fn line_after_completed(section: &[String]) -> String {
+        let i = section
+            .iter()
+            .position(|l| l.starts_with("  completed: "))
+            .unwrap_or_else(|| panic!("a completed line: {section:?}"));
+        section.get(i + 1).cloned().unwrap_or_default()
+    }
+
+    /// "The words": `  flags: GB 2  US 1  FR 0  DE 0  NL 1`, the five in
+    /// `Country::ALL`'s order, one line per seat after its `completed:` line.
+    /// The counts are distinct, so two countries swapped read a different
+    /// line; a seat with nothing face up reads five zeros; and the counts are
+    /// face up, so a hidden hand carries the line unchanged.
+    #[test]
+    fn the_players_view_lists_each_seat_s_flags() {
+        let (state, rules) = flags_state();
+        for seats in [seats_open(&state), SeatDisplay::hidden(2), SeatDisplay::new(vec![true, true], vec![true, true])]
+        {
+            let view = players_panel(&state, &rules, &seats);
+            assert_eq!(
+                line_after_completed(&seat_section(&view, 0)),
+                "  flags: GB 5  US 4  FR 3  DE 2  NL 1",
+                "seat 0, {seats:?}:\n{view}",
+            );
+            assert_eq!(
+                line_after_completed(&seat_section(&view, 1)),
+                "  flags: GB 0  US 0  FR 0  DE 0  NL 0",
+                "seat 1 has nothing face up, {seats:?}:\n{view}",
+            );
+            assert_eq!(view.matches("  flags: ").count(), 2, "one line per seat:\n{view}");
+        }
+    }
+
+    /// "The words": `  flags in hand (not yet counting): GB 1  NL 1`, the
+    /// non-zero countries of the HAND only, for a seat whose hand is shown and
+    /// holds at least one flag, and for no other seat.
+    ///
+    /// Three cases, each with its rival: seat 0's hand (GB 1, NL 2) is not its
+    /// face-up counts (5, 4, 3, 2, 1), so a line read off the face-up flags
+    /// differs; a seat with face-up flags and an EMPTY shown hand prints no
+    /// line, which a line read off the face-up flags would; and a HIDDEN hand
+    /// that holds orders prints no line while the shown one beside it does, so
+    /// a line printed for every seat, or for none, fails.
+    #[test]
+    fn the_flags_in_hand_are_apart_and_masked() {
+        let (mut state, rules) = flags_state();
+        // Seat 1: face-up flags, an empty hand.
+        state.players[1].completed_orders = vec![orders_of(&rules, Country::German)[1]];
+        assert!(state.players[1].order_cards_in_hand.is_empty());
+        let view = players_panel(&state, &rules, &seats_open(&state));
+        let seat0 = seat_section(&view, 0);
+        let i = seat0.iter().position(|l| l.starts_with("  flags: ")).expect("a flags line");
+        assert_eq!(
+            seat0[i + 1],
+            "  flags in hand (not yet counting): GB 1  NL 2",
+            "the shown hand's line follows the face-up line:\n{view}",
+        );
+        let seat1 = seat_section(&view, 1);
+        assert!(
+            seat1.iter().any(|l| l == "  flags: GB 0  US 0  FR 0  DE 1  NL 0"),
+            "seat 1's face-up flag is counted:\n{view}",
+        );
+        assert!(
+            !seat1.iter().any(|l| l.contains("flags in hand")),
+            "an empty shown hand holds no flag, so it prints no line:\n{view}",
+        );
+
+        // Seat 1 now holds orders, its hand hidden; seat 0 stays shown.
+        state.players[1].order_cards_in_hand =
+            vec![orders_of(&rules, Country::French)[3], orders_of(&rules, Country::American)[5]];
+        let mixed = players_panel(&state, &rules, &SeatDisplay::new(vec![false, true], vec![false, true]));
+        assert!(
+            !seat_section(&mixed, 1).iter().any(|l| l.contains("flags in hand")),
+            "a hidden hand prints no in-hand line whatever it holds:\n{mixed}",
+        );
+        assert!(
+            mixed.contains("2 cards (hidden"),
+            "and the hand is masked to its count:\n{mixed}",
+        );
+        assert_eq!(
+            mixed.matches("flags in hand").count(),
+            1,
+            "the shown seat's line stays:\n{mixed}",
+        );
+        // The same hand shown prints its line.
+        let open = players_panel(&state, &rules, &seats_open(&state));
+        assert!(
+            seat_section(&open, 1).iter().any(|l| l == "  flags in hand (not yet counting): US 1  FR 1"),
+            "shown, seat 1's hand prints its line:\n{open}",
+        );
     }
 
     #[test]

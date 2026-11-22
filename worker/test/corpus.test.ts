@@ -92,6 +92,8 @@ function withoutHostFields<T>(fixture: string, value: T): T {
  *   table's `Api`, which no script replays.
  * - `house_frame` (cycle E) is built in process from `signal::house_frame`:
  *   the walk never reads a stream.
+ * - `goals_claimed_4p` (issue #75) is built in process by `constructed()`: a
+ *   card with four claims, which no short deterministic walk reaches.
  *
  * The node replay's other four — `art_manifest` and the three `events*` — are
  * `walk-host.json`'s rows, which this host serves.
@@ -100,6 +102,7 @@ const THIRD_COLUMN = [
   "deal_bot_table",
   "explanation_terminal",
   "foreign_bot_409",
+  "goals_claimed_4p",
   "house_chat_off_404",
   "house_frame",
   "id_cases",

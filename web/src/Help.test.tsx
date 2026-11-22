@@ -313,6 +313,185 @@ describe("the help panel's prose", () => {
     expect(within(container).getAllByRole("heading").length).toBeGreaterThan(3);
   });
 });
+// **The two sentences that say the goods choosers (issue #77, plan 2a Task 9).**
+// At the Church and at Chinatown, when more than one payment or set of
+// exchanges is on offer, the answer bar holds ONE entry beside the decline, and
+// the entry opens a chooser; the page says so after its words on the placement
+// picker. Each needle below is carried by exactly one of the two sentences, so
+// a cut sentence reads red, and each must occur ONCE in the turn section, since
+// a needle a neighbouring sentence also carried would pin nothing. S1's four
+// needles are its condition (the entry exists only with several choices), its
+// decline as it follows that condition, the Church's own clause and the
+// minus's way back; S2's are what lights a plus, the minus's own rule (live whenever
+// there is one to take back, which the engine's list does NOT govern) and when
+// Confirm is live.
+describe("the help panel and the goods choosers (issue #77)", () => {
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  // **Plan 2b's sentences share two phrases with S1** ("beside the decline",
+  // "opens a chooser"), so S1's needles are the phrases only S1 carries: its
+  // condition, its decline as it follows that condition, the Church's own
+  // clause and the minus.
+  const s1 = [
+    "when more than one payment or set of exchanges is on offer",
+    "set of exchanges is on offer, the list shows a single entry beside the decline",
+    "at the Church you switch on what you pay",
+    "take them back with minus",
+  ] as const;
+  const s2 = [
+    "selling first is what lights a purchase",
+    "a minus is live whenever you have one to take back",
+    "holds exactly what you have chosen",
+  ] as const;
+
+  // **Both renders.** The game's surface draws the help with its pictures and
+  // the door's "How to play" without them; a paragraph that only the first
+  // drew (`{shots && ...}`) would read green on the first alone.
+  for (const [how, ui] of [
+    ["with its pictures", <Help key="a" />],
+    ["without its pictures", <Help key="b" shots={false} />],
+  ] as const) {
+    describe(how, () => {
+      it("says the Church and Chinatown open a chooser, when, and what its controls are", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of s1) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        // The words as a whole, so a space lost at a line end reads here too.
+        expect(text).toContain(
+          "At the Church and at Chinatown, when more than one payment or set of exchanges is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: at the Church you switch on what you pay, at Chinatown you add exchanges with plus and take them back with minus.",
+        );
+      });
+
+      it("says which controls the engine's list lights, that a minus is not one of them, and when Confirm is live", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of s2) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        expect(text).toContain(
+          "A kind or a plus is live only where the engine\u2019s list holds that choice, so selling first is what lights a purchase you could not yet afford; a minus is live whenever you have one to take back, and Confirm is live once the list holds exactly what you have chosen.",
+        );
+      });
+
+      it("says the entry first and the controls after it", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        // Both ends of the comparison are asserted present: an absent needle
+        // reads -1, which is less than anything (the fix wave's C5).
+        const s1End = text.indexOf(s1[3]);
+        const s2Start = text.indexOf(s2[0]);
+        expect(s1End, s1[3]).toBeGreaterThan(-1);
+        expect(s2Start, s2[0]).toBeGreaterThan(-1);
+        expect(s1End).toBeLessThan(s2Start);
+      });
+    });
+  }
+});
+
+// **The four sentences that say the Port's chooser and the Laboratory's rows
+// (issue #77, plan 2b Task 9).** They sit after plan 2a's two, in the same
+// section, and are held as those are: each needle is carried by exactly one of
+// the four and occurs ONCE in the turn section (P1 shares "beside the decline"
+// and "opens a chooser" with S1, so its needles are the phrases only it
+// carries), on both renders, whole, and in order.
+describe("the help panel and the Port and the Laboratory (issue #77)", () => {
+  const occurrences = (text: string, needle: string) => text.split(needle).length - 1;
+
+  const p1 = ["when more than one take is on offer", "you switch on one card or two"] as const;
+  const p2 = [
+    "live only where the engine\u2019s list holds a take with it added",
+    "a second card goes dark when your hand has no room for it or you cannot pay for it",
+    "Confirm asks which",
+  ] as const;
+  const p3 = ["can be paid for in more than one way is a single row", "opens the list of those ways"] as const;
+  const p4 = [
+    "both copies of a technology are on the same Laboratory board",
+    "names its slot, as the board numbers it",
+    "so you can tell which card you are taking",
+  ] as const;
+  const wholes = [
+    "At the Port, when more than one take is on offer, the list shows a single entry beside the decline, and that entry opens a chooser: you switch on one card or two.",
+    "A card you have not switched on is live only where the engine\u2019s list holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it; when you could pay for the second card either with 2 yen or with an imported good, Confirm asks which.",
+    "At the Laboratory a technology that can be paid for in more than one way is a single row, and pressing it opens the list of those ways.",
+    "When both copies of a technology are on the same Laboratory board, each of its rows names its slot, as the board numbers it, so you can tell which card you are taking.",
+  ] as const;
+
+  for (const [how, ui] of [
+    ["with its pictures", <Help key="a" />],
+    ["without its pictures", <Help key="b" shots={false} />],
+  ] as const) {
+    describe(how, () => {
+      it("says each of the four, once, and whole", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        for (const needle of [...p1, ...p2, ...p3, ...p4]) {
+          expect(text, needle).toContain(needle);
+          expect(occurrences(text, needle), needle).toBe(1);
+        }
+        for (const whole of wholes) expect(text).toContain(whole);
+      });
+
+      it("says them after the goods choosers' sentences, and in their own order", () => {
+        render(ui);
+        const text = section("Taking a turn");
+        // Both ends of every comparison are asserted present: an absent needle
+        // reads -1, which is less than anything.
+        const at = [
+          text.indexOf("holds exactly what you have chosen"), // the end of S2
+          ...wholes.map((w) => text.indexOf(w)),
+        ];
+        for (const i of at) expect(i).toBeGreaterThan(-1);
+        at.slice(1).forEach((here, i) => expect(at[i], `sentence ${i + 1}`).toBeLessThan(here));
+      });
+    });
+  }
+});
+
+// **The choosers SEEN beside their words (issue #77, Track 6's wrap).** The
+// placement picker's paragraph has its picture under it; the owner asked for
+// the Church's chooser and the Port's to have theirs the same way. Each picture
+// is held to the paragraph it shows by the paragraph's OPENING words — the
+// condition only that paragraph states — so a picture moved to another
+// paragraph, or a paragraph that lost its picture, reads red; and to its own
+// area by name in its alt, so the two cannot be swapped. The alt and the
+// caption are otherwise re-cut with the picture, so they are held to being
+// there, not to a sentence.
+describe("the help panel's pictures of the choosers (issue #77)", () => {
+  const flat = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+  const pictures = [
+    { src: "/help/church.webp", area: "Church", opens: "At the Church and at Chinatown, when more than one payment or set of exchanges is on offer" },
+    { src: "/help/port.webp", area: "Port", opens: "At the Port, when more than one take is on offer" },
+  ] as const;
+
+  for (const { src, area, opens } of pictures) {
+    it(`draws ${src} right after the paragraph that opens "${opens.slice(0, 24)}…", with an alt and a caption`, () => {
+      const { container } = render(<Help />);
+      const figures = [...container.querySelectorAll("figure.shot")].filter(
+        (f) => f.querySelector("img")?.getAttribute("src") === src,
+      );
+      expect(figures, `${src} is drawn once`).toHaveLength(1);
+      const figure = figures[0]!;
+      const before = figure.previousElementSibling;
+      expect(before?.tagName, `${src} does not follow a paragraph`).toBe("P");
+      expect(flat(before?.textContent).startsWith(opens), `${src} follows "${flat(before?.textContent).slice(0, 60)}"`).toBe(true);
+      const alt = flat(figure.querySelector("img")?.getAttribute("alt"));
+      expect(alt, `${src} has no alt`).not.toBe("");
+      expect(alt, `${src}'s alt does not name the ${area}`).toContain(area);
+      expect(flat(figure.querySelector("figcaption")?.textContent), `${src} has no caption`).not.toBe("");
+    });
+  }
+
+  // The door's render draws neither, as it draws no picture at all.
+  it("draws neither without its pictures", () => {
+    const { container } = render(<Help shots={false} />);
+    for (const { src } of pictures) expect(container.querySelector(`img[src="${src}"]`), src).toBeNull();
+  });
+});
+
 describe("the help panel and talking (M6.4)", () => {
   // **Where it is and that it is SHUT.** A panel folded by default is a panel a
   // player may never find, so the page has to say where it sits and that the
@@ -417,10 +596,35 @@ describe("the help panel and talking (M6.4)", () => {
   // no setup screen draws card art. The game's surface keeps them.
   it("draws its screenshots unless its host asks for the words alone", () => {
     const { container, unmount } = render(<Help />);
-    expect(container.querySelectorAll("figure.shot")).toHaveLength(5);
+    expect(container.querySelectorAll("figure.shot")).toHaveLength(7);
     unmount();
     const words = render(<Help shots={false} />);
     expect(words.container.querySelectorAll("figure.shot, img")).toHaveLength(0);
     expect(words.container.textContent).toContain("The three parts of the screen");
+  });
+});
+
+describe("the help panel and the claims and flags", () => {
+  // **The four sentences the claims-and-flags cycle added, two for each issue
+  // (#75 the claim, #76 the flags), and the clause its turn walk made
+  // necessary.** Each needle is a phrase only its own sentence carries, so a
+  // sentence cut or reworded away fails here rather than leaving the page
+  // silent on a card or a row the player can see. Every sentence has a needle;
+  // each issue's second sentence is two halves a semicolon joins, and each half
+  // has its own; the flag row's first sentence is a head clause and a colon's
+  // tail, and each has its own; and the walk's clause has its own. So cutting
+  // any sentence, any half, either side of the colon, or the clause fails the
+  // cell.
+  it("says where a claimant's assistant stands, what a seat's flags count, and that the walk marks a claimed goal", () => {
+    render(<Help />);
+    const text = section("The three parts of the screen");
+    expect(text).toContain("assistant on the card");
+    expect(text).toContain("stands in the ringed place beside the first-place points");
+    expect(text).toContain("later claimants follow beside theirs");
+    expect(text).toContain("counts their flags by country");
+    expect(text).toContain("which earn mercenaries and score the country sets");
+    expect(text).toContain("is the flags on orders still in your hand");
+    expect(text).toContain("they count once the order is fulfilled");
+    expect(text).toContain("and a goal a player has just claimed");
   });
 });

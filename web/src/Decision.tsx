@@ -1,6 +1,11 @@
-import { seatClass } from "./Cards";
+import { useLayoutEffect, useRef } from "react";
+import { OrderCardView, seatClass } from "./Cards";
 import { OutcomeView } from "./Index";
+import { Tokens, tokenLabel } from "./Token";
 import type {
+  ArtManifest,
+  ChinatownRow,
+  ChooserPreview,
   ClientState,
   Outcome,
   Deciding,
@@ -9,6 +14,9 @@ import type {
   NotOfferedReason,
   PendingChoice,
   PlayerColor,
+  PortPreview,
+  PortZone,
+  PromptState,
 } from "./types";
 
 /** A price, in the CLI's own words (`decision_render::fee_words`).
@@ -77,6 +85,57 @@ const NOT_OFFERED: Record<NotOfferedReason, string> = {
   NoAssistantThere: "you have no assistant there",
 };
 
+/** Every prompt kind this client draws: the whole union, and nothing else.
+ *
+ *  `satisfies` makes the list exactly the union's, so a kind added to
+ *  `PromptState` later fails to compile HERE until it is listed — and listing
+ *  it is the moment its arm is written. The fallback below is for what the
+ *  union does not hold at all: a kind a NEWER server answers reaching this
+ *  client before it takes the update. It is reached by this runtime check,
+ *  never by a switch left non-exhaustive. */
+const DRAWN_KINDS = {
+  options: true,
+  pick: true,
+  retreat: true,
+  place_a: true,
+  place_b: true,
+  church: true,
+  chinatown: true,
+  port: true,
+  reveal: true,
+  game_over: true,
+  locked: true,
+  watching: true,
+} as const satisfies Record<PromptState["kind"], true>;
+
+/** Whether this client draws `kind` (a string, since the server may be newer
+ *  than the union). */
+function drawsKind(kind: string): boolean {
+  return Object.hasOwn(DRAWN_KINDS, kind);
+}
+
+/** The prompts that are a chooser: the Church's, Chinatown's and the Port's.
+ *
+ *  **One test for "a chooser" so a fourth is added in one place.** What the
+ *  three share is the answer bar — Confirm, live exactly when the arm's
+ *  `preview.legal`, and Cancel — and nothing else (each draws its own panel).
+ *  The guard that draws that bar and every caller that asks "is this a
+ *  chooser" read this, not a comparison of kinds. */
+export type ChooserPrompt = Extract<PromptState, { kind: "church" | "chinatown" | "port" }>;
+export function isChooser(prompt: PromptState): prompt is ChooserPrompt {
+  return prompt.kind === "church" || prompt.kind === "chinatown" || prompt.kind === "port";
+}
+
+/** The heading a Port zone stands under. **Only the heading is the client's:**
+ *  which zones are drawn, in what order, and which card stands in which are the
+ *  arm's (the zones in the order `cards` first names them). */
+const PORT_HEADINGS: Record<PortZone, string> = { Low: "LOW", Mid: "MID", High: "HIGH" };
+
+/** The fallback's two lines (ruling R46). */
+const UNKNOWN_ASKING = "This screen needs a newer version.";
+const UNKNOWN_TEXT =
+  "The game asked something this version cannot draw. Take the update from the banner, or cancel to go back to the list.";
+
 /** The decision zone: where the turn stands, what is being asked, and what may
  * be answered.
  *
@@ -90,6 +149,7 @@ export function Decision({
   busy,
   outcome,
   spectating = false,
+  art = null,
   onSend,
 }: {
   state: ClientState;
@@ -117,11 +177,58 @@ export function Decision({
    *  **A default of `false`, so the fence is opt-in and no existing caller
    *  changes meaning.** */
   spectating?: boolean;
+  /** The server's art manifest, for the choosers' tokens. A default of `null`
+   *  (the typed marks) so no existing caller changes. */
+  art?: ArtManifest | null;
   onSend: (line: string) => void;
 }) {
   const d = state.frame.decision;
   const chain = labels?.phase_chain ?? d.phase_chain;
   const prompt = state.prompt;
+  const unknownKind = !drawsKind(prompt.kind);
+
+  // **Where the focus goes when a reply takes the pressed stepper away**
+  // (ruling R45). A chooser's kinds and steppers are `aria-disabled` while a
+  // request is in flight, not `disabled`, so the control a keyboard player
+  // pressed keeps the focus. But a reply can make it unavailable — a plus that
+  // can no longer add, a minus at zero — and a `disabled` button drops focus to
+  // the page's body. So the stepper pressed last is remembered with its row's
+  // count at the press; once the row's count has moved (the reply is in), a
+  // pressed control the payload now refuses hands the focus to its row's other
+  // stepper, or to the chooser itself when neither is live, and only while the
+  // focus is still on it or has fallen to the body. A Church kind needs none
+  // of this: a kind stays offered across a toggle. Nor does a Port card: a
+  // selected card is always offered (`selected || can_add`), so a card pressed
+  // ON stays pressable, and one pressed OFF returns to a selection the list
+  // held with it (at the Port a selection is empty or listed, plan 2b's
+  // measured fact), so it can be added again. A payload that said otherwise
+  // would `disable` the card and drop the focus, which nothing here handles.
+  const chooserNode = useRef<HTMLDivElement>(null);
+  const pressed = useRef<{ number: number; which: "plus" | "minus"; count: number } | null>(null);
+  useLayoutEffect(() => {
+    const p = pressed.current;
+    if (!p) return;
+    if (prompt.kind !== "chinatown") {
+      pressed.current = null;
+      return;
+    }
+    const row = prompt.rows.find((r) => r.number === p.number);
+    if (!row || row.count === p.count) return;
+    pressed.current = null;
+    const live = { plus: row.can_add, minus: row.count > 0 };
+    if (live[p.which]) return;
+    const node = chooserNode.current;
+    const ex = node?.querySelector(`.ex[data-number="${p.number}"]`);
+    const was = ex?.querySelector<HTMLElement>(`button.${p.which}`) ?? null;
+    const active = document.activeElement;
+    if (active && active !== was && active !== document.body) return;
+    const other = p.which === "plus" ? "minus" : "plus";
+    const target = live[other] ? ex?.querySelector<HTMLElement>(`button.${other}`) : node;
+    target?.focus();
+  });
+  const onStep = (number: number, which: "plus" | "minus", count: number) => {
+    pressed.current = { number, which, count };
+  };
 
   return (
     <div className="decision">
@@ -308,6 +415,154 @@ export function Decision({
           )
         ))}
 
+      {/* **The Church's chooser** (plan 2a): six kinds of payment, each a toggle.
+          Everything on it is the payload's — the number a click sends, the
+          words, what the seat has, whether the kind is selected and whether any
+          listed move pays it. **`disabled` is what the payload says and nothing
+          else** (ruling R45): a kind no listed move pays is `disabled` and
+          `data-unavailable`. While a request is in flight an offered kind is
+          `aria-disabled` and a press sends nothing, and it keeps the focus a
+          `disabled` button would drop. */}
+      {!spectating && prompt.kind === "church" && (
+        <div className="chooser church">
+          <div className="kinds">
+            {prompt.kinds.map((k) => (
+              <button
+                type="button"
+                className="kind"
+                key={k.number}
+                data-good={k.good}
+                aria-pressed={k.selected}
+                aria-label={`${k.words}, you have ${k.have}`}
+                disabled={!k.offered}
+                aria-disabled={busy && k.offered ? "true" : undefined}
+                data-unavailable={k.offered ? undefined : "true"}
+                onClick={() => {
+                  if (!busy) onSend(String(k.number));
+                }}
+              >
+                <Tokens good={k.good} amount={k.amount} art={art} />
+                <span className="lbl">
+                  <span>{k.words}</span>
+                  <span className="have">you have {k.have}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <Verdict preview={prompt.preview} faiths={prompt.offered_faiths} />
+        </div>
+      )}
+
+      {/* **Chinatown's chooser** (plan 2a): the seat's stock, then nine exchanges,
+          four sales under Sell and five purchases under Buy, each with a minus,
+          the count chosen and a plus. Everything on it is the payload's — the
+          words, the amounts, the count, whether one more can be added and the
+          stock; the split is the row's own `sells` flag, never a position.
+          **The rows are the deck's scrolling box** (`.rows`, as `.options.scrolls`
+          is for a list): the stock and the verdict above and below it do not
+          scroll, and Confirm and Cancel are outside the chooser altogether. */}
+      {!spectating && prompt.kind === "chinatown" && (
+        <div className="chooser chinatown" ref={chooserNode} tabIndex={-1}>
+          <div className="stock">
+            {prompt.stock.map((s) => (
+              /* One node a reader hears once (`3 yen`); the one small token
+                 inside is decorative, so it is not read a second time. */
+              <span
+                className="item"
+                key={s.good}
+                role="img"
+                aria-label={tokenLabel(s.good, s.amount)}
+                data-good={s.good}
+              >
+                <Tokens good={s.good} amount={1} art={art} small decorative />
+                <span className="amt">{s.amount}</span>
+              </span>
+            ))}
+          </div>
+          <div className="rows">
+            <div className="side-h">Sell</div>
+            {prompt.rows
+              .filter((r) => r.sells)
+              .map((r) => (
+                <Exchange key={r.number} row={r} art={art} busy={busy} onStep={onStep} onSend={onSend} />
+              ))}
+            <div className="side-h">Buy</div>
+            {prompt.rows
+              .filter((r) => !r.sells)
+              .map((r) => (
+                <Exchange key={r.number} row={r} art={art} busy={busy} onStep={onStep} onSend={onSend} />
+              ))}
+          </div>
+          <Verdict preview={prompt.preview} empty={prompt.chosen === 0} />
+        </div>
+      )}
+
+      {/* **The Port's chooser** (plan 2b): the order cards in reach, by zone, each
+          a pressable card face; the verdict under them reads the arm's `ways`.
+          Everything on it is the payload's — the cards and their order, each
+          card's zone, whether it is selected and whether it can be switched on
+          (`can_add`), and the words of every listed move that takes exactly the
+          selection. **The client reads no rule here:** a card is `disabled`
+          exactly when it is not selected and the payload says it cannot be added
+          (a selected card stays pressable, so it can be switched OFF), and the
+          line a press sends is the card's `number`. As at the Church, a card is
+          `aria-disabled` while a request is in flight, sends nothing and keeps
+          the focus (ruling R45). */}
+      {!spectating && prompt.kind === "port" && (
+        <div className="chooser port">
+          <div className="zones">
+            {[...new Set(prompt.cards.map((c) => c.zone))].map((zone) => {
+              const cards = prompt.cards.filter((c) => c.zone === zone);
+              const heading = PORT_HEADINGS[zone];
+              return (
+                <div className="zone" data-zone={zone} key={zone}>
+                  <span className="zl">{heading}</span>
+                  {cards.map((c) => {
+                    const offered = c.selected || c.can_add;
+                    return (
+                      <button
+                        type="button"
+                        className="card-pick"
+                        key={c.number}
+                        data-number={c.number}
+                        aria-pressed={c.selected}
+                        aria-label={c.words}
+                        disabled={!offered}
+                        aria-disabled={busy && offered ? "true" : undefined}
+                        data-unavailable={offered ? undefined : "true"}
+                        onClick={() => {
+                          if (!busy) onSend(String(c.number));
+                        }}
+                      >
+                        <OrderCardView art={art} card={c.printed} id={c.id} size="sm" />
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+          <PortVerdict preview={prompt.preview} anySelected={prompt.cards.some((c) => c.selected)} />
+        </div>
+      )}
+
+      {/* **A kind this client cannot draw** (ruling R46): a server newer than
+          this client answered it. Not a dead end: it says so, points at the
+          update line, and — for the acting seat — offers Cancel, which every
+          sub-prompt answers and the web's line fence admits. */}
+      {unknownKind && (
+        <div className="messages unknown-prompt">
+          <div>{UNKNOWN_TEXT}</div>
+        </div>
+      )}
+      {!spectating && unknownKind && (
+        <div className="controls">
+          <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
+            Cancel
+          </button>
+        </div>
+      )}
+
       {/* The near-miss rows say why an area is NOT on the list a watcher was
           never offered, so they go with it. */}
       {!spectating && (d.not_offered.length > 0 || d.not_offered_suppressed > 0) && (
@@ -363,6 +618,10 @@ export function Decision({
         </div>
       )}
 
+      {!spectating && isChooser(prompt) && (
+        <ChooserControls legal={prompt.preview.legal} busy={busy} onSend={onSend} />
+      )}
+
       {/* Undo lives here, so a watcher loses it with the rest of the bar
           (spec §5.2). The server refuses one from a caller holding no seat
           either way — this is the screen not offering what cannot work. */}
@@ -382,6 +641,180 @@ export function Decision({
   );
 }
 
+/** What stands under a chooser's selection, from the arm's own preview.
+ *
+ *  Nothing is worked out here: `legal` and `words` are the engine's reading of
+ *  the legal list, and `faiths` (the Church's line, when the selection names no
+ *  listed move) is the server's own sentence. A `status` region, so the verdict
+ *  a click changes is announced as the terminal prints it. */
+function Verdict({
+  preview,
+  faiths,
+  empty = false,
+}: {
+  preview: ChooserPreview;
+  faiths?: string | null;
+  /** Nothing chosen yet (Chinatown at `chosen` 0): the region stays mounted
+   *  and says nothing, so the first selection is announced against it. */
+  empty?: boolean;
+}) {
+  if (empty) return <div className="verdict" role="status" />;
+  return (
+    <div className={`verdict ${preview.legal ? "ok" : "bad"}`} role="status">
+      {preview.legal ? (
+        <>
+          <span className="tag">legal &mdash; </span>
+          {preview.words}
+        </>
+      ) : (
+        <>
+          <span className="tag">not offered &mdash; </span>
+          adjust the selection
+          {faiths && <div className="faiths">{faiths}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** What stands under the Port's selection, from the arm's own preview: every
+ *  listed move that takes exactly the cards switched on, in `describe`'s words
+ *  and the list's order. Two ways are the second card paid either way, and the
+ *  count of the array is what says so — the choice is asked at Confirm, in the
+ *  numbered pick the server opens. Nothing selected is not the warning (a
+ *  selection has to exist before it can be "not offered"), so nothing selected
+ *  and nothing legal is the SILENT region, as Chinatown's empty one is (the
+ *  region stays mounted, so the first selection is announced against it).
+ *  A `status` region, so what a press changes is announced. */
+function PortVerdict({ preview, anySelected }: { preview: PortPreview; anySelected: boolean }) {
+  if (preview.legal) {
+    return (
+      <div className="verdict ok" role="status">
+        <span className="tag">legal &mdash; </span>
+        {preview.ways.length > 1 && (
+          <span className="asked">{preview.ways.length} ways to pay, asked at Confirm:</span>
+        )}
+        {preview.ways.map((w, i) => (
+          <div className="way" key={i}>
+            {w}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (anySelected) {
+    return (
+      <div className="verdict bad" role="status">
+        <span className="tag">not offered &mdash; </span>
+        adjust the selection
+      </div>
+    );
+  }
+  return <div className="verdict" role="status" />;
+}
+
+/** One of Chinatown's nine exchanges: the spend, an arrow and the gain as
+ *  tokens, the payload's words, and a minus, the count and a plus. The
+ *  pictures and the arrow are ONE hidden wrapper, so the words are the row's
+ *  single reading. A plus is live exactly where the payload says one more can
+ *  be added (`can_add`) and a minus where something is chosen (`count`); where
+ *  the payload says not, it is `disabled` and `data-unavailable`. While a
+ *  request is in flight a live stepper is `aria-disabled` and a press sends
+ *  nothing, so it keeps the focus (ruling R45). A plus sends the row's number,
+ *  a minus `back` and it; `onStep` tells the chooser which was pressed. */
+function Exchange({
+  row,
+  art,
+  busy,
+  onStep,
+  onSend,
+}: {
+  row: ChinatownRow;
+  art: ArtManifest | null;
+  busy: boolean;
+  onStep: (number: number, which: "plus" | "minus", count: number) => void;
+  onSend: (line: string) => void;
+}) {
+  const press = (which: "plus" | "minus", line: string) => {
+    if (busy) return;
+    onStep(row.number, which, row.count);
+    onSend(line);
+  };
+  return (
+    <div className={`ex${row.count > 0 ? " on" : ""}`} data-number={row.number}>
+      <span className="what">
+        <span className="pics" aria-hidden="true">
+          <Tokens good={row.spend.good} amount={row.spend.amount} art={art} small />
+          <span className="arrow">&rarr;</span>
+          <Tokens good={row.gain.good} amount={row.gain.amount} art={art} small />
+        </span>
+        <span className="words">{row.words}</span>
+      </span>
+      <span className="step">
+        <button
+          type="button"
+          className="minus"
+          aria-label={`one fewer: ${row.words}`}
+          disabled={row.count === 0}
+          aria-disabled={busy && row.count > 0 ? "true" : undefined}
+          data-unavailable={row.count === 0 ? "true" : undefined}
+          onClick={() => press("minus", `back ${row.number}`)}
+        >
+          &minus;
+        </button>
+        <span className="n">{row.count}</span>
+        <button
+          type="button"
+          className="plus"
+          aria-label={`one more: ${row.words}`}
+          disabled={!row.can_add}
+          aria-disabled={busy && row.can_add ? "true" : undefined}
+          data-unavailable={row.can_add ? undefined : "true"}
+          onClick={() => press("plus", String(row.number))}
+        >
+          +
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** Confirm and Cancel for a chooser. Confirm is live exactly when the preview
+ *  is legal; the server still decides, since `confirm` commits only a listed
+ *  move. **`data-unavailable` is what the PAYLOAD said** (the preview is not
+ *  legal) and not that a request is in flight, so a walk can tell a chooser
+ *  that is busy from one that cannot be confirmed; Cancel is never unavailable.
+ *  **Unlike a kind or a stepper, both stay `disabled` while busy** (ruling
+ *  R45): the browser walks' settle wait reads a `disabled` control without
+ *  `data-unavailable` as a request in flight, and these two are what keep that
+ *  true of a chooser. */
+function ChooserControls({
+  legal,
+  busy,
+  onSend,
+}: {
+  legal: boolean;
+  busy: boolean;
+  onSend: (line: string) => void;
+}) {
+  return (
+    <div className="controls">
+      <button
+        type="button"
+        className="primary"
+        disabled={busy || !legal}
+        data-unavailable={legal ? undefined : "true"}
+        onClick={() => onSend("confirm")}
+      >
+        Confirm
+      </button>
+      <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
 /** An area's printed name, from the board already on the frame. */
 function areaName(state: ClientState, labels: Labels | null, area: number): string {
   const tile = state.frame.board.tiles.find((t) => t.area === area);
@@ -390,6 +823,7 @@ function areaName(state: ClientState, labels: Labels | null, area: number): stri
 }
 
 function asking(state: ClientState, labels: Labels | null): string {
+  if (!drawsKind(state.prompt.kind)) return UNKNOWN_ASKING;
   if (state.over) return "The game is over.";
   const d = state.frame.decision;
   const phaseKey = d.phase_chain[d.current_phase];
@@ -408,6 +842,14 @@ function asking(state: ClientState, labels: Labels | null): string {
       return "Placement — Option A.";
     case "place_b":
       return "Placement — Option B.";
+    case "church":
+      return "The Church — what do you pay?";
+    case "chinatown": {
+      const { max_exchanges: max, chosen } = state.prompt;
+      return `Chinatown — up to ${max} exchange${max === 1 ? "" : "s"} · ${chosen} of ${max} chosen`;
+    }
+    case "port":
+      return state.prompt.max_cards === 1 ? "The Port — take one card" : "The Port — take one card, or two";
     case "reveal":
       return "A card reveal is pending (live mode).";
     case "locked":

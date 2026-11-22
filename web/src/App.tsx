@@ -2447,6 +2447,7 @@ export function App() {
             labels={labels}
             colors={colors}
             changedSlots={highlights?.slots}
+            changedGoals={highlights?.goals}
             live={liveFrame?.game === state.id ? liveFrame.frame : null}
             runFor={runFor?.game === state.id ? runFor.events : null}
           />
@@ -2486,6 +2487,9 @@ export function App() {
           changedSeats={highlights?.seats}
           changedTechs={highlights?.techs}
           changedHand={highlights?.hand}
+          // Dormant on this Dashboard: `only` never draws the Achievements
+          // panel, so it lights nothing here; kept for a caller without `only`.
+          changedGoals={highlights?.goals}
           // **`state`, the live game, and never `view`**: the record's bot
           // seats do not change with the position walked or scrubbed, and a
           // replayed frame is not where they live (M6.5c2, spec §2.4).
@@ -2592,6 +2596,7 @@ export function App() {
             busy={busy}
             outcome={outcome}
             spectating={spectating}
+            art={art}
             onSend={(l) => void send(l)}
           />
         )}
