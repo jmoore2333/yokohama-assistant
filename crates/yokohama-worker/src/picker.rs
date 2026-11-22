@@ -990,6 +990,186 @@ mod tests {
         assert_eq!(r.picker.as_deref(), Some("[]"), "the closed chooser's list is cleared, for the shell to delete");
     }
 
+    /// The Port chooser's cards that read selected, by their `number`, in the
+    /// payload's order (the acting board's slot order).
+    fn port_selected(state: &Value) -> Vec<u64> {
+        assert_eq!(state["prompt"]["kind"], json!("port"), "premise: the acting seat's payload reads port: {state}");
+        state["prompt"]["cards"]
+            .as_array()
+            .expect("the cards in reach")
+            .iter()
+            .filter(|c| c["selected"] == json!(true))
+            .map(|c| c["number"].as_u64().expect("a number"))
+            .collect()
+    }
+
+    /// Premise: the cards in reach, by number, in the payload's order.
+    fn assert_port_cards(state: &Value, numbers: &[u64]) {
+        let got: Vec<u64> = state["prompt"]["cards"]
+            .as_array()
+            .expect("the cards in reach")
+            .iter()
+            .map(|c| c["number"].as_u64().expect("a number"))
+            .collect();
+        let mut got = got;
+        got.sort_unstable();
+        let mut want = numbers.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "premise: the cards in reach at this table: {state}");
+    }
+
+    /// **A Port chooser survives a new instance, selection and all** (plan 2b,
+    /// Task 6; design §3). The table is seed 20260831's: the entry is `1` and
+    /// the four cards in reach are 34, 19, 12 and 4 (read off the payload as
+    /// the cell runs, never assumed). The lines switch 34 on, 19 on, 34 OFF and
+    /// 12 on, so the selection is 19 and 12 and a repeated line matters: a
+    /// restore that feeds each distinct line once feeds `34, 19, 12`, reads 34
+    /// and 19 with 12 refused as a third card, and one that drops the repeated
+    /// line or the first toggle reads another pair again. `confirm` after the
+    /// restore commits the one listed take of those two cards (the seat holds
+    /// no imported good, so the pair pays one way and no pick opens), asserted
+    /// by the reply's line.
+    #[test]
+    fn restore_picker_rebuilds_a_port_chooser_with_its_cards() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("port");
+        let entry = to_chooser("port", "PortA", "port");
+        let entry_line = lines(&entry).remove(0);
+        assert_port_cards(&body(&entry), &[34, 19, 12, 4]);
+        for line in ["34", "19", "12"] {
+            assert_ne!(entry_line, line, "premise: the entry's line is no card's number");
+        }
+        let mut row = entry.picker.expect("the entry's list");
+        for line in ["34", "19", "34", "12"] {
+            let r = input(RED, "port", line, Some("port"));
+            assert_eq!(r.status, 200, "{}", r.body);
+            row = r.picker.expect("the grown list");
+        }
+        let before = body(&call(RED, "GET", "/api/games/port", None));
+        let mut on = port_selected(&before);
+        on.sort_unstable();
+        assert_eq!(on, [12, 19], "premise: 19 and 12, with 34 switched off again");
+        assert_eq!(
+            lines_of(&row),
+            [entry_line.as_str(), "34", "19", "34", "12"],
+            "the entry's line and the four toggles, the repeated line kept",
+        );
+        let (stored_table, stored) = (table("port"), record("port"));
+
+        fresh("port", &stored_table, &stored);
+        let r = restore_picker_inner("port", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, nothing moved");
+        assert_eq!(record("port"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/port", None));
+        let mut on = port_selected(&after);
+        on.sort_unstable();
+        assert_eq!(on, [12, 19], "19 and 12 and no other card: {after}");
+        assert_eq!(after["prompt"], before["prompt"], "the whole prompt reads as it did");
+
+        let r = input(RED, "port", "confirm", Some("port"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
+        assert_ne!(record("port"), stored, "premise: `confirm` APPLIED the take");
+        assert_ne!(s["prompt"]["kind"], json!("port"), "the chooser closes on its commit: {}", r.body);
+        let said = s["messages"].to_string();
+        assert!(said.contains("O19") && said.contains("O12"), "the take names the two cards: {said}");
+        assert!(!said.contains("O34") && !said.contains("O04"), "and no other card: {said}");
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
+    }
+
+    /// **A REFUSED card is a line the list keeps, and re-feeding it adds nothing
+    /// to the selection** (plan 2b, Task 6). With 34 and 19 on, `12` is a third
+    /// card: a 200 that names the refusal, leaves the chooser open and sits in
+    /// the list. The restore reads 34 and 19 and nothing else. The selection
+    /// alone cannot tell a recorded refusal from a dropped one (a refused line
+    /// re-fed is refused again), so the cell also reads what a refusal leaves
+    /// that a selection does not show: the stored lines, `12` among them and in
+    /// place, and the list's growth from its last line after the restore.
+    #[test]
+    fn a_refused_card_is_not_replayed_into_a_selection() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("refused-card");
+        let entry = to_chooser("refused-card", "PortA", "port");
+        let entry_line = lines(&entry).remove(0);
+        assert_port_cards(&body(&entry), &[34, 19, 12, 4]);
+        for line in ["34", "19"] {
+            let r = input(RED, "refused-card", line, Some("port"));
+            assert_eq!(r.status, 200, "{}", r.body);
+        }
+        let r = input(RED, "refused-card", "12", Some("port"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["prompt"]["kind"]), (200, &json!("port")), "the refusal is a 200 that leaves the chooser open: {}", r.body);
+        assert!(
+            s["messages"].to_string().contains("the list holds no take with O12 added from here"),
+            "premise: `12` is REFUSED as a third card: {}",
+            s["messages"],
+        );
+        let mut on = port_selected(&s);
+        on.sort_unstable();
+        assert_eq!(on, [19, 34], "the refusal changed nothing");
+        let row = r.picker.expect("the grown list");
+        assert_eq!(lines_of(&row), [entry_line.as_str(), "34", "19", "12"], "the refused line sits in the list, last");
+        let before = body(&call(RED, "GET", "/api/games/refused-card", None));
+        let (stored_table, stored) = (table("refused-card"), record("refused-card"));
+
+        fresh("refused-card", &stored_table, &stored);
+        let r = restore_picker_inner("refused-card", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, refused line and all");
+        assert_eq!(record("refused-card"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/refused-card", None));
+        let mut on = port_selected(&after);
+        on.sort_unstable();
+        assert_eq!(on, [19, 34], "the two cards and nothing else: {after}");
+        assert_eq!(after["prompt"], before["prompt"], "the selection equals the one before the restore");
+        let r = input(RED, "refused-card", "4", Some("port"));
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert!(
+            body(&r)["messages"].to_string().contains("the list holds no take with O04 added from here"),
+            "a further third card is refused on the restored chooser: {}",
+            r.body,
+        );
+        assert_eq!(
+            lines_of(r.picker.as_deref().expect("the grown list")),
+            [entry_line.as_str(), "34", "19", "12", "4"],
+            "the restored list grows from its last line",
+        );
+    }
+
+    /// **`cancel` closes the Port's chooser and clears its list** (plan 2b,
+    /// Task 6; plan 2a's cell of the same name, at the Port). A chooser opened
+    /// and a card switched on hold a list of two lines; `cancel` is a 200 that
+    /// changes no record, answers `"[]"` for the shell to delete the row and
+    /// leaves the main list; the entry opened again starts a list of one line
+    /// and no card on, so nothing of the first opening is kept.
+    #[test]
+    fn cancel_clears_the_port_s_lines() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("port-cancel");
+        let entry = to_chooser("port-cancel", "PortA", "port");
+        let entry_line = lines(&entry).remove(0);
+        assert_port_cards(&body(&entry), &[34, 19, 12, 4]);
+        let r = input(RED, "port-cancel", "34", Some("port"));
+        assert_eq!(port_selected(&body(&r)), [34], "premise: 34 switched on");
+        assert_eq!(lines(&r), [entry_line.as_str(), "34"], "premise: the list holds the entry and the toggle");
+        let stored = record("port-cancel");
+
+        let r = input(RED, "port-cancel", "cancel", Some("port"));
+        let s = body(&r);
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(record("port-cancel"), stored, "`cancel` applied nothing");
+        assert_eq!(s["prompt"]["kind"], json!("options"), "the chooser closed on the main list: {}", r.body);
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the closed chooser's list is cleared, for the shell to delete");
+
+        let r = input(RED, "port-cancel", &entry_line, None);
+        let s = body(&r);
+        assert_eq!((r.status, &s["prompt"]["kind"]), (200, &json!("port")), "the entry opens the chooser again: {}", r.body);
+        assert_eq!(port_selected(&s), Vec::<u64>::new(), "nothing of the first opening is kept");
+        assert_eq!(lines(&r), [entry_line.as_str()], "the new list holds the entry alone");
+    }
+
     /// **A list is only ever re-fed at the exact record it was built at** (the
     /// plan's guard, spec §2.4). A row built before a move, restored after it, is
     /// cleared WITHOUT re-feeding a line — and its first line, `1`, APPLIES a
