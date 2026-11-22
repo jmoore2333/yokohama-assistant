@@ -2,8 +2,10 @@
 //
 // **A generator, not a test.** Nothing here asserts a product property; it
 // drives the shipped client in real Chromium against the real release binary
-// and writes the five `web/help-shots/*.png`, each with the page's
-// accessibility snapshot beside it as `<name>.aria.txt` (see `shot`). It lives in `e2e/` because that
+// and writes the seven `web/help-shots/*.png` — five whole screens and two
+// crops of the answer bar (the choosers, at the end of the file) — each with
+// the page's accessibility snapshot beside it as `<name>.aria.txt` (see
+// `shot`). It lives in `e2e/` because that
 // is where the browser and the server already are, and because a screenshot
 // generator that needed its own harness would be a second driver of the same
 // app.
@@ -47,14 +49,14 @@
 // photographed is on screen, not that it is correct.
 
 import { unlinkSync, writeFileSync } from "node:fs";
-import { type Page } from "@playwright/test";
+import { type Locator, type Page } from "@playwright/test";
 // **`test` comes from `./sw`, not from `@playwright/test`** (M6.5b2, spec §2.3):
 // the fixture flags every page in the context so the release's service worker is
 // NOT registered during the walk. `every_spec_declares_its_worker.spec.ts` is what
 // keeps that from being a convention anybody has to remember.
 import { expect, test } from "./sw";
 import { haveBrowser } from "../playwright.config";
-import { act, readScreen, rng, startGame } from "./harness";
+import { act, CHOOSER_CLASS, LEGAL, openChooser, readScreen, rng, startGame, type ChooserArea } from "./harness";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -72,9 +74,13 @@ const SHOTS = "help-shots";
  *  designed and gated against (`e2e/gates.spec.ts` shoots the same cell), and a
  *  help panel photographed at a width nobody uses documents a layout nobody
  *  sees. `deviceScaleFactor` is deliberately left at 1 here where the gates
- *  spec sets 2: these five files (R-T14d added the strips picture) ship in
- *  `dist/` and in `README.md`, so their bytes are a cost the repository pays
- *  forever, and the gates are the place that pays for pixel density. */
+ *  spec sets 2: these five whole screens (R-T14d added the strips picture)
+ *  ship in `dist/` (the README stopped showing them when it took pictures of
+ *  its own, S4b), so their bytes are a cost the repository pays forever, and
+ *  the gates are the place that pays for pixel density. The two chooser crops
+ *  at the end of the file are the exception, and their comment says why. The
+ *  shape is every picture's, the crops' included: they are cut from this
+ *  window, so their column is the one the owner's screen draws. */
 const VIEWPORT = { width: 1710, height: 869 };
 
 /** Play real moves so the shots show a game in progress rather than a setup. */
@@ -98,7 +104,7 @@ async function playAFew(page: Page, moves: number, seed: number) {
  *  before or after. An empty snapshot fails the run rather than writing an
  *  empty file a reader would take for "nothing on screen". The file is in the
  *  gitignored `help-shots/` with its PNG; `mkhelpart.py` reads `*.png` only. */
-async function shot(page: Page, name: string): Promise<void> {
+async function shot(page: Page, name: string, crop?: Locator): Promise<void> {
   // The earlier run's text goes first, so a run that fails after the
   // screenshot leaves no older text beside the newer picture.
   try {
@@ -106,7 +112,9 @@ async function shot(page: Page, name: string): Promise<void> {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
-  await page.screenshot({ path: `${SHOTS}/${name}.png` });
+  // `crop` photographs one element instead of the viewport; the snapshot is
+  // still the PAGE's, so the text says what was around the crop as well.
+  await (crop ?? page).screenshot({ path: `${SHOTS}/${name}.png` });
   const aria = await page.locator("body").ariaSnapshot();
   if (aria.trim() === "") throw new Error(`shot: the accessibility snapshot for ${name} is empty`);
   writeFileSync(`${SHOTS}/${name}.aria.txt`, `${aria}\n`);
@@ -321,4 +329,181 @@ test("the explanation, and the replay track", async ({ page }) => {
   await scrollToTop(page);
   await park(page);
   await shot(page, "replay");
+});
+
+// ---- the area-action choosers: the answer bar alone (issue #77) -----------
+//
+// The help says the Church's and the Port's choosers in words, and the owner
+// asked to SEE them beside those words, as the placement picker is seen. These
+// two pictures are the answer bar and nothing else — the phase chain, the
+// asking line, the chooser, the verdict and Confirm and Cancel — cut from the
+// page as an ELEMENT screenshot of the decision panel.
+//
+// **At `deviceScaleFactor` 2, unlike the five above, and for the opposite
+// reason.** Those are whole screens whose bytes are paid by every release; a
+// crop of the side column is a few hundred CSS pixels across, so at 1 its
+// 11px text would ship as a smudge in a figure the help draws at the panel's
+// full width. A crop that small costs little at twice the pixels, and it is
+// the one place in this file that buys density. The viewport is the five's
+// ([`VIEWPORT`]), so the column the crop is cut from is the one the owner's
+// screen draws, and a table whose cards that column cannot hold whole is dealt
+// again rather than photographed ([`CHOOSER_TABLES`]).
+
+/** The decision panel the client renders for the prompt (`Decision.tsx`), and
+ *  not the two `.decision notices` strips the deck draws above and below it. */
+const PANEL = ".deck > .decision:not(.notices):not(.walking)";
+
+/** Fresh tables a chooser shot will deal before it gives up. The server draws
+ *  the seed, so a table may not serve the frame: it can offer a single payment,
+ *  which the list holds as a flat row rather than a chooser, and the order
+ *  cards it deals set how tall the Port's cards are, so at 1710x869 some
+ *  tables' second zone of cards is cut at the fold of the chooser's own
+ *  scroller (measured: one table cut two of four cards, the next cut none). */
+const CHOOSER_TABLES = 6;
+
+/** Reach `area`'s chooser, make a selection whose verdict is legal and check
+ *  the frame ([`assertChooserFrame`]), on a fresh table each attempt, up to
+ *  [`CHOOSER_TABLES`] of them. `select` makes the selection and returns the
+ *  verdict it read, or throws saying why it could not. Every miss is kept and
+ *  the last one fails the run with all of them, so a picture of the wrong
+ *  thing is never written and a run that photographed nothing says why. On
+ *  success the frame is the one checked, and the caller photographs it next. */
+async function chooserFrame(
+  page: Page,
+  area: ChooserArea,
+  items: string,
+  select: () => Promise<string>,
+): Promise<{ made: string; pressed: number; misses: string[] }> {
+  const misses: string[] = [];
+  for (let table = 1; table <= CHOOSER_TABLES; table++) {
+    try {
+      await startGame(page, { players: 2 });
+      await openChooser(page, area);
+      const made = await select();
+      const pressed = await page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]} ${items}[aria-pressed="true"]`).count();
+      await assertChooserFrame(page, area, items, pressed);
+      return { made, pressed, misses };
+    } catch (e) {
+      misses.push(`table ${table}: ${e instanceof Error ? e.message.split("\n").slice(0, 6).join(" / ") : String(e)}`);
+    }
+  }
+  throw new Error(`no ${area} chooser with a legal selection in a clean frame on ${CHOOSER_TABLES} fresh tables, so no picture was written:\n${misses.join("\n")}`);
+}
+
+/** The verdict line's text, or "" when it is silent. */
+const verdictOf = async (page: Page, area: ChooserArea) =>
+  ((await page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]} .verdict`).textContent()) ?? "").trim();
+
+/** What must be true of the frame before a chooser is photographed, asserted:
+ *  the chooser open with `pressed` of its items on, the verdict legal, Confirm
+ *  live and Cancel there, and the crop clean — inside the window and the deck
+ *  (a panel the deck clipped would photograph what lies under the clip), every
+ *  item the chooser draws whole inside each box that clips it and inside the
+ *  crop, Confirm and Cancel inside the crop, and no popover over it. */
+async function assertChooserFrame(page: Page, area: ChooserArea, items: string, pressed: number): Promise<void> {
+  const chooser = page.locator(`${PANEL} .chooser.${CHOOSER_CLASS[area]}`);
+  await expect(chooser, `the ${area} chooser is not open`).toHaveCount(1);
+  await expect(chooser.locator(`${items}[aria-pressed="true"]`), `the ${area} chooser does not hold the selection`).toHaveCount(pressed);
+  expect(await verdictOf(page, area), `the ${area} verdict is not legal`).toMatch(new RegExp(`^${LEGAL}`));
+  const confirm = page.locator(PANEL).getByRole("button", { name: "Confirm", exact: true });
+  await expect(confirm, "Confirm is not live").toBeEnabled();
+  await expect(page.locator(PANEL).getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+  await park(page);
+  const cut = await page.evaluate(
+    ({ panel, items }) => {
+      const r = (el: Element) => el.getBoundingClientRect();
+      const inside = (a: DOMRect, b: DOMRect) =>
+        a.left >= b.left - 0.5 && a.top >= b.top - 0.5 && a.right <= b.right + 0.5 && a.bottom <= b.bottom + 0.5;
+      const crop = document.querySelector(panel)!;
+      const box = r(crop);
+      const view = new DOMRect(0, 0, window.innerWidth, window.innerHeight);
+      const faults: string[] = [];
+      if (!inside(box, view)) faults.push(`the panel ${box.width}x${box.height} at ${box.left},${box.top} is not inside the window`);
+      if (!inside(box, r(crop.closest(".deck")!))) faults.push("the panel is not inside the deck");
+      const named = (name: string) => [...crop.querySelectorAll("button")].find((b) => b.textContent?.trim() === name);
+      for (const name of ["Confirm", "Cancel"]) {
+        const b = named(name);
+        if (!b || !inside(r(b), box)) faults.push(`${name} is not inside the panel`);
+      }
+      const all = [...crop.querySelectorAll(items)];
+      if (all.length === 0) faults.push(`the chooser draws no ${items}`);
+      for (const el of all) {
+        const at = r(el);
+        const what = el.getAttribute("data-good") ?? el.getAttribute("data-number") ?? el.textContent?.trim().slice(0, 20);
+        if (!inside(at, box)) faults.push(`${what} is not inside the panel`);
+        for (let up = el.parentElement; up && up !== crop.parentElement; up = up.parentElement) {
+          const s = getComputedStyle(up);
+          if ((s.overflowX !== "visible" || s.overflowY !== "visible") && !inside(at, r(up))) {
+            faults.push(`${what} is cut by ${up.className || up.tagName}, which shows ${up.clientHeight} of ${up.scrollHeight} px at a ${window.innerWidth}x${window.innerHeight} window`);
+            break;
+          }
+        }
+      }
+      return faults;
+    },
+    { panel: PANEL, items },
+  );
+  expect(cut, `the ${area} crop is not clean`).toEqual([]);
+}
+
+test.describe("the area-action choosers", () => {
+  test.use({ deviceScaleFactor: 2 });
+
+  test("the Church's chooser, with a legal payment switched on", async ({ page }) => {
+    await page.setViewportSize(VIEWPORT);
+    const kinds = "button.kind";
+    const { made, pressed, misses } = await chooserFrame(page, "Church", kinds, async () => {
+      // Kinds on, one at a time, the shape `the_table.spec.ts`'s Church payment
+      // takes, until the verdict reads legal with TWO kinds on — the owner's
+      // reference shows a payment of two kinds, which says "switch on what you
+      // pay" better than one. A table with no second kind to offer stops at its
+      // first legal selection.
+      const on = page.locator(`${PANEL} .chooser.church ${kinds}[aria-pressed="true"]`);
+      for (let press = 0; press < 6; press++) {
+        const verdict = await verdictOf(page, "Church");
+        if (verdict.startsWith(LEGAL) && (await on.count()) >= 2) return verdict;
+        const kind = page.locator(`${PANEL} .chooser.church ${kinds}:not([disabled])[aria-pressed="false"]`).first();
+        if ((await kind.count()) === 0) {
+          if (verdict.startsWith(LEGAL)) return verdict;
+          throw new Error(`no kind left to switch on, and the verdict never read legal: "${verdict}"`);
+        }
+        await kind.click();
+        await readScreen(page);
+      }
+      const verdict = await verdictOf(page, "Church");
+      if (!verdict.startsWith(LEGAL)) throw new Error(`six kinds on and the verdict is not legal: "${verdict}"`);
+      return verdict;
+    });
+    // eslint-disable-next-line no-console
+    console.log(`church: ${pressed} kind(s) on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
+    await shot(page, "church", page.locator(PANEL));
+  });
+
+  test("the Port's chooser, with a legal pair switched on", async ({ page }) => {
+    await page.setViewportSize(VIEWPORT);
+    const cards = "button.card-pick";
+    const live = `${PANEL} .chooser.port ${cards}:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"]`;
+    const { made, pressed, misses } = await chooserFrame(page, "Port", cards, async () => {
+      // The first card on, then a second the arm can add: a pair is what the
+      // owner's reference shows. A table whose arm can add no second card is
+      // photographed with its one card, and the run says so.
+      const first = page.locator(live).first();
+      if ((await first.count()) === 0) throw new Error("no card in reach can be switched on");
+      await first.click();
+      await readScreen(page);
+      const second = page.locator(live).first();
+      if ((await second.count()) > 0) {
+        await second.click();
+        await readScreen(page);
+      }
+      const on = await page.locator(`${PANEL} .chooser.port ${cards}[aria-pressed="true"]`).count();
+      if (on !== 1 && on !== 2) throw new Error(`the Port chooser holds ${on} cards`);
+      const verdict = await verdictOf(page, "Port");
+      if (!verdict.startsWith(LEGAL)) throw new Error(`the selection's verdict is not legal: "${verdict}"`);
+      return verdict;
+    });
+    // eslint-disable-next-line no-console
+    console.log(`port: ${pressed === 2 ? "a pair" : "ONE card (no second could be added)"} on, "${made}", after ${misses.length} missed table(s)${misses.map((m) => `\n  ${m}`).join("")} (recorded)`);
+    await shot(page, "port", page.locator(PANEL));
+  });
 });

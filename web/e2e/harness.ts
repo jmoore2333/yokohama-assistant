@@ -1116,3 +1116,92 @@ export function tally(page: Page, label: TallyPage, path: string | undefined = p
   page.on("requestfailed", (r) => write(r, 0));
   page.on("websocket", (ws) => line(Date.now(), "GET", ws.url().replace(/^ws/, "http"), 101));
 }
+
+// ---- the route to an area-action chooser (moved from `the_table.spec.ts`) ----
+//
+// Moved VERBATIM, with `export` added, so `shots.spec.ts` can photograph
+// the choosers the table's cells reach: a `.spec.ts` cannot be imported from
+// another spec without registering that file's tests into the run.
+
+/** Click the first enabled option row whose words match, or say there is none. */
+export async function answer(page: Page, words: RegExp): Promise<boolean> {
+  const rows = page.locator("button.option:not([disabled])").filter({ hasText: words });
+  if ((await rows.count()) === 0) return false;
+  await rows.first().click();
+  return true;
+}
+
+export type ChooserArea = "Church" | "Chinatown" | "Port";
+
+/** The chooser's own class, beside `.chooser`. */
+export const CHOOSER_CLASS: Record<ChooserArea, string> = { Church: "church", Chinatown: "chinatown", Port: "port" };
+
+/** The entry that opens it, as the plans' words sections spell it (plan 2b's
+ *  two Port lines: with a pair on the list, and without one). */
+export const CHOOSER_ENTRY: Record<ChooserArea, RegExp> = {
+  Church: /Church — choose what to pay \(/,
+  Chinatown: /Chinatown — choose exchanges \(up to /,
+  Port: /Port — take 1 (or 2 order cards|order card) \(\d+ in reach\)/,
+};
+
+/** The tile's printed name (`describe::area_type_name`): every table has a
+ *  Port A, and the route takes it. */
+export const CHOOSER_TILE: Record<ChooserArea, string> = { Church: "Church", Chinatown: "Chinatown", Port: "Port A" };
+
+/**
+ * Reach `area`'s chooser on a fresh table, through the screen: end the
+ * additional phase, Option B's two assistants on the area's tile, the Movement
+ * row naming the tile with the President, then the entry — the route the wire
+ * corpus's own Chinatown capture takes (`wire_fixtures.rs`). The tile is found
+ * by its label's printed name (`A05 Church · …`, `Board.tsx`'s load-bearing
+ * prefix) and its id read off it, so the President's row is the one naming
+ * THAT tile. Returns the tile's id. Any screen the route does not expect is an
+ * error quoting the answer bar, never a guess. `seen`, when given, collects the
+ * screen `readScreen` returned at each list the route answered, by what it
+ * answered there (`movement` the President's row, `entry` the chooser's).
+ */
+export async function openChooser(
+  page: Page,
+  area: ChooserArea,
+  seen?: { at: "movement" | "entry"; screen: Screen }[],
+): Promise<string> {
+  const chooser = page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`);
+  let tile: string | null = null;
+  for (let step = 0; step < 12; step++) {
+    const screen = await readScreen(page);
+    if (await chooser.count()) {
+      if (tile === null) throw new Error(`the ${area} chooser opened before this route placed anything`);
+      return tile;
+    }
+    if (await answer(page, CHOOSER_ENTRY[area])) {
+      seen?.push({ at: "entry", screen });
+      continue;
+    }
+    if (tile !== null && (await answer(page, new RegExp(`President.*\\(${tile}\\)`)))) {
+      seen?.push({ at: "movement", screen });
+      continue;
+    }
+    if (tile === null && (await answer(page, /Option B/))) {
+      await expect(page.locator('.tile[role="button"]').first()).not.toHaveAttribute("aria-disabled", "true");
+      const labels = await page
+        .locator('.tile[role="button"]')
+        .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""));
+      const at = labels.findIndex((l) => new RegExp(`^A\\d\\d ${CHOOSER_TILE[area]}( |$)`).test(l));
+      if (at < 0) throw new Error(`no ${area} tile to place on: ${labels.map((l) => l.slice(0, 14)).join(" | ")}`);
+      tile = labels[at]!.slice(0, 3);
+      await page.locator('.tile[role="button"]').nth(at).click();
+      expect((await readScreen(page)).pressed, `Option B did not take ${tile} ${area}`).toBe(1);
+      await page.getByRole("button", { name: "Confirm" }).click();
+      continue;
+    }
+    if (await answer(page, /End additional-action phase/)) continue;
+    break;
+  }
+  throw new Error(
+    `no scripted answer on the way to the ${area} chooser (tile ${tile ?? "not placed"}):\n` +
+      (await page.locator(".decision:not(.notices)").first().innerText()),
+  );
+}
+
+/** The verdict's `legal — ` tag, as the panel draws it (the plan's words). */
+export const LEGAL = "legal — ";
