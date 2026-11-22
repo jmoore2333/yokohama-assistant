@@ -2594,6 +2594,10 @@ The same code as the Worker's thirty-ninth deployment (`worker/RUNBOOK.md` §28)
 
 **What this deployment does NOT claim:** the seat-aware admission was not read live on this host (no watchers' figure was filled); the sweep's next hourly line was not read; the door's three cards were not recorded by eye on this host; a creator's reopen of a joiner's seat stays unread (one identity).
 
+### 3.25 The twenty-second deployment — `yokohama-web:0.7.4-track6`, 2026-11-22 (the play-feedback release; a pointer, its record the lab's)
+
+The same code as the Worker's fortieth deployment (`worker/RUNBOOK.md` §29): master at `ba4d5f4c`, the merge of PR #79, tagged `v0.7.4` and published by `release.yml` before the swap. **The canary of that release's window**, by §1 to §3's recipe unchanged: the musl binary and this host's own client build, the context served once from a scratch directory, the image's smoke with the hostname before the swap, the container recreated from §3's body with the new tag, and `cloudflared-nas` restarted. Read after: the health document at `server_version 0.7.4`, `semantics_rev 7` through the tunnel with the caller named, §3's two `docker exec` lines as that section expects (the listed `Host` 200, the foreign one 421), the negative probe from the terminal container, and the Port's, the Laboratory's and Chinatown's choosers played through the hostname. **By the owner's ruling of 2026-11-22 a private host's detail is kept in the lab's tracker**, and this file carries the pointer: the build's figures, the image, the container and the readings are there. **Rollback:** `yokohama-web:0.7.3-s4` stays on the NAS — recreate from §3's body with that tag; §5's bullets stand.
+
 ---
 
 ## 4. Modal and its edge proxy — RETIRED at M6.5c (a record, not a plan)
