@@ -600,25 +600,30 @@ export interface Screen {
    *  Neither is answerable, and neither is "nothing left to click" — a walk that
    *  reported them that way would name the wrong defect. */
   inert: "watching" | "locked" | null;
-  /** A chooser is open in the answer bar (plan 2a): the Church's payment or
-   *  Chinatown's exchanges, a `.chooser` inside `.decision`. */
+  /** A chooser is open in the answer bar (plans 2a and 2b): the Church's
+   *  payment, Chinatown's exchanges or the Port's cards, a `.chooser` inside
+   *  `.decision`. */
   chooser: boolean;
   /** What the open chooser can still ADD to its selection: the enabled kinds
-   *  not yet pressed (the Church) and the enabled pluses (Chinatown) —
-   *  [`CHOOSER_ADDS`]. Never a pressed kind and never a minus, since either
-   *  would take something away; zero when no chooser is open. */
+   *  not yet pressed (the Church), the enabled pluses (Chinatown) and the
+   *  enabled cards not yet pressed (the Port) — [`CHOOSER_ADDS`]. Never a
+   *  pressed kind or card and never a minus, since each would take something
+   *  away; zero when no chooser is open. */
   adds: number;
 }
 
 /** The controls that grow a chooser's selection, and only those: a kind the
- *  payload offers that is not pressed, and a plus the payload says can add.
+ *  payload offers that is not pressed, a plus the payload says can add, and a
+ *  Port card the payload says can be switched on (`can_add`) that is not
+ *  pressed — a pressed card stays live so it can be switched OFF, which is why
+ *  `[aria-pressed="false"]` is on the card's leg as on the kind's.
  *  `:not([disabled])` drops what the payload refuses (`data-unavailable`), and
- *  `:not([aria-disabled="true"])` anything in flight — a kind or a stepper is
- *  `aria-disabled` while busy, not `disabled`, so it keeps the focus (ruling
- *  R45). One selector, read by `readScreen` and clicked by `act`, so the count
- *  and the click cannot disagree. */
+ *  `:not([aria-disabled="true"])` anything in flight — a kind, a stepper or a
+ *  card is `aria-disabled` while busy, not `disabled`, so it keeps the focus
+ *  (ruling R45). One selector, read by `readScreen` and clicked by `act`, so
+ *  the count and the click cannot disagree. */
 export const CHOOSER_ADDS =
-  '.decision .chooser button.kind:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"], .decision .chooser button.plus:not([disabled]):not([aria-disabled="true"])';
+  '.decision .chooser button.kind:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"], .decision .chooser button.plus:not([disabled]):not([aria-disabled="true"]), .decision .chooser button.card-pick:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"]';
 
 export async function readScreen(page: Page): Promise<Screen> {
   // **Wait for the request in flight FIRST.** While `busy`, the client's own
@@ -637,18 +642,19 @@ export async function readScreen(page: Page): Promise<Screen> {
   //
   // **Except where the PAYLOAD disabled it (plan 2a).** A chooser always has
   // some control disabled by what the payload says rather than by `busy` — a
-  // kind no listed move pays, a plus that cannot add, a minus at zero, Confirm
-  // on a selection the list does not hold — so a wait on every `disabled`
-  // timed out after 15 s at the first chooser every walk met. Each of those
-  // carries `data-unavailable` (`Decision.tsx`), set from the payload alone and
-  // never from `busy`, and the wait passes over it. A chooser in flight still
-  // reads busy: `data-busy`, below, is what holds that — the client's own
-  // in-flight state, the same window — and Cancel, `disabled` while `busy` and
-  // never carrying the attribute, is a second guard (Confirm too, whenever the
-  // preview is legal). A kind or a stepper in flight is `aria-disabled` and not
-  // `disabled`, so this leg never reads it either way. Nothing but a chooser's
-  // kinds, steppers and Confirm carries the attribute at all, so every other
-  // control in the zone is read as before.
+  // kind no listed move pays, a plus that cannot add, a minus at zero, a Port
+  // card that cannot be switched on (plan 2b: with two cards on, every other
+  // card), Confirm on a selection the list does not hold — so a wait on every
+  // `disabled` timed out after 15 s at the first chooser every walk met. Each
+  // of those carries `data-unavailable` (`Decision.tsx`), set from the payload
+  // alone and never from `busy`, and the wait passes over it. A chooser in
+  // flight still reads busy: `data-busy`, below, is what holds that — the
+  // client's own in-flight state, the same window — and Cancel, `disabled`
+  // while `busy` and never carrying the attribute, is a second guard (Confirm
+  // too, whenever the preview is legal). A kind, a stepper or a card in flight
+  // is `aria-disabled` and not `disabled`, so this leg never reads it either
+  // way. Nothing but a chooser's kinds, steppers, cards and Confirm carries the
+  // attribute at all, so every other control in the zone is read as before.
   //
   // **And `data-busy` beside it, because `disabled` is only a signal on a
   // screen that HAS a control (M5.5).** The finished game's deck is a standing
@@ -805,16 +811,19 @@ export async function act(
     return "count";
   }
 
-  // **A chooser** (plan 2a): the Church's payment, Chinatown's exchanges.
-  // Confirm when it is live and either nothing is left to add or the coin says
-  // so — so a walk pays both a full selection and a partial one; else one of the
-  // adds ([`CHOOSER_ADDS`]); else back out through Cancel, the way a stuck
-  // placement picker is backed out of. **The visit ends**: an add only ever
-  // GROWS the selection — the policy never presses a pressed kind and never a
+  // **A chooser** (plans 2a and 2b): the Church's payment, Chinatown's
+  // exchanges, the Port's cards. Confirm when it is live and either nothing is
+  // left to add or the coin says so — so a walk pays both a full selection and
+  // a partial one, and takes one card and two; else one of the adds
+  // ([`CHOOSER_ADDS`]); else back out through Cancel, the way a stuck placement
+  // picker is backed out of. **The visit ends**: an add only ever GROWS the
+  // selection — the policy never presses a pressed kind or card and never a
   // minus — and a selection is bounded (six kinds; the exchanges up to the most
-  // one listed move holds, past which no plus can add), so it reaches Confirm or
-  // Cancel within a few presses. A visit that loops anyway is the whole-game
-  // walk's move cap failing, by design.
+  // one listed move holds, past which no plus can add; two cards, past which no
+  // card can be switched on), so it reaches Confirm or Cancel within a few
+  // presses. A Confirm on two cards the list holds two ways to pay for opens
+  // the numbered pick, which the option arm above answers. A visit that loops
+  // anyway is the whole-game walk's move cap failing, by design.
   if (screen.chooser) {
     if (screen.confirm && (screen.adds === 0 || pick() < 0.5)) {
       await page.getByRole("button", { name: "Confirm" }).click();

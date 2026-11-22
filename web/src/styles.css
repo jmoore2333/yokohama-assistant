@@ -1009,17 +1009,55 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * `aria-disabled` instead, so it keeps the focus (ruling R45), and both are
  * dimmed as a kind is. A pressed card wears the kind's pressed band, and the
  * focus ring is drawn INSIDE it in the foreground colour for the kind's reason
- * (the box below is a scroll container). **Where the deck is short the chooser
- * is meant to give way as the Church's does**: the zones scroll first, then the
- * chooser itself, and Confirm and Cancel, its siblings, stay in reach. That
- * sentence and the 5rem floor of the zones are REASONED, not measured: Task 5
- * measures the boxes in a browser. */
+ * (the box below is a scroll container).
+ *
+ * **The card face is laid out flat** (Task 5; ruling T5-a): the picture a
+ * 3.5rem-tall thumbnail (`--port-art`, 37 px wide) beside the caption, whose
+ * title and two chip rows wrap as one row-wise flow, and a chip's own words
+ * may wrap so a long one (`1 from warehouse`) cannot run out of its card. The
+ * accepted mockup's shape: one row per zone, its heading at the left and its
+ * two cards side by side as compact buttons. How the face LOOKS is the
+ * owner's reading.
+ *
+ * **Measured in Chromium, on the route's four cards** (a fresh two-player
+ * table, power 3; Task 5's cells 1 and 2). Drawn as the hand draws it, a card
+ * was 143x296 px at 390x844: the zones showed 297 of 598 px and a card's box
+ * reached 1036 px in an 844 px window; at 844x390 and 667x375 a card (370x618,
+ * 282x485) was taller than the deck, so no scroll could bring it into view.
+ * Flat, a card is 86 to 142 px tall at 390x844 and 1440x900 (the caption is
+ * about 90 px wide there) and 67.6 px at 844x390 and 667x375 (the caption is
+ * wider and the picture sets the height). At 390x844 the zones hold the
+ * route's two zones whole (219 to 259 px of 219 to 259; nothing scrolls). At
+ * 1440x900 the rail's 45vh deck is 405 px, the chooser gets 222 and the zones
+ * 179, so the second zone is cut at open (two of four cards whole) and each cut
+ * card scrolls into view inside the zones, the page not moving.
+ *
+ * **Where the deck is short the chooser gives way as the Church's does, and
+ * Confirm and Cancel, its siblings, stay in reach** (measured): at 844x390 the
+ * zones are at their floor, showing 69 of 141 px, and the chooser itself
+ * scrolls the last 8 px (103 of 111, the verdict under its fold); at 667x375
+ * it shows 71 of 111. **The zones' floor is one card**: the picture, the
+ * button's 0.3rem padding twice and its 1 px border twice (67.6 px), with a
+ * pixel to spare and in WHOLE pixels, 69 px — a floor of 68.6 px read as a
+ * 69 px box when scrolled and cut the last card by 0.6 px (measured). One
+ * card is also what the chooser can show at 667x375 (71 px), so a taller floor
+ * would cut a card there; and a card is that short only while its caption is
+ * no taller than its picture, three rows (measured at those widths; a fourth
+ * row is REASONED not to occur, the caption there being about 227 px wide and
+ * the widest chip row measured 224).
+ *
+ * **NOT measured: a table with SIX cards in reach** (power 4 or more), three
+ * zones: no cell's table reaches one by lines. Reasoned from the figures
+ * above, three zones of 86 to 142 px (270 to 438 px with their gaps) would
+ * not fit whole in the 219 to 259 px the zones had at 390x844, so the zones
+ * would scroll there as they do at 1440x900. */
 .decision > .chooser.port {
+  --port-art: 3.5rem;
   flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
 .chooser.port .zones {
-  flex: 0 1 auto; min-height: 5rem; overflow-y: auto; display: grid; gap: 6px;
+  flex: 0 1 auto; min-height: calc(var(--port-art) + 13px); overflow-y: auto; display: grid; gap: 6px;
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
 .chooser.port .zone {
@@ -1032,7 +1070,14 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 0.3rem; font: inherit; text-align: left; cursor: pointer;
 }
-.card-pick .card-face { width: 100%; border: 0; padding: 0; background: none; }
+.card-pick .card-face {
+  width: 100%; border: 0; padding: 0; background: none;
+  flex-direction: row; align-items: flex-start; gap: 0.4rem;
+}
+.card-pick .card-face img, .card-pick .card-face .card-blank { width: auto; height: var(--port-art); flex: none; }
+.card-pick .card-face figcaption { min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.3rem; }
+.card-pick .card-face .chips { margin-top: 0; min-width: 0; }
+.card-pick .card-face .chip { white-space: normal; }
 .card-pick:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--line-bright); }
 .card-pick:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
 .card-pick[aria-pressed="true"] {

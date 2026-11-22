@@ -10,8 +10,10 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { haveBrowser } from "../playwright.config";
 import { pyramidFits, tileWidthFor } from "../src/fit";
-import { act, atTheGame, blame, DESKTOP, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage, type Screen } from "./harness";
-import { hasMove } from "./shared_table";
+import { act, atTheGame, blame, capReached, deadEnd, DESKTOP, escaped, newGameForm, PHONE, readOverflow, readScreen, rng, startGame, WALKER, watchForBreakage, type Screen } from "./harness";
+import { hasMove, ownHand } from "./shared_table";
+import { CAP } from "./caps";
+import type { ClientState, PortCard } from "../src/types";
 
 test.skip(!haveBrowser, "no Chromium — YOKOHAMA_WEB_E2E_OPTIONAL=1; this run tested NOTHING");
 
@@ -1123,16 +1125,22 @@ test("each seat's flag row stays inside its seat at a phone's width and widens n
 // player does, measure its boxes at a phone's and a desktop's width, answer it
 // through the screen, and drive the walks' own policy at it.
 
-type ChooserArea = "Church" | "Chinatown";
+type ChooserArea = "Church" | "Chinatown" | "Port";
 
 /** The chooser's own class, beside `.chooser`. */
-const CHOOSER_CLASS: Record<ChooserArea, string> = { Church: "church", Chinatown: "chinatown" };
+const CHOOSER_CLASS: Record<ChooserArea, string> = { Church: "church", Chinatown: "chinatown", Port: "port" };
 
-/** The entry that opens it, as the plan's words section spells it. */
+/** The entry that opens it, as the plans' words sections spell it (plan 2b's
+ *  two Port lines: with a pair on the list, and without one). */
 const CHOOSER_ENTRY: Record<ChooserArea, RegExp> = {
   Church: /Church — choose what to pay \(/,
   Chinatown: /Chinatown — choose exchanges \(up to /,
+  Port: /Port — take 1 (or 2 order cards|order card) \(\d+ in reach\)/,
 };
+
+/** The tile's printed name (`describe::area_type_name`): every table has a
+ *  Port A, and the route takes it. */
+const CHOOSER_TILE: Record<ChooserArea, string> = { Church: "Church", Chinatown: "Chinatown", Port: "Port A" };
 
 /**
  * Reach `area`'s chooser on a fresh table, through the screen: end the
@@ -1172,7 +1180,7 @@ async function openChooser(
       const labels = await page
         .locator('.tile[role="button"]')
         .evaluateAll((els) => els.map((e) => e.getAttribute("aria-label") ?? ""));
-      const at = labels.findIndex((l) => new RegExp(`^A\\d\\d ${area}( |$)`).test(l));
+      const at = labels.findIndex((l) => new RegExp(`^A\\d\\d ${CHOOSER_TILE[area]}( |$)`).test(l));
       if (at < 0) throw new Error(`no ${area} tile to place on: ${labels.map((l) => l.slice(0, 14)).join(" | ")}`);
       tile = labels[at]!.slice(0, 3);
       await page.locator('.tile[role="button"]').nth(at).click();
@@ -1637,10 +1645,16 @@ const LANDSCAPE = { width: 844, height: 390 };
  *  shrink to their floor, one row of kinds, which at 844x390 they do not. */
 const SMALL_LANDSCAPE = { width: 667, height: 375 };
 
+/** What each chooser draws to choose from: the Church's six kinds, Chinatown's
+ *  nine exchanges, the four cards the Port's route puts in reach. */
+const CHOOSER_ITEMS: Record<ChooserArea, number> = { Church: 6, Chinatown: 9, Port: 4 };
+
 for (const [area, players, vp] of [
   ["Church", 2, LANDSCAPE],
   ["Chinatown", 4, LANDSCAPE],
   ["Church", 2, SMALL_LANDSCAPE],
+  ["Port", 2, LANDSCAPE],
+  ["Port", 2, SMALL_LANDSCAPE],
 ] as const) {
   test(`on a phone held sideways the ${area} chooser keeps Confirm and Cancel in the deck and the window, and what it cuts scrolls into view inside the deck, at ${vp.width}x${vp.height}`, async ({ page }) => {
     // **The rule (ruling R38): the controls are always inside the deck and the
@@ -1652,6 +1666,7 @@ for (const [area, players, vp] of [
     const watch = watchForBreakage(page);
     await startGame(page, { players });
     await openChooser(page, area);
+    await installClipsRead(page);
     await page.setViewportSize(vp);
     await settle(page);
     const at = `${area} at ${vp.width}x${vp.height}`;
@@ -1661,7 +1676,11 @@ for (const [area, players, vp] of [
     });
     const controls = await page.evaluate(controlsRead);
     expect(controls.h, `${at}: the window is not the height asked for`).toBe(vp.height);
-    if (vp === SMALL_LANDSCAPE) {
+    if (area === "Port") {
+      // eslint-disable-next-line no-console
+      console.log(`the Port's chooser ${at}: ${portFigures(await page.evaluate(portLayoutRead))} (recorded)`);
+    }
+    if (area === "Church" && vp === SMALL_LANDSCAPE) {
       // The kinds' floor binds here: their box is exactly one row of kinds
       // (0.5 px), which is what keeps one row visible on the shortest deck.
       const kinds = await page.locator(".decision .chooser.church .kinds").evaluate((el) => ({
@@ -1687,7 +1706,7 @@ for (const [area, players, vp] of [
     const last = await page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`).evaluate((chooser) => {
       const scrollers = [chooser, ...chooser.querySelectorAll("*")].filter((el) => el.scrollHeight > el.clientHeight + 1);
       for (const el of scrollers) if (el !== chooser) el.scrollTop = el.scrollHeight;
-      const items = chooser.querySelectorAll(".kinds > button.kind, .rows > .ex");
+      const items = chooser.querySelectorAll(".kinds > button.kind, .rows > .ex, .zones > .zone > button.card-pick");
       const item = items[items.length - 1]!;
       item.scrollIntoView({ block: "nearest", inline: "nearest" });
       const rect = (el: Element) => {
@@ -1697,7 +1716,7 @@ for (const [area, players, vp] of [
       const r = item.getBoundingClientRect();
       const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
       return {
-        what: item.getAttribute("data-good") ?? `row ${item.getAttribute("data-number")}`,
+        what: item.getAttribute("data-good") ?? `${item.classList.contains("card-pick") ? "card" : "row"} ${item.getAttribute("data-number")}`,
         items: items.length,
         box: rect(item),
         around: scrollers.filter((s) => s.contains(item)).map((s) => ({ cls: s.className, box: rect(s) })),
@@ -1705,7 +1724,7 @@ for (const [area, players, vp] of [
         hit: !!hit && item.contains(hit),
       };
     });
-    expect(last.items, `${at}: the chooser draws no kinds or exchanges`).toBe(area === "Church" ? 6 : 9);
+    expect(last.items, `${at}: the chooser does not draw its kinds, exchanges or cards`).toBe(CHOOSER_ITEMS[area]);
     // The deck's box again, after the scroll (it is pinned, so this is a check).
     const deckAfter = await page.locator(".deck").evaluate((d) => {
       const r = d.getBoundingClientRect();
@@ -1717,9 +1736,418 @@ for (const [area, players, vp] of [
       expect(outside(last.box, s.box), `${at}: the last item (${last.what}) is cut by its scrolling box ${s.cls}`).toBeNull();
     }
     expect(last.hit, `${at}: a press at the last item's (${last.what}) centre lands on something else`).toBe(true);
+    // And what can be SEEN of it (ruling T5-a): whole inside every clip's
+    // visible box — each scroll box's client box, the deck's, the window.
+    const seen = await page.locator(`.decision .chooser.${CHOOSER_CLASS[area]}`).evaluate((chooser) => {
+      const items = chooser.querySelectorAll(".kinds > button.kind, .rows > .ex, .zones > .zone > button.card-pick");
+      return (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(items[items.length - 1]!);
+    });
+    expect(cutBy(seen), `${at}: the last item (${last.what}), scrolled into view, is cut by`).toBeNull();
     // And the controls stayed where they were while the chooser scrolled.
     const after = await page.evaluate(controlsRead);
     expect(after.confirmHit && after.cancelHit, `${at}: scrolling the chooser moved its controls out of reach`).toBe(true);
     expect(watch.failures).toEqual([]);
   });
 }
+
+// ---- issue #76 (plan 2b): the Port's chooser, reached and measured ---------
+//
+// The Port's takes are ONE entry on the main list that opens a chooser of the
+// order cards in reach (Task 4's panel). These cells reach it through the
+// screen on a fresh two-player table — the additional phase ended, Option B's
+// two assistants on Port A, the President placed there: power 3, which on every
+// table puts four cards in reach and lists six pairs (plan 2b's measured fact) —
+// measure its boxes, take one card and two through the screen, press a card
+// from the keyboard, and read the walks' policy at it.
+
+const PORT = ".decision .chooser.port";
+/** A card the panel draws, as the policy and a player find it. */
+const PORT_CARD = `${PORT} .zones > .zone > button.card-pick`;
+
+/** Everything the Port's layout question needs, in ONE round trip: the deck,
+ *  the chooser and its zones (each with what it holds and what it shows), and
+ *  every card button with its face. */
+const portLayoutRead = () => {
+  const rect = (el: Element) => {
+    const r = el.getBoundingClientRect();
+    return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.width, height: r.height };
+  };
+  const chooser = document.querySelector(".decision .chooser.port")!;
+  const zones = chooser.querySelector(":scope > .zones")!;
+  return {
+    deck: rect(document.querySelector(".deck")!),
+    chooser: { box: rect(chooser), scroll: chooser.scrollHeight, client: chooser.clientHeight },
+    zones: { box: rect(zones), scroll: zones.scrollHeight, client: zones.clientHeight },
+    cards: [...chooser.querySelectorAll(":scope > .zones > .zone > button.card-pick")].map((b) => ({
+      number: b.getAttribute("data-number") ?? "",
+      box: rect(b),
+      face: rect(b.querySelector(".card-face")!),
+      scrollWidth: b.scrollWidth,
+      clientWidth: b.clientWidth,
+    })),
+  };
+};
+
+/** The figures a layout cell records beside what it asserts. */
+const portFigures = (read: ReturnType<typeof portLayoutRead>): string =>
+  `deck ${read.deck.height.toFixed(1)} px tall; chooser shows ${read.chooser.client} of ${read.chooser.scroll}; ` +
+  `zones show ${read.zones.client} of ${read.zones.scroll}; cards ` +
+  read.cards.map((c) => `${c.number} ${c.box.width.toFixed(1)}x${c.box.height.toFixed(1)}`).join(", ");
+
+/**
+ * **What can be SEEN of a box, not where its box is** (ruling T5-a): the box
+ * and every box that clips it — each ancestor up to the deck that clips its
+ * overflow, read as its CLIENT box (inside its border, without its scrollbar),
+ * the deck's client box, and the window — with whether a press at the box's
+ * centre lands on it, and the page's own scroll. A box inside the deck's box
+ * can still be under a scroll box's fold (measured: at 1440x900 a card cut by
+ * 32 px under the zones' fold lay inside the deck's box), so visibility is
+ * the box inside every clip ([`cutBy`]), never inside the deck alone.
+ * Self-contained: [`installClipsRead`] puts it on the page as its source,
+ * since a function cannot cross into the page by reference and the enforced
+ * policy refuses `new Function` there.
+ */
+const clipsRead = (el: Element) => {
+  const rect = (r: { left: number; top: number; right: number; bottom: number }) => ({
+    left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top,
+  });
+  const client = (c: Element) => {
+    const r = c.getBoundingClientRect();
+    const left = r.left + c.clientLeft;
+    const top = r.top + c.clientTop;
+    return rect({ left, top, right: left + c.clientWidth, bottom: top + c.clientHeight });
+  };
+  const clips: { what: string; box: ReturnType<typeof rect> }[] = [];
+  for (let c = el.parentElement; c; c = c.parentElement) {
+    const css = getComputedStyle(c);
+    const deck = c.classList.contains("deck");
+    if (deck || css.overflowY !== "visible" || css.overflowX !== "visible") {
+      clips.push({ what: `${c.tagName.toLowerCase()}.${[...c.classList].join(".")}`, box: client(c) });
+    }
+    if (deck) break;
+  }
+  clips.push({ what: "the window", box: rect({ left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight }) });
+  const r = el.getBoundingClientRect();
+  const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+  return { box: rect(r), clips, hit: !!hit && (hit === el || el.contains(hit)), pageScroll: window.scrollY };
+};
+
+/** Put [`clipsRead`] on the page as `window.clipsRead`, evaluated as text
+ *  through the browser protocol (which the page's policy does not govern). */
+async function installClipsRead(page: Page): Promise<void> {
+  await page.evaluate(`window.clipsRead = ${clipsRead.toString()}`);
+}
+
+/** The first clip a box runs out of, named, or `null` when the whole box can
+ *  be seen (with `outside`'s 0.5 px of rounding). */
+function cutBy(read: ReturnType<typeof clipsRead>): string | null {
+  for (const c of read.clips) {
+    const miss = outside(read.box, c.box);
+    if (miss) return `${c.what} (${miss})`;
+  }
+  return null;
+}
+
+test("the Port's chooser shows every card whole at 390, and at 1440 brings each cut card into view inside the deck, pressable, with the cards apart and Confirm and Cancel in the window and under their own centres", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
+  await installClipsRead(page);
+  const cards = () => page.locator(PORT_CARD);
+  const read = async (vp: { width: number; height: number }) => {
+    await page.setViewportSize(vp);
+    await settle(page);
+    const at = `at ${vp.width}x${vp.height}`;
+    const layout = await page.evaluate(portLayoutRead);
+    const seen = await cards().evaluateAll((els) =>
+      els.map((el) => ({ number: el.getAttribute("data-number") ?? "", read: (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(el) })),
+    );
+    const controls = await page.evaluate(controlsRead);
+    // eslint-disable-next-line no-console
+    console.log(`the Port's chooser ${at}: ${portFigures(layout)} (recorded)`);
+    expect(controls.w, `${at}: the window is not the width asked for`).toBe(vp.width);
+    // Anti-vacuity: the route's four cards, so no reading below passes over a
+    // box that was never drawn.
+    expect(layout.cards.length, `${at}: the cards in reach`).toBe(4);
+    for (const c of layout.cards) {
+      expect(c.box.width > 0 && c.box.height > 0, `${at}: card ${c.number} has no size`).toBe(true);
+      expect(outside(c.face, c.box), `${at}: card ${c.number}'s face runs out of its button`).toBeNull();
+      // 1px of slack: `clientWidth` is an integer and `scrollWidth` rounds up.
+      expect(c.scrollWidth, `${at}: card ${c.number}'s content overflows it (${c.scrollWidth} in ${c.clientWidth})`).toBeLessThanOrEqual(c.clientWidth + 1);
+    }
+    for (let i = 0; i < layout.cards.length; i++) {
+      for (let j = i + 1; j < layout.cards.length; j++) {
+        expect(overlaps(layout.cards[i]!.box, layout.cards[j]!.box), `${at}: card ${layout.cards[i]!.number} overlaps card ${layout.cards[j]!.number}`).toBe(false);
+      }
+    }
+    const frame = VIEWPORT_OF(controls.w, controls.h);
+    for (const [name, box, hit] of [["Confirm", controls.confirm, controls.confirmHit], ["Cancel", controls.cancel, controls.cancelHit]] as const) {
+      expect(box, `${at}: no ${name}`).not.toBeNull();
+      expect(outside(box!, frame), `${at}: ${name} is not inside the viewport`).toBeNull();
+      expect(hit, `${at}: a press at ${name}'s centre lands on something else`).toBe(true);
+    }
+    return { at, seen };
+  };
+
+  // **At 390x844 every card is whole with nothing scrolled**: inside the
+  // deck, the zones' visible box, the chooser and the window, and under its
+  // own centre.
+  const phone = await read(PHONE);
+  for (const { number, read: r } of phone.seen) {
+    expect(cutBy(r), `${phone.at}: card ${number} is cut at open by`).toBeNull();
+    expect(r.hit, `${phone.at}: a press at card ${number}'s centre lands on something else`).toBe(true);
+  }
+
+  // **At 1440x900 the deck is the rail's 45vh**, and the zones do not hold
+  // the route's two zones whole (measured 179 px of 219 to 259). What holds
+  // there: the cards apart and the controls in reach with nothing scrolled
+  // (above); the count of cards whole at open, printed; and every card cut at
+  // open, scrolled into view INSIDE the deck — the page itself does not
+  // scroll — is then whole and under its own centre. One that was cut is then
+  // pressed, and the arm's reply says it is on.
+  const desk = await read(DESKTOP);
+  const cut = desk.seen.filter((c) => cutBy(c.read) !== null).map((c) => c.number);
+  // eslint-disable-next-line no-console
+  console.log(`${desk.at}: ${desk.seen.length - cut.length} of ${desk.seen.length} cards whole at open; cut: ${cut.join(", ") || "none"} (recorded)`);
+  for (const number of desk.seen.map((c) => c.number)) {
+    const card = page.locator(`${PORT_CARD}[data-number="${number}"]`);
+    const into = await card.evaluate((el) => {
+      const before = window.scrollY;
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      return { before, read: (window as unknown as { clipsRead: typeof clipsRead }).clipsRead(el) };
+    });
+    const r = into.read;
+    expect(r.pageScroll, `${desk.at}: bringing card ${number} into view scrolled the page`).toBe(into.before);
+    expect(cutBy(r), `${desk.at}: card ${number}, scrolled into view, is cut by`).toBeNull();
+    expect(r.hit, `${desk.at}: a press at card ${number}'s centre, scrolled into view, lands on something else`).toBe(true);
+  }
+  // A card that was cut at open is pressable once in view: the last cut one,
+  // else (a table whose four fit) the last card, recorded as such.
+  const target = cut.at(-1) ?? desk.seen.at(-1)!.number;
+  const targetCard = page.locator(`${PORT_CARD}[data-number="${target}"]`);
+  await targetCard.evaluate((el) => el.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  const arm = await pressForArm(page, targetCard);
+  expect(arm.cards.find((c) => String(c.number) === target)?.selected, `${desk.at}: the arm does not say card ${target} is on after its press`).toBe(true);
+  await expect(targetCard).toHaveAttribute("aria-pressed", "true");
+  // eslint-disable-next-line no-console
+  console.log(`${desk.at}: pressed card ${target} (${cut.includes(target) ? "cut at open" : "no card was cut"}) (recorded)`);
+  expect(watch.failures).toEqual([]);
+});
+
+/** The log's newest line: the turn's account's last row, as `TurnAccount`
+ *  draws it (the record's line in its jump button, which names the mover
+ *  first: `Red: Port: take O15`). */
+const lastLogLine = (page: Page) => page.locator(".turn-account ol.account > li").last().locator(".log-jump");
+
+/** A log line that is `words`, after the mover's colour. */
+const logLineOf = (words: string) => new RegExp(`^[A-Z][a-z]+: ${escaped(words)}$`);
+
+/** The verdict's words after its `legal — ` tag: a single take's one way, or
+ *  the asked line and both ways of a pair. */
+async function portVerdictWords(page: Page): Promise<string> {
+  const text = (await page.locator(`${PORT} .verdict`).textContent()) ?? "";
+  expect(text, `the Port's verdict is not legal: "${text}"`).toMatch(new RegExp(`^${LEGAL}`));
+  return text.slice(LEGAL.length);
+}
+
+/** The card id a card button shows (`OrderCardView`'s `data-card`), which is
+ *  what the hand panel's faces carry too. */
+const cardId = (card: Locator) => card.locator(".card-face").getAttribute("data-card");
+
+/** Press `card` and return the arm the server answered with: the `port`
+ *  prompt's flags, read off the reply to the press itself. */
+async function pressForArm(page: Page, card: Locator): Promise<Extract<ClientState["prompt"], { kind: "port" }>> {
+  const reply = page.waitForResponse(
+    (r) => /\/api\/games\/[^/]+\/input$/.test(new URL(r.url()).pathname) && r.request().method() === "POST",
+  );
+  await card.click();
+  const state = (await (await reply).json()) as ClientState;
+  await readScreen(page);
+  expect(state.prompt.kind, "the press did not answer with the Port's arm").toBe("port");
+  return state.prompt as Extract<ClientState["prompt"], { kind: "port" }>;
+}
+
+test("a Port take through the screen: a card pressed to a legal verdict, Confirm, the log's last line is the take's and the hand holds the card", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
+  const before = await ownHand(page);
+  // Anti-vacuity: the chooser opens with nothing selected and its region silent.
+  await expect(page.locator(`${PORT} button.card-pick[aria-pressed="true"]`)).toHaveCount(0);
+  expect((await page.locator(`${PORT} .verdict`).textContent()) ?? "", "the chooser opened with a verdict").toBe("");
+  const number = await page.locator(`${PORT_CARD}:not([disabled])`).first().getAttribute("data-number");
+  expect(number, "no card can be switched on").not.toBeNull();
+  const card = page.locator(`${PORT_CARD}[data-number="${number}"]`);
+  const id = await cardId(card);
+  expect(id, `card ${number} carries no card id`).toBe(number);
+  await card.click();
+  await readScreen(page);
+  await expect(card).toHaveAttribute("aria-pressed", "true");
+  const words = await portVerdictWords(page);
+  expect(words, "the verdict is not the single take of the pressed card").toBe(`Port: take O${number!.padStart(2, "0")}`);
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await readScreen(page);
+  await expect(page.locator(PORT), "the chooser closes on its commit").toHaveCount(0);
+  await expect(lastLogLine(page), "the log's last line is not the take").toHaveText(logLineOf(words));
+  expect((await ownHand(page)).sort(), "the hand does not hold the card taken").toEqual([...before, id!].sort());
+  expect(watch.failures).toEqual([]);
+});
+
+test("two Port cards through the screen: a second card the arm's flags can add, Confirm, the payment answered when it is asked, and both cards in hand", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
+  const before = await ownHand(page);
+  const firstNumber = await page.locator(`${PORT_CARD}:not([disabled])`).first().getAttribute("data-number");
+  const first = page.locator(`${PORT_CARD}[data-number="${firstNumber}"]`);
+  const arm = await pressForArm(page, first);
+  // The screen draws what the arm's flags say: an unselected card is live
+  // exactly when `can_add`, a selected one always.
+  for (const c of arm.cards) {
+    const button = page.locator(`${PORT_CARD}[data-number="${c.number}"]`);
+    if (c.selected || c.can_add) await expect(button, `card ${c.number} is offered but drawn disabled`).toBeEnabled();
+    else await expect(button, `card ${c.number} cannot be added but is drawn live`).toBeDisabled();
+  }
+  const second: PortCard | undefined = arm.cards.find((c) => !c.selected && c.can_add);
+  const flags = arm.cards.map((c) => `${c.number}${c.selected ? " on" : c.can_add ? " can add" : " cannot add"}`).join(", ");
+  test.skip(second === undefined, `no second card can be added on this table (the arm's flags: ${flags})`);
+  const secondButton = page.locator(`${PORT_CARD}[data-number="${second!.number}"]`);
+  await secondButton.click();
+  await readScreen(page);
+  await expect(secondButton).toHaveAttribute("aria-pressed", "true");
+  // With two on, the cards left cannot be added (a take is one card or two):
+  // each is `disabled` by the payload and carries `data-unavailable`, so the
+  // settle wait above returned past a payload-disabled card.
+  const left = page.locator(`${PORT_CARD}[aria-pressed="false"]`);
+  expect(await left.count(), "no card is left unselected to read").toBeGreaterThan(0);
+  for (const b of await left.all()) {
+    await expect(b, "a third card is live").toBeDisabled();
+    await expect(b, "a third card is disabled without the payload's mark").toHaveAttribute("data-unavailable", "true");
+  }
+  const ids = [await cardId(first), await cardId(secondButton)];
+  const ways = await page.locator(`${PORT} .verdict .way`).allTextContents();
+  expect(ways.length, `the pair reads ${ways.length} ways to pay`).toBeGreaterThanOrEqual(1);
+  expect(ways.length, `the pair reads ${ways.length} ways to pay`).toBeLessThanOrEqual(2);
+  for (const w of ways) expect(w, "a way does not take the pair").toMatch(/^Port: take O\d\d, O\d\d/);
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await readScreen(page);
+  await expect(page.locator(PORT), "the chooser closes on Confirm").toHaveCount(0);
+  // When the pair can be paid two ways Confirm opens the numbered pick, the
+  // walks' own `pick`; its rows are the verdict's ways. Answered with the first.
+  const asked = ways.length === 2;
+  if (asked) {
+    await expect(page.locator(".decision .asking")).toHaveText(/ — choose the payment$/);
+    await expect(page.locator("button.option:not([disabled])")).toHaveCount(2);
+    await page.locator("button.option:not([disabled])").first().click();
+    await readScreen(page);
+  }
+  // eslint-disable-next-line no-console
+  console.log(`two Port cards: ${ids.join(", ")}, ${ways.length} way(s) to pay, the pick ${asked ? "answered" : "not opened"} (recorded)`);
+  // The first way: the only one, or the pick's first row, which is the list's
+  // first and so the verdict's first.
+  await expect(lastLogLine(page), "the log's last line is not the pair's take").toHaveText(logLineOf(ways[0]!));
+  expect((await ownHand(page)).sort(), "the hand does not hold both cards taken").toEqual([...before, ...(ids as string[])].sort());
+  expect(watch.failures).toEqual([]);
+});
+
+test("a Port card pressed from the keyboard keeps the focus, pressed and pressed again, and a Confirm reached by Tab applies the take", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
+  const number = await page.locator(`${PORT_CARD}:not([disabled])`).first().getAttribute("data-number");
+  const card = page.locator(`${PORT_CARD}[data-number="${number}"]`);
+  await focusFromKeyboard(page, card, "the card");
+  for (const want of ["true", "false", "true"]) {
+    await page.keyboard.press("Space");
+    await readScreen(page);
+    expect(await card.getAttribute("aria-pressed"), `Space did not toggle the focused card to ${want}`).toBe(want);
+    expect(await holdsFocus(card), `the card pressed to ${want} lost the focus to ${await focusHolder(page)}`).toBe(true);
+  }
+  const words = await portVerdictWords(page);
+  const confirm = page.getByRole("button", { name: "Confirm" });
+  let tabs = 0;
+  while (!(await holdsFocus(confirm)) && tabs < 20) {
+    await page.keyboard.press("Tab");
+    tabs += 1;
+  }
+  expect(await holdsFocus(confirm), `${tabs} Tabs from the card reached ${await focusHolder(page)}, not Confirm`).toBe(true);
+  await page.keyboard.press("Enter");
+  await readScreen(page);
+  await expect(page.locator(PORT), "the chooser closes on a Confirm from the keyboard").toHaveCount(0);
+  await expect(lastLogLine(page), "the log's last line is not the take").toHaveText(logLineOf(words));
+  expect(watch.failures).toEqual([]);
+});
+
+test("the walks' policy at the Port adds only a card that is not pressed, and over a walked game never presses a pressed one", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  // **Every press on a Port card, with the card's state WHEN it was pressed.**
+  // A capture listener on the document runs before React's handler, so
+  // `aria-pressed` is read before the press is sent: "true" is a pressed card
+  // pressed again, which would switch it OFF.
+  await page.addInitScript(() => {
+    const w = window as unknown as { portPresses: string[] };
+    w.portPresses = [];
+    document.addEventListener(
+      "click",
+      (e) => {
+        const card = (e.target as Element | null)?.closest?.("button.card-pick");
+        if (card) w.portPresses.push(card.getAttribute("aria-pressed") ?? "unset");
+      },
+      true,
+    );
+  });
+  const game = await startGame(page, { players: 2 });
+  await openChooser(page, "Port");
+  const pressed = page.locator(`${PORT_CARD}[aria-pressed="true"]`);
+  const canAdd = page.locator(`${PORT_CARD}:not([disabled])[aria-pressed="false"]`);
+  const live = page.locator(`${PORT_CARD}:not([disabled])`);
+
+  // Opened: nothing on, so Confirm is disabled by the payload, `readScreen`
+  // still returns, and the adds are exactly the cards that can be switched on.
+  const opened = await readScreen(page);
+  expect(opened.chooser, "readScreen does not see the Port's chooser").toBe(true);
+  expect(opened.confirm, "Confirm is pressable with nothing selected").toBe(false);
+  expect(opened.adds, "the chooser offers no card to add").toBeGreaterThan(0);
+  expect(opened.adds, "adds is not the count of cards that can be switched on").toBe(await canAdd.count());
+  expect(hasMove(opened), "hasMove reads the opened Port chooser as no move").toBe(true);
+  expect(await act(page, opened, () => 0.9), "the policy's answer at the opened chooser").toBe("chooser");
+  const one = await readScreen(page);
+  await expect(pressed, "the policy's first press switched on no card").toHaveCount(1);
+  // One card on: Confirm is live (a single take is listed whenever a pair is),
+  // and the pressed card, still live so it can be switched off, is NOT an add.
+  expect(one.confirm, "one card on is not a legal take").toBe(true);
+  expect(await live.count(), "the pressed card is not live").toBe((await canAdd.count()) + 1);
+  expect(one.adds, "adds counts the pressed card").toBe(await canAdd.count());
+  // A coin that does not confirm (0.9 is not below 0.5) adds a second card;
+  // a policy that pressed the pressed one would read one card on, or none.
+  expect(await act(page, one, () => 0.9), "the policy's second answer").toBe("chooser");
+  const two = await readScreen(page);
+  await expect(pressed, "the policy's second press did not add a card").toHaveCount(2);
+  expect(two.adds, "a third card is offered as an add").toBe(0);
+  let opportunities = 1;
+
+  // Then the rest of the game under the walks' own policy: every Port chooser
+  // it meets with a card on is another chance to press that card.
+  const pick = rng(0x504f_5254); // "PORT"
+  let moves = 2;
+  let visits = 0;
+  let screen = two;
+  while (!screen.over && moves < CAP) {
+    if (screen.chooser && (await pressed.count()) > 0) opportunities += 1;
+    if (screen.chooser && (await page.locator(PORT).count()) > 0) visits += 1;
+    const via = await act(page, screen, pick);
+    if (via === null) throw await deadEnd(page, game, moves);
+    moves += 1;
+    screen = await readScreen(page);
+  }
+  if (!screen.over) throw await capReached(page, game, moves);
+  const presses = await page.evaluate(() => (window as unknown as { portPresses: string[] }).portPresses);
+  // eslint-disable-next-line no-console
+  console.log(
+    `game ${game.id} finished in ${moves} moves; ${visits} answers at a Port chooser, ${opportunities} with a card on; ` +
+      `${presses.length} card presses (recorded)`,
+  );
+  expect(presses.length, "the walk pressed no Port card").toBeGreaterThanOrEqual(2);
+  expect(presses.filter((p) => p !== "false"), "the policy pressed a card that was already on").toEqual([]);
+  expect(watch.failures).toEqual([]);
+});
