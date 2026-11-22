@@ -963,6 +963,33 @@ mod tests {
         assert_eq!(lines_of(r.picker.as_deref().expect("the grown list")), [entry_line.as_str(), "2", "6", "4", "5"], "the restored list grows from its last line");
     }
 
+    /// **`cancel` closes a chooser and clears its list** (plan 2a's fix wave,
+    /// B8; spec §2.4's "a closed one clears the list"). A Church chooser opened
+    /// and a kind switched on hold a list of two lines; `cancel` is a 200 that
+    /// changes no record and leaves the picker closed, so the reply answers
+    /// `"[]"` for the shell to delete the row, and the prompt is the main list
+    /// again.
+    #[test]
+    fn cancel_closes_a_chooser_and_clears_its_list() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        two_player_table("cancel");
+        let entry = to_chooser("cancel", "Church", "church");
+        let entry_line = lines(&entry).remove(0);
+        assert_kind(&body(&entry), 2, "Silk");
+        let r = input(RED, "cancel", "2", Some("church"));
+        assert_eq!(church_selected(&body(&r)), [2], "premise: silk switched on");
+        assert_eq!(lines(&r), [entry_line.as_str(), "2"], "premise: the list holds the entry and the toggle");
+        let stored = record("cancel");
+
+        let r = input(RED, "cancel", "cancel", Some("church"));
+        let s = body(&r);
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_eq!(record("cancel"), stored, "`cancel` applied nothing");
+        assert_eq!(s["prompt"]["kind"], json!("options"), "the chooser closed on the main list: {}", r.body);
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the closed chooser's list is cleared, for the shell to delete");
+    }
+
     /// **A list is only ever re-fed at the exact record it was built at** (the
     /// plan's guard, spec §2.4). A row built before a move, restored after it, is
     /// cleared WITHOUT re-feeding a line — and its first line, `1`, APPLIES a

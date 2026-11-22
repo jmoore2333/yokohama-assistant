@@ -854,8 +854,10 @@ impl Repl {
         if self.overlay.is_some() {
             return self.step_overlay(&words);
         }
-        // `?` opens the card index from ANY prompt -- the main list, a
-        // Movement sub-prompt, or mid-reveal-capture. Intercepted HERE, ahead
+        // `?` opens the card index from ANY prompt -- the main list, any
+        // sub-prompt (a route pick, a guided retreat, a placement picker, an
+        // area-action chooser, a numbered pick), or mid-reveal-capture.
+        // Intercepted HERE, ahead
         // of both capture branches below, because that is the whole point of
         // §0.6: the index is needed most at the moment a capture is asking
         // which card is in a slot, and both of those loops would otherwise
@@ -892,10 +894,12 @@ impl Repl {
                 return self.open_index(kind);
             }
         }
-        // A Movement sub-prompt (route pick / guided retreat) captures input the
-        // same way the reveal collector does -- checked AFTER the lockdown gate
-        // above, so lockdown wins (entering or continuing a sub-prompt while
-        // locked is refused exactly like a move). Structurally exclusive with the
+        // A sub-prompt (any of `SubPrompt`'s: a route pick, a guided retreat, a
+        // placement picker, an area-action chooser, a numbered pick, the guided
+        // reveal) captures input the same way the reveal collector does --
+        // checked AFTER the lockdown gate above, so lockdown wins (entering or
+        // continuing a sub-prompt while locked is refused exactly like a
+        // move). Structurally exclusive with the
         // `pending` reveal branch below: a sub-prompt only ever starts from a
         // clean main prompt (see `SubPrompt`'s doc comment).
         if !matches!(self.sub, SubPrompt::None) {
@@ -1280,13 +1284,10 @@ impl Repl {
     /// exchanges in one listed set, counted off the list.
     fn group_area_action(legal: Vec<Move>) -> Vec<PromptOption> {
         let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
-        let sets: Vec<usize> = legal
-            .iter()
-            .filter_map(crate::chooser::chinatown_counts)
-            .map(|c| c.iter().map(|&n| usize::from(n)).sum())
-            .collect();
-        let chinatown = sets.len();
-        let longest = sets.into_iter().max().unwrap_or(0);
+        let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
+        // The chooser's own heading reads the same function (plan 2a's fix
+        // wave, L6): the entry's "up to K" and the heading's cannot disagree.
+        let longest = crate::chooser::longest_exchange_set(&legal);
         let mut out = Vec::new();
         let (mut church_entered, mut chinatown_entered) = (false, false);
         for mv in legal {
@@ -10030,6 +10031,24 @@ mod tests {
         assert_eq!(rows[1].mv, Some(SKIP));
         assert_eq!(rows[1].words, describe::describe_move(&SKIP, r.session.state(), r.session.rules()));
 
+        // At power 1 the entry says one exchange, in the plan's words.
+        let r = repl_at(ordinary_position_power_1());
+        assert_eq!(r.option_rows()[0].words, "Chinatown — choose exchanges (up to 1; 7 combinations)");
+
+        // **K counts an exchange made twice twice** (the fix wave's B1): at
+        // power 5 holding only 1 yen, every five-exchange set repeats one — a
+        // 1-yen purchase and its sale back, again — so the most DIFFERENT
+        // exchanges in one set is 4 where the most exchanges is 5.
+        let mut rich = rich_position();
+        let me = rich.current_player.0 as usize;
+        let p = &mut rich.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0, 1, 0);
+        let r = repl_at(rich);
+        let sets: Vec<[u8; 9]> = r.session.legal().iter().filter_map(counts_by_hand).collect();
+        assert_eq!(sets.iter().map(|c| c.iter().map(|&n| usize::from(n)).sum::<usize>()).max(), Some(5), "premise: five exchanges");
+        assert_eq!(sets.iter().map(|c| c.iter().filter(|&&n| n > 0).count()).max(), Some(4), "premise: four different at most");
+        assert_eq!(r.option_rows()[0].words, "Chinatown — choose exchanges (up to 5; 17 combinations)");
+
         // One listed exchange set stays a direct row: power 1, and a copper
         // to sell is all the seat can do.
         let mut state = ordinary_position_power_1();
@@ -10077,6 +10096,17 @@ mod tests {
             "{}",
             back.text,
         );
+
+        // The last number of the range takes one back too: the imported good
+        // the copper sale paid for, leaving the sale alone.
+        let mut r = repl_at(ordinary_position());
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("1");
+        r.step("9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 1], "premise: the sale made the purchase addable");
+        let back = r.step("back 9");
+        assert_eq!(chinatown_selection(&r), [1, 0, 0, 0, 0, 0, 0, 0, 0], "back 9 takes the purchase back");
+        assert_eq!(back.text, chinatown_screen(&r));
     }
 
     #[test]
@@ -10167,6 +10197,30 @@ mod tests {
             "the reply reads as a main-list row's did, the main prompt last:\n{}",
             out.text,
         );
+    }
+
+    /// The cell above's set is listed in row order already (rows 1, 6, 6), so
+    /// a `confirm` that BUILT the move from the counts in row order would pass
+    /// it. This one is not: the engine lists the silk purchase before the sale
+    /// it makes possible, which row order puts the other way round.
+    #[test]
+    fn confirm_commits_a_set_the_engine_lists_out_of_row_order() {
+        use ChinatownExchange as X;
+        let listed = chinatown_move(&[X::YenToSilk, X::SilkToYen]);
+        let row_order = chinatown_move(&[X::SilkToYen, X::YenToSilk]);
+        let mut r = repl_at(ordinary_position());
+        let legal = r.session.legal();
+        assert!(legal.contains(&listed), "premise: the engine lists the purchase first");
+        assert!(!legal.contains(&row_order), "premise: the set in row order is not a listed move");
+
+        let events = r.session.record().events.len();
+        r.step(&chinatown_entry(&r).to_string());
+        r.step("6");
+        r.step("2");
+        assert_eq!(chinatown_selection(&r), [0, 1, 0, 0, 0, 1, 0, 0, 0]);
+        r.step("confirm");
+        assert_eq!(r.session.record().events.len(), events + 1, "the set was committed");
+        assert_eq!(last_move(&r), listed, "the listed move, in the engine's own order");
     }
 
     #[test]
@@ -10276,6 +10330,15 @@ mod tests {
     fn sweep_spread(state: &GameState, rules: &Rules, at: &str, tally: &mut [usize; 3]) {
         let legal = get_legal_moves(state, rules);
         let family: Vec<&Move> = legal.iter().filter(|m| exchanges_by_hand(m).is_some()).collect();
+        // The entry's words carry the chooser's own heading figure, the
+        // model's `max_exchanges` (the fix wave's B1).
+        let model = chinatown_model(state, rules, &legal, [0; 9]);
+        let entry = repl_at(state.clone()).option_rows()[0].words.clone();
+        assert_eq!(
+            entry,
+            format!("Chinatown — choose exchanges (up to {}; {} combinations)", model.max_exchanges, family.len()),
+            "{at}: the entry",
+        );
         tally[0] += 1;
         for i in spread(family.len()) {
             let mv = family[i];
@@ -10357,6 +10420,14 @@ mod tests {
         sweep_spread(&rich, &rules, "the rich position", &mut tally);
         let [_, all_moves, five_at_power_5] = tally;
         let rich_moves = all_moves - self_play_moves;
+        // The same with 1 yen and no goods: every five-exchange set repeats an
+        // exchange, so the entry's K and the most different exchanges differ
+        // there (cell 1's reading), and no self-play position measured does.
+        let mut lean = rich_position();
+        let me = lean.current_player.0 as usize;
+        let p = &mut lean.players[me];
+        (p.copper, p.silk, p.tea, p.seafood, p.money, p.imported_goods) = (0, 0, 0, 0, 1, 0);
+        sweep_spread(&lean, &rules, "the rich position with 1 yen", &mut tally);
         println!(
             "every_listed_chinatown_move_commits_through_the_chooser: self-play {self_play_positions} positions, \
              {self_play_moves} moves, {self_play_fives} of five exchanges at power 5; the ordinary position's 102; \

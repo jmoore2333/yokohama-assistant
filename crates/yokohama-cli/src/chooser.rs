@@ -246,6 +246,19 @@ pub fn chinatown_counts(mv: &Move) -> Option<[u8; 9]> {
     }
 }
 
+/// The most exchanges one listed Chinatown move holds, an exchange made twice
+/// counted twice; 0 when none is listed. The ONE answer to "up to K": the main
+/// list's entry (`repl.rs`, `group_area_action`) and the chooser's heading
+/// (`chinatown_model`'s `max_exchanges`) both read it, so they cannot disagree.
+pub fn longest_exchange_set(legal: &[Move]) -> usize {
+    legal
+        .iter()
+        .filter_map(chinatown_counts)
+        .map(|c| c.iter().map(|&n| usize::from(n)).sum())
+        .max()
+        .unwrap_or(0)
+}
+
 /// The listed move holding exactly `counts`, in whatever order the engine
 /// listed it. The legal list decides: counts the list does not hold match
 /// nothing.
@@ -253,9 +266,10 @@ pub fn chinatown_match(legal: &[Move], counts: [u8; 9]) -> Option<Move> {
     legal.iter().find(|mv| chinatown_counts(mv) == Some(counts)).cloned()
 }
 
-/// `legal` is walked ONCE into a map from count arrays to the first listed move
-/// holding them; `can_add`, `offered`, `max_exchanges` and the preview are each
-/// answered from that map, never from the stock, the rate or the power. The
+/// `legal` is walked into a map from count arrays to the first listed move
+/// holding them; `can_add`, `offered` and the preview are each answered from
+/// that map, and `max_exchanges` from `longest_exchange_set` over the same
+/// list, never from the stock, the rate or the power. The
 /// map and `chinatown_match` agree because the list holds no two moves with the
 /// same counts (cell 2's first loop requires it).
 pub fn chinatown_model(
@@ -296,7 +310,7 @@ pub fn chinatown_model(
         words: matched.map(|mv| describe_move(mv, state, rules)),
     };
     ChinatownModel {
-        max_exchanges: sets.keys().map(total).max().unwrap_or(0),
+        max_exchanges: longest_exchange_set(legal),
         chosen: total(&counts),
         stock: CHURCH_KINDS
             .iter()
@@ -674,6 +688,52 @@ Selected: silk
         let screen = church_text(&church_model(&broke, &rules, &legal_of(&broke), [false; 6]));
         assert!(screen.contains("\n  [5] 2 yen            have 1    (not offered)\n"), "{screen}");
     }
+    /// **The guide pair's two quoted screens are these fixtures' screens**
+    /// (the fix wave's B5), byte for byte, as `repl.rs`'s guided-retreat
+    /// captures are tied to theirs: `docs/cli-guide.md`'s fenced blocks, and
+    /// `docs/cli-guide.html`'s `<pre><code>` blocks with their three entities
+    /// undone (`guide_sync`'s `unescape_html`). Each guide must hold a block
+    /// EQUAL to the screen, not merely containing it. Regenerate by pasting
+    /// both screens into BOTH formats from one run of these fixtures.
+    #[test]
+    fn the_guide_quotes_the_screens_these_fixtures_render() {
+        const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
+        const GUIDE_HTML: &str = include_str!("../../../docs/cli-guide.html");
+        let rules = Rules::standard();
+        let church = issue_position();
+        let church_screen = church_text(&church_model(
+            &church,
+            &rules,
+            &legal_of(&church),
+            flags(&[Good::Silk, Good::Tea, Good::Yen]),
+        ));
+        let town = ordinary_position();
+        let mut counts = [0u8; 9];
+        (counts[0], counts[5]) = (1, 2);
+        let town_screen = chinatown_text(&chinatown_model(&town, &rules, &legal_of(&town), counts));
+
+        let md_blocks: Vec<&str> = GUIDE_MD.split("```").skip(1).step_by(2).map(|b| b.trim_matches('\n')).collect();
+        let html_blocks: Vec<String> = GUIDE_HTML
+            .split("<pre><code>")
+            .skip(1)
+            .map(|b| {
+                let code = b.split("</code></pre>").next().expect("a closed block");
+                code.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            })
+            .collect();
+        for (what, screen) in [("the Church's", &church_screen), ("Chinatown's", &town_screen)] {
+            let screen = screen.trim_end_matches('\n');
+            assert!(
+                md_blocks.contains(&screen),
+                "docs/cli-guide.md quotes no block equal to {what} screen as the fixture renders it:\n{screen}"
+            );
+            assert!(
+                html_blocks.iter().any(|b| b.trim_matches('\n') == screen),
+                "docs/cli-guide.html quotes no block equal to {what} screen as the fixture renders it:\n{screen}"
+            );
+        }
+    }
+
     fn chinatown_moves(legal: &[Move]) -> Vec<&Move> {
         legal.iter().filter(|m| chinatown_counts(m).is_some()).collect()
     }

@@ -497,8 +497,31 @@ fn rows_from(
 }
 
 /// The current prompt's tag, without building the whole prompt.
+///
+/// Read off what [`prompt_of`]'s kind depends on and nothing else — the
+/// record's lockdown, whether the game is over, and `repl.sub` — so the
+/// `expect` check a request makes builds no list rows, no fee and no
+/// chooser's model. The match has no `_` arm: a new `SubPrompt` variant does
+/// not compile here until it is given its tag. Held equal to
+/// `prompt_of(repl).kind()` at every prompt kind by
+/// `prompt_kind_is_the_built_prompt_s_kind_at_every_kind`.
 pub fn prompt_kind(repl: &Repl) -> &'static str {
-    prompt_of(repl).kind()
+    if repl.session.record().lockdown.is_some() {
+        return "locked";
+    }
+    if repl.session.is_over() {
+        return "game_over";
+    }
+    match &repl.sub {
+        SubPrompt::None => "options",
+        SubPrompt::Pick { .. } => "pick",
+        SubPrompt::Retreat { .. } => "retreat",
+        SubPrompt::PlaceA { .. } => "place_a",
+        SubPrompt::PlaceB { .. } => "place_b",
+        SubPrompt::Reveal { .. } => "reveal",
+        SubPrompt::Church { .. } => "church",
+        SubPrompt::Chinatown { .. } => "chinatown",
+    }
 }
 
 fn prompt_of_seat(repl: &Repl, seat: PlayerId) -> PromptState {
@@ -1774,5 +1797,97 @@ mod tests {
             json["rows"].as_array().expect("rows").iter().map(|r| r["count"].as_u64().expect("a count")).collect();
         assert_eq!(counts, [0, 0, 0, 0, 0, 1, 0, 0, 0]);
         assert_eq!(json["chosen"], 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // `prompt_kind` without the model (plan 2a's fix wave, B7)
+    // ---------------------------------------------------------------------
+
+    /// **`prompt_kind` is the built prompt's kind, at every kind** — read off
+    /// `repl.sub` it builds nothing, and it must still say what `prompt_of`
+    /// would. A 2P game of people walked from its first prompt, every prompt
+    /// answered by the arm's own flags as `lib.rs`'s `play` answers them and a
+    /// numbered list by a seeded draw, with the equality read at every step;
+    /// then Chinatown's chooser on a four-player table, a locked session, and
+    /// the walk's own end. `watching` is not one of its answers, by design:
+    /// like `prompt_of`, `prompt_kind` is the ACTOR's prompt, which is what the
+    /// `expect` check compares against (`prompt_of_seat` scopes it apart), so
+    /// at every step the other seat's payload is read as `watching` beside it.
+    #[test]
+    fn prompt_kind_is_the_built_prompt_s_kind_at_every_kind() {
+        use std::collections::BTreeMap;
+        let mut seen: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut check = |repl: &Repl, at: &str| {
+            let built = prompt_of(repl).kind();
+            assert_eq!(prompt_kind(repl), built, "{at}");
+            *seen.entry(built).or_default() += 1;
+        };
+
+        let mut repl = two_human_repl();
+        let areas: Vec<AreaId> = repl.session.state().board_layout.areas.keys().copied().collect();
+        let mut k: u64 = 0x4b49_4e44; // "KIND"
+        let mut cursor = 0usize;
+        let mut watched = 0usize;
+        for step in 0..6000 {
+            check(&repl, &format!("step {step}"));
+            if repl.session.is_over() {
+                break;
+            }
+            let acting = repl.session.state().current_player;
+            let other = PlayerId::new(1 - acting.0);
+            if matches!(prompt_of_seat(&repl, other), PromptState::Watching { .. }) {
+                watched += 1;
+            }
+            k ^= k << 13;
+            k ^= k >> 7;
+            k ^= k << 17;
+            let prompt = serde_json::to_value(prompt_of(&repl)).expect("a prompt");
+            let line = match prompt["kind"].as_str().expect("a kind") {
+                "retreat" if prompt["remaining"] == 0 => "confirm".to_string(),
+                "retreat" => "0".to_string(),
+                "place_b" if prompt["selected"].is_null() => {
+                    prompt["areas"][0].as_u64().map_or_else(|| "cancel".to_string(), |a| a.to_string())
+                }
+                "place_b" => "confirm".to_string(),
+                "place_a" if prompt["selected"].as_array().is_some_and(|a| !a.is_empty()) => "confirm".to_string(),
+                "place_a" => {
+                    cursor += 1;
+                    areas[cursor % areas.len()].0.to_string()
+                }
+                "church" if prompt["preview"]["legal"] == true => "confirm".to_string(),
+                "church" => prompt["kinds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|kind| kind["offered"] == true && kind["selected"] == false)
+                    .and_then(|kind| kind["number"].as_u64())
+                    .map_or_else(|| "cancel".to_string(), |n| n.to_string()),
+                "options" | "pick" => {
+                    let rows = prompt["rows"].as_array().expect("rows");
+                    if rows.is_empty() {
+                        break;
+                    }
+                    rows[(k % rows.len() as u64) as usize]["number"].as_u64().expect("a number").to_string()
+                }
+                other => panic!("step {step}: a 2P walk of people met a `{other}` prompt"),
+            };
+            repl.step(&line);
+        }
+        assert!(repl.session.is_over(), "the walk did not finish its game: {:?}", seen);
+        assert!(watched > 0, "no step read the other seat as watching");
+
+        let mut town = chinatown_chooser_open();
+        check(&town, "Chinatown's chooser, opened");
+        town.step("1");
+        check(&town, "Chinatown's chooser, one exchange chosen");
+
+        let mut locked = two_human_repl();
+        locked.session.lock_down("a test's lockdown".to_string());
+        check(&locked, "a locked session");
+
+        println!("prompt_kind_is_the_built_prompt_s_kind_at_every_kind: {seen:?}; the other seat watching at {watched} steps");
+        for kind in ["options", "pick", "retreat", "place_a", "place_b", "church", "chinatown", "locked", "game_over"] {
+            assert!(seen.contains_key(kind), "the walk never met a `{kind}` prompt: {seen:?}");
+        }
     }
 }

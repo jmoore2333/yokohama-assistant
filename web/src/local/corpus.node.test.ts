@@ -339,6 +339,72 @@ describe.skipIf(!have)("the browser host serves the corpus", () => {
     }
   });
 
+  // **A chooser's other lines, through the module** (plan 2a's fix wave, B8).
+  // The walk opens, toggles, previews and confirms each chooser; a refused
+  // add, a take-back, a number out of range and `cancel` it never sends. So
+  // the walk is replayed through the module up to the row that opens
+  // Chinatown's chooser on `wire4`, and those four lines are dispatched there
+  // as the client sends them, each reply read: the refusal's line alone in
+  // `messages` and the selection unchanged, the take-back taken, the chooser
+  // closed on the main list after `cancel`.
+  it("answers a chooser's refused add, take-back, out-of-range number and cancel through the module", () => {
+    const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
+    wasm.init_diagnostic();
+    wasm.set_clock(FROZEN_CREATED_AT);
+    const rows = JSON.parse(fs.readFileSync(scriptFile, "utf8")) as Row[];
+    const opens = rows.findIndex((r) => r.fixture === "chinatown");
+    expect(opens, "the walk opens Chinatown's chooser").toBeGreaterThan(-1);
+    const encoder = new TextEncoder();
+    const dispatch = (who: string | null, method: string, at: string, query: string, body: unknown) => {
+      const hasBody = body !== null;
+      const reply = wasm.dispatch(
+        who ?? undefined,
+        method,
+        at,
+        query,
+        hasBody ? "application/json" : undefined,
+        hasBody ? encoder.encode(JSON.stringify(body)) : new Uint8Array(),
+      );
+      const out = { status: reply.status, text: reply.body };
+      reply.free();
+      return out;
+    };
+    for (const row of rows.slice(0, opens + 1)) {
+      expect(dispatch(row.who, row.method, row.path, row.query, row.body).status, `${row.method} ${row.path}`).toBe(row.status);
+    }
+    const { who, path: input } = rows[opens]!;
+    type Reply = { messages: string[]; prompt: { kind: string; chosen?: number; rows?: { number: number; count: number }[] } };
+    const send = (line: string, expect: string): Reply => {
+      const { status, text } = dispatch(who, "POST", input, "", { line, expect });
+      if (status !== 200) throw new Error(`${line}: ${status} ${text}`);
+      return replyOf(text, `POST ${input} ${line}`) as unknown as Reply;
+    };
+    const counts = (r: Reply) => (r.prompt.rows ?? []).map((x) => x.count);
+    const none = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    // 3 yen does not buy an imported good: the add is refused, the line rides.
+    const refused = send("9", "chinatown");
+    expect(refused.prompt.kind).toBe("chinatown");
+    expect(refused.messages).toEqual([
+      '! the list holds no set with one more "4 yen -> 1 imported good" from here',
+    ]);
+    expect(counts(refused), "the refused add changed nothing").toEqual(none);
+
+    const sold = send("1", "chinatown");
+    expect(counts(sold), "premise: the copper sale chosen").toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const range = send("back 10", "chinatown");
+    expect(range.messages).toEqual(["! pick an exchange 1-9, 'back <number>', 'confirm', or 'cancel'"]);
+    expect(counts(range), "the number out of range changed nothing").toEqual([1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    const back = send("back 1", "chinatown");
+    expect(back.prompt.kind).toBe("chinatown");
+    expect(back.messages, "a take-back prints no line of its own").toEqual([]);
+    expect(counts(back), "back 1 took the sale back").toEqual(none);
+
+    const cancelled = send("cancel", "chinatown");
+    expect(cancelled.prompt.kind, "cancel closes the chooser on the main list").toBe("options");
+    expect(cancelled.messages).toEqual(["Chinatown exchanges cancelled — back to the main options."]);
+  });
+
   it("keeps no archive, so the browser sends a finished game to the server's", () => {
     const wasm = createRequire(import.meta.url)(modulePath) as WasmHost;
     wasm.init_diagnostic();
