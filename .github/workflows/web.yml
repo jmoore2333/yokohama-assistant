@@ -271,7 +271,9 @@ jobs:
       - run: npm run test:wasm
         working-directory: web
       # **The whole-game gate, back in CI since M6.5c2** (R-6.5c2.14; spec §2.6,
-      # §2.9). Both arms play a full two-player game through the API; the vs-bot
+      # §2.9). Its two two-player arms each play a full game through the API, and
+      # since issue #77's plan 2b a three-player game answers every area-action
+      # chooser beside them, with a cell for its counters: FOUR tests. The vs-bot
       # arm prints the bot's stream seed first (`gate: start bot_seed=…`), and
       # `YOKOHAMA_WEB_GATE_BOT_SEED` replays that game. It runs LAST, so every
       # other step has reported before it, and it is BOUNDED: a livelock costs
@@ -281,8 +283,11 @@ jobs:
       # kills never ends — the seed line must reach the log as it is printed.
       # `set +e` for the refusing build's reason; `tee` keeps a copy for the
       # count; and the count is asserted, because an arm `#[ignore]`d or
-      # deleted still exits 0.
-      - name: the whole-game gate (both arms), bounded
+      # deleted still exits 0. The count is the binary's, so a test added to
+      # `tests/play_a_whole_game.rs` moves it HERE in the same commit: plan 2b
+      # added two and left this at 2, and since this workflow runs on dispatch
+      # alone, the step read red only at the release's pull request.
+      - name: the whole-game gate (every arm), bounded
         timeout-minutes: 20
         run: |
           set +e
@@ -293,8 +298,8 @@ jobs:
             echo "::error::the whole-game gate failed — its output, the vs-bot arm's seed included, is above"
             exit "$status"
           fi
-          grep -q "test result: ok. 2 passed" "$RUNNER_TEMP/whole-game.log" || {
-            echo "::error::the whole-game gate did not run both of its arms"
+          grep -q "test result: ok. 4 passed" "$RUNNER_TEMP/whole-game.log" || {
+            echo "::error::the whole-game gate did not run all four of its tests"
             exit 1
           }
 
