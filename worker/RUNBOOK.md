@@ -290,6 +290,16 @@ node scripts/deploy-guard.mjs --config <file> && node scripts/secrets-guard.mjs 
   probes once and reconnects, an open picker is re-fed — or dropped, when the deploy changed the
   engine's, the CLI's or the layer's sources (`picker-dropped`, §5) — and no acknowledged move is
   lost; but it is still a reconnect for everyone at every table, so deploy between games.
+- **A release that adds a prompt kind strands an OPEN older client at that prompt**
+  (`docs/web-lane.md` §7). The tab runs the client it was opened with, which draws nothing for a
+  kind it does not know, and the update line the banner shows is how it takes the new one. Issue
+  #77's plan 2a adds `church` and `chinatown`: a `0.7.3` tab that presses the Church's or
+  Chinatown's entry opens a chooser it cannot draw and is left with no Confirm, no Cancel and no
+  Undo; at a shared table the other seats wait on that seat; and the stranded state outlives a
+  hibernation, because the picker's lines are re-fed under the new code. Whether the release
+  accepts that window or holds the fold back from a client that has not announced it can draw it
+  is decided at the wrap. A client from plan 2a on draws an unknown kind as `This screen needs a
+  newer version.` with a Cancel.
 - **The migration `v1` is FROZEN from the first deploy on** (the orchestrator's ruling I-30): a
   class added later takes a new tag. Cloudflare's own docs now prefer a declarative `exports` field
   for NEW Workers, and keep the `migrations` array this Worker uses fully supported; the two may not
@@ -915,6 +925,11 @@ expires in 2031 (spec §0.5).
   legacy folder again, beside the renamed one, until the roll forward's window runs the recipe once
   more — step 2's merge branch (and step 3's new-key-first read) is written for exactly that second
   run. *(Added 2026-10-11, security S1c.)*
+- **A rollback across plan 2a (issue #77) takes the live replay back with it.** The replay's kept
+  rows include six on `wire4` whose committed answer depends on the choosers, so a replay from this
+  tree or a later one against a Worker built before plan 2a reads two mismatches, the first at walk
+  row 2204, by design (§7). After such a rollback, run the revert's replay from the tree the
+  restored Worker was built from. *(Added 2026-11-21, plan 2a's fix wave.)*
 
 ## 7. The live tiers and the quota guard
 
@@ -951,8 +966,10 @@ playbook sets, and spends the owner's write budget (the bullet says when to run 
 
 The dev door is not exempt from the rate limits (decision D-3), and neither tier comes near them: the
 local two-browser walk's busiest page peaks at 71 unsafe requests in 10 s, under `WRITE_LIMIT`'s 120
-(`docs/web-lane.md` §16), and the live replay is not paced — since security S1b it runs 26 of the
-corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, withdrawn).
+(`docs/web-lane.md` §16), and the live replay is not paced — since security S1b it runs only the
+rows a production host can be asked, 32 of the corpus's 2,234 since plan 2a
+(`worker/scripts/replay/fixtures/production-door-kept-rows.txt`, which reads 2,202 skipped), in
+seconds (4 s at 26 rows, §21; decision D-8, withdrawn).
 
 - **The live Playwright tier** — two specs, `two_browsers` and `joins_by_link`, played at
   `https://yokohama.moore.nyc` (`web/e2e/live.ts` holds its rules):
@@ -1016,7 +1033,17 @@ corpus's 2,213 rows at the production door, in about 4 s (§21; decision D-8, wi
   tier, which plays an unseeded two-person table to a winner on the live host.
 
   **Twice, one after the other**: the second run is the repeatability evidence, its two first sends
-  answering the once-rule's 200. **Never beside the Playwright tier**: the two share the house
+  answering the once-rule's 200.
+
+  **From plan 2a (issue #77) on, the replay holds only against a Worker built from the same tree or
+  a later one.** The six rows it sends to `wire4` (walk rows 2201 to 2206: the additional phase
+  ended, `b` at the Chinatown tile, the President placed, the entry, one copper sale, `confirm`) are
+  the first kept rows whose committed answer depends on the choosers. Against a Worker built before
+  them the run reads two mismatches, the first at walk row 2204, the row that opens the chooser —
+  there an older Worker applies the first listed exchange set — and the second at 2205; that is by
+  design, not a fault in the Worker. So the replay after a deploy runs from the tree that deploy
+  was built from, and **after a revert, the revert's replay runs from the tree the restored Worker
+  was built from** (§6). **Never beside the Playwright tier**: the two share the house
   chat's `seq`. It forces its three tables before and after itself with no credential, so over WARP
   the owner's own login is the operator (§3).
 
@@ -2304,7 +2331,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 - **The revert (12:31:37–12:32:32Z):** `npm run deploy` (`wrangler.jsonc deploys the worker door…`, `YOKOHAMA_DEV_DOOR ("on")`; version `eb8c7839`, the twenty-eighth deployment — 26 and 27 were the window's); the PUT back to the three hostnames (`yokohama`, `yokohama-cli`, `yokohama-nas`), the `aud` unchanged; `wrangler secret list` names both secrets. After-check: `/api/me` over WARP names the owner; **a clean headed browser without WARP at `/` meets Access's login** (12:43Z; the door not drawn); the credential + a claimed header names its caller; a claimed header WITHOUT the credential names the owner, not the claim; the live replay ONCE HOLDS; the quota above.
 - **The three PUT bodies** (`PUT /accounts/{account}/access/apps/11cbcf68-96cd-4310-baee-f2ade812155d`; the MCP or `curl` with an API token that manages Access) carry the application's read-back fields unchanged — `name: yokohama`, `type: self_hosted`, `session_duration: 730h`, `app_launcher_visible: true`, `allowed_idps` (the one identity provider's id), `auto_redirect_to_identity: true`, `http_only_cookie_attribute: true`, `policies` as `[{id, precedence}]` for the three (`sbaitso-friendly` 1, `yokohama-players` 2, `yokohama ST bypass` 3) — and differ ONLY in `domain`, `self_hosted_domains` and `destinations` (`[{type: "public", uri}]`, one per entry): the REVERT lists the three hostnames with `domain: yokohama.moore.nyc`; STATE 1 lists `yokohama-nas.moore.nyc` and `yokohama-cli.moore.nyc` with `domain: yokohama-nas.moore.nyc`; STATE 2 adds the nine `yokohama.moore.nyc/<path>` entries to state 1's list. Read the application back after every PUT: the `aud` must not change (it did not, three times), and a changed `aud` would orphan every `ACCESS_AUD` the Workers carry.
 - **Forward note (2026-10-20, security S3's Task 7, §26):** the application's lists carry FOUR hostnames from this day — `yokohama-test.moore.nyc` beside the three — and a PUT replaces the whole list, so every body above, and every revert, keeps the test host.
-- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7. Since S2b this recipe runs on THIS Worker inside the review's known exercises, and after the security process only by an owner decision, never as an operating step — the owner's clarification (2026-10-12) of "the door of the private Worker never flips" (§3). Corrected 2026-10-17, the S2 stack review: this sentence said the recipe waited on an amendment of R-SEC6.)*
+- **The flip RECIPE (what a later operator runs, in this order):** to state 2 — `npm run deploy:gate`, then the Access application's destinations PUT with the nine paths (the aud never changes); back — `npm run deploy` (the dev door on), then the PUT with the three hostnames, then the after-check above. To state 1 — the secret deleted FIRST, then `npm run deploy:open`, then the PUT without `yokohama.moore.nyc`; back through state 2's order (the gate deploy BEFORE the secret put — the open shell would 500 beside it). Any deploy restarts every object and closes every socket: flip between games. *(Forward note, 2026-11-21, plan 2a's fix wave: the after-check's live replay runs from the tree the deployed Worker was built from; from plan 2a on, a replay from a later tree against an older Worker reads two mismatches by design, §7.)* *(Forward note, 2026-10-12: `deploy:gate` was retired in security S2b; this recipe reads `npm run deploy` for it, around `npm run deploy:dev` — production's own file ships the dev door off since S2b, so state 2's deploy and the revert's are both the plain `npm run deploy`, and the after-check's dev-door readings and live replay run between an `npm run deploy:dev` and a closing `npm run deploy`, §7. Since S2b this recipe runs on THIS Worker inside the review's known exercises, and after the security process only by an owner decision, never as an operating step — the owner's clarification (2026-10-12) of "the door of the private Worker never flips" (§3). Corrected 2026-10-17, the S2 stack review: this sentence said the recipe waited on an amendment of R-SEC6.)*
 
 ### What this deployment does NOT claim
 - The live half of RF1 (the update path) on each host was read ONCE, in a headless persistent context on the workstation — not on the owner's Edge, whose pinned state is the one that failed on 2026-09-29; the owner's own browser is the last reading.
@@ -2367,7 +2394,7 @@ Every step is the orchestrator's, through the Cloudflare API (the MCP) and `wran
 4. **The edge rule created at position 1,** `--verify` rc 0.
 5. **Access off,** the `aud` read back; then the smoke's live mode must PASS — **run over WARP, or from any client Bot Fight Mode trusts:** off WARP the sitemap control reads Bot Fight Mode's 403, which the smoke cannot tell from the rule's (W-1, D-2).
 6. **The readings, each in its own named minute** for the query API: the curl shapes off WARP; the probe's two modes; the control; the browsers; the pinned reading; then the probe's two modes again OVER WARP, which isolates the rule's refusals from Bot Fight Mode's. **A pinned browser whose `cf_clearance` the instrument clears will meet W-3: its install of the new release fails on Bot Fight Mode's challenge of the precache's `/art/manifest.json` while Bot Fight Mode is on and the browser is off WARP** (the window read it four times). Read the pin over WARP, or with Bot Fight Mode off, or accept the failure line as the reading.
-7. **The revert:** Access back FIRST, the rule DISABLED by its id, the keyless build, `npm run deploy`, the secret put back through stdin, the after-checks over WARP, ONE live replay, a stranger's check off WARP, the quota after, the scratch key file removed.
+7. **The revert:** Access back FIRST, the rule DISABLED by its id, the keyless build, `npm run deploy`, the secret put back through stdin, the after-checks over WARP, ONE live replay, a stranger's check off WARP, the quota after, the scratch key file removed. *(Forward note, 2026-11-21, plan 2a's fix wave: the revert's ONE live replay runs from the tree the restored Worker was built from; from plan 2a on, a replay from a later tree against an older Worker reads two mismatches, the first at walk row 2204, by design, §7.)*
 
 ### What this deployment does NOT claim
 - A PINNED browser's observation of the no-click update on this host: the pin failed, and W-2 explains why. The update was observed once, at the revert, in one cleared and inspectable browser, in 7 seconds.
