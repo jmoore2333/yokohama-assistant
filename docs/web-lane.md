@@ -363,9 +363,10 @@ left with no Confirm, no Cancel and no Undo (measured by rendering the `0.7.3` c
 At a shared table the other seats wait on that seat. On the Worker the stranded state outlives a hibernation, since
 an open picker's lines are re-fed (`worker/RUNBOOK.md` §2); on the NAS it lasts until the container restarts (both by
 the mechanism as read, not by a run against a deployed host). The way
-out is the update line the banner shows. **Whether a release accepts that window, or holds the fold back from a
-client that has not announced it can draw it, is decided at the wrap** (Track 6's cycle 3); a hold is a wire
-change. A client from plan 2a on is not stranded by a later kind: it draws any kind it does not know as
+out is the update line the banner shows. **The release that carries plan 2a ACCEPTS that window** (the owner, 2026-11-22): a refresh is required of a tab
+opened before the deploy, few are expected to be open across it, and the fold is not held back from a client that
+has not announced it can draw it (a hold would be a wire change). A mechanic by which a later release can make open
+tabs refresh is issue #78. A client from plan 2a on is not stranded by a later kind: it draws any kind it does not know as
 `This screen needs a newer version.`, with a Cancel that sends `cancel`, which every sub-prompt answers
 (`Decision.tsx`'s fallback, ruling R46).
 

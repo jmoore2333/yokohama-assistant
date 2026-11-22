@@ -296,9 +296,10 @@ node scripts/deploy-guard.mjs --config <file> && node scripts/secrets-guard.mjs 
   #77's plan 2a adds `church` and `chinatown`: a `0.7.3` tab that presses the Church's or
   Chinatown's entry opens a chooser it cannot draw and is left with no Confirm, no Cancel and no
   Undo; at a shared table the other seats wait on that seat; and the stranded state outlives a
-  hibernation, because the picker's lines are re-fed under the new code. Whether the release
-  accepts that window or holds the fold back from a client that has not announced it can draw it
-  is decided at the wrap. A client from plan 2a on draws an unknown kind as `This screen needs a
+  hibernation, because the picker's lines are re-fed under the new code. The release that
+  carries plan 2a ACCEPTS that window (the owner, 2026-11-22): a refresh is required of a tab
+  opened before the deploy, and the fold is not held back; a mechanic by which a later release
+  can make open tabs refresh is issue #78. A client from plan 2a on draws an unknown kind as `This screen needs a
   newer version.` with a Cancel.
 - **The migration `v1` is FROZEN from the first deploy on** (the orchestrator's ruling I-30): a
   class added later takes a new tag. Cloudflare's own docs now prefer a declarative `exports` field
