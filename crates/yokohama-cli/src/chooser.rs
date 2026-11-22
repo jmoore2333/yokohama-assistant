@@ -1,11 +1,14 @@
-//! The area-action choosers' models (cycle 2, plan 2a): the Church's and
-//! Chinatown's, as a pure module over the legal list. Nothing in this file
+//! The area-action choosers' models (cycle 2, plan 2a; the Port's from plan
+//! 2b): the Church's, Chinatown's and the Port's, as a pure module over the
+//! legal list. Nothing in this file
 //! decides legality: whether a kind or an exchange is offered, whether a
 //! selection can be confirmed or added to, and which faiths the list holds are
 //! each answered by finding listed moves among the ones handed in
 //! (`docs/plans/2026-11-21-web-area-action-choosers-design.md` §3).
 //! `calculate_power`, `calculate_church_faith` and `chinatown_rate` are read for
-//! what is DISPLAYED only, as `describe`'s Church and Chinatown arms read them.
+//! what is DISPLAYED only, as `describe`'s Church and Chinatown arms read them;
+//! the Port's display-only reads are `PortBoard::zone_of` and the acting
+//! board's slots (a card's zone and its place in the list), never its reach.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -753,13 +756,19 @@ pub(crate) mod test_support {
     pub(crate) fn port_b_position() -> GameState {
         port_fixture(3, 7, true, 4, 1, 5, 0)
     }
+
+    /// `port_b_position`'s table with the seat acting on Port A instead: Port B
+    /// exists and is not the acting board.
+    pub(crate) fn port_a_at_three_position() -> GameState {
+        port_fixture(3, 7, false, 4, 1, 5, 0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::test_support::{
-        issue_position, ordinary_position, ordinary_position_power_1, port_b_position,
-        port_position, port_position_with, rich_position,
+        issue_position, ordinary_position, ordinary_position_power_1, port_a_at_three_position,
+        port_b_position, port_position, port_position_with, rich_position,
     };
     use super::*;
     use crate::describe::describe_move;
@@ -1484,14 +1493,20 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
     fn can_add_is_read_off_the_list() {
         let rules = Rules::standard();
         // (assistants, hand, yen, imports, cards in the model, most cards)
-        let positions: [(u8, usize, u32, u32, usize, usize); 4] = [
+        let positions: [(u8, usize, u32, u32, usize, usize); 5] = [
             (4, 1, 5, 1, 6, 2),
             (4, 2, 5, 1, 6, 1), // two orders in hand: rival "two cards while the hand has room for one"
             (4, 1, 1, 0, 6, 1), // 1 yen: rival "a second card is free"
             (1, 1, 5, 1, 2, 2), // power 2: rival "every card on the board"
+            // Three orders in hand: the list holds the decline alone, every zone
+            // is open at power 5 and the board holds six cards. Rival: "a card
+            // is in the model when its zone is accessible at the action power"
+            // (`port_accessible_zones`).
+            (4, 3, 5, 1, 0, 0),
         ];
         for (assistants, hand, yen, imports, in_model, most) in positions {
             let state = port_position_with(assistants, hand, yen, imports);
+            check_invariants(&state, &rules).expect("the position is a valid state");
             let legal = legal_of(&state);
             let reach = port_reach(&legal);
             assert_eq!(reach.len(), in_model, "reach at {assistants}/{hand}/{yen}/{imports}");
@@ -1534,6 +1549,26 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
         // Power 2: the board holds six cards, the model two.
         let low = port_position_with(1, 1, 5, 1);
         assert_eq!(low.port_state.port_a.slots.iter().flatten().count(), 6);
+        // Three orders in hand: the board holds six cards at power 5 and the
+        // list none of them.
+        let full = port_position_with(4, 3, 5, 1);
+        assert_eq!(full.port_state.port_a.slots.iter().flatten().count(), 6);
+        assert_eq!(full.current_action_power, Some(5));
+        assert!(port_moves(&legal_of(&full)).is_empty());
+
+        // A list that holds both takes of a pair out: with O10 on, O34 cannot
+        // be added and O28 can. Rival: "a second card is addable whenever some
+        // listed move takes two" (`can_add` from the list's maximum).
+        let state = port_position();
+        let mut cut = legal_of(&state);
+        cut.retain(|m| port_cards(m).is_none_or(|c| port_key(c) != [10, 34]));
+        assert_eq!(port_most_cards(&cut), 2);
+        let model = port_model(&state, &rules, &cut, &ids(&[10]));
+        let can_add: Vec<(u8, bool)> = model.cards.iter().map(|c| (c.number, c.can_add)).collect();
+        assert_eq!(
+            can_add,
+            [(10, false), (34, false), (28, true), (18, true), (2, true), (13, true)]
+        );
     }
 
     #[test]
@@ -1582,6 +1617,7 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
 
         // With no imported good a pair is listed once: one way, not two.
         let one_way = port_position_with(4, 1, 5, 0);
+        check_invariants(&one_way, &rules).expect("the position is a valid state");
         let one_legal = legal_of(&one_way);
         let model = port_model(&one_way, &rules, &one_legal, &ids(&[10, 34]));
         assert!(model.preview.legal);
@@ -1594,6 +1630,12 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
         cut.retain(|m| port_cards(m).map(|c| c.to_vec()) != Some(ids(&[10])));
         let model = port_model(&state, &rules, &cut, &ids(&[10]));
         assert_eq!(model.preview, PortPreview { legal: false, ways: vec![] });
+        // The list now names O34 before O10; the cards stay in slot order.
+        assert_eq!(port_reach(&cut)[0], OrderCardId(34));
+        assert_eq!(
+            model.cards.iter().map(|c| c.number).collect::<Vec<_>>(),
+            [10, 34, 28, 18, 2, 13]
+        );
         assert!(
             port_text(&model).contains("\n  -> NOT currently offered (adjust the selection)\n"),
             "{}",
@@ -1643,9 +1685,35 @@ Selected (3 of 3): 1 copper -> 2 yen, 2 yen -> 1 silk, 2 yen -> 1 silk
         }
         assert!(port_text(&model).starts_with("Port B — take 1 card, or 2"), "{}", port_text(&model));
 
-        // Port A is the other answer.
+        // Port A is the other answer, at two players (no Port B on the table)
+        // and at three, where Port B exists and is not the acting board.
         let a = port_position();
         assert!(!port_model(&a, &rules, &legal_of(&a), &[]).board_b);
+        let three = port_a_at_three_position();
+        check_invariants(&three, &rules).expect("the position is a valid state");
+        assert!(three.port_state.port_b.is_some());
+        let three_legal = legal_of(&three);
+        let on_a = port_model(&three, &rules, &three_legal, &[]);
+        assert!(!on_a.board_b);
+        assert_eq!(on_a.cards.len(), 6);
+        for c in &on_a.cards {
+            assert!(three.port_state.port_a.find_card(c.id).is_some(), "{} sits on Port A", c.number);
+            assert!(
+                three.port_state.port_b.as_ref().unwrap().find_card(c.id).is_none(),
+                "{} is not Port B's",
+                c.number
+            );
+        }
+        assert!(port_text(&on_a).starts_with("Port A — take 1 card, or 2"), "{}", port_text(&on_a));
+
+        // A card in the acting board's slots that the list holds no take for
+        // is ignored too: at power 2 only O10 and O34 are in reach, O28 is not.
+        let low = port_position_with(1, 1, 5, 1);
+        let low_legal = legal_of(&low);
+        assert_eq!(
+            port_model(&low, &rules, &low_legal, &ids(&[28])),
+            port_model(&low, &rules, &low_legal, &[])
+        );
 
         // A card of `selected` the acting board does not hold is ignored.
         let foreign = state.port_state.port_a.slots[0].expect("Port A holds a card");
@@ -1712,6 +1780,7 @@ Selected: O10, O34
             [(4, 1, 5, 1, 2), (4, 2, 5, 1, 1), (4, 1, 1, 0, 1)]
         {
             let state = port_position_with(assistants, hand, yen, imports);
+            check_invariants(&state, &rules).expect("the position is a valid state");
             let legal = legal_of(&state);
             assert_eq!(port_most_cards(&legal), most);
             assert_eq!(port_model(&state, &rules, &legal, &[]).max_cards, most);
