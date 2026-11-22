@@ -619,9 +619,11 @@ fn mercenaries_line(p: &PlayerModel) -> String {
 /// clipped mid-token — the policy [`seat_tail_row`]'s `next take` follows:
 ///
 /// 1. **`· N used` yields first.** It is the one number on the row that does
-///    not score, and the `players` view prints it. At a four-player seat's 48
-///    columns it always yields (the opening row is 54); at a three-player
-///    seat's 56 it yields only at the widest legal rows.
+///    not score, and the `players` view gives the mercenaries' total beside
+///    the unused count, so the used count is their difference. At a
+///    four-player seat's 48 columns it always yields (the opening row is
+///    54); at a three-player seat's 56 it yields only at the widest legal
+///    rows.
 /// 2. **Then the countries at zero**, all of them. A row that has yielded its
 ///    zeros names every country it holds, so a country it does not name has
 ///    none.
@@ -633,7 +635,9 @@ fn mercenaries_line(p: &PlayerModel) -> String {
 /// far past an ordinary game (two-digit counts in four countries, or in three
 /// with all ten mercenaries unused): the second form measures up to 50
 /// columns against 48. Every figure is measured by
-/// `the_used_count_yields_first_and_whole`, over every legal row.
+/// `the_used_count_yields_first_and_whole`, over a superset of the legal rows
+/// taken one count per class of counts that render alike (the reduction is
+/// reasoned in the cell).
 fn mercenaries_twin(p: &PlayerModel, w: usize) -> Twin {
     let head = |with_used: bool| {
         let mut t = indented();
@@ -2948,6 +2952,15 @@ mod tests {
     ///   countries at zero yield next (55 rows, widest 45); where no country
     ///   is at zero the counts yield together and the row reads its unused
     ///   count alone (125 rows, widest 24). No row is ever clipped.
+    ///
+    /// **That the zeros yield all at once, rather than one at a time, is
+    /// REASONED, not measured**: the second form outruns 48 columns only with
+    /// two-digit counts in four countries — GB, US, FR and DE, the only four
+    /// whose bound reaches 10 — or with all ten mercenaries unused, which
+    /// needs every country at its supply's bound and so none at zero. So a
+    /// row the zeros' step applies to has exactly one country at zero, NL,
+    /// and the two readings render it alike (Task 8's review found its R07
+    /// mutant, the zeros one at a time, equivalent for that reason).
     #[test]
     fn the_used_count_yields_first_and_whole() {
         use crate::screen_model::{country_code, FlagCounts};

@@ -225,7 +225,8 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
         // seed 3734450748880462653): the arm meets few folded Ports and its
         // draws took singles. The counts are printed, not floored here; the
         // floors on pairs and picks are the three-player arm's (plan 2b,
-        // Task 7), whose game reads 2 pairs and 1 payment pick.
+        // Task 7), whose game at seed 12 reads 3 pairs and 1 Port payment
+        // pick.
         "port" => {
             let cards = prompt["cards"].as_array().expect("cards");
             let on = cards.iter().filter(|c| c["selected"] == Value::Bool(true)).count();

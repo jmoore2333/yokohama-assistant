@@ -682,7 +682,13 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             // pick, the log, its `suggest` and `why`); the browser's advisor
             // panel words a continuation's later steps at the root
             // (`yokohama-web`'s `explain.rs`), where such a step reads
-            // unmarked (Task 3b's review, ruling T3b-a: recorded, not changed).
+            // without its slot, or — when the root is a mercenary's action
+            // at a Laboratory that the line's President later acts at — with
+            // the marker the root's board gives it: a slot the mercenary's
+            // acquire may since have moved, or a marker on a card whose twin
+            // that acquire took (Task 3b's review, ruling T3b-a, and the
+            // whole-branch review: recorded, not changed; the reach is
+            // reasoned from the move generator, not played).
             if let Some(slot) = twin_slot(*card_id, state, &rules.techs) {
                 s.push_str(&format!(" (slot {})", crate::screen_model::menu_number(slot)));
             }
@@ -1620,22 +1626,15 @@ mod tests {
         assert!(ch.contains("1 copper -> 2 yen"), "{ch}");
     }
 
-    /// The Laboratory acquisition's `extra_tech_payment` surcharge is the
-    /// rulebook p.14 cost "Starting with your 4th card, each technology card
-    /// requires an additional cost of 2 yen or 1 import" (D2 owner ruling
-    /// 2026-08-08; engine: `extra_tech_surcharge_required` fires once the
-    /// player owns 3+ techs), so it applies unchanged to the 5th, 6th, ...
-    /// acquisition too. The label must not hard-code the ordinal "4th"
-    /// (which is false for a 5th/6th buy) -- "4th+" names the surcharge
-    /// accurately. NOTE: this is a different surcharge from the
-    /// board-position surcharge (`extra_yen`/`extra_imported`, slots 3-6 =
-    /// +1,+1,+2,+2); this test pins only the 4th+ tech-CARD surcharge label.
     /// **A Laboratory move whose card is not on the acting board reads as
     /// before and never panics** (plan 2b, Task 3b). The slot marker is read
     /// off the board for display; a move no listed row carries — card 20,
     /// Postal System, in the tech deck here — finds no slot, so it gets no
-    /// marker. So does any move worded while no Laboratory is acting (the
-    /// President in hand: `state_2p`, the cells below).
+    /// marker. So does any move worded while no Laboratory is acting: with
+    /// the President in hand `acting_area` answers `None` before any board is
+    /// read, and with the President on another area the board's match answers
+    /// `None` — both pinned below by wording the twin, which carries its
+    /// marker at the Laboratory, from each of those two positions.
     #[test]
     fn a_laboratory_card_off_the_acting_board_gets_no_slot_marker() {
         let state = crate::chooser::test_support::lab_twin_position();
@@ -1651,6 +1650,23 @@ mod tests {
         assert_eq!(describe_move(&mv(99), &state, &rules), "Laboratory: acquire T99");
         // The twin on the board still gets its marker in the same state.
         assert_eq!(describe_move(&mv(12), &state, &rules), "Laboratory: acquire Ball (slot 5)");
+
+        // No Laboratory acting (the whole-branch review's BAT-1): the same
+        // twin, the board untouched, worded with the President on an area
+        // that is not a Laboratory, and then with the President in hand.
+        let me = state.current_player.0 as usize;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| !matches!(c.area_type, AreaType::LaboratoryA | AreaType::LaboratoryB))
+            .expect("an area that is not a Laboratory")
+            .0;
+        let mut away = state.clone();
+        away.players[me].president_location = PresidentLocation::OnBoard(elsewhere);
+        assert_eq!(describe_move(&mv(12), &away, &rules), "Laboratory: acquire Ball");
+        away.players[me].president_location = PresidentLocation::InHand;
+        assert_eq!(describe_move(&mv(12), &away, &rules), "Laboratory: acquire Ball");
 
         // A card on the OTHER Laboratory (Task 3b's review, m-1): at four
         // players, both copies of Ball on Laboratory A while Laboratory B
@@ -1674,6 +1690,16 @@ mod tests {
         assert_eq!(describe_move(&mv(11), &state, &rules), "Laboratory: acquire Ball");
     }
 
+    /// The Laboratory acquisition's `extra_tech_payment` surcharge is the
+    /// rulebook p.14 cost "Starting with your 4th card, each technology card
+    /// requires an additional cost of 2 yen or 1 import" (D2 owner ruling
+    /// 2026-08-08; engine: `extra_tech_surcharge_required` fires once the
+    /// player owns 3+ techs), so it applies unchanged to the 5th, 6th, ...
+    /// acquisition too. The label must not hard-code the ordinal "4th"
+    /// (which is false for a 5th/6th buy) -- "4th+" names the surcharge
+    /// accurately. NOTE: this is a different surcharge from the
+    /// board-position surcharge (`extra_yen`/`extra_imported`, slots 3-6 =
+    /// +1,+1,+2,+2); this test pins only the 4th+ tech-CARD surcharge label.
     #[test]
     fn laboratory_fourth_plus_tech_fee_is_not_hard_coded_to_the_fourth() {
         let state = state_2p();

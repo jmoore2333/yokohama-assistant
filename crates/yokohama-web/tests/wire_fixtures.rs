@@ -1608,9 +1608,12 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 // entry, the number of each kind its flags hold (read BY
                 // FIELD NAME, since the corpus sorts an object's keys),
                 // `confirm`. Measured at these seeds: 95 area-action
-                // prompts, three of them folded (events 18, 251 and 387), and
-                // every draw lands on a Church move, so the decline branch
-                // below never runs here; it stays for a seed that reaches it.
+                // prompts, three of them Church prompts folded (events 18,
+                // 251 and 387; the Port's eleven folded prompts and the
+                // Laboratory's one are counted in their rules below), and
+                // every Church draw lands on a Church move, so the decline
+                // branch below never runs here; it stays for a seed that
+                // reaches it.
                 // **The Port's takes fold the same way** (plan 2b, Task 2), and
                 // the walk plays the same game across this fold by the same
                 // rule: at a folded Port prompt the draw is taken over
@@ -1623,6 +1626,9 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 // these seeds, no draw is one (the three pairs drawn, at
                 // events 90, 356 and 1024, are each listed once), so the walk
                 // REFUSES that case rather than carry a branch no seed runs.
+                // Measured at these seeds: eleven folded Port prompts, whose
+                // draws are those three pairs, five singles (events 117, 274,
+                // 447, 707 and 736) and three declines (145, 821 and 917).
                 // The three captures are taken at the one folded prompt whose
                 // draw is a pair with MORE than two cards in reach — a pair
                 // where only two are in reach leaves no card off, so its flags

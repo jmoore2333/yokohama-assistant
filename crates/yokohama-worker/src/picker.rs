@@ -744,7 +744,13 @@ mod tests {
 
     /// The two-player table of `at_place_a_from`, dealt and kept, red to move.
     fn two_player_table(id: &str) {
-        let r = create_inner(Some(RED), CREATE.as_bytes(), id, Some("application/json"));
+        two_player_table_from(id, CREATE);
+    }
+
+    /// [`two_player_table`] from another create body: the same seats, joined
+    /// and kept the same way.
+    fn two_player_table_from(id: &str, create: &str) {
+        let r = create_inner(Some(RED), create.as_bytes(), id, Some("application/json"));
         assert_eq!(r.status, 201, "{}", r.body);
         let r = call(BLUE, "POST", &format!("/api/games/{id}/join"), Some(r#"{"seat":1}"#));
         assert_eq!(r.status, 200, "{}", r.body);
@@ -1003,7 +1009,9 @@ mod tests {
             .collect()
     }
 
-    /// Premise: the cards in reach, by number, in the payload's order.
+    /// Premise: the cards in reach, as a SET of numbers — both sides are
+    /// sorted, so their order is not compared here (the restore cells compare
+    /// the whole prompt before and after the restore).
     fn assert_port_cards(state: &Value, numbers: &[u64]) {
         let got: Vec<u64> = state["prompt"]["cards"]
             .as_array()
@@ -1019,10 +1027,11 @@ mod tests {
     }
 
     /// **A Port chooser survives a new instance, selection and all** (plan 2b,
-    /// Task 6; design §3). The table is seed 20260831's: the entry is `1` and
-    /// the four cards in reach are 34, 19, 12 and 4 (read off the payload as
-    /// the cell runs, never assumed). The lines switch 34 on, 19 on, 34 OFF and
-    /// 12 on, so the selection is 19 and 12 and a repeated line matters: a
+    /// Task 6; design §3). The table is seed 20260831's: the entry's line is
+    /// read off its reply, and the four cards in reach, 34, 19, 12 and 4, are
+    /// written down here and checked against the payload by
+    /// [`assert_port_cards`] as the cell runs. The lines switch 34 on, 19 on,
+    /// 34 OFF and 12 on, so the selection is 19 and 12 and a repeated line matters: a
     /// restore that feeds each distinct line once feeds `34, 19, 12`, reads 34
     /// and 19 with 12 refused as a third card, and one that drops the repeated
     /// line or the first toggle reads another pair again. `confirm` after the
@@ -1168,6 +1177,60 @@ mod tests {
         assert_eq!((r.status, &s["prompt"]["kind"]), (200, &json!("port")), "the entry opens the chooser again: {}", r.body);
         assert_eq!(port_selected(&s), Vec::<u64>::new(), "nothing of the first opening is kept");
         assert_eq!(lines(&r), [entry_line.as_str()], "the new list holds the entry alone");
+    }
+
+    /// **A Laboratory pick survives a new instance** (the whole-branch review's
+    /// m-2; plan 2b, Task 3). A folded title's pick is a `pick`, no chooser of
+    /// its own, so it is restored by the generic re-feed: its list is the
+    /// entry's line alone, and re-feeding it at the same record opens the same
+    /// pick. The table is seed 18's, which `yokohama-web`'s
+    /// `a_folded_laboratory_title_is_a_row_that_opens_the_pick` names as the
+    /// first table seed whose opening Laboratory visit folds a title, measured
+    /// on its own REPL table; here the fold is this table's own premise —
+    /// `to_chooser` finds the entry and asserts it opens a `pick` — and the
+    /// pick's title and rows are read off the payload. After the restore the
+    /// whole prompt reads as it did; its first row then commits that title's
+    /// acquire (the reply's change line names the technology gained) and
+    /// clears the list.
+    #[test]
+    fn restore_picker_rebuilds_a_laboratory_pick_with_its_rows() {
+        let _s = serial();
+        init_inner(&config("off")).unwrap();
+        let create = CREATE.replacen(r#""seed":20260831"#, r#""seed":18"#, 1);
+        assert_ne!(create, CREATE, "premise: the create body names its seed");
+        two_player_table_from("lab-pick", &create);
+        let entry = to_chooser("lab-pick", "LaboratoryA", "pick");
+        let row = entry.picker.clone().expect("the entry's list");
+        let before = body(&call(RED, "GET", "/api/games/lab-pick", None));
+        let title = before["prompt"]["title"].as_str().expect("a title").to_string();
+        let acquire = title
+            .strip_suffix(" — choose the payment")
+            .filter(|t| t.starts_with("Laboratory: acquire "))
+            .unwrap_or_else(|| panic!("premise: a folded Laboratory title's pick: {before}"))
+            .to_string();
+        let rows = before["prompt"]["rows"].as_array().expect("the pick's rows");
+        assert!(rows.len() >= 2, "premise: a folded title has two rows or more: {before}");
+        assert!(
+            rows.iter().all(|r| r["words"].as_str().is_some_and(|w| w.starts_with(&acquire))),
+            "premise: every row is the title's acquire: {before}",
+        );
+        let (stored_table, stored) = (table("lab-pick"), record("lab-pick"));
+
+        fresh("lab-pick", &stored_table, &stored);
+        let r = restore_picker_inner("lab-pick", &row);
+        assert_eq!((r.status, r.picker.as_deref(), tagged(&r).as_str()), (200, None, "[]"), "the list is kept, nothing moved");
+        assert_eq!(record("lab-pick"), stored, "the restore applied nothing");
+        let after = body(&call(RED, "GET", "/api/games/lab-pick", None));
+        assert_eq!(after["prompt"], before["prompt"], "the whole pick reads as it did: {after}");
+
+        let r = input(RED, "lab-pick", "1", Some("pick"));
+        let s = body(&r);
+        assert_eq!((r.status, &s["events"]), (200, &json!(before["events"].as_u64().unwrap() + 1)), "{}", r.body);
+        assert_ne!(record("lab-pick"), stored, "premise: the row APPLIED the acquire");
+        assert_ne!(s["prompt"]["kind"], json!("pick"), "the pick closes on its commit: {}", r.body);
+        let name = acquire.strip_prefix("Laboratory: acquire ").expect("the title's name");
+        assert!(s["messages"].to_string().contains(&format!("tech +{name}")), "the commit gains the title: {}", s["messages"]);
+        assert_eq!(r.picker.as_deref(), Some("[]"), "the restored list is this instance's, and the move cleared it");
     }
 
     /// **A list is only ever re-fed at the exact record it was built at** (the
