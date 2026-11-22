@@ -721,14 +721,19 @@ fn the_three_player_counters_tell_the_picks_apart() {
 const THREE_PLAYER_SEED: u64 = 12;
 const THREE_PLAYER_RNG: u64 = 0x5448_5245_4550_4C41; // "THREEPLA"
 
-/// **The three-player arm's input cap, MEASURED**: the game at
-/// [`THREE_PLAYER_SEED`] reads 2,141 loop passes (every line posted, every
-/// placement probe, every stuck `cancel` and every hot-seat re-read; 1,126
-/// events), the same in two debug runs and a release run, since nothing in it
-/// is drawn from entropy. The cap is the next thousand above three times that
-/// (6,423), [`VS_BOT_CAP`]'s rule, and a stall reads red naming the prompt it
-/// stalled at.
-const THREE_PLAYER_CAP: usize = 7_000;
+/// **The three-player arm's input cap, sized from the LONGEST healthy game
+/// measured, not from the chosen one** (Task 7's re-review, N-1). The seed
+/// sweep behind [`THREE_PLAYER_SEED`] (this policy, table seeds 1 to 30 and
+/// 20261122, release, 2026-11-22) played all 31 games to a winner, and their
+/// loop passes (every line posted, every placement probe, every stuck
+/// `cancel` and every hot-seat re-read) ran from 2,141 — seed 12, the chosen
+/// seed and the SHORTEST of the 31 — to 8,194 (seed 25; then 8,170 at seed
+/// 27 and 7,201 at seed 20). The cap is three times that maximum, 24,582,
+/// rounded up to 25,000, as [`VS_BOT_CAP`] is about three times the longest
+/// game of its sample: a change that lengthens this game toward the sweep's
+/// range is not read as a failure. Nothing in the game is drawn from
+/// entropy, so seed 12 reads 2,141 on every run.
+const THREE_PLAYER_CAP: usize = 25_000;
 
 /// **The gate's third arm: a bot-free THREE-player game, one caller in every
 /// seat, played to a winner** (plan 2b, Task 7; plan 2a's "Owed by plan 2b").
@@ -806,8 +811,10 @@ async fn play_three(seed: u64, rng_seed: u64) -> Reached {
         inputs += 1;
         assert!(
             inputs < THREE_PLAYER_CAP,
-            "the three-player game did not finish inside {THREE_PLAYER_CAP} inputs (seed {seed}): stalled at a `{}` prompt; \
-             reached {reached:?}; last state: {state}",
+            "the three-player game did not finish inside {THREE_PLAYER_CAP} inputs (seed {seed}): at {} events, deck {}, \
+             answering a `{}` prompt; reached {reached:?}; last state: {state}",
+            state["events"],
+            state["deck_remaining"],
             state["prompt"]["kind"].as_str().unwrap_or("?"),
         );
         // **A move's reply is built for the seat that MOVED** (§5.1), so the
