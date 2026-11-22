@@ -361,6 +361,27 @@ export interface ChinatownRow {
   offered: boolean;
 }
 
+/** One order card in the Port's chooser (`chooser::PortCard`). `number` is
+ *  what to send to switch it (its bare id); `zone` and `printed` are typed as
+ *  the ports panel types a slot's; `words` is `order_prompt_line`'s; `can_add`
+ *  is "the list holds a take of the selection with this card added", read off
+ *  the list — false for a card already selected. */
+export interface PortCard {
+  number: number;
+  id: OrderCardId;
+  zone: PortZone;
+  printed: OrderCard;
+  words: string;
+  selected: boolean;
+  can_add: boolean;
+}
+
+/** What stands under the Port's selection (`chooser::PortPreview`): whether
+ *  some listed move takes exactly the selection, and `describe`'s words for
+ *  every one that does, in list order — none, one, or two when the second
+ *  card can be paid for with 2 yen or with an imported good. */
+export interface PortPreview { legal: boolean; ways: string[] }
+
 /** INTERNALLY tagged — the one exception on the wire. */
 export type PromptState =
   | { kind: "options"; rows: OptionRow[] }
@@ -386,6 +407,12 @@ export type PromptState =
       rows: ChinatownRow[];
       preview: ChooserPreview;
     }
+  /** The Port chooser (plan 2b): the REPL's own model. Which port is acting,
+   *  the most cards one listed take holds, the cards in reach in the acting
+   *  board's slot order, and the preview. The server still decides: `confirm`
+   *  commits only a listed move, and opens a `pick` when there are two ways to
+   *  pay for it. */
+  | { kind: "port"; board_b: boolean; max_cards: number; cards: PortCard[]; preview: PortPreview }
   | { kind: "reveal" }
   | { kind: "game_over" }
   /** The session is locked after a driver or engine fault. Nothing this client

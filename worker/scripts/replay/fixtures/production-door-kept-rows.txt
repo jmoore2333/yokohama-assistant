@@ -1,4 +1,4 @@
-skipped tables: wire, wire2; rows 2234 (walk 2222, host 4, archive 8)
+skipped tables: wire, wire2; rows 2253 (walk 2241, host 4, archive 8)
 walk-host.json row 0: GET /api/art as no one -> 200 art_manifest
 walk.json row 0: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
 walk.json row 1: POST /api/games as red@wire.test -> 201 (unnamed)  <- the create, held to its 400
@@ -9,20 +9,20 @@ walk.json row 31: GET /api/labels as red@wire.test -> 200 labels
 walk.json row 43: POST /api/chat as red@wire.test -> 201 house_chat_post
 walk.json row 44: GET /api/chat as blue@wire.test -> 200 house_chat
 walk.json row 48: DELETE /api/chat/1 as red@wire.test -> 204 house_chat_delete
-walk.json row 2194: POST /api/games as red@wire.test -> 201 (unnamed)
-walk.json row 2195: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
-walk.json row 2196: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
-walk.json row 2197: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
-walk.json row 2198: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
-walk.json row 2199: GET /api/games/wire4 as red@wire.test -> 200 options_4p
-walk.json row 2200: GET /api/games/wire4/areas as red@wire.test -> 200 areas_4p
-walk.json row 2201: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
-walk.json row 2202: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
-walk.json row 2203: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
-walk.json row 2204: POST /api/games/wire4/input as red@wire.test -> 200 chinatown
-walk.json row 2205: POST /api/games/wire4/input as red@wire.test -> 200 chinatown_selected
-walk.json row 2206: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
-walk.json row 2221: GET /api/games/no-such-game as red@wire.test -> 404 error
+walk.json row 2213: POST /api/games as red@wire.test -> 201 (unnamed)
+walk.json row 2214: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2215: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2216: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2217: POST /api/games/wire4/keep as red@wire.test -> 200 (unnamed)
+walk.json row 2218: GET /api/games/wire4 as red@wire.test -> 200 options_4p
+walk.json row 2219: GET /api/games/wire4/areas as red@wire.test -> 200 areas_4p
+walk.json row 2220: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2221: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2222: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2223: POST /api/games/wire4/input as red@wire.test -> 200 chinatown
+walk.json row 2224: POST /api/games/wire4/input as red@wire.test -> 200 chinatown_selected
+walk.json row 2225: POST /api/games/wire4/input as red@wire.test -> 200 (unnamed)
+walk.json row 2240: GET /api/games/no-such-game as red@wire.test -> 404 error
 archive-walk.json row 0: POST /api/archive as red@wire.test -> 201 archive_post
 archive-walk.json row 1: POST /api/archive as red@wire.test -> 200 archive_post_identical
 archive-walk.json row 2: POST /api/archive as red@wire.test -> 409 archive_409
@@ -31,4 +31,4 @@ archive-walk.json row 4: POST /api/archive as red@wire.test -> 400 archive_400_r
 archive-walk.json row 5: POST /api/archive as red@wire.test -> 400 archive_400_digest
 archive-walk.json row 6: POST /api/archive as red@wire.test -> 400 archive_400_replay
 archive-walk.json row 7: POST /api/archive as red@wire.test -> 400 archive_400_table
-kept 32, skipped 2202, total 2234
+kept 32, skipped 2221, total 2253

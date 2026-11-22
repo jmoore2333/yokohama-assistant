@@ -4795,4 +4795,115 @@ mod tests {
             assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
         }
     }
+
+    // -----------------------------------------------------------------------
+    // The Port chooser's replies (cycle 2, plan 2b, Task 2)
+    // -----------------------------------------------------------------------
+
+    /// A two-person table at the corpus seed with red at the Port's folded
+    /// takes, stepped there on the resident handle, and the entry's number.
+    /// Every line after this goes through `input`.
+    fn at_the_port(games: &Games, id: &str) -> String {
+        use crate::games::test_support::{playing, two_people, CORPUS_SEED};
+        let handle = playing(games, &two_people(id, CORPUS_SEED), &["red@t.test", "blue@t.test"]);
+        let mut repl = handle.lock().expect("a game");
+        crate::client::test_support::to_the_port(&mut repl)
+    }
+
+    /// **A Port reply carries no line of the terminal's chooser screen**
+    /// (design §5.6), as at the Church: a toggle's reply carries no line at
+    /// all, and a refused third card's carries exactly the refusal, the
+    /// screen stripped by identity after it.
+    #[test]
+    fn a_port_reply_carries_no_screen_line_and_keeps_a_refusal() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_port(&games, "port");
+        let screen_now = || {
+            let handle = games.handle("port").expect("playing");
+            let repl = handle.lock().expect("a game");
+            repl.chooser_screen().expect("the chooser is open")
+        };
+        let opened = send(&games, "port", &entry);
+        assert_eq!(opened["prompt"]["kind"], "port", "{opened}");
+        assert_eq!(messages_of(&opened), Vec::<String>::new(), "opening prints no line of its own");
+        let cards: Vec<u64> = opened["prompt"]["cards"]
+            .as_array()
+            .expect("cards")
+            .iter()
+            .map(|c| c["number"].as_u64().expect("a number"))
+            .collect();
+        assert!(cards.len() >= 3, "premise: a third card to refuse: {cards:?}");
+        let mut replies = vec![(opened, screen_now())];
+        for card in &cards[..2] {
+            let toggled = send(&games, "port", &card.to_string());
+            assert_eq!(toggled["prompt"]["kind"], "port");
+            assert_eq!(messages_of(&toggled), Vec::<String>::new(), "a toggle's reply carries no line");
+            replies.push((toggled, screen_now()));
+        }
+        let before = screen_now();
+        let refused = send(&games, "port", &cards[2].to_string());
+        assert_eq!(refused["prompt"]["kind"], "port");
+        assert_eq!(
+            messages_of(&refused),
+            vec![format!("! the list holds no take with O{:02} added from here", cards[2])],
+            "exactly the refusal line",
+        );
+        assert_eq!(screen_now(), before, "premise: the refusal kept the selection, so the screen did not move");
+        replies.push((refused, before));
+        for (reply, screen) in &replies {
+            for line in screen.lines().map(str::trim_end).filter(|l| !l.is_empty()) {
+                assert!(
+                    !messages_of(reply).iter().any(|m| m == line),
+                    "a line of the chooser's screen rode `messages`: {line:?}",
+                );
+            }
+        }
+    }
+
+    /// **The `expect` check tells the Port's chooser from the main list**: a
+    /// line sent with `expect: "options"` while the chooser is open answers
+    /// 409, names both prompts, and applies nothing — the chooser is still
+    /// open with its selection, and the same line with `expect: "port"` is
+    /// then taken.
+    #[test]
+    fn the_expect_check_tells_the_port_from_the_main_list() {
+        let games = crate::games::test_support::games();
+        let entry = at_the_port(&games, "port-expect");
+        let opened = send(&games, "port-expect", &entry);
+        let card = opened["prompt"]["cards"][0]["number"].as_u64().expect("a card").to_string();
+        let body = serde_json::json!({ "line": card, "expect": "options" }).to_string();
+        let (status, reply) = ask(&games, "red@t.test", "POST", "/api/games/port-expect/input", "", &body);
+        assert_eq!(status, 409, "{reply}");
+        let msg = reply["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("options") && msg.contains("port"), "names both prompts: {msg}");
+        let still = {
+            let handle = games.handle("port-expect").expect("playing");
+            let repl = handle.lock().expect("a game");
+            match &repl.sub {
+                yokohama_cli::repl::SubPrompt::Port { selected } => selected.len(),
+                _ => panic!("the chooser closed"),
+            }
+        };
+        assert_eq!(still, 0, "the refused line switched nothing on");
+        let body = serde_json::json!({ "line": card, "expect": "port" }).to_string();
+        let (status, reply) = ask(&games, "red@t.test", "POST", "/api/games/port-expect/input", "", &body);
+        assert_eq!(status, 200, "{reply}");
+        assert!(reply["prompt"]["cards"][0]["selected"] == true, "{reply}");
+    }
+
+    /// **Every line the client sends for the Port passes the fence as it
+    /// stands**: each card's bare number, 1 to 36, `confirm` and `cancel`;
+    /// the terminal's displayed form (`O11`, `o11`), which the client never
+    /// sends, does not.
+    #[test]
+    fn every_line_the_client_sends_for_the_port_passes_the_fence() {
+        let mut lines: Vec<String> = (1..=36).map(|n| n.to_string()).collect();
+        lines.extend(["confirm".to_string(), "cancel".to_string()]);
+        for line in &lines {
+            assert!(crate::grammar::is_gameplay_line(line), "{line:?}");
+        }
+        for line in ["O11", "o11"] {
+            assert!(!crate::grammar::is_gameplay_line(line), "{line:?}: the terminal's form, refused at the fence");
+        }
+    }
 }

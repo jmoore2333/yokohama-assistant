@@ -88,9 +88,9 @@ const NOT_OFFERED: Record<NotOfferedReason, string> = {
  *  `satisfies` makes the list exactly the union's, so a kind added to
  *  `PromptState` later fails to compile HERE until it is listed — and listing
  *  it is the moment its arm is written. The fallback below is for what the
- *  union does not hold at all: a kind a NEWER server answers (plan 2b's `port`
- *  is the next) reaching this client before it takes the update. It is reached
- *  by this runtime check, never by a switch left non-exhaustive. */
+ *  union does not hold at all: a kind a NEWER server answers reaching this
+ *  client before it takes the update. It is reached by this runtime check,
+ *  never by a switch left non-exhaustive. */
 const DRAWN_KINDS = {
   options: true,
   pick: true,
@@ -99,6 +99,7 @@ const DRAWN_KINDS = {
   place_b: true,
   church: true,
   chinatown: true,
+  port: true,
   reveal: true,
   game_over: true,
   locked: true,
@@ -472,6 +473,21 @@ export function Decision({
         </div>
       )}
 
+      {/* **The Port's chooser, INTERIM** (plan 2b, Task 2): the panel's asking
+          line (above, from `asking`) and Cancel, which the REPL's chooser
+          answers and the web's line fence admits, under `.chooser.port`; the
+          cards and Confirm are Task 4's panel. A known kind, so never the
+          unknown-kind node below, and never a dead end between the tasks. */}
+      {!spectating && prompt.kind === "port" && (
+        <div className="chooser port">
+          <div className="controls">
+            <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* **A kind this client cannot draw** (ruling R46): a server newer than
           this client answered it. Not a dead end: it says so, points at the
           update line, and — for the acting seat — offers Cancel, which every
@@ -738,6 +754,8 @@ function asking(state: ClientState, labels: Labels | null): string {
       const { max_exchanges: max, chosen } = state.prompt;
       return `Chinatown — up to ${max} exchange${max === 1 ? "" : "s"} · ${chosen} of ${max} chosen`;
     }
+    case "port":
+      return state.prompt.max_cards === 1 ? "The Port — take one card" : "The Port — take one card, or two";
     case "reveal":
       return "A card reveal is pending (live mode).";
     case "locked":

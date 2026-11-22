@@ -972,13 +972,14 @@ Selected: silk
         let screen = church_text(&church_model(&broke, &rules, &legal_of(&broke), [false; 6]));
         assert!(screen.contains("\n  [5] 2 yen            have 1    (not offered)\n"), "{screen}");
     }
-    /// **The guide pair's two quoted screens are these fixtures' screens**
-    /// (the fix wave's B5), byte for byte, as `repl.rs`'s guided-retreat
+    /// **The guide pair's three quoted chooser screens are these fixtures'
+    /// screens** (the fix wave's B5; the Port's from plan 2b), byte for byte,
+    /// as `repl.rs`'s guided-retreat
     /// captures are tied to theirs: `docs/cli-guide.md`'s fenced blocks, and
     /// `docs/cli-guide.html`'s `<pre><code>` blocks with their three entities
     /// undone (`guide_sync`'s `unescape_html`). Each guide must hold a block
     /// EQUAL to the screen, not merely containing it. Regenerate by pasting
-    /// both screens into BOTH formats from one run of these fixtures.
+    /// the screens into BOTH formats from one run of these fixtures.
     #[test]
     fn the_guide_quotes_the_screens_these_fixtures_render() {
         const GUIDE_MD: &str = include_str!("../../../docs/cli-guide.md");
@@ -995,6 +996,8 @@ Selected: silk
         let mut counts = [0u8; 9];
         (counts[0], counts[5]) = (1, 2);
         let town_screen = chinatown_text(&chinatown_model(&town, &rules, &legal_of(&town), counts));
+        let port = port_position();
+        let port_screen = port_text(&port_model(&port, &rules, &legal_of(&port), &ids(&[10, 34])));
 
         let md_blocks: Vec<&str> = GUIDE_MD.split("```").skip(1).step_by(2).map(|b| b.trim_matches('\n')).collect();
         let html_blocks: Vec<String> = GUIDE_HTML
@@ -1005,7 +1008,9 @@ Selected: silk
                 code.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
             })
             .collect();
-        for (what, screen) in [("the Church's", &church_screen), ("Chinatown's", &town_screen)] {
+        for (what, screen) in
+            [("the Church's", &church_screen), ("Chinatown's", &town_screen), ("the Port's", &port_screen)]
+        {
             let screen = screen.trim_end_matches('\n');
             assert!(
                 md_blocks.contains(&screen),

@@ -32,17 +32,20 @@ pub struct Repl {
     pub(crate) locked: bool,
     /// An in-progress sub-prompt, or `None`: any of [`SubPrompt`]'s — the
     /// Movement phase's route pick and guided retreat, Placement's two
-    /// pickers, the area-action choosers (the Church's and Chinatown's), a
-    /// numbered pick, the guided reveal. A sibling of `pending` rather than a
-    /// `Pending` variant: `pending`
+    /// pickers, the area-action choosers (the Church's, Chinatown's and the
+    /// Port's), a numbered pick, the guided reveal. A sibling of `pending`
+    /// rather than a `Pending` variant: `pending`
     /// models LIVE-mode reveal collection (always `None` in simulation, keyed to
     /// hidden-card entry), whereas sub-prompts are pure ENTRY HELPERS over the
     /// engine's own legal list that apply in BOTH modes and never collect hidden
     /// information. The two are structurally mutually exclusive -- a sub-prompt
     /// only ever starts from a clean main prompt (`pick_option` runs only when
-    /// `pending` is `None`), and committing out of one never draws a card or
-    /// claims a token (President moves / retreats touch neither deck), so
-    /// `commit` never parks a fresh `Pending` behind a sub-prompt.
+    /// `pending` is `None`), and every sub-prompt that names a move is closed
+    /// BEFORE `commit` applies it, so `commit` never parks a fresh `Pending` behind a
+    /// sub-prompt. That order is load-bearing at the Port, whose take draws a
+    /// card in live mode and parks a reveal (the Port's chooser and its
+    /// payment pick both close first; plan 2b's
+    /// `a_live_port_take_through_the_chooser_parks_at_its_reveal`).
     pub sub: SubPrompt,
     /// Set true once the FIRST `board` render of a session has printed the
     /// wide-board width note (S3), so it prints exactly once. Lives on the
@@ -158,13 +161,14 @@ impl ViewSurface {
 /// docs/plans/2026-07-18-phase2-cli-driver-design.md: `Route`, `Retreat`),
 /// the Placement main list (`PlacementA`, `PlacementB`), a queued
 /// assistant-move choice (`MoveFrom`), and the AreaAction main list with no
-/// choice queued (`Church`, `Chinatown`, cycle 2's area-action choosers,
-/// docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
+/// choice queued (`Church`, `Chinatown`, `Port`, cycle 2's area-action
+/// choosers, docs/plans/2026-11-21-web-area-action-choosers-design.md §5.1). Everywhere
 /// else every option is a bare `Direct`, so the list is byte-identical to the
 /// ungrouped `legal()` rendering. The legal list stays the SOLE authority:
 /// every collapsing variant is an entry helper whose selection is
 /// exact-matched against `legal()` before anything commits
-/// (`find_placement_match`, `chooser::church_match`, `chooser::chinatown_match`).
+/// (`find_placement_match`, `chooser::church_match`, `chooser::chinatown_match`,
+/// `chooser::port_matches`).
 enum PromptOption {
     /// A single move rendered and committed exactly as today (`describe_move`).
     Direct(Move),
@@ -196,11 +200,17 @@ enum PromptOption {
     /// `AreaAction::Chinatown` move is listed. `count` is how many; `longest`
     /// is the most exchanges in one of them, read off the list.
     Chinatown { count: usize, longest: usize },
+    /// The Port's take family collapsed (plan 2b): more than one
+    /// `AreaAction::Port` move is listed. `reach` is how many distinct cards
+    /// the listed takes name (`chooser::port_reach`); `pairs` is whether some
+    /// listed take names two (`chooser::port_most_cards`), each read off the
+    /// list.
+    Port { reach: usize, pairs: bool },
 }
 
 /// An in-progress sub-prompt, from any of three phases: Movement's route pick
-/// and guided retreat, Placement's two pickers, the AreaAction phase's Church
-/// and Chinatown choosers, plus the numbered pick a queued assistant-move
+/// and guided retreat, Placement's two pickers, the AreaAction phase's Church,
+/// Chinatown and Port choosers, plus the numbered pick a queued assistant-move
 /// choice or a Telegram bonus opens and the guided `reveal` flow. Every variant but
 /// `Reveal` is an ENTRY HELPER over the legal list: whatever it assembles or
 /// names is exact-matched against `session.legal()` before `commit`, so none
@@ -261,6 +271,22 @@ pub enum SubPrompt {
     /// engine's own order, never the order typed — or refuses and keeps the
     /// selection.
     Chinatown { counts: [u8; 9] },
+    /// The Port chooser (plan 2b): the cards switched on, in the order they
+    /// were switched on. A card's number toggles it (switching ON one the list
+    /// holds no take with is refused); `confirm` commits the one listed move
+    /// `chooser::port_matches` finds, or opens the numbered pick over the two
+    /// ways to pay, or refuses and keeps the selection.
+    Port { selected: Vec<OrderCardId> },
+}
+
+/// How an area-action chooser is left ([`Repl::leave_chooser`]).
+enum LeaveChooser {
+    /// `quit`: the chooser stays as it is.
+    Quit,
+    /// `cancel`: closed, with the chooser's own line.
+    Cancel(&'static str),
+    /// `confirm` with exactly one listed move: closed, then committed.
+    Commit(Move),
 }
 
 /// The result of one `Repl::step` call: the text to show the user (which
@@ -742,8 +768,9 @@ impl Repl {
     /// collapses to one entry per destination with the whole retreat family
     /// folded into one row, Placement collapses to Option A / Option B /
     /// place-none, a queued `AssistantMove` groups by source, and the
-    /// AreaAction list folds the Church's payments, and Chinatown's exchange
-    /// sets, into one entry each when more than one is listed. A consumer
+    /// AreaAction list folds the Church's payments, Chinatown's exchange
+    /// sets and the Port's takes into one entry each when more than one is
+    /// listed. A consumer
     /// that numbered `DecisionModel::options` instead — which IS one per
     /// legal move — would send back a number meaning a
     /// different move, and in the Movement phase it would usually still be a
@@ -1226,6 +1253,11 @@ impl Repl {
                 self.page = 0;
                 self.out(String::new(), false)
             }
+            Some(PromptOption::Port { .. }) => {
+                self.sub = SubPrompt::Port { selected: Vec::new() };
+                self.page = 0;
+                self.out(String::new(), false)
+            }
             None => self.out(format!("option {shown} out of range ({})\n", range_text(len)), false),
         }
     }
@@ -1235,8 +1267,8 @@ impl Repl {
     /// assistant-move choice, every legal move is a bare `Direct`
     /// (byte-identical to the old ungrouped rendering); Placement, the
     /// assistant-move choice and AreaAction group as `group_options` routes
-    /// them (AreaAction folds the Church's payments and Chinatown's exchange
-    /// sets, `group_area_action`). In
+    /// them (AreaAction folds the Church's payments, Chinatown's exchange
+    /// sets and the Port's takes, `group_area_action`). In
     /// the Movement main list it collapses the family
     /// (docs/plans/2026-07-18-phase2-cli-driver-design.md): one entry per
     /// walk/teleport destination (a `Route` when that destination has >1 fee
@@ -1276,20 +1308,26 @@ impl Repl {
     /// The area-action main list: a family with more than one listed move
     /// becomes one entry at its first move's place; every other move stays `Direct`.
     ///
-    /// The Church's payments and Chinatown's exchange sets are the two
-    /// families folded (plan 2a). A family with one listed move, or none,
-    /// reads exactly as the ungrouped list did (design §4.4), so "Enter
+    /// The Church's payments and Chinatown's exchange sets are folded (plan
+    /// 2a), and the Port's takes (plan 2b). A family with one listed move, or
+    /// none, reads exactly as the ungrouped list did (design §4.4), so "Enter
     /// applies the only option" stays true; the decline keeps its own place,
     /// last, as the engine lists it. Chinatown's entry carries the most
-    /// exchanges in one listed set, counted off the list.
+    /// exchanges in one listed set, the Port's how many cards the listed takes
+    /// name and whether one of them takes two, each counted off the list.
     fn group_area_action(legal: Vec<Move>) -> Vec<PromptOption> {
         let church = legal.iter().filter(|mv| crate::chooser::church_flags(mv).is_some()).count();
         let chinatown = legal.iter().filter(|mv| crate::chooser::chinatown_counts(mv).is_some()).count();
+        let port = legal.iter().filter(|mv| crate::chooser::port_cards(mv).is_some()).count();
         // The chooser's own heading reads the same function (plan 2a's fix
         // wave, L6): the entry's "up to K" and the heading's cannot disagree.
         let longest = crate::chooser::longest_exchange_set(&legal);
+        // The same for the Port's "1 card, or 2": `port_text` reads the
+        // model's `max_cards`, which is this function over the same list.
+        let (reach, pairs) =
+            (crate::chooser::port_reach(&legal).len(), crate::chooser::port_most_cards(&legal) >= 2);
         let mut out = Vec::new();
-        let (mut church_entered, mut chinatown_entered) = (false, false);
+        let (mut church_entered, mut chinatown_entered, mut port_entered) = (false, false, false);
         for mv in legal {
             if church > 1 && crate::chooser::church_flags(&mv).is_some() {
                 if !church_entered {
@@ -1300,6 +1338,11 @@ impl Repl {
                 if !chinatown_entered {
                     out.push(PromptOption::Chinatown { count: chinatown, longest });
                     chinatown_entered = true;
+                }
+            } else if port > 1 && crate::chooser::port_cards(&mv).is_some() {
+                if !port_entered {
+                    out.push(PromptOption::Port { reach, pairs });
+                    port_entered = true;
                 }
             } else {
                 out.push(PromptOption::Direct(mv));
@@ -1463,6 +1506,8 @@ impl Repl {
             PromptOption::Chinatown { count, longest } => {
                 format!("Chinatown — choose exchanges (up to {longest}; {count} combinations)")
             }
+            PromptOption::Port { reach, pairs: true } => format!("Port — take 1 or 2 order cards ({reach} in reach)"),
+            PromptOption::Port { reach, pairs: false } => format!("Port — take 1 order card ({reach} in reach)"),
         }
     }
 
@@ -1627,6 +1672,7 @@ impl Repl {
             SubPrompt::Reveal { .. } => self.step_reveal(words),
             SubPrompt::Church { .. } => self.step_church(words),
             SubPrompt::Chinatown { .. } => self.step_chinatown(words),
+            SubPrompt::Port { .. } => self.step_port(words),
             SubPrompt::None => self.out(String::new(), false), // unreachable: gated by caller
         }
     }
@@ -1804,9 +1850,12 @@ impl Repl {
             | SubPrompt::Retreat { .. }
             | SubPrompt::PlaceA { .. }
             | SubPrompt::PlaceB { .. }
-            // A chooser asks about goods, not about a card registry.
+            // A chooser records nothing: the Church's and Chinatown's ask
+            // about goods, and `?` over the Port's opens the order index as
+            // a read-only view, which is the registry its cards are in.
             | SubPrompt::Church { .. }
-            | SubPrompt::Chinatown { .. } => None,
+            | SubPrompt::Chinatown { .. }
+            | SubPrompt::Port { .. } => None,
         }
     }
 
@@ -2452,18 +2501,10 @@ impl Repl {
             _ => return self.out(String::new(), false), // unreachable: dispatched as Church
         };
         match words {
-            ["cancel"] => {
-                self.sub = SubPrompt::None;
-                self.page = 0;
-                self.out("Church payment cancelled — back to the main options.".to_string(), false)
-            }
-            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["cancel"] => self.leave_chooser(LeaveChooser::Cancel("Church payment cancelled — back to the main options.")),
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
             ["confirm"] => match crate::chooser::church_match(&self.session.legal(), selected) {
-                Some(mv) => {
-                    self.sub = SubPrompt::None;
-                    self.page = 0;
-                    self.commit(mv)
-                }
+                Some(mv) => self.leave_chooser(LeaveChooser::Commit(mv)),
                 None => self.out(
                     "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
                     false,
@@ -2519,20 +2560,14 @@ impl Repl {
         let row = |tok: &str| tok.parse::<usize>().ok().filter(|n| (1..=9).contains(n)).map(|n| n - 1);
         match words {
             ["cancel"] => {
-                self.sub = SubPrompt::None;
-                self.page = 0;
-                self.out("Chinatown exchanges cancelled — back to the main options.".to_string(), false)
+                self.leave_chooser(LeaveChooser::Cancel("Chinatown exchanges cancelled — back to the main options."))
             }
-            ["quit"] | ["q"] => StepOutput { text: "bye\n".to_string(), quit: true },
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
             ["confirm"] if counts.iter().all(|&n| n == 0) => {
                 self.out("! add an exchange first, or 'cancel'".to_string(), false)
             }
             ["confirm"] => match crate::chooser::chinatown_match(&self.session.legal(), counts) {
-                Some(mv) => {
-                    self.sub = SubPrompt::None;
-                    self.page = 0;
-                    self.commit(mv)
-                }
+                Some(mv) => self.leave_chooser(LeaveChooser::Commit(mv)),
                 None => self.out(
                     "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
                     false,
@@ -2580,6 +2615,111 @@ impl Repl {
         }
     }
 
+    /// How a chooser is left — the ONE helper `step_church`, `step_chinatown`
+    /// and `step_port` close by (plan 2b): `quit` quits as every sub-prompt
+    /// does, leaving the chooser as it is; `cancel` closes it, resets the
+    /// page and says so; a `confirm` with one listed move closes it, resets
+    /// the page and THEN commits that move, in `step_place_a`'s order — `out`
+    /// appends the main prompt only once no sub-prompt is open, so only this
+    /// order makes the reply read as the old row's did.
+    fn leave_chooser(&mut self, how: LeaveChooser) -> StepOutput {
+        match how {
+            LeaveChooser::Quit => StepOutput { text: "bye\n".to_string(), quit: true },
+            LeaveChooser::Cancel(line) => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.out(line.to_string(), false)
+            }
+            LeaveChooser::Commit(mv) => {
+                self.sub = SubPrompt::None;
+                self.page = 0;
+                self.commit(mv)
+            }
+        }
+    }
+
+    /// Port chooser input (plan 2b, "The words"): a card's number — bare
+    /// (`11`, what the browser sends) or as displayed (`O11`, `o11`) —
+    /// switches that card; switching ON one the list holds no take with is
+    /// refused and the selection kept, switching off is always taken; a
+    /// number that is no card in reach is refused. `confirm` reads
+    /// `chooser::port_matches`: no listed move takes exactly the selection,
+    /// refused and kept; one, the chooser closes and THEN that listed move is
+    /// committed ([`Self::leave_chooser`]); two — the second card payable
+    /// with 2 yen or an imported good — the numbered pick opens over those
+    /// two moves in their list order, in place of the chooser. Every "in
+    /// reach", "can add" and match is a lookup in `session.legal()`, never a
+    /// rule.
+    fn step_port(&mut self, words: &[&str]) -> StepOutput {
+        let selected = match &self.sub {
+            SubPrompt::Port { selected } => selected.clone(),
+            _ => return self.out(String::new(), false), // unreachable: dispatched as Port
+        };
+        // A card as the terminal shows it or as the browser sends it; `None`
+        // for a token that is not a number in either form.
+        let number = |tok: &str| {
+            let digits = tok.strip_prefix(['O', 'o']).unwrap_or(tok);
+            (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then(|| digits.parse::<u8>().ok())
+        };
+        match words {
+            ["cancel"] => self.leave_chooser(LeaveChooser::Cancel("Port take cancelled — back to the main options.")),
+            ["quit"] | ["q"] => self.leave_chooser(LeaveChooser::Quit),
+            ["confirm"] if selected.is_empty() => self.out("! pick a card first, or 'cancel'".to_string(), false),
+            ["confirm"] => {
+                let mut matches = crate::chooser::port_matches(&self.session.legal(), &selected);
+                match matches.len() {
+                    0 => self.out(
+                        "! that selection is not currently available — adjust it or 'cancel'.\n".to_string(),
+                        false,
+                    ),
+                    1 => self.leave_chooser(LeaveChooser::Commit(matches.remove(0))),
+                    _ => {
+                        let cards = crate::chooser::port_cards(&matches[0])
+                            .unwrap_or_default()
+                            .iter()
+                            .map(|id| format!("O{:02}", id.0))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.enter_pick_subprompt(format!("Port: take {cards} — choose the payment"), matches)
+                    }
+                }
+            }
+            [tok] if number(tok).is_some() => {
+                let model = crate::chooser::port_model(
+                    self.session.state(),
+                    self.session.rules(),
+                    &self.session.legal(),
+                    &selected,
+                );
+                let Some(card) = number(tok).flatten().and_then(|n| model.cards.iter().find(|c| c.number == n)) else {
+                    return self.out(
+                        "! that is not a card in reach here — pick one of the listed numbers, 'confirm', or 'cancel'"
+                            .to_string(),
+                        false,
+                    );
+                };
+                let id = card.id;
+                if !card.selected && !card.can_add {
+                    return self.out(format!("! the list holds no take with O{:02} added from here", id.0), false);
+                }
+                if let SubPrompt::Port { selected } = &mut self.sub {
+                    match selected.iter().position(|c| *c == id) {
+                        Some(i) => {
+                            selected.remove(i);
+                        }
+                        None => selected.push(id),
+                    }
+                }
+                self.out(String::new(), false)
+            }
+            _ => self.out(
+                "! toggle a card by its number, 'confirm', or 'cancel' ('?' shows the cards; cancel first for help or the view menu)"
+                    .to_string(),
+                false,
+            ),
+        }
+    }
+
     /// The screen an open chooser appended to the last reply, exactly as `out`
     /// appended it; `None` when no chooser is open.
     ///
@@ -2593,7 +2733,9 @@ impl Repl {
             return None;
         }
         match self.sub {
-            SubPrompt::Church { .. } | SubPrompt::Chinatown { .. } => Some(self.sub_prompt_text()),
+            SubPrompt::Church { .. } | SubPrompt::Chinatown { .. } | SubPrompt::Port { .. } => {
+                Some(self.sub_prompt_text())
+            }
             SubPrompt::None
             | SubPrompt::Pick { .. }
             | SubPrompt::Retreat { .. }
@@ -2736,6 +2878,13 @@ impl Repl {
                 rules,
                 &self.session.legal(),
                 *counts,
+            )),
+            // Task 1's model and screen (plan 2b), over the same legal list.
+            SubPrompt::Port { selected } => crate::chooser::port_text(&crate::chooser::port_model(
+                state,
+                rules,
+                &self.session.legal(),
+                selected,
             )),
             SubPrompt::Pick { title, moves } => {
                 // Same 20/page + footer machinery the main list uses (brief item
@@ -3867,6 +4016,53 @@ fn range_text(n: usize) -> String {
         None => "nothing to pick here".to_string(),
         Some((lo, hi)) if lo == hi => format!("{lo}"),
         Some((lo, hi)) => format!("{lo}-{hi}"),
+    }
+}
+
+/// What a cell that commits a Port take types (plan 2b, Task 2): every cell
+/// that once answered a take by its row in the legal list.
+#[cfg(test)]
+impl Repl {
+    /// The lines that commit the listed Port move `mv` from the main list, as
+    /// a player types them: the folded entry's number, each card's bare
+    /// number in the move's own order, `confirm`, and — when two listed moves
+    /// take the same cards — the payment pick's row for `mv`. With a single
+    /// listed Port move there is no fold, and the line is that row's number.
+    /// Counted by hand off the list, never through `chooser`, so a cell that
+    /// drives a take with it does not share the code it checks.
+    pub(crate) fn port_take_lines(&self, mv: &Move) -> Vec<String> {
+        let cards = |m: &Move| match m {
+            Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } => Some(cards_taken.clone()),
+            _ => None,
+        };
+        let set = |c: &[OrderCardId]| {
+            let mut k: Vec<u8> = c.iter().map(|x| x.0).collect();
+            k.sort_unstable();
+            k
+        };
+        let taken = cards(mv).expect("a Port move");
+        let rows = self.option_rows();
+        if let Some(k) = rows.iter().position(|r| r.mv.as_ref() == Some(mv)) {
+            return vec![menu_number(k).to_string()];
+        }
+        let entry = rows
+            .iter()
+            .position(|r| r.mv.is_none() && r.words.starts_with("Port — take"))
+            .expect("the Port's takes fold into one entry");
+        let mut lines = vec![menu_number(entry).to_string()];
+        lines.extend(taken.iter().map(|c| c.0.to_string()));
+        lines.push("confirm".to_string());
+        let same: Vec<Move> = self
+            .session
+            .legal()
+            .into_iter()
+            .filter(|m| cards(m).is_some_and(|c| set(&c) == set(&taken)))
+            .collect();
+        if same.len() > 1 {
+            let k = same.iter().position(|m| m == mv).expect("mv is listed");
+            lines.push(menu_number(k).to_string());
+        }
+        lines
     }
 }
 
@@ -5317,11 +5513,17 @@ mod tests {
             m, Move::PlacePresident { destination } if *destination == port_area
         )).expect("PlacePresident at Port A is legal from hand at game start");
         r.step(&menu_number(k).to_string());
-        let take = r.session.legal().iter().position(|m| matches!(
+        let take = r.session.legal().into_iter().find(|m| matches!(
             m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 1
         )).expect("1-card port take available");
         let events_before = r.session.record().events.len();
-        let out = r.step(&menu_number(take).to_string());
+        // The take through the Port's chooser (plan 2b): its entry, the card,
+        // `confirm`.
+        let mut out = None;
+        for line in r.port_take_lines(&take) {
+            out = Some(r.step(&line));
+        }
+        let out = out.expect("a line was sent");
         assert!(!out.text.to_lowercase().contains("slot"), "{}", out.text);
         assert_eq!(r.session.record().events.len(), events_before + 1);
         assert!(matches!(r.pending, Pending::None));
@@ -9373,10 +9575,13 @@ mod tests {
         let take = r
             .session
             .legal()
-            .iter()
-            .position(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 2))
+            .into_iter()
+            .find(|m| matches!(m, Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } if cards_taken.len() == 2))
             .expect("a 2-card port take is available");
-        r.step(&menu_number(take).to_string());
+        // Through the Port's chooser (plan 2b).
+        for line in r.port_take_lines(&take) {
+            r.step(&line);
+        }
         assert!(matches!(r.pending, Pending::OrderReveals { .. }), "parked at a reveal");
         (r, deck_card)
     }
@@ -10451,4 +10656,559 @@ mod tests {
     const SWEEP_SEEDS: u64 = 4;
     const CHINATOWN_SWEEP_POSITIONS_FLOOR: usize = 25;
     const CHINATOWN_SWEEP_MOVES_FLOOR: usize = 780;
+
+    // -----------------------------------------------------------------
+    // The Port's chooser (cycle 2, plan 2b, Task 2)
+    // -----------------------------------------------------------------
+
+    use crate::chooser::test_support::{port_b_position, port_position, port_position_with};
+    use crate::chooser::{port_model, port_text};
+
+    /// The cards a Port move takes, read by pattern — never through
+    /// `chooser::port_cards` — so a cell that compares against it does not
+    /// share the code it checks.
+    fn cards_by_hand(mv: &Move) -> Option<Vec<OrderCardId>> {
+        match mv {
+            Move::ExecuteAreaAction { action: AreaAction::Port { cards_taken, .. } } => Some(cards_taken.clone()),
+            _ => None,
+        }
+    }
+
+    /// A card set as its sorted numbers, so two orders of one set compare equal.
+    fn set_of(cards: &[OrderCardId]) -> Vec<u8> {
+        let mut key: Vec<u8> = cards.iter().map(|c| c.0).collect();
+        key.sort_unstable();
+        key
+    }
+
+    /// Every listed Port move, in list order.
+    fn port_takes(legal: &[Move]) -> Vec<Move> {
+        legal.iter().filter(|m| cards_by_hand(m).is_some()).cloned().collect()
+    }
+
+    /// The cards an open Port chooser holds, in the order switched on, or panic.
+    fn port_selection(r: &Repl) -> Vec<u8> {
+        match &r.sub {
+            SubPrompt::Port { selected } => selected.iter().map(|c| c.0).collect(),
+            _ => panic!("the Port chooser is not open"),
+        }
+    }
+
+    /// The terminal's screen for the open chooser, from Task 1's model over
+    /// the repl's own legal list.
+    fn port_screen(r: &Repl) -> String {
+        let selected: Vec<OrderCardId> = port_selection(r).into_iter().map(OrderCardId).collect();
+        port_text(&port_model(r.session.state(), r.session.rules(), &r.session.legal(), &selected))
+    }
+
+    /// The display number of the folded Port entry.
+    fn port_entry(r: &Repl) -> usize {
+        display_number_containing(r, "Port — take").expect("the Port entry is listed")
+    }
+
+    /// The Port take of exactly `cards`, in that order, with `payment`.
+    fn port_move(cards: &[u8], payment: Option<PortPayment>) -> Move {
+        Move::ExecuteAreaAction {
+            action: AreaAction::Port {
+                cards_taken: cards.iter().map(|&n| OrderCardId(n)).collect(),
+                second_card_payment: payment,
+            },
+        }
+    }
+
+    const NOT_IN_REACH: &str =
+        "! that is not a card in reach here — pick one of the listed numbers, 'confirm', or 'cancel'";
+    const PORT_ANYTHING_ELSE: &str =
+        "! toggle a card by its number, 'confirm', or 'cancel' ('?' shows the cards; cancel first for help or the view menu)";
+
+    /// The one-move position (ruling F2's cell 1): two orders in hand at power
+    /// 2, so only the two LOW cards' singles are listed, with the first LOW
+    /// slot's card moved into the removed pile — a real card, moved, not
+    /// invented — leaving one Port move and the decline.
+    fn one_take_position() -> GameState {
+        let mut state = port_position_with(1, 2, 5, 1);
+        let card = state.port_state.port_a.slots[0].take().expect("slot 0 holds a card");
+        state.orders_removed.push(card);
+        state
+    }
+
+    /// A mercenary's sub-turn at Port A, built as the Church's mercenary cell
+    /// builds its own and then MADE whole: the President stands elsewhere, the
+    /// four assistants at the Port act alone (power 4), the mercenary is
+    /// spent for this turn and the phase it returns to is recorded.
+    fn mercenary_port_position() -> GameState {
+        let mut state = port_position_with(4, 1, 5, 1);
+        let port = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .expect("the board has Port A")
+            .0;
+        let elsewhere = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(id, c)| **id != port && c.area_type.allows_placement())
+            .expect("another area")
+            .0;
+        let me = state.current_player;
+        state.players[me.0 as usize].president_location = PresidentLocation::OnBoard(elsewhere);
+        state.is_mercenary_action = true;
+        state.mercenary_target_area = Some(port);
+        state.mercenary_return_phase = Some(TurnPhase::AdditionalActionFirst);
+        state.additional_action_state.mercenary_used = true;
+        state.current_action_power = Some(calculate_power(&state, me, port));
+        state
+    }
+
+    /// The lines that commit `mv` through the chooser: the entry, each card
+    /// in `order` as `form` spells it, `confirm`, and — when two listed moves
+    /// take the same cards — the pick's row for `mv`, its place among them in
+    /// list order, counted by hand.
+    fn lines_for(r: &Repl, mv: &Move, order: &[OrderCardId], form: fn(u8) -> String) -> Vec<String> {
+        let legal = r.session.legal();
+        let mut lines = vec![port_entry(r).to_string()];
+        lines.extend(order.iter().map(|c| form(c.0)));
+        lines.push("confirm".to_string());
+        let key = set_of(&cards_by_hand(mv).expect("a Port move"));
+        let same: Vec<Move> =
+            port_takes(&legal).into_iter().filter(|m| set_of(&cards_by_hand(m).unwrap()) == key).collect();
+        if same.len() > 1 {
+            let k = same.iter().position(|m| m == mv).expect("mv is listed");
+            lines.push(menu_number(k).to_string());
+        }
+        lines
+    }
+
+    fn bare(n: u8) -> String {
+        n.to_string()
+    }
+    fn displayed(n: u8) -> String {
+        format!("O{n:02}")
+    }
+    fn displayed_lower(n: u8) -> String {
+        format!("o{n:02}")
+    }
+
+    #[test]
+    fn the_main_list_folds_the_port() {
+        let rules = Rules::standard();
+        assert_eq!(check_invariants(&port_position(), &rules), Ok(()));
+        let r = repl_at(port_position());
+        let rows = r.option_rows();
+        assert_eq!(rows.len(), 2, "{:?}", rows.iter().map(|x| &x.words).collect::<Vec<_>>());
+        assert_eq!(rows[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        assert_eq!(rows[0].mv, None, "the entry opens a chooser and names no move");
+        assert_eq!(rows[1].mv, Some(SKIP));
+
+        // Two orders in hand: room for one card, so no pair is listed.
+        let r = repl_at(port_position_with(4, 2, 5, 1));
+        assert!(port_takes(&r.session.legal()).iter().all(|m| cards_by_hand(m).unwrap().len() == 1), "premise");
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 order card (6 in reach)");
+
+        // One listed Port move stays a direct row, in `describe_move`'s words
+        // (the rival: fold whenever the President is at a Port).
+        let state = one_take_position();
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        let r = repl_at(state);
+        let takes = port_takes(&r.session.legal());
+        assert_eq!(takes.len(), 1, "premise: exactly one Port move is listed: {takes:?}");
+        let (state, rules) = (r.session.state(), r.session.rules());
+        assert_eq!(
+            r.option_rows().iter().map(|x| (x.mv.clone(), x.words.clone())).collect::<Vec<_>>(),
+            vec![
+                (Some(takes[0].clone()), describe::describe_move(&takes[0], state, rules)),
+                (Some(SKIP), describe::describe_move(&SKIP, state, rules)),
+            ],
+        );
+    }
+
+    #[test]
+    fn every_listed_take_commits_through_the_chooser() {
+        // Power 5, room for two, 5 yen and an imported good: 36 takes, every
+        // pair listed twice.
+        let state = port_position();
+        let takes = port_takes(&get_legal_moves(&state, &Rules::standard()));
+        assert_eq!(takes.len(), 36, "premise");
+        let mut picks = 0usize;
+        for (i, mv) in takes.iter().enumerate() {
+            let cards = cards_by_hand(mv).unwrap();
+            let mut reversed = cards.clone();
+            reversed.reverse();
+            let form: fn(u8) -> String = if i % 2 == 0 { bare } else if i % 4 == 1 { displayed } else { displayed_lower };
+            for order in [&cards, &reversed] {
+                let mut r = repl_at(state.clone());
+                let lines = lines_for(&r, mv, order, form);
+                for line in &lines[..lines.len() - 1] {
+                    r.step(line);
+                }
+                if cards.len() == 2 {
+                    // Every pair here is payable two ways: `confirm` opens the
+                    // pick over both, titled as "The words" say.
+                    assert!(
+                        matches!(&r.sub, SubPrompt::Pick { title, moves }
+                            if *title == format!("Port: take O{:02}, O{:02} — choose the payment", cards[0].0, cards[1].0)
+                                && moves.len() == 2 && moves.contains(mv)),
+                        "take {i} ({order:?}): the pick is open",
+                    );
+                    picks += 1;
+                }
+                r.step(lines.last().unwrap());
+                assert_eq!(&last_move(&r), mv, "take {i}, cards sent as {order:?}");
+                assert!(matches!(r.sub, SubPrompt::None), "take {i}: nothing left open");
+            }
+        }
+        assert_eq!(picks, 60, "15 pairs, each two ways, each sent in two orders");
+
+        // 5 yen and no imported good: 21 takes, each pair listed once, and
+        // `confirm` commits it with no pick (the rival: the pick opens
+        // whenever two cards are on).
+        let state = port_position_with(4, 1, 5, 0);
+        let takes = port_takes(&get_legal_moves(&state, &Rules::standard()));
+        assert_eq!(takes.len(), 21, "premise");
+        for (i, mv) in takes.iter().enumerate() {
+            let cards = cards_by_hand(mv).unwrap();
+            let mut reversed = cards.clone();
+            reversed.reverse();
+            for order in [&cards, &reversed] {
+                let mut r = repl_at(state.clone());
+                let lines = lines_for(&r, mv, order, if i % 2 == 0 { bare } else { displayed });
+                assert_eq!(lines.last().map(String::as_str), Some("confirm"), "no pick row: one way to pay");
+                for line in &lines {
+                    r.step(line);
+                }
+                assert_eq!(&last_move(&r), mv, "take {i}, cards sent as {order:?}");
+                assert!(matches!(r.sub, SubPrompt::None), "take {i}: committed at confirm, no pick opened");
+            }
+        }
+    }
+
+    #[test]
+    fn a_third_card_is_refused_and_the_selection_kept() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        let events = r.session.record().events.len();
+        let out = r.step("28");
+        assert_eq!(port_selection(&r), [10, 34], "the selection is kept");
+        assert_eq!(out.text, format!("! the list holds no take with O28 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert!(
+            matches!(&r.sub, SubPrompt::Pick { moves, .. }
+                if *moves == vec![port_move(&[10, 34], Some(PortPayment::TwoYen)), port_move(&[10, 34], Some(PortPayment::OneImportedGood))]),
+            "confirm opens the pick over the first two cards' two ways",
+        );
+
+        // Design §6's case: a second card with room in hand for one.
+        let mut r = repl_at(port_position_with(4, 2, 5, 1));
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        let events = r.session.record().events.len();
+        let out = r.step("34");
+        assert_eq!(port_selection(&r), [10]);
+        assert_eq!(out.text, format!("! the list holds no take with O34 added from here\n{}", port_screen(&r)));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[10], None), "confirm takes the first alone");
+    }
+
+    #[test]
+    fn a_number_that_is_no_card_in_reach_is_refused() {
+        // Power 2: the two LOW cards are in reach; O28 sits on the board, MID.
+        let state = port_position_with(1, 1, 5, 1);
+        assert!(state.port_state.port_a.slots.contains(&Some(OrderCardId(28))), "premise: O28 is on the board");
+        let mut r = repl_at(state);
+        r.step(&port_entry(&r).to_string());
+        for tok in ["28", "99", "0", "O28", "o99"] {
+            let out = r.step(tok);
+            assert_eq!(port_selection(&r), Vec::<u8>::new(), "{tok}: nothing switched on");
+            assert_eq!(out.text, format!("{NOT_IN_REACH}\n{}", port_screen(&r)), "{tok}");
+        }
+        r.step("34");
+        for tok in ["28", "99", "0"] {
+            let out = r.step(tok);
+            assert_eq!(port_selection(&r), [34], "{tok}: the selection is kept");
+            assert_eq!(out.text, format!("{NOT_IN_REACH}\n{}", port_screen(&r)), "{tok}");
+        }
+    }
+
+    #[test]
+    fn confirm_with_one_way_closes_then_commits() {
+        // A single, and a pair listed one way: each reply is the one the old
+        // direct row gave, read off a twin that commits the same move.
+        for (state, cards, mv) in [
+            (port_position(), vec!["10"], port_move(&[10], None)),
+            (port_position_with(4, 1, 5, 0), vec!["34", "10"], port_move(&[10, 34], Some(PortPayment::TwoYen))),
+        ] {
+            let mut twin = repl_at(state.clone());
+            let expected = twin.commit(mv.clone());
+            let mut r = repl_at(state);
+            r.step(&port_entry(&r).to_string());
+            for card in &cards {
+                r.step(card);
+            }
+            let screen = port_screen(&r);
+            let out = r.step("confirm");
+            assert!(matches!(r.sub, SubPrompt::None), "the chooser closes");
+            assert_eq!(last_move(&r), mv);
+            assert_eq!(r.session.state(), twin.session.state(), "the state is the listed move's");
+            assert_eq!(out.text, expected.text, "the reply is the old row's");
+            assert!(out.text.ends_with(&r.prompt()), "the next prompt last:\n{}", out.text);
+            for line in screen.lines().filter(|l| !l.trim().is_empty()) {
+                assert!(!out.text.lines().any(|l| l == line), "a line of the chooser's screen rode the reply: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cancel_in_the_payment_pick_keeps_nothing() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("34");
+        r.step("confirm");
+        assert!(matches!(r.sub, SubPrompt::Pick { .. }), "premise: the payment pick is open");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(out.text, format!("Selection cancelled — back to the main options.\n{}", r.prompt()));
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        let opened = r.step(&port_entry(&r).to_string());
+        assert_eq!(port_selection(&r), Vec::<u8>::new(), "the chooser opens empty");
+        assert!(opened.text.contains("\nSelected: (none)\n"), "{}", opened.text);
+    }
+
+    #[test]
+    fn the_refusals_are_the_plan_s() {
+        let mut r = repl_at(port_position());
+        let events = r.session.record().events.len();
+        let opened = r.step(&port_entry(&r).to_string());
+        assert_eq!(opened.text, port_screen(&r), "opening prints the screen and nothing before it");
+        let out = r.step("confirm");
+        assert_eq!(out.text, format!("! pick a card first, or 'cancel'\n{}", port_screen(&r)));
+        r.step("10");
+        let tile = format!("A{:02}", r.session.state().board_layout.areas.keys().next().expect("a tile").0);
+        for word in ["back", "back 1", "more", "help", tile.as_str(), "list"] {
+            let out = r.step(word);
+            assert_eq!(out.text, format!("{PORT_ANYTHING_ELSE}\n{}", port_screen(&r)), "{word}");
+            assert_eq!(port_selection(&r), [10], "{word}: the selection is kept");
+        }
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+        let out = r.step("cancel");
+        assert!(matches!(r.sub, SubPrompt::None));
+        assert_eq!(out.text, format!("Port take cancelled — back to the main options.\n{}", r.prompt()));
+        assert_eq!(r.session.record().events.len(), events, "nothing applied");
+    }
+
+    #[test]
+    fn the_card_index_opens_over_the_port_s_chooser_and_returns_to_it() {
+        let mut r = repl_at(port_position());
+        r.step(&port_entry(&r).to_string());
+        r.step("10");
+        r.step("?");
+        assert!(matches!(r.overlay, Some(Overlay::Index { kind: IndexKind::Orders, .. })), "the order index is open");
+        assert_eq!(r.index_target(), None, "nothing is being recorded");
+        let back = r.step("cancel");
+        assert!(r.overlay.is_none());
+        assert_eq!(port_selection(&r), [10]);
+        assert!(back.text.ends_with(&port_screen(&r)), "{}", back.text);
+    }
+
+    #[test]
+    fn port_b_folds_and_commits() {
+        let state = port_b_position();
+        assert_eq!(check_invariants(&state, &Rules::standard()), Ok(()));
+        let mut r = repl_at(state);
+        assert!(r.option_rows()[0].words.starts_with("Port — take 1 or 2 order cards ("), "{:?}", r.option_rows()[0].words);
+        let opened = r.step(&port_entry(&r).to_string());
+        assert!(opened.text.starts_with("Port B — take 1 card, or 2 (toggle by number):\n"), "{}", opened.text);
+        let single = port_takes(&r.session.legal()).into_iter().next().expect("a take");
+        let card = cards_by_hand(&single).unwrap()[0];
+        r.step(&card.0.to_string());
+        r.step("confirm");
+        assert_eq!(last_move(&r), single);
+        assert!(!r.session.is_locked());
+    }
+
+    #[test]
+    fn a_mercenary_s_port_folds_and_commits() {
+        let state = mercenary_port_position();
+        let rules = Rules::standard();
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        assert_eq!(state.current_action_power, Some(4), "premise: the assistants alone");
+        let mut r = repl_at(state);
+        let takes = port_takes(&r.session.legal());
+        assert_eq!(takes.len(), 36, "premise: 36 takes in the sub-turn");
+        assert_eq!(r.option_rows().len(), 2);
+        assert_eq!(r.option_rows()[0].words, "Port — take 1 or 2 order cards (6 in reach)");
+        r.step(&port_entry(&r).to_string());
+        r.step("28");
+        r.step("confirm");
+        assert_eq!(last_move(&r), port_move(&[28], None));
+        assert!(!r.session.is_locked(), "the take passed the engine's invariants");
+        assert!(r.session.state().is_mercenary_action, "still in the sub-turn");
+        assert_eq!(r.session.state().turn_phase, TurnPhase::FivePowerBonus, "the sub-turn's next phase");
+    }
+
+    /// A live 2P session as `reveal.rs`'s cells build theirs.
+    fn live_repl_for_the_port() -> Repl {
+        let rules = Rules::standard();
+        let config = GameConfig::for_player_count(2);
+        let table = new_game(config.clone(), &rules, 900).unwrap();
+        let obs = SetupObservations {
+            port_a: Some(std::array::from_fn(|i| table.state.port_state.port_a.slots[i].unwrap())),
+            lab_a: Some(std::array::from_fn(|i| table.state.lab_state.lab_a.slots[i].unwrap())),
+            deals: vec![(PlayerId::new(0), table.deals[0])],
+            ..Default::default()
+        };
+        let session = Session::new_live(
+            config,
+            901,
+            obs,
+            vec![StartingOrderChoice::Keep(0), StartingOrderChoice::Unknown],
+            rules,
+        )
+        .unwrap();
+        Repl::new(session)
+    }
+
+    /// The live session walked to its Port A area action: the additional
+    /// phase ended, one assistant placed at Port A, the President placed there.
+    fn live_at_the_port() -> Repl {
+        let mut r = live_repl_for_the_port();
+        let port = *r
+            .session
+            .state()
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::PortA)
+            .unwrap()
+            .0;
+        r.step("1");
+        r.step(&format!("a {}", port.0));
+        let k = r
+            .session
+            .legal()
+            .iter()
+            .position(|m| matches!(m, Move::PlacePresident { destination } if *destination == port))
+            .expect("PlacePresident at Port A");
+        r.step(&menu_number(k).to_string());
+        r
+    }
+
+    #[test]
+    fn a_live_port_take_through_the_chooser_parks_at_its_reveal() {
+        for size in [1usize, 2] {
+            let mut r = live_at_the_port();
+            let mv = port_takes(&r.session.legal())
+                .into_iter()
+                .find(|m| cards_by_hand(m).unwrap().len() == size)
+                .expect("a take of that size");
+            let mut twin = live_at_the_port();
+            let expected = twin.commit(mv.clone());
+            let events = r.session.record().events.len();
+            let lines = r.port_take_lines(&mv);
+            assert!(lines.len() > 1, "premise: the take goes through the chooser: {lines:?}");
+            let mut out = None;
+            for line in &lines {
+                out = Some(r.step(line));
+            }
+            let out = out.unwrap();
+            assert!(matches!(r.sub, SubPrompt::None), "{size}: the chooser closed");
+            assert!(matches!(r.pending, Pending::OrderReveals { .. }), "{size}: parked at the reveal");
+            assert_eq!(r.session.record().events.len(), events, "{size}: nothing recorded before the reveal");
+            assert_eq!(out.text, expected.text, "{size}: the reveal prompt, as the old row's");
+            assert!(out.text.to_lowercase().contains("slot"), "{}", out.text);
+        }
+    }
+
+    /// The sweep's anti-vacuity floors, about half of what it read when set:
+    /// 233 folded positions and 728 takes over seeds 0..8 at 2, 3 and 4
+    /// players, 13 of their pairs payable both ways, in about 5 s of a debug
+    /// build. The both-ways floor is one (the brief's): those are the takes
+    /// that go through the payment pick.
+    const PORT_SWEEP_POSITIONS_FLOOR: usize = 116;
+    const PORT_SWEEP_TAKES_FLOOR: usize = 364;
+
+    /// Every card's `can_add` on the open chooser against "the list holds a
+    /// take of the selection with it added", read by hand off the list.
+    fn assert_port_can_add_is_the_list_s(r: &Repl, at: &str) {
+        let legal = r.session.legal();
+        let selected: Vec<OrderCardId> = port_selection(r).into_iter().map(OrderCardId).collect();
+        let model = port_model(r.session.state(), r.session.rules(), &legal, &selected);
+        let listed: Vec<Vec<u8>> = port_takes(&legal).iter().map(|m| set_of(&cards_by_hand(m).unwrap())).collect();
+        for card in &model.cards {
+            let mut with = selected.clone();
+            with.push(card.id);
+            let expected = !selected.contains(&card.id) && listed.contains(&set_of(&with));
+            assert_eq!(card.can_add, expected, "{at}: O{:02} can_add after {selected:?}", card.number);
+        }
+    }
+
+    #[test]
+    fn a_self_play_sweep_commits_every_take() {
+        let rules = Rules::standard();
+        let started = std::time::Instant::now();
+        // [folded positions, takes committed, pairs payable both ways]
+        let mut tally = [0usize; 3];
+        for n in [2u8, 3, 4] {
+            for seed in 0..PORT_SWEEP_SEEDS {
+                let pending = new_game(GameConfig::for_player_count(n), &rules, seed).unwrap();
+                let mut state =
+                    finalize_setup(pending, &vec![StartingOrderChoice::Keep(0); n as usize]).unwrap();
+                let mut k: u64 = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+                for _ in 0..4000 {
+                    if is_game_over(&state) {
+                        break;
+                    }
+                    let legal = get_legal_moves(&state, &rules);
+                    let takes = port_takes(&legal);
+                    if state.turn_phase == TurnPhase::AreaAction && state.pending_choices.is_empty() && takes.len() > 1 {
+                        let at = format!("{n}P seed {seed} turn {}", state.turn_number);
+                        tally[0] += 1;
+                        let mut seen: Vec<Vec<u8>> = Vec::new();
+                        for mv in &takes {
+                            let cards = cards_by_hand(mv).unwrap();
+                            let key = set_of(&cards);
+                            if takes.iter().filter(|m| set_of(&cards_by_hand(m).unwrap()) == key).count() > 1
+                                && !seen.contains(&key)
+                            {
+                                seen.push(key);
+                                tally[2] += 1;
+                            }
+                            let mut r = repl_at(state.clone());
+                            let lines = lines_for(&r, mv, &cards, bare);
+                            for (i, line) in lines.iter().enumerate() {
+                                r.step(line);
+                                if i < cards.len() + 1 {
+                                    assert_port_can_add_is_the_list_s(&r, &at);
+                                }
+                            }
+                            assert_eq!(&last_move(&r), mv, "{at}");
+                            tally[1] += 1;
+                        }
+                    }
+                    k ^= k << 13;
+                    k ^= k >> 7;
+                    k ^= k << 17;
+                    state = apply_move(&state, &legal[(k % legal.len() as u64) as usize], &rules).unwrap();
+                }
+            }
+        }
+        let [positions, takes, both_ways] = tally;
+        println!(
+            "a_self_play_sweep_commits_every_take: {positions} positions, {takes} takes, {both_ways} pairs payable \
+             both ways, in {:?}",
+            started.elapsed()
+        );
+        assert!(positions >= PORT_SWEEP_POSITIONS_FLOOR, "only {positions} folded Port positions");
+        assert!(takes >= PORT_SWEEP_TAKES_FLOOR, "only {takes} Port takes committed");
+        assert!(both_ways >= 1, "the sweep met no pair payable both ways");
+    }
+
+    /// The sweep's seeds per player count.
+    const PORT_SWEEP_SEEDS: u64 = 8;
 }

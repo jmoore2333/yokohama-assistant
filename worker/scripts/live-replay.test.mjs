@@ -371,7 +371,7 @@ describe("productionSeedRule", () => {
   // `wire4`, a kept table (plan 2a, 2026-11-21): the walk's own rows, read by
   // that plan's reviews and not by S1b's. Mutant: the skip rule widened to
   // `wire4`'s four keep rows.
-  it("keeps exactly thirty-two rows, of 2,234: the twenty-six the S1b review read and the six lines the walk plays at wire4", () => {
+  it("keeps exactly thirty-two rows, of 2,253: the twenty-six the S1b review read and the six lines the walk plays at wire4", () => {
     const skipped = productionSeedRule(SCRIPTS.walk);
     const rows = order(SCRIPTS.walk, SCRIPTS.host, SCRIPTS.archive);
     const kept = rows.filter(({ row }) => !skippedUnderProductionSeedRule(row, skipped));
@@ -387,7 +387,7 @@ describe("productionSeedRule", () => {
     const file = readFileSync(new URL("./replay/fixtures/production-door-kept-rows.txt", import.meta.url), "utf8");
     expect(file.endsWith("\n"), "the list ends in one newline").toBe(true);
     expect(lines).toEqual(file.slice(0, -1).split("\n"));
-    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([32, 2202, 2234]);
+    expect([kept.length, rows.length - kept.length, rows.length]).toEqual([32, 2221, 2253]);
   });
   // The sentence is `tables::SEED_NOT_SOLO`'s, read off the Rust source so
   // the two cannot drift (the edge rule's drift cell is the precedent).

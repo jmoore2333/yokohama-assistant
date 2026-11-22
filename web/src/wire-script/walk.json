@@ -2635,7 +2635,40 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "3"
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "34"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "19"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null
@@ -3384,6 +3417,28 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
+      "line": "12"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
       "line": "1"
     },
     "status": 200,
@@ -3924,7 +3979,7 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "5"
+      "line": "2"
     },
     "status": 200,
     "fixture": null
@@ -7192,6 +7247,28 @@
     "query": "",
     "body": {
       "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "4"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null
@@ -9075,7 +9152,40 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "3"
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "18"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "26"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null
@@ -11199,6 +11309,28 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
+      "line": "17"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
       "line": "1"
     },
     "status": 200,
@@ -16319,6 +16451,28 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
+      "line": "28"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "red@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
       "line": "1"
     },
     "status": 200,
@@ -16870,7 +17024,29 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "2"
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "11"
+    },
+    "status": 200,
+    "fixture": null
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null
@@ -18655,7 +18831,7 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "4"
+      "line": "2"
     },
     "status": 200,
     "fixture": null
@@ -20933,7 +21109,7 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "4"
+      "line": "2"
     },
     "status": 200,
     "fixture": null
@@ -23517,7 +23693,40 @@
     "path": "/api/games/wire/input",
     "query": "",
     "body": {
-      "line": "5"
+      "line": "1"
+    },
+    "status": 200,
+    "fixture": "port"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "36"
+    },
+    "status": 200,
+    "fixture": "port_selected"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "14"
+    },
+    "status": 200,
+    "fixture": "port_pair"
+  },
+  {
+    "who": "blue@wire.test",
+    "method": "POST",
+    "path": "/api/games/wire/input",
+    "query": "",
+    "body": {
+      "line": "confirm"
     },
     "status": 200,
     "fixture": null

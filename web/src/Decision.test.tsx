@@ -1062,7 +1062,8 @@ describe("Chinatown's chooser", () => {
 
 describe("a prompt kind this client cannot draw", () => {
   // A server newer than this client can answer a kind the union does not hold
-  // (plan 2b's `port` is the next). The client must not be left with nothing
+  // (`port` was such a kind until plan 2b made it a known one, so the cells
+  // name a kind no server sends). The client must not be left with nothing
   // to press (ruling R46): it says so and offers Cancel, which every sub-prompt
   // answers and the web's line fence admits. The payload is a real one with ONE
   // fact changed, its kind; its other prompt fields are left as they are.
@@ -1072,7 +1073,7 @@ describe("a prompt kind this client cannot draw", () => {
   const unknown = (): ClientState => {
     const c = JSON.parse(JSON.stringify(wire.church)) as { prompt: { kind: string } };
     expect(c.prompt.kind).toBe("church");
-    c.prompt.kind = "port";
+    c.prompt.kind = "a_kind_no_server_sends";
     return c as unknown as ClientState;
   };
 
@@ -1106,5 +1107,39 @@ describe("a prompt kind this client cannot draw", () => {
       expect(container.querySelector(".unknown-prompt"), `the ${state.prompt.kind} fixture`).toBeNull();
       cleanup();
     }
+  });
+});
+
+describe("the Port's chooser until its panel (plan 2b, Task 2)", () => {
+  // `port` is a known kind from Task 2 on, drawn by an interim branch of its
+  // own until Task 4's panel: the panel's asking line and Cancel, under
+  // `.chooser.port` — never the unknown-kind node. The asking line reads the
+  // arm's `max_cards`, so the cell reads the fixture and a clone with that ONE
+  // field changed.
+  it("asks the panel's question and offers Cancel, which sends cancel", async () => {
+    const { container, onSend, user } = show(wire.port);
+    expect(container.querySelector(".asking")!.textContent).toBe("The Port — take one card, or two");
+    expect(container.querySelector(".chooser.port")).not.toBeNull();
+    expect(container.querySelector(".unknown-prompt")).toBeNull();
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel"]);
+    await user.click(buttons[0]!);
+    expect(onSend.mock.calls).toEqual([["cancel"]]);
+    cleanup();
+
+    const one = JSON.parse(JSON.stringify(wire.port)) as { prompt: { kind: string; max_cards: number } };
+    expect(one.prompt.max_cards).toBe(2);
+    one.prompt.max_cards = 1;
+    const { container: c1 } = show(one as unknown as ClientState);
+    expect(c1.querySelector(".asking")!.textContent).toBe("The Port — take one card");
+    cleanup();
+
+    // In flight, its Cancel is disabled like the others; a watcher gets none.
+    show(wire.port, true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    cleanup();
+    const { container: watcher } = show(wire.port, false, true);
+    expect(watcher.querySelector(".chooser.port")).toBeNull();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 });

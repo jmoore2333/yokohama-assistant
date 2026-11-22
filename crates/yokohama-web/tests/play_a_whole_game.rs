@@ -207,6 +207,32 @@ fn choose(state: &Value, rng: &mut Rng) -> Option<String> {
                 }
             }
         }
+        // The Port's chooser (plan 2b): while fewer than `max_cards` cards are
+        // on and some card still off can be switched on, the draw decides
+        // whether to switch one on (a card drawn among those) or, once the
+        // selection is legal, to confirm it; else Confirm a legal selection;
+        // else back out. Confirming as soon as the preview is legal would take
+        // a single every time — one card is always legal, measured — and no
+        // pair and no payment pick would ever be reached. A pair payable two
+        // ways comes back as a `pick`, answered by the arm above.
+        "port" => {
+            let cards = prompt["cards"].as_array().expect("cards");
+            let on = cards.iter().filter(|c| c["selected"] == Value::Bool(true)).count();
+            let max = prompt["max_cards"].as_u64().expect("max_cards") as usize;
+            let legal = prompt["preview"]["legal"] == Value::Bool(true);
+            let open: Vec<u64> = cards
+                .iter()
+                .filter(|c| c["selected"] == Value::Bool(false) && c["can_add"] == Value::Bool(true))
+                .map(|c| c["number"].as_u64().expect("a number"))
+                .collect();
+            if on < max && !open.is_empty() && (!legal || rng.below(2) == 0) {
+                open[rng.below(open.len())].to_string()
+            } else if legal {
+                "confirm".to_string()
+            } else {
+                "cancel".to_string()
+            }
+        }
         // Chinatown's chooser (plan 2a, Task 4, ruling R28): refused, not
         // answered. This gate's games are two-player and that board has no
         // Chinatown, so an arm that answered the chooser could never run.

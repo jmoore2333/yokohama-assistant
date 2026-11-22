@@ -152,20 +152,72 @@ describe("the payload roots carry exactly the fields the client declares", () =>
     }
   });
 
+  // The Port chooser's arm (plan 2b, Task 2): its top, every card and its
+  // preview carry the fields `types.ts` declares, on every `port` state.
+  it.each(
+    EVERY_STATE.filter((state) => state.prompt.kind === "port").map(
+      (state, i) => [i, state] as const,
+    ),
+  )("PortCard and PortPreview (port state %s)", (_i, state) => {
+    const prompt = state.prompt;
+    if (prompt.kind !== "port") throw new Error("filtered to port states");
+    expect(keys(prompt)).toEqual(listed(KEYS.portPrompt));
+    expect(prompt.cards.length).toBeGreaterThan(0);
+    for (const card of prompt.cards) {
+      expect(keys(card)).toEqual(listed(KEYS.portCard));
+      // The number a click sends is the card's bare id, and its face is the card's.
+      expect(card.number).toBe(card.id);
+      expect(card.printed.id).toBe(card.id);
+    }
+    expect(keys(prompt.preview)).toEqual(listed(KEYS.portPreview));
+  });
+
+  it("the corpus's three port states: as it opens, with one card on, and with a pair on", () => {
+    const ports = EVERY_STATE.filter((state) => state.prompt.kind === "port");
+    expect(ports).toEqual([wire.port, wire.portSelected, wire.portPair]);
+    const prompt = (state: typeof wire.port) => {
+      if (state.prompt.kind !== "port") throw new Error(`not a port prompt: ${state.prompt.kind}`);
+      return state.prompt;
+    };
+    const on = (state: typeof wire.port) => prompt(state).cards.filter((c) => c.selected);
+    // As it opens: nothing selected, not legal, no way; four cards in reach.
+    const opened = prompt(wire.port);
+    expect(opened.cards.length).toBe(4);
+    expect(on(wire.port)).toEqual([]);
+    expect(opened.preview).toEqual({ legal: false, ways: [] });
+    expect(opened.cards.every((c) => c.can_add)).toBe(true);
+    // One card on: legal, one way, in `describe`'s words.
+    const one = prompt(wire.portSelected);
+    expect(on(wire.portSelected).length).toBe(1);
+    expect(one.preview.legal).toBe(true);
+    expect(one.preview.ways).toEqual([`Port: take O${String(on(wire.portSelected)[0]!.number).padStart(2, "0")}`]);
+    // A pair on: legal, one way, and every other card's can_add false.
+    const pair = prompt(wire.portPair);
+    expect(on(wire.portPair).length).toBe(2);
+    expect(pair.preview.legal).toBe(true);
+    expect(pair.preview.ways.length).toBe(1);
+    expect(pair.preview.ways[0]).toMatch(/^Port: take O\d\d, O\d\d, paying /);
+    expect(pair.cards.filter((c) => !c.selected).length).toBe(2);
+    expect(pair.cards.every((c) => !c.can_add)).toBe(true);
+    for (const state of ports) expect(prompt(state).max_cards).toBe(2);
+  });
+
   // **A chooser's terminal screen never rides `messages`** (design §5.6; the
   // fix wave's C2). The server strips it by identity and `api.rs`'s cells
   // catch a Rust-side leak, but a REGENERATED corpus would freeze the leak as
   // faithfully as a fix (measured: vitest read 226 passed over a corpus
   // regenerated with the screen in `messages`). So the corpus's own chooser
   // states are read for the lines only a screen carries: each screen's
-  // heading and its `> ` hint, in "The words" of plan 2a.
+  // heading and its `> ` hint, in "The words" of plans 2a and 2b.
   const SCREEN_LINES: { what: string; test: (line: string) => boolean }[] = [
     { what: "the Church's heading", test: (l) => l === "Church — pay any of these, at most one of each (toggle by number):" },
     { what: "the Church's hint", test: (l) => l === "> type a number to toggle, 'confirm' to pay, or 'cancel'" },
     { what: "Chinatown's heading", test: (l) => /^Chinatown — up to \d+ exchanges? \(add by number\):$/.test(l) },
     { what: "Chinatown's hint", test: (l) => l === "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'" },
+    { what: "the Port's heading", test: (l) => /^Port [AB] — take 1 card(, or 2)? \(toggle by number\):$/.test(l) },
+    { what: "the Port's hint", test: (l) => l === "> a card number toggles it, 'confirm' to take, or 'cancel'" },
   ];
-  it("no chooser state's messages carry a line of either chooser's terminal screen", () => {
+  it("no chooser state's messages carry a line of any chooser's terminal screen", () => {
     // The patterns read the screens' own lines (anti-vacuity).
     for (const line of [
       "Church — pay any of these, at most one of each (toggle by number):",
@@ -173,11 +225,16 @@ describe("the payload roots carry exactly the fields the client declares", () =>
       "Chinatown — up to 3 exchanges (add by number):",
       "Chinatown — up to 1 exchange (add by number):",
       "> a number adds one, 'back <number>' takes one back, 'confirm', or 'cancel'",
+      "Port A — take 1 card, or 2 (toggle by number):",
+      "Port B — take 1 card (toggle by number):",
+      "> a card number toggles it, 'confirm' to take, or 'cancel'",
     ]) {
       expect(SCREEN_LINES.some((s) => s.test(line)), line).toBe(true);
     }
-    const choosers = EVERY_STATE.filter((s) => s.prompt.kind === "church" || s.prompt.kind === "chinatown");
-    expect(choosers.length, "the corpus's chooser states").toBe(5);
+    const choosers = EVERY_STATE.filter(
+      (s) => s.prompt.kind === "church" || s.prompt.kind === "chinatown" || s.prompt.kind === "port",
+    );
+    expect(choosers.length, "the corpus's chooser states").toBe(8);
     for (const state of choosers) {
       for (const message of state.messages) {
         for (const line of message.split("\n")) {

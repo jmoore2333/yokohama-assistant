@@ -1575,9 +1575,20 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 assert!(
                     !(kind == "options" && rows.len() < options.len() && options.iter().any(|o| chinatown(&o["mv"]))),
                     "a folded Chinatown prompt on the walk's two-player table, whose board has no Chinatown: \
-                     the folded-prompt rule is the Church's alone, and a table that reaches Chinatown needs \
-                     its own rule, written with a seed that runs it: {state}",
+                     the folded-prompt rules are the Church's and the Port's, and a table that reaches Chinatown \
+                     needs its own rule, written with a seed that runs it: {state}",
                 );
+                let port = |mv: &Value| mv["ExecuteAreaAction"]["action"]["Port"].is_object();
+                // A Port take's cards as their sorted numbers, so two orders
+                // of one set compare equal.
+                let port_set = |mv: &Value| -> Vec<u64> {
+                    let mut set: Vec<u64> = mv["ExecuteAreaAction"]["action"]["Port"]["cards_taken"]
+                        .as_array()
+                        .map(|cards| cards.iter().map(|c| c.as_u64().expect("a card")).collect())
+                        .unwrap_or_default();
+                    set.sort_unstable();
+                    set
+                };
                 // **The Church's payments fold into one entry** (cycle 2, plan
                 // 2a), and this walk must play the SAME game across the fold:
                 // a draw over the two rows left would play a different game
@@ -1592,7 +1603,82 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
                 // prompts, three of them folded (events 18, 251 and 387), and
                 // every draw lands on a Church move, so the decline branch
                 // below never runs here; it stays for a seed that reaches it.
-                if kind == "options"
+                // **The Port's takes fold the same way** (plan 2b, Task 2), and
+                // the walk plays the same game across this fold by the same
+                // rule: at a folded Port prompt the draw is taken over
+                // `frame.decision.options`, and the move it names is played
+                // by lines — the decline by its direct row's number; a take
+                // by the entry's number, each card's bare number in the
+                // listed move's order, `confirm`. A drawn pair that two
+                // listed moves take (payable with 2 yen or an imported good)
+                // would need the payment pick's number as well; measured at
+                // these seeds, no draw is one (the three pairs drawn, at
+                // events 90, 356 and 1024, are each listed once), so the walk
+                // REFUSES that case rather than carry a branch no seed runs.
+                // The three captures are taken at the one folded prompt whose
+                // draw is a pair with MORE than two cards in reach — a pair
+                // where only two are in reach leaves no card off, so its flags
+                // say nothing — and the condition is stated here rather than
+                // left to the first-sighting order, since an earlier folded
+                // prompt opens a four-card chooser to take a single.
+                if kind == "options" && rows.len() < options.len() && options.iter().any(|o| port(&o["mv"])) {
+                    let mv = options[rng.below(options.len())]["mv"].clone();
+                    if port(&mv) {
+                        let set = port_set(&mv);
+                        let ways = options.iter().filter(|o| port(&o["mv"]) && port_set(&o["mv"]) == set).count();
+                        assert_eq!(
+                            ways, 1,
+                            "a drawn Port take that two listed moves take, so the payment pick would need its \
+                             number too: no seed of this walk drew one when the rule was written, and the walk \
+                             refuses it rather than carry a branch nobody ran: {state}",
+                        );
+                        let entry = rows
+                            .iter()
+                            .find(|r| r["opens_picker"] == Value::Bool(true))
+                            .unwrap_or_else(|| panic!("a folded Port prompt has its entry: {state}"));
+                        let mut chooser = api
+                            .send_as(mover, &entry["number"].as_u64().expect("a number").to_string())
+                            .await;
+                        assert_eq!(chooser["prompt"]["kind"], "port", "the entry opens the chooser: {chooser}");
+                        let cards = mv["ExecuteAreaAction"]["action"]["Port"]["cards_taken"].as_array().cloned().expect("cards");
+                        let in_reach = chooser["prompt"]["cards"].as_array().map_or(0, Vec::len);
+                        let here = cards.len() == 2 && in_reach > 2;
+                        if here {
+                            capture(&mut out, &mut seen, "port", &chooser);
+                        }
+                        for (i, card) in cards.iter().enumerate() {
+                            let number = card.as_u64().expect("a card");
+                            chooser = api.send_as(mover, &number.to_string()).await;
+                            assert!(
+                                chooser["prompt"]["cards"]
+                                    .as_array()
+                                    .expect("cards")
+                                    .iter()
+                                    .any(|c| c["number"] == number && c["selected"] == Value::Bool(true)),
+                                "card {number} switched on: {chooser}",
+                            );
+                            if here {
+                                capture(&mut out, &mut seen, if i == 0 { "port_selected" } else { "port_pair" }, &chooser);
+                            }
+                        }
+                        assert_eq!(
+                            chooser["prompt"]["preview"]["legal"],
+                            Value::Bool(true),
+                            "the drawn take is listed, so its selection previews legal: {chooser}",
+                        );
+                        "confirm".to_string()
+                    } else {
+                        assert_eq!(
+                            mv,
+                            json!({ "ExecuteAreaAction": { "action": "Skip" } }),
+                            "a folded Port prompt lists its takes and the decline: {state}",
+                        );
+                        let direct: Vec<&Value> =
+                            rows.iter().filter(|r| r["opens_picker"] == Value::Bool(false)).collect();
+                        assert_eq!(direct.len(), 1, "the decline is the one direct row: {state}");
+                        direct[0]["number"].as_u64().expect("a number").to_string()
+                    }
+                } else if kind == "options"
                     && rows.len() < options.len()
                     && options.iter().any(|o| church(&o["mv"]))
                 {
@@ -1783,6 +1869,9 @@ async fn walk_with(api: &Api) -> (Vec<(String, Value)>, Vec<ScriptRow>, Vec<Scri
         "church",
         "church_selected",
         "church_legal",
+        "port",
+        "port_selected",
+        "port_pair",
     ] {
         assert!(
             seen.iter().any(|s| s == owed),
@@ -4499,6 +4588,12 @@ fn every_prompt_variant() -> Vec<yokohama_web::client::PromptState> {
             rows: Vec::new(),
             preview: yokohama_cli::chooser::Preview { legal: false, words: None },
         }),
+        PromptState::Port(yokohama_cli::chooser::PortModel {
+            board_b: false,
+            max_cards: 0,
+            cards: Vec::new(),
+            preview: yokohama_cli::chooser::PortPreview { legal: false, ways: Vec::new() },
+        }),
     ]
 }
 
@@ -4517,6 +4612,7 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
         PromptState::Watching { .. } => 8,
         PromptState::Church(_) => 9,
         PromptState::Chinatown(_) => 10,
+        PromptState::Port(_) => 11,
     }
 }
 
@@ -4524,14 +4620,14 @@ fn prompt_ordinal(p: &yokohama_web::client::PromptState) -> usize {
 ///
 /// The compile-error match is half the guard and this is the other half: a new
 /// arm added to `prompt_ordinal` without a value added to `every_prompt_variant`
-/// would otherwise leave the list eleven long and every check below still green.
-/// **`11` is load-bearing and moves with the enum.**
+/// would otherwise leave the list twelve long and every check below still green.
+/// **`12` is load-bearing and moves with the enum.**
 #[test]
 fn the_variant_list_is_every_variant_exactly_once() {
     let all = every_prompt_variant();
     assert_eq!(
         all.len(),
-        11,
+        12,
         "a `PromptState` variant was added or removed: `every_prompt_variant`, this count, and \
          the EXEMPT list in `every_prompt_the_client_can_be_shown_has_a_fixture` move together",
     );

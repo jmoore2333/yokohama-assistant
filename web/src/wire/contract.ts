@@ -61,6 +61,8 @@ import type {
   ChooserPreview,
   ChurchKind,
   ClientState,
+  PortCard,
+  PortPreview,
   Counter,
   DealCard,
   DealingErrorBody,
@@ -120,6 +122,9 @@ import churchSelected from "./church_selected.json";
 import churchLegal from "./church_legal.json";
 import chinatown from "./chinatown.json";
 import chinatownSelected from "./chinatown_selected.json";
+import port from "./port.json";
+import portSelected from "./port_selected.json";
+import portPair from "./port_pair.json";
 import areas4p from "./areas_4p.json";
 import artManifest from "./art_manifest.json";
 import siteSpaceWords from "./site_space_words.json";
@@ -274,6 +279,9 @@ const _churchSelected: Widen<ClientState> = churchSelected;
 const _churchLegal: Widen<ClientState> = churchLegal;
 const _chinatown: Widen<ClientState> = chinatown;
 const _chinatownSelected: Widen<ClientState> = chinatownSelected;
+const _port: Widen<ClientState> = port;
+const _portSelected: Widen<ClientState> = portSelected;
+const _portPair: Widen<ClientState> = portPair;
 const _refused: Widen<ClientState> = refused;
 const _labels: Widen<Labels> = labels;
 // ---- M6.1: the table, the deal, the lobby, and the two refusals ----------
@@ -541,6 +549,9 @@ const _pChurchSelected: PromptOf<"church"> = churchSelected.prompt;
 const _pChurchLegal: PromptOf<"church"> = churchLegal.prompt;
 const _pChinatown: PromptOf<"chinatown"> = chinatown.prompt;
 const _pChinatownSelected: PromptOf<"chinatown"> = chinatownSelected.prompt;
+const _pPort: PromptOf<"port"> = port.prompt;
+const _pPortSelected: PromptOf<"port"> = portSelected.prompt;
+const _pPortPair: PromptOf<"port"> = portPair.prompt;
 const _pPlaceB: PromptOf<"place_b"> = placeB.prompt;
 const _pPlaceBSelected: PromptOf<"place_b"> = placeBSelected.prompt;
 const _pGameOver: PromptOf<"game_over"> = gameOver.prompt;
@@ -589,6 +600,7 @@ void [
   _pChoiceAssistantMove, _pChoiceWarehouseTake, _pChoiceChurchSpace,
   _pChurch, _pChurchSelected, _pChurchLegal,
   _pChinatown, _pChinatownSelected,
+  _pPort, _pPortSelected, _pPortPair,
 ];
 
 // `noUnusedLocals` is on, and these exist to be checked rather than read. One
@@ -608,6 +620,7 @@ void [
   _archive409, _archive400Rev, _archive400Digest, _archive400Replay, _archive400Table,
   _choiceAssistantMove, _choiceChurchSpace, _choiceWarehouseTake, _church, _churchSelected, _churchLegal,
   _chinatown, _chinatownSelected,
+  _port, _portSelected, _portPair,
   _suggest, _why, _whyRefused, _whyWithheld, _whyRefusals,
   _suggestOk, _whyOk, _whyProvenance, _whyWithheldHalf, _whyWithheldProvenance, _whyRanked, _suggestTerm, _refusedRow,
   _indexOrders, _indexTechs, _indexGoals, _indexSites, _indexFiltered, _result, _placing,
@@ -673,6 +686,11 @@ const CHINATOWN_ROW = ["number", "sells", "spend", "gain", "words", "count", "ca
 // here as the rows are, not left to a human reading the regenerated diff.
 const CHURCH_PROMPT = ["kind", "kinds", "preview", "offered_faiths"] as const;
 const CHINATOWN_PROMPT = ["kind", "max_exchanges", "chosen", "stock", "rows", "preview"] as const;
+// The Port's arm (plan 2b): its top, a card and its preview, pinned as the
+// other two arms' are.
+const PORT_PROMPT = ["kind", "board_b", "max_cards", "cards", "preview"] as const;
+const PORT_CARD = ["number", "id", "zone", "printed", "words", "selected", "can_add"] as const;
+const PORT_PREVIEW = ["legal", "ways"] as const;
 const CHOOSER_AMOUNT = ["good", "amount"] as const;
 const PLAYER = [
   "seat", "color", "money", "victory_points", "goods", "assistants",
@@ -800,6 +818,9 @@ const _ctr: KeysOf<ChinatownRow, typeof CHINATOWN_ROW> = CHINATOWN_ROW;
 const _chq: KeysOf<Extract<PromptState, { kind: "church" }>, typeof CHURCH_PROMPT> = CHURCH_PROMPT;
 const _ctq: KeysOf<Extract<PromptState, { kind: "chinatown" }>, typeof CHINATOWN_PROMPT> = CHINATOWN_PROMPT;
 const _cha: KeysOf<ChooserAmount, typeof CHOOSER_AMOUNT> = CHOOSER_AMOUNT;
+const _ptq: KeysOf<Extract<PromptState, { kind: "port" }>, typeof PORT_PROMPT> = PORT_PROMPT;
+const _ptc: KeysOf<PortCard, typeof PORT_CARD> = PORT_CARD;
+const _ptp: KeysOf<PortPreview, typeof PORT_PREVIEW> = PORT_PREVIEW;
 const _pl: KeysOf<PlayerModel, typeof PLAYER> = PLAYER;
 const _ha: KeysOf<HandPanel, typeof HAND> = HAND;
 const _ti: KeysOf<TileModel, typeof TILE> = TILE;
@@ -854,7 +875,7 @@ const _sb: KeysOf<SeatBot, typeof SEAT_BOT> = SEAT_BOT;
 const _pb: KeysOf<ProductionBot, typeof PRODUCTION_BOT> = PRODUCTION_BOT;
 const _fe: KeysOf<ForeignBotErrorBody, typeof FOREIGN_BOT_ERROR> = FOREIGN_BOT_ERROR;
 const _fb: KeysOf<ForeignBot, typeof FOREIGN_BOT> = FOREIGN_BOT;
-void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _chq, _ctq, _cha, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
+void [_cs, _fr, _de, _or, _chk, _chp, _ctr, _chq, _ctq, _cha, _ptq, _ptc, _ptp, _pl, _ha, _ti, _tr, _po, _la, _ar, _lo, _lb, _he, _mk, _dc, _er,
       _ev, _hfk, _gck,
       _tv, _sh, _dv, _gl, _d4,
       _sr, _so, _wr, _wo, _ww, _ex, _tm, _pr, _rk, _rf, _ix, _oc, _pc, _bd,
@@ -873,6 +894,9 @@ export const KEYS = {
   chinatownRow: CHINATOWN_ROW,
   churchPrompt: CHURCH_PROMPT,
   chinatownPrompt: CHINATOWN_PROMPT,
+  portPrompt: PORT_PROMPT,
+  portCard: PORT_CARD,
+  portPreview: PORT_PREVIEW,
   chooserAmount: CHOOSER_AMOUNT,
   player: PLAYER,
   hand: HAND,
@@ -984,6 +1008,15 @@ export const wire = {
   chinatown: as<ClientState>(chinatown),
   /** The same chooser after one copper sale, a listed set. */
   chinatownSelected: as<ClientState>(chinatownSelected),
+  /** The Port chooser as it opens (plan 2b), at the walk's one folded Port
+   *  prompt whose draw is a pair with more than two cards in reach (event
+   *  1024): four cards, nothing selected. */
+  port: as<ClientState>(port),
+  /** The same chooser with the drawn pair's first card on: legal, one way. */
+  portSelected: as<ClientState>(portSelected),
+  /** The same chooser with both cards on: legal, one way, and no other card
+   *  can be switched on. */
+  portPair: as<ClientState>(portPair),
   refused: as<ClientState>(refused),
   labels: as<Labels>(labels),
   tableDealing: as<TableView>(tableDealing),
@@ -1119,5 +1152,6 @@ export const EVERY_STATE: readonly ClientState[] = [
   wire.choiceAssistantMove, wire.choiceChurchSpace, wire.choiceWarehouseTake,
   wire.church, wire.churchSelected, wire.churchLegal,
   wire.chinatown, wire.chinatownSelected,
+  wire.port, wire.portSelected, wire.portPair,
   wire.spectator, wire.spectatorOver,
 ];
