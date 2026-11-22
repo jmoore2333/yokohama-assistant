@@ -451,6 +451,47 @@ describe("the help panel and the Port and the Laboratory (issue #77)", () => {
   }
 });
 
+// **The choosers SEEN beside their words (issue #77, Track 6's wrap).** The
+// placement picker's paragraph has its picture under it; the owner asked for
+// the Church's chooser and the Port's to have theirs the same way. Each picture
+// is held to the paragraph it shows by the paragraph's OPENING words — the
+// condition only that paragraph states — so a picture moved to another
+// paragraph, or a paragraph that lost its picture, reads red; and to its own
+// area by name in its alt, so the two cannot be swapped. The alt and the
+// caption are otherwise re-cut with the picture, so they are held to being
+// there, not to a sentence.
+describe("the help panel's pictures of the choosers (issue #77)", () => {
+  const flat = (text: string | null | undefined) => (text ?? "").replace(/\s+/g, " ").trim();
+  const pictures = [
+    { src: "/help/church.webp", area: "Church", opens: "At the Church and at Chinatown, when more than one payment or set of exchanges is on offer" },
+    { src: "/help/port.webp", area: "Port", opens: "At the Port, when more than one take is on offer" },
+  ] as const;
+
+  for (const { src, area, opens } of pictures) {
+    it(`draws ${src} right after the paragraph that opens "${opens.slice(0, 24)}…", with an alt and a caption`, () => {
+      const { container } = render(<Help />);
+      const figures = [...container.querySelectorAll("figure.shot")].filter(
+        (f) => f.querySelector("img")?.getAttribute("src") === src,
+      );
+      expect(figures, `${src} is drawn once`).toHaveLength(1);
+      const figure = figures[0]!;
+      const before = figure.previousElementSibling;
+      expect(before?.tagName, `${src} does not follow a paragraph`).toBe("P");
+      expect(flat(before?.textContent).startsWith(opens), `${src} follows "${flat(before?.textContent).slice(0, 60)}"`).toBe(true);
+      const alt = flat(figure.querySelector("img")?.getAttribute("alt"));
+      expect(alt, `${src} has no alt`).not.toBe("");
+      expect(alt, `${src}'s alt does not name the ${area}`).toContain(area);
+      expect(flat(figure.querySelector("figcaption")?.textContent), `${src} has no caption`).not.toBe("");
+    });
+  }
+
+  // The door's render draws neither, as it draws no picture at all.
+  it("draws neither without its pictures", () => {
+    const { container } = render(<Help shots={false} />);
+    for (const { src } of pictures) expect(container.querySelector(`img[src="${src}"]`), src).toBeNull();
+  });
+});
+
 describe("the help panel and talking (M6.4)", () => {
   // **Where it is and that it is SHUT.** A panel folded by default is a panel a
   // player may never find, so the page has to say where it sits and that the
@@ -555,7 +596,7 @@ describe("the help panel and talking (M6.4)", () => {
   // no setup screen draws card art. The game's surface keeps them.
   it("draws its screenshots unless its host asks for the words alone", () => {
     const { container, unmount } = render(<Help />);
-    expect(container.querySelectorAll("figure.shot")).toHaveLength(5);
+    expect(container.querySelectorAll("figure.shot")).toHaveLength(7);
     unmount();
     const words = render(<Help shots={false} />);
     expect(words.container.querySelectorAll("figure.shot, img")).toHaveLength(0);

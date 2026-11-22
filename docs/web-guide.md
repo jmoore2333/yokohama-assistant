@@ -98,6 +98,10 @@ with plus and take them back with minus. A kind or a plus is live only where the
 selling first is what lights a purchase you could not yet afford; a minus is live whenever you have one to take back,
 and Confirm is live once the list holds exactly what you have chosen.
 
+![The Church's chooser in the answer bar: the turn and the phase chain over "The Church — what do you pay?", a button
+for each of the six kinds with how many you have, two switched on and the one you hold none of unavailable, and under
+them the line saying the payment is legal and what it buys, over Confirm and Cancel.](../web/public/help/church.webp)
+
 At the Port, when more than one take is on offer, the list shows a single entry beside the decline, and that entry
 opens a chooser: you switch on one card or two. A card you have not switched on is live only where the engine's list
 holds a take with it added, so a second card goes dark when your hand has no room for it or you cannot pay for it;
@@ -105,6 +109,11 @@ when you could pay for the second card either with 2 yen or with an imported goo
 Laboratory a technology that can be paid for in more than one way is a single row, and pressing it opens the list of
 those ways. When both copies of a technology are on the same Laboratory board, each of its rows names its slot, as
 the board numbers it, so you can tell which card you are taking.
+
+![The Port's chooser in the answer bar: the turn and the phase chain over "The Port — take one card, or two", the
+order cards in reach under their zones, each naming what it needs and pays, two switched on and the others
+unavailable, and under them the line saying the take is legal and how it is paid for, over Confirm and
+Cancel.](../web/public/help/port.webp)
 
 - **Boards**, along the top, is one menu with a switch for each board that can sit under the pyramid: the port, the
   laboratory, the tracks, the goals and the building sites.

@@ -39,8 +39,8 @@
 // these are what a reader is told the product looks like. The second half is
 // this file's own: the server draws the seed, so every run photographs a
 // DIFFERENT game, and each shot carries an `alt` and a `caption` in
-// `web/src/Help.tsx` (and `screen`'s alt also in `docs/web-guide.md`) that claim what is in
-// frame. Those were written against a picture and stayed behind when the
+// `web/src/Help.tsx` (and `screen`'s, `church`'s and `port`'s alts also in
+// `docs/web-guide.md`, shorter) that claim what is in frame. Those were written against a picture and stayed behind when the
 // picture moved on. Regenerating without re-reading them ships a description of
 // a screenshot that no longer exists.
 //

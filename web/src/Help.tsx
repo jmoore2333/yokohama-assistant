@@ -134,6 +134,13 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         a minus is live whenever you have one to take back, and Confirm is live once the list
         holds exactly what you have chosen.
       </p>
+      {shots && (
+        <Shot
+          src="/help/church.webp"
+          alt="The Church&rsquo;s chooser open in the answer bar, cut from the side column: the turn and the phase chain over the question &ldquo;The Church &mdash; what do you pay?&rdquo;, then a button for each of the six kinds you could pay, each with its good and how many you have &mdash; two of them switched on, and the one you hold none of drawn unavailable &mdash; and under them the line saying the payment is legal and what it buys, over Confirm and Cancel."
+          caption="The Church&rsquo;s chooser: switch on what you pay. Once the list holds that payment, the line under the kinds says so and names the faith it buys, and Confirm commits it."
+        />
+      )}
       <p>
         At the Port, when more than one take is on offer, the list shows a single entry beside
         the decline, and that entry opens a chooser: you switch on one card or two. A card you
@@ -145,6 +152,13 @@ export function Help({ shots = true }: { shots?: boolean } = {}) {
         copies of a technology are on the same Laboratory board, each of its rows names its
         slot, as the board numbers it, so you can tell which card you are taking.
       </p>
+      {shots && (
+        <Shot
+          src="/help/port.webp"
+          alt="The Port&rsquo;s chooser open in the answer bar, cut from the side column: the turn and the phase chain over the question &ldquo;The Port &mdash; take one card, or two&rdquo;, then the order cards in reach under their zones, LOW and MID, each a button naming the card, its country, what it needs and what it pays &mdash; two of them switched on and the other two drawn unavailable &mdash; and under them the line saying the take is legal and how it is paid for, over Confirm and Cancel."
+          caption="The Port&rsquo;s chooser: with two cards switched on the rest go dark, since a take is one card or two, and the line under them names the take and how it is paid for before you confirm."
+        />
+      )}
 
       <h3>Looking things up</h3>
       <p>
