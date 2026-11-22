@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import { seatClass } from "./Cards";
 import { OutcomeView } from "./Index";
 import { Tokens, tokenLabel } from "./Token";
@@ -13,6 +14,7 @@ import type {
   NotOfferedReason,
   PendingChoice,
   PlayerColor,
+  PromptState,
 } from "./types";
 
 /** A price, in the CLI's own words (`decision_render::fee_words`).
@@ -81,6 +83,39 @@ const NOT_OFFERED: Record<NotOfferedReason, string> = {
   NoAssistantThere: "you have no assistant there",
 };
 
+/** Every prompt kind this client draws: the whole union, and nothing else.
+ *
+ *  `satisfies` makes the list exactly the union's, so a kind added to
+ *  `PromptState` later fails to compile HERE until it is listed — and listing
+ *  it is the moment its arm is written. The fallback below is for what the
+ *  union does not hold at all: a kind a NEWER server answers (plan 2b's `port`
+ *  is the next) reaching this client before it takes the update. It is reached
+ *  by this runtime check, never by a switch left non-exhaustive. */
+const DRAWN_KINDS = {
+  options: true,
+  pick: true,
+  retreat: true,
+  place_a: true,
+  place_b: true,
+  church: true,
+  chinatown: true,
+  reveal: true,
+  game_over: true,
+  locked: true,
+  watching: true,
+} as const satisfies Record<PromptState["kind"], true>;
+
+/** Whether this client draws `kind` (a string, since the server may be newer
+ *  than the union). */
+function drawsKind(kind: string): boolean {
+  return Object.hasOwn(DRAWN_KINDS, kind);
+}
+
+/** The fallback's two lines (ruling R46). */
+const UNKNOWN_ASKING = "This screen needs a newer version.";
+const UNKNOWN_TEXT =
+  "The game asked something this version cannot draw. Take the update from the banner, or cancel to go back to the list.";
+
 /** The decision zone: where the turn stands, what is being asked, and what may
  * be answered.
  *
@@ -130,6 +165,45 @@ export function Decision({
   const d = state.frame.decision;
   const chain = labels?.phase_chain ?? d.phase_chain;
   const prompt = state.prompt;
+  const unknownKind = !drawsKind(prompt.kind);
+
+  // **Where the focus goes when a reply takes the pressed stepper away**
+  // (ruling R45). A chooser's kinds and steppers are `aria-disabled` while a
+  // request is in flight, not `disabled`, so the control a keyboard player
+  // pressed keeps the focus. But a reply can make it unavailable — a plus that
+  // can no longer add, a minus at zero — and a `disabled` button drops focus to
+  // the page's body. So the stepper pressed last is remembered with its row's
+  // count at the press; once the row's count has moved (the reply is in), a
+  // pressed control the payload now refuses hands the focus to its row's other
+  // stepper, or to the chooser itself when neither is live, and only while the
+  // focus is still on it or has fallen to the body. A Church kind needs none
+  // of this: a kind stays offered across a toggle.
+  const chooserNode = useRef<HTMLDivElement>(null);
+  const pressed = useRef<{ number: number; which: "plus" | "minus"; count: number } | null>(null);
+  useLayoutEffect(() => {
+    const p = pressed.current;
+    if (!p) return;
+    if (prompt.kind !== "chinatown") {
+      pressed.current = null;
+      return;
+    }
+    const row = prompt.rows.find((r) => r.number === p.number);
+    if (!row || row.count === p.count) return;
+    pressed.current = null;
+    const live = { plus: row.can_add, minus: row.count > 0 };
+    if (live[p.which]) return;
+    const node = chooserNode.current;
+    const ex = node?.querySelector(`.ex[data-number="${p.number}"]`);
+    const was = ex?.querySelector<HTMLElement>(`button.${p.which}`) ?? null;
+    const active = document.activeElement;
+    if (active && active !== was && active !== document.body) return;
+    const other = p.which === "plus" ? "minus" : "plus";
+    const target = live[other] ? ex?.querySelector<HTMLElement>(`button.${other}`) : node;
+    target?.focus();
+  });
+  const onStep = (number: number, which: "plus" | "minus", count: number) => {
+    pressed.current = { number, which, count };
+  };
 
   return (
     <div className="decision">
@@ -319,9 +393,11 @@ export function Decision({
       {/* **The Church's chooser** (plan 2a): six kinds of payment, each a toggle.
           Everything on it is the payload's — the number a click sends, the
           words, what the seat has, whether the kind is selected and whether any
-          listed move pays it. A kind no listed move pays is `unavailable` by
-          the payload and a busy chooser is merely disabled; the walks tell the
-          two apart by `data-unavailable`. */}
+          listed move pays it. **`disabled` is what the payload says and nothing
+          else** (ruling R45): a kind no listed move pays is `disabled` and
+          `data-unavailable`. While a request is in flight an offered kind is
+          `aria-disabled` and a press sends nothing, and it keeps the focus a
+          `disabled` button would drop. */}
       {!spectating && prompt.kind === "church" && (
         <div className="chooser church">
           <div className="kinds">
@@ -333,9 +409,12 @@ export function Decision({
                 data-good={k.good}
                 aria-pressed={k.selected}
                 aria-label={`${k.words}, you have ${k.have}`}
-                disabled={busy || !k.offered}
+                disabled={!k.offered}
+                aria-disabled={busy && k.offered ? "true" : undefined}
                 data-unavailable={k.offered ? undefined : "true"}
-                onClick={() => onSend(String(k.number))}
+                onClick={() => {
+                  if (!busy) onSend(String(k.number));
+                }}
               >
                 <Tokens good={k.good} amount={k.amount} art={art} />
                 <span className="lbl">
@@ -358,7 +437,7 @@ export function Decision({
           is for a list): the stock and the verdict above and below it do not
           scroll, and Confirm and Cancel are outside the chooser altogether. */}
       {!spectating && prompt.kind === "chinatown" && (
-        <div className="chooser chinatown">
+        <div className="chooser chinatown" ref={chooserNode} tabIndex={-1}>
           <div className="stock">
             {prompt.stock.map((s) => (
               /* One node a reader hears once (`3 yen`); the one small token
@@ -380,16 +459,33 @@ export function Decision({
             {prompt.rows
               .filter((r) => r.sells)
               .map((r) => (
-                <Exchange key={r.number} row={r} art={art} busy={busy} onSend={onSend} />
+                <Exchange key={r.number} row={r} art={art} busy={busy} onStep={onStep} onSend={onSend} />
               ))}
             <div className="side-h">Buy</div>
             {prompt.rows
               .filter((r) => !r.sells)
               .map((r) => (
-                <Exchange key={r.number} row={r} art={art} busy={busy} onSend={onSend} />
+                <Exchange key={r.number} row={r} art={art} busy={busy} onStep={onStep} onSend={onSend} />
               ))}
           </div>
           <Verdict preview={prompt.preview} empty={prompt.chosen === 0} />
+        </div>
+      )}
+
+      {/* **A kind this client cannot draw** (ruling R46): a server newer than
+          this client answered it. Not a dead end: it says so, points at the
+          update line, and — for the acting seat — offers Cancel, which every
+          sub-prompt answers and the web's line fence admits. */}
+      {unknownKind && (
+        <div className="messages unknown-prompt">
+          <div>{UNKNOWN_TEXT}</div>
+        </div>
+      )}
+      {!spectating && unknownKind && (
+        <div className="controls">
+          <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
+            Cancel
+          </button>
         </div>
       )}
 
@@ -511,20 +607,29 @@ function Verdict({
  *  tokens, the payload's words, and a minus, the count and a plus. The
  *  pictures and the arrow are ONE hidden wrapper, so the words are the row's
  *  single reading. A plus is live exactly where the payload says one more can
- *  be added (`can_add`) and a minus where something is chosen (`count`); each
- *  is `data-unavailable` by what the payload said, and merely disabled while a
- *  request is in flight. A plus sends the row's number, a minus `back` and it. */
+ *  be added (`can_add`) and a minus where something is chosen (`count`); where
+ *  the payload says not, it is `disabled` and `data-unavailable`. While a
+ *  request is in flight a live stepper is `aria-disabled` and a press sends
+ *  nothing, so it keeps the focus (ruling R45). A plus sends the row's number,
+ *  a minus `back` and it; `onStep` tells the chooser which was pressed. */
 function Exchange({
   row,
   art,
   busy,
+  onStep,
   onSend,
 }: {
   row: ChinatownRow;
   art: ArtManifest | null;
   busy: boolean;
+  onStep: (number: number, which: "plus" | "minus", count: number) => void;
   onSend: (line: string) => void;
 }) {
+  const press = (which: "plus" | "minus", line: string) => {
+    if (busy) return;
+    onStep(row.number, which, row.count);
+    onSend(line);
+  };
   return (
     <div className={`ex${row.count > 0 ? " on" : ""}`} data-number={row.number}>
       <span className="what">
@@ -540,9 +645,10 @@ function Exchange({
           type="button"
           className="minus"
           aria-label={`one fewer: ${row.words}`}
-          disabled={busy || row.count === 0}
+          disabled={row.count === 0}
+          aria-disabled={busy && row.count > 0 ? "true" : undefined}
           data-unavailable={row.count === 0 ? "true" : undefined}
-          onClick={() => onSend(`back ${row.number}`)}
+          onClick={() => press("minus", `back ${row.number}`)}
         >
           &minus;
         </button>
@@ -551,9 +657,10 @@ function Exchange({
           type="button"
           className="plus"
           aria-label={`one more: ${row.words}`}
-          disabled={busy || !row.can_add}
+          disabled={!row.can_add}
+          aria-disabled={busy && row.can_add ? "true" : undefined}
           data-unavailable={row.can_add ? undefined : "true"}
-          onClick={() => onSend(String(row.number))}
+          onClick={() => press("plus", String(row.number))}
         >
           +
         </button>
@@ -566,7 +673,11 @@ function Exchange({
  *  is legal; the server still decides, since `confirm` commits only a listed
  *  move. **`data-unavailable` is what the PAYLOAD said** (the preview is not
  *  legal) and not that a request is in flight, so a walk can tell a chooser
- *  that is busy from one that cannot be confirmed; Cancel is never unavailable. */
+ *  that is busy from one that cannot be confirmed; Cancel is never unavailable.
+ *  **Unlike a kind or a stepper, both stay `disabled` while busy** (ruling
+ *  R45): the browser walks' settle wait reads a `disabled` control without
+ *  `data-unavailable` as a request in flight, and these two are what keep that
+ *  true of a chooser. */
 function ChooserControls({
   legal,
   busy,
@@ -602,6 +713,7 @@ function areaName(state: ClientState, labels: Labels | null, area: number): stri
 }
 
 function asking(state: ClientState, labels: Labels | null): string {
+  if (!drawsKind(state.prompt.kind)) return UNKNOWN_ASKING;
   if (state.over) return "The game is over.";
   const d = state.frame.decision;
   const phaseKey = d.phase_chain[d.current_phase];

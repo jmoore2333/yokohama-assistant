@@ -612,21 +612,24 @@ export interface Screen {
 
 /** The controls that grow a chooser's selection, and only those: a kind the
  *  payload offers that is not pressed, and a plus the payload says can add.
- *  `:not([disabled])` drops both what the payload refuses (`data-unavailable`)
- *  and anything in flight. One selector, read by `readScreen` and clicked by
- *  `act`, so the count and the click cannot disagree. */
+ *  `:not([disabled])` drops what the payload refuses (`data-unavailable`), and
+ *  `:not([aria-disabled="true"])` anything in flight — a kind or a stepper is
+ *  `aria-disabled` while busy, not `disabled`, so it keeps the focus (ruling
+ *  R45). One selector, read by `readScreen` and clicked by `act`, so the count
+ *  and the click cannot disagree. */
 export const CHOOSER_ADDS =
-  '.decision .chooser button.kind:not([disabled])[aria-pressed="false"], .decision .chooser button.plus:not([disabled])';
+  '.decision .chooser button.kind:not([disabled]):not([aria-disabled="true"])[aria-pressed="false"], .decision .chooser button.plus:not([disabled]):not([aria-disabled="true"])';
 
 export async function readScreen(page: Page): Promise<Screen> {
-  // **Wait for the request in flight FIRST.** Every control in the decision zone
-  // — and every board tile — is `disabled` while `busy`, which is the client's
-  // own in-flight state. A read taken between the click and the response
-  // therefore sees a screen with nothing enabled on it and reports "nothing left
-  // to click", which is a true statement about that instant and a false one
-  // about the game. Measured: the first walk failed at its first move, with the
-  // decision zone plainly showing "End additional-action phase" in the failure
-  // message.
+  // **Wait for the request in flight FIRST.** While `busy`, the client's own
+  // in-flight state, every control in the decision zone but a chooser's kinds
+  // and steppers is `disabled` (those are `aria-disabled`, so they keep the
+  // focus: ruling R45), and every board tile is `aria-disabled` (below). A read
+  // taken between the click and the response therefore sees a screen with
+  // nothing answerable on it and reports "nothing left to click", which is a
+  // true statement about that instant and a false one about the game.
+  // Measured: the first walk failed at its first move, with the decision zone
+  // plainly showing "End additional-action phase" in the failure message.
   //
   // `disabled` is the signal rather than a sleep because it is the SAME
   // condition the client renders from, so this cannot drift from what a player
@@ -640,8 +643,10 @@ export async function readScreen(page: Page): Promise<Screen> {
   // carries `data-unavailable` (`Decision.tsx`), set from the payload alone and
   // never from `busy`, and the wait passes over it. A chooser in flight still
   // reads busy: `data-busy`, below, is what holds that — the client's own
-  // in-flight state, the same window — and Cancel, disabled by `busy` alone and
-  // never carrying the attribute, is a second guard. Nothing but a chooser's
+  // in-flight state, the same window — and Cancel, `disabled` while `busy` and
+  // never carrying the attribute, is a second guard (Confirm too, whenever the
+  // preview is legal). A kind or a stepper in flight is `aria-disabled` and not
+  // `disabled`, so this leg never reads it either way. Nothing but a chooser's
   // kinds, steppers and Confirm carries the attribute at all, so every other
   // control in the zone is read as before.
   //

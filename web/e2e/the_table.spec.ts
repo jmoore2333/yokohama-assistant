@@ -1309,10 +1309,10 @@ test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and u
   // border and the inset shadow, in `--vp` — by colour AND by place: 2 px in
   // the foreground colour, its outer edge at least 1 px inside the band. The
   // kind is focused from the KEYBOARD (Shift+Tab then Tab), so `:focus-visible`
-  // applies as it does for a player, then pressed with Space and focused the
-  // same way again: a kind is `disabled` while its request is in flight, and a
-  // disabled button lets focus go. Computed lengths are whole pixels here;
-  // 0.01 px is allowed for the parse.
+  // applies as it does for a player, then pressed with Space, and it keeps the
+  // focus across the press: a kind in flight is `aria-disabled`, not
+  // `disabled` (ruling R45; the focus cells below hold it). Computed lengths
+  // are whole pixels here; 0.01 px is allowed for the parse.
   const kind = page.locator(".decision .chooser.church button.kind:not([disabled])").first();
   const keyboardFocus = async () => {
     await kind.focus();
@@ -1340,7 +1340,6 @@ test("the Church's chooser lays its six kinds inside it, apart, thumb-tall and u
   expect(focused.focused, "the kind took no keyboard focus, so :focus-visible reads nothing").toBe(true);
   await page.keyboard.press("Space");
   await readScreen(page);
-  await keyboardFocus();
   const both = await ring();
   expect(both.pressed, "Space did not press the focused kind").toBe("true");
   expect(both.focused, "the pressed kind lost its keyboard focus").toBe(true);
@@ -1477,6 +1476,94 @@ test("a Chinatown exchange through the screen on a four-player table: plus, lega
   expect(watch.failures).toEqual([]);
 });
 
+/** Focus `control` as a keyboard player does: Shift+Tab off it and Tab back, so
+ *  `:focus-visible` applies. Asserted, so a press below is the keyboard's. */
+async function focusFromKeyboard(page: Page, control: Locator, what: string): Promise<void> {
+  await control.focus();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
+  expect(await control.evaluate((el) => el === document.activeElement && el.matches(":focus-visible")), `${what} took no keyboard focus`).toBe(true);
+}
+
+/** What holds the focus now, in words a failure can be read by. */
+const focusHolder = (page: Page) =>
+  page.evaluate(() => {
+    const a = document.activeElement;
+    if (!a) return "nothing";
+    const ex = a.closest(".ex");
+    return `${a.tagName}${a.className ? `.${a.className}` : ""}${ex ? ` in row ${ex.getAttribute("data-number")}` : ""}`;
+  });
+
+const holdsFocus = (control: Locator) => control.evaluate((el) => el === document.activeElement);
+
+// **A chooser's control keeps the keyboard's focus across a press** (ruling
+// R45). A kind or a stepper is `aria-disabled` while its request is in flight,
+// not `disabled`, and a press then sends nothing; a `disabled` button lets
+// focus fall to the page's body, which left a keyboard player tabbing back from
+// the top of the page after every toggle (measured: after Space,
+// `document.activeElement` was `BODY`). jsdom blurs nothing, so these are
+// browser cells.
+test("a Church kind pressed from the keyboard keeps the focus, pressed and pressed again", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 2 });
+  await openChooser(page, "Church");
+  const kind = page.locator(".decision .chooser.church button.kind:not([disabled])").first();
+  expect(await kind.getAttribute("aria-pressed"), "the first offered kind opens pressed").toBe("false");
+  await focusFromKeyboard(page, kind, "the kind");
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  expect(await kind.getAttribute("aria-pressed"), "Space did not press the focused kind").toBe("true");
+  expect(await holdsFocus(kind), `the pressed kind lost the focus to ${await focusHolder(page)}`).toBe(true);
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  expect(await kind.getAttribute("aria-pressed"), "Space did not press the kind off again").toBe("false");
+  expect(await holdsFocus(kind), `the kind pressed off lost the focus to ${await focusHolder(page)}`).toBe(true);
+  expect(watch.failures).toEqual([]);
+});
+
+test("a Chinatown plus pressed from the keyboard keeps the focus while it can still add, hands it to its row's minus when the reply says it cannot, and the minus hands it back at zero", async ({ page }) => {
+  const watch = watchForBreakage(page);
+  await startGame(page, { players: 4 });
+  await openChooser(page, "Chinatown");
+  const row = (n: number) => page.locator(`.decision .chooser.chinatown .rows > .ex[data-number="${n}"]`);
+  // Row 7 is a purchase of tea for 1 yen; the seat opens with 3 yen, so one
+  // more can still be added after the first. Asserted from the screen.
+  await expect(row(7).locator(".words")).toHaveText("1 yen -> 1 tea");
+  await expect(page.locator('.decision .chooser.chinatown .stock .item[data-good="Yen"]')).toHaveAttribute("aria-label", "3 yen");
+  const tea = row(7).locator("button.plus");
+  await focusFromKeyboard(page, tea, "row 7's plus");
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  await expect(row(7).locator(".n")).toHaveText("1");
+  await expect(tea, "row 7's plus can still add, so it stays live").toBeEnabled();
+  expect(await holdsFocus(tea), `row 7's plus lost the focus to ${await focusHolder(page)}`).toBe(true);
+
+  // Row 1 is the copper sale and the seat holds ONE copper, so the reply to
+  // the sale makes its plus unavailable: the focus goes to the row's minus,
+  // which now has the sale to take back, and not to the page.
+  await expect(row(1).locator(".words")).toHaveText("1 copper -> 2 yen");
+  await expect(page.locator('.decision .chooser.chinatown .stock .item[data-good="Copper"]')).toHaveAttribute("aria-label", "1 copper");
+  const sale = row(1).locator("button.plus");
+  await focusFromKeyboard(page, sale, "row 1's plus");
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  await expect(row(1).locator(".n")).toHaveText("1");
+  await expect(sale, "the copper sale's plus is unavailable once the one copper is chosen").toBeDisabled();
+  await expect(sale).toHaveAttribute("data-unavailable", "true");
+  expect(await holdsFocus(row(1).locator("button.minus")), `the focus went to ${await focusHolder(page)}, not row 1's minus`).toBe(true);
+
+  // And back: the minus, pressed from where the focus now is, takes the sale
+  // back and reaches zero, so it is unavailable and the focus goes to the
+  // row's plus, which can add the sale again.
+  await page.keyboard.press("Space");
+  await readScreen(page);
+  await expect(row(1).locator(".n")).toHaveText("0");
+  await expect(row(1).locator("button.minus"), "a minus at zero is unavailable").toBeDisabled();
+  await expect(sale, "the sale can be added again").toBeEnabled();
+  expect(await holdsFocus(sale), `the focus went to ${await focusHolder(page)}, not row 1's plus`).toBe(true);
+  expect(watch.failures).toEqual([]);
+});
+
 test("the walks' policy settles on a chooser and answers it: an add where Confirm is disabled, Confirm where nothing is left to add", async ({ page }) => {
   const watch = watchForBreakage(page);
   // Chinatown, opened: nothing chosen, so Confirm is disabled by the payload and
@@ -1510,6 +1597,14 @@ test("the walks' policy settles on a chooser and answers it: an add where Confir
   expect(await page.locator(".decision .chooser.chinatown button.minus:not([disabled])").count(), "no minus is enabled after an add").toBeGreaterThan(0);
   expect(pressedOnce.adds, "adds counts a minus").toBe(await page.locator(".decision .chooser.chinatown button.plus:not([disabled])").count());
   await expect(page.locator(".decision .chooser.chinatown"), "and the chooser is still open").toHaveCount(1);
+  // **And it never PRESSES one** (`act`'s "the visit ends"): with a minus live
+  // and a coin that does not confirm (0.9 is not below 0.5), the policy adds a
+  // second exchange. A policy that took the first back would read 0 here.
+  expect(pressedOnce.adds, "nothing is left to add after one exchange").toBeGreaterThan(0);
+  expect(await act(page, pressedOnce, () => 0.9), "the policy's second answer").toBe("chooser");
+  await readScreen(page);
+  expect(await chosen(), "the policy's second press added, so two exchanges are chosen").toBe(2);
+  await expect(page.locator(".decision .chooser.chinatown"), "and the chooser is still open after it").toHaveCount(1);
 
   // The Church, with every offered kind pressed: nothing is left to add, so the
   // policy confirms — without asking the coin, which is asked only while an add

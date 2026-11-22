@@ -7,7 +7,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { Decision } from "./Decision";
-import { wire } from "./wire/contract";
+import { EVERY_STATE, wire } from "./wire/contract";
 import type { ArtManifest, ClientState, PlayerColor } from "./types";
 
 const COLORS: PlayerColor[] = ["Red", "Blue"];
@@ -501,12 +501,28 @@ describe("the Church's chooser", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("disables an offered kind while a request is in flight without calling it unavailable", () => {
-    const { container } = show(wire.church, true);
+  // **In flight, an offered kind is `aria-disabled`, never `disabled`** (ruling
+  // R45): a `disabled` button lets the browser drop its focus, so the kind a
+  // keyboard player just pressed would leave them at the top of the page. It
+  // sends nothing while busy, and `disabled` stays what the payload says.
+  it("leaves an offered kind enabled but aria-disabled while a request is in flight, and a press then sends nothing", async () => {
+    const { container, onSend, user } = show(wire.church, true);
     const buttons = kindButtons(container);
-    for (const b of buttons) expect(b).toBeDisabled();
-    for (const b of buttons.slice(0, 5)) expect(b).not.toHaveAttribute("data-unavailable");
+    for (const b of buttons.slice(0, 5)) {
+      expect(b).toBeEnabled();
+      expect(b).toHaveAttribute("aria-disabled", "true");
+      expect(b).not.toHaveAttribute("data-unavailable");
+      await user.click(b);
+    }
+    expect(onSend).not.toHaveBeenCalled();
+    // The kind the list does not offer is still disabled, by the payload.
+    expect(buttons[5]).toBeDisabled();
     expect(buttons[5]).toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // Idle, the offered kinds carry no `aria-disabled` at all.
+    const idle = kindButtons(show(wire.church).container);
+    for (const b of idle.slice(0, 5)) expect(b).not.toHaveAttribute("aria-disabled");
   });
 
   it("enables Confirm only where the preview is legal, and sends confirm and cancel", async () => {
@@ -795,14 +811,21 @@ describe("Chinatown's chooser", () => {
     expect(onSend.mock.calls).toEqual([["back 1"]]);
     cleanup();
 
-    // In flight: the chosen row's minus is disabled but nothing the payload
-    // said made it unavailable.
+    // In flight (ruling R45): the chosen row's minus stays enabled, so it keeps
+    // the focus, but is `aria-disabled` and sends nothing; nothing the payload
+    // said made it unavailable. A minus at zero is still disabled by the payload.
     const busy = show(wire.chinatownSelected, true);
     const b = rowEls(busy.container);
-    expect(minus(b[0]!)).toBeDisabled();
+    expect(minus(b[0]!)).toBeEnabled();
+    expect(minus(b[0]!)).toHaveAttribute("aria-disabled", "true");
     expect(minus(b[0]!)).not.toHaveAttribute("data-unavailable");
+    await busy.user.click(minus(b[0]!));
+    expect(busy.onSend).not.toHaveBeenCalled();
+    expect(minus(b[1]!)).toBeDisabled();
     expect(minus(b[1]!)).toHaveAttribute("data-unavailable");
-    for (const el of b) expect(plus(el)).toBeDisabled();
+    // Idle, a live minus carries no `aria-disabled`.
+    cleanup();
+    expect(minus(rowEls(show(wire.chinatownSelected).container)[0]!)).not.toHaveAttribute("aria-disabled");
   });
 
   it("disables a plus the list cannot take, by the payload's `can_add`", async () => {
@@ -856,13 +879,23 @@ describe("Chinatown's chooser", () => {
     expect(plus(top)).not.toHaveAttribute("data-unavailable");
     cleanup();
 
-    // In flight: every plus is disabled, and only the cannot-add one is
-    // unavailable.
+    // In flight (ruling R45): a plus that can add stays enabled, so it keeps
+    // the focus, but is `aria-disabled`, carries no `data-unavailable` and sends
+    // nothing; the cannot-add one is still disabled by the payload.
     const busy = show(wire.chinatown, true);
     const b = rowEls(busy.container);
-    for (const el of b) expect(plus(el)).toBeDisabled();
-    for (const el of b.slice(0, 8)) expect(plus(el)).not.toHaveAttribute("data-unavailable");
+    for (const el of b.slice(0, 8)) {
+      expect(plus(el)).toBeEnabled();
+      expect(plus(el)).toHaveAttribute("aria-disabled", "true");
+      expect(plus(el)).not.toHaveAttribute("data-unavailable");
+      await busy.user.click(plus(el));
+    }
+    expect(busy.onSend).not.toHaveBeenCalled();
+    expect(plus(b[8]!)).toBeDisabled();
     expect(plus(b[8]!)).toHaveAttribute("data-unavailable");
+    // Idle, a live plus carries no `aria-disabled`.
+    cleanup();
+    expect(plus(rowEls(show(wire.chinatown).container)[0]!)).not.toHaveAttribute("aria-disabled");
   });
 
   it("reads the stock from the payload, one image node per good", () => {
@@ -1024,5 +1057,54 @@ describe("Chinatown's chooser", () => {
     expect(container.querySelectorAll("button.plus, button.minus")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Confirm" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  });
+});
+
+describe("a prompt kind this client cannot draw", () => {
+  // A server newer than this client can answer a kind the union does not hold
+  // (plan 2b's `port` is the next). The client must not be left with nothing
+  // to press (ruling R46): it says so and offers Cancel, which every sub-prompt
+  // answers and the web's line fence admits. The payload is a real one with ONE
+  // fact changed, its kind; its other prompt fields are left as they are.
+  const FALLBACK_ASKING = "This screen needs a newer version.";
+  const FALLBACK_TEXT =
+    "The game asked something this version cannot draw. Take the update from the banner, or cancel to go back to the list.";
+  const unknown = (): ClientState => {
+    const c = JSON.parse(JSON.stringify(wire.church)) as { prompt: { kind: string } };
+    expect(c.prompt.kind).toBe("church");
+    c.prompt.kind = "port";
+    return c as unknown as ClientState;
+  };
+
+  it("says the screen needs a newer version and offers Cancel alone, which sends cancel", async () => {
+    const { container, onSend, user } = show(unknown());
+    expect(container.querySelector(".asking")!.textContent).toBe(FALLBACK_ASKING);
+    expect(container.querySelector(".unknown-prompt")!.textContent).toBe(FALLBACK_TEXT);
+    const buttons = screen.getAllByRole("button");
+    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel"]);
+    expect(buttons[0]).toBeEnabled();
+    await user.click(buttons[0]!);
+    expect(onSend.mock.calls).toEqual([["cancel"]]);
+    cleanup();
+
+    // In flight, its Cancel is disabled like the others.
+    show(unknown(), true);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+  });
+
+  it("gives a watcher the two lines and no button", () => {
+    const { container } = show(unknown(), false, true);
+    expect(container.querySelector(".asking")!.textContent).toBe(FALLBACK_ASKING);
+    expect(container.querySelector(".unknown-prompt")!.textContent).toBe(FALLBACK_TEXT);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
+  it("is never what a kind the corpus holds draws", () => {
+    for (const state of EVERY_STATE) {
+      const { container } = show(state);
+      expect(container.querySelector(".asking")!.textContent, `the ${state.prompt.kind} fixture`).not.toBe(FALLBACK_ASKING);
+      expect(container.querySelector(".unknown-prompt"), `the ${state.prompt.kind} fixture`).toBeNull();
+      cleanup();
+    }
   });
 });
