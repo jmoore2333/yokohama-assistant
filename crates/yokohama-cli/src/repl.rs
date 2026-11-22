@@ -11600,6 +11600,18 @@ mod tests {
                 (true, SKIP_WORDS.to_string()),
             ],
         );
+        // The ACTING board is the mercenary's target, not the board the
+        // President stands on (it stands elsewhere here): the twin's rows name
+        // their slots (plan 2b, Task 3b's review, I-2).
+        assert_eq!(
+            lab_words_of(&r, "Ball"),
+            [
+                "Laboratory: acquire Ball (slot 2)",
+                "Laboratory: acquire Ball (slot 5), slot fee: 4 yen",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 yen + 1 imported good",
+                "Laboratory: acquire Ball (slot 5), slot fee: 2 imported goods",
+            ],
+        );
         let ball = lab_rows_of(&r, "Ball");
         r.step("2");
         r.step("4");

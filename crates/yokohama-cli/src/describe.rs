@@ -676,7 +676,13 @@ fn describe_area_action(action: &AreaAction, state: &GameState, rules: &Rules) -
             // Plan 2b, Task 3b (the owner, 2026-11-22): when the acting board
             // holds both copies of this title, the row names which card it
             // takes, by the slot the `labs` view and the browser's lab strip
-            // label. Every other row is worded as before.
+            // label. Every other row is worded as before. The marker reads the
+            // state a move is worded AT, so it is carried wherever a move is
+            // worded at the state it is made from (the terminal's lists, its
+            // pick, the log, its `suggest` and `why`); the browser's advisor
+            // panel words a continuation's later steps at the root
+            // (`yokohama-web`'s `explain.rs`), where such a step reads
+            // unmarked (Task 3b's review, ruling T3b-a: recorded, not changed).
             if let Some(slot) = twin_slot(*card_id, state, &rules.techs) {
                 s.push_str(&format!(" (slot {})", crate::screen_model::menu_number(slot)));
             }
@@ -1645,6 +1651,27 @@ mod tests {
         assert_eq!(describe_move(&mv(99), &state, &rules), "Laboratory: acquire T99");
         // The twin on the board still gets its marker in the same state.
         assert_eq!(describe_move(&mv(12), &state, &rules), "Laboratory: acquire Ball (slot 5)");
+
+        // A card on the OTHER Laboratory (Task 3b's review, m-1): at four
+        // players, both copies of Ball on Laboratory A while Laboratory B
+        // acts. A's card, worded there, gets no marker — the board read is
+        // the acting one, not the one that holds the card.
+        use crate::chooser::test_support::lay_out_lab;
+        let pending = new_game(GameConfig::for_player_count(4), &rules, 7).unwrap();
+        let mut state = finalize_setup(pending, &[StartingOrderChoice::Keep(0); 4]).unwrap();
+        lay_out_lab(&mut state, false, [Some(TechCardId(11)), Some(TechCardId(12)), None, None, None, None]);
+        let lab_b = *state
+            .board_layout
+            .areas
+            .iter()
+            .find(|(_, c)| c.area_type == AreaType::LaboratoryB)
+            .expect("4P has Laboratory B")
+            .0;
+        let me = state.current_player.0 as usize;
+        state.players[me].president_location = PresidentLocation::OnBoard(lab_b);
+        state.turn_phase = TurnPhase::AreaAction;
+        assert_eq!(check_invariants(&state, &rules), Ok(()));
+        assert_eq!(describe_move(&mv(11), &state, &rules), "Laboratory: acquire Ball");
     }
 
     #[test]
