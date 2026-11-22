@@ -1002,6 +1002,49 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
 }
 .chooser.chinatown .verdict { flex: none; }
+/* The Port: the cards in reach by zone (plan 2b, Task 4). A zone is a heading
+ * and its cards, two to a row (a port zone holds two); each card is a button
+ * over the client's own card face. A card the payload says cannot be added is
+ * `disabled` and carries `data-unavailable`; in flight an offered card is
+ * `aria-disabled` instead, so it keeps the focus (ruling R45), and both are
+ * dimmed as a kind is. A pressed card wears the kind's pressed band, and the
+ * focus ring is drawn INSIDE it in the foreground colour for the kind's reason
+ * (the box below is a scroll container). **Where the deck is short the chooser
+ * gives way as the Church's does**: the zones scroll first, then the chooser
+ * itself, and Confirm and Cancel, its siblings, stay in reach. The 5rem floor
+ * of the zones is a reasoned figure, not a measured one: its boxes are Task 5's
+ * to measure in a browser. */
+.decision > .chooser.port {
+  flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.port .zones {
+  flex: 0 1 auto; min-height: 5rem; overflow-y: auto; display: grid; gap: 6px;
+  scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;
+}
+.chooser.port .zone {
+  display: grid; grid-template-columns: 3.2rem repeat(2, minmax(0, 1fr)); gap: 6px; align-items: stretch;
+}
+.chooser.port .zl { font-size: 10px; letter-spacing: 0.08em; color: var(--fg-faint); align-self: center; }
+.card-pick {
+  display: flex; flex-direction: column; min-width: 0;
+  background: var(--bg-raised); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0.3rem; font: inherit; text-align: left; cursor: pointer;
+}
+.card-pick .card-face { width: 100%; border: 0; padding: 0; background: none; }
+.card-pick:hover:not(:disabled):not([aria-disabled="true"]) { border-color: var(--line-bright); }
+.card-pick:focus-visible { outline: 2px solid var(--fg); outline-offset: -5px; }
+.card-pick[aria-pressed="true"] {
+  border-color: var(--vp); background: #14202e; box-shadow: inset 0 0 0 1px var(--vp);
+}
+.card-pick:disabled, .card-pick[aria-disabled="true"] { opacity: 0.38; cursor: default; }
+.chooser.port .verdict { flex: none; }
+.chooser.port .verdict .way { display: block; }
+.chooser.port .verdict .tag + .way { display: inline; }
+.chooser.port .verdict .asked { color: var(--fg-dim); }
+.chooser.port .verdict .asked + .way { margin-left: 1rem; }
+.chooser.port .verdict .way + .way { margin-left: 1rem; }
 .side-h { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-faint); margin: 0.7rem 0 0.3rem; }
 .side-h:first-child { margin-top: 0.2rem; }
 .ex {

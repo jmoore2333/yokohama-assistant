@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef } from "react";
-import { seatClass } from "./Cards";
+import { OrderCardView, seatClass } from "./Cards";
 import { OutcomeView } from "./Index";
 import { Tokens, tokenLabel } from "./Token";
 import type {
@@ -14,6 +14,8 @@ import type {
   NotOfferedReason,
   PendingChoice,
   PlayerColor,
+  PortPreview,
+  PortZone,
   PromptState,
 } from "./types";
 
@@ -111,6 +113,26 @@ const DRAWN_KINDS = {
 function drawsKind(kind: string): boolean {
   return Object.hasOwn(DRAWN_KINDS, kind);
 }
+
+/** The prompts that are a chooser: the Church's, Chinatown's and the Port's.
+ *
+ *  **One test for "a chooser" so a fourth is added in one place.** What the
+ *  three share is the answer bar — Confirm, live exactly when the arm's
+ *  `preview.legal`, and Cancel — and nothing else (each draws its own panel).
+ *  The guard that draws that bar and every caller that asks "is this a
+ *  chooser" read this, not a comparison of kinds. */
+export type ChooserPrompt = Extract<PromptState, { kind: "church" | "chinatown" | "port" }>;
+export function isChooser(prompt: PromptState): prompt is ChooserPrompt {
+  return prompt.kind === "church" || prompt.kind === "chinatown" || prompt.kind === "port";
+}
+
+/** The Port's three zones, in the board's order: the arm's `zone` and the
+ *  heading it stands under. A zone with no card in the arm draws no row. */
+const PORT_ZONES: readonly (readonly [PortZone, string])[] = [
+  ["Low", "LOW"],
+  ["Mid", "MID"],
+  ["High", "HIGH"],
+];
 
 /** The fallback's two lines (ruling R46). */
 const UNKNOWN_ASKING = "This screen needs a newer version.";
@@ -473,18 +495,52 @@ export function Decision({
         </div>
       )}
 
-      {/* **The Port's chooser, INTERIM** (plan 2b, Task 2): the panel's asking
-          line (above, from `asking`) and Cancel, which the REPL's chooser
-          answers and the web's line fence admits, under `.chooser.port`; the
-          cards and Confirm are Task 4's panel. A known kind, so never the
-          unknown-kind node below, and never a dead end between the tasks. */}
+      {/* **The Port's chooser** (plan 2b): the order cards in reach, by zone, each
+          a pressable card face; the verdict under them reads the arm's `ways`.
+          Everything on it is the payload's — the cards and their order, each
+          card's zone, whether it is selected and whether it can be switched on
+          (`can_add`), and the words of every listed move that takes exactly the
+          selection. **The client reads no rule here:** a card is `disabled`
+          exactly when it is not selected and the payload says it cannot be added
+          (a selected card stays pressable, so it can be switched OFF), and the
+          line a press sends is the card's `number`. As at the Church, a card is
+          `aria-disabled` while a request is in flight, sends nothing and keeps
+          the focus (ruling R45). */}
       {!spectating && prompt.kind === "port" && (
         <div className="chooser port">
-          <div className="controls">
-            <button type="button" className="ghost" disabled={busy} onClick={() => onSend("cancel")}>
-              Cancel
-            </button>
+          <div className="zones">
+            {PORT_ZONES.map(([zone, heading]) => {
+              const cards = prompt.cards.filter((c) => c.zone === zone);
+              if (cards.length === 0) return null;
+              return (
+                <div className="zone" data-zone={zone} key={zone}>
+                  <span className="zl">{heading}</span>
+                  {cards.map((c) => {
+                    const offered = c.selected || c.can_add;
+                    return (
+                      <button
+                        type="button"
+                        className="card-pick"
+                        key={c.number}
+                        data-number={c.number}
+                        aria-pressed={c.selected}
+                        aria-label={c.words}
+                        disabled={!offered}
+                        aria-disabled={busy && offered ? "true" : undefined}
+                        data-unavailable={offered ? undefined : "true"}
+                        onClick={() => {
+                          if (!busy) onSend(String(c.number));
+                        }}
+                      >
+                        <OrderCardView art={art} card={c.printed} id={c.id} size="sm" />
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
           </div>
+          <PortVerdict preview={prompt.preview} anySelected={prompt.cards.some((c) => c.selected)} />
         </div>
       )}
 
@@ -560,7 +616,7 @@ export function Decision({
         </div>
       )}
 
-      {!spectating && (prompt.kind === "church" || prompt.kind === "chinatown") && (
+      {!spectating && isChooser(prompt) && (
         <ChooserControls legal={prompt.preview.legal} busy={busy} onSend={onSend} />
       )}
 
@@ -615,6 +671,44 @@ function Verdict({
           {faiths && <div className="faiths">{faiths}</div>}
         </>
       )}
+    </div>
+  );
+}
+
+/** What stands under the Port's selection, from the arm's own preview: every
+ *  listed move that takes exactly the cards switched on, in `describe`'s words
+ *  and the list's order. Two ways are the second card paid either way, and the
+ *  count of the array is what says so — the choice is asked at Confirm, in the
+ *  numbered pick the server opens. Nothing selected is a hint, not the warning
+ *  (a selection has to exist before it can be "not offered"). A `status`
+ *  region, so what a press changes is announced. */
+function PortVerdict({ preview, anySelected }: { preview: PortPreview; anySelected: boolean }) {
+  if (preview.legal) {
+    return (
+      <div className="verdict ok" role="status">
+        <span className="tag">legal &mdash; </span>
+        {preview.ways.length > 1 && (
+          <span className="asked">{preview.ways.length} ways to pay, asked at Confirm:</span>
+        )}
+        {preview.ways.map((w, i) => (
+          <div className="way" key={i}>
+            {w}
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (anySelected) {
+    return (
+      <div className="verdict bad" role="status">
+        <span className="tag">not offered &mdash; </span>
+        adjust the selection
+      </div>
+    );
+  }
+  return (
+    <div className="verdict" role="status">
+      pick a card to preview it
     </div>
   );
 }

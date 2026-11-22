@@ -6,7 +6,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { Decision } from "./Decision";
+import { Decision, isChooser } from "./Decision";
 import { EVERY_STATE, wire } from "./wire/contract";
 import type { ArtManifest, ClientState, PlayerColor } from "./types";
 
@@ -1110,36 +1110,303 @@ describe("a prompt kind this client cannot draw", () => {
   });
 });
 
-describe("the Port's chooser until its panel (plan 2b, Task 2)", () => {
-  // `port` is a known kind from Task 2 on, drawn by an interim branch of its
-  // own until Task 4's panel: the panel's asking line and Cancel, under
-  // `.chooser.port` — never the unknown-kind node. The asking line reads the
-  // arm's `max_cards`, so the cell reads the fixture and a clone with that ONE
-  // field changed.
-  it("asks the panel's question and offers Cancel, which sends cancel", async () => {
-    const { container, onSend, user } = show(wire.port);
+describe("the Port's chooser (plan 2b, Task 4)", () => {
+  // Three real replies from one prompt of the corpus walk (`wire/port*.json`):
+  // four cards in reach, two in LOW and two in MID, `max_cards` 2. None has two
+  // ways, a `max_cards` of 1 or a HIGH card, so every cell that reads such a
+  // fact reads a JSON round-trip clone of a fixture with ONE field changed, and
+  // names the rival rule the clone is chosen against. This block replaces Task
+  // 2's interim cell (the asking line, Cancel and the watcher's absence are
+  // read below, with the rest).
+  const portPrompt = (s: ClientState) => {
+    if (s.prompt.kind !== "port") throw new Error("fixture moved");
+    return s.prompt;
+  };
+  const clone = (s: ClientState): ClientState => JSON.parse(JSON.stringify(s)) as ClientState;
+  const clonePort = (s: ClientState, edit: (p: ReturnType<typeof portPrompt>) => void) => {
+    const c = clone(s);
+    edit(portPrompt(c));
+    return c;
+  };
+  const cardEls = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLButtonElement>(".chooser.port .zones button.card-pick")];
+  const numbers = (container: HTMLElement) => cardEls(container).map((b) => b.dataset.number);
+  const headings = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLElement>(".chooser.port .zone")].map((z) => z.querySelector(".zl")!.textContent);
+  const card = (container: HTMLElement, number: number) =>
+    container.querySelector<HTMLButtonElement>(`.chooser.port button.card-pick[data-number="${number}"]`)!;
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  it("draws the asking line, each zone's heading and one pressable card per card in the arm's order", () => {
+    const p = portPrompt(wire.port);
+    expect(p.cards.map((c) => c.number)).toEqual([36, 14, 8, 6]);
+    expect(p.cards.map((c) => c.zone)).toEqual(["Low", "Low", "Mid", "Mid"]);
+    const { container } = show(wire.port);
     expect(container.querySelector(".asking")!.textContent).toBe("The Port — take one card, or two");
-    expect(container.querySelector(".chooser.port")).not.toBeNull();
     expect(container.querySelector(".unknown-prompt")).toBeNull();
-    const buttons = screen.getAllByRole("button");
-    expect(buttons.map((b) => b.textContent)).toEqual(["Cancel"]);
-    await user.click(buttons[0]!);
-    expect(onSend.mock.calls).toEqual([["cancel"]]);
+    expect(container.querySelector(".decision > .chooser.port")).not.toBeNull();
+    expect(headings(container)).toEqual(["LOW", "MID"]);
+    expect(numbers(container)).toEqual(p.cards.map((c) => String(c.number)));
+    const els = cardEls(container);
+    els.forEach((el, i) => {
+      const c = p.cards[i]!;
+      expect(el).toHaveAttribute("aria-label", c.words);
+      // The accessible name collapses runs of spaces; the attribute above is exact.
+      expect(el).toHaveAccessibleName(c.words.replace(/\s+/g, " "));
+      expect(el).toHaveAttribute("aria-pressed", "false");
+      expect(el).toBeEnabled();
+      expect(el).not.toHaveAttribute("data-unavailable");
+      expect(el.querySelector(`[data-card="${c.id}"]`)).not.toBeNull();
+    });
+    // Each card stands under its own zone's heading.
+    const zones = [...container.querySelectorAll<HTMLElement>(".chooser.port .zone")];
+    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "Mid"]);
+    expect([...zones[0]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["36", "14"]);
+    expect([...zones[1]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["8", "6"]);
+    // Nothing is selected, so Confirm is refused by the payload; Cancel is live.
+    expect(portPrompt(wire.port).preview.legal).toBe(false);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable", "true");
+    expect(button("Cancel")).toBeEnabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    // No row of the numbered list.
+    expect(container.querySelectorAll("button.option")).toHaveLength(0);
+  });
+
+  it("presses the selected cards and reads the verdict's words off the preview's ways", () => {
+    const one = portPrompt(wire.portSelected);
+    expect(one.cards.filter((c) => c.selected).map((c) => c.number)).toEqual([36]);
+    expect(one.preview.ways).toEqual(["Port: take O36"]);
+    const first = show(wire.portSelected);
+    expect(cardEls(first.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "false", "false", "false"]);
+    const v1 = first.container.querySelector(".verdict")!;
+    expect(v1).toHaveAttribute("role", "status");
+    expect(v1).toHaveClass("ok");
+    expect(v1).not.toHaveClass("bad");
+    expect(v1.querySelector(".tag")!.textContent).toBe("legal — ");
+    expect([...v1.querySelectorAll(".way")].map((w) => w.textContent)).toEqual(one.preview.ways);
+    expect(v1.textContent).not.toContain("asked at Confirm");
     cleanup();
 
-    const one = JSON.parse(JSON.stringify(wire.port)) as { prompt: { kind: string; max_cards: number } };
-    expect(one.prompt.max_cards).toBe(2);
-    one.prompt.max_cards = 1;
-    const { container: c1 } = show(one as unknown as ClientState);
-    expect(c1.querySelector(".asking")!.textContent).toBe("The Port — take one card");
+    const two = portPrompt(wire.portPair);
+    expect(two.cards.filter((c) => c.selected).map((c) => c.number)).toEqual([36, 14]);
+    expect(two.preview.ways).toEqual(["Port: take O36, O14, paying 2 yen"]);
+    const second = show(wire.portPair);
+    expect(cardEls(second.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["true", "true", "false", "false"]);
+    const v2 = second.container.querySelector(".verdict")!;
+    expect(v2).toHaveClass("ok");
+    expect([...v2.querySelectorAll(".way")].map((w) => w.textContent)).toEqual(two.preview.ways);
     cleanup();
 
-    // In flight, its Cancel is disabled like the others; a watcher gets none.
-    show(wire.port, true);
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    // Nothing selected and nothing legal: no ways drawn, and not the warning
+    // either (a selection has to exist before it can be "not offered").
+    const idle = show(wire.port);
+    const v0 = idle.container.querySelector(".verdict")!;
+    expect(v0).toHaveAttribute("role", "status");
+    expect(v0).not.toHaveClass("ok");
+    expect(v0).not.toHaveClass("bad");
+    expect(v0.querySelectorAll(".way")).toHaveLength(0);
+  });
+
+  // The rival is "a second card goes dark once two are on" (a count in the
+  // client) and "a card is live while fewer than two are on". Each clone moves
+  // ONE `can_add`, so a count and a flag part company.
+  it("disables a card exactly where the payload's can_add says, and never a selected one", () => {
+    const pair = portPrompt(wire.portPair);
+    expect(pair.cards.map((c) => [c.selected, c.can_add])).toEqual([[true, false], [true, false], [false, false], [false, false]]);
+    const first = show(wire.portPair);
+    const [a, b, c, d] = cardEls(first.container);
+    // A selected card stays pressable, so it can be switched OFF, though its
+    // own can_add is false in every fixture.
+    expect(a).toBeEnabled();
+    expect(a).not.toHaveAttribute("data-unavailable");
+    expect(b).toBeEnabled();
+    for (const el of [c!, d!]) {
+      expect(el).toBeDisabled();
+      expect(el).toHaveAttribute("data-unavailable", "true");
+    }
     cleanup();
-    const { container: watcher } = show(wire.port, false, true);
-    expect(watcher.querySelector(".chooser.port")).toBeNull();
+
+    // Two are on and the payload says the third card can still be added.
+    const third = clonePort(wire.portPair, (p) => { p.cards[2]!.can_add = true; });
+    expect(portPrompt(third).cards.filter((x) => x.selected)).toHaveLength(2);
+    const second = show(third);
+    const els = cardEls(second.container);
+    expect(els[2]).toBeEnabled();
+    expect(els[2]).not.toHaveAttribute("data-unavailable");
+    expect(els[3]).toBeDisabled();
+    cleanup();
+
+    // One is on and the payload says one card cannot be added.
+    const barred = clonePort(wire.portSelected, (p) => { p.cards[2]!.can_add = false; });
+    expect(portPrompt(barred).cards.filter((x) => x.selected)).toHaveLength(1);
+    const third2 = show(barred);
+    const els2 = cardEls(third2.container);
+    expect(els2.map((e) => e.disabled)).toEqual([false, false, true, false]);
+    expect(els2[2]).toHaveAttribute("data-unavailable", "true");
+    for (const i of [0, 1, 3]) expect(els2[i]).not.toHaveAttribute("data-unavailable");
+  });
+
+  // The rival is "Confirm is live when something is selected" (and, as an
+  // extra, "when `ways` is non-empty"): the first clone selects a card and
+  // keeps its way, but the payload says the selection is not legal; the second
+  // selects nothing and the payload says one way is.
+  it("enables Confirm exactly when the preview is legal", () => {
+    const unlisted = clonePort(wire.portSelected, (p) => { p.preview.legal = false; });
+    expect(portPrompt(unlisted).cards.some((c) => c.selected)).toBe(true);
+    expect(portPrompt(unlisted).preview.ways).toHaveLength(1);
+    const first = show(unlisted);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).toHaveAttribute("data-unavailable", "true");
+    expect(first.container.querySelector(".verdict")).toHaveClass("bad");
+    expect(first.container.querySelector(".verdict")!.textContent).toBe("not offered — adjust the selection");
+    cleanup();
+
+    const listed = clonePort(wire.port, (p) => {
+      p.preview.legal = true;
+      p.preview.ways = ["Port: take O36"];
+    });
+    expect(portPrompt(listed).cards.some((c) => c.selected)).toBe(false);
+    show(listed);
+    expect(button("Confirm")).toBeEnabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+  });
+
+  it("draws every way and says the choice is asked at Confirm when there are two", () => {
+    const two = clonePort(wire.portPair, (p) => {
+      p.preview.ways = [...p.preview.ways, "Port: take O36, O14, paying 1 imported good"];
+    });
+    const { container } = show(two);
+    const v = container.querySelector(".verdict")!;
+    expect([...v.querySelectorAll(".way")].map((w) => w.textContent)).toEqual([
+      "Port: take O36, O14, paying 2 yen",
+      "Port: take O36, O14, paying 1 imported good",
+    ]);
+    expect(v.textContent).toContain("2 ways to pay, asked at Confirm");
+    expect(v).toHaveClass("ok");
+    // One way, and the line is not there.
+    cleanup();
+    const one = show(wire.portPair);
+    expect(one.container.querySelector(".verdict")!.textContent).not.toContain("asked at Confirm");
+  });
+
+  // The rivals: "the cards are sorted" (by number or by id) and "a card's zone
+  // is its place in the list".
+  it("draws the cards in the payload's order and each under the zone the payload names", () => {
+    const reversed = clonePort(wire.port, (p) => { p.cards.reverse(); });
+    const r = show(reversed);
+    expect(headings(r.container)).toEqual(["LOW", "MID"]);
+    expect(numbers(r.container)).toEqual(["14", "36", "6", "8"]);
+    cleanup();
+
+    // Only the MID pair swapped: LOW keeps the order the fixture has, so a sort
+    // by number and a payload order part company in both zones.
+    const swapped = clonePort(wire.port, (p) => { [p.cards[2], p.cards[3]] = [p.cards[3]!, p.cards[2]!]; });
+    const s = show(swapped);
+    expect(numbers(s.container)).toEqual(["36", "14", "6", "8"]);
+    cleanup();
+
+    // A card whose zone is HIGH stands under HIGH, beside nothing it was
+    // beside by position.
+    const raised = clonePort(wire.port, (p) => { p.cards[1]!.zone = "High"; });
+    const h = show(raised);
+    expect(headings(h.container)).toEqual(["LOW", "MID", "HIGH"]);
+    const zones = [...h.container.querySelectorAll<HTMLElement>(".chooser.port .zone")];
+    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "Mid", "High"]);
+    expect([...zones[0]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["36"]);
+    expect([...zones[2]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["14"]);
+  });
+
+  // The rival is "the line a card sends is its index in the list": none of the
+  // fixture's numbers is its place (36, 14, 8, 6).
+  it("sends the card's number, then confirm and cancel by their words", async () => {
+    const first = show(wire.port);
+    await first.user.click(card(first.container, 14));
+    await first.user.click(card(first.container, 6));
+    expect(first.onSend.mock.calls).toEqual([["14"], ["6"]]);
+    cleanup();
+
+    // A selected card is pressed to switch it off: the same number.
+    const second = show(wire.portSelected);
+    await second.user.click(card(second.container, 36));
+    expect(second.onSend.mock.calls).toEqual([["36"]]);
+    cleanup();
+
+    const third = show(wire.portSelected);
+    await third.user.click(button("Confirm"));
+    await third.user.click(button("Cancel"));
+    expect(third.onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    cleanup();
+
+    // A card the payload disables sends nothing.
+    const fourth = show(wire.portPair);
+    await fourth.user.click(card(fourth.container, 8));
+    expect(fourth.onSend).not.toHaveBeenCalled();
+  });
+
+  // Plan 2a's ruling R45: a card is `aria-disabled`, not `disabled`, so it
+  // keeps the keyboard focus; Confirm and Cancel are `disabled`.
+  it("while a request is in flight: a card sends nothing and keeps the focus, Confirm and Cancel are disabled", async () => {
+    const { container, onSend, user } = show(wire.portSelected, true);
+    const els = cardEls(container);
+    for (const el of els) {
+      expect(el).toBeEnabled();
+      expect(el).toHaveAttribute("aria-disabled", "true");
+      expect(el).not.toHaveAttribute("data-unavailable");
+    }
+    els[1]!.focus();
+    expect(document.activeElement).toBe(els[1]);
+    await user.click(els[1]!);
+    await user.click(els[0]!);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(els[0]);
+    expect(button("Confirm")).toBeDisabled();
+    expect(button("Confirm")).not.toHaveAttribute("data-unavailable");
+    expect(button("Cancel")).toBeDisabled();
+    expect(button("Cancel")).not.toHaveAttribute("data-unavailable");
+    cleanup();
+
+    // What the payload disabled is still `disabled` and unavailable, busy or not.
+    const barred = show(wire.portPair, true);
+    const c = cardEls(barred.container)[2]!;
+    expect(c).toBeDisabled();
+    expect(c).toHaveAttribute("data-unavailable", "true");
+    expect(c).not.toHaveAttribute("aria-disabled");
+    cleanup();
+
+    // Idle, no card carries aria-disabled.
+    const idle = show(wire.port);
+    for (const el of cardEls(idle.container)) expect(el).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("draws nothing for a watcher or a seat that does not act", () => {
+    const { container } = show(wire.portPair, false, true);
+    expect(container.querySelector(".chooser")).toBeNull();
+    expect(cardEls(container)).toHaveLength(0);
     expect(screen.queryAllByRole("button")).toHaveLength(0);
+    cleanup();
+    // A seat that is not to move is told `watching`, which has no chooser.
+    const waiting = show(wire.watching);
+    expect(waiting.container.querySelector(".chooser")).toBeNull();
+  });
+
+  it("asks for one card when the arm's max_cards is 1", () => {
+    expect(portPrompt(wire.port).max_cards).toBe(2);
+    const one = clonePort(wire.port, (p) => { p.max_cards = 1; });
+    const { container } = show(one);
+    expect(container.querySelector(".asking")!.textContent).toBe("The Port — take one card");
+  });
+});
+
+describe("isChooser", () => {
+  it("is true for the three chooser kinds and false for every other kind in the corpus", () => {
+    const seen = new Set<string>();
+    for (const state of EVERY_STATE) {
+      const kind = state.prompt.kind;
+      seen.add(kind);
+      expect(isChooser(state.prompt), `the ${kind} fixture`).toBe(kind === "church" || kind === "chinatown" || kind === "port");
+    }
+    for (const kind of ["church", "chinatown", "port"]) expect(seen.has(kind), kind).toBe(true);
+    expect(seen.size).toBeGreaterThan(3);
   });
 });
