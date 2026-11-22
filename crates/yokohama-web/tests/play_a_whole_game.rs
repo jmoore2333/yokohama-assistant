@@ -618,6 +618,45 @@ impl Reached {
     }
 }
 
+/// **The counters tell the picks apart** (the task's mutant probe: a
+/// Laboratory counter that counted ANY answered pick read 20 at the arm's
+/// seed and passed every floor, since a floor cannot see over-counting). Two
+/// committed payloads — `lab_pick.json`, a Laboratory payment pick, and
+/// `pick.json`, the assistant destinations — and a clone of the first with
+/// ONE field changed, its title a Port payment pick's, each answered with a
+/// reply whose event count moved; and the Laboratory pick once more with a
+/// reply whose count did not, which is no pick taken.
+#[test]
+fn the_three_player_counters_tell_the_picks_apart() {
+    let wire = |name: &str| -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/wire").join(name);
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+            .expect("a committed payload parses")
+    };
+    let moved = |state: &Value| {
+        let mut reply = state.clone();
+        reply["events"] = serde_json::json!(state["events"].as_u64().expect("an event count") + 1);
+        reply["prompt"] = serde_json::json!({ "kind": "options", "rows": [] });
+        reply
+    };
+    let lab = wire("lab_pick.json");
+    let other = wire("pick.json");
+    assert_eq!(lab["prompt"]["kind"], "pick", "premise: {}", lab["prompt"]);
+    assert_eq!(other["prompt"]["kind"], "pick", "premise: {}", other["prompt"]);
+    let mut port = lab.clone();
+    port["prompt"]["title"] = serde_json::json!("Port: take O10, O34 — choose the payment");
+
+    let read = |state: &Value, reply: &Value| {
+        let mut r = Reached::default();
+        r.count(state, "1", reply);
+        (r.lab_picks, r.port)
+    };
+    assert_eq!(read(&lab, &moved(&lab)), (1, [0, 0]), "a Laboratory payment pick is one, and no Port pick");
+    assert_eq!(read(&other, &moved(&other)), (0, [0, 0]), "another pick is neither");
+    assert_eq!(read(&port, &moved(&port)), (0, [0, 1]), "a Port payment pick is the Port's, not the Laboratory's");
+    assert_eq!(read(&lab, &lab), (0, [0, 0]), "a pick whose reply moved no event was not taken");
+}
+
 /// **The three-player arm's table seed and its policy's stream seed, chosen
 /// by measurement** (2026-11-22, plan 2b's Task 7): under this policy stream,
 /// table seeds 1 to 20 and 20261122 were each played to their winner, and 7
