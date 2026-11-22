@@ -8,7 +8,7 @@
                ┌ A04 CHURCH ────────────────┐┌ A05 SILK MILL ─────────────┐┌ A06 TEA PLANTATION ────────┐                     Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
                │ 5-Power: 3 Tea Site 16     ││ 5-Power: 1 Import Site 6   ││ 5-Power: 2 Silk Site 22    │                     Orders  1 in hand · 0 filled
                │ no pawns                   ││ no pawns                   ││ no pawns                   │                     Tech  none yet
-               │ sites ★1 ★2¥1 — ★1¥1  │ T9 ││ sites ★1 *2 — *1  │ T7     ││ sites ★1 ★4 — ★3  │ T9     │                     Mercenaries  0 unused · 0 used
+               │ sites ★1 ★2¥1 — ★1¥1  │ T9 ││ sites ★1 *2 — *1  │ T7     ││ sites ★1 ★4 — ★3  │ T9     │                     Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0
                └────────────────────────────┘└────────────────────────────┘└────────────────────────────┘                     President in hand
                               ┌ A07 LABORATORY A ──────────┐┌ A08 COPPER MINE ───────────┐
                               │ 5-Power: 1 Import Site 14  ││ 5-Power: 3 Yen Site 21     │                                    BLUE                      ¥4    0 VP    seat 1
@@ -18,7 +18,7 @@
                                              ┌ A09 EMPLOYMENT AGENCY ─────┐                                                   Trade houses  0 in hand · 4 in warehouse · 0 built (next take ¥4)
                                              │ 5-Power: 2 Copper Site 13  │                                                   Orders  1 in hand · 0 filled
                                              │ no pawns                   │                                                   Tech  none yet
-                                             │ sites ★1 ⌂3 — ⌂2  │ T5     │                                                   Mercenaries  0 unused · 0 used
+                                             │ sites ★1 ⌂3 — ⌂2  │ T5     │                                                   Mercenaries  0 unused · 0 used · GB0 US0 FR0 DE0 NL0
                                              └────────────────────────────┘                                                   President in hand
 
                                                                                                                             ─ TRACKS  (ends at 4 of YOUR pawns · D = dummy, not counted) ─────────────

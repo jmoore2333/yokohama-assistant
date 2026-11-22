@@ -363,6 +363,28 @@ pub fn face_up_flags(p: &PlayerState, rules: &Rules) -> FlagCounts {
     flags
 }
 
+/// A country's two-letter code — `GB`, `US`, `FR`, `DE`, `NL` — as the
+/// engine's compact order line prints it, and as the terminal names a flag
+/// count (the `players` view's `flags:` line and the dashboard's Mercenaries
+/// row).
+///
+/// **A mirror, with a drift pin** (the [`placement_fee`] precedent): the
+/// engine's own table, `country_compact` in `yokohama-core`'s `display.rs`, is
+/// private to that crate and this crate may not widen it, so this copy is held
+/// to the engine's public output by
+/// `country_code_is_the_country_token_of_the_engines_compact_order_line`, which
+/// reads the second token of `order_compact_line` for one registry card of each
+/// of the five countries.
+pub fn country_code(country: Country) -> &'static str {
+    match country {
+        Country::English => "GB",
+        Country::American => "US",
+        Country::French => "FR",
+        Country::German => "DE",
+        Country::Dutch => "NL",
+    }
+}
+
 /// One seat's dashboard row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlayerModel {
@@ -4081,6 +4103,40 @@ mod tests {
             countries.insert(tech.country);
         }
         assert_eq!(countries.len(), Country::ALL.len(), "the technologies span every country");
+    }
+
+    /// **The drift pin for [`country_code`]** (plan 2b, Task 8): the engine's
+    /// own table is private, so the mirror is held to what the engine prints.
+    /// `order_compact_line` reads `O17 GB  2cop 1fish -> 8vp 1imp`; its second
+    /// token is the code. One registry card of each country, the lowest id of
+    /// that country (the registry iterates in no promised order), and the five
+    /// codes are distinct, so a table that swapped two countries fails on both.
+    #[test]
+    fn country_code_is_the_country_token_of_the_engines_compact_order_line() {
+        let rules = Rules::standard();
+        let mut cards: Vec<&OrderCard> = rules.orders.iter().collect();
+        cards.sort_by_key(|c| c.id.0);
+        let mut codes = std::collections::BTreeSet::new();
+        for country in Country::ALL {
+            let card = cards
+                .iter()
+                .find(|c| c.country == country)
+                .unwrap_or_else(|| panic!("a registry order of {country:?}"));
+            let line = yokohama_core::order_compact_line(card);
+            let token = line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or_else(|| panic!("a country token on {line:?}"));
+            assert_eq!(
+                country_code(country),
+                token,
+                "{country:?}: the mirror says {:?}, the engine's compact line for {:?} reads {line:?}",
+                country_code(country),
+                card.id,
+            );
+            codes.insert(token.to_string());
+        }
+        assert_eq!(codes.len(), Country::ALL.len(), "five distinct codes: {codes:?}");
     }
 
     /// A card in hand is not face up: a seat whose only English card is in its

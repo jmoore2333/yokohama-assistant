@@ -154,7 +154,14 @@ In the always-visible dashboard the face-up counts ride the **Mercenaries row** 
   Mercenaries  0 unused · GB1 US0 FR0 DE1 NL1
 ```
 
-The first form wherever the row fits its width (the two-player dashboard's 74 columns; a three-player seat's 56). The second where it does not: the `used` count yields FIRST and whole, never clipped, as `next take` yields on the seat's last row; it stays in the `players` view. That is always so in a four-player seat's 48 columns. The flags in hand are not on the dashboard: its hand panel already names each card's country. **Ruled by the owner on 2026-11-22**, after reading the mock: see "The owner's ruling: where the terminal shows the flags".
+The first form wherever the row fits its width (the two-player dashboard's 74 columns; a three-player seat's 56). The second where it does not: the `used` count yields FIRST and whole, never clipped, as `next take` yields on the seat's last row; it stays in the `players` view. That is always so in a four-player seat's 48 columns. **Where the second form does not fit either** (corrected at Task 8, measured over every legal row by `the_used_count_yields_first_and_whole`: the second form reaches 50 columns, against a four-player seat's 48, with two-digit counts in four countries or in three with all ten mercenaries unused; the widest row at 74 columns is 59 and the widest second form at 56 is 50, so neither of the other two widths reaches this), the countries at zero yield next, all of them and whole, so a row that names some countries and not others has none of the others:
+
+```
+  Mercenaries  9 unused · GB14 US12 FR12 DE10
+  Mercenaries  10 unused
+```
+
+and where no country is at zero, the counts yield together and the row reads its unused count alone, the last form above: no country is ever dropped while another stays, since that would read as a zero, and nothing is ever clipped. The flags in hand are not on the dashboard: its hand panel already names each card's country. **Ruled by the owner on 2026-11-22**, after reading the mock: see "The owner's ruling: where the terminal shows the flags".
 
 **The browser's words.** The Port panel's asking line is `The Port — take one card, or two`, or `The Port — take one card` when the arm's `max_cards` is 1. The help's and the guide's three sentences (Task 9):
 
