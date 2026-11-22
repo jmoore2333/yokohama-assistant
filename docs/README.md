@@ -75,6 +75,8 @@ Scripts that regenerate or check the tree's derived files, in [`tools/`](tools/)
 - [`mkguide.py`](tools/mkguide.py): regenerates the CLI guide's HTML from its markdown.
 - [`mkcardart.py`](tools/mkcardart.py): crops the Tabletop Simulator sprite sheets into per-card art.
 - [`mkhelpart.py`](tools/mkhelpart.py): re-cuts the help panel's screenshots to WebP.
+- [`mkcligif.py`](tools/mkcligif.py): regenerates the README's terminal animation from a recorded game, at the CLI as
+  built, and checks that its frames' text has not drifted.
 - [`tilerects.py`](tools/tilerects.py): draws the web client's tile overlay rectangles onto the area art for review.
 - [`tts-extraction/`](tools/tts-extraction/): the record and map of the Tabletop Simulator extraction.
 
