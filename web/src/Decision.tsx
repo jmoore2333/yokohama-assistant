@@ -126,13 +126,10 @@ export function isChooser(prompt: PromptState): prompt is ChooserPrompt {
   return prompt.kind === "church" || prompt.kind === "chinatown" || prompt.kind === "port";
 }
 
-/** The Port's three zones, in the board's order: the arm's `zone` and the
- *  heading it stands under. A zone with no card in the arm draws no row. */
-const PORT_ZONES: readonly (readonly [PortZone, string])[] = [
-  ["Low", "LOW"],
-  ["Mid", "MID"],
-  ["High", "HIGH"],
-];
+/** The heading a Port zone stands under. **Only the heading is the client's:**
+ *  which zones are drawn, in what order, and which card stands in which are the
+ *  arm's (the zones in the order `cards` first names them). */
+const PORT_HEADINGS: Record<PortZone, string> = { Low: "LOW", Mid: "MID", High: "HIGH" };
 
 /** The fallback's two lines (ruling R46). */
 const UNKNOWN_ASKING = "This screen needs a newer version.";
@@ -200,7 +197,12 @@ export function Decision({
   // pressed control the payload now refuses hands the focus to its row's other
   // stepper, or to the chooser itself when neither is live, and only while the
   // focus is still on it or has fallen to the body. A Church kind needs none
-  // of this: a kind stays offered across a toggle.
+  // of this: a kind stays offered across a toggle. Nor does a Port card: a
+  // selected card is always offered (`selected || can_add`), so a card pressed
+  // ON stays pressable, and one pressed OFF returns to a selection the list
+  // held with it (at the Port a selection is empty or listed, plan 2b's
+  // measured fact), so it can be added again. A payload that said otherwise
+  // would `disable` the card and drop the focus, which nothing here handles.
   const chooserNode = useRef<HTMLDivElement>(null);
   const pressed = useRef<{ number: number; which: "plus" | "minus"; count: number } | null>(null);
   useLayoutEffect(() => {
@@ -509,9 +511,9 @@ export function Decision({
       {!spectating && prompt.kind === "port" && (
         <div className="chooser port">
           <div className="zones">
-            {PORT_ZONES.map(([zone, heading]) => {
+            {[...new Set(prompt.cards.map((c) => c.zone))].map((zone) => {
               const cards = prompt.cards.filter((c) => c.zone === zone);
-              if (cards.length === 0) return null;
+              const heading = PORT_HEADINGS[zone];
               return (
                 <div className="zone" data-zone={zone} key={zone}>
                   <span className="zl">{heading}</span>
@@ -679,9 +681,11 @@ function Verdict({
  *  listed move that takes exactly the cards switched on, in `describe`'s words
  *  and the list's order. Two ways are the second card paid either way, and the
  *  count of the array is what says so — the choice is asked at Confirm, in the
- *  numbered pick the server opens. Nothing selected is a hint, not the warning
- *  (a selection has to exist before it can be "not offered"). A `status`
- *  region, so what a press changes is announced. */
+ *  numbered pick the server opens. Nothing selected is not the warning (a
+ *  selection has to exist before it can be "not offered"), so nothing selected
+ *  and nothing legal is the SILENT region, as Chinatown's empty one is (the
+ *  region stays mounted, so the first selection is announced against it).
+ *  A `status` region, so what a press changes is announced. */
 function PortVerdict({ preview, anySelected }: { preview: PortPreview; anySelected: boolean }) {
   if (preview.legal) {
     return (
@@ -706,11 +710,7 @@ function PortVerdict({ preview, anySelected }: { preview: PortPreview; anySelect
       </div>
     );
   }
-  return (
-    <div className="verdict" role="status">
-      pick a card to preview it
-    </div>
-  );
+  return <div className="verdict" role="status" />;
 }
 
 /** One of Chinatown's nine exchanges: the spend, an arrow and the gain as

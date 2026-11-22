@@ -1010,10 +1010,10 @@ h1, h2, h3 { font-family: var(--display); font-weight: 500; margin: 0; }
  * dimmed as a kind is. A pressed card wears the kind's pressed band, and the
  * focus ring is drawn INSIDE it in the foreground colour for the kind's reason
  * (the box below is a scroll container). **Where the deck is short the chooser
- * gives way as the Church's does**: the zones scroll first, then the chooser
- * itself, and Confirm and Cancel, its siblings, stay in reach. The 5rem floor
- * of the zones is a reasoned figure, not a measured one: its boxes are Task 5's
- * to measure in a browser. */
+ * is meant to give way as the Church's does**: the zones scroll first, then the
+ * chooser itself, and Confirm and Cancel, its siblings, stay in reach. That
+ * sentence and the 5rem floor of the zones are REASONED, not measured: Task 5
+ * measures the boxes in a browser. */
 .decision > .chooser.port {
   flex: 0 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
   scrollbar-width: thin; scrollbar-color: var(--line-bright) transparent;

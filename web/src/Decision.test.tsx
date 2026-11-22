@@ -1198,13 +1198,23 @@ describe("the Port's chooser (plan 2b, Task 4)", () => {
     expect([...v2.querySelectorAll(".way")].map((w) => w.textContent)).toEqual(two.preview.ways);
     cleanup();
 
-    // Nothing selected and nothing legal: no ways drawn, and not the warning
-    // either (a selection has to exist before it can be "not offered").
+    // Where a card stands is not what makes it pressed: the SELECTED flag is,
+    // read on the last card (the rival is "the first n cards are pressed", which
+    // every fixture satisfies since its selected cards stand first).
+    const last = clonePort(wire.port, (p) => { p.cards[3]!.selected = true; });
+    const third = show(last);
+    expect(cardEls(third.container).map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "false", "false", "true"]);
+    cleanup();
+
+    // Nothing selected and nothing legal: the region stays mounted and says
+    // nothing, as the Church's and Chinatown's do at an empty selection, and it
+    // is not the warning either (a selection has to exist before it can be
+    // "not offered").
     const idle = show(wire.port);
     const v0 = idle.container.querySelector(".verdict")!;
     expect(v0).toHaveAttribute("role", "status");
-    expect(v0).not.toHaveClass("ok");
-    expect(v0).not.toHaveClass("bad");
+    expect(v0.className).toBe("verdict");
+    expect(v0.textContent).toBe("");
     expect(v0.querySelectorAll(".way")).toHaveLength(0);
   });
 
@@ -1259,6 +1269,7 @@ describe("the Port's chooser (plan 2b, Task 4)", () => {
     expect(button("Confirm")).toBeDisabled();
     expect(button("Confirm")).toHaveAttribute("data-unavailable", "true");
     expect(first.container.querySelector(".verdict")).toHaveClass("bad");
+    expect(first.container.querySelector(".verdict")).toHaveAttribute("role", "status");
     expect(first.container.querySelector(".verdict")!.textContent).toBe("not offered — adjust the selection");
     cleanup();
 
@@ -1290,31 +1301,38 @@ describe("the Port's chooser (plan 2b, Task 4)", () => {
     expect(one.container.querySelector(".verdict")!.textContent).not.toContain("asked at Confirm");
   });
 
-  // The rivals: "the cards are sorted" (by number or by id) and "a card's zone
-  // is its place in the list".
-  it("draws the cards in the payload's order and each under the zone the payload names", () => {
+  // The rivals: "the zones are drawn in a fixed LOW, MID, HIGH order", "the
+  // cards are sorted" (by number or by id) and "a card's zone is its place in
+  // the list". The zones stand in the order the payload's cards first name them.
+  it("draws the zones and the cards in the payload's order, each card under the zone the payload names", () => {
+    // Reversed: the MID pair is first and each pair is reversed. (A sort by
+    // number cannot part this clone, since the fixture reversed IS ascending:
+    // the swap below and the fixture's own LOW order, 36 before 14, do.)
     const reversed = clonePort(wire.port, (p) => { p.cards.reverse(); });
     const r = show(reversed);
-    expect(headings(r.container)).toEqual(["LOW", "MID"]);
-    expect(numbers(r.container)).toEqual(["14", "36", "6", "8"]);
+    expect(headings(r.container)).toEqual(["MID", "LOW"]);
+    expect(numbers(r.container)).toEqual(["6", "8", "14", "36"]);
     cleanup();
 
     // Only the MID pair swapped: LOW keeps the order the fixture has, so a sort
-    // by number and a payload order part company in both zones.
+    // by number and the payload's order part company.
     const swapped = clonePort(wire.port, (p) => { [p.cards[2], p.cards[3]] = [p.cards[3]!, p.cards[2]!]; });
     const s = show(swapped);
+    expect(headings(s.container)).toEqual(["LOW", "MID"]);
     expect(numbers(s.container)).toEqual(["36", "14", "6", "8"]);
     cleanup();
 
-    // A card whose zone is HIGH stands under HIGH, beside nothing it was
-    // beside by position.
+    // A card whose zone is HIGH stands under HIGH, in the place the payload
+    // first names that zone, beside nothing it was beside by position.
     const raised = clonePort(wire.port, (p) => { p.cards[1]!.zone = "High"; });
     const h = show(raised);
-    expect(headings(h.container)).toEqual(["LOW", "MID", "HIGH"]);
+    expect(headings(h.container)).toEqual(["LOW", "HIGH", "MID"]);
     const zones = [...h.container.querySelectorAll<HTMLElement>(".chooser.port .zone")];
-    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "Mid", "High"]);
-    expect([...zones[0]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["36"]);
-    expect([...zones[2]!.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number)).toEqual(["14"]);
+    expect(zones.map((z) => z.dataset.zone)).toEqual(["Low", "High", "Mid"]);
+    const inZone = (z: HTMLElement) => [...z.querySelectorAll<HTMLElement>("button.card-pick")].map((b) => b.dataset.number);
+    expect(inZone(zones[0]!)).toEqual(["36"]);
+    expect(inZone(zones[1]!)).toEqual(["14"]);
+    expect(inZone(zones[2]!)).toEqual(["8", "6"]);
   });
 
   // The rival is "the line a card sends is its index in the list": none of the
@@ -1336,6 +1354,15 @@ describe("the Port's chooser (plan 2b, Task 4)", () => {
     await third.user.click(button("Confirm"));
     await third.user.click(button("Cancel"));
     expect(third.onSend.mock.calls).toEqual([["confirm"], ["cancel"]]);
+    cleanup();
+
+    // The line is the arm's `number`, not the card's id (every fixture has the
+    // two equal): one card's number changed alone.
+    const renumbered = clonePort(wire.port, (p) => { p.cards[1]!.number = 99; });
+    expect(portPrompt(renumbered).cards[1]!.id).toBe(14);
+    const fifth = show(renumbered);
+    await fifth.user.click(card(fifth.container, 99));
+    expect(fifth.onSend.mock.calls).toEqual([["99"]]);
     cleanup();
 
     // A card the payload disables sends nothing.
